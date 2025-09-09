@@ -45,6 +45,7 @@ SERVICE_TYPES = [
 TIME_CAPSULE_HINTS = (
     "time capsule",
     "timecapsule",
+    "capsule",
     "airport time capsule",
     "airport",
 )
@@ -112,10 +113,15 @@ class Collector:
             self._browsers.append(browser)
 
     def _on_service_state_change(self, *, zeroconf: Zeroconf, service_type: str, name: str, state_change: ServiceStateChange):
-        if state_change is ServiceStateChange.Added or state_change is ServiceStateChange.Updated:
-            info = zeroconf.get_service_info(service_type, name, 2000)
-            if info:
-                self._add_info(service_type, info)
+        try:
+            if state_change is ServiceStateChange.Added or state_change is ServiceStateChange.Updated:
+                info = zeroconf.get_service_info(service_type, name, 2000)
+                if info:
+                    self._add_info(service_type, info)
+        except Exception:
+            # Swallow exceptions from the zeroconf thread to avoid noisy stack traces
+            # during discovery; discovery is best-effort.
+            pass
 
     def _add_info(self, stype: str, info: ServiceInfo):
         name = info.name or ""
@@ -181,11 +187,12 @@ def discover(timeout: float = 5.0) -> List[Discovered]:
         except Exception:
             pass
 
-    # Filter for Time Capsules
+    # Filter for Time Capsules (by explicit hints in name/model)
     filtered = [r for r in all_results if _looks_like_time_capsule(r.name, r.properties)]
 
     # If nothing matched hints, fall back to any _airport entries (likely Apple base stations)
     if not filtered:
+        # Fallback: anything advertising the AirPort base station service
         filtered = [r for r in all_results if "_airport._tcp.local." in r.services]
 
     # Sort by hostname then name for stable output

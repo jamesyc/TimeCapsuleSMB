@@ -1,0 +1,2 @@
+"""Discovery utilities for TimeCapsuleSMB."""
+
