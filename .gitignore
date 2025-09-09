@@ -18,6 +18,10 @@ dist/
 *.egg-info/
 *.egg
 
+# Local dependencies and AirPyrt env
+.deps/
+.airpyrt-venv/
+
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
@@ -37,4 +41,3 @@ coverage.xml
 # Editor / IDE
 .idea/
 .vscode/
-
