@@ -1,0 +1,40 @@
+# macOS
+.DS_Store
+
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments (from Makefile)
+.venv/
+.env/
+venv/
+env/
+
+# Packaging / distribution
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Test / coverage
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.mypy_cache/
+.ruff_cache/
+.pytype/
+
+# Editor / IDE
+.idea/
+.vscode/
+
