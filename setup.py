@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
 Interactive setup helper: discovers Apple Time Capsules via mDNS and lets the
-user select one. Stores the selection in a local variable and prints a summary.
-
-This script does not perform any further actions yet.
+user select one. Stores the selection in a local variable and enables SSH via
+AirPyrt if not already enabled. If SSH is already enabled, offers to disable it.
 """
 
 from __future__ import annotations
@@ -23,13 +22,8 @@ except Exception as e:
     sys.exit(1)
 
 try:
-    from ssh.enable_ssh import enable_ssh, wait_for_ssh_open
-    from ssh.disable_ssh import (
-        disable_ssh,
-        wait_for_ssh_close,
-        wait_for_device_up,
-        ssh_stays_disabled,
-    )
+    from ssh.enable_ssh import enable_ssh
+    from ssh.disable_ssh import disable_ssh
 except Exception as e:
     print("Failed to import ssh module.\n", e, file=sys.stderr)
     sys.exit(1)
@@ -50,20 +44,7 @@ def prefer_routable_ipv4(rec: Discovered) -> str:
             return ip
     return rec.ipv4[0] if rec.ipv4 else ""
 
-def ssh_open(host: str, port: int = 22, timeout: float = 2.0) -> bool:
-    """Return True if a TCP connection to host:port succeeds within timeout."""
-    try:
-        for family, socktype, proto, _, sockaddr in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM):
-            with closing(socket.socket(family, socktype, proto)) as s:
-                s.settimeout(timeout)
-                try:
-                    s.connect(sockaddr)
-                    return True
-                except (socket.timeout, ConnectionRefusedError, OSError):
-                    continue
-    except Exception:
-        return False
-    return False
+ 
 
 def list_devices(records: List[Discovered]) -> None:
     print("Found devices:")
@@ -89,6 +70,49 @@ def choose_device(records: List[Discovered]) -> Optional[Discovered]:
             print("Out of range.")
             continue
         return records[idx - 1]
+
+# --- Connectivity probes and waiters ---
+
+def tcp_open(host: str, port: int, timeout: float = 2.0) -> bool:
+    try:
+        for family, socktype, proto, _, sockaddr in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM):
+            with closing(socket.socket(family, socktype, proto)) as s:
+                s.settimeout(timeout)
+                try:
+                    s.connect(sockaddr)
+                    return True
+                except (socket.timeout, ConnectionRefusedError, OSError):
+                    continue
+    except Exception:
+        return False
+    return False
+
+
+def wait_for_ssh(host: str, *, expected_state: bool, timeout_seconds: int = 120, interval_seconds: int = 5, verbose: bool = True) -> bool:
+    expected_state_string = "open" if expected_state else "closed"
+    if verbose:
+        print("Waiting for SSH port to be {}...".format(expected_state_string))
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        time.sleep(interval_seconds)
+        is_open = tcp_open(host, 22)
+        if (is_open and expected_state) or (not is_open and not expected_state):
+            if verbose:
+                print("SSH is {}.".format(expected_state_string))
+            return True
+    if verbose:
+        print("SSH did not {} within {}s.".format(expected_state_string, timeout_seconds))
+    return False
+
+
+def wait_for_device_up(host: str, *, probe_ports: Iterable[int] = (5009, 445, 139), timeout_seconds: int = 180, interval_seconds: int = 5) -> bool:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        time.sleep(interval_seconds)
+        if any(tcp_open(host, p) for p in probe_ports):
+            return True
+    return False
+
 
 def main(argv: Optional[list[str]] = None) -> int:
     print("Discovering Time Capsules on the local network...")
@@ -120,22 +144,19 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("Could not determine a routable IPv4 or hostname for the selected device.")
         return 1
 
+    # Prompt once for the AirPort admin password (DRY)
+    try:
+        password = getpass.getpass("Enter AirPort admin password: ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return 1
+    if not password:
+        print("No password provided.")
+        return 1
+
     print(f"Probing SSH on {airpyrt_host}:22 ...")
-    if not ssh_open(airpyrt_host):
+    if not tcp_open(airpyrt_host, 22):
         print("SSH not reachable. Attempting to enable via AirPyrt...")
-
-        if enable_ssh is None:
-            print("AirPyrt enable script not available. Ensure ssh/enable_ssh.py exists.")
-            return 1
-
-        try:
-            password = getpass.getpass("Enter AirPort admin password: ")
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return 1
-        if not password:
-            print("No password provided.")
-            return 1
 
         try:
             enable_ssh(airpyrt_host, password, reboot_device=True, verbose=True)
@@ -144,11 +165,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 1
 
         # Wait for SSH to become reachable after reboot, then finish.
-        if not wait_for_ssh_open(airpyrt_host):
+        if not wait_for_ssh(airpyrt_host, expected_state=True):
             return 1
     
     else: 
         # SSH is reachable; offer to disable and revert to default
+        should_disable = False
         while True:
             try:
                 resp = input("SSH already enabled. Disable? [y/N]: ").strip().lower()
@@ -157,38 +179,31 @@ def main(argv: Optional[list[str]] = None) -> int:
                 resp = ""
             if resp in {"", "n", "no"}:
                 print("Leaving SSH enabled.")
-                return 0
-            if resp in {"y", "yes"}:
                 break
-            print("Please answer 'y' or 'n'.")
-
-        try:
-            password = getpass.getpass("Enter AirPort admin password: ")
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return 1
-        if not password:
-            print("No password provided.")
-            return 1
-
-        try:
-            disable_ssh(airpyrt_host, password, reboot_device=True, verbose=True)
-        except Exception as e:
-            print(f"Failed to disable SSH via AirPyrt: {e}")
-            return 1
-
-        if not wait_for_ssh_close(airpyrt_host):
-            return 0
-
-        wait_for_device_up(airpyrt_host)
-
-        if not ssh_stays_disabled(airpyrt_host, stabilization_seconds=30):
-            print("Warning: SSH reopened after reboot. Disable may not have persisted.")
-            print("- Ensure AirPyrt is installed and try disabling again.")
-            print("- If this persists, the firmware may re-enable SSH via other debug flags.")
-            print("  Consider resetting debug settings or power-cycling the device.")
-        else:
-            print("SSH disabled (remains closed after reboot).")
+            if resp in {"y", "yes"}:
+                should_disable = True
+                break
+            print("Please answer 'y' or 'n'. ")
+        if should_disable:
+            try:
+                disable_ssh(airpyrt_host, password, reboot_device=True, verbose=True)
+            except Exception as e:
+                print(f"Failed to disable SSH via AirPyrt: {e}")
+                return 1
+            
+            print("Device is starting reboot now, waiting for it to shut down...")
+            if not wait_for_ssh(airpyrt_host, expected_state=False):
+                return 0
+            print("Device is down now, verifying persistence after reboot...")
+            wait_for_device_up(airpyrt_host)
+            print("Device successfully rebooted. Checking if SSH is still disabled...")
+            if not wait_for_ssh(airpyrt_host, expected_state=False, timeout_seconds=30):
+                print("Warning: SSH reopened after reboot. Disable may not have persisted.")
+            else:
+                print("SSH disabled (remains closed after reboot). Enable SSH again if this was not intended.")
+                return 0
+    
+    print("SSH is configured. You can connect as 'root' using the AirPort admin password.")
     return 0
 
 

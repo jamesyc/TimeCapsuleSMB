@@ -5,9 +5,10 @@ import shlex
 import shutil
 import subprocess
 from typing import Iterable, List, Optional, Tuple
+import re
 
 
-def run(cmd: List[str], check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:
+def run(cmd: List[str], check: bool = True, capture: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(
         cmd,
         check=check,
@@ -17,9 +18,29 @@ def run(cmd: List[str], check: bool = True, capture: bool = False) -> subprocess
     )
 
 
+def acp_run_check(cmd: List[str]) -> str:
+    """Run an AirPyrt command, detect in-output error codes, and raise.
+
+    Some AirPyrt (acp) invocations print "error code: -0x.." but still exit 0
+    when authentication fails. This parses stdout to catch that case.
+
+    Returns captured stdout on success.
+    """
+    proc = run(cmd, check=False, capture=True)
+    out = proc.stdout or ""
+    if proc.returncode != 0:
+        raise RuntimeError(out.strip() or f"Command failed with rc={proc.returncode}")
+    low = out.lower()
+    m = re.search(r"error[_ ]code\s*:?[\t ]*(-?0x[0-9a-f]+)", low)
+    if m and m.group(1).startswith("-0x"):
+        raise RuntimeError(f"AirPyrt reported error_code {m.group(1)} (likely wrong admin password). Output: {out.strip()}")
+    return out
+
+
 def acp_available(py_exe: str) -> bool:
     try:
-        run([py_exe, "-c", "import acp; print(1)"])
+        # Capture output to avoid printing to stdout during interpreter probes
+        run([py_exe, "-c", "import acp; print(1)"], capture=True)
         return True
     except Exception:
         return False
@@ -68,29 +89,9 @@ def set_dbug(host: str, password: str, value_hex: str, *, python_candidates: Opt
     if verbose:
         print("Running:", " ".join(shlex.quote(x) for x in cmd))
     try:
-        run(cmd, check=True)
-    except subprocess.CalledProcessError as e:
-        msg = e.stdout.strip() if e.stdout else str(e)
-        raise RuntimeError(f"Failed to set dbug={value_hex} via AirPyrt. Output: {msg}")
-
-
-def remove_property(host: str, password: str, name: str, *, python_candidates: Optional[Iterable[str]] = None, verbose: bool = True) -> None:
-    """Remove an AirPort configuration property using AirPyrt.
-
-    Some firmware treats removing the property as distinct from setting to zero.
-    """
-    acp_exec, py = ensure_airpyrt_available(python_candidates)
-    if acp_exec:
-        cmd = [acp_exec, "-t", host, "-p", password, "remove", name]
-    else:
-        cmd = [py, "-B", "-m", "acp", "-t", host, "-p", password, "remove", name]
-    if verbose:
-        print("Running:", " ".join(shlex.quote(x) for x in cmd))
-    try:
-        run(cmd, check=True)
-    except subprocess.CalledProcessError as e:
-        msg = e.stdout.strip() if e.stdout else str(e)
-        raise RuntimeError(f"Failed to remove property '{name}' via AirPyrt. Output: {msg}")
+        acp_run_check(cmd)
+    except RuntimeError as e:
+        raise RuntimeError(f"Failed to set dbug={value_hex} via AirPyrt. Output: {e}")
 
 
 def reboot(host: str, password: str, *, python_candidates: Optional[Iterable[str]] = None, verbose: bool = True) -> None:
@@ -102,13 +103,12 @@ def reboot(host: str, password: str, *, python_candidates: Optional[Iterable[str
     if verbose:
         print("Rebooting device:", " ".join(shlex.quote(x) for x in cmd))
     try:
-        run(cmd, check=True)
-    except subprocess.CalledProcessError as e:
-        msg = e.stdout.strip() if e.stdout else str(e)
-        raise RuntimeError(f"Reboot command failed. Output: {msg}")
+        acp_run_check(cmd)
+    except RuntimeError as e:
+        raise RuntimeError(f"Reboot command failed. Output: {e}")
 
 
-# --- SSH helpers (run commands on the device) ---
+# --- SSH helper (run commands on the device) ---
 
 def ssh_run_command(host: str, password: str, command: str, *, timeout: int = 30, verbose: bool = True) -> Tuple[int, str]:
     """Run a shell command on the device via system ssh using pexpect.
@@ -151,34 +151,4 @@ def ssh_run_command(host: str, password: str, command: str, *, timeout: int = 30
     return rc, "".join(out_chunks)
 
 
-def disable_ssh_via_local_acp(host: str, password: str, *, verbose: bool = True) -> None:
-    """Disable SSH by removing 'dbug' using the on-device 'acp' command via SSH.
-
-    This aligns with reports that removing the property locally persists
-    correctly, whereas remote ACP remove/set may not on some firmware.
-    """
-    cmds = [
-        "acp remove dbug",
-        "/usr/sbin/acp remove dbug",
-        "/usr/bin/acp remove dbug",
-    ]
-    last_err = None
-    for c in cmds:
-        rc, out = ssh_run_command(host, password, c, verbose=verbose)
-        if rc == 0:
-            if verbose:
-                print("Removed 'dbug' via:", c)
-            break
-        last_err = (rc, out)
-    else:
-        code, out = last_err or (1, "unknown error")
-        raise RuntimeError(f"Failed to remove 'dbug' via on-device acp (rc={code}). Output: {out}")
-
-    # Reboot the device to apply changes. Prefer acp --reboot; fall back to reboot(8).
-    for c in ("acp --reboot", "/usr/sbin/acp --reboot", "/sbin/reboot", "reboot"):
-        rc, out = ssh_run_command(host, password, c, verbose=verbose)
-        if rc == 0:
-            if verbose:
-                print("Rebooted device via:", c)
-            return
-    raise RuntimeError("Failed to reboot device after removing 'dbug'.")
+    
