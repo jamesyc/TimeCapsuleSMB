@@ -126,7 +126,7 @@ class Collector:
     def _add_info(self, stype: str, info: ServiceInfo):
         name = info.name or ""
         hostname = info.server or ""
-        props = _decode_props(info.properties or {})
+        props = _decode_props({k: v for k, v in (info.properties or {}).items() if v is not None})
 
         ipv4: List[str] = []
         ipv6: List[str] = []
