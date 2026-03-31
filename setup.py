@@ -44,8 +44,6 @@ def prefer_routable_ipv4(rec: Discovered) -> str:
             return ip
     return rec.ipv4[0] if rec.ipv4 else ""
 
- 
-
 def list_devices(records: List[Discovered]) -> None:
     print("Found devices:")
     for i, r in enumerate(records, start=1):

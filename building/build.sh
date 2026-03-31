@@ -1,4 +1,4 @@
-# I ssh'd into an Apple Time Capsule (NetBSD 6.0 evbarm) using ssh -oHostKeyAlgorithms=+ssh-dss.
+# I ssh'd into an Apple Time Capsule (NetBSD 6.0 evbarm) using ssh -oHostKeyAlgorithms=+ssh-dss root@192.168.1.217
 
 # Environment is super minimal (tiny mdroot, tiny flash, 16 MB tmpfs). No sftp-server, no compiler, limited tools. 256MB ram. The 2 TB disk is mounted at /Volumes/dk2.
 
@@ -11,7 +11,7 @@
 # Samba version reality: vfs_fruit is not in Samba 3.6 which is lightweight; appears in Samba 4.x (AAPL ext in 4.2; Time Machine switch in 4.8). So if you want Apple semantics/Time Machine over SMB, you need Samba ≥4.8.
 
 # Build strategy:  
-# Use a UTM VM: NetBSD 9/10 (aarch64) for speed and sane tools.
+# Use a UTM VM: NetBSD 9/10 (aarch64) for speed and sane tools. https://stevens.netmeister.org/631/utm/
 # From that VM, cross-compile for NetBSD 6/evbarm using NetBSD’s build.sh:
 # Build tools and distribution to get TOOLDIR and DESTDIR (sysroot).
 # Cross-build and stage GMP → nettle → GnuTLS into ~/tc-stage (your $PREFIX).
@@ -25,17 +25,17 @@
 # /Volumes/dk2/samba-min/sbin/smbd -i -s /Volumes/dk2/samba-min/etc/smb.conf
 # Suggested smb.conf uses SMB2 only and stacks catia, fruit, streams_xattr, with fruit:time machine = yes (on Samba 4.8).
 
-# I set up the cross toolchain and successfully built GMP, nettle, GnuTLS into $PREFIX.
-
 # THINGS I DID
+su -
 
-Fetch NetBSD 6 source tarball from archive (src.tgz, etc):
+# Fetch NetBSD 6 source tarball from archive (src.tgz, etc):
 mkdir -p ~/netbsd6 && cd ~/netbsd6
 curl https://archive.netbsd.org/pub/NetBSD-archive/NetBSD-6.0/source/sets/src.tgz -o src.tgz
 tar -xzf src.tgz -C ~/netbsd6
+# repeat prior steps for gnusrc.tgz sharesrc.tgz src.tgz syssrc.tgz xsrc.tgz
 cd /root/netbsd6/usr/src
 
-Start building (use gcc 4 flags):
+# Start building (use gcc 4 flags):
 env HOST_CC=/usr/pkg/gcc12/bin/gcc HOST_CXX=/usr/pkg/gcc12/bin/g++ HOST_CFLAGS='-O -fcommon -fgnu89-inline' HOST_CXXFLAGS='-O -fcommon -fgnu89-inline' HOST_CPPFLAGS='-D__GNUC_GNU_INLINE__' ./build.sh -U -m evbarm tools
 env HOST_CC=/usr/pkg/gcc12/bin/gcc HOST_CXX=/usr/pkg/gcc12/bin/g++ HOST_CFLAGS='-O -fcommon -fgnu89-inline' HOST_CXXFLAGS='-O -fcommon -fgnu89-inline' HOST_CPPFLAGS='-D__GNUC_GNU_INLINE__' ./build.sh -U -m evbarm distribution
 
@@ -61,7 +61,6 @@ export RANLIB="$TOOLDIR/bin/$TRIPLE-ranlib"
 export STRIP="$TOOLDIR/bin/$TRIPLE-strip"
 export LD="$TOOLDIR/bin/$TRIPLE-ld --sysroot=$DESTDIR"
 export CFLAGS="-Os"
-export LDFLAGS="--sysroot=$DESTDIR"
 export PREFIX="$HOME/tc-stage"
 export CPPFLAGS="-I$PREFIX/include -I$SYSROOT/usr/include"
 export LDFLAGS="-L$PREFIX/lib -L$SYSROOT/lib -L$SYSROOT/usr/lib"
@@ -78,15 +77,8 @@ mkdir -p "$PREFIX"
 
 # 3) Build GMP → nettle → GnuTLS (installed into $PREFIX)  
 # 3.1) GMP
-cd /root/tc-build
-curl -LO https://gmplib.org/download/gmp/gmp-6.2.1.tar.xz
-tar -xf gmp-6.2.1.tar.xz 
 
-cd /root/tc-build/gmp-6.2.1
-gmake distclean 2>/dev/null || true
-./configure --build="$(sh config.guess)" --host="$TRIPLE" --prefix="$PREFIX" \
-        --disable-nls --enable-shared --disable-static
-gmake -j"$(sysctl -n hw.ncpu)" && gmake install
+
 
 # 3.2) nettle
 cd /root/tc-build
@@ -118,14 +110,14 @@ env -u DESTDIR gmake install   # again, avoid DESTDIR here
 
 
 
-# prepare samba) Work in clean build dir, fetch & unpack Samba 4.8.x
+# prepare) Work in clean build dir, fetch & unpack Samba 4.8.x
 cd /root/tc-build
 curl -LO https://download.samba.org/pub/samba/stable/samba-4.8.12.tar.gz
 tar -xzf samba-4.8.12.tar.gz
 cd /root/tc-build/samba-4.8.12
 rm -rf bin/ .waf* config.log 2>/dev/null || true
 
-# === 0) Toolchain/env from your NetBSD 6 source tree ===
+# === 0) Toolchain/env from NetBSD 6 source tree ===
 cd /root/netbsd6/usr/src
 TOOLDIR="$(ls -d "$(pwd)"/obj/tooldir.*)"
 DESTDIR="$(ls -d "$(pwd)"/obj/destdir.evbarm)"
@@ -144,7 +136,7 @@ export AR="$TOOLDIR/bin/$TRIPLE-ar"
 export RANLIB="$TOOLDIR/bin/$TRIPLE-ranlib"
 export STRIP="$TOOLDIR/bin/$TRIPLE-strip"
 
-# Your staging prefix (later copied onto the Time Capsule)
+# Staging prefix (later copied onto the Time Capsule)
 export PREFIX="$HOME/tc-stage"
 mkdir -p "$PREFIX"
 
@@ -179,11 +171,10 @@ export PYTHON=/usr/pkg/bin/python2.7
 [ -e /usr/pkg/bin/python ] && echo "/usr/pkg/bin/python already exists" || ln -s /usr/pkg/bin/python2.7 /usr/pkg/bin/python
 
 # Base flags + fixes used earlier
-export CFLAGS="-Os -fno-ident"
+export CFLAGS="-Os -fno-ident -fno-pic -fno-pie"
 export CPPFLAGS="-I$PREFIX/include -I$SYSROOT/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DID_REAL=0 -DID_EFFECTIVE=1"
-export LDFLAGS="-L$PREFIX/lib -L$SYSROOT/lib -L$SYSROOT/usr/lib"
+export LDFLAGS="-L$PREFIX/lib -L$SYSROOT/lib -L$SYSROOT/usr/lib -no-pie"
 
-# pkg-config to your stage
 export PKG_CONFIG_DIR=
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
 export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig"
@@ -330,7 +321,7 @@ python ./buildtools/bin/waf install
 
 # Results
 # ja# pwd
-# /root/tc-stage
+# c
 # ja# ls
 # bin       include   lib       samba-min share
 # ja# ls samba-min/

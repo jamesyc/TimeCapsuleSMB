@@ -8,8 +8,7 @@
 # Quick start:
 #   1) make install           # create venv and install Python 3 deps
 #   2) make airpyrt           # provision pyenv Python 2.7.18 + local AirPyrt venv
-#   3) make discover          # run mDNS discovery to list devices
-#   4) make setup             # select device; enables SSH via AirPyrt if needed
+#   3) make setup             # use mDNS to select device; enables SSH via AirPyrt if needed
 #      (or run: python setup.py)
 #
 # Targets:
