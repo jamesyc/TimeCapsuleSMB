@@ -70,10 +70,6 @@ EOF
 
     expect_probe_format
 
-    echo "--- known-good control ---"
-    "$TOOLDIR/bin/nbfile" /root/tc-build/hello
-    "$TOOLDIR/bin/$TRIPLE-objdump" -p /root/tc-build/hello | sed -n '1,120p'
-
     scp -O $TC_SSH_OPTS "$PROBE_BIN" "$TC_HOST:/tmp/hello-clean"
     ssh $TC_SSH_OPTS "$TC_HOST" \
       'chmod +x /tmp/hello-clean && /tmp/hello-clean'

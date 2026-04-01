@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Shared configuration for the reproducible NetBSD 6 cross-build workflow.
+# Shared configuration for the reproducible NetBSD cross-build workflow.
 
 NETBSD6_ROOT=/root/netbsd6
 NETBSD7_ROOT=/root/netbsd7
@@ -8,6 +8,9 @@ SRC="$NETBSD7_ROOT/usr/src"
 OUT=/root/tc-earmv4
 OBJ="$OUT/obj"
 TOOLS="$OUT/tools"
+STAMPS="$OUT/stamps"
+TOOLS_STAMP="$STAMPS/tools.ok"
+DIST_STAMP="$STAMPS/distribution.ok"
 MKCONF=
 
 HOST_CC=/usr/pkg/gcc7/bin/gcc
@@ -31,7 +34,7 @@ PROBE_BIN="$PROBE_DIR/hello"
 TC_HOST=root@192.168.1.217
 TC_SSH_OPTS='-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1'
 
-export NETBSD6_ROOT NETBSD7_ROOT SRC OUT OBJ TOOLS MKCONF
+export NETBSD6_ROOT NETBSD7_ROOT SRC OUT OBJ TOOLS STAMPS TOOLS_STAMP DIST_STAMP MKCONF
 export HOST_CC HOST_CXX HOST_CFLAGS HOST_CXXFLAGS HOST_CPPFLAGS
 export NO_PTHREADS TOOLS_LOG DIST_LOG HELLO_LOG DOWNLOAD_LOG PROBE_DIR PROBE_SRC PROBE_BIN
 export TC_HOST TC_SSH_OPTS
