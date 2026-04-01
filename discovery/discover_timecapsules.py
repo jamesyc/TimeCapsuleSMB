@@ -79,16 +79,44 @@ def _bytes_to_ip(addr_bytes: bytes) -> str:
 def _decode_props(props: Dict[bytes, bytes]) -> Dict[str, str]:
     out: Dict[str, str] = {}
     for k, v in props.items():
+        if v is None:
+            continue
         try:
-            out[k.decode("utf-8", "ignore")] = v.decode("utf-8", "ignore")
+            key = k.decode("utf-8", "ignore")
+            value = v.decode("utf-8", "ignore")
         except Exception:
             continue
+        if not key:
+            continue
+        out[key] = value
+
+        # Some older Apple services expose a single TXT entry whose value contains
+        # a comma-separated list of additional key=value pairs.
+        if "," not in value:
+            continue
+        for chunk in value.split(","):
+            if "=" not in chunk:
+                continue
+            extra_key, extra_value = chunk.split("=", 1)
+            extra_key = extra_key.strip()
+            if extra_key and extra_key not in out:
+                out[extra_key] = extra_value.strip()
     return out
 
 
-def _looks_like_time_capsule(name: str, props: Dict[str, str]) -> bool:
+def _display_name(fullname: str, service_type: str) -> str:
+    suffix = service_type
+    if fullname.endswith(suffix):
+        return fullname[: -len(suffix)].rstrip(".")
+    return fullname.rstrip(".")
+
+
+def _looks_like_time_capsule(name: str, hostname: str, props: Dict[str, str]) -> bool:
     s = name.lower()
     if any(h in s for h in TIME_CAPSULE_HINTS):
+        return True
+    host = hostname.lower()
+    if any(h in host for h in TIME_CAPSULE_HINTS):
         return True
     model = props.get("model", "").lower()
     if any(h in model for h in TIME_CAPSULE_HINTS):
@@ -124,7 +152,7 @@ class Collector:
             pass
 
     def _add_info(self, stype: str, info: ServiceInfo):
-        name = info.name or ""
+        name = _display_name(info.name or "", stype)
         hostname = info.server or ""
         props = _decode_props({k: v for k, v in (info.properties or {}).items() if v is not None})
 
@@ -156,6 +184,8 @@ class Collector:
                 rec = Discovered(name=name, hostname=hostname.rstrip("."))
                 self.records[key] = rec
             rec.services.add(stype)
+            if not rec.name and name:
+                rec.name = name
             # Update host if we previously didn't have it
             if not rec.hostname and hostname:
                 rec.hostname = hostname.rstrip(".")
@@ -188,7 +218,7 @@ def discover(timeout: float = 5.0) -> List[Discovered]:
             pass
 
     # Filter for Time Capsules (by explicit hints in name/model)
-    filtered = [r for r in all_results if _looks_like_time_capsule(r.name, r.properties)]
+    filtered = [r for r in all_results if _looks_like_time_capsule(r.name, r.hostname, r.properties)]
 
     # If nothing matched hints, fall back to any _airport entries (likely Apple base stations)
     if not filtered:
