@@ -46,4 +46,3 @@ coverage.xml
 
 # Env
 .env
-build/password.txt
