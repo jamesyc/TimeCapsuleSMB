@@ -1,247 +1,258 @@
 # TimeCapsuleSMB
 
-Run a modern Samba server on an Apple AirPort Time Capsule.
+Give an old Apple AirPort Time Capsule a modern SMB server again.
 
-Current working design:
-- static Samba 4.3.13 built from NetBSD 7 sources
-- a tiny boot hook on `/mnt/Flash`
-- the real runtime staged into `/mnt/Memory` at boot
-- the persistent payload stored on the internal HDD
-- a separate tiny mDNS advertiser for `_smb._tcp`
+This project replaces the Time Capsule's outdated file sharing with a working Samba 4 setup that:
 
-This repo now contains both the developer build pipeline and the user-facing deployment workflow.
+- boots automatically after reboot
+- shows up over Bonjour on your Mac
+- works with modern macOS SMB
+- uses the same password you already enter for the Time Capsule during setup
 
-## Status
+The default result is:
 
-Known working:
-- Time Capsule discovery from macOS
-- enabling SSH with AirPyrt
-- deploy from checked-in repo assets
-- automatic boot via `rc.local`
-- Samba 4 serving the HDD-backed share after reboot
-- Bonjour `_smb._tcp` advertisement via a separate helper
-- macOS access through `smb://timecapsulesamba4.local/Data`
+- SMB service name: `Time Capsule Samba 4`
+- SMB username: `admin`
+- share name: `Data`
+- Finder address: `smb://timecapsulesamba4.local/Data`
 
-Known limitations:
-- current share access is still guest-based
-- real authenticated Samba users are still TODO
-- this should be treated as LAN-only
-- the build flow is maintainer-oriented and requires a NetBSD VM
+For the deeper engineering details, see [DETAIL.md](/Users/jameschang/git/TimeCapsuleSMB/DETAIL.md).
 
-## Architecture
+## Why This Exists
 
-The Time Capsule has three relevant storage locations:
-- `/mnt/Flash`: tiny persistent flash
-- `/mnt/Memory`: small RAM disk
-- `/Volumes/dk2` or `/Volumes/dk3`: the large internal HFS+ disk that Apple may unmount when idle
+Old Time Capsules used AFP and SMB1-era behavior. That is a problem now because:
 
-That means the final layout cannot simply run `smbd` from the disk. The current design is:
+- AFP is effectively dead on modern Apple systems
+- SMB1 is old, fragile, and often disabled or unsupported
+- Apple's original Time Capsule sharing experience no longer feels reliable on a current Mac
 
-1. Deploy the persistent payload to the internal HDD:
-   - `smbd`
-   - `mdns-smbd-advertiser`
-   - `smb.conf.template`
-2. Install a tiny boot hook on `/mnt/Flash`:
-   - `rc.local`
-   - `start-samba.sh`
-   - `dfree.sh`
-3. At boot:
-   - wait for the disk device to exist
-   - mount the internal disk at Apple’s normal mountpoint
-   - discover the real shared data root
-   - copy the runtime binaries into `/mnt/Memory`
-   - render `smb.conf`
-   - start `smbd`
-   - start the tiny mDNS advertiser
+This repo gives the Time Capsule a newer SMB server so it can behave more like a normal NAS on a home network.
 
-This avoids executing the main Samba process from a disk Apple may later unmount.
+## What You Get
 
-## Repo Layout
+When this is working, your Time Capsule:
 
-- [bin/](/Users/jameschang/git/TimeCapsuleSMB/bin)
-  Checked-in deployable binaries.
-- [bin/samba4/smbd](/Users/jameschang/git/TimeCapsuleSMB/bin/samba4/smbd)
-  Static Samba 4.3.13 server binary.
-- [bin/mdns/mdns-smbd-advertiser](/Users/jameschang/git/TimeCapsuleSMB/bin/mdns/mdns-smbd-advertiser)
-  Tiny static `_smb._tcp` advertiser.
-- [boot/samba4/](/Users/jameschang/git/TimeCapsuleSMB/boot/samba4)
-  Boot/runtime templates copied to the Time Capsule.
-- [scripts/](/Users/jameschang/git/TimeCapsuleSMB/scripts)
-  User-facing workflow scripts for host setup, discovery, configuration, and deploy.
-- [build/](/Users/jameschang/git/TimeCapsuleSMB/build)
-  Maintainer-only NetBSD VM build scripts.
-- [plan/](/Users/jameschang/git/TimeCapsuleSMB/plan)
-  Investigation notes and session handoff docs.
+- runs Samba 4.3.13
+- advertises itself over Bonjour as an SMB server
+- accepts authenticated SMB logins
+- serves the internal Time Capsule disk over SMB2/SMB3
 
-## End-User Workflow
+Current auth model:
 
-If you are not rebuilding Samba yourself, you only need the checked-in binaries under `bin/`.
+- username: `admin`
+- password: the same password you provide during setup in `.env`
 
-### 1. Bootstrap the local Mac host
+Guest access is disabled.
+
+## Before You Start
+
+You need:
+
+- a Mac on the same local network as the Time Capsule
+- the Time Capsule's password
+- Python 3 on your Mac
+
+You do not need to build Samba yourself. The working binaries are already checked into this repo under [bin/](/Users/jameschang/git/TimeCapsuleSMB/bin).
+
+## The Simple Path
+
+If you are a normal user and just want this working, these are the commands you care about.
+
+### 1. Prepare your Mac
+
+From the repo root:
 
 ```bash
 python3 scripts/bootstrap_host.py
 ```
 
-This creates the local Python environments and installs the Python dependencies needed for:
-- discovery
-- AirPyrt integration
-- deploy
+This creates the local Python environments and installs the tools this repo needs.
 
-### 2. Discover the Time Capsule and enable SSH
+### 2. Find the Time Capsule and enable SSH
 
 ```bash
 .venv/bin/python scripts/prep_device.py
 ```
 
-This is the discovery / SSH-prep step. It is not the full deploy.
+This script:
 
-### 3. Generate local config
+- finds Time Capsules on your network
+- lets you pick the right one
+- enables SSH on it if needed
+
+### 3. Create your local config
 
 ```bash
 .venv/bin/python scripts/configure.py
 ```
 
-This writes a repo-local `.env` file. The main knobs are:
-- `TC_HOST`
-- `TC_PASSWORD`
-- `TC_NET_IFACE`
-- `TC_SHARE_NAME`
-- `TC_NETBIOS_NAME`
-- `TC_PAYLOAD_DIR_NAME`
-- `TC_MDNS_INSTANCE_NAME`
-- `TC_MDNS_HOST_LABEL`
+This writes a local `.env` file in the repo.
 
-Typical defaults:
+For most people, pressing Enter for the defaults is fine.
+
+Important defaults:
+
 - share name: `Data`
-- NetBIOS name: `TimeCapsule`
-- mDNS instance: `Time Capsule Samba 4`
-- mDNS hostname label: `timecapsulesamba4`
+- Samba username: `admin`
+- Bonjour service name: `Time Capsule Samba 4`
+- Bonjour hostname: `timecapsulesamba4`
 
-### 4. Deploy and reboot
+### 4. Deploy it
 
 ```bash
 .venv/bin/python scripts/deploy.py
 ```
 
-By default, `deploy.py` copies the checked-in payload to the Time Capsule and reboots it.
+By default, `deploy.py`:
 
-Useful flags:
+- copies the checked-in Samba files to the Time Capsule
+- installs the boot scripts
+- configures the SMB password
+- reboots the Time Capsule
+- waits for it to come back
+- runs a basic post-deploy check
+
+If you want to skip the reboot prompt:
 
 ```bash
 .venv/bin/python scripts/deploy.py --yes
-.venv/bin/python scripts/deploy.py --no-reboot
-.venv/bin/python scripts/deploy.py --dry-run
 ```
 
-## What Gets Deployed
+### 5. Check that it worked
 
-`deploy.py` uses only checked-in repo assets:
-
-- [bin/samba4/smbd](/Users/jameschang/git/TimeCapsuleSMB/bin/samba4/smbd)
-- [bin/mdns/mdns-smbd-advertiser](/Users/jameschang/git/TimeCapsuleSMB/bin/mdns/mdns-smbd-advertiser)
-- [boot/samba4/rc.local](/Users/jameschang/git/TimeCapsuleSMB/boot/samba4/rc.local)
-- [boot/samba4/start-samba.sh](/Users/jameschang/git/TimeCapsuleSMB/boot/samba4/start-samba.sh)
-- [boot/samba4/dfree.sh](/Users/jameschang/git/TimeCapsuleSMB/boot/samba4/dfree.sh)
-- [boot/samba4/smb.conf.template](/Users/jameschang/git/TimeCapsuleSMB/boot/samba4/smb.conf.template)
-
-The persistent payload goes onto the internal HDD under:
-- `/Volumes/dkX/samba4`
-
-The boot hooks go onto flash:
-- `/mnt/Flash/rc.local`
-- `/mnt/Flash/start-samba.sh`
-- `/mnt/Flash/dfree.sh`
-
-The runtime executes from RAM:
-- `/mnt/Memory/samba4`
-
-## Verification
-
-After deploy and reboot, these checks should work from the Mac:
-
-Browse Bonjour SMB services:
+Run:
 
 ```bash
-dns-sd -B _smb._tcp local.
+.venv/bin/python scripts/doctor.py
 ```
 
-Resolve the advertised service:
+This checks:
 
-```bash
-dns-sd -L "Time Capsule Samba 4" _smb._tcp local.
-```
+- your local `.env`
+- required local tools
+- the checked-in binaries
+- SSH reachability
+- SMB reachability
+- Bonjour `_smb._tcp`
+- authenticated SMB listing
 
-List shares:
+## Connecting From Finder
 
-```bash
-smbutil view //guest:@timecapsulesamba4.local
-```
-
-Expected shares:
-- `IPC$`
-- `Data`
-
-You can also connect directly in Finder:
+Once deployment finishes and the Time Capsule has rebooted, you can connect from Finder with:
 
 ```text
 smb://timecapsulesamba4.local/Data
 ```
 
-## Build Workflow For Maintainers
+If that hostname is different on your setup, `deploy.py` and `doctor.py` will tell you what it is.
 
-Normal users do not need this section.
+Login with:
 
-The `build/` directory is for producing:
+- username: `admin`
+- password: your Time Capsule password
+
+## What The Scripts Actually Do
+
+You do not need this section to use the repo, but it helps explain why the project looks unusual.
+
+The Time Capsule has very little persistent writable space:
+
+- `/mnt/Flash` is tiny
+- `/mnt/Memory` is a small RAM disk
+- the internal HDD is large, but Apple may mount and unmount it on its own schedule
+
+So the working design is:
+
+1. Keep the real payload on the internal disk.
+2. Keep only tiny boot hooks on flash.
+3. At boot, copy the runtime into RAM.
+4. Start Samba from RAM.
+5. Advertise SMB with a separate tiny mDNS helper.
+
+That is why this repo uses:
+
 - [bin/samba4/smbd](/Users/jameschang/git/TimeCapsuleSMB/bin/samba4/smbd)
 - [bin/mdns/mdns-smbd-advertiser](/Users/jameschang/git/TimeCapsuleSMB/bin/mdns/mdns-smbd-advertiser)
+- [boot/samba4/rc.local](/Users/jameschang/git/TimeCapsuleSMB/boot/samba4/rc.local)
+- [boot/samba4/start-samba.sh](/Users/jameschang/git/TimeCapsuleSMB/boot/samba4/start-samba.sh)
 
-It assumes:
-- a NetBSD VM
-- the NetBSD cross-build environment under `/root`
-- use of `su` for the root-owned toolchain/output tree
+## Files You Probably Care About
 
-Typical maintainer flow:
+- [scripts/bootstrap_host.py](/Users/jameschang/git/TimeCapsuleSMB/scripts/bootstrap_host.py)
+  Sets up the local Mac-side environment.
+- [scripts/prep_device.py](/Users/jameschang/git/TimeCapsuleSMB/scripts/prep_device.py)
+  Finds the Time Capsule and enables SSH.
+- [scripts/configure.py](/Users/jameschang/git/TimeCapsuleSMB/scripts/configure.py)
+  Writes `.env`.
+- [scripts/deploy.py](/Users/jameschang/git/TimeCapsuleSMB/scripts/deploy.py)
+  Deploys the working system.
+- [scripts/doctor.py](/Users/jameschang/git/TimeCapsuleSMB/scripts/doctor.py)
+  Verifies that the setup is healthy.
+
+## Troubleshooting
+
+### I do not see the Time Capsule in Finder
+
+Try:
 
 ```bash
-cp build/.env.example build/.env
-# edit build/.env for the VM/toolchain
-
-cd build
-sh download.sh
-sh bootstrap.sh
-sh downloadsamba4.sh
-sh samba4.sh
-sh mdns.sh
+.venv/bin/python scripts/doctor.py
 ```
 
-The checked-in `bin/` artifacts are the outputs users deploy.
+and also:
+
+```bash
+dns-sd -B _smb._tcp local.
+```
+
+If Bonjour is working, you should see:
+
+- `Time Capsule Samba 4`
+
+### Finder still does not connect
+
+Try connecting directly with:
+
+```text
+smb://timecapsulesamba4.local/Data
+```
+
+or use the IP address from your `.env`.
+
+### Deploy says SMB listing failed right after reboot
+
+That can happen if the Time Capsule is still coming up. Wait a little and run:
+
+```bash
+.venv/bin/python scripts/doctor.py
+```
+
+### I want more detail
+
+Read:
+
+- [DETAIL.md](/Users/jameschang/git/TimeCapsuleSMB/DETAIL.md)
+- [plan/session-handoff-2026-04-03-2.md](/Users/jameschang/git/TimeCapsuleSMB/plan/session-handoff-2026-04-03-2.md)
 
 ## Security Notes
 
-- Treat this as LAN-only.
+- Keep this LAN-only.
 - Do not expose this SMB service to the public internet.
-- The current working configuration is still guest-based and should be considered temporary.
-- Real authentication is the next major missing feature.
+- The current auth model maps SMB access to `root` on the Time Capsule internally.
+- This is a practical compatibility choice for old Apple firmware, not a modern hardened NAS design.
 
-## What This Repo No Longer Does
+## For Developers
 
-The old README described a different design:
-- Samba 3
-- persistent flash as the main runtime
-- `pf` port redirection from 445/139 to high ports
-- piggybacking on Apple file sharing for SMB exposure
+Most users do not need this section.
 
-That is no longer the active architecture.
+The checked-in binaries are already built. If you want to rebuild them yourself, the maintainer build flow lives under [build/](/Users/jameschang/git/TimeCapsuleSMB/build) and uses a NetBSD VM.
 
-The current working system is:
-- Samba 4.3.13
-- direct listen on port 445
-- boot-time RAM staging
-- separate mDNS advertisement helper
+Main build outputs:
 
-## Project Notes
+- [bin/samba4/smbd](/Users/jameschang/git/TimeCapsuleSMB/bin/samba4/smbd)
+- [bin/mdns/mdns-smbd-advertiser](/Users/jameschang/git/TimeCapsuleSMB/bin/mdns/mdns-smbd-advertiser)
 
-- This project is unofficial and unaffiliated with Apple or the Samba team.
-- The code and docs reflect a reverse-engineered workflow for a very specific class of old hardware.
-- See the files under [plan/](/Users/jameschang/git/TimeCapsuleSMB/plan) for investigation history and current handoff notes.
+The long-form history and design notes are in:
+
+- [DETAIL.md](/Users/jameschang/git/TimeCapsuleSMB/DETAIL.md)
+- [plan/](/Users/jameschang/git/TimeCapsuleSMB/plan)
