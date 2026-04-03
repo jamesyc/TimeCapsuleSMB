@@ -138,7 +138,7 @@ def render_smbpasswd(username: str, password: str) -> tuple[str, str]:
     nt_hash = nt_hash_hex(password)
     lct = f"{int(time.time()):08X}"
     smbpasswd_line = f"root:0:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX:{nt_hash}:[U          ]:LCT-{lct}:\n"
-    username_map = f"root = {username}\n"
+    username_map = f"{username} = root\n"
     return smbpasswd_line, username_map
 
 
@@ -326,19 +326,29 @@ def run_local_capture(cmd: list[str], timeout: int = 15) -> subprocess.Completed
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
+def capture_live_output(cmd: list[str], duration_seconds: int = 5) -> str:
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        time.sleep(duration_seconds)
+        proc.terminate()
+        try:
+            stdout, _ = proc.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, _ = proc.communicate(timeout=3)
+        return stdout or ""
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=3)
+
+
 def capture_dns_sd_browse(service_type: str, duration_seconds: int = 5) -> str:
-    script = f'dns-sd -B {shlex.quote(service_type)} local. & pid=$!; sleep {duration_seconds}; kill "$pid" >/dev/null 2>&1 || true; wait "$pid" >/dev/null 2>&1 || true'
-    proc = run_local_capture(["/bin/sh", "-c", script], timeout=duration_seconds + 5)
-    return proc.stdout
+    return capture_live_output(["dns-sd", "-B", service_type, "local."], duration_seconds=duration_seconds)
 
 
 def capture_dns_sd_lookup(instance_name: str, service_type: str, duration_seconds: int = 5) -> str:
-    script = (
-        f'dns-sd -L {shlex.quote(instance_name)} {shlex.quote(service_type)} local. & '
-        f'pid=$!; sleep {duration_seconds}; kill "$pid" >/dev/null 2>&1 || true; wait "$pid" >/dev/null 2>&1 || true'
-    )
-    proc = run_local_capture(["/bin/sh", "-c", script], timeout=duration_seconds + 5)
-    return proc.stdout
+    return capture_live_output(["dns-sd", "-L", instance_name, service_type, "local."], duration_seconds=duration_seconds)
 
 
 def parse_browse_instance(output: str) -> str | None:
@@ -388,14 +398,31 @@ def verify_post_deploy(values: dict[str, str]) -> None:
         print("  Bonjour verification skipped: dns-sd not found")
 
     if command_exists("smbutil"):
-        server = f"{host_label}.local"
-        proc = run_local_capture(["smbutil", "view", f"//{samba_user}:{password}@{server}"], timeout=20)
-        if proc.returncode == 0:
-            print(f"  Authenticated SMB listing: ok ({samba_user}@{server})")
-        else:
+        servers = [f"{host_label}.local"]
+        tc_host = values.get("TC_HOST", "")
+        if "@" in tc_host:
+            tc_host = tc_host.split("@", 1)[1]
+        if tc_host and tc_host not in servers:
+            servers.append(tc_host)
+
+        listing_ok = False
+        failure_msg = "not attempted"
+        attempted_server = servers[0]
+        for server in servers:
+            attempted_server = server
+            try:
+                proc = run_local_capture(["smbutil", "view", f"//{samba_user}:{password}@{server}"], timeout=12)
+            except subprocess.TimeoutExpired:
+                failure_msg = f"timed out via {server}"
+                continue
+            if proc.returncode == 0:
+                print(f"  Authenticated SMB listing: ok ({samba_user}@{server})")
+                listing_ok = True
+                break
             detail = (proc.stderr or proc.stdout).strip().splitlines()
-            msg = detail[-1] if detail else f"failed with rc={proc.returncode}"
-            print(f"  Authenticated SMB listing: failed ({msg})")
+            failure_msg = detail[-1] if detail else f"failed with rc={proc.returncode} via {server}"
+        if not listing_ok:
+            print(f"  Authenticated SMB listing: failed ({failure_msg})")
     else:
         print("  SMB listing verification skipped: smbutil not found")
 

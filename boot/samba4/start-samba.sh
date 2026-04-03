@@ -229,6 +229,11 @@ stage_runtime() {
     interfaces = $BIND_INTERFACES
     bind interfaces only = yes
     security = user
+    map to guest = Never
+    restrict anonymous = 2
+    guest account = nobody
+    null passwords = no
+    ea support = yes
     passdb backend = smbpasswd:$DATA_ROOT/../$PAYLOAD_DIR_NAME/private/smbpasswd
     username map = $DATA_ROOT/../$PAYLOAD_DIR_NAME/private/username.map
     dos charset = ASCII
@@ -246,13 +251,25 @@ stage_runtime() {
     max log size = 256
     smb ports = 445
     deadtime = 15
+    fruit:aapl = yes
+    fruit:model = MacSamba
+    fruit:advertise_fullsync = true
+    fruit:nfs_aces = no
+    fruit:veto_appledouble = no
+    fruit:wipe_intentionally_left_blank_rfork = yes
+    fruit:delete_empty_adfiles = yes
 
 [$SMB_SHARE_NAME]
     path = $DATA_ROOT
     browseable = yes
     read only = no
     guest ok = no
-    valid users = admin root
+    valid users = __SMB_SAMBA_USER__ root
+    vfs objects = catia fruit streams_xattr xattr_tdb
+    fruit:resource = stream
+    fruit:metadata = stream
+    fruit:time machine = yes
+    xattr_tdb:file = $DATA_ROOT/../$PAYLOAD_DIR_NAME/private/xattr.tdb
     force user = root
     force group = wheel
     create mask = 0644

@@ -43,6 +43,11 @@ mkdir -p "$OUT" "$SAMBA4_WORK"
         "$SAMBA4_SRC_DIR/wscript" \
         "$SAMBA4_SRC_DIR/ctdb/wscript" \
         "$SAMBA4_SRC_DIR/lib/ldb/wscript"
+    perl -0pi -e 's/conf\.SAMBA_CHECK_PYTHON_HEADERS\(mandatory=\(not conf\.env\.disable_python\)\)/conf.SAMBA_CHECK_PYTHON_HEADERS(mandatory=False)/g' \
+        "$SAMBA4_SRC_DIR/wscript" \
+        "$SAMBA4_SRC_DIR/lib/ldb/wscript"
+    perl -0pi -e 's/conf\.SAMBA_CHECK_PYTHON_HEADERS\(mandatory=not conf\.env\.disable_python\)/conf.SAMBA_CHECK_PYTHON_HEADERS(mandatory=False)/g' \
+        "$SAMBA4_SRC_DIR/lib/ldb/wscript"
     perl -0pi -e 's/conf\.SAMBA_CHECK_PYTHON_HEADERS\(mandatory=False\)\n/conf.SAMBA_CHECK_PYTHON_HEADERS(mandatory=False)\n    conf.env.disable_python = not conf.env.HAVE_PYTHON_H\n/' \
         "$SAMBA4_SRC_DIR/wscript"
     perl -0pi -e 's/enabled=enabled\)/enabled=(enabled and not bld.env.disable_python and bld.CONFIG_SET('\''HAVE_PYTHON_H'\'')))/' \
@@ -149,6 +154,17 @@ if not bld.env.disable_python:
 
     bld.INSTALL_WILDCARD('${PYTHONARCHDIR}', 'samba/**/*.py', flat=False)
 EOF
+
+    perl -0pi -e "s/SRC = '''tevent\\.c tevent_debug\\.c tevent_fd\\.c tevent_immediate\\.c\\n             tevent_queue\\.c tevent_req\\.c\\n             tevent_poll\\.c tevent_threads\\.c\\n             tevent_signal\\.c tevent_standard\\.c tevent_timed\\.c tevent_util\\.c tevent_wakeup\\.c'''/SRC = '''tevent.c tevent_debug.c tevent_fd.c tevent_immediate.c\\n             tevent_queue.c tevent_req.c\\n             tevent_poll.c\\n             tevent_signal.c tevent_standard.c tevent_timed.c tevent_util.c tevent_wakeup.c'''\\n\\n    if bld.CONFIG_SET('HAVE_PTHREAD'):\\n        SRC += ' tevent_threads.c'/s" \
+        "$SAMBA4_SRC_DIR/lib/tevent/wscript"
+    perl -0pi -e "s/\\n\\ttevent_poll_init\\(\\);\\n\\ttevent_poll_mt_init\\(\\);/\\n\\ttevent_poll_init();\\n#ifdef HAVE_PTHREAD\\n\\ttevent_poll_mt_init();\\n#endif/s" \
+        "$SAMBA4_SRC_DIR/lib/tevent/tevent.c"
+    perl -0pi -e "s/\\n\\tif \\(ev->threaded_contexts != NULL\\) \\{\\n\\t\\ttevent_common_threaded_activate_immediate\\(ev\\);\\n\\t\\}/\\n#ifdef HAVE_PTHREAD\\n\\tif (ev->threaded_contexts != NULL) {\\n\\t\\ttevent_common_threaded_activate_immediate(ev);\\n\\t}\\n#endif/s" \
+        "$SAMBA4_SRC_DIR/lib/tevent/tevent_poll.c"
+    perl -0pi -e "s/\\n\\tif \\(ev->threaded_contexts != NULL\\) \\{\\n\\t\\ttevent_common_threaded_activate_immediate\\(ev\\);\\n\\t\\}/\\n#ifdef HAVE_PTHREAD\\n\\tif (ev->threaded_contexts != NULL) {\\n\\t\\ttevent_common_threaded_activate_immediate(ev);\\n\\t}\\n#endif/s" \
+        "$SAMBA4_SRC_DIR/lib/tevent/tevent_epoll.c"
+    perl -0pi -e "s/\\n\\tif \\(ev->threaded_contexts != NULL\\) \\{\\n\\t\\ttevent_common_threaded_activate_immediate\\(ev\\);\\n\\t\\}/\\n#ifdef HAVE_PTHREAD\\n\\tif (ev->threaded_contexts != NULL) {\\n\\t\\ttevent_common_threaded_activate_immediate(ev);\\n\\t}\\n#endif/s" \
+        "$SAMBA4_SRC_DIR/lib/tevent/tevent_port.c"
 
     git -C "$SAMBA4_SRC_DIR" rev-parse --short HEAD
     git -C "$SAMBA4_SRC_DIR" log -1 --format='%H%n%cd%n%s' --date=iso
