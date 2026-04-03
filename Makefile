@@ -6,15 +6,16 @@
 #   - Build deps: brew install zlib bzip2 readline
 #
 # Quick start:
-#   1) make install           # create venv and install Python 3 deps
-#   2) make airpyrt           # provision pyenv Python 2.7.18 + local AirPyrt venv
-#   3) make setup             # use mDNS to select device; enables SSH via AirPyrt if needed
-#      (or run: python setup.py)
+#   1) python3 scripts/bootstrap_host.py   # create .venv and install Python deps
+#   2) .venv/bin/python scripts/prep_device.py
+#   3) .venv/bin/python scripts/configure.py
 #
 # Targets:
 #   make venv                    - create local virtualenv at .venv
 #   make install                 - install Python dependencies into .venv
-#   make discover                - run discovery/discover_timecapsules.py (depends on install)
+#   make discover                - run scripts/discover_timecapsules.py (depends on install)
+#   make bootstrap-host          - run the Python host bootstrap helper
+#   make prep-device             - discover the device and enable SSH if needed
 #   make airpyrt                 - clone+install AirPyrt into local .airpyrt-venv (via pyenv Python 2)
 #   make airpyrt-clone           - clone AirPyrt repo only
 #   make airpyrt-bootstrap       - ensure pyenv Python 2.7.18 is installed
@@ -24,7 +25,7 @@
 #   make airpyrt-clean           - remove the local .airpyrt-venv
 #   make airpyrt-uninstall-pyenv - uninstall the pyenv Python 2.7.18 interpreter
 
-.PHONY: venv install discover setup clean \
+.PHONY: venv install discover bootstrap-host prep-device setup clean \
         airpyrt airpyrt-clone airpyrt-bootstrap airpyrt-venv airpyrt-install airpyrt-clean airpyrt-uninstall-pyenv
 
 VENVDIR := .venv
@@ -42,10 +43,15 @@ install: venv
 	@echo "Optional: run 'make airpyrt' to install AirPyrt (Python 2)."
 
 discover: install
-	$(PY) discovery/discover_timecapsules.py
+	$(PY) scripts/discover_timecapsules.py
 
-setup: install
-	$(PY) setup.py
+bootstrap-host:
+	$(PYTHON) scripts/bootstrap_host.py
+
+prep-device: install
+	$(PY) scripts/prep_device.py
+
+setup: prep-device
 
 clean: airpyrt-clean
 	rm -rf $(VENVDIR)
@@ -137,7 +143,7 @@ airpyrt-install: airpyrt-clone airpyrt-venv
 		fi; \
 	fi
 	$(AIRPYRT_PIP) install $(AIRPYRT_DIR)
-	@echo "Done. Use AIRPYRT_PY=$(AIRPYRT_PY) when running setup.py, or add $(AIRPYRT_ENV)/bin to PATH."
+	@echo "Done. Use AIRPYRT_PY=$(AIRPYRT_PY) when running scripts/prep_device.py, or add $(AIRPYRT_ENV)/bin to PATH."
 
 airpyrt-clean:
 	rm -rf $(AIRPYRT_ENV)

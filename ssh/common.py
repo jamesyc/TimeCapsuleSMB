@@ -75,7 +75,8 @@ def ensure_airpyrt_available(python_candidates: Optional[Iterable[str]] = None) 
         raise RuntimeError(
             "AirPyrt (acp) not found. Install per https://github.com/samuelthomas2774/airport/wiki/AirPyrt#installation\n"
             "Example: git clone https://github.com/x56/airpyrt-tools.git && cd airpyrt-tools && python2 setup.py install --user\n"
-            "Then ensure 'acp' is on PATH or set AIRPYRT_PY to that interpreter."
+            "Then ensure 'acp' is on PATH or set AIRPYRT_PY to that interpreter.\n"
+            "For this repo, the supported path is: python3 scripts/bootstrap_host.py"
         )
     return acp_exec, py
 
@@ -119,7 +120,9 @@ def ssh_run_command(host: str, password: str, command: str, *, timeout: int = 30
     try:
         import pexpect
     except Exception:
-        raise RuntimeError("pexpect not available. Run 'make install' to install requirements.")
+        raise RuntimeError(
+            "pexpect not available. Run 'python3 scripts/bootstrap_host.py' first, or use 'make install'."
+        )
 
     ssh_cmd = [
         "ssh",
