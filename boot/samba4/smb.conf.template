@@ -1,5 +1,5 @@
 [global]
-    netbios name = TimeCapsule
+    netbios name = __SMB_NETBIOS_NAME__
     workgroup = WORKGROUP
     server string = Time Capsule Samba 4
     interfaces = __BIND_INTERFACES__
@@ -23,7 +23,7 @@
     smb ports = 445
     deadtime = 15
 
-[Data]
+[__SMB_SHARE_NAME__]
     path = __DATA_ROOT__
     browseable = yes
     read only = no

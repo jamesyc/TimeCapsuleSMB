@@ -28,20 +28,28 @@ RAM_LOCKS="$RAM_ROOT/locks"
 RAM_PRIVATE="$RAM_ROOT/private"
 RAM_LOG="$RAM_VAR/rc.local.log"
 SMBD_LOG="$RAM_VAR/log.smbd"
+MDNS_LOG="$RAM_VAR/log.mdns"
 LEGACY_PREFIX=/root/tc-stage4
 
-PAYLOAD_DIR_NAME=samba4
+PAYLOAD_DIR_NAME=__PAYLOAD_DIR_NAME__
 PAYLOAD_TEMPLATE_NAME=smb.conf.template
 
-SMB_SHARE_NAME=Data
-SMB_NETBIOS_NAME=TimeCapsule
+SMB_SHARE_NAME=__SMB_SHARE_NAME__
+SMB_NETBIOS_NAME=__SMB_NETBIOS_NAME__
+NET_IFACE=__NET_IFACE__
+MDNS_INSTANCE_NAME=__MDNS_INSTANCE_NAME__
+MDNS_HOST_LABEL=__MDNS_HOST_LABEL__
 
 log() {
+    log_dir=${RAM_LOG%/*}
+    [ -d "$log_dir" ] || mkdir -p "$log_dir"
     echo "$(date '+%Y-%m-%d %H:%M:%S') rc.local: $*" >>"$RAM_LOG"
 }
 
 cleanup_old_runtime() {
+    log "cleanup_old_runtime begin"
     /usr/bin/pkill smbd >/dev/null 2>&1 || true
+    /usr/bin/pkill mdns-smbd-advertiser >/dev/null 2>&1 || true
     sleep 1
     rm -rf /mnt/Memory/samba3 /mnt/Memory/samba4
 }
@@ -53,16 +61,18 @@ prepare_ram_root() {
     chmod 755 "$RAM_VAR/run" "$RAM_VAR/run/ncalrpc"
     chmod 700 "$RAM_VAR/cores"
     : >"$RAM_LOG"
+    log "prepare_ram_root complete"
 }
 
 prepare_legacy_prefix() {
     [ -d /root ] || mkdir -p /root
     rm -rf "$LEGACY_PREFIX"
     ln -s "$RAM_ROOT" "$LEGACY_PREFIX"
+    log "prepare_legacy_prefix complete"
 }
 
 get_bridge0_ipv4() {
-    /sbin/ifconfig bridge0 2>/dev/null | sed -n 's/^[[:space:]]*inet[[:space:]]\([0-9.]*\).*/\1/p' | sed -n '1p'
+    /sbin/ifconfig "$NET_IFACE" 2>/dev/null | sed -n 's/^[[:space:]]*inet[[:space:]]\([0-9.]*\).*/\1/p' | sed -n '1p'
 }
 
 wait_for_bind_interfaces() {
@@ -179,6 +189,21 @@ find_payload_dir() {
     return 1
 }
 
+find_volume_root() {
+    data_root=$1
+    case "$data_root" in
+        /Volumes/dk2/*)
+            echo /Volumes/dk2
+            return 0
+            ;;
+        /Volumes/dk3/*)
+            echo /Volumes/dk3
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 find_payload_smbd() {
     payload_dir=$1
 
@@ -195,12 +220,29 @@ find_payload_smbd() {
     return 1
 }
 
+find_payload_mdns() {
+    payload_dir=$1
+
+    if [ -x "$payload_dir/mdns-smbd-advertiser" ]; then
+        echo "$payload_dir/mdns-smbd-advertiser"
+        return 0
+    fi
+
+    return 1
+}
+
 stage_runtime() {
     payload_dir=$1
     smbd_src=$2
+    mdns_src=${3:-}
 
     cp "$smbd_src" "$RAM_SBIN/smbd"
     chmod 755 "$RAM_SBIN/smbd"
+
+    if [ -n "$mdns_src" ] && [ -x "$mdns_src" ]; then
+        cp "$mdns_src" "$RAM_SBIN/mdns-smbd-advertiser"
+        chmod 755 "$RAM_SBIN/mdns-smbd-advertiser"
+    fi
 
     if [ -f "$payload_dir/$PAYLOAD_TEMPLATE_NAME" ]; then
         sed \
@@ -250,22 +292,44 @@ start_smbd() {
     "$RAM_SBIN/smbd" -D -s "$RAM_ETC/smb.conf"
 }
 
+start_mdns() {
+    if [ ! -x "$RAM_SBIN/mdns-smbd-advertiser" ]; then
+        log "mdns advertiser not present; skipping"
+        return 0
+    fi
+
+    : >"$MDNS_LOG"
+    "$RAM_SBIN/mdns-smbd-advertiser" \
+        --instance "$MDNS_INSTANCE_NAME" \
+        --host "$MDNS_HOST_LABEL" \
+        --ipv4 "$BRIDGE0_IP" \
+        >"$MDNS_LOG" 2>&1 &
+    log "mdns advertiser launch requested"
+}
+
 cleanup_old_runtime
 prepare_ram_root
 prepare_legacy_prefix
 log "boot start"
+log "script path: $0"
+log "PATH: $PATH"
+log "NET_IFACE: $NET_IFACE"
+log "PAYLOAD_DIR_NAME: $PAYLOAD_DIR_NAME"
 
 DATA_ROOT=$(ensure_data_root) || {
     log "failed to discover data root"
     exit 1
 }
-log "data root: $DATA_ROOT"
+    log "data root: $DATA_ROOT"
 
 BIND_INTERFACES=$(wait_for_bind_interfaces) || {
-    log "failed to determine bridge0 IPv4 address"
+    log "failed to determine $NET_IFACE IPv4 address"
     exit 1
 }
 log "bind interfaces: $BIND_INTERFACES"
+BRIDGE0_IP=${BIND_INTERFACES#127.0.0.1/8 }
+BRIDGE0_IP=${BRIDGE0_IP%%/*}
+log "mdns ipv4: $BRIDGE0_IP"
 
 PAYLOAD_DIR=$(find_payload_dir "$DATA_ROOT") || {
     log "missing payload directory under mounted volume"
@@ -273,15 +337,30 @@ PAYLOAD_DIR=$(find_payload_dir "$DATA_ROOT") || {
 }
 log "payload dir: $PAYLOAD_DIR"
 
+VOLUME_ROOT=$(find_volume_root "$DATA_ROOT") || {
+    log "failed to determine volume root"
+    exit 1
+}
+log "volume root: $VOLUME_ROOT"
+
 SMBD_SRC=$(find_payload_smbd "$PAYLOAD_DIR") || {
     log "missing smbd in payload directory"
     exit 1
 }
 log "smbd src: $SMBD_SRC"
 
-stage_runtime "$PAYLOAD_DIR" "$SMBD_SRC"
+MDNS_SRC=
+if MDNS_SRC=$(find_payload_mdns "$PAYLOAD_DIR"); then
+    log "mdns src: $MDNS_SRC"
+else
+    log "mdns src missing in payload dir; continuing without mdns"
+    MDNS_SRC=
+fi
+
+stage_runtime "$PAYLOAD_DIR" "$SMBD_SRC" "$MDNS_SRC"
 log "runtime staged under $RAM_ROOT"
 
+start_mdns
 start_smbd
 log "smbd launch requested"
 
