@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import re
 import shlex
 import socket
 import subprocess
@@ -317,6 +318,88 @@ def wait_for_ssh_state(hostname: str, *, expected_up: bool, timeout_seconds: int
     return False
 
 
+def command_exists(name: str) -> bool:
+    return subprocess.run(["/usr/bin/env", "sh", "-c", f"command -v {shlex.quote(name)} >/dev/null 2>&1"]).returncode == 0
+
+
+def run_local_capture(cmd: list[str], timeout: int = 15) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+
+def capture_dns_sd_browse(service_type: str, duration_seconds: int = 5) -> str:
+    script = f'dns-sd -B {shlex.quote(service_type)} local. & pid=$!; sleep {duration_seconds}; kill "$pid" >/dev/null 2>&1 || true; wait "$pid" >/dev/null 2>&1 || true'
+    proc = run_local_capture(["/bin/sh", "-c", script], timeout=duration_seconds + 5)
+    return proc.stdout
+
+
+def capture_dns_sd_lookup(instance_name: str, service_type: str, duration_seconds: int = 5) -> str:
+    script = (
+        f'dns-sd -L {shlex.quote(instance_name)} {shlex.quote(service_type)} local. & '
+        f'pid=$!; sleep {duration_seconds}; kill "$pid" >/dev/null 2>&1 || true; wait "$pid" >/dev/null 2>&1 || true'
+    )
+    proc = run_local_capture(["/bin/sh", "-c", script], timeout=duration_seconds + 5)
+    return proc.stdout
+
+
+def parse_browse_instance(output: str) -> str | None:
+    for line in output.splitlines():
+        if " Add " in line and "_smb._tcp." in line:
+            m = re.search(r"_smb\._tcp\.\s+(.+)$", line)
+            if m:
+                return m.group(1).strip()
+    return None
+
+
+def parse_lookup_target(output: str) -> str | None:
+    for line in output.splitlines():
+        if " can be reached at " in line:
+            return line.split(" can be reached at ", 1)[1].strip()
+    return None
+
+
+def verify_post_deploy(values: dict[str, str]) -> None:
+    instance_name = values["TC_MDNS_INSTANCE_NAME"]
+    service_type = "_smb._tcp"
+    samba_user = values["TC_SAMBA_USER"]
+    password = values["TC_PASSWORD"]
+    host_label = values["TC_MDNS_HOST_LABEL"]
+
+    print("Post-deploy verification:")
+
+    if command_exists("dns-sd"):
+        try:
+            browse_output = capture_dns_sd_browse(service_type)
+            discovered_instance = parse_browse_instance(browse_output)
+            if discovered_instance:
+                print(f"  Advertised service name: {discovered_instance}")
+                instance_name = discovered_instance
+            else:
+                print("  Advertised service name: not found")
+
+            lookup_output = capture_dns_sd_lookup(instance_name, service_type)
+            target = parse_lookup_target(lookup_output)
+            if target:
+                print(f"  Advertised hostname: {target}")
+            else:
+                print("  Advertised hostname: not resolved")
+        except Exception as e:
+            print(f"  Bonjour verification failed: {e}")
+    else:
+        print("  Bonjour verification skipped: dns-sd not found")
+
+    if command_exists("smbutil"):
+        server = f"{host_label}.local"
+        proc = run_local_capture(["smbutil", "view", f"//{samba_user}:{password}@{server}"], timeout=20)
+        if proc.returncode == 0:
+            print(f"  Authenticated SMB listing: ok ({samba_user}@{server})")
+        else:
+            detail = (proc.stderr or proc.stdout).strip().splitlines()
+            msg = detail[-1] if detail else f"failed with rc={proc.returncode}"
+            print(f"  Authenticated SMB listing: failed ({msg})")
+    else:
+        print("  SMB listing verification skipped: smbutil not found")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Deploy the checked-in Samba 4 payload to a Time Capsule.")
     parser.add_argument("--no-reboot", action="store_true", help="Do not reboot after deployment")
@@ -400,6 +483,7 @@ def main(argv: list[str] | None = None) -> int:
     print("Waiting for the device to come back up...")
     if wait_for_ssh_state(hostname, expected_up=True, timeout_seconds=240):
         print("Device is back online.")
+        verify_post_deploy(values)
         return 0
 
     print("Timed out waiting for SSH after reboot.")
