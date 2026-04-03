@@ -13,7 +13,6 @@ venv/
 env/
 
 # Packaging / distribution
-build/
 dist/
 *.egg-info/
 *.egg
@@ -46,4 +45,4 @@ coverage.xml
 /plan
 
 # Env
-scripts/password.txt
+.env

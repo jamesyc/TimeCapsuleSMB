@@ -10,7 +10,7 @@ SYSROOT="$DESTDIR"
 
 if [ ! -x "$TOOLDIR/bin/nbmake" ] || [ ! -d "$DESTDIR" ]; then
     echo "Missing toolchain/sysroot under $OUT"
-    echo "Run scripts/bootstrap.sh first."
+    echo "Run build/bootstrap.sh first."
     exit 1
 fi
 
@@ -67,7 +67,7 @@ CROSS_EXECUTE="$(cd "$(dirname "$0")" && pwd)/samba4-cross-exec.sh"
 
     if [ ! -f "$SAMBA4_SRC_DIR/configure" ]; then
         echo "Missing Samba 4 source tree at $SAMBA4_SRC_DIR"
-        echo "Run ./scripts/downloadsamba4.sh first."
+        echo "Run ./build/downloadsamba4.sh first."
         exit 1
     fi
 

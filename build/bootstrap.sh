@@ -20,7 +20,7 @@ done
 case "$phase" in
     ''|tools|distribution) ;;
     *)
-        echo "Usage: ./scripts/bootstrap.sh [tools|distribution]"
+        echo "Usage: ./build/bootstrap.sh [tools|distribution]"
         exit 1
         ;;
 esac
@@ -37,7 +37,7 @@ clean_magic_cache() {
 run_tools() {
     rm -rf "$OBJ" "$TOOLS"
     mkdir -p "$OBJ" "$TOOLS"
-    rm -f "$TOOLS_STAMP" "$DIST_STAMP"
+    rm -f "$TOOLS_STAMP"
     clean_magic_cache
     cd "$SRC"
     env HOST_CC="$HOST_CC" HOST_CXX="$HOST_CXX" \
@@ -53,7 +53,7 @@ run_tools() {
 run_distribution() {
     if [ ! -f "$TOOLS_STAMP" ] && [ ! -x "$TOOLS/bin/nbmake" ]; then
         echo "Missing successful tools build."
-        echo "Run ./scripts/bootstrap.sh tools first."
+        echo "Run ./build/bootstrap.sh tools first."
         exit 1
     fi
     mkdir -p "$OBJ" "$TOOLS"

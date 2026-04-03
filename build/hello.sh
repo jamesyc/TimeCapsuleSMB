@@ -26,7 +26,7 @@ expect_probe_format() {
 
 if [ ! -x "$TOOLS/bin/nbmake" ] || [ ! -d "$OBJ/destdir.evbarm" ]; then
     echo "Missing toolchain/sysroot under $OUT"
-    echo "Run scripts/bootstrap.sh first."
+    echo "Run build/bootstrap.sh first."
     exit 1
 fi
 
@@ -70,8 +70,8 @@ EOF
 
     expect_probe_format
 
-    scp -O $TC_SSH_OPTS "$PROBE_BIN" "$TC_HOST:/tmp/hello-clean"
-    ssh $TC_SSH_OPTS "$TC_HOST" \
+    tc_scp "$PROBE_BIN" "$TC_HOST:/tmp/hello-clean"
+    tc_ssh "$TC_HOST" \
       'chmod +x /tmp/hello-clean && /tmp/hello-clean'
 } >"$HELLO_LOG" 2>&1
 
