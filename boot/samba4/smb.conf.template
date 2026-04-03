@@ -1,0 +1,34 @@
+[global]
+    netbios name = TimeCapsule
+    workgroup = WORKGROUP
+    server string = Time Capsule Samba 4
+    interfaces = __BIND_INTERFACES__
+    bind interfaces only = yes
+    security = user
+    map to guest = Bad User
+    guest account = root
+    dos charset = ASCII
+    max protocol = SMB3
+    load printers = no
+    disable spoolss = yes
+    dfree command = /bin/sh /mnt/Flash/dfree.sh
+    pid directory = /mnt/Memory/samba4/var
+    lock directory = /mnt/Memory/samba4/locks
+    state directory = /mnt/Memory/samba4/var
+    cache directory = /mnt/Memory/samba4/var
+    private dir = /mnt/Memory/samba4/private
+    log file = /mnt/Memory/samba4/var/log.smbd
+    max log size = 256
+    smb ports = 445
+    deadtime = 15
+
+[Data]
+    path = __DATA_ROOT__
+    browseable = yes
+    read only = no
+    guest ok = yes
+    guest only = yes
+    force user = root
+    force group = wheel
+    create mask = 0644
+    directory mask = 0755
