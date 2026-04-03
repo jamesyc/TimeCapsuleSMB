@@ -282,6 +282,8 @@ The intended user flow is:
    - [scripts/configure.py](/Users/jameschang/git/TimeCapsuleSMB/scripts/configure.py)
 4. deploy and reboot
    - [scripts/deploy.py](/Users/jameschang/git/TimeCapsuleSMB/scripts/deploy.py)
+5. run local diagnostics
+   - [scripts/doctor.py](/Users/jameschang/git/TimeCapsuleSMB/scripts/doctor.py)
 
 `configure.py` writes repo-root `.env`.
 
@@ -303,6 +305,43 @@ Current defaults:
 - `TC_PAYLOAD_DIR_NAME=samba4`
 - `TC_MDNS_INSTANCE_NAME=Time Capsule Samba 4`
 - `TC_MDNS_HOST_LABEL=timecapsulesamba4`
+
+## Doctor Script
+
+[scripts/doctor.py](/Users/jameschang/git/TimeCapsuleSMB/scripts/doctor.py) is a non-destructive local diagnostic helper.
+
+It checks:
+- `.env` completeness
+- required local tools
+- whether the checked-in binaries exist
+- SSH reachability
+- SMB reachability
+- `_smb._tcp` browse and resolve
+- authenticated `smbutil view`
+
+It does not:
+- deploy
+- reboot
+- change the device
+
+Typical usage:
+
+```bash
+.venv/bin/python scripts/doctor.py
+```
+
+Optional skips:
+
+```bash
+.venv/bin/python scripts/doctor.py --skip-ssh
+.venv/bin/python scripts/doctor.py --skip-bonjour
+.venv/bin/python scripts/doctor.py --skip-smb
+```
+
+The normal goal is to use it as a quick health check after:
+- local setup
+- deploy
+- reboot
 
 ## Deploy Details
 
