@@ -15,6 +15,7 @@ FIELDS = [
     ("TC_PASSWORD", "Time Capsule root password", "", True),
     ("TC_NET_IFACE", "Network interface on the Time Capsule", "bridge0", False),
     ("TC_SHARE_NAME", "SMB share name", "Data", False),
+    ("TC_SAMBA_USER", "Samba username", "admin", False),
     ("TC_NETBIOS_NAME", "Samba NetBIOS name", "TimeCapsule", False),
     ("TC_PAYLOAD_DIR_NAME", "Persistent payload directory name", "samba4", False),
     ("TC_MDNS_INSTANCE_NAME", "mDNS SMB instance name", "Time Capsule Samba 4", False),
