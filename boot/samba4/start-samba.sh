@@ -49,7 +49,13 @@ cleanup_old_runtime() {
     /usr/bin/pkill smbd >/dev/null 2>&1 || true
     /usr/bin/pkill mdns-smbd-advertiser >/dev/null 2>&1 || true
     sleep 1
-    rm -rf /mnt/Memory/samba3 /mnt/Memory/samba4
+    rm -rf /mnt/Memory/samba4
+}
+
+prepare_legacy_prefix() {
+    mkdir -p /root
+    rm -rf "$LEGACY_PREFIX"
+    ln -s "$RAM_ROOT" "$LEGACY_PREFIX"
 }
 
 prepare_ram_root() {
@@ -61,13 +67,7 @@ prepare_ram_root() {
     : >"$RAM_LOG"
 }
 
-prepare_legacy_prefix() {
-    [ -d /root ] || mkdir -p /root
-    rm -rf "$LEGACY_PREFIX"
-    ln -s "$RAM_ROOT" "$LEGACY_PREFIX"
-}
-
-get_bridge0_ipv4() {
+get_iface_ipv4() {
     /sbin/ifconfig "$NET_IFACE" 2>/dev/null | sed -n 's/^[[:space:]]*inet[[:space:]]\([0-9.]*\).*/\1/p' | sed -n '1p'
 }
 
@@ -76,9 +76,9 @@ wait_for_bind_interfaces() {
 
     sleep 5
     while [ "$attempt" -lt 15 ]; do
-        bridge0_ip=$(get_bridge0_ipv4 || true)
-        if [ -n "$bridge0_ip" ] && [ "$bridge0_ip" != "0.0.0.0" ]; then
-            echo "127.0.0.1/8 $bridge0_ip/24"
+        iface_ip=$(get_iface_ipv4 || true)
+        if [ -n "$iface_ip" ] && [ "$iface_ip" != "0.0.0.0" ]; then
+            echo "127.0.0.1/8 $iface_ip/24"
             return 0
         fi
 
@@ -170,21 +170,6 @@ find_payload_dir() {
         return 0
     fi
 
-    return 1
-}
-
-find_volume_root() {
-    data_root=$1
-    case "$data_root" in
-        /Volumes/dk2/*)
-            echo /Volumes/dk2
-            return 0
-            ;;
-        /Volumes/dk3/*)
-            echo /Volumes/dk3
-            return 0
-            ;;
-    esac
     return 1
 }
 
@@ -312,11 +297,6 @@ BRIDGE0_IP=${BRIDGE0_IP%%/*}
 
 PAYLOAD_DIR=$(find_payload_dir "$DATA_ROOT") || {
     log "missing payload directory under mounted volume"
-    exit 1
-}
-
-VOLUME_ROOT=$(find_volume_root "$DATA_ROOT") || {
-    log "failed to determine volume root"
     exit 1
 }
 
