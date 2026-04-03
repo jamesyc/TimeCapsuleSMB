@@ -8,6 +8,7 @@
     map to guest = Bad User
     guest account = root
     dos charset = ASCII
+    min protocol = SMB2
     max protocol = SMB3
     load printers = no
     disable spoolss = yes

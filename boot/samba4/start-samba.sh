@@ -220,6 +220,7 @@ stage_runtime() {
     security = user
     map to guest = Bad User
     guest account = root
+    min protocol = SMB2
     load printers = no
     disable spoolss = yes
     pid directory = $RAM_VAR
