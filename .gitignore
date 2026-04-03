@@ -41,3 +41,9 @@ coverage.xml
 # Editor / IDE
 .idea/
 .vscode/
+
+# Planning
+/plan
+
+# Env
+scripts/password.txt
