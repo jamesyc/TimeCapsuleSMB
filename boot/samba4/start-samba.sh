@@ -28,7 +28,6 @@ RAM_LOCKS="$RAM_ROOT/locks"
 RAM_PRIVATE="$RAM_ROOT/private"
 RAM_LOG="$RAM_VAR/rc.local.log"
 SMBD_LOG="$RAM_VAR/log.smbd"
-MDNS_LOG="$RAM_VAR/log.mdns"
 LEGACY_PREFIX=/root/tc-stage4
 
 PAYLOAD_DIR_NAME=__PAYLOAD_DIR_NAME__
@@ -47,7 +46,6 @@ log() {
 }
 
 cleanup_old_runtime() {
-    log "cleanup_old_runtime begin"
     /usr/bin/pkill smbd >/dev/null 2>&1 || true
     /usr/bin/pkill mdns-smbd-advertiser >/dev/null 2>&1 || true
     sleep 1
@@ -61,14 +59,12 @@ prepare_ram_root() {
     chmod 755 "$RAM_VAR/run" "$RAM_VAR/run/ncalrpc"
     chmod 700 "$RAM_VAR/cores"
     : >"$RAM_LOG"
-    log "prepare_ram_root complete"
 }
 
 prepare_legacy_prefix() {
     [ -d /root ] || mkdir -p /root
     rm -rf "$LEGACY_PREFIX"
     ln -s "$RAM_ROOT" "$LEGACY_PREFIX"
-    log "prepare_legacy_prefix complete"
 }
 
 get_bridge0_ipv4() {
@@ -114,47 +110,35 @@ mount_device_if_possible() {
     volume_root=$2
 
     if [ ! -b "$dev_path" ]; then
-        log "device missing: $dev_path"
         return 1
     fi
 
     [ -d "$volume_root" ] || mkdir -p "$volume_root"
-    log "mount attempt: $dev_path -> $volume_root"
 
     /sbin/mount_hfs "$dev_path" "$volume_root" >/dev/null 2>&1 || true
-
-    if [ -d "$volume_root" ]; then
-        log "mountpoint present after attempt: $volume_root"
-    fi
 }
 
 ensure_data_root() {
     attempt=0
     while [ "$attempt" -lt 120 ]; do
-        log "ensure_data_root attempt $attempt"
-
         if data_root=$(find_data_root_under_volume /Volumes/dk2); then
-            log "found data root under /Volumes/dk2"
             echo "$data_root"
             return 0
         fi
 
         if data_root=$(find_data_root_under_volume /Volumes/dk3); then
-            log "found data root under /Volumes/dk3"
             echo "$data_root"
             return 0
         fi
 
         mount_device_if_possible /dev/dk2 /Volumes/dk2
         if data_root=$(find_data_root_under_volume /Volumes/dk2); then
-            log "found data root under /Volumes/dk2 after mount"
             echo "$data_root"
             return 0
         fi
 
         mount_device_if_possible /dev/dk3 /Volumes/dk3
         if data_root=$(find_data_root_under_volume /Volumes/dk3); then
-            log "found data root under /Volumes/dk3 after mount"
             echo "$data_root"
             return 0
         fi
@@ -294,16 +278,14 @@ start_smbd() {
 
 start_mdns() {
     if [ ! -x "$RAM_SBIN/mdns-smbd-advertiser" ]; then
-        log "mdns advertiser not present; skipping"
         return 0
     fi
 
-    : >"$MDNS_LOG"
     "$RAM_SBIN/mdns-smbd-advertiser" \
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
         --ipv4 "$BRIDGE0_IP" \
-        >"$MDNS_LOG" 2>&1 &
+        >/dev/null 2>&1 &
     log "mdns advertiser launch requested"
 }
 
@@ -311,49 +293,39 @@ cleanup_old_runtime
 prepare_ram_root
 prepare_legacy_prefix
 log "boot start"
-log "script path: $0"
-log "PATH: $PATH"
-log "NET_IFACE: $NET_IFACE"
-log "PAYLOAD_DIR_NAME: $PAYLOAD_DIR_NAME"
 
 DATA_ROOT=$(ensure_data_root) || {
     log "failed to discover data root"
     exit 1
 }
-    log "data root: $DATA_ROOT"
+log "data root: $DATA_ROOT"
 
 BIND_INTERFACES=$(wait_for_bind_interfaces) || {
     log "failed to determine $NET_IFACE IPv4 address"
     exit 1
 }
-log "bind interfaces: $BIND_INTERFACES"
 BRIDGE0_IP=${BIND_INTERFACES#127.0.0.1/8 }
 BRIDGE0_IP=${BRIDGE0_IP%%/*}
-log "mdns ipv4: $BRIDGE0_IP"
 
 PAYLOAD_DIR=$(find_payload_dir "$DATA_ROOT") || {
     log "missing payload directory under mounted volume"
     exit 1
 }
-log "payload dir: $PAYLOAD_DIR"
 
 VOLUME_ROOT=$(find_volume_root "$DATA_ROOT") || {
     log "failed to determine volume root"
     exit 1
 }
-log "volume root: $VOLUME_ROOT"
 
 SMBD_SRC=$(find_payload_smbd "$PAYLOAD_DIR") || {
     log "missing smbd in payload directory"
     exit 1
 }
-log "smbd src: $SMBD_SRC"
 
 MDNS_SRC=
 if MDNS_SRC=$(find_payload_mdns "$PAYLOAD_DIR"); then
-    log "mdns src: $MDNS_SRC"
+    :
 else
-    log "mdns src missing in payload dir; continuing without mdns"
     MDNS_SRC=
 fi
 
