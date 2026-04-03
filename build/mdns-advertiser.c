@@ -38,8 +38,11 @@ struct config {
     char instance_name[MAX_NAME];
     char host_label[MAX_LABEL + 1];
     char host_fqdn[MAX_NAME];
+    char adisk_service_type[MAX_NAME];
+    char adisk_share_name[MAX_NAME];
     uint32_t ipv4_addr;
     uint16_t port;
+    uint16_t adisk_port;
     uint32_t ttl;
 };
 
@@ -62,6 +65,7 @@ static void usage(const char *prog) {
             "Usage: %s --instance <name> --host <label> --ipv4 <address> [options]\n"
             "Options:\n"
             "  --service <type>   Service type (default: _smb._tcp.local.)\n"
+            "  --adisk-share <n>  Also advertise _adisk._tcp for Time Machine\n"
             "  --port <port>      Service port (default: 445)\n"
             "  --ttl <seconds>    Record TTL (default: 120)\n",
             prog);
@@ -218,7 +222,7 @@ static int add_rr_ptr(uint8_t *buf, size_t *off, size_t cap, const char *owner, 
     return 0;
 }
 
-static int add_rr_txt(uint8_t *buf, size_t *off, size_t cap, const char *owner, uint32_t ttl) {
+static int add_rr_txt_empty(uint8_t *buf, size_t *off, size_t cap, const char *owner, uint32_t ttl) {
     static const uint8_t empty_txt[] = {0x00};
     if (encode_name(buf, off, cap, owner) != 0 ||
         append_u16(buf, off, cap, DNS_TYPE_TXT) != 0 ||
@@ -227,6 +231,45 @@ static int add_rr_txt(uint8_t *buf, size_t *off, size_t cap, const char *owner, 
         append_u16(buf, off, cap, (uint16_t)sizeof(empty_txt)) != 0 ||
         append_bytes(buf, off, cap, empty_txt, sizeof(empty_txt)) != 0) {
         return -1;
+    }
+    return 0;
+}
+
+static int add_rr_txt_strings(uint8_t *buf, size_t *off, size_t cap, const char *owner, uint32_t ttl,
+                              const char **strings, size_t string_count) {
+    size_t rdlength_pos;
+    size_t rdata_start;
+    size_t i;
+
+    if (encode_name(buf, off, cap, owner) != 0 ||
+        append_u16(buf, off, cap, DNS_TYPE_TXT) != 0 ||
+        append_u16(buf, off, cap, DNS_CLASS_IN) != 0 ||
+        append_u32(buf, off, cap, ttl) != 0) {
+        return -1;
+    }
+
+    rdlength_pos = *off;
+    if (append_u16(buf, off, cap, 0) != 0) {
+        return -1;
+    }
+    rdata_start = *off;
+
+    for (i = 0; i < string_count; i++) {
+        uint8_t len;
+        size_t slen = strlen(strings[i]);
+        if (slen > 255) {
+            return -1;
+        }
+        len = (uint8_t)slen;
+        if (append_bytes(buf, off, cap, &len, 1) != 0 ||
+            append_bytes(buf, off, cap, strings[i], slen) != 0) {
+            return -1;
+        }
+    }
+
+    {
+        uint16_t rdlength = htons((uint16_t)(*off - rdata_start));
+        memcpy(buf + rdlength_pos, &rdlength, sizeof(rdlength));
     }
     return 0;
 }
@@ -270,6 +313,32 @@ static int add_rr_a(uint8_t *buf, size_t *off, size_t cap, const char *owner, ui
     return 0;
 }
 
+static int add_adisk_records(uint8_t *buf, size_t *off, size_t cap, const struct config *cfg, int *answers) {
+    char instance_fqdn[MAX_NAME];
+    char txt1[128];
+    char txt2[256];
+    const char *txts[2];
+
+    if (cfg->adisk_share_name[0] == '\0') {
+        return 0;
+    }
+
+    snprintf(instance_fqdn, sizeof(instance_fqdn), "%s.%s", cfg->instance_name, cfg->adisk_service_type);
+    snprintf(txt1, sizeof(txt1), "sys=waMa=0,adVF=0x100");
+    snprintf(txt2, sizeof(txt2), "dk0=adVN=%s,adVF=0x82", cfg->adisk_share_name);
+    txts[0] = txt1;
+    txts[1] = txt2;
+
+    if (add_rr_ptr(buf, off, cap, cfg->adisk_service_type, instance_fqdn, cfg->ttl) != 0 ||
+        add_rr_srv(buf, off, cap, instance_fqdn, cfg->host_fqdn, cfg->adisk_port, cfg->ttl) != 0 ||
+        add_rr_txt_strings(buf, off, cap, instance_fqdn, cfg->ttl, txts, 2) != 0) {
+        return -1;
+    }
+
+    *answers += 3;
+    return 0;
+}
+
 static int send_announcement(int sockfd, const struct sockaddr_in *dest, const struct config *cfg) {
     uint8_t buf[BUF_SIZE];
     size_t off = sizeof(struct dns_header);
@@ -284,11 +353,16 @@ static int send_announcement(int sockfd, const struct sockaddr_in *dest, const s
 
     if (add_rr_ptr(buf, &off, sizeof(buf), cfg->service_type, instance_fqdn, cfg->ttl) != 0 ||
         add_rr_srv(buf, &off, sizeof(buf), instance_fqdn, cfg->host_fqdn, cfg->port, cfg->ttl) != 0 ||
-        add_rr_txt(buf, &off, sizeof(buf), instance_fqdn, cfg->ttl) != 0 ||
+        add_rr_txt_empty(buf, &off, sizeof(buf), instance_fqdn, cfg->ttl) != 0 ||
         add_rr_a(buf, &off, sizeof(buf), cfg->host_fqdn, cfg->ipv4_addr, cfg->ttl) != 0) {
         return -1;
     }
     answers = 4;
+
+    if (add_adisk_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {
+        return -1;
+    }
+
     hdr.ancount = htons((uint16_t)answers);
     memcpy(buf, &hdr, sizeof(hdr));
 
@@ -302,10 +376,14 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
     uint8_t reply[BUF_SIZE];
     size_t off = sizeof(struct dns_header);
     char instance_fqdn[MAX_NAME];
+    char adisk_instance_fqdn[MAX_NAME];
     int want_ptr = 0;
     int want_srv = 0;
     int want_txt = 0;
     int want_a = 0;
+    int want_adisk_ptr = 0;
+    int want_adisk_srv = 0;
+    int want_adisk_txt = 0;
     int answers = 0;
     uint16_t i;
 
@@ -319,6 +397,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
 
     qdcount = ntohs(hdr.qdcount);
     snprintf(instance_fqdn, sizeof(instance_fqdn), "%s.%s", cfg->instance_name, cfg->service_type);
+    snprintf(adisk_instance_fqdn, sizeof(adisk_instance_fqdn), "%s.%s", cfg->instance_name, cfg->adisk_service_type);
 
     for (i = 0; i < qdcount; i++) {
         char qname[MAX_NAME];
@@ -340,16 +419,29 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
 
         if (name_equals(qname, cfg->service_type) && (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
             want_ptr = 1;
+        } else if (cfg->adisk_share_name[0] != '\0' &&
+                   name_equals(qname, cfg->adisk_service_type) &&
+                   (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
+            want_adisk_ptr = 1;
         } else if (name_equals(qname, instance_fqdn) && (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY)) {
             want_srv = 1;
         } else if (name_equals(qname, instance_fqdn) && (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY)) {
             want_txt = 1;
+        } else if (cfg->adisk_share_name[0] != '\0' &&
+                   name_equals(qname, adisk_instance_fqdn) &&
+                   (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY)) {
+            want_adisk_srv = 1;
+        } else if (cfg->adisk_share_name[0] != '\0' &&
+                   name_equals(qname, adisk_instance_fqdn) &&
+                   (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY)) {
+            want_adisk_txt = 1;
         } else if (name_equals(qname, cfg->host_fqdn) && (qtype == DNS_TYPE_A || qtype == DNS_TYPE_ANY)) {
             want_a = 1;
         }
     }
 
-    if (!want_ptr && !want_srv && !want_txt && !want_a) {
+    if (!want_ptr && !want_srv && !want_txt && !want_a &&
+        !want_adisk_ptr && !want_adisk_srv && !want_adisk_txt) {
         return 0;
     }
 
@@ -369,10 +461,39 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
         answers++;
     }
     if (want_txt) {
-        if (add_rr_txt(reply, &off, sizeof(reply), instance_fqdn, cfg->ttl) != 0) {
+        if (add_rr_txt_empty(reply, &off, sizeof(reply), instance_fqdn, cfg->ttl) != 0) {
             return -1;
         }
         answers++;
+    }
+    if (want_adisk_ptr || want_adisk_srv || want_adisk_txt) {
+        char txt1[128];
+        char txt2[256];
+        const char *txts[2];
+
+        snprintf(txt1, sizeof(txt1), "sys=waMa=0,adVF=0x100");
+        snprintf(txt2, sizeof(txt2), "dk0=adVN=%s,adVF=0x82", cfg->adisk_share_name);
+        txts[0] = txt1;
+        txts[1] = txt2;
+
+        if (want_adisk_ptr) {
+            if (add_rr_ptr(reply, &off, sizeof(reply), cfg->adisk_service_type, adisk_instance_fqdn, cfg->ttl) != 0) {
+                return -1;
+            }
+            answers++;
+        }
+        if (want_adisk_srv) {
+            if (add_rr_srv(reply, &off, sizeof(reply), adisk_instance_fqdn, cfg->host_fqdn, cfg->adisk_port, cfg->ttl) != 0) {
+                return -1;
+            }
+            answers++;
+        }
+        if (want_adisk_txt) {
+            if (add_rr_txt_strings(reply, &off, sizeof(reply), adisk_instance_fqdn, cfg->ttl, txts, 2) != 0) {
+                return -1;
+            }
+            answers++;
+        }
     }
     if (want_a) {
         if (add_rr_a(reply, &off, sizeof(reply), cfg->host_fqdn, cfg->ipv4_addr, cfg->ttl) != 0) {
@@ -445,12 +566,16 @@ int main(int argc, char **argv) {
 
     memset(&cfg, 0, sizeof(cfg));
     strcpy(cfg.service_type, "_smb._tcp.local.");
+    strcpy(cfg.adisk_service_type, "_adisk._tcp.local.");
     cfg.port = 445;
+    cfg.adisk_port = 9;
     cfg.ttl = 120;
 
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--service") == 0 && i + 1 < argc) {
             strncpy(cfg.service_type, argv[++i], sizeof(cfg.service_type) - 1);
+        } else if (strcmp(argv[i], "--adisk-share") == 0 && i + 1 < argc) {
+            strncpy(cfg.adisk_share_name, argv[++i], sizeof(cfg.adisk_share_name) - 1);
         } else if (strcmp(argv[i], "--instance") == 0 && i + 1 < argc) {
             strncpy(cfg.instance_name, argv[++i], sizeof(cfg.instance_name) - 1);
         } else if (strcmp(argv[i], "--host") == 0 && i + 1 < argc) {

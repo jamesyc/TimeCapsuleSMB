@@ -272,6 +272,7 @@ start_mdns() {
     "$RAM_SBIN/mdns-smbd-advertiser" \
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
+        --adisk-share "$SMB_SHARE_NAME" \
         --ipv4 "$BRIDGE0_IP" \
         >/dev/null 2>&1 &
     log "mdns advertiser launch requested"
