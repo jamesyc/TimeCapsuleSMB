@@ -244,11 +244,14 @@ stage_runtime() {
     interfaces = $BIND_INTERFACES
     bind interfaces only = yes
     security = user
-    map to guest = Bad User
-    guest account = root
+    passdb backend = smbpasswd:$DATA_ROOT/../$PAYLOAD_DIR_NAME/private/smbpasswd
+    username map = $DATA_ROOT/../$PAYLOAD_DIR_NAME/private/username.map
+    dos charset = ASCII
     min protocol = SMB2
+    max protocol = SMB3
     load printers = no
     disable spoolss = yes
+    dfree command = /bin/sh /mnt/Flash/dfree.sh
     pid directory = $RAM_VAR
     lock directory = $RAM_LOCKS
     state directory = $RAM_VAR
@@ -263,8 +266,8 @@ stage_runtime() {
     path = $DATA_ROOT
     browseable = yes
     read only = no
-    guest ok = yes
-    guest only = yes
+    guest ok = no
+    valid users = admin root
     force user = root
     force group = wheel
     create mask = 0644
