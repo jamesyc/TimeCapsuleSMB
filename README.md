@@ -12,7 +12,7 @@ If you want the long-form engineering background, design decisions, and implemen
 
 If the setup completes successfully, your Time Capsule will boot its own Samba 4 server automatically, advertise itself over Bonjour, and accept authenticated SMB connections from macOS. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack.
 
-The current authentication model is straightforward. You log in as `admin`, and the Samba password is the same password you enter during setup when the scripts ask for the Time Capsule password. Guest access is disabled.
+The current authentication model uses `admin` as the username, and the Samba password is the same password you enter during setup when the tool asks for the Time Capsule password. Guest access is disabled.
 
 ## Requirements
 
@@ -26,35 +26,47 @@ For the typical setup path, you need only:
 
 That is it. The build system exists in this repository because it was necessary to get the binaries in the first place, but most users should ignore that part entirely.
 
-## The Short Version
+## Quick Start
 
 From the root of this repository, the normal flow is:
 
-1. `python3 scripts/bootstrap_host.py`
-2. `.venv/bin/python scripts/prep_device.py`
-3. `.venv/bin/python scripts/configure.py`
-4. `.venv/bin/python scripts/deploy.py`
-5. `.venv/bin/python scripts/doctor.py`
+1. `./tcapsule bootstrap`
+2. `.venv/bin/tcapsule prep-device`
+3. `.venv/bin/tcapsule configure`
+4. `.venv/bin/tcapsule deploy`
+5. `.venv/bin/tcapsule doctor`
+
+If you prefer, you can activate the virtual environment after step 1 and then run `tcapsule ...` directly:
+
+```bash
+source .venv/bin/activate
+tcapsule prep-device
+tcapsule configure
+tcapsule deploy
+tcapsule doctor
+```
 
 ## Step 1: Prepare Your Mac
 
 Run:
 
 ```bash
-python3 scripts/bootstrap_host.py
+./tcapsule bootstrap
 ```
 
-This script prepares the local Python environment by setting it up in this folder. In the folder, it creates the virtual environments that the rest of the workflow expects and installs the Python packages needed for device discovery, AirPyrt integration, deployment, and verification. 
+This command prepares the local Python environment in this folder. It creates the `.venv` folder, installs in there the Python dependencies needed for discovery, deployment, and verification, installs the local `tcapsule` command into that virtualenv, and optionally provisions AirPyrt support.
+
+If this is your first time using the repo, this is the only command you should run with the repo-local launcher. After this step, use `.venv/bin/tcapsule ...` or activate `.venv`.
 
 ## Step 2: Find The Time Capsule And Enable SSH
 
 Run:
 
 ```bash
-.venv/bin/python scripts/prep_device.py
+.venv/bin/tcapsule prep-device
 ```
 
-This is the step that finds the Time Capsule on your local network and, if necessary, enables SSH access on it. The script is intentionally focused on preparation, not on the full deployment. It exists to solve the annoying early-stage problem that most users have, which is simply identifying the right device and getting it into a state where it can be managed.
+This step finds the Time Capsule on your local network and, if necessary, enables SSH access on it. It is for identifying the right device and getting it into a state where it can be managed.
 
 In practical terms, this script will:
 
@@ -67,10 +79,10 @@ In practical terms, this script will:
 Run:
 
 ```bash
-.venv/bin/python scripts/configure.py
+.venv/bin/tcapsule configure
 ```
 
-This will write a local `.env` file in the repository, and acts as the configuration for the target Time Capsule.
+This will write a `.env` file in the folder, and that file acts as the configuration for the target Time Capsule.
 
 For typical users, most of the defaults are good enough. If the script offers a value and you do not have a reason to change it, **just pressing Enter is usually the correct choice**.
 
@@ -93,36 +105,48 @@ Samba does not magically use Apple’s internal password backend; unfortunately,
 Run:
 
 ```bash
-.venv/bin/python scripts/deploy.py
+.venv/bin/tcapsule deploy
 ```
 
-This is the installation step. It copies the checked-in binaries and boot files to the Time Capsule, sets up the Samba password files, installs the boot hook, and reboots the device so the new runtime comes up cleanly.
+This is the installation step. It validates the checked-in binaries, copies the payload and boot files to the Time Capsule, sets up the Samba password files, installs the boot hook, and reboots the device so the new runtime comes up cleanly.
 
-By default, `deploy.py` reboots the Time Capsule after deployment and then wait for it to come back. If you want to skip the reboot confirmation prompt, you can run:
+By default, `tcapsule deploy` reboots the Time Capsule after deployment and then waits for it to come back. If you want to skip the reboot confirmation prompt, you can run:
 
 ```bash
-.venv/bin/python scripts/deploy.py --yes
+.venv/bin/tcapsule deploy --yes
 ```
 
 There are also other flags such as `--no-reboot` and `--dry-run`, but leave those alone unless you have a specific reason to use them.
+
+If you want a machine-readable deployment plan without changing the device, use:
+
+```bash
+.venv/bin/tcapsule deploy --dry-run --json
+```
 
 ## Step 5: Verify The Result
 
 Run:
 
 ```bash
-.venv/bin/python scripts/doctor.py
+.venv/bin/tcapsule doctor
 ```
 
-This is a non-destructive diagnostic script. `doctor.py` checks:
+This is a non-destructive diagnostic command. `tcapsule doctor` checks:
 
 - that your `.env` is complete
 - that the required local tools exist
-- that the checked-in binaries are present
+- that the checked-in binaries are present and match the expected checksums
 - that SSH is reachable
 - that SMB is reachable
 - that Bonjour `_smb._tcp` advertisement is visible
 - that an authenticated SMB listing actually works
+
+If you want the results in JSON instead of human-readable text, use:
+
+```bash
+.venv/bin/tcapsule doctor --json
+```
 
 ## Connecting From Finder
 
@@ -132,7 +156,7 @@ Once deployment has completed and the Time Capsule has rebooted, you should be a
 smb://timecapsulesamba4.local/Data
 ```
 
-If your Bonjour hostname is different on your system, `deploy.py` and `doctor.py` will tell you what name was actually advertised.
+If your Bonjour hostname is different on your system, `tcapsule deploy` and `tcapsule doctor` will tell you what name was actually advertised.
 
 When Finder prompts for credentials, use:
 
@@ -140,6 +164,10 @@ When Finder prompts for credentials, use:
 - password: your Time Capsule password
 
 This is the intended normal user path. You should not have to care about the internal mountpoints, boot scripts, or NetBSD build details just to open the share.
+
+## Technical Notes
+
+Everything above is the beginner path. The rest of this README is more technical and explains why the repo is structured this way.
 
 ## Design
 
@@ -189,13 +217,19 @@ The current default result is:
 Run:
 
 ```bash
-.venv/bin/python scripts/doctor.py
+.venv/bin/tcapsule doctor
 ```
 
 Then check Bonjour directly:
 
 ```bash
 dns-sd -B _smb._tcp local.
+```
+
+To inspect discovery results from the tool itself in JSON, run:
+
+```bash
+.venv/bin/tcapsule discover --json
 ```
 
 If the system is working normally, you should see:
@@ -221,7 +255,7 @@ That can happen if the device has come back on the network but is still finishin
 Wait a little, then run:
 
 ```bash
-.venv/bin/python scripts/doctor.py
+.venv/bin/tcapsule doctor
 ```
 
 ### I Want The Full Technical Story
