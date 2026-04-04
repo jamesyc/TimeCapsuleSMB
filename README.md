@@ -53,7 +53,7 @@ Run:
 python3 scripts/bootstrap_host.py
 ```
 
-This script prepares the local Python environment on your Mac. It creates the virtual environments that the rest of the workflow expects and installs the Python packages needed for device discovery, AirPyrt integration, deployment, and verification. The point of this step is simply to make the rest of the workflow predictable, so that you are not trying to guess which global Python or random package version your machine happens to have.
+This script prepares the local Python environment by setting it up in this folder. It creates the virtual environments that the rest of the workflow expects and installs the Python packages needed for device discovery, AirPyrt integration, deployment, and verification. The point of this step is simply to make the rest of the workflow predictable, so that you are not trying to guess which global Python or random package version your machine happens to have.
 
 If this step fails, stop there and fix that first. There is no point trying to debug Time Capsule behavior when the local host environment itself is incomplete.
 
@@ -73,8 +73,6 @@ In practical terms, this script will:
 - let you pick the correct one
 - enable SSH if SSH is not already available
 
-This is why the script is called `prep_device.py` and not something grander. It is not trying to pretend it does everything. It just gets the device ready for the real install step.
-
 ## Step 3: Create The Local Config
 
 Run:
@@ -83,9 +81,9 @@ Run:
 .venv/bin/python scripts/configure.py
 ```
 
-This writes a local `.env` file in the repository. That file is not meant to be committed. It is your local machine’s configuration for the target Time Capsule.
+This will write a local `.env` file in the repository. It is your configuration for the target Time Capsule.
 
-For most users, the defaults are good enough. If the script offers a value and you do not have a reason to change it, pressing Enter is usually the correct choice.
+For most users, the defaults are good enough. If the script offers a value and you do not have a reason to change it, ** just pressing Enter is usually the correct choice**.
 
 The most important defaults are:
 
@@ -99,7 +97,7 @@ The password you enter here is important. It becomes the password used for the S
 - username: `admin`
 - password: the same Time Capsule password you entered during configuration
 
-That is not because Samba is magically using Apple’s internal password backend. It is because this project deliberately reuses the same password value so that the user-facing experience is simpler and less confusing.
+That because Samba is not magically using Apple’s internal password backend; unfortunately, using Apple's password system is not possible. It is because this this deliberately reuses the same password value so that the user experience is simpler and less confusing.
 
 ## Step 4: Deploy It
 
@@ -111,15 +109,13 @@ Run:
 
 This is the actual installation step. It copies the checked-in binaries and boot files to the Time Capsule, sets up the Samba password files, installs the boot hook, and reboots the device so the new runtime comes up cleanly.
 
-By default, `deploy.py` does the sensible thing, which is to reboot the Time Capsule after deployment and then wait for it to come back. That is not an accident. This project deliberately favors the boring, repeatable path over the clever one-off path, because boot-time behavior is what really matters here. If it only works until the next reboot, it does not really work.
-
-If you want to skip the reboot confirmation prompt, you can run:
+By default, `deploy.py` does the sensible thing, which is to reboot the Time Capsule after deployment and then wait for it to come back. If you want to skip the reboot confirmation prompt, you can run:
 
 ```bash
 .venv/bin/python scripts/deploy.py --yes
 ```
 
-There are also flags such as `--no-reboot` and `--dry-run`, but beginners should generally leave those alone unless they have a specific reason to use them.
+There are also other flags such as `--no-reboot` and `--dry-run`, but leave those alone unless you have a specific reason to use them.
 
 ## Step 5: Verify The Result
 
@@ -129,9 +125,7 @@ Run:
 .venv/bin/python scripts/doctor.py
 ```
 
-This is the non-destructive diagnostic script. It exists because the difference between “the deploy finished” and “the system is actually healthy” matters. A lot of old-device hacking projects stop at a half-working state and call that good enough. This repo does not try to do that.
-
-`doctor.py` checks:
+This is a non-destructive diagnostic script. `doctor.py` checks:
 
 - that your `.env` is complete
 - that the required local tools exist
@@ -140,8 +134,6 @@ This is the non-destructive diagnostic script. It exists because the difference 
 - that SMB is reachable
 - that Bonjour `_smb._tcp` advertisement is visible
 - that an authenticated SMB listing actually works
-
-If `doctor.py` passes, you are in much better shape than simply assuming Finder will sort itself out.
 
 ## Connecting From Finder
 
@@ -160,25 +152,21 @@ When Finder prompts for credentials, use:
 
 This is the intended normal user path. You should not have to care about the internal mountpoints, boot scripts, or NetBSD build details just to open the share.
 
-## Why The Design Looks Strange
+## Design
 
-The Time Capsule hardware is old, constrained, and opinionated. That matters.
+The Time Capsule hardware is old, constrained, and opinionated. It has three relevant storage areas:
 
-It has three relevant storage areas:
+- `/mnt/Flash`, which is persistent but only has ~900KB of free space.
+- `/mnt/Memory`, which is a 16MB ramdisk
+- the internal HDD mounted under `/Volumes/dk2` or `/Volumes/dk3`, which is large but managed by Apple and unmounts when idle. You cannot run a binary off this location for that reason.
 
-- `/mnt/Flash`, which is persistent but tiny
-- `/mnt/Memory`, which is small and temporary
-- the internal HDD under `/Volumes/dk2` or `/Volumes/dk3`, which is large but managed by Apple in ways that are not always friendly
+Unfortunately, it was not an option to "copy one binary somewhere and call it a day" to get `smbd` running. Thus, the current process is:
 
-So the final working design is not “copy one binary somewhere and call it a day.” That would have been nice, but the hardware does not really allow it.
-
-The design that actually works is:
-
-1. Keep the real payload on the internal disk.
-2. Keep only very small boot hooks on flash.
+1. Keep the full `smbd` payload on the internal disk.
+2. Keep only a very small `rc.local` boot hook on flash.
 3. At boot, wait for the internal disk to appear and mount.
 4. Copy the runtime binaries into `/mnt/Memory`.
-5. Start Samba from RAM, not from the disk Apple may later decide to unmount.
+5. Start Samba from the ramdisk, not from the disk Apple may later decide to unmount.
 6. Advertise `_smb._tcp` with a separate tiny mDNS helper.
 
 That is the reason the repository contains both:
@@ -190,8 +178,6 @@ and boot files such as:
 
 - [boot/samba4/rc.local](/Users/jameschang/git/TimeCapsuleSMB/boot/samba4/rc.local)
 - [boot/samba4/start-samba.sh](/Users/jameschang/git/TimeCapsuleSMB/boot/samba4/start-samba.sh)
-
-It is not pretty in the abstract, but it is grounded in what the hardware actually allows.
 
 ## The Files You Are Most Likely To Use
 
@@ -216,7 +202,7 @@ If you are just using the project rather than maintaining it, these are the file
 
 ### The Time Capsule Does Not Show Up In Finder
 
-First, do not guess. Run:
+Run:
 
 ```bash
 .venv/bin/python scripts/doctor.py
@@ -246,15 +232,13 @@ If necessary, use the IP address from your `.env` instead. The point is to separ
 
 ### Deploy Says SMB Listing Failed Right After Reboot
 
-That can happen if the device has come back on the network but is still finishing startup. These old boxes are not fast.
+That can happen if the device has come back on the network but is still finishing startup. These old Time Capsule CPUs are not fast.
 
 Wait a little, then run:
 
 ```bash
 .venv/bin/python scripts/doctor.py
 ```
-
-Again, the idea is to check the real state rather than assume the first timing-sensitive check tells the whole story.
 
 ### I Want The Full Technical Story
 
@@ -263,15 +247,15 @@ Read:
 - [DETAIL.md](/Users/jameschang/git/TimeCapsuleSMB/DETAIL.md)
 - [plan/session-handoff-2026-04-03-2.md](/Users/jameschang/git/TimeCapsuleSMB/plan/session-handoff-2026-04-03-2.md)
 
-Those documents explain the engineering constraints, historical dead ends, and current implementation in much more detail than a beginner should have to absorb up front.
+Those documents explain the engineering constraints, historical dead ends, and current implementation in much more detail.
 
 ## Security Notes
 
 This should be treated as a LAN-only setup.
 
-Do not expose this SMB service directly to the public internet. Do not forward ports to it. Do not pretend that an old Time Capsule turned into a modern hardened NAS just because the SMB side now works better.
+Do not expose this SMB service directly to the public internet. Do not forward ports to it. Do not pretend that an old Time Capsule turned into a modern hardened NAS just because the SMB side now works better. I have tested this with a M1 Macbook Pro and an A1470 Time Capsule. Your mileage may vary. Older models of Time Capsules may have a smaller `/mnt/Memory` that the `smbd` binary does not fit in; I am unable to confirm.
 
-Also note that the current auth model maps SMB access to `root` internally on the Time Capsule. That is a deliberate compatibility choice for this old firmware. It is practical, and it works, but it is not the same thing as a carefully sandboxed modern server design.
+Also note that the current auth model maps SMB access to `root` internally on the Time Capsule. That is a deliberate compatibility choice for this old firmware, as the version of NetBSD 6 running on the Time Capsule errors when Samba tries to switch users.
 
 ## For Developers And Maintainers
 
@@ -284,7 +268,7 @@ The main build outputs are:
 - [bin/samba4/smbd](/Users/jameschang/git/TimeCapsuleSMB/bin/samba4/smbd)
 - [bin/mdns/mdns-smbd-advertiser](/Users/jameschang/git/TimeCapsuleSMB/bin/mdns/mdns-smbd-advertiser)
 
-If you want the actual engineering details, the right place to start is not the old hand-wavy README history but:
+If you want the actual engineering details, the right place to start is:
 
 - [DETAIL.md](/Users/jameschang/git/TimeCapsuleSMB/DETAIL.md)
 - [plan/](/Users/jameschang/git/TimeCapsuleSMB/plan)
