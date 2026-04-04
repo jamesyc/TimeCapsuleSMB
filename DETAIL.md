@@ -1,8 +1,8 @@
 # TimeCapsuleSMB Detail Reference
 
-This file is the long-form engineering reference for the current system. Most of this is AI generated summaries of my notes. 
+This file is the long-form engineering reference for the current system.
 
-It is intentionally denser than [README.md](README.md). The README is the user-facing overview. This file is for maintainers who want the actual constraints, rationale, and important implementation details in one place.
+It is intentionally denser than [README.md](README.md). The README is the user-facing overview. This file is for maintainers, contributors, and users who want the actual constraints, rationale, and implementation details in one place before they start modifying the box or the tooling.
 
 ## Current Working State
 
@@ -327,24 +327,22 @@ At runtime it advertises:
 - A record: current IPv4 from the configured network interface
   - default: `bridge0`
 
-This is now the chosen discovery path.
-
 ## Current User-Facing Workflow
 
 The intended user flow is:
 
 1. bootstrap the local host
-   - [scripts/bootstrap_host.py](scripts/bootstrap_host.py)
+   - [`./tcapsule bootstrap`](./tcapsule)
 2. discover the Time Capsule and enable SSH
-   - [scripts/prep_device.py](scripts/prep_device.py)
+   - [src/timecapsulesmb/cli/prep_device.py](src/timecapsulesmb/cli/prep_device.py)
 3. generate local config
-   - [scripts/configure.py](scripts/configure.py)
+   - [src/timecapsulesmb/cli/configure.py](src/timecapsulesmb/cli/configure.py)
 4. deploy and reboot
-   - [scripts/deploy.py](scripts/deploy.py)
+   - [src/timecapsulesmb/cli/deploy.py](src/timecapsulesmb/cli/deploy.py)
 5. run local diagnostics
-   - [scripts/doctor.py](scripts/doctor.py)
+   - [src/timecapsulesmb/cli/doctor.py](src/timecapsulesmb/cli/doctor.py)
 
-`configure.py` writes repo-root `.env`.
+`tcapsule configure` writes repo-root `.env`.
 
 Current important `.env` values include:
 - `TC_HOST`
@@ -365,14 +363,38 @@ Current defaults:
 - `TC_MDNS_INSTANCE_NAME=Time Capsule Samba 4`
 - `TC_MDNS_HOST_LABEL=timecapsulesamba4`
 
-## Doctor Script
+Workflow details:
+- the command entrypoints live under [src/timecapsulesmb/cli/](src/timecapsulesmb/cli)
+- the deploy/runtime logic lives under [src/timecapsulesmb/deploy/](src/timecapsulesmb/deploy) and [src/timecapsulesmb/device/](src/timecapsulesmb/device)
+- the checked-in binaries and build tooling are visible in the repo, so advanced users can swap binaries, rebuild artifacts, or trace the exact boot/runtime layout
 
-[scripts/doctor.py](scripts/doctor.py) is a non-destructive local diagnostic helper.
+## Host-Side Architecture
+
+Current important package areas:
+- [src/timecapsulesmb/cli/](src/timecapsulesmb/cli): command entrypoints for `bootstrap`, `discover`, `prep-device`, `configure`, `deploy`, and `doctor`
+- [src/timecapsulesmb/core/](src/timecapsulesmb/core): shared config parsing, defaults, and common models
+- [src/timecapsulesmb/transport/](src/timecapsulesmb/transport): local command execution plus SSH and SCP helpers
+- [src/timecapsulesmb/discovery/](src/timecapsulesmb/discovery): Bonjour-based device discovery
+- [src/timecapsulesmb/integrations/](src/timecapsulesmb/integrations): AirPyrt-backed SSH enable and disable flows
+- [src/timecapsulesmb/checks/](src/timecapsulesmb/checks): reusable local, network, Bonjour, and SMB verification checks
+- [src/timecapsulesmb/device/](src/timecapsulesmb/device): remote probing for device-specific layout such as the active `dk2` or `dk3` volume root
+- [src/timecapsulesmb/deploy/](src/timecapsulesmb/deploy): auth generation, template rendering, deployment planning, execution, dry-run formatting, artifact resolution, and post-deploy verification
+- [src/timecapsulesmb/assets/](src/timecapsulesmb/assets): packaged boot templates and artifact metadata
+
+Practical consequence:
+- if you want to modify how the box is discovered, start in `discovery/`
+- if you want to change what gets uploaded, start in `deploy/planner.py` and `deploy/executor.py`
+- if you want to change the on-device boot behavior, inspect the packaged boot assets and the runtime layout sections below
+- if you want to replace binaries or rebuild them, inspect the artifact manifest plus the `build/` tree
+
+## Doctor Command
+
+[src/timecapsulesmb/cli/doctor.py](src/timecapsulesmb/cli/doctor.py) is a non-destructive local diagnostic helper.
 
 It checks:
 - `.env` completeness
 - required local tools
-- whether the checked-in binaries exist
+- whether the required checked-in binaries exist and match the expected checksums
 - SSH reachability
 - SMB reachability
 - `_smb._tcp` browse and resolve
@@ -386,15 +408,21 @@ It does not:
 Typical usage:
 
 ```bash
-.venv/bin/python scripts/doctor.py
+.venv/bin/tcapsule doctor
+```
+
+Machine-readable output:
+
+```bash
+.venv/bin/tcapsule doctor --json
 ```
 
 Optional skips:
 
 ```bash
-.venv/bin/python scripts/doctor.py --skip-ssh
-.venv/bin/python scripts/doctor.py --skip-bonjour
-.venv/bin/python scripts/doctor.py --skip-smb
+.venv/bin/tcapsule doctor --skip-ssh
+.venv/bin/tcapsule doctor --skip-bonjour
+.venv/bin/tcapsule doctor --skip-smb
 ```
 
 The normal goal is to use it as a quick health check after:
@@ -404,24 +432,31 @@ The normal goal is to use it as a quick health check after:
 
 ## Deploy Details
 
-[scripts/deploy.py](scripts/deploy.py) currently does all of the following:
+[src/timecapsulesmb/cli/deploy.py](src/timecapsulesmb/cli/deploy.py) is now mostly an orchestrator over shared modules in [src/timecapsulesmb/deploy/](src/timecapsulesmb/deploy) and [src/timecapsulesmb/device/](src/timecapsulesmb/device).
+
+Current deploy flow:
 
 - loads `.env`
+- validates the required binary artifacts against the artifact manifest
 - discovers the correct volume root on the Time Capsule
+- computes the device-specific runtime and payload paths
+- builds a deployment plan before execution
 - creates the persistent payload dir under `/Volumes/dkX/samba4`
-- copies:
+- uploads the checked-in binaries:
   - `smbd`
   - `mdns-smbd-advertiser`
+- renders and uploads the packaged boot/runtime files:
   - `smb.conf.template`
   - `rc.local`
   - `start-samba.sh`
   - `watchdog.sh`
   - `dfree.sh`
-- creates:
+- generates and installs:
   - `private/smbpasswd`
   - `private/username.map`
+- applies the required permissions on files and directories
 - reboots by default
-- verifies Bonjour and authenticated SMB access after reboot in the normal path
+- verifies Bonjour and authenticated SMB access after reboot in the normal path using the same shared checks used by `doctor`
 
 The current password flow is:
 - `TC_PASSWORD` is also used as the Samba password
@@ -430,6 +465,29 @@ The current password flow is:
 This gives a near-enough user experience:
 - same password as the device password already entered during setup
 - without reverse-engineering Apple’s actual SMB auth backend
+
+Useful operator modes:
+
+```bash
+.venv/bin/tcapsule deploy --dry-run
+.venv/bin/tcapsule deploy --dry-run --json
+```
+
+Those are intended for users who want to inspect the exact remote actions before touching the box.
+
+## Artifact Resolution
+
+The active deployable binaries live in the repo under [bin/](bin).
+
+The host-side code does not hardcode the binary repo paths directly. Artifact path knowledge is centralized in:
+- [src/timecapsulesmb/assets/artifact-manifest.json](src/timecapsulesmb/assets/artifact-manifest.json)
+- [src/timecapsulesmb/deploy/artifact_resolver.py](src/timecapsulesmb/deploy/artifact_resolver.py)
+- [src/timecapsulesmb/deploy/artifacts.py](src/timecapsulesmb/deploy/artifacts.py)
+
+This is useful if you are hacking on the repo because:
+- deploy and doctor now resolve artifacts by logical name instead of constructing `bin/...` paths ad hoc
+- checksum validation and path resolution happen through one layer
+- future work can change where artifacts come from without rewriting deploy and doctor again
 
 ## What The Build Pipeline Produces
 
