@@ -2,12 +2,12 @@
 
 ## Supported Versions
 
-There's no official support at this time. All software is AS IS with no implied WARRANTY. If you're nice and file a github issue, I'll help you there. 
+This software is provided AS-IS with no warranty of any kind. There is no formal support program, but if you file a GitHub issue, I'm happy to help in the thread.
 
 ## Reporting a Vulnerability
 
-If you find a security vulnderability, file a Github issue without the details of the vulnerability. Then we can discuss what channel is best to communicat privately to properly disclose the problem.
+If you discover a security vulnerability, please file a GitHub issue without including specific details of the vulnerability. From there, we'll establish a private channel for responsible disclosure.
 
-I will respond within 72 hours, and triage the issue. If it's a high priority issue, I will give updates every 24 hours. 
+I will respond within 72 hours and triage the issue. For high-priority vulnerabilities, I'll provide updates every 24 hours.
 
-If the vulnerability is accepted, I will buy you a coffee.
+If the vulnerability is confirmed, I'll buy you a coffee.
