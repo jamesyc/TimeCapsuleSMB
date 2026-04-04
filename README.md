@@ -16,7 +16,7 @@ The current authentication model is straightforward. You log in as `admin`, and 
 
 ## Requirements
 
-You do not need to rebuild Samba yourself. The working binaries are already checked into this repository under [bin/](/Users/jameschang/git/TimeCapsuleSMB/bin), and the normal user workflow uses those checked-in files directly.
+You do not need to rebuild Samba yourself. The working binaries are already checked into this repository under [bin/](bin), and the normal user workflow uses those checked-in files directly.
 
 For the typical setup path, you need only:
 
@@ -160,13 +160,13 @@ Unfortunately, it was not an option to "copy one binary somewhere and call it a 
 
 That is the reason the repository contains both:
 
-- [bin/samba4/smbd](/Users/jameschang/git/TimeCapsuleSMB/bin/samba4/smbd)
-- [bin/mdns/mdns-smbd-advertiser](/Users/jameschang/git/TimeCapsuleSMB/bin/mdns/mdns-smbd-advertiser)
+- [bin/samba4/smbd](bin/samba4/smbd)
+- [bin/mdns/mdns-smbd-advertiser](bin/mdns/mdns-smbd-advertiser)
 
 and boot files such as:
 
-- [boot/samba4/rc.local](/Users/jameschang/git/TimeCapsuleSMB/boot/samba4/rc.local)
-- [boot/samba4/start-samba.sh](/Users/jameschang/git/TimeCapsuleSMB/boot/samba4/start-samba.sh)
+- [boot/samba4/rc.local](boot/samba4/rc.local)
+- [boot/samba4/start-samba.sh](boot/samba4/start-samba.sh)
 
 There are other constraints the Time Capsule places on us:  
 - The NetBSD 6 source code does not support earmv4 builds, so we need to build from NetBSD 7.
@@ -228,8 +228,7 @@ Wait a little, then run:
 
 Read:
 
-- [DETAIL.md](/Users/jameschang/git/TimeCapsuleSMB/DETAIL.md)
-- [plan/session-handoff-2026-04-03-2.md](/Users/jameschang/git/TimeCapsuleSMB/plan/session-handoff-2026-04-03-2.md)
+- [DETAIL.md](DETAIL.md)
 
 Those documents explain the engineering constraints, historical dead ends, and current implementation in much more detail.
 
@@ -245,14 +244,14 @@ Also note that the current auth model maps SMB access to `root` internally on th
 
 Most users should stop reading here.
 
-The checked-in binaries are already built. If you want to rebuild them yourself, the maintainer build flow lives under [build/](/Users/jameschang/git/TimeCapsuleSMB/build) and depends on a NetBSD VM.
+The checked-in binaries are already built. If you want to rebuild them yourself, the maintainer build flow lives under [build/](build) and depends on a NetBSD VM.
 
 The main build outputs are:
 
-- [bin/samba4/smbd](/Users/jameschang/git/TimeCapsuleSMB/bin/samba4/smbd)
-- [bin/mdns/mdns-smbd-advertiser](/Users/jameschang/git/TimeCapsuleSMB/bin/mdns/mdns-smbd-advertiser)
+- [bin/samba4/smbd](bin/samba4/smbd)
+- [bin/mdns/mdns-smbd-advertiser](bin/mdns/mdns-smbd-advertiser)
 
 If you want the actual engineering details, the right place to start is:
 
-- [DETAIL.md](/Users/jameschang/git/TimeCapsuleSMB/DETAIL.md)
-- [plan/](/Users/jameschang/git/TimeCapsuleSMB/plan)
+- [DETAIL.md](DETAIL.md)
+- [plan/](plan)

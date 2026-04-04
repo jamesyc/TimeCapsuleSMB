@@ -2,14 +2,14 @@
 
 This file is the long-form engineering reference for the current system. Most of this is AI generated summaries of my notes. 
 
-It is intentionally denser than [README.md](/Users/jameschang/git/TimeCapsuleSMB/README.md). The README is the user-facing overview. This file is for maintainers who want the actual constraints, rationale, and important implementation details in one place.
+It is intentionally denser than [README.md](README.md). The README is the user-facing overview. This file is for maintainers who want the actual constraints, rationale, and important implementation details in one place.
 
 ## Current Working State
 
 The current system works end to end on the target Apple AirPort Time Capsule.
 
 What is working now:
-- static Samba 4.3.13 built from NetBSD 7 sources
+- static Samba 4.8.x built from NetBSD 7 sources
 - static tiny `_smb._tcp` advertiser
 - boot-time runtime staging via `/mnt/Flash/rc.local`
 - direct SMB service on port `445`
@@ -34,7 +34,7 @@ Current auth model:
 
 ## Device Profile
 
-The target device facts are documented in [plan/device-profile.md](/Users/jameschang/git/TimeCapsuleSMB/plan/device-profile.md), but the important points are:
+The important target device facts are:
 
 - OS: `NetBSD 6.0`
 - arch: `evbarm`
@@ -75,7 +75,7 @@ The root filesystem is also too small to be the main runtime home.
 
 ### The HDD is large but unreliable as an execution root
 
-The internal HDD can be mounted locally and is fully usable for reads and writes. This was confirmed in [plan/disk-investigation-results.md](/Users/jameschang/git/TimeCapsuleSMB/plan/disk-investigation-results.md).
+The internal HDD can be mounted locally and is fully usable for reads and writes.
 
 However, Apple may later unmount or sleep the disk. Running `smbd` directly from `/Volumes/dk2` is therefore unsafe.
 
@@ -89,6 +89,7 @@ The actual working split is:
   - `/Volumes/dkX/samba4/smb.conf.template`
   - `/Volumes/dkX/samba4/private/smbpasswd`
   - `/Volumes/dkX/samba4/private/username.map`
+  - `/Volumes/dkX/samba4/private/xattr.tdb`
 - tiny persistent boot hook on flash:
   - `/mnt/Flash/rc.local`
   - `/mnt/Flash/start-samba.sh`
@@ -101,17 +102,13 @@ This gives:
 - safe execution from RAM
 - only tiny always-mounted files on flash
 
-## Why Samba 4.3.13
+## Why Samba 4.8
 
-The project did not land on Samba 4.3 by accident.
+The project did not land on Samba 4.8 by accident.
 
 ### Samba 3
 
 Samba 3 worked well enough to prove the device could serve files, but it had limitations and older behavior bugs, and it was not the final direction.
-
-### Samba 4.8
-
-Earlier Samba 4.8 attempts were too difficult to build and adapt for this environment.
 
 ### Samba 4.2
 
@@ -119,6 +116,24 @@ Samba 4.2 was built successfully, but it hit a real runtime bug on-device:
 - a `talloc` / `loadparm` use-after-free class issue on first client session
 
 Separately, the NetBSD 10-era toolchain path also exposed incompatible directory API behavior on this NetBSD 6 box.
+
+### Samba 4.3
+
+Samba 4.3 was an important stepping stone, but it was not enough for the current goal.
+
+It worked as a normal authenticated network share, but not as a real Time Machine target. In practice, 4.3 proved the architecture and deployment model, while 4.8 is the version that enables the full Time Machine-oriented share behavior.
+
+### Samba 4.8
+
+Samba 4.8 is the current target because it gives the project a usable Time Machine stack through `vfs_fruit`.
+
+With the current static-module build, the shipped config supports:
+- `fruit`
+- `streams_xattr`
+- `xattr_tdb`
+- `fruit:time machine = yes`
+
+That is the difference between "this works as a normal SMB share" and "this can present itself as a Time Machine target."
 
 ### NetBSD 10 build path
 
@@ -129,14 +144,15 @@ A NetBSD 10-generated static binary could execute, but a direct directory probe 
 The working result came from:
 - NetBSD 7 source tree
 - static `earmv4` build
-- Samba 4.3.13
+- Samba 4.8.x
 
 That combination:
 - builds reproducibly
 - executes correctly on the Time Capsule
 - serves files successfully
+- supports Time Machine semantics through `vfs_fruit`
 
-The important build logic is now under [build/](/Users/jameschang/git/TimeCapsuleSMB/build).
+The important build logic is now under [build/](build).
 
 ## Why We Do Not Use Apple’s Native SMB Bonjour Path
 
@@ -149,10 +165,6 @@ Apple’s stack does have a native SMB/mDNS path involving:
 - `mDNSResponder`
 - `ACPd`
 
-Relevant backups are in:
-- [plan/apple-cifs-backup](/Users/jameschang/git/TimeCapsuleSMB/plan/apple-cifs-backup)
-- [plan/apple-cifs-backup-2](/Users/jameschang/git/TimeCapsuleSMB/plan/apple-cifs-backup-2)
-
 Important findings:
 - Apple’s own `_smb._tcp` path is coupled to Apple’s file-sharing stack
 - when Apple’s stack owns that path, Finder tends to reconnect through Apple SMB/AFP rather than our Samba service
@@ -161,10 +173,11 @@ Important findings:
 So the current system deliberately does not use Apple’s SMB advertisement path.
 
 Instead it uses a separate tiny helper:
-- [bin/mdns/mdns-smbd-advertiser](/Users/jameschang/git/TimeCapsuleSMB/bin/mdns/mdns-smbd-advertiser)
+- [bin/mdns/mdns-smbd-advertiser](bin/mdns/mdns-smbd-advertiser)
 
 This helper:
 - advertises `_smb._tcp.local.`
+- can also advertise `_adisk._tcp.local.` for Time Machine when started with `--adisk-share`
 - resolves to the custom host label, by default `timecapsulesamba4.local`
 - points clients at our `smbd` on port `445`
 
@@ -173,8 +186,8 @@ This was a key design fork.
 ## Boot Flow In Detail
 
 The boot logic lives in:
-- [boot/samba4/rc.local](/Users/jameschang/git/TimeCapsuleSMB/boot/samba4/rc.local)
-- [boot/samba4/start-samba.sh](/Users/jameschang/git/TimeCapsuleSMB/boot/samba4/start-samba.sh)
+- [boot/samba4/rc.local](boot/samba4/rc.local)
+- [boot/samba4/start-samba.sh](boot/samba4/start-samba.sh)
 
 ### `rc.local`
 
@@ -196,7 +209,8 @@ This matters because:
 5. discovers the real data root by checking:
    - `ShareRoot/.com.apple.timemachine.supported`
    - `Shared/.com.apple.timemachine.supported`
-6. waits for the device IP on `bridge0`
+6. waits for the device IP on the configured network interface
+   - default: `bridge0`
 7. finds the persistent payload directory
 8. copies `smbd` and `mdns-smbd-advertiser` into `/mnt/Memory/samba4/sbin`
 9. renders `smb.conf` from the template
@@ -226,6 +240,9 @@ Current persistent auth files live on the HDD:
 - `/Volumes/dk2/samba4/private/smbpasswd`
 - `/Volumes/dk2/samba4/private/username.map`
 
+Current persistent Time Machine metadata state also lives on the HDD:
+- `/Volumes/dk2/samba4/private/xattr.tdb`
+
 Current rendered Samba config characteristics:
 - `security = user`
 - `min protocol = SMB2`
@@ -235,6 +252,13 @@ Current rendered Samba config characteristics:
 - `force user = root`
 - `force group = wheel`
 - `path = /Volumes/dk2/ShareRoot` on the tested box
+- `vfs objects = catia fruit streams_xattr xattr_tdb`
+- `fruit:resource = file`
+- `fruit:metadata = stream`
+- `fruit:time machine = yes`
+- `fruit:posix_rename = yes`
+- `streams_xattr:store_stream_type = no`
+- `xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb` on the tested box
 
 Current auth mapping:
 - `admin` maps to Unix `root`
@@ -247,14 +271,19 @@ This is intentionally pragmatic:
 - the filesystem still runs as `root`
 - it avoids the earlier non-root privilege-switch failures on this firmware
 
+Operational note:
+- the live runtime config at `/mnt/Memory/samba4/etc/smb.conf` is regenerated on each boot
+- `/mnt/Memory` is a RAM disk, so live edits there are ephemeral
+- temporary debug edits such as one-off `log level = ...` lines will disappear after reboot
+
 ## mDNS Advertiser Details
 
 The mDNS helper is:
-- [bin/mdns/mdns-smbd-advertiser](/Users/jameschang/git/TimeCapsuleSMB/bin/mdns/mdns-smbd-advertiser)
+- [bin/mdns/mdns-smbd-advertiser](bin/mdns/mdns-smbd-advertiser)
 
 It is built from:
-- [build/mdns-advertiser.c](/Users/jameschang/git/TimeCapsuleSMB/build/mdns-advertiser.c)
-- [build/mdns.sh](/Users/jameschang/git/TimeCapsuleSMB/build/mdns.sh)
+- [build/mdns-advertiser.c](build/mdns-advertiser.c)
+- [build/mdns.sh](build/mdns.sh)
 
 Important properties:
 - static NetBSD 7 `earmv4` binary
@@ -263,10 +292,12 @@ Important properties:
 
 At runtime it advertises:
 - service type: `_smb._tcp.local.`
+- optional Time Machine service type: `_adisk._tcp.local.`
 - instance name: by default `Time Capsule Samba 4`
 - host label: by default `timecapsulesamba4`
 - port: `445`
-- A record: current IPv4 from `bridge0`
+- A record: current IPv4 from the configured network interface
+  - default: `bridge0`
 
 This is now the chosen discovery path.
 
@@ -275,15 +306,15 @@ This is now the chosen discovery path.
 The intended user flow is:
 
 1. bootstrap the local host
-   - [scripts/bootstrap_host.py](/Users/jameschang/git/TimeCapsuleSMB/scripts/bootstrap_host.py)
+   - [scripts/bootstrap_host.py](scripts/bootstrap_host.py)
 2. discover the Time Capsule and enable SSH
-   - [scripts/prep_device.py](/Users/jameschang/git/TimeCapsuleSMB/scripts/prep_device.py)
+   - [scripts/prep_device.py](scripts/prep_device.py)
 3. generate local config
-   - [scripts/configure.py](/Users/jameschang/git/TimeCapsuleSMB/scripts/configure.py)
+   - [scripts/configure.py](scripts/configure.py)
 4. deploy and reboot
-   - [scripts/deploy.py](/Users/jameschang/git/TimeCapsuleSMB/scripts/deploy.py)
+   - [scripts/deploy.py](scripts/deploy.py)
 5. run local diagnostics
-   - [scripts/doctor.py](/Users/jameschang/git/TimeCapsuleSMB/scripts/doctor.py)
+   - [scripts/doctor.py](scripts/doctor.py)
 
 `configure.py` writes repo-root `.env`.
 
@@ -308,7 +339,7 @@ Current defaults:
 
 ## Doctor Script
 
-[scripts/doctor.py](/Users/jameschang/git/TimeCapsuleSMB/scripts/doctor.py) is a non-destructive local diagnostic helper.
+[scripts/doctor.py](scripts/doctor.py) is a non-destructive local diagnostic helper.
 
 It checks:
 - `.env` completeness
@@ -345,7 +376,7 @@ The normal goal is to use it as a quick health check after:
 
 ## Deploy Details
 
-[scripts/deploy.py](/Users/jameschang/git/TimeCapsuleSMB/scripts/deploy.py) currently does all of the following:
+[scripts/deploy.py](scripts/deploy.py) currently does all of the following:
 
 - loads `.env`
 - discovers the correct volume root on the Time Capsule
@@ -372,11 +403,11 @@ This gives a near-enough user experience:
 
 ## What The Build Pipeline Produces
 
-The build pipeline under [build/](/Users/jameschang/git/TimeCapsuleSMB/build) is for maintainers, not normal users.
+The build pipeline under [build/](build) is for maintainers, not normal users.
 
 Current important outputs:
-- [bin/samba4/smbd](/Users/jameschang/git/TimeCapsuleSMB/bin/samba4/smbd)
-- [bin/mdns/mdns-smbd-advertiser](/Users/jameschang/git/TimeCapsuleSMB/bin/mdns/mdns-smbd-advertiser)
+- [bin/samba4/smbd](bin/samba4/smbd)
+- [bin/mdns/mdns-smbd-advertiser](bin/mdns/mdns-smbd-advertiser)
 
 It assumes:
 - a NetBSD VM
@@ -393,9 +424,6 @@ These are the findings that matter to future maintainers.
 ### The internal disk can be mounted locally
 
 This was a major breakthrough. The Time Capsule can locally mount `/dev/dk2` with `mount_hfs` without needing a Mac to first trigger Apple sharing.
-
-See:
-- [plan/disk-investigation-results.md](/Users/jameschang/git/TimeCapsuleSMB/plan/disk-investigation-results.md)
 
 ### Running `smbd` from the HDD is a bad idea
 
@@ -481,16 +509,7 @@ That should fail with an authentication error.
 ## Files Worth Reading
 
 Short overview:
-- [README.md](/Users/jameschang/git/TimeCapsuleSMB/README.md)
-
-Most important investigation docs:
-- [plan/device-profile.md](/Users/jameschang/git/TimeCapsuleSMB/plan/device-profile.md)
-- [plan/disk-investigation-results.md](/Users/jameschang/git/TimeCapsuleSMB/plan/disk-investigation-results.md)
-- [plan/session-handoff-2026-04-03.md](/Users/jameschang/git/TimeCapsuleSMB/plan/session-handoff-2026-04-03.md)
-
-Apple CIFS / Bonjour investigation backups:
-- [plan/apple-cifs-backup](/Users/jameschang/git/TimeCapsuleSMB/plan/apple-cifs-backup)
-- [plan/apple-cifs-backup-2](/Users/jameschang/git/TimeCapsuleSMB/plan/apple-cifs-backup-2)
+- [README.md](README.md)
 
 ## Summary
 
@@ -500,6 +519,7 @@ The current system is no longer just an experiment:
 - survives reboot
 - advertises itself over Bonjour
 - authenticates as `admin`
-- serves the internal disk through Samba 4
+- serves the internal disk through Samba 4.8
+- supports Time Machine via `vfs_fruit`
 
 The main remaining “nice to have” work is polish, not core functionality.
