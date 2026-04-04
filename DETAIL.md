@@ -108,20 +108,24 @@ The project did not land on Samba 4.8 by accident.
 
 ### Samba 3
 
-Samba 3 worked well enough to prove the device could serve files, but it had limitations and older behavior bugs, and it was not the final direction.
+Samba 3.x worked well enough to prove the device could serve files, and was a small 6MB, but has issues with directory traversal with NetBSD 6. This meant `ls` would not work in the Samba share. As Samba 3.x was the first version with SMB2 support, it was rather incomplete and buggy.
+
+### Samba 4.0
+
+Tried 4.0 as it in theory had better SMB2 support than 3.x but it had the same directory traveral bug. It was significantly harder to compile than 3.x but a lot easier than 4.2-4.8, so it served well as a stepping stone in getting 4.8 to work as trying to compile 4.8 from scratch at first drove me crazy.
 
 ### Samba 4.2
 
-Samba 4.2 was built successfully, but it hit a real runtime bug on-device:
+Samba 4.2 was built successfully, but it hit a runtime bug on-device:
 - a `talloc` / `loadparm` use-after-free class issue on first client session
 
-Separately, the NetBSD 10-era toolchain path also exposed incompatible directory API behavior on this NetBSD 6 box.
+Separately, the NetBSD 10-era toolchain path also exposed incompatible directory API behavior on the NetBSD 6 box.
 
 ### Samba 4.3
 
-Samba 4.3 was an important stepping stone, but it was not enough for the current goal.
+Samba 4.3 was an important stepping stone, but it was not enough. It did not run into any bugs as a network file share. It worked as a normal authenticated network share, but not as a real Time Machine target. 
 
-It worked as a normal authenticated network share, but not as a real Time Machine target. In practice, 4.3 proved the architecture and deployment model, while 4.8 is the version that enables the full Time Machine-oriented share behavior.
+In practice, 4.3 proved the architecture and deployment model, while 4.8 is the version that enables the full Time Machine-oriented share behavior.
 
 ### Samba 4.8
 
@@ -133,11 +137,13 @@ With the current static-module build, the shipped config supports:
 - `xattr_tdb`
 - `fruit:time machine = yes`
 
-That is the difference between "this works as a normal SMB share" and "this can present itself as a Time Machine target."
+## NetBSD 6 build path
+
+As the Time Capsule ran NetBSD 6, intial attempts used the NetBSD 6 source code to attempt to build. This failed terribly, as it turns out the NetBSD 6 source did not support earmv4 build output. I presume Apple used some custom toolchain. 
 
 ### NetBSD 10 build path
 
-A NetBSD 10-generated static binary could execute, but a direct directory probe confirmed that important directory APIs failed on the Time Capsule. That made the NetBSD 10 route unacceptable for full Samba serving.
+My VM was running NetBSD 10. A NetBSD 10-generated static binary could execute, and it worked fine for Samba 3.x, but later direct directory probes confirmed that important directory APIs failed on the Time Capsule. That made the NetBSD 10 route unacceptable for full Samba serving.
 
 ### NetBSD 7 build path
 
@@ -180,8 +186,6 @@ This helper:
 - can also advertise `_adisk._tcp.local.` for Time Machine when started with `--adisk-share`
 - resolves to the custom host label, by default `timecapsulesamba4.local`
 - points clients at our `smbd` on port `445`
-
-This was a key design fork.
 
 ## Boot Flow In Detail
 
