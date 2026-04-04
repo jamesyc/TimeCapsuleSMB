@@ -1,27 +1,18 @@
 # TimeCapsuleSMB
 
-This project exists for one simple reason: old Apple AirPort Time Capsules are still perfectly usable pieces of hardware, but Apple left them behind in exactly the part that matters most, which is file sharing that still works cleanly with a modern Mac.
+Apple AirPort Time Capsules are still perfectly usable pieces of hardware, but they only support AFP and SMB1. Apple has removed SMB1 support from MacOS a long time ago, and AFP support is removed for MacOS 27.
 
-The original Time Capsule experience depended heavily on AFP and older SMB behavior. That was reasonable when Apple still cared about AFP and when SMB1 was still tolerated everywhere. That is not the world we live in anymore. AFP is effectively dead for normal users, SMB1 is old and increasingly unwelcome, and the result is that a Time Capsule which used to feel integrated and obvious now feels brittle, outdated, or simply broken.
+This repo configures a modern Samba setup that runs directly on the Time Capsule itself. The goal is that a Time Capsule can once again show up as a normal SMB server on your network, and your Mac can connect to it as a network share.
 
-What this repo does is replace that old sharing path with a modern Samba setup that runs directly on the Time Capsule itself. The result is that your Time Capsule can once again show up as a normal SMB server on your network, and your Mac can connect to it in the way you would expect from any other NAS.
-
-The current default result is:
-
-- SMB service name: `Time Capsule Samba 4`
-- SMB username: `admin`
-- share name: `Data`
-- Finder address: `smb://timecapsulesamba4.local/Data`
-
-If you want the long-form engineering background, design decisions, and implementation details, read [DETAIL.md](/Users/jameschang/git/TimeCapsuleSMB/DETAIL.md). This README is intentionally aimed at the person who mostly wants the thing to work.
+If you want the long-form engineering background, design decisions, and implementation details, read [DETAIL.md](/Users/jameschang/git/TimeCapsuleSMB/DETAIL.md).
 
 ## What You Should Expect
 
-If the setup completes successfully, your Time Capsule will boot its own Samba 4 server automatically, advertise itself over Bonjour, and accept authenticated SMB connections from macOS. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy file-sharing stack.
+If the setup completes successfully, your Time Capsule will boot its own Samba 4 server automatically, advertise itself over Bonjour, and accept authenticated SMB connections from macOS. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack.
 
-The current authentication model is straightforward. You log in as `admin`, and the password is the same password you enter during setup when the scripts ask for the Time Capsule password. Guest access is disabled. That means the box behaves much more like a normal SMB appliance and much less like the vague old “maybe Finder will discover it, maybe it will not” experience that many people are used to from aging Apple hardware.
+The current authentication model is straightforward. You log in as `admin`, and the Samba password is the same password you enter during setup when the scripts ask for the Time Capsule password. Guest access is disabled.
 
-## What You Need
+## Requirements
 
 You do not need to rebuild Samba yourself. The working binaries are already checked into this repository under [bin/](/Users/jameschang/git/TimeCapsuleSMB/bin), and the normal user workflow uses those checked-in files directly.
 
@@ -29,7 +20,7 @@ For the typical setup path, you need only:
 
 - a Mac on the same local network as the Time Capsule
 - the Time Capsule password
-- Python 3 on your Mac
+- Python 3 installed on your Mac. Homebrew is recommended.
 
 That is it. The build system exists in this repository because it was necessary to get the binaries in the first place, but most users should ignore that part entirely.
 
@@ -43,8 +34,6 @@ From the root of this repository, the normal flow is:
 4. `.venv/bin/python scripts/deploy.py`
 5. `.venv/bin/python scripts/doctor.py`
 
-If you already know what you are doing, that may be enough. If not, the sections below explain each step in plain English.
-
 ## Step 1: Prepare Your Mac
 
 Run:
@@ -53,9 +42,7 @@ Run:
 python3 scripts/bootstrap_host.py
 ```
 
-This script prepares the local Python environment by setting it up in this folder. It creates the virtual environments that the rest of the workflow expects and installs the Python packages needed for device discovery, AirPyrt integration, deployment, and verification. The point of this step is simply to make the rest of the workflow predictable, so that you are not trying to guess which global Python or random package version your machine happens to have.
-
-If this step fails, stop there and fix that first. There is no point trying to debug Time Capsule behavior when the local host environment itself is incomplete.
+This script prepares the local Python environment by setting it up in this folder. In the folder, it creates the virtual environments that the rest of the workflow expects and installs the Python packages needed for device discovery, AirPyrt integration, deployment, and verification. 
 
 ## Step 2: Find The Time Capsule And Enable SSH
 
@@ -81,9 +68,9 @@ Run:
 .venv/bin/python scripts/configure.py
 ```
 
-This will write a local `.env` file in the repository. It is your configuration for the target Time Capsule.
+This will write a local `.env` file in the repository, and acts as the configuration for the target Time Capsule.
 
-For most users, the defaults are good enough. If the script offers a value and you do not have a reason to change it, ** just pressing Enter is usually the correct choice**.
+For typical users, most of the defaults are good enough. If the script offers a value and you do not have a reason to change it, **just pressing Enter is usually the correct choice**.
 
 The most important defaults are:
 
@@ -97,7 +84,7 @@ The password you enter here is important. It becomes the password used for the S
 - username: `admin`
 - password: the same Time Capsule password you entered during configuration
 
-That because Samba is not magically using Apple’s internal password backend; unfortunately, using Apple's password system is not possible. It is because this this deliberately reuses the same password value so that the user experience is simpler and less confusing.
+Samba does not magically use Apple’s internal password backend; unfortunately, using Apple's password system is not possible. We deliberately reuse the same password value so that the user experience is simpler and less confusing.
 
 ## Step 4: Deploy It
 
@@ -107,9 +94,9 @@ Run:
 .venv/bin/python scripts/deploy.py
 ```
 
-This is the actual installation step. It copies the checked-in binaries and boot files to the Time Capsule, sets up the Samba password files, installs the boot hook, and reboots the device so the new runtime comes up cleanly.
+This is the installation step. It copies the checked-in binaries and boot files to the Time Capsule, sets up the Samba password files, installs the boot hook, and reboots the device so the new runtime comes up cleanly.
 
-By default, `deploy.py` does the sensible thing, which is to reboot the Time Capsule after deployment and then wait for it to come back. If you want to skip the reboot confirmation prompt, you can run:
+By default, `deploy.py` reboots the Time Capsule after deployment and then wait for it to come back. If you want to skip the reboot confirmation prompt, you can run:
 
 ```bash
 .venv/bin/python scripts/deploy.py --yes
@@ -199,6 +186,13 @@ If you are just using the project rather than maintaining it, these are the file
   Checks whether the result is actually healthy.
 
 ## Troubleshooting
+
+The current default result is:
+
+- SMB service name: `Time Capsule Samba 4`
+- SMB username: `admin`
+- share name: `Data`
+- Finder address: `smb://timecapsulesamba4.local/Data`
 
 ### The Time Capsule Does Not Show Up In Finder
 
