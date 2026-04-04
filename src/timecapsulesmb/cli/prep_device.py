@@ -1,121 +1,41 @@
-#!/usr/bin/env python3
-"""
-Prepare an Apple Time Capsule for later deployment work.
-
-This script is intentionally narrow in scope:
-- discover Time Capsules via mDNS/Bonjour
-- let the user select one
-- enable SSH via AirPyrt if needed
-- optionally disable SSH again if it is already enabled
-
-It does not deploy Samba or edit boot files.
-"""
-
 from __future__ import annotations
 
-import getpass
 import argparse
-import socket
+import getpass
 import sys
 import time
-from contextlib import closing
-from pathlib import Path
-from typing import Iterable, List, Optional, TYPE_CHECKING
+from typing import Iterable
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-if TYPE_CHECKING:
-    from discover_timecapsules import Discovered
+from timecapsulesmb.discovery.bonjour import discover, prefer_routable_ipv4, preferred_host
+from timecapsulesmb.integrations.airpyrt import disable_ssh, enable_ssh
+from timecapsulesmb.transport.local import tcp_open
 
 
-def load_runtime_dependencies():
-    try:
-        from discover_timecapsules import Discovered, discover
-    except Exception as e:
-        print(
-            "Failed to import discovery module.\n"
-            "Run 'python3 scripts/bootstrap_host.py' first, or use 'make install'.\n",
-            e,
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    try:
-        from ssh.enable_ssh import enable_ssh
-        from ssh.disable_ssh import disable_ssh
-    except Exception as e:
-        print(
-            "Failed to import SSH helper modules.\n"
-            "Run 'python3 scripts/bootstrap_host.py' first, or use 'make install'.\n",
-            e,
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    return Discovered, discover, enable_ssh, disable_ssh
-
-
-def preferred_host(rec: "Discovered") -> str:
-    if rec.hostname:
-        return rec.hostname
-    if rec.ipv4:
-        return rec.ipv4[0]
-    if rec.ipv6:
-        return rec.ipv6[0]
-    return ""
-
-
-def prefer_routable_ipv4(rec: "Discovered") -> str:
-    for ip in rec.ipv4:
-        if not ip.startswith("169.254."):
-            return ip
-    return rec.ipv4[0] if rec.ipv4 else ""
-
-
-def list_devices(records: List["Discovered"]) -> None:
+def list_devices(records) -> None:
     print("Found devices:")
-    for i, r in enumerate(records, start=1):
-        pref = preferred_host(r)
-        ipv4 = ",".join(r.ipv4) if r.ipv4 else "-"
-        print(f"  {i}. {r.name} | host: {pref} | IPv4: {ipv4}")
+    for i, record in enumerate(records, start=1):
+        pref = preferred_host(record)
+        ipv4 = ",".join(record.ipv4) if record.ipv4 else "-"
+        print(f"  {i}. {record.name} | host: {pref} | IPv4: {ipv4}")
 
 
-def choose_device(records: List["Discovered"]) -> Optional["Discovered"]:
+def choose_device(records):
     while True:
         try:
-            s = input("Select a device by number (q to quit): ").strip()
+            raw = input("Select a device by number (q to quit): ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             return None
-        if s.lower() in {"q", "quit", "exit"}:
+        if raw.lower() in {"q", "quit", "exit"}:
             return None
-        if not s.isdigit():
+        if not raw.isdigit():
             print("Please enter a valid number.")
             continue
-        idx = int(s)
+        idx = int(raw)
         if not (1 <= idx <= len(records)):
             print("Out of range.")
             continue
         return records[idx - 1]
-
-
-def tcp_open(host: str, port: int, timeout: float = 2.0) -> bool:
-    try:
-        for family, socktype, proto, _, sockaddr in socket.getaddrinfo(
-            host, port, type=socket.SOCK_STREAM
-        ):
-            with closing(socket.socket(family, socktype, proto)) as s:
-                s.settimeout(timeout)
-                try:
-                    s.connect(sockaddr)
-                    return True
-                except (socket.timeout, ConnectionRefusedError, OSError):
-                    continue
-    except Exception:
-        return False
-    return False
 
 
 def wait_for_ssh(
@@ -152,22 +72,17 @@ def wait_for_device_up(
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         time.sleep(interval_seconds)
-        if any(tcp_open(host, p) for p in probe_ports):
+        if any(tcp_open(host, port) for port in probe_ports):
             return True
     return False
 
 
-def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Discover a Time Capsule and enable or disable SSH via AirPyrt."
-    )
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Discover a Time Capsule and enable or disable SSH via AirPyrt.")
     parser.parse_args(argv)
-
-    _, discover, enable_ssh, disable_ssh = load_runtime_dependencies()
 
     print("Discovering Time Capsules on the local network...")
     records = discover(timeout=5.0)
-
     if not records:
         print("No Time Capsules discovered. Ensure you're on the same network and try again.")
         return 1
@@ -246,7 +161,3 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     print("SSH is configured. You can connect as 'root' using the AirPort admin password.")
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

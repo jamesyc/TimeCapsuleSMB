@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
-from typing import Iterable, List, Optional, Tuple
-import re
+from typing import Iterable
 
 
-def run(cmd: List[str], check: bool = True, capture: bool = True) -> subprocess.CompletedProcess:
+def run(cmd: list[str], *, check: bool = True, capture: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         cmd,
         check=check,
@@ -18,35 +18,29 @@ def run(cmd: List[str], check: bool = True, capture: bool = True) -> subprocess.
     )
 
 
-def acp_run_check(cmd: List[str]) -> str:
-    """Run an AirPyrt command, detect in-output error codes, and raise.
-
-    Some AirPyrt (acp) invocations print "error code: -0x.." but still exit 0
-    when authentication fails. This parses stdout to catch that case.
-
-    Returns captured stdout on success.
-    """
+def acp_run_check(cmd: list[str]) -> str:
     proc = run(cmd, check=False, capture=True)
     out = proc.stdout or ""
     if proc.returncode != 0:
         raise RuntimeError(out.strip() or f"Command failed with rc={proc.returncode}")
-    low = out.lower()
-    m = re.search(r"error[_ ]code\s*:?[\t ]*(-?0x[0-9a-f]+)", low)
-    if m and m.group(1).startswith("-0x"):
-        raise RuntimeError(f"AirPyrt reported error_code {m.group(1)} (likely wrong admin password). Output: {out.strip()}")
+    lowered = out.lower()
+    match = re.search(r"error[_ ]code\s*:?[\t ]*(-?0x[0-9a-f]+)", lowered)
+    if match and match.group(1).startswith("-0x"):
+        raise RuntimeError(
+            f"AirPyrt reported error_code {match.group(1)} (likely wrong admin password). Output: {out.strip()}"
+        )
     return out
 
 
 def acp_available(py_exe: str) -> bool:
     try:
-        # Capture output to avoid printing to stdout during interpreter probes
         run([py_exe, "-c", "import acp; print(1)"], capture=True)
         return True
     except Exception:
         return False
 
 
-def candidate_interpreters() -> List[str]:
+def candidate_interpreters() -> list[str]:
     env_py = os.environ.get("AIRPYRT_PY")
     if env_py:
         return [env_py]
@@ -54,7 +48,7 @@ def candidate_interpreters() -> List[str]:
     return [local_env, "python2", "python2.7", "python"]
 
 
-def find_airpyrt_python(candidates: Optional[Iterable[str]] = None) -> Optional[str]:
+def find_airpyrt_python(candidates: Iterable[str] | None = None) -> str | None:
     for py in (candidates or candidate_interpreters()):
         try:
             if acp_available(py):
@@ -64,11 +58,11 @@ def find_airpyrt_python(candidates: Optional[Iterable[str]] = None) -> Optional[
     return None
 
 
-def find_acp_executable() -> Optional[str]:
+def find_acp_executable() -> str | None:
     return shutil.which("acp")
 
 
-def ensure_airpyrt_available(python_candidates: Optional[Iterable[str]] = None) -> tuple[Optional[str], Optional[str]]:
+def ensure_airpyrt_available(python_candidates: Iterable[str] | None = None) -> tuple[str | None, str | None]:
     acp_exec = find_acp_executable()
     py = find_airpyrt_python(python_candidates)
     if not acp_exec and not py:
@@ -76,17 +70,20 @@ def ensure_airpyrt_available(python_candidates: Optional[Iterable[str]] = None) 
             "AirPyrt (acp) not found. Install per https://github.com/samuelthomas2774/airport/wiki/AirPyrt#installation\n"
             "Example: git clone https://github.com/x56/airpyrt-tools.git && cd airpyrt-tools && python2 setup.py install --user\n"
             "Then ensure 'acp' is on PATH or set AIRPYRT_PY to that interpreter.\n"
-            "For this repo, the supported path is: python3 scripts/bootstrap_host.py"
+            "For this repo, the supported path is: ./tcapsule bootstrap"
         )
     return acp_exec, py
 
 
-def set_dbug(host: str, password: str, value_hex: str, *, python_candidates: Optional[Iterable[str]] = None, verbose: bool = True) -> None:
+def _acp_command(host: str, password: str, *args: str, python_candidates: Iterable[str] | None = None) -> list[str]:
     acp_exec, py = ensure_airpyrt_available(python_candidates)
     if acp_exec:
-        cmd = [acp_exec, "-t", host, "-p", password, "--setprop", "dbug", value_hex]
-    else:
-        cmd = [py, "-B", "-m", "acp", "-t", host, "-p", password, "--setprop", "dbug", value_hex]
+        return [acp_exec, "-t", host, "-p", password, *args]
+    return [py, "-B", "-m", "acp", "-t", host, "-p", password, *args]
+
+
+def set_dbug(host: str, password: str, value_hex: str, *, python_candidates: Iterable[str] | None = None, verbose: bool = True) -> None:
+    cmd = _acp_command(host, password, "--setprop", "dbug", value_hex, python_candidates=python_candidates)
     if verbose:
         print("Running:", " ".join(shlex.quote(x) for x in cmd))
     try:
@@ -95,12 +92,8 @@ def set_dbug(host: str, password: str, value_hex: str, *, python_candidates: Opt
         raise RuntimeError(f"Failed to set dbug={value_hex} via AirPyrt. Output: {e}")
 
 
-def reboot(host: str, password: str, *, python_candidates: Optional[Iterable[str]] = None, verbose: bool = True) -> None:
-    acp_exec, py = ensure_airpyrt_available(python_candidates)
-    if acp_exec:
-        cmd = [acp_exec, "-t", host, "-p", password, "--reboot"]
-    else:
-        cmd = [py, "-B", "-m", "acp", "-t", host, "-p", password, "--reboot"]
+def reboot(host: str, password: str, *, python_candidates: Iterable[str] | None = None, verbose: bool = True) -> None:
+    cmd = _acp_command(host, password, "--reboot", python_candidates=python_candidates)
     if verbose:
         print("Rebooting device:", " ".join(shlex.quote(x) for x in cmd))
     try:
@@ -109,19 +102,12 @@ def reboot(host: str, password: str, *, python_candidates: Optional[Iterable[str
         raise RuntimeError(f"Reboot command failed. Output: {e}")
 
 
-# --- SSH helper (run commands on the device) ---
-
-def ssh_run_command(host: str, password: str, command: str, *, timeout: int = 30, verbose: bool = True) -> Tuple[int, str]:
-    """Run a shell command on the device via system ssh using pexpect.
-
-    Uses password auth for user 'root', allows legacy DSA host keys, and disables
-    strict host key checking. Returns (exit_code, combined_output).
-    """
+def ssh_run_command(host: str, password: str, command: str, *, timeout: int = 30, verbose: bool = True) -> tuple[int, str]:
     try:
         import pexpect
     except Exception:
         raise RuntimeError(
-            "pexpect not available. Run 'python3 scripts/bootstrap_host.py' first, or use 'make install'."
+            "pexpect not available. Run './tcapsule bootstrap' first, or use 'make install'."
         )
 
     ssh_cmd = [
@@ -136,9 +122,8 @@ def ssh_run_command(host: str, password: str, command: str, *, timeout: int = 30
     if verbose:
         print("SSH exec:", " ".join(shlex.quote(x) for x in ssh_cmd))
 
-    import pexpect
     child = pexpect.spawn(ssh_cmd[0], ssh_cmd[1:], encoding="utf-8", timeout=timeout)
-    out_chunks: List[str] = []
+    out_chunks: list[str] = []
     try:
         i = child.expect(["[Pp]assword:", pexpect.EOF, pexpect.TIMEOUT], timeout=timeout)
         if i == 0:
@@ -154,4 +139,29 @@ def ssh_run_command(host: str, password: str, command: str, *, timeout: int = 30
     return rc, "".join(out_chunks)
 
 
-    
+def enable_ssh(host: str, password: str, *, reboot_device: bool = True, python_candidates: Iterable[str] | None = None, verbose: bool = True) -> None:
+    set_dbug(host, password, "0x3000", python_candidates=python_candidates, verbose=verbose)
+    if reboot_device:
+        reboot(host, password, python_candidates=python_candidates, verbose=verbose)
+
+
+def disable_ssh(host: str, password: str, *, reboot_device: bool = True, python_candidates: Iterable[str] | None = None, verbose: bool = True) -> None:
+    cmds = [
+        "acp remove dbug",
+        "/usr/sbin/acp remove dbug",
+        "/usr/bin/acp remove dbug",
+    ]
+    last_err: tuple[int, str] | None = None
+    for command in cmds:
+        rc, out = ssh_run_command(host, password, command, verbose=verbose)
+        if rc == 0:
+            if verbose:
+                print("Removed 'dbug' via:", command)
+            break
+        last_err = (rc, out)
+    else:
+        code, out = last_err or (1, "unknown error")
+        raise RuntimeError(f"Failed to remove 'dbug' via on-device acp (rc={code}). Output: {out}")
+
+    if reboot_device:
+        reboot(host, password, python_candidates=python_candidates, verbose=verbose)

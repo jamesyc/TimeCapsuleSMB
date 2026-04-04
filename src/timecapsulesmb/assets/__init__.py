@@ -1,0 +1,1 @@
+"""Packaged assets for TimeCapsuleSMB."""
