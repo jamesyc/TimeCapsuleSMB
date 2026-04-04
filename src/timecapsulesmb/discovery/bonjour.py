@@ -238,6 +238,12 @@ def print_table(records: list[Discovered]) -> None:
         print(fmt(row))
 
 
+def discovery_record_to_jsonable(record: Discovered) -> dict[str, object]:
+    data = asdict(record)
+    data["services"] = sorted(record.services)
+    return data
+
+
 def run_cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Discover Apple Time Capsules via mDNS/Bonjour")
     parser.add_argument("--timeout", type=float, default=5.0, help="Browse time in seconds (default: 5)")
@@ -247,7 +253,7 @@ def run_cli(argv: list[str] | None = None) -> int:
 
     records = discover(timeout=args.timeout)
     if args.json:
-        print(json.dumps([asdict(record) for record in records], indent=2, sort_keys=True))
+        print(json.dumps([discovery_record_to_jsonable(record) for record in records], indent=2, sort_keys=True))
         return 0
 
     print_table(records)

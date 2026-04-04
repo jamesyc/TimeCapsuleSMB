@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from timecapsulesmb.checks.doctor import run_doctor_checks
@@ -20,6 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skip-ssh", action="store_true", help="Skip SSH reachability checks")
     parser.add_argument("--skip-bonjour", action="store_true", help="Skip Bonjour browse/resolve checks")
     parser.add_argument("--skip-smb", action="store_true", help="Skip authenticated SMB listing check")
+    parser.add_argument("--json", action="store_true", help="Output doctor results as JSON")
     args = parser.parse_args(argv)
 
     values = parse_env_values(ENV_PATH)
@@ -31,6 +33,14 @@ def main(argv: list[str] | None = None) -> int:
         skip_bonjour=args.skip_bonjour,
         skip_smb=args.skip_smb,
     )
+
+    if args.json:
+        print(json.dumps({
+            "fatal": fatal,
+            "results": [{"status": result.status, "message": result.message} for result in results],
+            "summary": "doctor found one or more fatal problems." if fatal else "doctor checks passed.",
+        }, indent=2, sort_keys=True))
+        return 1 if fatal else 0
 
     for result in results:
         print_result(result)

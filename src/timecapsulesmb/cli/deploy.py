@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
 import tempfile
 from pathlib import Path
 
 from timecapsulesmb.core.config import ENV_PATH, extract_host, parse_env_values
 from timecapsulesmb.deploy.artifacts import validate_artifacts
+from timecapsulesmb.deploy.dry_run import deployment_plan_to_jsonable, format_deployment_plan
 from timecapsulesmb.deploy.executor import (
     remote_install_auth_files,
     remote_install_permissions,
@@ -37,7 +39,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-reboot", action="store_true", help="Do not reboot after deployment")
     parser.add_argument("--yes", action="store_true", help="Do not prompt before reboot")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without making changes")
+    parser.add_argument("--json", action="store_true", help="Output the dry-run deployment plan as JSON")
     args = parser.parse_args(argv)
+
+    if args.json and not args.dry_run:
+        parser.error("--json currently requires --dry-run")
 
     values = parse_env_values(ENV_PATH)
     host = require(values, "TC_HOST")
@@ -55,13 +61,17 @@ def main(argv: list[str] | None = None) -> int:
 
     template_bundle = build_template_bundle(values)
 
-    if args.dry_run:
-        print(f"Would deploy {smbd_path} to {host}")
-        return 0
-
     volume_root = discover_volume_root(host, password, ssh_opts)
     device_paths = build_device_paths(volume_root, values["TC_PAYLOAD_DIR_NAME"])
     plan = build_deployment_plan(host, device_paths, smbd_path, mdns_path)
+
+    if args.dry_run:
+        if args.json:
+            print(json.dumps(deployment_plan_to_jsonable(plan), indent=2, sort_keys=True))
+        else:
+            print(format_deployment_plan(plan))
+        return 0
+
     remote_prepare_dirs(host, password, ssh_opts, plan.payload_dir)
 
     with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp:
