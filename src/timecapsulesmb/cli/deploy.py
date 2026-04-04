@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 
 from timecapsulesmb.core.config import ENV_PATH, extract_host, parse_env_values
+from timecapsulesmb.deploy.artifact_resolver import resolve_required_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
 from timecapsulesmb.deploy.dry_run import deployment_plan_to_jsonable, format_deployment_plan
 from timecapsulesmb.deploy.executor import (
@@ -23,8 +24,6 @@ from timecapsulesmb.transport.ssh import run_ssh
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-BIN_DIR = REPO_ROOT / "bin" / "samba4"
-MDNS_BIN_DIR = REPO_ROOT / "bin" / "mdns"
 
 
 def require(values: dict[str, str], key: str) -> str:
@@ -52,12 +51,13 @@ def main(argv: list[str] | None = None) -> int:
         password = getpass.getpass("Time Capsule root password: ")
     ssh_opts = values["TC_SSH_OPTS"]
 
-    smbd_path = BIN_DIR / "smbd"
-    mdns_path = MDNS_BIN_DIR / "mdns-smbd-advertiser"
     artifact_results = validate_artifacts(REPO_ROOT)
     failures = [message for _, ok, message in artifact_results if not ok]
     if failures:
         raise SystemExit("; ".join(failures))
+    resolved_artifacts = resolve_required_artifacts(REPO_ROOT, ["smbd", "mdns-smbd-advertiser"])
+    smbd_path = resolved_artifacts["smbd"].absolute_path
+    mdns_path = resolved_artifacts["mdns-smbd-advertiser"].absolute_path
 
     template_bundle = build_template_bundle(values)
 
