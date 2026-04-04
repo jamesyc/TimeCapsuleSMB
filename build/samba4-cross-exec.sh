@@ -12,24 +12,33 @@ quote_arg() {
     printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
 
-LOCAL_BIN=$1
+LOCAL_CMD=$1
 shift
 
-REMOTE_DIR="/tmp/tc-samba4-probes"
-REMOTE_BIN="$REMOTE_DIR/$(basename "$LOCAL_BIN").$$"
-REMOTE_CMD=$(quote_arg "$REMOTE_BIN")
+if [ -f "$LOCAL_CMD" ]; then
+    REMOTE_DIR="/tmp/tc-samba4-probes"
+    REMOTE_BIN="$REMOTE_DIR/$(basename "$LOCAL_CMD").$$"
+    REMOTE_CMD=$(quote_arg "$REMOTE_BIN")
 
+    for arg in "$@"; do
+        REMOTE_CMD="$REMOTE_CMD $(quote_arg "$arg")"
+    done
+
+    tc_ssh "$TC_HOST" "mkdir -p \"$REMOTE_DIR\""
+    cat "$LOCAL_CMD" | tc_ssh "$TC_HOST" "cat > \"$REMOTE_BIN\""
+
+    status=0
+    if ! tc_ssh "$TC_HOST" "chmod +x \"$REMOTE_BIN\" && exec $REMOTE_CMD"; then
+        status=$?
+    fi
+
+    tc_ssh "$TC_HOST" "rm -f \"$REMOTE_BIN\"" >/dev/null 2>&1 || true
+    exit "$status"
+fi
+
+REMOTE_CMD=$(quote_arg "$LOCAL_CMD")
 for arg in "$@"; do
     REMOTE_CMD="$REMOTE_CMD $(quote_arg "$arg")"
 done
 
-tc_ssh "$TC_HOST" "mkdir -p \"$REMOTE_DIR\""
-tc_scp "$LOCAL_BIN" "$TC_HOST:$REMOTE_BIN" >/dev/null
-
-status=0
-if ! tc_ssh "$TC_HOST" "chmod +x \"$REMOTE_BIN\" && exec $REMOTE_CMD"; then
-    status=$?
-fi
-
-tc_ssh "$TC_HOST" "rm -f \"$REMOTE_BIN\"" >/dev/null 2>&1 || true
-exit "$status"
+tc_ssh "$TC_HOST" "exec $REMOTE_CMD"
