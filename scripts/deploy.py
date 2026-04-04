@@ -289,7 +289,7 @@ def remote_prepare_dirs(host: str, password: str, ssh_opts: str, payload_dir: st
 def remote_install_permissions(host: str, password: str, ssh_opts: str, payload_dir: str) -> None:
     private_dir = f"{payload_dir}/private"
     cmd = (
-        "chmod 755 /mnt/Flash/rc.local /mnt/Flash/start-samba.sh /mnt/Flash/dfree.sh && "
+        "chmod 755 /mnt/Flash/rc.local /mnt/Flash/start-samba.sh /mnt/Flash/watchdog.sh /mnt/Flash/dfree.sh && "
         f"chmod 700 {shlex.quote(private_dir)} && "
         f"chmod 600 {shlex.quote(private_dir + '/smbpasswd')} {shlex.quote(private_dir + '/username.map')}"
     )
@@ -457,6 +457,13 @@ def main(argv: list[str] | None = None) -> int:
         "__MDNS_HOST_LABEL__": shell_quote(values["TC_MDNS_HOST_LABEL"]),
     }
 
+    watchdog_replacements = {
+        "__SMB_SHARE_NAME__": shell_quote(values["TC_SHARE_NAME"]),
+        "__NET_IFACE__": shell_quote(values["TC_NET_IFACE"]),
+        "__MDNS_INSTANCE_NAME__": shell_quote(values["TC_MDNS_INSTANCE_NAME"]),
+        "__MDNS_HOST_LABEL__": shell_quote(values["TC_MDNS_HOST_LABEL"]),
+    }
+
     smbconf_replacements = {
         "__PAYLOAD_DIR_NAME__": values["TC_PAYLOAD_DIR_NAME"],
         "__SMB_SHARE_NAME__": values["TC_SHARE_NAME"],
@@ -476,14 +483,17 @@ def main(argv: list[str] | None = None) -> int:
     with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp:
         tmpdir = Path(tmp)
         rendered_start = tmpdir / "start-samba.sh"
+        rendered_watchdog = tmpdir / "watchdog.sh"
         rendered_smbconf = tmpdir / "smb.conf.template"
         rendered_start.write_text(render_template(BOOT_DIR / "start-samba.sh", start_script_replacements))
+        rendered_watchdog.write_text(render_template(BOOT_DIR / "watchdog.sh", watchdog_replacements))
         rendered_smbconf.write_text(render_template(BOOT_DIR / "smb.conf.template", smbconf_replacements))
 
         run_scp(host, password, ssh_opts, smbd_path, f"{payload_dir}/smbd")
         run_scp(host, password, ssh_opts, mdns_path, f"{payload_dir}/mdns-smbd-advertiser")
         run_scp(host, password, ssh_opts, BOOT_DIR / "rc.local", "/mnt/Flash/rc.local")
         run_scp(host, password, ssh_opts, rendered_start, "/mnt/Flash/start-samba.sh")
+        run_scp(host, password, ssh_opts, rendered_watchdog, "/mnt/Flash/watchdog.sh")
         run_scp(host, password, ssh_opts, BOOT_DIR / "dfree.sh", "/mnt/Flash/dfree.sh")
         run_scp(host, password, ssh_opts, rendered_smbconf, f"{payload_dir}/smb.conf.template")
 

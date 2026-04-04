@@ -10,8 +10,9 @@ The current system works end to end on the target Apple AirPort Time Capsule.
 
 What is working now:
 - static Samba 4.8.x built from NetBSD 7 sources
-- static tiny `_smb._tcp` advertiser
+- static tiny SMB / Time Machine mDNS advertiser
 - boot-time runtime staging via `/mnt/Flash/rc.local`
+- boot-time watchdog for `smbd` and the mDNS helper
 - direct SMB service on port `445`
 - Bonjour advertisement under a separate service name
 - authenticated SMB access using:
@@ -93,6 +94,7 @@ The actual working split is:
 - tiny persistent boot hook on flash:
   - `/mnt/Flash/rc.local`
   - `/mnt/Flash/start-samba.sh`
+  - `/mnt/Flash/watchdog.sh`
   - `/mnt/Flash/dfree.sh`
 - transient runtime on RAM disk:
   - `/mnt/Memory/samba4`
@@ -192,10 +194,11 @@ This helper:
 The boot logic lives in:
 - [boot/samba4/rc.local](boot/samba4/rc.local)
 - [boot/samba4/start-samba.sh](boot/samba4/start-samba.sh)
+- [boot/samba4/watchdog.sh](boot/samba4/watchdog.sh)
 
 ### `rc.local`
 
-`rc.local` is intentionally tiny. It just backgrounds `start-samba.sh`.
+`rc.local` is intentionally tiny. It just backgrounds `start-samba.sh` and `watchdog.sh`.
 
 This matters because:
 - boot ordering is messy
@@ -229,6 +232,26 @@ Important bug lessons from getting this stable:
 - the script must use `-b` for block devices, not `-c`
 - it cannot call non-existent utilities like `dirname`
 - it must tolerate a long delay before the disk appears
+
+### `watchdog.sh`
+
+`watchdog.sh` is a simple long-running supervisor launched at boot from flash.
+
+Current behavior:
+- polls every `300` seconds
+- if `smbd` is missing, starts it again
+- if `mdns-smbd-advertiser` is missing, starts it again
+
+This is intentionally simple:
+- SMB transfers are not interrupted because `smbd` is only restarted when absent
+- the mDNS helper is also only restarted when absent
+
+The watchdog log is written to:
+- `/mnt/Memory/samba4/var/watchdog.log`
+
+Important implementation detail:
+- on this NetBSD firmware, `pkill` matches the truncated process name `mdns-smbd-advert`, not the full `mdns-smbd-advertiser`
+- the watchdog therefore uses the truncated process name for liveness checks and restarts
 
 ## SMB Runtime Layout
 
@@ -279,6 +302,7 @@ Operational note:
 - the live runtime config at `/mnt/Memory/samba4/etc/smb.conf` is regenerated on each boot
 - `/mnt/Memory` is a RAM disk, so live edits there are ephemeral
 - temporary debug edits such as one-off `log level = ...` lines will disappear after reboot
+- watchdog logs under `/mnt/Memory/samba4/var` are also ephemeral for the same reason
 
 ## mDNS Advertiser Details
 
@@ -391,11 +415,13 @@ The normal goal is to use it as a quick health check after:
   - `smb.conf.template`
   - `rc.local`
   - `start-samba.sh`
+  - `watchdog.sh`
   - `dfree.sh`
 - creates:
   - `private/smbpasswd`
   - `private/username.map`
 - reboots by default
+- verifies Bonjour and authenticated SMB access after reboot in the normal path
 
 The current password flow is:
 - `TC_PASSWORD` is also used as the Samba password
