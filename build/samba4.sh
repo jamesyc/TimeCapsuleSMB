@@ -63,6 +63,7 @@ CROSS_EXECUTE="$(cd "$(dirname "$0")" && pwd)/samba4-cross-exec.sh"
     echo "WORK=$SAMBA4_WORK"
     echo "STAGE=$SAMBA4_STAGE"
     echo "SRC_DIR=$SAMBA4_SRC_DIR"
+    echo "STATIC_MODULES=$SAMBA4_STATIC_MODULES"
     echo "CROSS_EXECUTE=$CROSS_EXECUTE"
 
     if [ ! -f "$SAMBA4_SRC_DIR/configure" ]; then
@@ -81,12 +82,18 @@ CROSS_EXECUTE="$(cd "$(dirname "$0")" && pwd)/samba4-cross-exec.sh"
     cd "$SAMBA4_SRC_DIR"
     PYTHON="$PYTHON2_BIN" ./buildtools/bin/waf distclean >/dev/null 2>&1 || true
 
-    PYTHON="$PYTHON2_BIN" ./configure \
+    # Force IPC$ to be non-guest. macOS Time Machine currently sees
+    # SupportsGuest=1 from Samba 4.8 and then attempts the wrong auth flow.
+    # Keeping this patch in the build script makes the experiment reproducible.
+    perl -0pi -e 's/lp_add_ipc\("IPC\\\$", \(lp_restrict_anonymous\(\) < 2\)\);/lp_add_ipc("IPC\$", false);/' \
+        "$SAMBA4_SRC_DIR/source3/param/loadparm.c"
+
+    CONFIGURE_ARGS="\
       --cross-compile \
-      --cross-execute="$CROSS_EXECUTE" \
-      --hostcc="$HOST_CC" \
-      --prefix="$SAMBA4_STAGE" \
-      --bundled-libraries='!asn1_compile,!compile_et' \
+      --cross-execute=$CROSS_EXECUTE \
+      --hostcc=$HOST_CC \
+      --prefix=$SAMBA4_STAGE \
+      --bundled-libraries=!asn1_compile,!compile_et \
       --without-pie \
       --without-acl-support \
       --without-ad-dc \
@@ -97,15 +104,36 @@ CROSS_EXECUTE="$(cd "$(dirname "$0")" && pwd)/samba4-cross-exec.sh"
       --without-winbind \
       --without-utmp \
       --without-syslog \
-      --nonshared-binary=smbd/smbd
+      --nonshared-binary=smbd/smbd"
+
+    if [ -n "$SAMBA4_STATIC_MODULES" ]; then
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --with-static-modules=$SAMBA4_STATIC_MODULES"
+    fi
+
+    # Intentionally keep the Time Machine VFS stack static during experiments.
+    # The device does not have a normal shared-module runtime tree, and the
+    # earlier fruit test failed because smbd tried to dlopen streams_xattr.so.
+    eval "PYTHON=\"$PYTHON2_BIN\" ./configure $CONFIGURE_ARGS"
 
     for cache_file in "$SAMBA4_SRC_DIR"/bin/c4che/*.py; do
         [ -f "$cache_file" ] || continue
         perl -0pi -e 's/^ENABLE_PIE = True$/ENABLE_PIE = False/m' "$cache_file"
+        perl -0pi -e 's/^HAVE_POSIX_FALLOCATE = .*$/HAVE_POSIX_FALLOCATE = ()/m' "$cache_file"
+        perl -0pi -e 's/^_POSIX_FALLOCATE_CAPABLE_LIBC = .*$/_POSIX_FALLOCATE_CAPABLE_LIBC = ()/m' "$cache_file"
         if ! grep -q '^FULLSTATIC = ' "$cache_file"; then
             perl -0pi -e 's/^(FULLSTATIC_MARKER = .*)$/$1\nFULLSTATIC = True/m' "$cache_file"
         fi
         grep -q '^FULLSTATIC = ' "$cache_file" || printf 'FULLSTATIC = True\n' >>"$cache_file"
+    done
+
+    for config_header in \
+        "$SAMBA4_SRC_DIR/bin/default/include/config.h" \
+        "$SAMBA4_SRC_DIR/bin/default/source3/include/config.h" \
+        "$SAMBA4_SRC_DIR/bin/default/source4/include/config.h"
+    do
+        [ -f "$config_header" ] || continue
+        perl -0pi -e 's/^#define HAVE_POSIX_FALLOCATE 1$/\/\* #undef HAVE_POSIX_FALLOCATE \*\//m' "$config_header"
+        perl -0pi -e 's/^#define _POSIX_FALLOCATE_CAPABLE_LIBC 1$/\/\* #undef _POSIX_FALLOCATE_CAPABLE_LIBC \*\//m' "$config_header"
     done
 
     PYTHON="$PYTHON2_BIN" ./buildtools/bin/waf -v -j"$SAMBA4_JOBS" build --targets=smbd/smbd

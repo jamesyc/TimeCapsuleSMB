@@ -266,9 +266,11 @@ stage_runtime() {
     guest ok = no
     valid users = __SMB_SAMBA_USER__ root
     vfs objects = catia fruit streams_xattr xattr_tdb
-    fruit:resource = stream
+    fruit:resource = file
     fruit:metadata = stream
     fruit:time machine = yes
+    fruit:posix_rename = yes
+    streams_xattr:store_stream_type = no
     xattr_tdb:file = $DATA_ROOT/../$PAYLOAD_DIR_NAME/private/xattr.tdb
     force user = root
     force group = wheel

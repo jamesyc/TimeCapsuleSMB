@@ -2,8 +2,8 @@
 
 # Shared configuration for the reproducible NetBSD cross-build workflow.
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
-REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
+REPO_ROOT=$(CDPATH= cd "$SCRIPT_DIR/.." && pwd)
 ENV_FILE="${TC_ENV_FILE:-$SCRIPT_DIR/.env}"
 
 if [ -f "$ENV_FILE" ]; then
