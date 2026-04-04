@@ -1,6 +1,6 @@
 # TimeCapsuleSMB Detail Reference
 
-This file is the long-form engineering reference for the current system.
+This file is the long-form engineering reference for the current system. Most of this is AI generated summaries of my notes. 
 
 It is intentionally denser than [README.md](/Users/jameschang/git/TimeCapsuleSMB/README.md). The README is the user-facing overview. This file is for maintainers who want the actual constraints, rationale, and important implementation details in one place.
 
