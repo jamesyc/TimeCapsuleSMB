@@ -6,7 +6,7 @@ Apple AirPort Time Capsules are still perfectly usable pieces of hardware, but t
 
 This repo configures a modern Samba setup that runs directly on the Time Capsule itself. The goal is that a Time Capsule can once again show up as a normal SMB server on your network, and your Mac can connect to it as a network share.
 
-If you want the long-form engineering background, design decisions, and implementation details, read [DETAIL.md](/Users/jameschang/git/TimeCapsuleSMB/DETAIL.md).
+If you want the long-form engineering background, design decisions, and implementation details, read [DETAIL.md](/DETAIL.md).
 
 ## Expectations
 
