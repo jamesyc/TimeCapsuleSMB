@@ -138,7 +138,7 @@ def render_smbpasswd(username: str, password: str) -> tuple[str, str]:
     nt_hash = nt_hash_hex(password)
     lct = f"{int(time.time()):08X}"
     smbpasswd_line = f"root:0:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX:{nt_hash}:[U          ]:LCT-{lct}:\n"
-    username_map = f"{username} = root\n"
+    username_map = f"root = {username}\n"
     return smbpasswd_line, username_map
 
 
