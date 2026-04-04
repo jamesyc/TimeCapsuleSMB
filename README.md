@@ -6,7 +6,7 @@ This repo configures a modern Samba setup that runs directly on the Time Capsule
 
 If you want the long-form engineering background, design decisions, and implementation details, read [DETAIL.md](/Users/jameschang/git/TimeCapsuleSMB/DETAIL.md).
 
-## What You Should Expect
+## Expectations
 
 If the setup completes successfully, your Time Capsule will boot its own Samba 4 server automatically, advertise itself over Bonjour, and accept authenticated SMB connections from macOS. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack.
 
@@ -141,7 +141,7 @@ This is the intended normal user path. You should not have to care about the int
 
 ## Design
 
-The Time Capsule hardware is old, constrained, and opinionated. It has three relevant storage areas:
+The Time Capsule hardware is old and constrained. It has three relevant storage areas:
 
 - `/mnt/Flash`, which is persistent but only has ~900KB of free space.
 - `/mnt/Memory`, which is a 16MB ramdisk
@@ -166,24 +166,12 @@ and boot files such as:
 - [boot/samba4/rc.local](/Users/jameschang/git/TimeCapsuleSMB/boot/samba4/rc.local)
 - [boot/samba4/start-samba.sh](/Users/jameschang/git/TimeCapsuleSMB/boot/samba4/start-samba.sh)
 
-## The Files You Are Most Likely To Use
-
-If you are just using the project rather than maintaining it, these are the files that matter most:
-
-- [scripts/bootstrap_host.py](/Users/jameschang/git/TimeCapsuleSMB/scripts/bootstrap_host.py)  
-  Prepares the local Python environment on your Mac.
-
-- [scripts/prep_device.py](/Users/jameschang/git/TimeCapsuleSMB/scripts/prep_device.py)  
-  Finds the Time Capsule and enables SSH if needed.
-
-- [scripts/configure.py](/Users/jameschang/git/TimeCapsuleSMB/scripts/configure.py)  
-  Writes your local `.env` file.
-
-- [scripts/deploy.py](/Users/jameschang/git/TimeCapsuleSMB/scripts/deploy.py)  
-  Installs the working runtime onto the Time Capsule.
-
-- [scripts/doctor.py](/Users/jameschang/git/TimeCapsuleSMB/scripts/doctor.py)  
-  Checks whether the result is actually healthy.
+There are other constraints the Time Capsule places on us:  
+- The NetBSD 6 source code does not support earmv4 builds, so we need to build from NetBSD 7.
+- Samba 3.x compiles easily, but it doesn't support directory traversal on NetBSD 6. This is a known bug apparently.
+- Samba 4.0.x has the same issue
+- Samba 4.2.x and 4.3.x are much harder to compile, and do not support vfs_fruit
+- Samba 4.8.x is the first version that seems to work, although getting it to compile can be very difficult.
 
 ## Troubleshooting
 
