@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -8,7 +7,7 @@ import sys
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[3]
 VENVDIR = REPO_ROOT / ".venv"
 REQUIREMENTS = REPO_ROOT / "requirements.txt"
 
@@ -30,6 +29,7 @@ def install_python_requirements(venv_python: Path) -> None:
     print("Installing Python dependencies into .venv")
     run([str(venv_python), "-m", "pip", "install", "-U", "pip"])
     run([str(venv_python), "-m", "pip", "install", "-r", str(REQUIREMENTS)])
+    run([str(venv_python), "-m", "pip", "install", "-e", str(REPO_ROOT)])
 
 
 def maybe_install_airpyrt(skip_airpyrt: bool) -> None:
@@ -47,21 +47,11 @@ def maybe_install_airpyrt(skip_airpyrt: bool) -> None:
     run([make, "airpyrt"], cwd=REPO_ROOT)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Prepare the local host for TimeCapsuleSMB user workflows."
-    )
-    parser.add_argument(
-        "--python",
-        default=sys.executable or "python3",
-        help="Python interpreter to use for the repo .venv",
-    )
-    parser.add_argument(
-        "--skip-airpyrt",
-        action="store_true",
-        help="Do not provision AirPyrt / .airpyrt-venv",
-    )
-    args = parser.parse_args()
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Prepare the local host for TimeCapsuleSMB user workflows.")
+    parser.add_argument("--python", default=sys.executable or "python3", help="Python interpreter to use for the repo .venv")
+    parser.add_argument("--skip-airpyrt", action="store_true", help="Do not provision AirPyrt / .airpyrt-venv")
+    args = parser.parse_args(argv)
 
     if not REQUIREMENTS.exists():
         print(f"Missing {REQUIREMENTS}", file=sys.stderr)
@@ -77,10 +67,8 @@ def main() -> int:
 
     print("\nHost setup complete.")
     print("Next steps:")
-    print(f"  1. {venv_python} scripts/prep_device.py")
-    print(f"  2. {venv_python} scripts/configure.py")
+    print(f"  1. {VENVDIR / 'bin' / 'tcapsule'} prep-device")
+    print(f"  2. {VENVDIR / 'bin' / 'tcapsule'} configure")
+    print(f"  3. {VENVDIR / 'bin' / 'tcapsule'} deploy")
+    print(f"  4. {VENVDIR / 'bin' / 'tcapsule'} doctor")
     return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

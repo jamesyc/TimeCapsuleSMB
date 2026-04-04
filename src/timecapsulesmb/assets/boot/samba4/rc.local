@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+/mnt/Flash/start-samba.sh >/dev/null 2>&1 &
+/mnt/Flash/watchdog.sh >/dev/null 2>&1 &
+
+exit 0

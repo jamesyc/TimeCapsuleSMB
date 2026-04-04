@@ -1,13 +1,3 @@
-#!/usr/bin/env python3
-"""
-Discover Apple Time Capsules on the local network via mDNS/Bonjour.
-
-Usage
-  python scripts/discover_timecapsules.py
-  python scripts/discover_timecapsules.py --select
-  python scripts/discover_timecapsules.py --json
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -17,8 +7,9 @@ import socket
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Set
+from dataclasses import asdict, dataclass, field
+from typing import Any
+
 
 SERVICE_TYPES = [
     "_airport._tcp.local.",
@@ -40,13 +31,24 @@ TIME_CAPSULE_HINTS = (
 class Discovered:
     name: str
     hostname: str
-    ipv4: List[str] = field(default_factory=list)
-    ipv6: List[str] = field(default_factory=list)
-    services: Set[str] = field(default_factory=set)
-    properties: Dict[str, str] = field(default_factory=dict)
+    ipv4: list[str] = field(default_factory=list)
+    ipv6: list[str] = field(default_factory=list)
+    services: set[str] = field(default_factory=set)
+    properties: dict[str, str] = field(default_factory=dict)
 
     def prefer_host(self) -> str:
         return self.hostname or (self.ipv4[0] if self.ipv4 else (self.ipv6[0] if self.ipv6 else ""))
+
+
+def preferred_host(rec: Discovered) -> str:
+    return rec.prefer_host()
+
+
+def prefer_routable_ipv4(rec: Discovered) -> str:
+    for ip in rec.ipv4:
+        if not ip.startswith("169.254."):
+            return ip
+    return rec.ipv4[0] if rec.ipv4 else ""
 
 
 def _bytes_to_ip(addr_bytes: bytes) -> str:
@@ -60,8 +62,8 @@ def _bytes_to_ip(addr_bytes: bytes) -> str:
         return ""
 
 
-def _decode_props(props: Dict[bytes, bytes]) -> Dict[str, str]:
-    out: Dict[str, str] = {}
+def _decode_props(props: dict[bytes, bytes]) -> dict[str, str]:
+    out: dict[str, str] = {}
     for k, v in props.items():
         if v is None:
             continue
@@ -92,26 +94,26 @@ def _display_name(fullname: str, service_type: str) -> str:
     return fullname.rstrip(".")
 
 
-def _looks_like_time_capsule(name: str, hostname: str, props: Dict[str, str]) -> bool:
-    s = name.lower()
-    if any(h in s for h in TIME_CAPSULE_HINTS):
+def looks_like_time_capsule(name: str, hostname: str, props: dict[str, str]) -> bool:
+    lowered_name = name.lower()
+    if any(hint in lowered_name for hint in TIME_CAPSULE_HINTS):
         return True
-    host = hostname.lower()
-    if any(h in host for h in TIME_CAPSULE_HINTS):
+    lowered_host = hostname.lower()
+    if any(hint in lowered_host for hint in TIME_CAPSULE_HINTS):
         return True
     model = props.get("model", "").lower()
-    if any(h in model for h in TIME_CAPSULE_HINTS):
+    if any(hint in model for hint in TIME_CAPSULE_HINTS):
         return True
     return "timecapsule" in model.replace(" ", "")
 
 
 class Collector:
-    def __init__(self, zc: Any, services: Iterable[str]):
+    def __init__(self, zc: Any, services: list[str]):
         self.zc = zc
-        self.services = list(services)
+        self.services = services
         self.lock = threading.Lock()
-        self.records: Dict[str, Discovered] = {}
-        self._browsers: List[Any] = []
+        self.records: dict[str, Discovered] = {}
+        self._browsers: list[Any] = []
 
     def start(self) -> None:
         from zeroconf import ServiceBrowser
@@ -135,16 +137,16 @@ class Collector:
         name = _display_name(info.name or "", stype)
         hostname = info.server or ""
         props = _decode_props({k: v for k, v in (info.properties or {}).items() if v is not None})
-        ipv4: List[str] = []
-        ipv6: List[str] = []
+        ipv4: list[str] = []
+        ipv6: list[str] = []
 
         try:
             addrs = list(info.addresses or [])
         except Exception:
             addrs = []
 
-        for a in addrs:
-            ip = _bytes_to_ip(a)
+        for addr in addrs:
+            ip = _bytes_to_ip(addr)
             if not ip:
                 continue
             try:
@@ -175,18 +177,18 @@ class Collector:
                     rec.ipv6.append(ip)
             rec.properties.update({k: v for k, v in props.items() if v})
 
-    def results(self) -> List[Discovered]:
+    def results(self) -> list[Discovered]:
         with self.lock:
             return list(self.records.values())
 
 
-def discover(timeout: float = 5.0) -> List[Discovered]:
+def discover(timeout: float = 5.0) -> list[Discovered]:
     try:
         from zeroconf import IPVersion, Zeroconf
     except Exception as e:
         print(
             "Failed to import zeroconf.\n"
-            "Run 'python3 scripts/bootstrap_host.py' first, or use 'make install'.\n",
+            "Run './tcapsule bootstrap' first, or use 'make install'.\n",
             e,
             file=sys.stderr,
         )
@@ -204,24 +206,30 @@ def discover(timeout: float = 5.0) -> List[Discovered]:
         except Exception:
             pass
 
-    filtered = [r for r in all_results if _looks_like_time_capsule(r.name, r.hostname, r.properties)]
+    filtered = [record for record in all_results if looks_like_time_capsule(record.name, record.hostname, record.properties)]
     if not filtered:
-        filtered = [r for r in all_results if "_airport._tcp.local." in r.services]
-    filtered.sort(key=lambda r: (r.hostname or "", r.name or ""))
+        filtered = [record for record in all_results if "_airport._tcp.local." in record.services]
+    filtered.sort(key=lambda record: (record.hostname or "", record.name or ""))
     return filtered
 
 
-def print_table(records: List[Discovered]) -> None:
+def print_table(records: list[Discovered]) -> None:
     if not records:
         print("No Time Capsules discovered.")
         return
     headers = ["#", "Name", "Hostname (preferred)", "IPv4", "IPv6"]
     rows = []
-    for i, r in enumerate(records, start=1):
-        rows.append([str(i), r.name, r.hostname, ",".join(r.ipv4) if r.ipv4 else "-", ",".join(r.ipv6) if r.ipv6 else "-"])
+    for i, record in enumerate(records, start=1):
+        rows.append([
+            str(i),
+            record.name,
+            record.hostname,
+            ",".join(record.ipv4) if record.ipv4 else "-",
+            ",".join(record.ipv6) if record.ipv6 else "-",
+        ])
     widths = [max(len(h), max((len(row[i]) for row in rows), default=0)) for i, h in enumerate(headers)]
 
-    def fmt(cols: List[str]) -> str:
+    def fmt(cols: list[str]) -> str:
         return "  ".join(col.ljust(widths[i]) for i, col in enumerate(cols))
 
     print(fmt(headers))
@@ -230,7 +238,7 @@ def print_table(records: List[Discovered]) -> None:
         print(fmt(row))
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def run_cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Discover Apple Time Capsules via mDNS/Bonjour")
     parser.add_argument("--timeout", type=float, default=5.0, help="Browse time in seconds (default: 5)")
     parser.add_argument("--json", action="store_true", help="Output results as JSON")
@@ -239,7 +247,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     records = discover(timeout=args.timeout)
     if args.json:
-        print(json.dumps([r.__dict__ for r in records], indent=2, sort_keys=True))
+        print(json.dumps([asdict(record) for record in records], indent=2, sort_keys=True))
         return 0
 
     print_table(records)
@@ -260,12 +268,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             if not (1 <= idx <= len(records)):
                 print("Out of range.")
                 continue
-            selected = records[idx - 1]
-            print(selected.prefer_host())
+            print(records[idx - 1].prefer_host())
             return 0
 
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

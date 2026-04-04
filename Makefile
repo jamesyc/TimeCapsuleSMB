@@ -6,15 +6,15 @@
 #   - Build deps: brew install zlib bzip2 readline
 #
 # Quick start:
-#   1) python3 scripts/bootstrap_host.py   # create .venv and install Python deps
-#   2) .venv/bin/python scripts/prep_device.py
-#   3) .venv/bin/python scripts/configure.py
+#   1) ./tcapsule bootstrap
+#   2) .venv/bin/tcapsule prep-device
+#   3) .venv/bin/tcapsule configure
 #
 # Targets:
 #   make venv                    - create local virtualenv at .venv
 #   make install                 - install Python dependencies into .venv
-#   make discover                - run scripts/discover_timecapsules.py (depends on install)
-#   make bootstrap-host          - run the Python host bootstrap helper
+#   make discover                - run tcapsule discover (depends on install)
+#   make bootstrap-host          - run the host bootstrap helper
 #   make prep-device             - discover the device and enable SSH if needed
 #   make airpyrt                 - clone+install AirPyrt into local .airpyrt-venv (via pyenv Python 2)
 #   make airpyrt-clone           - clone AirPyrt repo only
@@ -40,16 +40,17 @@ venv:
 install: venv
 	$(PIP) install -U pip
 	$(PIP) install -r requirements.txt
+	$(PIP) install -e .
 	@echo "Optional: run 'make airpyrt' to install AirPyrt (Python 2)."
 
 discover: install
-	$(PY) scripts/discover_timecapsules.py
+	$(VENVDIR)/bin/tcapsule discover
 
 bootstrap-host:
-	$(PYTHON) scripts/bootstrap_host.py
+	./tcapsule bootstrap
 
 prep-device: install
-	$(PY) scripts/prep_device.py
+	$(VENVDIR)/bin/tcapsule prep-device
 
 setup: prep-device
 
@@ -143,7 +144,7 @@ airpyrt-install: airpyrt-clone airpyrt-venv
 		fi; \
 	fi
 	$(AIRPYRT_PIP) install $(AIRPYRT_DIR)
-	@echo "Done. Use AIRPYRT_PY=$(AIRPYRT_PY) when running scripts/prep_device.py, or add $(AIRPYRT_ENV)/bin to PATH."
+	@echo "Done. Use AIRPYRT_PY=$(AIRPYRT_PY) when running '.venv/bin/tcapsule prep-device', or add $(AIRPYRT_ENV)/bin to PATH."
 
 airpyrt-clean:
 	rm -rf $(AIRPYRT_ENV)
