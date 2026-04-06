@@ -255,6 +255,7 @@ stage_runtime() {
     fruit:model = MacSamba
     fruit:advertise_fullsync = true
     fruit:nfs_aces = no
+    fruit:encoding = native
     fruit:veto_appledouble = no
     fruit:wipe_intentionally_left_blank_rfork = yes
     fruit:delete_empty_adfiles = yes
@@ -265,11 +266,12 @@ stage_runtime() {
     read only = no
     guest ok = no
     valid users = __SMB_SAMBA_USER__ root
-    vfs objects = catia fruit xattr_tdb
+    vfs objects = catia fruit streams_xattr xattr_tdb
     fruit:resource = file
     fruit:metadata = netatalk
     fruit:time machine = yes
     fruit:posix_rename = yes
+    fruit:locking = none
     xattr_tdb:file = $DATA_ROOT/../$PAYLOAD_DIR_NAME/private/xattr.tdb
     force user = root
     force group = wheel
