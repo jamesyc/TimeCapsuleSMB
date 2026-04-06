@@ -166,6 +166,13 @@ EOF
     perl -0pi -e "s/\\n\\tif \\(ev->threaded_contexts != NULL\\) \\{\\n\\t\\ttevent_common_threaded_activate_immediate\\(ev\\);\\n\\t\\}/\\n#ifdef HAVE_PTHREAD\\n\\tif (ev->threaded_contexts != NULL) {\\n\\t\\ttevent_common_threaded_activate_immediate(ev);\\n\\t}\\n#endif/s" \
         "$SAMBA4_SRC_DIR/lib/tevent/tevent_port.c"
 
+    # NetBSD/HFS + fruit/streams_xattr/xattr_tdb hits a Samba bug where a
+    # missing TDB record is treated as corruption instead of "no xattrs yet".
+    # That bubbles up as EINVAL from listxattr/getxattr and breaks SMB
+    # rename/delete paths. Patch xattr_tdb to treat NOT_FOUND as an empty set.
+    perl -0pi -e 's/status = dbwrap_fetch\(db, frame, key, &data\);\n\tif \(!NT_STATUS_IS_OK\(status\)\) \{\n\t\treturn NT_STATUS_INTERNAL_DB_CORRUPTION;\n\t\}/status = dbwrap_fetch(db, frame, key, \&data);\n\tif (NT_STATUS_EQUAL(status, NT_STATUS_NOT_FOUND)) {\n\t\t*presult = talloc_zero(mem_ctx, struct tdb_xattrs);\n\t\tif (*presult == NULL) {\n\t\t\treturn NT_STATUS_NO_MEMORY;\n\t\t}\n\t\treturn NT_STATUS_OK;\n\t}\n\tif (!NT_STATUS_IS_OK(status)) {\n\t\treturn NT_STATUS_INTERNAL_DB_CORRUPTION;\n\t}/' \
+        "$SAMBA4_SRC_DIR/source3/lib/xattr_tdb.c"
+
     git -C "$SAMBA4_SRC_DIR" rev-parse --short HEAD
     git -C "$SAMBA4_SRC_DIR" log -1 --format='%H%n%cd%n%s' --date=iso
     echo "Finished Samba 4 download workflow at $(date -u)"
