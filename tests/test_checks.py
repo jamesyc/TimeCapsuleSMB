@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -16,7 +17,7 @@ import subprocess
 from timecapsulesmb.checks.bonjour import parse_browse_instance, parse_lookup_target, run_bonjour_checks
 from timecapsulesmb.checks.doctor import run_doctor_checks
 from timecapsulesmb.checks.local_tools import check_required_local_tools
-from timecapsulesmb.checks.smb import try_authenticated_smb_listing
+from timecapsulesmb.checks.smb import check_authenticated_smb_file_ops, exercise_mounted_share_file_ops, try_authenticated_smb_listing
 
 
 class CheckTests(unittest.TestCase):
@@ -46,7 +47,8 @@ class CheckTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.checks.doctor.check_smb_port"):
                         with mock.patch("timecapsulesmb.checks.doctor.run_bonjour_checks", return_value=([], None, None)):
                             with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing"):
-                                results, fatal = run_doctor_checks(values, env_exists=False, repo_root=REPO_ROOT)
+                                with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops"):
+                                    results, fatal = run_doctor_checks(values, env_exists=False, repo_root=REPO_ROOT)
         self.assertTrue(fatal)
         self.assertEqual(results[0].status, "FAIL")
 
@@ -101,6 +103,39 @@ class CheckTests(unittest.TestCase):
         smb_port_mock.assert_called_once()
         self.assertFalse(fatal)
         self.assertEqual(results[0].status, "PASS")
+
+    def test_exercise_mounted_share_file_ops_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            exercise_mounted_share_file_ops(root, prefix="unit")
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_check_authenticated_smb_file_ops_warns_without_mount_smbfs(self) -> None:
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=False):
+            result = check_authenticated_smb_file_ops("admin", "pw", "server.local", "Data")
+        self.assertEqual(result.status, "WARN")
+        self.assertIn("mount_smbfs not found", result.message)
+
+    def test_check_authenticated_smb_file_ops_handles_mount_failure(self) -> None:
+        proc = subprocess.CompletedProcess(["mount_smbfs"], 1, "", "mount failed")
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+            with mock.patch("timecapsulesmb.checks.smb._mount_smb_share", return_value=proc):
+                result = check_authenticated_smb_file_ops("admin", "pw", "server.local", "Data")
+        self.assertEqual(result.status, "FAIL")
+        self.assertIn("failed to mount share", result.message)
+
+    def test_check_authenticated_smb_file_ops_reuses_existing_mount_on_file_exists(self) -> None:
+        proc = subprocess.CompletedProcess(["mount_smbfs"], 64, "", "mount_smbfs: mount error: //admin:pw@server.local/Data: File exists")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            existing_mount = root / "mounted"
+            existing_mount.mkdir()
+            with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+                with mock.patch("timecapsulesmb.checks.smb._mount_smb_share", return_value=proc):
+                    with mock.patch("timecapsulesmb.checks.smb._find_existing_smb_mount", return_value=existing_mount):
+                        result = check_authenticated_smb_file_ops("admin", "pw", "server.local", "Data")
+        self.assertEqual(result.status, "PASS")
+        self.assertIn("via existing mount", result.message)
 
 
 if __name__ == "__main__":

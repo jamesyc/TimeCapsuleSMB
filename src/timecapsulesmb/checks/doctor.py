@@ -6,7 +6,7 @@ from timecapsulesmb.checks.bonjour import run_bonjour_checks
 from timecapsulesmb.checks.local_tools import check_required_artifacts, check_required_local_tools
 from timecapsulesmb.checks.models import CheckResult, is_fatal
 from timecapsulesmb.checks.network import check_smb_port, check_ssh_reachability
-from timecapsulesmb.checks.smb import check_authenticated_smb_listing
+from timecapsulesmb.checks.smb import check_authenticated_smb_file_ops, check_authenticated_smb_listing
 from timecapsulesmb.core.config import extract_host, missing_required_keys
 
 
@@ -53,6 +53,14 @@ def run_doctor_checks(
                 values["TC_SAMBA_USER"],
                 values["TC_PASSWORD"],
                 f"{values['TC_MDNS_HOST_LABEL']}.local",
+            )
+        )
+        results.append(
+            check_authenticated_smb_file_ops(
+                values["TC_SAMBA_USER"],
+                values["TC_PASSWORD"],
+                f"{values['TC_MDNS_HOST_LABEL']}.local",
+                values["TC_SHARE_NAME"],
             )
         )
 
