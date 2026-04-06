@@ -192,9 +192,9 @@ This helper:
 ## Boot Flow In Detail
 
 The boot logic lives in:
-- [boot/samba4/rc.local](boot/samba4/rc.local)
-- [boot/samba4/start-samba.sh](boot/samba4/start-samba.sh)
-- [boot/samba4/watchdog.sh](boot/samba4/watchdog.sh)
+- [src/timecapsulesmb/assets/boot/samba4/rc.local](src/timecapsulesmb/assets/boot/samba4/rc.local)
+- [src/timecapsulesmb/assets/boot/samba4/start-samba.sh](src/timecapsulesmb/assets/boot/samba4/start-samba.sh)
+- [src/timecapsulesmb/assets/boot/samba4/watchdog.sh](src/timecapsulesmb/assets/boot/samba4/watchdog.sh)
 
 ### `rc.local`
 

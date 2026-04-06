@@ -193,8 +193,8 @@ That is the reason the repository contains both:
 
 and boot files such as:
 
-- [boot/samba4/rc.local](boot/samba4/rc.local)
-- [boot/samba4/start-samba.sh](boot/samba4/start-samba.sh)
+- [src/timecapsulesmb/assets/boot/samba4/rc.local](src/timecapsulesmb/assets/boot/samba4/rc.local)
+- [src/timecapsulesmb/assets/boot/samba4/start-samba.sh](src/timecapsulesmb/assets/boot/samba4/start-samba.sh)
 
 There are other constraints the Time Capsule places on us:  
 - The NetBSD 6 source code does not support earmv4 builds, so we need to build from NetBSD 7.
