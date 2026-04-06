@@ -28,7 +28,7 @@
     smb ports = 445
     deadtime = 15
     fruit:aapl = yes
-    fruit:model = MacSamba
+    fruit:model = TimeCapsule8,119
     fruit:advertise_fullsync = true
     fruit:nfs_aces = no
     fruit:veto_appledouble = no
@@ -41,12 +41,11 @@
     read only = no
     guest ok = no
     valid users = __SMB_SAMBA_USER__ root
-    vfs objects = catia fruit streams_xattr xattr_tdb
+    vfs objects = catia fruit xattr_tdb
     fruit:resource = file
-    fruit:metadata = stream
+    fruit:metadata = netatalk
     fruit:time machine = yes
     fruit:posix_rename = yes
-    streams_xattr:store_stream_type = no
     xattr_tdb:file = __DATA_ROOT__/../__PAYLOAD_DIR_NAME__/private/xattr.tdb
     force user = root
     force group = wheel
