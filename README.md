@@ -6,15 +6,15 @@ Apple AirPort Time Capsules are still perfectly usable pieces of hardware, but t
 
 This repo configures a modern Samba setup that runs directly on the Time Capsule itself. The goal is that a Time Capsule can once again show up as a normal SMB server on your network, and your Mac can connect to it as a network share.
 
-THIS DOES NOT SUPPORT older NetBSD 4 based Time Capsules. This only supports Time Capsules running NetBSD 6. 
-
 If you want the long-form engineering background, design decisions, and implementation details, read [DETAIL.md](/DETAIL.md).
 
 ## Expectations
 
-If the setup completes successfully, your Time Capsule will boot its own Samba 4 server automatically, advertise itself over Bonjour, and accept authenticated SMB connections from macOS. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack.
+If the setup completes successfully, your Time Capsule will boot its own Samba 4 server automatically, advertise itself over Bonjour, and accept authenticated SMB connections from macOS. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack. **This will disable Apple's AFP and SMB file server**, so do not expect those to be running at the same time. 
 
-The current authentication model uses `admin` as the username, and the Samba password is the same password you enter during setup when the tool asks for the Time Capsule password. Guest access is disabled.
+THIS DOES NOT SUPPORT older NetBSD 4 based Time Capsules. This only supports Time Capsules running NetBSD 6. It is expected to get "Internal disk needs repair" when adding files to the internal disk; see [this issue for more information](https://github.com/jamesyc/TimeCapsuleSMB/issues/13).
+
+The current authentication model uses `admin` as the username, and the Samba password is the same password you enter during setup when the tool asks for the Time Capsule password. Guest access is disabled. 
 
 ## Requirements
 
