@@ -14,7 +14,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.cli import bootstrap, configure, deploy, discover, doctor, prep_device
+from timecapsulesmb.cli import bootstrap, configure, deploy, discover, doctor, prep_device, uninstall
 from timecapsulesmb.cli.main import main
 from timecapsulesmb.discovery.bonjour import Discovered
 
@@ -325,6 +325,83 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["host"], "root@10.0.0.2")
         self.assertEqual(payload["volume_root"], "/Volumes/dk2")
         self.assertIn("post_deploy_checks", payload)
+
+    def test_uninstall_dry_run_prints_target_host(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+        }
+        with mock.patch("timecapsulesmb.cli.uninstall.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root", return_value="/Volumes/dk2"):
+                with redirect_stdout(output):
+                    rc = uninstall.main(["--dry-run"])
+        self.assertEqual(rc, 0)
+        text = output.getvalue()
+        self.assertIn("Dry run: uninstall plan", text)
+        self.assertIn("host: root@10.0.0.2", text)
+        self.assertIn("payload dir: /Volumes/dk2/samba4", text)
+
+    def test_uninstall_json_outputs_plan(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+        }
+        with mock.patch("timecapsulesmb.cli.uninstall.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root", return_value="/Volumes/dk2"):
+                with redirect_stdout(output):
+                    rc = uninstall.main(["--dry-run", "--json"])
+        self.assertEqual(rc, 0)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["host"], "root@10.0.0.2")
+        self.assertEqual(payload["volume_root"], "/Volumes/dk2")
+        self.assertIn("post_uninstall_checks", payload)
+
+    def test_uninstall_yes_reboots_and_verifies(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+        }
+        with mock.patch("timecapsulesmb.cli.uninstall.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload") as uninstall_mock:
+                    with mock.patch("timecapsulesmb.cli.uninstall.run_ssh") as run_ssh_mock:
+                        with mock.patch("timecapsulesmb.cli.uninstall.wait_for_ssh_state", side_effect=[True, True]):
+                            with mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall", return_value=True) as verify_mock:
+                                with redirect_stdout(output):
+                                    rc = uninstall.main(["--yes"])
+        self.assertEqual(rc, 0)
+        uninstall_mock.assert_called_once()
+        run_ssh_mock.assert_called_once()
+        verify_mock.assert_called_once()
+        self.assertIn("Device is back online.", output.getvalue())
+
+    def test_uninstall_declined_reboot_returns_failure(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+        }
+        with mock.patch("timecapsulesmb.cli.uninstall.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"):
+                    with mock.patch("builtins.input", return_value="n"):
+                        with mock.patch("timecapsulesmb.cli.uninstall.run_ssh") as run_ssh_mock:
+                            with redirect_stdout(output):
+                                rc = uninstall.main([])
+        self.assertEqual(rc, 1)
+        run_ssh_mock.assert_not_called()
+        self.assertIn("Uninstall requires a reboot to complete.", output.getvalue())
 
     def test_discover_json_outputs_records(self) -> None:
         output = io.StringIO()

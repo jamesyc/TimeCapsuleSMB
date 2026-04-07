@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import shlex
+
 from timecapsulesmb.checks.bonjour import run_bonjour_checks
 from timecapsulesmb.checks.smb import try_authenticated_smb_listing
+from timecapsulesmb.deploy.planner import UninstallPlan
 from timecapsulesmb.transport.local import command_exists
+from timecapsulesmb.transport.ssh import run_ssh
 
 
 def verify_post_deploy(values: dict[str, str]) -> None:
@@ -44,3 +48,23 @@ def verify_post_deploy(values: dict[str, str]) -> None:
             print(f"  Authenticated SMB listing: failed ({failure})")
     else:
         print("  SMB listing verification skipped: smbutil not found")
+
+
+def verify_post_uninstall(host: str, password: str, ssh_opts: str, plan: UninstallPlan) -> bool:
+    print("Post-uninstall verification:")
+    script_lines = [
+        "missing=0",
+    ]
+    for target in plan.verify_absent_targets:
+        quoted = shlex.quote(target)
+        script_lines.append(f"if [ -e {quoted} ]; then echo PRESENT:{target}; missing=1; else echo ABSENT:{target}; fi")
+    script_lines.append("exit \"$missing\"")
+    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote('; '.join(script_lines))}", check=False)
+
+    ok = proc.returncode == 0
+    for line in proc.stdout.strip().splitlines():
+        if line.startswith("ABSENT:"):
+            print(f"  ok: removed {line.removeprefix('ABSENT:')}")
+        elif line.startswith("PRESENT:"):
+            print(f"  failed: still present {line.removeprefix('PRESENT:')}")
+    return ok

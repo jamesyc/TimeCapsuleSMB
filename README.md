@@ -37,6 +37,7 @@ From the root of this repository, the normal flow is:
 3. `.venv/bin/tcapsule configure`
 4. `.venv/bin/tcapsule deploy`
 5. `.venv/bin/tcapsule doctor`
+6. `.venv/bin/tcapsule uninstall` if you want to remove TimeCapsuleSMB later
 
 If you prefer, you can activate the virtual environment after step 1 and then run `tcapsule ...` directly:
 
@@ -46,6 +47,7 @@ tcapsule prep-device
 tcapsule configure
 tcapsule deploy
 tcapsule doctor
+tcapsule uninstall
 ```
 
 ## Step 1: Prepare Your Mac
@@ -149,6 +151,36 @@ If you want the results in JSON instead of human-readable text, use:
 ```bash
 .venv/bin/tcapsule doctor --json
 ```
+
+## Step 6: Remove It Later If Needed
+
+Run:
+
+```bash
+.venv/bin/tcapsule uninstall
+```
+
+This removes the managed TimeCapsuleSMB payload from the internal disk, removes the boot hook files from `/mnt/Flash`, and reboots the Time Capsule so the custom Samba runtime does not come back on the next boot.
+
+If you want to skip the reboot confirmation prompt, use:
+
+```bash
+.venv/bin/tcapsule uninstall --yes
+```
+
+If you want to preview the uninstall plan without changing the device, use:
+
+```bash
+.venv/bin/tcapsule uninstall --dry-run
+```
+
+For machine-readable dry-run output:
+
+```bash
+.venv/bin/tcapsule uninstall --dry-run --json
+```
+
+Uninstall success means the managed payload and boot files are gone after reboot. It does **not** require Apple SMB or AFP to be enabled afterward. Those services may be on or off depending on the device's own settings.
 
 ## Connecting From Finder
 

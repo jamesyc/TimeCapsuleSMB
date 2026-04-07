@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 from timecapsulesmb.deploy.auth import render_smbpasswd
-from timecapsulesmb.deploy.planner import DeploymentPlan
+from timecapsulesmb.deploy.planner import DeploymentPlan, UninstallPlan
 from timecapsulesmb.transport.ssh import run_scp, run_ssh
 
 
@@ -55,3 +55,9 @@ def upload_deployment_payload(
     run_scp(host, password, ssh_opts, rendered_watchdog, plan.flash_targets["watchdog.sh"])
     run_scp(host, password, ssh_opts, rendered_dfree, plan.flash_targets["dfree.sh"])
     run_scp(host, password, ssh_opts, rendered_smbconf, plan.payload_targets["smb.conf.template"])
+
+
+def remote_uninstall_payload(host: str, password: str, ssh_opts: str, plan: UninstallPlan) -> None:
+    cmd_parts = [*plan.stop_commands]
+    cmd_parts.extend(f"rm -rf {shlex.quote(target)}" for target in plan.remove_targets)
+    run_ssh(host, password, ssh_opts, " && ".join(cmd_parts))

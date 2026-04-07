@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from . import bootstrap, configure, deploy, discover, doctor, prep_device
+from . import bootstrap, configure, deploy, discover, doctor, prep_device, uninstall
 
 
 COMMANDS = {
@@ -12,6 +12,7 @@ COMMANDS = {
     "discover": discover.main,
     "doctor": doctor.main,
     "prep-device": prep_device.main,
+    "uninstall": uninstall.main,
 }
 
 
