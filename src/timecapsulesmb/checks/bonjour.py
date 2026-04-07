@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shlex
+from typing import Optional, Tuple
 
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.transport.local import command_exists, run_local_capture
@@ -26,7 +27,7 @@ def capture_dns_sd_lookup(instance_name: str, service_type: str, duration_second
     return proc.stdout
 
 
-def parse_browse_instance(output: str) -> str | None:
+def parse_browse_instance(output: str) -> Optional[str]:
     for line in output.splitlines():
         if " Add " in line and "_smb._tcp." in line:
             marker = "_smb._tcp."
@@ -36,14 +37,14 @@ def parse_browse_instance(output: str) -> str | None:
     return None
 
 
-def parse_lookup_target(output: str) -> str | None:
+def parse_lookup_target(output: str) -> Optional[str]:
     for line in output.splitlines():
         if " can be reached at " in line:
             return line.split(" can be reached at ", 1)[1].strip()
     return None
 
 
-def run_bonjour_checks(expected_instance_name: str, *, service_type: str = "_smb._tcp") -> tuple[list[CheckResult], str | None, str | None]:
+def run_bonjour_checks(expected_instance_name: str, *, service_type: str = "_smb._tcp") -> Tuple[list[CheckResult], Optional[str], Optional[str]]:
     if not command_exists("dns-sd"):
         return [CheckResult("FAIL", "missing local tool dns-sd")], None, None
 

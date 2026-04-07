@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import uuid
 from pathlib import Path
+from typing import Optional
 from urllib.parse import quote
 
 from timecapsulesmb.checks.models import CheckResult
@@ -72,7 +73,7 @@ def _mount_smb_share(username: str, password: str, server: str, share_name: str,
     return run_local_capture(["/sbin/mount_smbfs", remote, str(mountpoint)], timeout=timeout)
 
 
-def _find_existing_smb_mount(username: str, share_name: str, *, timeout: int) -> Path | None:
+def _find_existing_smb_mount(username: str, share_name: str, *, timeout: int) -> Optional[Path]:
     proc = run_local_capture(["/sbin/mount"], timeout=timeout)
     if proc.returncode != 0:
         return None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import getpass
+from typing import Optional
 
 from timecapsulesmb.core.config import CONFIG_FIELDS, DEFAULTS, ENV_PATH, parse_env_values, write_env_file
 from timecapsulesmb.transport.ssh import run_ssh
@@ -35,7 +36,7 @@ def prompt_host_and_password(existing: dict[str, str], values: dict[str, str]) -
     values["TC_PASSWORD"] = prompt("Time Capsule root password", password_default, True)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     existing = parse_env_values(ENV_PATH, defaults={})
     values: dict[str, str] = {}
 

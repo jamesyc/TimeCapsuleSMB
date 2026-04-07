@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 
 SERVICE_TYPES = [
@@ -244,7 +244,7 @@ def discovery_record_to_jsonable(record: Discovered) -> dict[str, object]:
     return data
 
 
-def run_cli(argv: list[str] | None = None) -> int:
+def run_cli(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Discover Apple Time Capsules via mDNS/Bonjour")
     parser.add_argument("--timeout", type=float, default=5.0, help="Browse time in seconds (default: 5)")
     parser.add_argument("--json", action="store_true", help="Output results as JSON")

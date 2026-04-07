@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Optional
 
 from timecapsulesmb.checks.bonjour import run_bonjour_checks
 from timecapsulesmb.checks.local_tools import check_required_artifacts, check_required_local_tools
@@ -19,7 +20,7 @@ def run_doctor_checks(
     skip_ssh: bool = False,
     skip_bonjour: bool = False,
     skip_smb: bool = False,
-    on_result: Callable[[CheckResult], None] | None = None,
+    on_result: Optional[Callable[[CheckResult], None]] = None,
 ) -> tuple[list[CheckResult], bool]:
     results: list[CheckResult] = []
 

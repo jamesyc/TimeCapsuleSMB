@@ -3,6 +3,7 @@ from __future__ import annotations
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -71,7 +72,7 @@ def parse_env_value(raw_value: str) -> str:
         return value.strip("'\"")
 
 
-def parse_env_values(path: Path, *, defaults: dict[str, str] | None = None) -> dict[str, str]:
+def parse_env_values(path: Path, *, defaults: Optional[dict[str, str]] = None) -> dict[str, str]:
     values = dict(DEFAULTS if defaults is None else defaults)
     if not path.exists():
         return values

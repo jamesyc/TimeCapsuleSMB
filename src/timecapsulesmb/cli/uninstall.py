@@ -4,6 +4,7 @@ import argparse
 import getpass
 import json
 from pathlib import Path
+from typing import Optional
 
 from timecapsulesmb.core.config import ENV_PATH, extract_host, parse_env_values
 from timecapsulesmb.deploy.dry_run import format_uninstall_plan, uninstall_plan_to_jsonable
@@ -21,7 +22,7 @@ def require(values: dict[str, str], key: str) -> str:
     return value
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Remove the managed TimeCapsuleSMB payload from a Time Capsule.")
     parser.add_argument("--yes", action="store_true", help="Do not prompt before reboot")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without making changes")

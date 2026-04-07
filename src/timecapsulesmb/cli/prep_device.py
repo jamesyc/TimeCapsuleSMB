@@ -4,7 +4,7 @@ import argparse
 import getpass
 import sys
 import time
-from typing import Iterable
+from typing import Iterable, Optional
 
 from timecapsulesmb.discovery.bonjour import discover, prefer_routable_ipv4, preferred_host
 from timecapsulesmb.integrations.airpyrt import disable_ssh, enable_ssh
@@ -77,7 +77,7 @@ def wait_for_device_up(
     return False
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Discover a Time Capsule and enable or disable SSH via AirPyrt.")
     parser.parse_args(argv)
 

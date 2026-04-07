@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -12,7 +13,7 @@ VENVDIR = REPO_ROOT / ".venv"
 REQUIREMENTS = REPO_ROOT / "requirements.txt"
 
 
-def run(cmd: list[str], *, cwd: Path | None = None) -> None:
+def run(cmd: list[str], *, cwd: Optional[Path] = None) -> None:
     subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True)
 
 
@@ -47,7 +48,7 @@ def maybe_install_airpyrt(skip_airpyrt: bool) -> None:
     run([make, "airpyrt"], cwd=REPO_ROOT)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Prepare the local host for TimeCapsuleSMB user workflows.")
     parser.add_argument("--python", default=sys.executable or "python3", help="Python interpreter to use for the repo .venv")
     parser.add_argument("--skip-airpyrt", action="store_true", help="Do not provision AirPyrt / .airpyrt-venv")
