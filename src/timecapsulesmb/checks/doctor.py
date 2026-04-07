@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from timecapsulesmb.checks.bonjour import run_bonjour_checks
@@ -18,44 +19,53 @@ def run_doctor_checks(
     skip_ssh: bool = False,
     skip_bonjour: bool = False,
     skip_smb: bool = False,
+    on_result: Callable[[CheckResult], None] | None = None,
 ) -> tuple[list[CheckResult], bool]:
     results: list[CheckResult] = []
 
+    def add_result(result: CheckResult) -> None:
+        results.append(result)
+        if on_result is not None:
+            on_result(result)
+
     if not env_exists:
-        results.append(CheckResult("FAIL", f"missing {repo_root / '.env'}"))
+        add_result(CheckResult("FAIL", f"missing {repo_root / '.env'}"))
     else:
         missing = missing_required_keys(values)
         if missing:
-            results.append(CheckResult("FAIL", f".env is missing required keys: {', '.join(missing)}"))
+            add_result(CheckResult("FAIL", f".env is missing required keys: {', '.join(missing)}"))
         else:
-            results.append(CheckResult("PASS", ".env contains all required keys"))
+            add_result(CheckResult("PASS", ".env contains all required keys"))
 
-    results.extend(check_required_local_tools())
-    results.extend(check_required_artifacts(repo_root))
+    for result in check_required_local_tools():
+        add_result(result)
+    for result in check_required_artifacts(repo_root):
+        add_result(result)
 
     host = extract_host(values["TC_HOST"])
 
     if not skip_ssh:
-        results.append(check_ssh_reachability(host))
+        add_result(check_ssh_reachability(host))
 
-    results.append(check_smb_port(host))
+    add_result(check_smb_port(host))
 
     if not skip_bonjour:
         try:
             bonjour_results, _, _ = run_bonjour_checks(values["TC_MDNS_INSTANCE_NAME"])
-            results.extend(bonjour_results)
+            for result in bonjour_results:
+                add_result(result)
         except Exception as e:
-            results.append(CheckResult("FAIL", f"Bonjour check failed: {e}"))
+            add_result(CheckResult("FAIL", f"Bonjour check failed: {e}"))
 
     if not skip_smb:
-        results.append(
+        add_result(
             check_authenticated_smb_listing(
                 values["TC_SAMBA_USER"],
                 values["TC_PASSWORD"],
                 f"{values['TC_MDNS_HOST_LABEL']}.local",
             )
         )
-        results.append(
+        add_result(
             check_authenticated_smb_file_ops(
                 values["TC_SAMBA_USER"],
                 values["TC_PASSWORD"],

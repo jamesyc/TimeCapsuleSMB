@@ -74,6 +74,21 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("doctor found one or more fatal problems", output.getvalue())
 
+    def test_doctor_streams_results_in_human_mode(self) -> None:
+        output = io.StringIO()
+        streamed_result = doctor.CheckResult("PASS", "streamed")
+
+        def fake_run_doctor_checks(*_args, **kwargs):
+            kwargs["on_result"](streamed_result)
+            return ([streamed_result], False)
+
+        with mock.patch("timecapsulesmb.cli.doctor.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
+                with redirect_stdout(output):
+                    rc = doctor.main([])
+        self.assertEqual(rc, 0)
+        self.assertIn("PASS streamed", output.getvalue())
+
     def test_deploy_dry_run_prints_target_host(self) -> None:
         output = io.StringIO()
         values = {
