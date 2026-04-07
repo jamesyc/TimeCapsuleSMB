@@ -17,6 +17,14 @@ def run(cmd: list[str], *, cwd: Optional[Path] = None) -> None:
     subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True)
 
 
+def confirm(prompt_text: str, *, default: bool = True) -> bool:
+    suffix = "[Y/n]" if default else "[y/N]"
+    reply = input(f"{prompt_text} {suffix}: ").strip().lower()
+    if not reply:
+        return default
+    return reply in {"y", "yes"}
+
+
 def ensure_venv(python: str) -> Path:
     if not VENVDIR.exists():
         print(f"Creating virtualenv at {VENVDIR}", flush=True)
@@ -42,6 +50,12 @@ def maybe_install_airpyrt(skip_airpyrt: bool) -> None:
     if not make:
         print("Skipping AirPyrt setup because 'make' is not available.", flush=True)
         print("Later, install it manually or run 'make airpyrt'.", flush=True)
+        return
+
+    print("AirPyrt support is optional, but it is needed by 'prep-device' when SSH must be enabled on the Time Capsule.", flush=True)
+    print("Installing it may trigger Homebrew package installs, pyenv installation, and a local Python 2.7.18 build.", flush=True)
+    if not confirm("Continue with optional AirPyrt setup?", default=True):
+        print("Skipping AirPyrt setup. You can install it later with 'make airpyrt' or rerun './tcapsule bootstrap'.", flush=True)
         return
 
     print("Provisioning AirPyrt via 'make airpyrt'", flush=True)

@@ -69,11 +69,6 @@ PYENV_VERSION := 2.7.18
 BREW := $(shell command -v brew 2>/dev/null)
 PYENV_BIN := $(shell command -v pyenv 2>/dev/null || if [ -x "$$(brew --prefix pyenv 2>/dev/null)/bin/pyenv" ]; then printf "%s\n" "$$(brew --prefix pyenv 2>/dev/null)/bin/pyenv"; fi)
 
-# Homebrew prefixes for build deps (zlib, bzip2, readline)
-ZLIB_PREFIX := $(shell brew --prefix zlib 2>/dev/null)
-BZIP2_PREFIX := $(shell brew --prefix bzip2 2>/dev/null)
-READLINE_PREFIX := $(shell brew --prefix readline 2>/dev/null)
-
 # Pin virtualenv to a version that can create Python 2.7 envs
 VIRTUALENV_VERSION := 20.16.7
 
@@ -103,29 +98,42 @@ airpyrt-bootstrap:
 		echo "pyenv install did not produce a usable binary."; \
 		exit 1; \
 	fi
-	@if [ ! -d "$(ZLIB_PREFIX)" ]; then \
-		echo "Missing zlib. Run: brew install zlib"; \
-		exit 1; \
-	fi
-	@if [ ! -d "$(BZIP2_PREFIX)" ]; then \
-		echo "Missing bzip2. Run: brew install bzip2"; \
-		exit 1; \
-	fi
-	@if [ ! -d "$(READLINE_PREFIX)" ]; then \
-		echo "Missing readline. Run: brew install readline"; \
-		exit 1; \
-	fi
 	@pyenv_bin="$(PYENV_BIN)"; \
 	if [ -z "$$pyenv_bin" ]; then \
 		pyenv_bin="$$( "$(BREW)" --prefix pyenv )/bin/pyenv"; \
+	fi; \
+	openssl_prefix="$$( "$(BREW)" --prefix openssl@3 2>/dev/null || true )"; \
+	if [ ! -d "$$openssl_prefix" ]; then \
+		echo "Missing openssl@3. Installing it via Homebrew (one-time)..."; \
+		"$(BREW)" install openssl@3; \
+		openssl_prefix="$$( "$(BREW)" --prefix openssl@3 )"; \
+	fi; \
+	zlib_prefix="$$( "$(BREW)" --prefix zlib 2>/dev/null || true )"; \
+	if [ ! -d "$$zlib_prefix" ]; then \
+		echo "Missing zlib. Installing it via Homebrew (one-time)..."; \
+		"$(BREW)" install zlib; \
+		zlib_prefix="$$( "$(BREW)" --prefix zlib )"; \
+	fi; \
+	bzip2_prefix="$$( "$(BREW)" --prefix bzip2 2>/dev/null || true )"; \
+	if [ ! -d "$$bzip2_prefix" ]; then \
+		echo "Missing bzip2. Installing it via Homebrew (one-time)..."; \
+		"$(BREW)" install bzip2; \
+		bzip2_prefix="$$( "$(BREW)" --prefix bzip2 )"; \
+	fi; \
+	readline_prefix="$$( "$(BREW)" --prefix readline 2>/dev/null || true )"; \
+	if [ ! -d "$$readline_prefix" ]; then \
+		echo "Missing readline. Installing it via Homebrew (one-time)..."; \
+		"$(BREW)" install readline; \
+		readline_prefix="$$( "$(BREW)" --prefix readline )"; \
 	fi; \
 	if ! "$$pyenv_bin" versions --bare | grep -qx "$(PYENV_VERSION)"; then \
 		echo "Installing Python $(PYENV_VERSION) via pyenv (one-time)..."; \
 		echo "This is the slowest AirPyrt step and can take several minutes while Python 2.7.18 builds."; \
 		env \
-			LDFLAGS="-L$(ZLIB_PREFIX)/lib -L$(BZIP2_PREFIX)/lib -L$(READLINE_PREFIX)/lib" \
-			CPPFLAGS="-I$(ZLIB_PREFIX)/include -I$(BZIP2_PREFIX)/include -I$(READLINE_PREFIX)/include" \
-			PKG_CONFIG_PATH="$(ZLIB_PREFIX)/lib/pkgconfig:$(BZIP2_PREFIX)/lib/pkgconfig:$(READLINE_PREFIX)/lib/pkgconfig" \
+			PYTHON_BUILD_HOMEBREW_OPENSSL_FORMULA="openssl@3 openssl" \
+			LDFLAGS="-L$$zlib_prefix/lib -L$$bzip2_prefix/lib -L$$readline_prefix/lib" \
+			CPPFLAGS="-I$$zlib_prefix/include -I$$bzip2_prefix/include -I$$readline_prefix/include" \
+			PKG_CONFIG_PATH="$$openssl_prefix/lib/pkgconfig:$$zlib_prefix/lib/pkgconfig:$$bzip2_prefix/lib/pkgconfig:$$readline_prefix/lib/pkgconfig" \
 			"$$pyenv_bin" install -s $(PYENV_VERSION); \
 	else \
 		echo "pyenv Python $(PYENV_VERSION) already installed"; \

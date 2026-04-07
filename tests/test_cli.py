@@ -48,14 +48,31 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
                     with mock.patch("timecapsulesmb.cli.bootstrap.run") as run_mock:
                         with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", return_value="/usr/bin/make"):
-                            with redirect_stdout(output):
-                                rc = bootstrap.main([])
+                            with mock.patch("timecapsulesmb.cli.bootstrap.confirm", return_value=True):
+                                with redirect_stdout(output):
+                                    rc = bootstrap.main([])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("Provisioning AirPyrt via 'make airpyrt'", text)
         self.assertIn("may take several minutes", text)
         self.assertIn("--skip-airpyrt", text)
         run_mock.assert_called_once_with(["/usr/bin/make", "airpyrt"], cwd=bootstrap.REPO_ROOT)
+
+    def test_bootstrap_can_skip_optional_airpyrt_after_prompt(self) -> None:
+        output = io.StringIO()
+        with mock.patch("pathlib.Path.exists", return_value=True):
+            with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", return_value=bootstrap.VENVDIR / "bin" / "python"):
+                with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
+                    with mock.patch("timecapsulesmb.cli.bootstrap.run") as run_mock:
+                        with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", return_value="/usr/bin/make"):
+                            with mock.patch("timecapsulesmb.cli.bootstrap.confirm", return_value=False):
+                                with redirect_stdout(output):
+                                    rc = bootstrap.main([])
+        self.assertEqual(rc, 0)
+        text = output.getvalue()
+        self.assertIn("AirPyrt support is optional", text)
+        self.assertIn("Skipping AirPyrt setup", text)
+        run_mock.assert_not_called()
 
     def test_bootstrap_returns_error_when_requirements_missing(self) -> None:
         stderr = io.StringIO()
@@ -75,8 +92,9 @@ class CliTests(unittest.TestCase):
                         side_effect=subprocess.CalledProcessError(2, ["make", "airpyrt"]),
                     ):
                         with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", return_value="/usr/bin/make"):
-                            with redirect_stdout(output):
-                                rc = bootstrap.main([])
+                            with mock.patch("timecapsulesmb.cli.bootstrap.confirm", return_value=True):
+                                with redirect_stdout(output):
+                                    rc = bootstrap.main([])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("Warning: AirPyrt setup failed", text)
