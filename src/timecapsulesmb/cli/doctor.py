@@ -32,6 +32,7 @@ def main(argv: list[str] | None = None) -> int:
         skip_ssh=args.skip_ssh,
         skip_bonjour=args.skip_bonjour,
         skip_smb=args.skip_smb,
+        on_result=None if args.json else print_result,
     )
 
     if args.json:
@@ -41,9 +42,6 @@ def main(argv: list[str] | None = None) -> int:
             "summary": "doctor found one or more fatal problems." if fatal else "doctor checks passed.",
         }, indent=2, sort_keys=True))
         return 1 if fatal else 0
-
-    for result in results:
-        print_result(result)
 
     if fatal:
         print("\nSummary: doctor found one or more fatal problems.")
