@@ -41,6 +41,22 @@ class CliTests(unittest.TestCase):
         self.assertIn("deploy", text)
         self.assertIn("doctor", text)
 
+    def test_bootstrap_explains_long_running_airpyrt_step(self) -> None:
+        output = io.StringIO()
+        with mock.patch("pathlib.Path.exists", return_value=True):
+            with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", return_value=bootstrap.VENVDIR / "bin" / "python"):
+                with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
+                    with mock.patch("timecapsulesmb.cli.bootstrap.run") as run_mock:
+                        with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", return_value="/usr/bin/make"):
+                            with redirect_stdout(output):
+                                rc = bootstrap.main([])
+        self.assertEqual(rc, 0)
+        text = output.getvalue()
+        self.assertIn("Provisioning AirPyrt via 'make airpyrt'", text)
+        self.assertIn("may take several minutes", text)
+        self.assertIn("--skip-airpyrt", text)
+        run_mock.assert_called_once_with(["/usr/bin/make", "airpyrt"], cwd=bootstrap.REPO_ROOT)
+
     def test_bootstrap_returns_error_when_requirements_missing(self) -> None:
         stderr = io.StringIO()
         with mock.patch("pathlib.Path.exists", return_value=False):

@@ -95,6 +95,7 @@ airpyrt-bootstrap:
 	@pyenv_bin="$(PYENV_BIN)"; \
 	if [ -z "$$pyenv_bin" ]; then \
 		echo "pyenv not found. Installing it via Homebrew (one-time)..."; \
+		echo "This may take a minute or two depending on your network and Homebrew state."; \
 		"$(BREW)" install pyenv; \
 		pyenv_bin="$$( "$(BREW)" --prefix pyenv )/bin/pyenv"; \
 	fi; \
@@ -120,6 +121,7 @@ airpyrt-bootstrap:
 	fi; \
 	if ! "$$pyenv_bin" versions --bare | grep -qx "$(PYENV_VERSION)"; then \
 		echo "Installing Python $(PYENV_VERSION) via pyenv (one-time)..."; \
+		echo "This is the slowest AirPyrt step and can take several minutes while Python 2.7.18 builds."; \
 		env \
 			LDFLAGS="-L$(ZLIB_PREFIX)/lib -L$(BZIP2_PREFIX)/lib -L$(READLINE_PREFIX)/lib" \
 			CPPFLAGS="-I$(ZLIB_PREFIX)/include -I$(BZIP2_PREFIX)/include -I$(READLINE_PREFIX)/include" \
