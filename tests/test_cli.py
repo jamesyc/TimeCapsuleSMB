@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -47,6 +48,23 @@ class CliTests(unittest.TestCase):
                 rc = bootstrap.main([])
         self.assertEqual(rc, 1)
         self.assertIn("Missing", stderr.getvalue())
+
+    def test_bootstrap_continues_when_airpyrt_setup_fails(self) -> None:
+        output = io.StringIO()
+        with mock.patch("pathlib.Path.exists", return_value=True):
+            with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", return_value=bootstrap.VENVDIR / "bin" / "python"):
+                with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
+                    with mock.patch(
+                        "timecapsulesmb.cli.bootstrap.run",
+                        side_effect=subprocess.CalledProcessError(2, ["make", "airpyrt"]),
+                    ):
+                        with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", return_value="/usr/bin/make"):
+                            with redirect_stdout(output):
+                                rc = bootstrap.main([])
+        self.assertEqual(rc, 0)
+        text = output.getvalue()
+        self.assertIn("Warning: AirPyrt setup failed", text)
+        self.assertIn("Host setup complete.", text)
 
     def test_configure_writes_values_from_prompts(self) -> None:
         output = io.StringIO()

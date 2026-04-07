@@ -2,7 +2,6 @@
 #
 # Prerequisites (macOS):
 #   - Homebrew: https://brew.sh
-#   - pyenv:    brew install pyenv
 #   - Build deps: brew install zlib bzip2 readline
 #
 # Quick start:
@@ -16,7 +15,7 @@
 #   make discover                - run tcapsule discover (depends on install)
 #   make bootstrap-host          - run the host bootstrap helper
 #   make prep-device             - discover the device and enable SSH if needed
-#   make airpyrt                 - clone+install AirPyrt into local .airpyrt-venv (via pyenv Python 2)
+#   make airpyrt                 - clone+install AirPyrt into local .airpyrt-venv (auto-installs pyenv if needed)
 #   make airpyrt-clone           - clone AirPyrt repo only
 #   make airpyrt-bootstrap       - ensure pyenv Python 2.7.18 is installed
 #   make airpyrt-venv            - create local Python 2 venv from pyenv version
@@ -59,6 +58,7 @@ clean: airpyrt-clean
 
 # --- AirPyrt (acp) installation helpers ---
 # AirPyrt is Python 2.x-based. We isolate it in .airpyrt-venv using pyenv's Python 2.7.18.
+# pyenv does not need shell initialization here because we invoke the binary directly.
 DEPSDIR := .deps
 AIRPYRT_DIR := $(DEPSDIR)/airpyrt-tools
 AIRPYRT_ENV := .airpyrt-venv
@@ -66,12 +66,10 @@ AIRPYRT_PY := $(AIRPYRT_ENV)/bin/python
 AIRPYRT_PIP := $(AIRPYRT_ENV)/bin/pip
 
 PYENV_VERSION := 2.7.18
-PYENV_BIN := $(shell command -v pyenv 2>/dev/null)
-PYENV_ROOT := $(shell pyenv root 2>/dev/null)
-PYENV_PY2 := $(PYENV_ROOT)/versions/$(PYENV_VERSION)/bin/python2.7
+BREW := $(shell command -v brew 2>/dev/null)
+PYENV_BIN := $(shell command -v pyenv 2>/dev/null || if [ -x "$$(brew --prefix pyenv 2>/dev/null)/bin/pyenv" ]; then printf "%s\n" "$$(brew --prefix pyenv 2>/dev/null)/bin/pyenv"; fi)
 
 # Homebrew prefixes for build deps (zlib, bzip2, readline)
-BREW := $(shell command -v brew 2>/dev/null)
 ZLIB_PREFIX := $(shell brew --prefix zlib 2>/dev/null)
 BZIP2_PREFIX := $(shell brew --prefix bzip2 2>/dev/null)
 READLINE_PREFIX := $(shell brew --prefix readline 2>/dev/null)
@@ -90,13 +88,18 @@ airpyrt-clone:
 	fi
 
 airpyrt-bootstrap:
-	@if [ -z "$(PYENV_BIN)" ]; then \
-		echo "pyenv not found. Please 'brew install pyenv' and ensure it is on PATH."; \
-		echo "Also initialize it in your shell (e.g., eval \"$$(pyenv init -)\")."; \
-		exit 1; \
-	fi
 	@if [ -z "$(BREW)" ]; then \
 		echo "Homebrew not found. Install from https://brew.sh to provide build deps (zlib, bzip2, readline)."; \
+		exit 1; \
+	fi
+	@pyenv_bin="$(PYENV_BIN)"; \
+	if [ -z "$$pyenv_bin" ]; then \
+		echo "pyenv not found. Installing it via Homebrew (one-time)..."; \
+		"$(BREW)" install pyenv; \
+		pyenv_bin="$$( "$(BREW)" --prefix pyenv )/bin/pyenv"; \
+	fi; \
+	if [ ! -x "$$pyenv_bin" ]; then \
+		echo "pyenv install did not produce a usable binary."; \
 		exit 1; \
 	fi
 	@if [ ! -d "$(ZLIB_PREFIX)" ]; then \
@@ -111,22 +114,36 @@ airpyrt-bootstrap:
 		echo "Missing readline. Run: brew install readline"; \
 		exit 1; \
 	fi
-	@if ! pyenv versions --bare | grep -qx "$(PYENV_VERSION)"; then \
+	@pyenv_bin="$(PYENV_BIN)"; \
+	if [ -z "$$pyenv_bin" ]; then \
+		pyenv_bin="$$( "$(BREW)" --prefix pyenv )/bin/pyenv"; \
+	fi; \
+	if ! "$$pyenv_bin" versions --bare | grep -qx "$(PYENV_VERSION)"; then \
 		echo "Installing Python $(PYENV_VERSION) via pyenv (one-time)..."; \
 		env \
 			LDFLAGS="-L$(ZLIB_PREFIX)/lib -L$(BZIP2_PREFIX)/lib -L$(READLINE_PREFIX)/lib" \
 			CPPFLAGS="-I$(ZLIB_PREFIX)/include -I$(BZIP2_PREFIX)/include -I$(READLINE_PREFIX)/include" \
 			PKG_CONFIG_PATH="$(ZLIB_PREFIX)/lib/pkgconfig:$(BZIP2_PREFIX)/lib/pkgconfig:$(READLINE_PREFIX)/lib/pkgconfig" \
-			pyenv install -s $(PYENV_VERSION); \
+			"$$pyenv_bin" install -s $(PYENV_VERSION); \
 	else \
 		echo "pyenv Python $(PYENV_VERSION) already installed"; \
 	fi
 
 airpyrt-venv: install airpyrt-bootstrap
-	@echo "Creating local AirPyrt venv at $(AIRPYRT_ENV) using $(PYENV_PY2)"
 	@$(PIP) install -q "virtualenv==$(VIRTUALENV_VERSION)"
-	@if [ ! -d $(AIRPYRT_ENV) ]; then \
-		$(VENVDIR)/bin/virtualenv -p $(PYENV_PY2) $(AIRPYRT_ENV); \
+	@pyenv_bin="$(PYENV_BIN)"; \
+	if [ -z "$$pyenv_bin" ]; then \
+		pyenv_bin="$$( "$(BREW)" --prefix pyenv )/bin/pyenv"; \
+	fi; \
+	pyenv_root="$$( "$$pyenv_bin" root )"; \
+	pyenv_py2="$$pyenv_root/versions/$(PYENV_VERSION)/bin/python2.7"; \
+	echo "Creating local AirPyrt venv at $(AIRPYRT_ENV) using $$pyenv_py2"; \
+	if [ ! -x "$$pyenv_py2" ]; then \
+		echo "Missing Python $(PYENV_VERSION) at $$pyenv_py2"; \
+		exit 1; \
+	fi; \
+	if [ ! -d $(AIRPYRT_ENV) ]; then \
+		$(VENVDIR)/bin/virtualenv -p "$$pyenv_py2" $(AIRPYRT_ENV); \
 	else \
 		echo "$(AIRPYRT_ENV) already exists"; \
 	fi
@@ -155,9 +172,9 @@ airpyrt-uninstall-pyenv:
 		echo "pyenv not found; skipping uninstall."; \
 		exit 0; \
 	fi
-	@if ! pyenv versions --bare | grep -qx "$(PYENV_VERSION)"; then \
+	@if ! "$(PYENV_BIN)" versions --bare | grep -qx "$(PYENV_VERSION)"; then \
 		echo "pyenv Python $(PYENV_VERSION) not installed; skipping."; \
 		exit 0; \
 	fi
-	pyenv uninstall -f $(PYENV_VERSION)
+	"$(PYENV_BIN)" uninstall -f $(PYENV_VERSION)
 	@echo "Uninstalled pyenv Python $(PYENV_VERSION)."

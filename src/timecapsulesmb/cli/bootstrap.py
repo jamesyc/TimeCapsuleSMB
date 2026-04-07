@@ -45,7 +45,12 @@ def maybe_install_airpyrt(skip_airpyrt: bool) -> None:
         return
 
     print("Provisioning AirPyrt via 'make airpyrt'")
-    run([make, "airpyrt"], cwd=REPO_ROOT)
+    try:
+        run([make, "airpyrt"], cwd=REPO_ROOT)
+    except subprocess.CalledProcessError as exc:
+        print("Warning: AirPyrt setup failed. Host bootstrap will continue without it.")
+        print("Later, rerun './tcapsule bootstrap' or 'make airpyrt' after fixing the local prerequisites.")
+        print(f"AirPyrt setup command failed with exit code {exc.returncode}: {exc.cmd}")
 
 
 def main(argv: Optional[list[str]] = None) -> int:
