@@ -110,6 +110,11 @@ CROSS_EXECUTE="$(cd "$(dirname "$0")" && pwd)/samba4-cross-exec.sh"
         CONFIGURE_ARGS="$CONFIGURE_ARGS --with-static-modules=$SAMBA4_STATIC_MODULES"
     fi
 
+    # NetBSD 7.2 on the Time Capsule does not expose the POSIX ACL API Samba
+    # probes for in configure (`sys/acl.h`, libacl). We use the acl_xattr VFS
+    # module to provide Windows ACL semantics via xattrs/tdb instead of native
+    # filesystem ACLs.
+    #
     # Intentionally keep the Time Machine VFS stack static during experiments.
     # The device does not have a normal shared-module runtime tree, and the
     # earlier fruit test failed because smbd tried to dlopen streams_xattr.so.
