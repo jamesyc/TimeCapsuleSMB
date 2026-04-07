@@ -41,8 +41,17 @@ MDNS_HOST_LABEL=__MDNS_HOST_LABEL__
 
 log() {
     log_dir=${RAM_LOG%/*}
+    tmp_log="$RAM_LOG.tmp.$$"
+    line="$(date '+%Y-%m-%d %H:%M:%S') rc.local: $*"
+
     [ -d "$log_dir" ] || mkdir -p "$log_dir"
-    echo "$(date '+%Y-%m-%d %H:%M:%S') rc.local: $*" >>"$RAM_LOG"
+    {
+        if [ -f "$RAM_LOG" ]; then
+            /usr/bin/tail -n 255 "$RAM_LOG" 2>/dev/null || true
+        fi
+        echo "$line"
+    } >"$tmp_log"
+    mv "$tmp_log" "$RAM_LOG"
 }
 
 cleanup_old_runtime() {
@@ -64,7 +73,6 @@ prepare_ram_root() {
     chmod 755 "$RAM_ROOT" "$RAM_SBIN" "$RAM_ETC" "$RAM_VAR" "$RAM_LOCKS" "$RAM_PRIVATE"
     chmod 755 "$RAM_VAR/run" "$RAM_VAR/run/ncalrpc"
     chmod 700 "$RAM_VAR/cores"
-    : >"$RAM_LOG"
 }
 
 get_iface_ipv4() {

@@ -22,8 +22,17 @@ POLL_SECONDS=300
 
 log() {
     log_dir=${WATCHDOG_LOG%/*}
+    tmp_log="$WATCHDOG_LOG.tmp.$$"
+    line="$(date '+%Y-%m-%d %H:%M:%S') watchdog: $*"
+
     [ -d "$log_dir" ] || mkdir -p "$log_dir"
-    echo "$(date '+%Y-%m-%d %H:%M:%S') watchdog: $*" >>"$WATCHDOG_LOG"
+    {
+        if [ -f "$WATCHDOG_LOG" ]; then
+            /usr/bin/tail -n 255 "$WATCHDOG_LOG" 2>/dev/null || true
+        fi
+        echo "$line"
+    } >"$tmp_log"
+    mv "$tmp_log" "$WATCHDOG_LOG"
 }
 
 get_iface_ipv4() {
