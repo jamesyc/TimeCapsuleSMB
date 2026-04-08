@@ -1,6 +1,6 @@
 # TimeCapsuleSMB
 
-Apple AirPort Time Capsules are still perfectly usable pieces of hardware, but they only support AFP and SMB1. Apple has removed SMB1 support from MacOS a long time ago, and AFP support is removed for MacOS 27.
+Apple AirPort Time Capsules are still perfectly usable pieces of hardware, but they only support AFP and SMB1. Apple has removed SMB1 support from MacOS a long time ago, and AFP support is being removed for MacOS 27.
 
 **NOTE THAT TIME MACHINE ON MACOS 26.4 IS CURRENTLY BROKEN**, see https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups
 
@@ -17,21 +17,21 @@ THIS CURRENTLY DOES NOT SUPPORT older NetBSD 4 based Time Capsules. This only su
 <img width="256" height="192" alt="image" src="https://github.com/user-attachments/assets/5d0b044f-2137-4bb7-8d65-3d1bb251754c" />
 
 
-**It is expected to get "Internal disk needs repair" because this adds files to the internal disk**; see [this issue for more information](https://github.com/jamesyc/TimeCapsuleSMB/issues/13).
+**It is expected to get "Internal disk needs repair" because this adds files to the internal disk**; see [this issue for more information](https://github.com/jamesyc/TimeCapsuleSMB/issues/13). The `deploy` script will drop 4 files in `/mnt/Flash` on the Time Capsule, plus a `samba4` folder on the root of the hard drive. The `uninstall` script will delete these files and reboot the Time Capsule. 
 
 The current authentication model uses `admin` as the username, and the Samba password is the same password you enter during setup when the tool asks for the Time Capsule password. Guest access is disabled. 
 
 ## Requirements
 
-You do not need to rebuild Samba yourself. The working binaries are already checked into this repository under [bin/](bin), and the normal user workflow uses those checked-in files directly.
+You do not need to build Samba yourself. The working binaries are already checked into this repository under [bin/](bin), and the normal user workflow uses those checked-in files directly. To rebuild `smbd` by yourself, run the scripts in `build/` on a NetBSD machine.
+
+Also, if you are an expert, you can copy the binary at [/bin/samba4/smbd](/bin/samba4/smbd) onto the Time Capsule and set it up yourself. 
 
 For the typical setup path, you need only:
 
 - a Mac on the same local network as the Time Capsule
 - the Time Capsule password
 - Python 3 and Homebrew installed on your Mac.
-
-That is it. The build system exists in this repository because it was necessary to get the binaries in the first place, but most users should ignore that part entirely.
 
 ## Quick Start
 
