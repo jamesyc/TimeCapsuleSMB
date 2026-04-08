@@ -170,7 +170,7 @@ EOF
     # missing TDB record is treated as corruption instead of "no xattrs yet".
     # That bubbles up as EINVAL from listxattr/getxattr and breaks SMB
     # rename/delete paths. Patch xattr_tdb to treat NOT_FOUND as an empty set.
-    perl -0pi -e 's/status = dbwrap_fetch\(db, frame, key, &data\);\n\tif \(!NT_STATUS_IS_OK\(status\)\) \{\n\t\treturn NT_STATUS_INTERNAL_DB_CORRUPTION;\n\t\}/status = dbwrap_fetch(db, frame, key, \&data);\n\tif (NT_STATUS_EQUAL(status, NT_STATUS_NOT_FOUND)) {\n\t\t*presult = talloc_zero(mem_ctx, struct tdb_xattrs);\n\t\tif (*presult == NULL) {\n\t\t\treturn NT_STATUS_NO_MEMORY;\n\t\t}\n\t\treturn NT_STATUS_OK;\n\t}\n\tif (!NT_STATUS_IS_OK(status)) {\n\t\treturn NT_STATUS_INTERNAL_DB_CORRUPTION;\n\t}/' \
+    perl -0pi -e 's/\tstatus = dbwrap_fetch\(db, frame, key, &data\);\n\tif \(!NT_STATUS_IS_OK\(status\)\) \{\n\t\treturn NT_STATUS_INTERNAL_DB_CORRUPTION;\n\t\}/\tstatus = dbwrap_fetch(db, frame, key, \&data);\n\tif (NT_STATUS_EQUAL(status, NT_STATUS_NOT_FOUND)) {\n\t\t*presult = talloc_zero(mem_ctx, struct tdb_xattrs);\n\t\tif (*presult == NULL) {\n\t\t\treturn NT_STATUS_NO_MEMORY;\n\t\t}\n\t\treturn NT_STATUS_OK;\n\t}\n\tif (!NT_STATUS_IS_OK(status)) {\n\t\treturn NT_STATUS_INTERNAL_DB_CORRUPTION;\n\t}/' \
         "$SAMBA4_SRC_DIR/source3/lib/xattr_tdb.c"
 
     git -C "$SAMBA4_SRC_DIR" rev-parse --short HEAD
