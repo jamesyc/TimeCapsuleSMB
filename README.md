@@ -42,6 +42,8 @@ From the root of this repository, the normal flow is:
 5. `.venv/bin/tcapsule doctor`
 6. `.venv/bin/tcapsule uninstall` if you want to remove TimeCapsuleSMB later
 
+Just delete this `TimeCapsuleSMB` folder if you want to remove it from your Mac after you're done setting up the Time Capsule. All the scripts/binaries/etc are stored in the `TimeCapsuleSMB` folder, so if you want to clean up your Mac then just deleting the folder is fine.
+
 If you prefer, you can activate the virtual environment after step 1 and then run `tcapsule ...` directly:
 
 ```bash
