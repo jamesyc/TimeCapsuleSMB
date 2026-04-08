@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import argparse
+from typing import Optional
 
-from . import bootstrap, configure, deploy, discover, doctor, prep_device
+from . import bootstrap, configure, deploy, discover, doctor, prep_device, uninstall
 
 
 COMMANDS = {
@@ -12,6 +13,7 @@ COMMANDS = {
     "discover": discover.main,
     "doctor": doctor.main,
     "prep-device": prep_device.main,
+    "uninstall": uninstall.main,
 }
 
 
@@ -22,7 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     return COMMANDS[args.command](args.args)

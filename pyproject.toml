@@ -7,7 +7,7 @@ name = "timecapsulesmb"
 version = "0.1.0"
 description = "Deploy modern Samba to Apple AirPort Time Capsules."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 dependencies = [
   "ifaddr>=0.2.0",
   "pexpect>=4.9.0",

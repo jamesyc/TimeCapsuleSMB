@@ -1,6 +1,6 @@
 # TimeCapsuleSMB
 
-Apple AirPort Time Capsules are still perfectly usable pieces of hardware, but they only support AFP and SMB1. Apple has removed SMB1 support from MacOS a long time ago, and AFP support is removed for MacOS 27.
+Apple AirPort Time Capsules are still perfectly usable pieces of hardware, but they only support AFP and SMB1. Apple has removed SMB1 support from MacOS a long time ago, and AFP support is being removed for MacOS 27.
 
 **NOTE THAT TIME MACHINE ON MACOS 26.4 IS CURRENTLY BROKEN**, see https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups
 
@@ -10,40 +10,49 @@ If you want the long-form engineering background, design decisions, and implemen
 
 ## Expectations
 
-If the setup completes successfully, your Time Capsule will boot its own Samba 4 server automatically, advertise itself over Bonjour, and accept authenticated SMB connections from macOS. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack.
+If the setup completes successfully, your Time Capsule will boot its own Samba 4 server automatically, advertise itself over Bonjour (show up automatically in the "Network" folder on MacOS), and accept authenticated SMB connections from macOS. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack. **This will disable Apple's AFP and SMB file server**, so do not expect those to be running at the same time. 
 
-The current authentication model uses `admin` as the username, and the Samba password is the same password you enter during setup when the tool asks for the Time Capsule password. Guest access is disabled.
+THIS CURRENTLY DOES NOT SUPPORT older NetBSD 4 based Time Capsules. This only supports Time Capsules running NetBSD 6. Support for older Time Capsules is in progress, for more information [see this issue](https://github.com/jamesyc/TimeCapsuleSMB/issues/15). Your Time Capsule should look like this:
+
+<img width="256" height="192" alt="image" src="https://github.com/user-attachments/assets/5d0b044f-2137-4bb7-8d65-3d1bb251754c" />
+
+
+**It is expected to get "Internal disk needs repair" because this adds files to the internal disk**; see [this issue for more information](https://github.com/jamesyc/TimeCapsuleSMB/issues/13). The `deploy` script will drop 4 files in `/mnt/Flash` on the Time Capsule, plus a `samba4` folder on the root of the hard drive. The `uninstall` script will delete these files and reboot the Time Capsule. 
+
+The current authentication model uses `admin` as the username, and the Samba password is the same password you enter during setup when the tool asks for the Time Capsule password. Guest access is disabled. 
 
 ## Requirements
 
-You do not need to rebuild Samba yourself. The working binaries are already checked into this repository under [bin/](bin), and the normal user workflow uses those checked-in files directly.
+You do not need to build Samba yourself. The working binaries are already checked into this repository under [bin/](bin), and the normal user workflow uses those checked-in files directly. To rebuild `smbd` by yourself, run the scripts in `build/` on a NetBSD machine.
+
+Also, if you are an expert, you can copy the binary at [/bin/samba4/smbd](/bin/samba4/smbd) onto the Time Capsule and set it up yourself. 
 
 For the typical setup path, you need only:
 
 - a Mac on the same local network as the Time Capsule
 - the Time Capsule password
-- Python 3 installed on your Mac. Homebrew is recommended.
-
-That is it. The build system exists in this repository because it was necessary to get the binaries in the first place, but most users should ignore that part entirely.
+- Python 3 and Homebrew installed on your Mac.
 
 ## Quick Start
 
 From the root of this repository, the normal flow is:
 
 1. `./tcapsule bootstrap`
-2. `.venv/bin/tcapsule prep-device`
-3. `.venv/bin/tcapsule configure`
+2. `.venv/bin/tcapsule configure`
+3. `.venv/bin/tcapsule prep-device`
 4. `.venv/bin/tcapsule deploy`
 5. `.venv/bin/tcapsule doctor`
+6. `.venv/bin/tcapsule uninstall` if you want to remove TimeCapsuleSMB later
 
 If you prefer, you can activate the virtual environment after step 1 and then run `tcapsule ...` directly:
 
 ```bash
 source .venv/bin/activate
-tcapsule prep-device
 tcapsule configure
+tcapsule prep-device
 tcapsule deploy
 tcapsule doctor
+tcapsule uninstall
 ```
 
 ## Step 1: Prepare Your Mac
@@ -58,23 +67,7 @@ This command prepares the local Python environment in this folder. It creates th
 
 If this is your first time using the repo, this is the only command you should run with the repo-local launcher. After this step, use `.venv/bin/tcapsule ...` or activate `.venv`.
 
-## Step 2: Find The Time Capsule And Enable SSH
-
-Run:
-
-```bash
-.venv/bin/tcapsule prep-device
-```
-
-This step finds the Time Capsule on your local network and, if necessary, enables SSH access on it. It is for identifying the right device and getting it into a state where it can be managed.
-
-In practical terms, this script will:
-
-- discover Time Capsules on your network
-- let you pick the correct one
-- enable SSH if SSH is not already available
-
-## Step 3: Create The Local Config
+## Step 2: Create The Local Config
 
 Run:
 
@@ -82,7 +75,9 @@ Run:
 .venv/bin/tcapsule configure
 ```
 
-This will write a `.env` file in the folder, and that file acts as the configuration for the target Time Capsule.
+This writes a `.env` file in the repo folder, and the other `tcapsule` commands use that file as their local device configuration.
+
+At the start of `configure`, the tool first tries to discover your Time Capsule on the local network via mDNS/Bonjour. If it finds one, it prefills the SSH target for you. If it does not find one, it falls back to the normal manual prompt flow.
 
 For typical users, most of the defaults are good enough. If the script offers a value and you do not have a reason to change it, **just pressing Enter is usually the correct choice**.
 
@@ -99,6 +94,22 @@ The password you enter here is important. It becomes the password used for the S
 - password: the same Time Capsule password you entered during configuration
 
 Samba does not magically use Apple’s internal password backend; unfortunately, using Apple's password system is not possible. We deliberately reuse the same password value so that the user experience is simpler and less confusing.
+
+## Step 3: Find The Time Capsule And Enable SSH
+
+Run:
+
+```bash
+.venv/bin/tcapsule prep-device
+```
+
+This step uses the `.env` configuration you just wrote. In particular, it uses the configured `TC_HOST` and `TC_PASSWORD` values and then enables or disables SSH through AirPyrt as needed.
+
+In practical terms, this script will:
+
+- use the Time Capsule target from `.env`
+- check whether SSH is already reachable
+- enable SSH if SSH is not already available
 
 ## Step 4: Deploy It
 
@@ -147,6 +158,36 @@ If you want the results in JSON instead of human-readable text, use:
 ```bash
 .venv/bin/tcapsule doctor --json
 ```
+
+## Step 6: Remove It Later If Needed
+
+Run:
+
+```bash
+.venv/bin/tcapsule uninstall
+```
+
+This removes the managed TimeCapsuleSMB payload from the internal disk, removes the boot hook files from `/mnt/Flash`, and reboots the Time Capsule so the custom Samba runtime does not come back on the next boot.
+
+If you want to skip the reboot confirmation prompt, use:
+
+```bash
+.venv/bin/tcapsule uninstall --yes
+```
+
+If you want to preview the uninstall plan without changing the device, use:
+
+```bash
+.venv/bin/tcapsule uninstall --dry-run
+```
+
+For machine-readable dry-run output:
+
+```bash
+.venv/bin/tcapsule uninstall --dry-run --json
+```
+
+Uninstall success means the managed payload and boot files are gone after reboot. It does **not** require Apple SMB or AFP to be enabled afterward. Those services may be on or off depending on the device's own settings.
 
 ## Connecting From Finder
 

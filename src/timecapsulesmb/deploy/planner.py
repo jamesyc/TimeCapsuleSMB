@@ -30,6 +30,18 @@ class DeploymentPlan:
     reboot_required: bool
 
 
+@dataclass(frozen=True)
+class UninstallPlan:
+    host: str
+    volume_root: str
+    payload_dir: str
+    flash_targets: dict[str, str]
+    remove_targets: list[str]
+    verify_absent_targets: list[str]
+    stop_commands: list[str]
+    reboot_required: bool
+
+
 def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path, mdns_path: Path) -> DeploymentPlan:
     payload_dir = device_paths.payload_dir
     flash_targets = {
@@ -76,5 +88,39 @@ def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path,
             f"chmod 700 {private_dir}",
             f"chmod 600 {private_dir}/smbpasswd {private_dir}/username.map",
         ],
+        reboot_required=True,
+    )
+
+
+def build_uninstall_plan(host: str, device_paths: DevicePaths) -> UninstallPlan:
+    payload_dir = device_paths.payload_dir
+    flash_targets = {
+        "rc.local": "/mnt/Flash/rc.local",
+        "start-samba.sh": "/mnt/Flash/start-samba.sh",
+        "watchdog.sh": "/mnt/Flash/watchdog.sh",
+        "dfree.sh": "/mnt/Flash/dfree.sh",
+    }
+    remove_targets = [
+        payload_dir,
+        *flash_targets.values(),
+        "/mnt/Memory/samba4",
+        "/root/tc-stage4",
+    ]
+    verify_absent_targets = [
+        payload_dir,
+        *flash_targets.values(),
+    ]
+    stop_commands = [
+        "pkill smbd >/dev/null 2>&1 || true",
+        "pkill mdns-smbd-advertiser >/dev/null 2>&1 || true",
+    ]
+    return UninstallPlan(
+        host=host,
+        volume_root=device_paths.volume_root,
+        payload_dir=payload_dir,
+        flash_targets=flash_targets,
+        remove_targets=remove_targets,
+        verify_absent_targets=verify_absent_targets,
+        stop_commands=stop_commands,
         reboot_required=True,
     )

@@ -5,6 +5,7 @@ import getpass
 import json
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 from timecapsulesmb.core.config import ENV_PATH, extract_host, parse_env_values
 from timecapsulesmb.deploy.artifact_resolver import resolve_required_artifacts
@@ -33,7 +34,7 @@ def require(values: dict[str, str], key: str) -> str:
     return value
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Deploy the checked-in Samba 4 payload to a Time Capsule.")
     parser.add_argument("--no-reboot", action="store_true", help="Do not reboot after deployment")
     parser.add_argument("--yes", action="store_true", help="Do not prompt before reboot")
