@@ -110,7 +110,7 @@ CROSS_EXECUTE="$(cd "$(dirname "$0")" && pwd)/samba4-cross-exec.sh"
         CONFIGURE_ARGS="$CONFIGURE_ARGS --with-static-modules=$SAMBA4_STATIC_MODULES"
     fi
 
-    # NetBSD 7.2 on the Time Capsule does not expose the POSIX ACL API Samba
+    # NetBSD 6 on the Time Capsule does not expose the POSIX ACL API Samba
     # probes for in configure (`sys/acl.h`, libacl). We use the acl_xattr VFS
     # module to provide Windows ACL semantics via xattrs/tdb instead of native
     # filesystem ACLs.
