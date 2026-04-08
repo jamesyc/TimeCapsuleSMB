@@ -12,7 +12,12 @@ If you want the long-form engineering background, design decisions, and implemen
 
 If the setup completes successfully, your Time Capsule will boot its own Samba 4 server automatically, advertise itself over Bonjour (show up automatically in the "Network" folder on MacOS), and accept authenticated SMB connections from macOS. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack. **This will disable Apple's AFP and SMB file server**, so do not expect those to be running at the same time. 
 
-THIS DOES NOT SUPPORT older NetBSD 4 based Time Capsules. This only supports Time Capsules running NetBSD 6. It **is expected to get "Internal disk needs repair" because this adds files to the internal disk**; see [this issue for more information](https://github.com/jamesyc/TimeCapsuleSMB/issues/13).
+THIS CURRENTLY DOES NOT SUPPORT older NetBSD 4 based Time Capsules. This only supports Time Capsules running NetBSD 6. Support for older Time Capsules is in progress, for more information [see this issue](https://github.com/jamesyc/TimeCapsuleSMB/issues/15). Your Time Capsule should look like this:
+
+<img width="256" height="192" alt="image" src="https://github.com/user-attachments/assets/5d0b044f-2137-4bb7-8d65-3d1bb251754c" />
+
+
+**It is expected to get "Internal disk needs repair" because this adds files to the internal disk**; see [this issue for more information](https://github.com/jamesyc/TimeCapsuleSMB/issues/13).
 
 The current authentication model uses `admin` as the username, and the Samba password is the same password you enter during setup when the tool asks for the Time Capsule password. Guest access is disabled. 
 
@@ -24,7 +29,7 @@ For the typical setup path, you need only:
 
 - a Mac on the same local network as the Time Capsule
 - the Time Capsule password
-- Python 3 installed on your Mac. Homebrew is recommended.
+- Python 3 and Homebrew installed on your Mac.
 
 That is it. The build system exists in this repository because it was necessary to get the binaries in the first place, but most users should ignore that part entirely.
 
