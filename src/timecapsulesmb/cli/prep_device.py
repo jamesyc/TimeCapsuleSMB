@@ -1,41 +1,12 @@
 from __future__ import annotations
 
 import argparse
-import getpass
-import sys
 import time
 from typing import Iterable, Optional
 
-from timecapsulesmb.discovery.bonjour import discover, prefer_routable_ipv4, preferred_host
+from timecapsulesmb.core.config import ENV_PATH, extract_host, parse_env_values
 from timecapsulesmb.integrations.airpyrt import disable_ssh, enable_ssh
 from timecapsulesmb.transport.local import tcp_open
-
-
-def list_devices(records) -> None:
-    print("Found devices:")
-    for i, record in enumerate(records, start=1):
-        pref = preferred_host(record)
-        ipv4 = ",".join(record.ipv4) if record.ipv4 else "-"
-        print(f"  {i}. {record.name} | host: {pref} | IPv4: {ipv4}")
-
-
-def choose_device(records):
-    while True:
-        try:
-            raw = input("Select a device by number (q to quit): ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return None
-        if raw.lower() in {"q", "quit", "exit"}:
-            return None
-        if not raw.isdigit():
-            print("Please enter a valid number.")
-            continue
-        idx = int(raw)
-        if not (1 <= idx <= len(records)):
-            print("Out of range.")
-            continue
-        return records[idx - 1]
 
 
 def wait_for_ssh(
@@ -78,41 +49,18 @@ def wait_for_device_up(
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Discover a Time Capsule and enable or disable SSH via AirPyrt.")
+    parser = argparse.ArgumentParser(description="Use the configured Time Capsule target from .env to enable or disable SSH via AirPyrt.")
     parser.parse_args(argv)
 
-    print("Discovering Time Capsules on the local network...")
-    records = discover(timeout=5.0)
-    if not records:
-        print("No Time Capsules discovered. Ensure you're on the same network and try again.")
+    values = parse_env_values(ENV_PATH, defaults={})
+    host_target = values.get("TC_HOST", "")
+    password = values.get("TC_PASSWORD", "")
+    if not host_target or not password:
+        print(f"Missing {ENV_PATH} settings. Run '.venv/bin/tcapsule configure' first.")
         return 1
+    airpyrt_host = extract_host(host_target)
 
-    list_devices(records)
-    selected_device = choose_device(records)
-    if selected_device is None:
-        return 0
-
-    print("Selected:")
-    print(f"  Name: {selected_device.name}")
-    print(f"  Hostname (preferred): {preferred_host(selected_device)}")
-    print(f"  IPv4: {','.join(selected_device.ipv4) if selected_device.ipv4 else '-'}")
-    print(f"  IPv6: {','.join(selected_device.ipv6) if selected_device.ipv6 else '-'}")
-
-    host = preferred_host(selected_device)
-    airpyrt_host = prefer_routable_ipv4(selected_device) or host
-    if not airpyrt_host:
-        print("Could not determine a routable IPv4 or hostname for the selected device.")
-        return 1
-
-    try:
-        password = getpass.getpass("Enter AirPort admin password: ")
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return 1
-    if not password:
-        print("No password provided.")
-        return 1
-
+    print(f"Using configured target from {ENV_PATH}: {host_target}")
     print(f"Probing SSH on {airpyrt_host}:22 ...")
     if not tcp_open(airpyrt_host, 22):
         print("SSH not reachable. Attempting to enable via AirPyrt...")

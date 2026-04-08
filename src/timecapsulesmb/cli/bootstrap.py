@@ -92,8 +92,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     print("\nHost setup complete.", flush=True)
     print("Next steps:", flush=True)
-    print(f"  1. {VENVDIR / 'bin' / 'tcapsule'} prep-device", flush=True)
-    print(f"  2. {VENVDIR / 'bin' / 'tcapsule'} configure", flush=True)
+    print(f"  1. {VENVDIR / 'bin' / 'tcapsule'} configure", flush=True)
+    print(f"  2. {VENVDIR / 'bin' / 'tcapsule'} prep-device", flush=True)
     print(f"  3. {VENVDIR / 'bin' / 'tcapsule'} deploy", flush=True)
     print(f"  4. {VENVDIR / 'bin' / 'tcapsule'} doctor", flush=True)
     return 0

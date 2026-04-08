@@ -108,14 +108,84 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=lambda _l, default, _s: default or "pw"):
-                with mock.patch("timecapsulesmb.cli.configure.validate_ssh_target", return_value=True):
-                    with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
-                        with redirect_stdout(output):
-                            rc = configure.main([])
+            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=lambda _l, default, _s: default or "pw"):
+                    with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=False):
+                        with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_SAMBA_USER"], "admin")
         self.assertIn("Wrote", output.getvalue())
+        self.assertIn("This writes a local .env configuration file", output.getvalue())
+
+    def test_configure_uses_discovered_host_when_available(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        record = mock.Mock(name="Time Capsule", hostname="capsule.local", ipv4=["10.0.0.2"], ipv6=[])
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        prompt_values = iter([
+            "pw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            if label == "Time Capsule SSH target":
+                return default
+            return next(prompt_values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[record]):
+                with mock.patch("timecapsulesmb.cli.configure.prefer_routable_ipv4", return_value="10.0.0.2"):
+                    with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                        with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=False):
+                            with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                                with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                    with redirect_stdout(output):
+                                        rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(fake_values["TC_HOST"], "root@10.0.0.2")
+
+    def test_configure_rejects_blank_password_when_no_existing_password(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        input_values = iter([
+            "root@10.0.0.2",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+        ])
+        password_values = iter(["", "goodpw"])
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                with mock.patch("builtins.input", side_effect=lambda _prompt: next(input_values)):
+                    with mock.patch("timecapsulesmb.cli.configure.getpass.getpass", side_effect=lambda _prompt: next(password_values)):
+                        with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=False):
+                            with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                                with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                    with redirect_stdout(output):
+                                        rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(fake_values["TC_PASSWORD"], "goodpw")
+        self.assertIn("Time Capsule root password cannot be blank", output.getvalue())
 
     def test_configure_reprompts_host_and_password_when_validation_fails(self) -> None:
         output = io.StringIO()
@@ -141,12 +211,14 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
-                with mock.patch("timecapsulesmb.cli.configure.validate_ssh_target", side_effect=[False, True]):
-                    with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=False):
-                        with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
-                            with redirect_stdout(output):
-                                rc = configure.main([])
+            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=True):
+                        with mock.patch("timecapsulesmb.cli.configure.validate_ssh_target", side_effect=[False, True]):
+                            with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=False):
+                                with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                    with redirect_stdout(output):
+                                        rc = configure.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_HOST"], "root@10.0.0.3")
         self.assertEqual(fake_values["TC_PASSWORD"], "goodpw")
@@ -174,15 +246,53 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
-                with mock.patch("timecapsulesmb.cli.configure.validate_ssh_target", return_value=False):
-                    with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
-                        with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
-                            with redirect_stdout(output):
-                                rc = configure.main([])
+            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=True):
+                        with mock.patch("timecapsulesmb.cli.configure.validate_ssh_target", return_value=False):
+                            with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                                with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                    with redirect_stdout(output):
+                                        rc = configure.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_HOST"], "root@10.0.0.2")
         self.assertEqual(fake_values["TC_PASSWORD"], "badpw")
+
+    def test_configure_can_reprompt_when_ssh_is_not_reachable_yet(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        prompt_values = iter([
+            "root@10.0.0.2",
+            "badpw",
+            "root@10.0.0.3",
+            "goodpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+        ])
+
+        def fake_prompt(_label, _default, _secret):
+            return next(prompt_values)
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=False):
+                        with mock.patch("timecapsulesmb.cli.configure.confirm", side_effect=[False, True]):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(fake_values["TC_HOST"], "root@10.0.0.3")
+        self.assertEqual(fake_values["TC_PASSWORD"], "goodpw")
+        self.assertIn("cannot validate this password", output.getvalue())
 
     def test_doctor_returns_failure_when_checks_fatal(self) -> None:
         output = io.StringIO()
@@ -347,65 +457,53 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("Timed out waiting for SSH after reboot.", output.getvalue())
 
-    def test_prep_device_returns_error_when_no_devices_found(self) -> None:
+    def test_prep_device_returns_error_when_env_missing(self) -> None:
         output = io.StringIO()
-        with mock.patch("timecapsulesmb.cli.prep_device.discover", return_value=[]):
+        with mock.patch("timecapsulesmb.cli.prep_device.parse_env_values", return_value={}):
             with redirect_stdout(output):
                 rc = prep_device.main([])
         self.assertEqual(rc, 1)
-        self.assertIn("No Time Capsules discovered", output.getvalue())
+        self.assertIn("Run '.venv/bin/tcapsule configure' first", output.getvalue())
 
     def test_prep_device_enable_flow_succeeds(self) -> None:
         output = io.StringIO()
-        record = mock.Mock(name="Time Capsule", hostname="capsule.local", ipv4=["10.0.0.2"], ipv6=[])
-        with mock.patch("timecapsulesmb.cli.prep_device.discover", return_value=[record]):
-            with mock.patch("timecapsulesmb.cli.prep_device.choose_device", return_value=record):
-                with mock.patch("timecapsulesmb.cli.prep_device.preferred_host", return_value="capsule.local"):
-                    with mock.patch("timecapsulesmb.cli.prep_device.prefer_routable_ipv4", return_value="10.0.0.2"):
-                        with mock.patch("timecapsulesmb.cli.prep_device.getpass.getpass", return_value="pw"):
-                            with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=False):
-                                with mock.patch("timecapsulesmb.cli.prep_device.enable_ssh") as enable_ssh_mock:
-                                    with mock.patch("timecapsulesmb.cli.prep_device.wait_for_ssh", return_value=True):
-                                        with redirect_stdout(output):
-                                            rc = prep_device.main([])
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
+        with mock.patch("timecapsulesmb.cli.prep_device.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=False):
+                with mock.patch("timecapsulesmb.cli.prep_device.enable_ssh") as enable_ssh_mock:
+                    with mock.patch("timecapsulesmb.cli.prep_device.wait_for_ssh", return_value=True):
+                        with redirect_stdout(output):
+                            rc = prep_device.main([])
         self.assertEqual(rc, 0)
         enable_ssh_mock.assert_called_once()
         self.assertIn("SSH is configured", output.getvalue())
 
     def test_prep_device_disable_flow_warns_when_ssh_reopens(self) -> None:
         output = io.StringIO()
-        record = mock.Mock(name="Time Capsule", hostname="capsule.local", ipv4=["10.0.0.2"], ipv6=[])
-        with mock.patch("timecapsulesmb.cli.prep_device.discover", return_value=[record]):
-            with mock.patch("timecapsulesmb.cli.prep_device.choose_device", return_value=record):
-                with mock.patch("timecapsulesmb.cli.prep_device.preferred_host", return_value="capsule.local"):
-                    with mock.patch("timecapsulesmb.cli.prep_device.prefer_routable_ipv4", return_value="10.0.0.2"):
-                        with mock.patch("timecapsulesmb.cli.prep_device.getpass.getpass", return_value="pw"):
-                            with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=True):
-                                with mock.patch("builtins.input", return_value="y"):
-                                    with mock.patch("timecapsulesmb.cli.prep_device.disable_ssh") as disable_ssh_mock:
-                                        with mock.patch("timecapsulesmb.cli.prep_device.wait_for_ssh", side_effect=[True, False]):
-                                            with mock.patch("timecapsulesmb.cli.prep_device.wait_for_device_up"):
-                                                with redirect_stdout(output):
-                                                    rc = prep_device.main([])
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
+        with mock.patch("timecapsulesmb.cli.prep_device.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=True):
+                with mock.patch("builtins.input", return_value="y"):
+                    with mock.patch("timecapsulesmb.cli.prep_device.disable_ssh") as disable_ssh_mock:
+                        with mock.patch("timecapsulesmb.cli.prep_device.wait_for_ssh", side_effect=[True, False]):
+                            with mock.patch("timecapsulesmb.cli.prep_device.wait_for_device_up"):
+                                with redirect_stdout(output):
+                                    rc = prep_device.main([])
         self.assertEqual(rc, 0)
         disable_ssh_mock.assert_called_once()
         self.assertIn("Warning: SSH reopened after reboot", output.getvalue())
 
     def test_prep_device_disable_flow_confirms_ssh_disabled(self) -> None:
         output = io.StringIO()
-        record = mock.Mock(name="Time Capsule", hostname="capsule.local", ipv4=["10.0.0.2"], ipv6=[])
-        with mock.patch("timecapsulesmb.cli.prep_device.discover", return_value=[record]):
-            with mock.patch("timecapsulesmb.cli.prep_device.choose_device", return_value=record):
-                with mock.patch("timecapsulesmb.cli.prep_device.preferred_host", return_value="capsule.local"):
-                    with mock.patch("timecapsulesmb.cli.prep_device.prefer_routable_ipv4", return_value="10.0.0.2"):
-                        with mock.patch("timecapsulesmb.cli.prep_device.getpass.getpass", return_value="pw"):
-                            with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=True):
-                                with mock.patch("builtins.input", return_value="y"):
-                                    with mock.patch("timecapsulesmb.cli.prep_device.disable_ssh"):
-                                        with mock.patch("timecapsulesmb.cli.prep_device.wait_for_ssh", side_effect=[True, True]):
-                                            with mock.patch("timecapsulesmb.cli.prep_device.wait_for_device_up"):
-                                                with redirect_stdout(output):
-                                                    rc = prep_device.main([])
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
+        with mock.patch("timecapsulesmb.cli.prep_device.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=True):
+                with mock.patch("builtins.input", return_value="y"):
+                    with mock.patch("timecapsulesmb.cli.prep_device.disable_ssh"):
+                        with mock.patch("timecapsulesmb.cli.prep_device.wait_for_ssh", side_effect=[True, True]):
+                            with mock.patch("timecapsulesmb.cli.prep_device.wait_for_device_up"):
+                                with redirect_stdout(output):
+                                    rc = prep_device.main([])
         self.assertEqual(rc, 0)
         self.assertIn("SSH disabled (remains closed after reboot)", output.getvalue())
 

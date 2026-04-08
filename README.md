@@ -33,8 +33,8 @@ That is it. The build system exists in this repository because it was necessary 
 From the root of this repository, the normal flow is:
 
 1. `./tcapsule bootstrap`
-2. `.venv/bin/tcapsule prep-device`
-3. `.venv/bin/tcapsule configure`
+2. `.venv/bin/tcapsule configure`
+3. `.venv/bin/tcapsule prep-device`
 4. `.venv/bin/tcapsule deploy`
 5. `.venv/bin/tcapsule doctor`
 6. `.venv/bin/tcapsule uninstall` if you want to remove TimeCapsuleSMB later
@@ -43,8 +43,8 @@ If you prefer, you can activate the virtual environment after step 1 and then ru
 
 ```bash
 source .venv/bin/activate
-tcapsule prep-device
 tcapsule configure
+tcapsule prep-device
 tcapsule deploy
 tcapsule doctor
 tcapsule uninstall
@@ -62,23 +62,7 @@ This command prepares the local Python environment in this folder. It creates th
 
 If this is your first time using the repo, this is the only command you should run with the repo-local launcher. After this step, use `.venv/bin/tcapsule ...` or activate `.venv`.
 
-## Step 2: Find The Time Capsule And Enable SSH
-
-Run:
-
-```bash
-.venv/bin/tcapsule prep-device
-```
-
-This step finds the Time Capsule on your local network and, if necessary, enables SSH access on it. It is for identifying the right device and getting it into a state where it can be managed.
-
-In practical terms, this script will:
-
-- discover Time Capsules on your network
-- let you pick the correct one
-- enable SSH if SSH is not already available
-
-## Step 3: Create The Local Config
+## Step 2: Create The Local Config
 
 Run:
 
@@ -86,7 +70,9 @@ Run:
 .venv/bin/tcapsule configure
 ```
 
-This will write a `.env` file in the folder, and that file acts as the configuration for the target Time Capsule.
+This writes a `.env` file in the repo folder, and the other `tcapsule` commands use that file as their local device configuration.
+
+At the start of `configure`, the tool first tries to discover your Time Capsule on the local network via mDNS/Bonjour. If it finds one, it prefills the SSH target for you. If it does not find one, it falls back to the normal manual prompt flow.
 
 For typical users, most of the defaults are good enough. If the script offers a value and you do not have a reason to change it, **just pressing Enter is usually the correct choice**.
 
@@ -103,6 +89,22 @@ The password you enter here is important. It becomes the password used for the S
 - password: the same Time Capsule password you entered during configuration
 
 Samba does not magically use Apple’s internal password backend; unfortunately, using Apple's password system is not possible. We deliberately reuse the same password value so that the user experience is simpler and less confusing.
+
+## Step 3: Find The Time Capsule And Enable SSH
+
+Run:
+
+```bash
+.venv/bin/tcapsule prep-device
+```
+
+This step uses the `.env` configuration you just wrote. In particular, it uses the configured `TC_HOST` and `TC_PASSWORD` values and then enables or disables SSH through AirPyrt as needed.
+
+In practical terms, this script will:
+
+- use the Time Capsule target from `.env`
+- check whether SSH is already reachable
+- enable SSH if SSH is not already available
 
 ## Step 4: Deploy It
 
