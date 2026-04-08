@@ -4,7 +4,8 @@ Apple AirPort Time Capsules are still perfectly usable pieces of hardware, but t
 
 **NOTE THAT TIME MACHINE ON MACOS 26.4 IS CURRENTLY BROKEN**, see https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups
 
-This repo configures a modern Samba setup that runs directly on the Time Capsule itself. The goal is that a Time Capsule can once again show up as a normal SMB server on your network, and your Mac can connect to it as a network share.
+This repo configures a modern Samba setup that runs directly on the Time Capsule itself. The goal is that a Time Capsule can once again show up as a normal SMB server on your network, and your Mac can connect to it as a network share. This project is currently confirmed to work for NetBSD 6 based Time Capsules! Your Time Capsule should work if it looks like this:
+<img width="256" height="192" alt="image" src="https://github.com/user-attachments/assets/5d0b044f-2137-4bb7-8d65-3d1bb251754c" />
 
 If you want the long-form engineering background, design decisions, and implementation details, read [DETAIL.md](/DETAIL.md).
 
@@ -12,10 +13,7 @@ If you want the long-form engineering background, design decisions, and implemen
 
 If the setup completes successfully, your Time Capsule will boot its own Samba 4 server automatically, advertise itself over Bonjour (show up automatically in the "Network" folder on MacOS), and accept authenticated SMB connections from macOS. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack. **This will disable Apple's AFP and SMB file server**, so do not expect those to be running at the same time. 
 
-THIS CURRENTLY DOES NOT SUPPORT older NetBSD 4 based Time Capsules. This only supports Time Capsules running NetBSD 6. Support for older Time Capsules is in progress, for more information [see this issue](https://github.com/jamesyc/TimeCapsuleSMB/issues/15). Your Time Capsule should look like this:
-
-<img width="256" height="192" alt="image" src="https://github.com/user-attachments/assets/5d0b044f-2137-4bb7-8d65-3d1bb251754c" />
-
+THIS CURRENTLY DOES NOT SUPPORT older NetBSD 4 based Time Capsules. This only supports Time Capsules running NetBSD 6. Support for older Time Capsules is in progress, for more information [see this issue](https://github.com/jamesyc/TimeCapsuleSMB/issues/15). 
 
 **It is expected to get "Internal disk needs repair" because this adds files to the internal disk**; see [this issue for more information](https://github.com/jamesyc/TimeCapsuleSMB/issues/13). The `deploy` script will drop 4 files in `/mnt/Flash` on the Time Capsule, plus a `samba4` folder on the root of the hard drive. The `uninstall` script will delete these files and reboot the Time Capsule. 
 
