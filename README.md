@@ -23,7 +23,7 @@ The current authentication model uses `admin` as the username, and the Samba pas
 
 You do not need to build Samba yourself. The working binaries are already checked into this repository under [bin/](bin), and the normal user workflow uses those checked-in files directly. To rebuild `smbd` by yourself, run the scripts in `build/` on a NetBSD machine.
 
-Also, if you are an expert, you can copy the binary at [/bin/samba4/smbd](/bin/samba4/smbd) onto the Time Capsule and set it up yourself. 
+Also, if you are an expert and want to DIY the install, you can copy the binary at [/bin/samba4/smbd](/bin/samba4/smbd) onto the Time Capsule and set it up yourself. 
 
 For the typical setup path, you need only:
 
