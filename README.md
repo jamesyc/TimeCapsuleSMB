@@ -21,7 +21,7 @@ The current authentication model uses `admin` as the username, and the Samba pas
 
 ## Requirements
 
-You do not need to build Samba yourself. The working binaries are already checked into this repository under [bin/](bin), and the normal user workflow uses those checked-in files directly. To rebuild `smbd` by yourself, run the scripts in `build/` on a NetBSD machine.
+You do not need to build Samba yourself. The working binaries are already saved in this repository under [bin/](bin), and the normal user workflow uses those checked-in files directly. To rebuild `smbd` by yourself, run the scripts in `build/` on a NetBSD machine.
 
 Also, if you are an expert and want to DIY the install, you can copy the binary at [/bin/samba4/smbd](/bin/samba4/smbd) onto the Time Capsule and set it up yourself. 
 
@@ -33,7 +33,7 @@ For the typical setup path, you need only:
 
 ## Quick Start
 
-From the root of this repository, the normal flow is:
+Download (or run `git clone`) this repository to a folder on your Mac. From the root of this repository, the normal flow is:
 
 1. `./tcapsule bootstrap`
 2. `.venv/bin/tcapsule configure`
@@ -75,7 +75,7 @@ Run:
 .venv/bin/tcapsule configure
 ```
 
-This writes a `.env` file in the repo folder, and the other `tcapsule` commands use that file as their local device configuration.
+This writes a hidden `.env` file in the repo folder, and the other `tcapsule` commands use that file as their local device configuration.
 
 At the start of `configure`, the tool first tries to discover your Time Capsule on the local network via mDNS/Bonjour. If it finds one, it prefills the SSH target for you. If it does not find one, it falls back to the normal manual prompt flow.
 
@@ -191,7 +191,7 @@ Uninstall success means the managed payload and boot files are gone after reboot
 
 ## Connecting From Finder
 
-Once deployment has completed and the Time Capsule has rebooted, you should be able to connect from Finder with:
+Once deployment has completed and the Time Capsule has rebooted, you should be able to connect from Finder. The device should show up in the "Network" folder, or with:
 
 ```text
 smb://timecapsulesamba4.local/Data
@@ -204,15 +204,13 @@ When Finder prompts for credentials, use:
 - username: `admin`
 - password: your Time Capsule password
 
-This is the intended normal user path. You should not have to care about the internal mountpoints, boot scripts, or NetBSD build details just to open the share.
-
 ## Technical Notes
 
-Everything above is the beginner path. The rest of this README is more technical and explains why the repo is structured this way.
+The rest of this README is more technical and explains why the repo is structured this way.
 
 ## Design
 
-The Time Capsule hardware is old and constrained. It has three relevant storage areas:
+The Time Capsule hardware is very old and constrained. It has three relevant storage areas:
 
 - `/mnt/Flash`, which is persistent but only has ~900KB of free space.
 - `/mnt/Memory`, which is a 16MB ramdisk
@@ -220,11 +218,11 @@ The Time Capsule hardware is old and constrained. It has three relevant storage 
 
 Unfortunately, it was not an option to "copy one binary somewhere and call it a day" to get `smbd` running. Thus, the current process is:
 
-1. Keep the full `smbd` payload on the internal disk.
-2. Keep only a very small `rc.local` boot hook on flash.
+1. Keep the full `smbd` payload on the big internal hard disk.
+2. Keep only a very small `rc.local` boot script on flash.
 3. At boot, wait for the internal disk to appear and mount.
 4. Copy the runtime binaries into `/mnt/Memory`.
-5. Start Samba from the ramdisk, not from the disk Apple may later decide to unmount.
+5. Start Samba from the `/mnt/Memory`, not from the big disk Apple may later decide to unmount.
 6. Advertise `_smb._tcp` with a separate tiny mDNS helper.
 
 That is the reason the repository contains both:
@@ -239,10 +237,11 @@ and boot files such as:
 
 There are other constraints the Time Capsule places on us:  
 - The NetBSD 6 source code does not support earmv4 builds, so we need to build from NetBSD 7.
-- Samba 3.x compiles easily, but it doesn't support directory traversal on NetBSD 6. This is a known bug apparently.
+- Samba 3.x compiles easily, but it doesn't support directory traversal with SMB2 on NetBSD 6. This is a known bug apparently.
 - Samba 4.0.x has the same issue
-- Samba 4.2.x and 4.3.x are much harder to compile, and do not support vfs_fruit
-- Samba 4.8.x is the first version that seems to work, although getting it to compile can be very difficult.
+- Samba 4.2.x was much harder to compile, and had a `talloc` / `loadparm` use-after-free runtime bug
+- Samba 4.3.x was the first version to work as a network share, but it does not support vfs_fruit for Time Machine backup support
+- Samba 4.8.x is the first version that fully works, although getting it to compile can be very difficult.
 
 ## Troubleshooting
 
@@ -281,7 +280,7 @@ Finder is not always the best first diagnostic tool. The service can be up and c
 
 ### Finder Still Does Not Connect
 
-Try the direct address explicitly:
+Try a reboot, then try the direct address explicitly:
 
 ```text
 smb://timecapsulesamba4.local/Data
@@ -305,19 +304,19 @@ Read:
 
 - [DETAIL.md](DETAIL.md)
 
-Those documents explain the engineering constraints, historical dead ends, and current implementation in much more detail.
+This explains the engineering constraints, historical dead ends, and current implementation in much more detail.
 
 ## Security Notes
 
 This should be treated as a LAN-only setup.
 
-Do not expose this SMB service directly to the public internet. Do not forward ports to it. Do not pretend that an old Time Capsule turned into a modern hardened NAS just because the SMB side now works better. I have tested this with a M1 Macbook Pro and an A1470 Time Capsule. Your mileage may vary. Older models of Time Capsules may have a smaller `/mnt/Memory` that the `smbd` binary does not fit in; I am unable to confirm.
+Do not expose this SMB service directly to the public internet! Do not forward ports to it. Do not pretend that an old Time Capsule turned into a modern hardened NAS just because the SMB side now works better. I have tested this with a M1 Macbook Pro and an A1470 Time Capsule. Your mileage may vary. Older models of Time Capsules may have a smaller `/mnt/Memory` that the `smbd` binary does not fit in; I am unable to confirm.
 
 Also note that the current auth model maps SMB access to `root` internally on the Time Capsule. That is a deliberate compatibility choice for this old firmware, as the version of NetBSD 6 running on the Time Capsule errors when Samba tries to switch users.
 
 ## For Developers And Maintainers
 
-Most users should stop reading here.
+Most users can stop reading here.
 
 The checked-in binaries are already built. If you want to rebuild them yourself, the maintainer build flow lives under [build/](build) and depends on a NetBSD VM.
 
@@ -326,7 +325,4 @@ The main build outputs are:
 - [bin/samba4/smbd](bin/samba4/smbd)
 - [bin/mdns/mdns-smbd-advertiser](bin/mdns/mdns-smbd-advertiser)
 
-If you want the actual engineering details, the right place to start is:
-
-- [DETAIL.md](DETAIL.md)
-- [plan/](plan)
+If you want the actual engineering details, read [DETAIL.md](DETAIL.md)
