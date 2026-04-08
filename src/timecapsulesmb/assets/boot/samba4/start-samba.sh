@@ -274,7 +274,7 @@ stage_runtime() {
     read only = no
     guest ok = no
     valid users = __SMB_SAMBA_USER__ root
-    vfs objects = catia fruit streams_xattr xattr_tdb acl_xattr
+    vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb
     acl_xattr:ignore system acls = yes
     fruit:resource = file
     fruit:metadata = netatalk
