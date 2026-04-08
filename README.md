@@ -2,12 +2,11 @@
 
 Apple AirPort Time Capsules are still perfectly usable pieces of hardware, but they only support AFP and SMB1. Apple has removed SMB1 support from MacOS a long time ago, and AFP support is being removed for MacOS 27.
 
-**NOTE THAT TIME MACHINE ON MACOS 26.4 IS CURRENTLY BROKEN**, see https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups
+**NOTE THAT TIME MACHINE ON MACOS 26.4 IS CURRENTLY BROKEN**, see https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups  
+Macs running MacOS 26.4 can still use the device as a standard Samba network share in Finder.
 
-This repo configures a modern Samba setup that runs directly on the Time Capsule itself. The goal is that a Time Capsule can once again show up as a normal SMB server on your network, and your Mac can connect to it as a network share. This project is currently confirmed to work for NetBSD 6 based Time Capsules! Your Time Capsule should work if it looks like this:  
+This repo configures a modern SMB3 Samba setup that runs directly on the Time Capsule itself. The goal is that a Time Capsule can once again show up as a normal SMB server on your network, and modern MacOS can connect to it as a network share. This project is currently confirmed to work for NetBSD 6 based Time Capsules! Your Time Capsule should work if it looks like this:  
 <img width="256" height="192" alt="image" src="https://github.com/user-attachments/assets/5d0b044f-2137-4bb7-8d65-3d1bb251754c" />
-
-If you want the long-form engineering background, design decisions, and implementation details, read [DETAIL.md](/DETAIL.md).
 
 ## Expectations
 
@@ -308,15 +307,11 @@ This explains the engineering constraints, historical dead ends, and current imp
 
 ## Security Notes
 
-This should be treated as a LAN-only setup.
-
-Do not expose this SMB service directly to the public internet! Do not forward ports to it. Do not pretend that an old Time Capsule turned into a modern hardened NAS just because the SMB side now works better. I have tested this with a M1 Macbook Pro and an A1470 Time Capsule. Your mileage may vary. Older models of Time Capsules may have a smaller `/mnt/Memory` that the `smbd` binary does not fit in; I am unable to confirm.
+This should be treated as a LAN-only setup. Do not expose this SMB service directly to the public internet! Do not forward ports to it. Do not pretend that an old Time Capsule turned into a modern hardened NAS just because the SMB side now works better. I have tested this with a M1 Macbook Pro and an A1470 Time Capsule. Your mileage may vary. 
 
 Also note that the current auth model maps SMB access to `root` internally on the Time Capsule. That is a deliberate compatibility choice for this old firmware, as the version of NetBSD 6 running on the Time Capsule errors when Samba tries to switch users.
 
 ## For Developers And Maintainers
-
-Most users can stop reading here.
 
 The checked-in binaries are already built. If you want to rebuild them yourself, the maintainer build flow lives under [build/](build) and depends on a NetBSD VM.
 
