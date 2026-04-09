@@ -13,12 +13,24 @@ from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.transport.local import command_exists, run_local_capture
 
 
-def check_authenticated_smb_listing(username: str, password: str, server: str, *, timeout: int = 20) -> CheckResult:
+def check_authenticated_smb_listing(
+    username: str,
+    password: str,
+    server: str,
+    *,
+    expected_share_name: Optional[str] = None,
+    timeout: int = 20,
+) -> CheckResult:
     if not command_exists("smbutil"):
         return CheckResult("FAIL", "missing local tool smbutil")
 
     proc = run_local_capture(["smbutil", "view", f"//{username}:{password}@{server}"], timeout=timeout)
     if proc.returncode == 0:
+        if expected_share_name is not None and expected_share_name not in proc.stdout:
+            return CheckResult(
+                "FAIL",
+                f"authenticated SMB listing did not include expected share {expected_share_name!r} on {server}",
+            )
         return CheckResult("PASS", f"authenticated SMB listing works for {username}@{server}")
     detail = (proc.stderr or proc.stdout).strip().splitlines()
     msg = detail[-1] if detail else f"failed with rc={proc.returncode}"

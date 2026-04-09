@@ -64,6 +64,7 @@ def run_doctor_checks(
                 values["TC_SAMBA_USER"],
                 values["TC_PASSWORD"],
                 f"{values['TC_MDNS_HOST_LABEL']}.local",
+                expected_share_name=values["TC_SHARE_NAME"],
             )
         )
         add_result(
