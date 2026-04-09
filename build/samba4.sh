@@ -34,6 +34,8 @@ pick_python2() {
 
 mkdir -p "$SAMBA4_WORK" "$SAMBA4_STAGE" "$SAMBA4_BUILD"
 
+MAP_FILE="$SAMBA4_STAGE/sbin/smbd.map"
+
 export PATH="$TOOLDIR/bin:/usr/pkg/libexec/heimdal:/usr/local/libexec/heimdal:/usr/pkg/bin:$PATH"
 export TOOLDIR DESTDIR TRIPLE SYSROOT
 export CC="$TOOLDIR/bin/$TRIPLE-gcc --sysroot=$SYSROOT"
@@ -46,7 +48,7 @@ export LD="$TOOLDIR/bin/$TRIPLE-ld --sysroot=$SYSROOT"
 export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie"
 export CXXFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie"
 export CPPFLAGS="-I$SYSROOT/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES"
-export LDFLAGS="-static -Wl,--gc-sections -L$SYSROOT/lib -L$SYSROOT/usr/lib"
+export LDFLAGS="-static -Wl,--gc-sections -Wl,-Map=$MAP_FILE -L$SYSROOT/lib -L$SYSROOT/usr/lib"
 export PKG_CONFIG_DIR=
 export PKG_CONFIG_PATH=
 export PKG_CONFIG_LIBDIR=
@@ -95,9 +97,12 @@ CROSS_EXECUTE="$(cd "$(dirname "$0")" && pwd)/samba4-cross-exec.sh"
       --prefix=$SAMBA4_STAGE \
       --bundled-libraries=!asn1_compile,!compile_et \
       --without-pie \
+      --disable-avahi \
       --without-acl-support \
       --without-ad-dc \
       --without-ads \
+      --without-automount \
+      --without-dmapi \
       --without-ldap \
       --without-pam \
       --disable-cups \
@@ -109,6 +114,10 @@ CROSS_EXECUTE="$(cd "$(dirname "$0")" && pwd)/samba4-cross-exec.sh"
     if [ -n "$SAMBA4_STATIC_MODULES" ]; then
         CONFIGURE_ARGS="$CONFIGURE_ARGS --with-static-modules=$SAMBA4_STATIC_MODULES"
     fi
+
+    # The Time Capsule image does not expose a normal always-on Avahi daemon.
+    # Keep Samba's built-in Avahi integration disabled and use the dedicated
+    # mdns-smbd-advertiser payload instead.
 
     # Intentionally keep the Time Machine VFS stack static during experiments.
     # The device does not have a normal shared-module runtime tree, and the
