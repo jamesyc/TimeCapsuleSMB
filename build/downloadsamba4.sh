@@ -155,6 +155,371 @@ if not bld.env.disable_python:
     bld.INSTALL_WILDCARD('${PYTHONARCHDIR}', 'samba/**/*.py', flat=False)
 EOF
 
+    # The NetBSD Time Capsule build only needs file serving plus the macOS
+    # Time Machine VFS stack. Replace the printing/spoolss implementation with
+    # small stubs so the build does not pull in the printer stack.
+    cat >"$SAMBA4_SRC_DIR/source3/printing/notify_disabled.c" <<'EOF'
+#include "includes.h"
+#include "printing/notify.h"
+
+int print_queue_snum(const char *qname)
+{
+	return -1;
+}
+
+void print_notify_send_messages(struct messaging_context *msg_ctx,
+				unsigned int timeout) {}
+void notify_printer_status_byname(struct tevent_context *ev,
+				  struct messaging_context *msg_ctx,
+				  const char *sharename, uint32_t status) {}
+void notify_printer_status(struct tevent_context *ev,
+			   struct messaging_context *msg_ctx,
+			   int snum, uint32_t status) {}
+void notify_job_status_byname(struct tevent_context *ev,
+			      struct messaging_context *msg_ctx,
+			      const char *sharename, uint32_t jobid,
+			      uint32_t status, uint32_t flags) {}
+void notify_job_status(struct tevent_context *ev,
+		       struct messaging_context *msg_ctx,
+		       const char *sharename, uint32_t jobid, uint32_t status) {}
+void notify_job_total_bytes(struct tevent_context *ev,
+			    struct messaging_context *msg_ctx,
+			    const char *sharename, uint32_t jobid,
+			    uint32_t size) {}
+void notify_job_total_pages(struct tevent_context *ev,
+			    struct messaging_context *msg_ctx,
+			    const char *sharename, uint32_t jobid,
+			    uint32_t pages) {}
+void notify_job_username(struct tevent_context *ev,
+			 struct messaging_context *msg_ctx,
+			 const char *sharename, uint32_t jobid, char *name) {}
+void notify_job_name(struct tevent_context *ev,
+		     struct messaging_context *msg_ctx,
+		     const char *sharename, uint32_t jobid, char *name) {}
+void notify_job_submitted(struct tevent_context *ev,
+			  struct messaging_context *msg_ctx,
+			  const char *sharename, uint32_t jobid,
+			  time_t submitted) {}
+void notify_printer_driver(struct tevent_context *ev,
+			   struct messaging_context *msg_ctx,
+			   int snum, const char *driver_name) {}
+void notify_printer_comment(struct tevent_context *ev,
+			    struct messaging_context *msg_ctx,
+			    int snum, const char *comment) {}
+void notify_printer_sharename(struct tevent_context *ev,
+			      struct messaging_context *msg_ctx,
+			      int snum, const char *share_name) {}
+void notify_printer_printername(struct tevent_context *ev,
+				struct messaging_context *msg_ctx,
+				int snum, const char *printername) {}
+void notify_printer_port(struct tevent_context *ev,
+			 struct messaging_context *msg_ctx,
+			 int snum, const char *port_name) {}
+void notify_printer_location(struct tevent_context *ev,
+			     struct messaging_context *msg_ctx,
+			     int snum, const char *location) {}
+void notify_printer_sepfile(struct tevent_context *ev,
+			    struct messaging_context *msg_ctx,
+			    int snum, const char *sepfile) {}
+void notify_printer_byname(struct tevent_context *ev,
+			   struct messaging_context *msg_ctx,
+			   const char *printername, uint32_t attribute,
+			   const char *value) {}
+EOF
+
+    cat >"$SAMBA4_SRC_DIR/source3/printing/queue_process_disabled.c" <<'EOF'
+#include "includes.h"
+#include "printing/load.h"
+#include "printing/pcap.h"
+#include "printing/queue_process.h"
+
+bool printing_subsystem_init(struct tevent_context *ev_ctx,
+			     struct messaging_context *msg_ctx,
+			     bool start_daemons,
+			     bool background_queue)
+{
+	return true;
+}
+
+void printing_subsystem_update(struct tevent_context *ev_ctx,
+			       struct messaging_context *msg_ctx,
+			       bool force) {}
+
+pid_t start_background_queue(struct tevent_context *ev,
+			     struct messaging_context *msg,
+			     char *logfile)
+{
+	return (pid_t)-1;
+}
+
+bool pcap_cache_loaded(time_t *_last_change)
+{
+	return false;
+}
+
+bool pcap_printername_ok(const char *printername)
+{
+	return false;
+}
+
+void load_printers(struct tevent_context *ev,
+		   struct messaging_context *msg_ctx) {}
+
+void update_monitored_printq_cache(struct messaging_context *msg_ctx) {}
+EOF
+
+    cat >"$SAMBA4_SRC_DIR/source3/printing/printspoolss_disabled.c" <<'EOF'
+#include "includes.h"
+#include "printing.h"
+
+NTSTATUS print_spool_open(files_struct *fsp,
+			  const char *fname,
+			  uint64_t current_vuid)
+{
+	return NT_STATUS_NOT_SUPPORTED;
+}
+
+int print_spool_write(files_struct *fsp, const char *data, uint32_t size,
+		      off_t offset, uint32_t *written)
+{
+	if (written != NULL) {
+		*written = 0;
+	}
+	errno = ENOSYS;
+	return -1;
+}
+
+void print_spool_end(files_struct *fsp, enum file_close_type close_type) {}
+
+void print_spool_terminate(struct connection_struct *conn,
+			   struct print_file_data *print_file) {}
+
+uint16_t print_spool_rap_jobid(struct print_file_data *print_file)
+{
+	return 0;
+}
+EOF
+
+    cat >"$SAMBA4_SRC_DIR/source3/printing/printing_disabled.c" <<'EOF'
+#include "includes.h"
+#include "printing.h"
+
+static int disabled_queue_get(const char *printer_name,
+			      enum printing_types printing_type,
+			      char *lpq_command,
+			      print_queue_struct **q,
+			      print_status_struct *status)
+{
+	if (q != NULL) {
+		*q = NULL;
+	}
+	if (status != NULL) {
+		ZERO_STRUCTP(status);
+	}
+	return 0;
+}
+
+static int disabled_queue_int(int snum)
+{
+	return -1;
+}
+
+static int disabled_job_action(const char *sharename,
+			       const char *lprm_command,
+			       struct printjob *pjob)
+{
+	return -1;
+}
+
+static int disabled_job_control(int snum, struct printjob *pjob)
+{
+	return -1;
+}
+
+static int disabled_job_submit(int snum, struct printjob *pjob,
+			       enum printing_types printing_type,
+			       char *lpq_command)
+{
+	return -1;
+}
+
+struct printif generic_printif = {
+	.type = PRINT_BSD,
+	.queue_get = disabled_queue_get,
+	.queue_pause = disabled_queue_int,
+	.queue_resume = disabled_queue_int,
+	.job_delete = disabled_job_action,
+	.job_pause = disabled_job_control,
+	.job_resume = disabled_job_control,
+	.job_submit = disabled_job_submit,
+};
+
+uint32_t sysjob_to_jobid_pdb(struct tdb_print_db *pdb, int sysjob) { return 0; }
+uint32_t sysjob_to_jobid(int unix_jobid) { return 0; }
+int jobid_to_sysjob_pdb(struct tdb_print_db *pdb, uint32_t jobid) { return -1; }
+bool print_notify_register_pid(int snum) { return false; }
+bool print_notify_deregister_pid(int snum) { return false; }
+bool print_job_exists(const char *sharename, uint32_t jobid) { return false; }
+struct spoolss_DeviceMode *print_job_devmode(TALLOC_CTX *mem_ctx,
+					     const char *sharename,
+					     uint32_t jobid) { return NULL; }
+bool print_job_set_name(struct tevent_context *ev,
+			struct messaging_context *msg_ctx,
+			const char *sharename, uint32_t jobid,
+			const char *name) { return false; }
+bool print_job_get_name(TALLOC_CTX *mem_ctx, const char *sharename,
+			uint32_t jobid, char **name) { return false; }
+WERROR print_job_delete(const struct auth_session_info *server_info,
+			struct messaging_context *msg_ctx,
+			int snum, uint32_t jobid) { return WERR_NOT_SUPPORTED; }
+WERROR print_job_pause(const struct auth_session_info *server_info,
+		       struct messaging_context *msg_ctx,
+		       int snum, uint32_t jobid) { return WERR_NOT_SUPPORTED; }
+WERROR print_job_resume(const struct auth_session_info *server_info,
+			struct messaging_context *msg_ctx,
+			int snum, uint32_t jobid) { return WERR_NOT_SUPPORTED; }
+ssize_t print_job_write(struct tevent_context *ev,
+			struct messaging_context *msg_ctx,
+			int snum, uint32_t jobid,
+			const char *buf, size_t size)
+{
+	errno = ENOSYS;
+	return -1;
+}
+
+int print_queue_length(struct messaging_context *msg_ctx, int snum,
+		       print_status_struct *pstatus)
+{
+	if (pstatus != NULL) {
+		ZERO_STRUCTP(pstatus);
+	}
+	return 0;
+}
+
+WERROR print_job_start(const struct auth_session_info *server_info,
+		       struct messaging_context *msg_ctx,
+		       const char *clientmachine,
+		       int snum, const char *docname, const char *filename,
+		       struct spoolss_DeviceMode *devmode,
+		       uint32_t *_jobid) { return WERR_NOT_SUPPORTED; }
+void print_job_endpage(struct messaging_context *msg_ctx,
+		       int snum, uint32_t jobid) {}
+NTSTATUS print_job_end(struct messaging_context *msg_ctx, int snum,
+		       uint32_t jobid,
+		       enum file_close_type close_type)
+{
+	return NT_STATUS_NOT_SUPPORTED;
+}
+
+int print_queue_status(struct messaging_context *msg_ctx, int snum,
+		       print_queue_struct **ppqueue,
+		       print_status_struct *status)
+{
+	if (ppqueue != NULL) {
+		*ppqueue = NULL;
+	}
+	if (status != NULL) {
+		ZERO_STRUCTP(status);
+	}
+	return 0;
+}
+
+WERROR print_queue_pause(const struct auth_session_info *server_info,
+			 struct messaging_context *msg_ctx,
+			 int snum) { return WERR_NOT_SUPPORTED; }
+WERROR print_queue_resume(const struct auth_session_info *server_info,
+			  struct messaging_context *msg_ctx,
+			  int snum) { return WERR_NOT_SUPPORTED; }
+WERROR print_queue_purge(const struct auth_session_info *server_info,
+			 struct messaging_context *msg_ctx,
+			 int snum) { return WERR_NOT_SUPPORTED; }
+uint32_t print_queue_c_set(struct messaging_context *msg_ctx, int snum) { return 0; }
+void print_queue_update(struct messaging_context *msg_ctx, int snum) {}
+uint16_t pjobid_to_rap(const char *sharename, uint32_t jobid) { return 0; }
+bool rap_to_pjobid(uint16_t rap_jobid, fstring sharename, uint32_t *pjobid)
+{
+	return false;
+}
+
+void rap_jobid_delete(const char *sharename, uint32_t jobid) {}
+bool print_backend_init(struct messaging_context *msg_ctx) { return true; }
+void printing_end(void) {}
+
+bool parse_lpq_entry(enum printing_types printing_type, char *line,
+		     print_queue_struct *buf,
+		     print_status_struct *status, bool first)
+{
+	return false;
+}
+
+struct tdb_print_db *get_print_db_byname(const char *printername) { return NULL; }
+void release_print_db(struct tdb_print_db *pdb) {}
+void close_all_print_db(void) {}
+TDB_DATA get_printer_notify_pid_list(struct tdb_context *tdb,
+				     const char *printer_name,
+				     bool cleanlist)
+{
+	TDB_DATA data = { NULL, 0 };
+	return data;
+}
+
+void print_queue_receive(struct messaging_context *msg,
+			 void *private_data,
+			 uint32_t msg_type,
+			 struct server_id server_id,
+			 DATA_BLOB *data) {}
+EOF
+
+    cat >"$SAMBA4_SRC_DIR/source3/rpc_server/spoolss/spoolss_disabled.c" <<'EOF'
+#include "includes.h"
+#include "rpc_server/spoolss/srv_spoolss_nt.h"
+
+void srv_spoolss_cleanup(void) {}
+EOF
+
+    cat >"$SAMBA4_SRC_DIR/source3/rpc_server/spoolss/iremotewinspool_disabled.c" <<'EOF'
+#include "includes.h"
+EOF
+
+    perl -0pi -e "s/printing\\/printspoolss\\.c/printing\\/printspoolss_disabled.c/" \
+        "$SAMBA4_SRC_DIR/source3/wscript_build"
+    perl -0pi -e "s/bld\\.SAMBA3_SUBSYSTEM\\('PRINTBASE',\\n\\s*source='''\\n\\s*printing\\/notify\\.c\\n\\s*printing\\/printing_db\\.c\\n\\s*'''/bld.SAMBA3_SUBSYSTEM('PRINTBASE',\\n                    source='''\\n                           printing\\/notify_disabled.c\\n                           printing\\/queue_process_disabled.c\\n                           '''/s" \
+        "$SAMBA4_SRC_DIR/source3/wscript_build"
+    perl -0pi -e "s/bld\\.SAMBA3_SUBSYSTEM\\('PRINTBACKEND',\\n\\s*source='''\\n.*?\\n\\s*'''/bld.SAMBA3_SUBSYSTEM('PRINTBACKEND',\\n                    source='''\\n                           printing\\/printing_disabled.c\\n                           '''/s" \
+        "$SAMBA4_SRC_DIR/source3/wscript_build"
+    perl -0pi -e "s/bld\\.SAMBA3_SUBSYSTEM\\('PRINTING',\\n\\s*source='''\\n.*?\\n\\s*'''/bld.SAMBA3_SUBSYSTEM('PRINTING',\\n                    source='''\\n                           printing\\/printing_disabled.c\\n                           '''/s" \
+        "$SAMBA4_SRC_DIR/source3/wscript_build"
+
+    perl -0pi -e "s/bld\\.SAMBA3_SUBSYSTEM\\('RPC_SPOOLSS',\\n\\s*source='''.*?''',\\n\\s*deps='.*?'\\)/bld.SAMBA3_SUBSYSTEM('RPC_SPOOLSS',\\n                    source='''spoolss\\/spoolss_disabled.c''',\\n                    deps='')/s" \
+        "$SAMBA4_SRC_DIR/source3/rpc_server/wscript_build"
+    perl -0pi -e "s/bld\\.SAMBA3_SUBSYSTEM\\('RPC_IREMOTEWINSPOOL',\\n\\s*source='''.*?''',\\n\\s*deps='RPC_SPOOLSS'\\)/bld.SAMBA3_SUBSYSTEM('RPC_IREMOTEWINSPOOL',\\n                    source='''spoolss\\/iremotewinspool_disabled.c''',\\n                    deps='')/s" \
+        "$SAMBA4_SRC_DIR/source3/rpc_server/wscript_build"
+    perl -0pi -e "s/\\n\\s*RPC_SPOOLSS\\n\\s*RPC_IREMOTEWINSPOOL//s" \
+        "$SAMBA4_SRC_DIR/source3/rpc_server/wscript_build"
+
+    perl -0pi -e "s/static bool rpc_setup_spoolss\\(.*?\\n\\}\\n\\n/static bool rpc_setup_spoolss(struct tevent_context *ev_ctx,\\n                              struct messaging_context *msg_ctx)\\n{\\n    return true;\\n}\\n\\n/s" \
+        "$SAMBA4_SRC_DIR/source3/rpc_server/rpc_service_setup.c"
+    perl -0pi -e 's/^\s*rpc_spoolss_shutdown\(\);\n//m' \
+        "$SAMBA4_SRC_DIR/source3/smbd/server_exit.c"
+    perl -0pi -e "s/bool lp_disable_spoolss\\( void \\)\\n\\{\\n.*?\\n\\}/bool lp_disable_spoolss( void )\\n{\\n\\treturn true;\\n\\}/s" \
+        "$SAMBA4_SRC_DIR/source3/param/loadparm.c"
+    perl -0pi -e "s/static bool api_DosPrintQGetInfo\\(.*?^\\}/static bool api_DosPrintQGetInfo(struct smbd_server_connection *sconn,\\n\\t\\t\\t connection_struct *conn, uint64_t vuid,\\n\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
+        "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
+    perl -0pi -e "s/static bool api_DosPrintQEnum\\(.*?^\\}/static bool api_DosPrintQEnum(struct smbd_server_connection *sconn,\\n\\t\\t\\t      connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt, int mprcnt,\\n\\t\\t\\t\\tchar **rdata, char** rparam,\\n\\t\\t\\t\\tint *rdata_len, int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
+        "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
+    perl -0pi -e "s/static bool api_PrintJobInfo\\(.*?^\\}/static bool api_PrintJobInfo(struct smbd_server_connection *sconn,\\n\\t\\t\\t     connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
+        "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
+    perl -0pi -e "s/static bool api_WPrintJobGetInfo\\(.*?^\\}/static bool api_WPrintJobGetInfo(struct smbd_server_connection *sconn,\\n\\t\\t\\t\\t connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
+        "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
+    perl -0pi -e "s/static bool api_WPrintDestGetInfo\\(.*?^\\}/static bool api_WPrintDestGetInfo(struct smbd_server_connection *sconn,\\n\\t\\t\\t\\t  connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
+        "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
+    perl -0pi -e "s/static bool api_WPrintDestEnum\\(.*?^\\}/static bool api_WPrintDestEnum(struct smbd_server_connection *sconn,\\n\\t\\t\\t       connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
+        "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
+    perl -0pi -e "s/static bool api_WPrintJobEnumerate\\(.*?^\\}/static bool api_WPrintJobEnumerate(struct smbd_server_connection *sconn,\\n\\t\\t\\t   connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
+        "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
+    perl -0pi -e "s/void reply_printqueue\\(struct smb_request \\*req\\)\\n\\{.*?^\\}/void reply_printqueue(struct smb_request *req)\\n{\\n\\treply_nterror(req, NT_STATUS_NOT_SUPPORTED);\\n\\treturn;\\n\\}/ms" \
+        "$SAMBA4_SRC_DIR/source3/smbd/reply.c"
+
     perl -0pi -e "s/SRC = '''tevent\\.c tevent_debug\\.c tevent_fd\\.c tevent_immediate\\.c\\n             tevent_queue\\.c tevent_req\\.c\\n             tevent_poll\\.c tevent_threads\\.c\\n             tevent_signal\\.c tevent_standard\\.c tevent_timed\\.c tevent_util\\.c tevent_wakeup\\.c'''/SRC = '''tevent.c tevent_debug.c tevent_fd.c tevent_immediate.c\\n             tevent_queue.c tevent_req.c\\n             tevent_poll.c\\n             tevent_signal.c tevent_standard.c tevent_timed.c tevent_util.c tevent_wakeup.c'''\\n\\n    if bld.CONFIG_SET('HAVE_PTHREAD'):\\n        SRC += ' tevent_threads.c'/s" \
         "$SAMBA4_SRC_DIR/lib/tevent/wscript"
     perl -0pi -e "s/\\n\\ttevent_poll_init\\(\\);\\n\\ttevent_poll_mt_init\\(\\);/\\n\\ttevent_poll_init();\\n#ifdef HAVE_PTHREAD\\n\\ttevent_poll_mt_init();\\n#endif/s" \

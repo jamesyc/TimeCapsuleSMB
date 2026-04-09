@@ -2,7 +2,7 @@
   "artifacts": {
     "smbd": {
       "path": "bin/samba4/smbd",
-      "sha256": "1cda8bc4ca5caa8c0264b849eadbb3c5954d16ca892cfb4e21e16e20f0aaf3d4"
+      "sha256": "2fb34fdf2adf13879d83cf42efa0e7f66ef98f192f7ce7c3c84327420d5319a9"
     },
     "mdns-smbd-advertiser": {
       "path": "bin/mdns/mdns-smbd-advertiser",

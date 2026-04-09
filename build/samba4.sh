@@ -106,6 +106,7 @@ CROSS_EXECUTE="$(cd "$(dirname "$0")" && pwd)/samba4-cross-exec.sh"
       --without-ldap \
       --without-pam \
       --disable-cups \
+      --disable-iprint \
       --without-winbind \
       --without-utmp \
       --without-syslog \
@@ -118,6 +119,8 @@ CROSS_EXECUTE="$(cd "$(dirname "$0")" && pwd)/samba4-cross-exec.sh"
     # The Time Capsule image does not expose a normal always-on Avahi daemon.
     # Keep Samba's built-in Avahi integration disabled and use the dedicated
     # mdns-smbd-advertiser payload instead.
+    # Printing and spoolss are patched out in downloadsamba4.sh, so keep the
+    # configure side on the no-printing path too.
 
     # Intentionally keep the Time Machine VFS stack static during experiments.
     # The device does not have a normal shared-module runtime tree, and the
