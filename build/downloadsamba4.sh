@@ -155,6 +155,13 @@ if not bld.env.disable_python:
     bld.INSTALL_WILDCARD('${PYTHONARCHDIR}', 'samba/**/*.py', flat=False)
 EOF
 
+    # The native NetBSD 6 getifaddrs() probe can hang on the Time Capsule.
+    # Force Samba onto the older libreplace interface enumeration path.
+    perl -0pi -e "s/conf\\.CHECK_FUNCS\\('timegm getifaddrs freeifaddrs mmap setgroups syscall setsid'\\)/conf.CHECK_FUNCS('timegm mmap setgroups syscall setsid')/" \
+        "$SAMBA4_SRC_DIR/lib/replace/wscript"
+    perl -0pi -e "s/for method in \\['HAVE_IFACE_GETIFADDRS', 'HAVE_IFACE_AIX', 'HAVE_IFACE_IFCONF', 'HAVE_IFACE_IFREQ'\\]:/for method in ['HAVE_IFACE_IFCONF', 'HAVE_IFACE_IFREQ', 'HAVE_IFACE_AIX']:/" \
+        "$SAMBA4_SRC_DIR/lib/replace/wscript"
+
     # The NetBSD Time Capsule build only needs file serving plus the macOS
     # Time Machine VFS stack. Replace the printing/spoolss implementation with
     # small stubs so the build does not pull in the printer stack.
@@ -481,6 +488,10 @@ EOF
 #include "includes.h"
 EOF
 
+    cat >"$SAMBA4_SRC_DIR/source3/rpc_server/wkssvc/wkssvc_disabled.c" <<'EOF'
+#include "includes.h"
+EOF
+
     perl -0pi -e "s/printing\\/printspoolss\\.c/printing\\/printspoolss_disabled.c/" \
         "$SAMBA4_SRC_DIR/source3/wscript_build"
     perl -0pi -e "s/bld\\.SAMBA3_SUBSYSTEM\\('PRINTBASE',\\n\\s*source='''\\n\\s*printing\\/notify\\.c\\n\\s*printing\\/printing_db\\.c\\n\\s*'''/bld.SAMBA3_SUBSYSTEM('PRINTBASE',\\n                    source='''\\n                           printing\\/notify_disabled.c\\n                           printing\\/queue_process_disabled.c\\n                           '''/s" \
@@ -494,14 +505,24 @@ EOF
         "$SAMBA4_SRC_DIR/source3/rpc_server/wscript_build"
     perl -0pi -e "s/bld\\.SAMBA3_SUBSYSTEM\\('RPC_IREMOTEWINSPOOL',\\n\\s*source='''.*?''',\\n\\s*deps='RPC_SPOOLSS'\\)/bld.SAMBA3_SUBSYSTEM('RPC_IREMOTEWINSPOOL',\\n                    source='''spoolss\\/iremotewinspool_disabled.c''',\\n                    deps='')/s" \
         "$SAMBA4_SRC_DIR/source3/rpc_server/wscript_build"
+    perl -0pi -e "s/bld\\.SAMBA3_SUBSYSTEM\\('RPC_WKSSVC',\\n\\s*source='''.*?''',\\n\\s*deps='LIBNET'\\)/bld.SAMBA3_SUBSYSTEM('RPC_WKSSVC',\\n                    source='''wkssvc\\/wkssvc_disabled.c''',\\n                    deps='')/s" \
+        "$SAMBA4_SRC_DIR/source3/rpc_server/wscript_build"
     perl -0pi -e "s/\\n\\s*RPC_SPOOLSS\\n\\s*RPC_IREMOTEWINSPOOL//s" \
+        "$SAMBA4_SRC_DIR/source3/rpc_server/wscript_build"
+    perl -0pi -e "s/\\n\\s*RPC_WKSSVC\\n//s" \
         "$SAMBA4_SRC_DIR/source3/rpc_server/wscript_build"
 
     perl -0pi -e "s/static bool rpc_setup_spoolss\\(.*?\\n\\}\\n\\n/static bool rpc_setup_spoolss(struct tevent_context *ev_ctx,\\n                              struct messaging_context *msg_ctx)\\n{\\n    return true;\\n}\\n\\n/s" \
         "$SAMBA4_SRC_DIR/source3/rpc_server/rpc_service_setup.c"
+    perl -0pi -e "s/static bool rpc_setup_wkssvc\\(.*?\\n\\}\\n\\n/static bool rpc_setup_wkssvc(struct tevent_context *ev_ctx,\\n                             struct messaging_context *msg_ctx)\\n{\\n    return true;\\n}\\n\\n/s" \
+        "$SAMBA4_SRC_DIR/source3/rpc_server/rpc_service_setup.c"
     perl -0pi -e 's/^\s*rpc_spoolss_shutdown\(\);\n//m' \
         "$SAMBA4_SRC_DIR/source3/smbd/server_exit.c"
+    perl -0pi -e 's/^\s*rpc_wkssvc_shutdown\(\);\n//m' \
+        "$SAMBA4_SRC_DIR/source3/smbd/server_exit.c"
     perl -0pi -e "s/bool lp_disable_spoolss\\( void \\)\\n\\{\\n.*?\\n\\}/bool lp_disable_spoolss( void )\\n{\\n\\treturn true;\\n\\}/s" \
+        "$SAMBA4_SRC_DIR/source3/param/loadparm.c"
+    perl -0pi -e "s/epmapper wkssvc rpcecho/epmapper rpcecho/" \
         "$SAMBA4_SRC_DIR/source3/param/loadparm.c"
     perl -0pi -e "s/static bool api_DosPrintQGetInfo\\(.*?^\\}/static bool api_DosPrintQGetInfo(struct smbd_server_connection *sconn,\\n\\t\\t\\t connection_struct *conn, uint64_t vuid,\\n\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
         "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
@@ -517,8 +538,28 @@ EOF
         "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
     perl -0pi -e "s/static bool api_WPrintJobEnumerate\\(.*?^\\}/static bool api_WPrintJobEnumerate(struct smbd_server_connection *sconn,\\n\\t\\t\\t   connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
         "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
+    perl -0pi -e "s/static bool api_RNetServerGetInfo\\(.*?^\\}/static bool api_RNetServerGetInfo(struct smbd_server_connection *sconn,\\n\\t\\t\\t  connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
+        "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
+    perl -0pi -e "s/static bool api_NetWkstaGetInfo\\(.*?^\\}/static bool api_NetWkstaGetInfo(struct smbd_server_connection *sconn,\\n\\t\\t\\t\\tconnection_struct *conn,uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
+        "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
+    perl -0pi -e "s/static bool api_RNetSessionEnum\\(.*?^\\}/static bool api_RNetSessionEnum(struct smbd_server_connection *sconn,\\n\\t\\t\\t   connection_struct *conn,uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
+        "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
     perl -0pi -e "s/void reply_printqueue\\(struct smb_request \\*req\\)\\n\\{.*?^\\}/void reply_printqueue(struct smb_request *req)\\n{\\n\\treply_nterror(req, NT_STATUS_NOT_SUPPORTED);\\n\\treturn;\\n\\}/ms" \
         "$SAMBA4_SRC_DIR/source3/smbd/reply.c"
+    perl -0pi -e "s/WERROR _srvsvc_NetFileEnum\\(.*?^\\}/WERROR _srvsvc_NetFileEnum(struct pipes_struct *p,\\n\\t\\t\\t   struct srvsvc_NetFileEnum *r)\\n{\\n\\treturn WERR_NOT_SUPPORTED;\\n\\}/ms" \
+        "$SAMBA4_SRC_DIR/source3/rpc_server/srvsvc/srv_srvsvc_nt.c"
+    perl -0pi -e "s/WERROR _srvsvc_NetSrvGetInfo\\(.*?^\\}/WERROR _srvsvc_NetSrvGetInfo(struct pipes_struct *p,\\n\\t\\t\\t     struct srvsvc_NetSrvGetInfo *r)\\n{\\n\\treturn WERR_NOT_SUPPORTED;\\n\\}/ms" \
+        "$SAMBA4_SRC_DIR/source3/rpc_server/srvsvc/srv_srvsvc_nt.c"
+    perl -0pi -e "s/WERROR _srvsvc_NetSrvSetInfo\\(.*?^\\}/WERROR _srvsvc_NetSrvSetInfo(struct pipes_struct *p,\\n\\t\\t\\t     struct srvsvc_NetSrvSetInfo *r)\\n{\\n\\treturn WERR_NOT_SUPPORTED;\\n\\}/ms" \
+        "$SAMBA4_SRC_DIR/source3/rpc_server/srvsvc/srv_srvsvc_nt.c"
+    perl -0pi -e "s/WERROR _srvsvc_NetConnEnum\\(.*?^\\}/WERROR _srvsvc_NetConnEnum(struct pipes_struct *p,\\n\\t\\t\\t   struct srvsvc_NetConnEnum *r)\\n{\\n\\treturn WERR_NOT_SUPPORTED;\\n\\}/ms" \
+        "$SAMBA4_SRC_DIR/source3/rpc_server/srvsvc/srv_srvsvc_nt.c"
+    perl -0pi -e "s/WERROR _srvsvc_NetSessEnum\\(.*?^\\}/WERROR _srvsvc_NetSessEnum(struct pipes_struct *p,\\n\\t\\t\\t   struct srvsvc_NetSessEnum *r)\\n{\\n\\treturn WERR_NOT_SUPPORTED;\\n\\}/ms" \
+        "$SAMBA4_SRC_DIR/source3/rpc_server/srvsvc/srv_srvsvc_nt.c"
+    perl -0pi -e "s/WERROR _srvsvc_NetSessDel\\(.*?^\\}/WERROR _srvsvc_NetSessDel(struct pipes_struct *p,\\n\\t\\t\\t  struct srvsvc_NetSessDel *r)\\n{\\n\\treturn WERR_NOT_SUPPORTED;\\n\\}/ms" \
+        "$SAMBA4_SRC_DIR/source3/rpc_server/srvsvc/srv_srvsvc_nt.c"
+    perl -0pi -e "s/WERROR _srvsvc_NetRemoteTOD\\(.*?^\\}/WERROR _srvsvc_NetRemoteTOD(struct pipes_struct *p,\\n\\t\\t\\t    struct srvsvc_NetRemoteTOD *r)\\n{\\n\\treturn WERR_NOT_SUPPORTED;\\n\\}/ms" \
+        "$SAMBA4_SRC_DIR/source3/rpc_server/srvsvc/srv_srvsvc_nt.c"
 
     perl -0pi -e "s/SRC = '''tevent\\.c tevent_debug\\.c tevent_fd\\.c tevent_immediate\\.c\\n             tevent_queue\\.c tevent_req\\.c\\n             tevent_poll\\.c tevent_threads\\.c\\n             tevent_signal\\.c tevent_standard\\.c tevent_timed\\.c tevent_util\\.c tevent_wakeup\\.c'''/SRC = '''tevent.c tevent_debug.c tevent_fd.c tevent_immediate.c\\n             tevent_queue.c tevent_req.c\\n             tevent_poll.c\\n             tevent_signal.c tevent_standard.c tevent_timed.c tevent_util.c tevent_wakeup.c'''\\n\\n    if bld.CONFIG_SET('HAVE_PTHREAD'):\\n        SRC += ' tevent_threads.c'/s" \
         "$SAMBA4_SRC_DIR/lib/tevent/wscript"

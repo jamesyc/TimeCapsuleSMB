@@ -17,7 +17,12 @@ import subprocess
 from timecapsulesmb.checks.bonjour import parse_browse_instance, parse_lookup_target, run_bonjour_checks
 from timecapsulesmb.checks.doctor import run_doctor_checks
 from timecapsulesmb.checks.local_tools import check_required_local_tools
-from timecapsulesmb.checks.smb import check_authenticated_smb_file_ops, exercise_mounted_share_file_ops, try_authenticated_smb_listing
+from timecapsulesmb.checks.smb import (
+    check_authenticated_smb_file_ops,
+    check_authenticated_smb_listing,
+    exercise_mounted_share_file_ops,
+    try_authenticated_smb_listing,
+)
 
 
 class CheckTests(unittest.TestCase):
@@ -132,6 +137,65 @@ class CheckTests(unittest.TestCase):
                                     )
         self.assertFalse(fatal)
         self.assertEqual([result.message for result in results], emitted)
+
+    def test_run_doctor_checks_passes_expected_share_to_listing(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+        }
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.check_ssh_reachability", return_value=mock.Mock(status="PASS", message="ssh ok")):
+                    with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
+                        with mock.patch("timecapsulesmb.checks.doctor.run_bonjour_checks", return_value=([], None, None)):
+                            with mock.patch(
+                                "timecapsulesmb.checks.doctor.check_authenticated_smb_listing",
+                                return_value=mock.Mock(status="PASS", message="listing ok"),
+                            ) as listing_mock:
+                                with mock.patch(
+                                    "timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops",
+                                    return_value=mock.Mock(status="PASS", message="file ops ok"),
+                                ):
+                                    run_doctor_checks(values, env_exists=True, repo_root=REPO_ROOT)
+        listing_mock.assert_called_once_with(
+            "admin",
+            "pw",
+            "timecapsulesamba4.local",
+            expected_share_name="Data",
+        )
+
+    def test_check_authenticated_smb_listing_requires_expected_share(self) -> None:
+        proc = subprocess.CompletedProcess(["smbutil"], 0, "Public\n", "")
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+            with mock.patch("timecapsulesmb.checks.smb.run_local_capture", return_value=proc):
+                result = check_authenticated_smb_listing(
+                    "admin",
+                    "pw",
+                    "server.local",
+                    expected_share_name="Data",
+                )
+        self.assertEqual(result.status, "FAIL")
+        self.assertIn("did not include expected share", result.message)
+
+    def test_check_authenticated_smb_listing_passes_when_expected_share_present(self) -> None:
+        proc = subprocess.CompletedProcess(["smbutil"], 0, "Data\nPublic\n", "")
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+            with mock.patch("timecapsulesmb.checks.smb.run_local_capture", return_value=proc):
+                result = check_authenticated_smb_listing(
+                    "admin",
+                    "pw",
+                    "server.local",
+                    expected_share_name="Data",
+                )
+        self.assertEqual(result.status, "PASS")
+        self.assertIn("listing works", result.message)
 
     def test_exercise_mounted_share_file_ops_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
