@@ -19,6 +19,7 @@ from timecapsulesmb.core.config import (
     parse_env_value,
     parse_env_values,
     render_env_text,
+    write_env_file,
 )
 
 
@@ -44,6 +45,17 @@ class ConfigTests(unittest.TestCase):
         rendered = render_env_text(values)
         self.assertIn("TC_PASSWORD=secret", rendered)
         self.assertIn("TC_MDNS_INSTANCE_NAME='Time Capsule Samba 4'", rendered)
+        self.assertIn("TC_MDNS_DEVICE_MODEL=TimeCapsule", rendered)
+
+    def test_write_env_file_round_trips_mdns_device_model(self) -> None:
+        values = dict(DEFAULTS)
+        values["TC_PASSWORD"] = "secret"
+        values["TC_MDNS_DEVICE_MODEL"] = "AirPortTimeCapsule"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            write_env_file(path, values)
+            reparsed = parse_env_values(path)
+        self.assertEqual(reparsed["TC_MDNS_DEVICE_MODEL"], "AirPortTimeCapsule")
 
     def test_parse_env_value_falls_back_for_unbalanced_quotes(self) -> None:
         self.assertEqual(parse_env_value("'unterminated"), "unterminated")

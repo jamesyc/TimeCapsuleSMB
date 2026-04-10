@@ -17,6 +17,7 @@ NET_IFACE=__NET_IFACE__
 SMB_SHARE_NAME=__SMB_SHARE_NAME__
 MDNS_INSTANCE_NAME=__MDNS_INSTANCE_NAME__
 MDNS_HOST_LABEL=__MDNS_HOST_LABEL__
+MDNS_DEVICE_MODEL=__MDNS_DEVICE_MODEL__
 
 POLL_SECONDS=300
 
@@ -70,6 +71,7 @@ restart_mdns() {
     "$MDNS_BIN" \
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
+        --device-model "$MDNS_DEVICE_MODEL" \
         --adisk-share "$SMB_SHARE_NAME" \
         --ipv4 "$iface_ip" \
         >/dev/null 2>&1 &

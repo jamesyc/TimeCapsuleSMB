@@ -148,6 +148,7 @@ class CliTests(unittest.TestCase):
             "samba4",
             "Time Capsule Samba 4",
             "timecapsulesamba4",
+            "TimeCapsule",
         ])
 
         def fake_prompt(label, default, _secret):
@@ -179,6 +180,7 @@ class CliTests(unittest.TestCase):
             "samba4",
             "Time Capsule Samba 4",
             "timecapsulesamba4",
+            "TimeCapsule",
         ])
         password_values = iter(["", "goodpw"])
 
@@ -213,6 +215,7 @@ class CliTests(unittest.TestCase):
             "samba4",
             "Time Capsule Samba 4",
             "timecapsulesamba4",
+            "TimeCapsule",
         ])
 
         def fake_prompt(_label, _default, _secret):
@@ -248,6 +251,7 @@ class CliTests(unittest.TestCase):
             "samba4",
             "Time Capsule Samba 4",
             "timecapsulesamba4",
+            "TimeCapsule",
         ])
 
         def fake_prompt(_label, _default, _secret):
@@ -284,6 +288,7 @@ class CliTests(unittest.TestCase):
             "samba4",
             "Time Capsule Samba 4",
             "timecapsulesamba4",
+            "TimeCapsule",
         ])
 
         def fake_prompt(_label, _default, _secret):
@@ -342,6 +347,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -376,6 +382,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -395,6 +402,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -424,6 +432,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -454,6 +463,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -483,6 +493,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
         unsupported = DeviceCompatibility(
@@ -575,6 +586,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):

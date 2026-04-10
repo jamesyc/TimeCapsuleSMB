@@ -36,11 +36,26 @@ class DeployModuleTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
         bundle = build_template_bundle(values)
         self.assertIn("__SMB_SHARE_NAME__", bundle.start_script_replacements)
         self.assertIn("__SMB_SAMBA_USER__", bundle.smbconf_replacements)
+        self.assertEqual(bundle.start_script_replacements["__MDNS_DEVICE_MODEL__"], "TimeCapsule")
+
+    def test_build_template_bundle_defaults_mdns_device_model(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(values)
+        self.assertEqual(bundle.start_script_replacements["__MDNS_DEVICE_MODEL__"], "TimeCapsule")
 
     def test_build_deployment_plan_uses_device_paths(self) -> None:
         paths = build_device_paths("/Volumes/dk2", "samba4")
@@ -56,6 +71,38 @@ class DeployModuleTests(unittest.TestCase):
     def test_load_boot_asset_text_reads_packaged_asset(self) -> None:
         content = load_boot_asset_text("rc.local")
         self.assertIn("/mnt/Flash/start-samba.sh", content)
+
+    def test_render_start_script_includes_device_model_flag(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(values)
+        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
+        self.assertIn('MDNS_DEVICE_MODEL=AirPortTimeCapsule', rendered)
+        self.assertIn('--device-model "$MDNS_DEVICE_MODEL"', rendered)
+
+    def test_render_watchdog_script_includes_device_model_flag(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(values)
+        rendered = render_template("watchdog.sh", bundle.watchdog_replacements)
+        self.assertIn('MDNS_DEVICE_MODEL=AirPortTimeCapsule', rendered)
+        self.assertIn('--device-model "$MDNS_DEVICE_MODEL"', rendered)
 
     def test_discover_volume_root_raises_when_no_output(self) -> None:
         proc = mock.Mock(stdout="\n")

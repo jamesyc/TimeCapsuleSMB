@@ -19,6 +19,7 @@ DEFAULTS = {
     "TC_PAYLOAD_DIR_NAME": "samba4",
     "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
     "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+    "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
 }
 
 REQUIRED_ENV_KEYS = [
@@ -31,6 +32,7 @@ REQUIRED_ENV_KEYS = [
     "TC_PAYLOAD_DIR_NAME",
     "TC_MDNS_INSTANCE_NAME",
     "TC_MDNS_HOST_LABEL",
+    "TC_MDNS_DEVICE_MODEL",
 ]
 
 CONFIG_FIELDS = [
@@ -43,6 +45,7 @@ CONFIG_FIELDS = [
     ("TC_PAYLOAD_DIR_NAME", "Persistent payload directory name", DEFAULTS["TC_PAYLOAD_DIR_NAME"], False),
     ("TC_MDNS_INSTANCE_NAME", "mDNS SMB instance name", DEFAULTS["TC_MDNS_INSTANCE_NAME"], False),
     ("TC_MDNS_HOST_LABEL", "mDNS host label", DEFAULTS["TC_MDNS_HOST_LABEL"], False),
+    ("TC_MDNS_DEVICE_MODEL", "mDNS device model hint", DEFAULTS["TC_MDNS_DEVICE_MODEL"], False),
 ]
 
 CONFIG_HEADER = """# Local user/device configuration for TimeCapsuleSMB.
