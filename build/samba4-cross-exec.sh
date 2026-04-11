@@ -180,7 +180,7 @@ if [ -f "$LOCAL_CMD" ]; then
     done
 
     if [ "$MODE" = "replay" ]; then
-        status=$(replay_probe "$SAMBA4_COMPAT_REPLAY_IN" file "$PROBE_SHA256" "$stdout_file" "$stderr_file" "$@")
+        status=$(replay_probe "$SAMBA4_COMPAT_REPLAY_IN" file "$PROBE_SHA256" "$stdout_file" "$stderr_file" "$@") || exit $?
         emit_captured_output "$stdout_file" "$stderr_file"
         exit "$status"
     fi
