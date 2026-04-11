@@ -59,7 +59,7 @@ SAMBA4_JOBS="${SAMBA4_JOBS:-2}"
 SAMBA4_HOST_ALIAS="${SAMBA4_HOST_ALIAS:-armv4-unknown-netbsd7.2}"
 SAMBA4_FALLBACK_VERSION="${SAMBA4_FALLBACK_VERSION:-4.3.13}"
 SAMBA4_FALLBACK_GIT_REF="${SAMBA4_FALLBACK_GIT_REF:-samba-${SAMBA4_FALLBACK_VERSION}}"
-SAMBA4_STATIC_MODULES="${SAMBA4_STATIC_MODULES:-vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb}"
+SAMBA4_STATIC_MODULES="${SAMBA4_STATIC_MODULES:-vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_acl_xattr}"
 
 TC_HOST="${TC_HOST:-root@192.168.1.217}"
 TC_SSH_OPTS="${TC_SSH_OPTS:--o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null}"
