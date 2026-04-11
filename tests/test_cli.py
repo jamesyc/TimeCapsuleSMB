@@ -28,6 +28,8 @@ class CliTests(unittest.TestCase):
             os_release="6.0",
             arch="earmv4",
             payload_family="netbsd6_samba4",
+            device_generation="gen5",
+            mdns_device_model_hint="TimeCapsule8,119",
             supported=True,
             message="Detected supported device: NetBSD 6.0 (earmv4).",
         )
@@ -167,6 +169,88 @@ class CliTests(unittest.TestCase):
                                         rc = configure.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_HOST"], "root@10.0.0.2")
+
+    def test_configure_prefills_mdns_device_model_from_detected_device(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        prompt_values = iter([
+            "rootpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+        ])
+        seen_defaults = {}
+
+        def fake_prompt(label, default, _secret):
+            seen_defaults[label] = default
+            if label == "Time Capsule SSH target":
+                return "root@10.0.0.2"
+            if label == "mDNS device model hint":
+                return default
+            return next(prompt_values)
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=True):
+                        with mock.patch("timecapsulesmb.cli.configure.validate_ssh_target", return_value=True):
+                            with mock.patch("timecapsulesmb.cli.configure.infer_mdns_device_model_hint", return_value="TimeCapsule8,119"):
+                                with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                    with redirect_stdout(output):
+                                        rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen_defaults["mDNS device model hint"], "TimeCapsule8,119")
+        self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
+
+    def test_configure_preserves_existing_mdns_device_model_override(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        existing = {
+            "TC_MDNS_DEVICE_MODEL": "CustomCapsuleModel",
+            "TC_SSH_OPTS": "-o foo",
+        }
+        prompt_values = iter([
+            "rootpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+        ])
+        seen_defaults = {}
+
+        def fake_prompt(label, default, _secret):
+            seen_defaults[label] = default
+            if label == "Time Capsule SSH target":
+                return "root@10.0.0.2"
+            if label == "mDNS device model hint":
+                return default
+            return next(prompt_values)
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
+            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=True):
+                        with mock.patch("timecapsulesmb.cli.configure.validate_ssh_target", return_value=True):
+                            with mock.patch("timecapsulesmb.cli.configure.infer_mdns_device_model_hint", return_value="TimeCapsule8,119"):
+                                with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                    with redirect_stdout(output):
+                                        rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen_defaults["mDNS device model hint"], "CustomCapsuleModel")
+        self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "CustomCapsuleModel")
 
     def test_configure_rejects_blank_password_when_no_existing_password(self) -> None:
         output = io.StringIO()
@@ -501,6 +585,8 @@ class CliTests(unittest.TestCase):
             os_release="4.0",
             arch="earmv4",
             payload_family=None,
+            device_generation="gen1-4",
+            mdns_device_model_hint="TimeCapsule6,106",
             supported=False,
             message="This Time Capsule is running NetBSD 4, which is an older 4th gen or earlier model. The checked-in Samba payload only supports NetBSD 6 (5th gen) devices right now.",
         )
