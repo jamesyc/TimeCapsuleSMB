@@ -93,6 +93,47 @@ static int append_u32(uint8_t *buf, size_t *off, size_t cap, uint32_t value) {
     return append_bytes(buf, off, cap, &net, sizeof(net));
 }
 
+static int validate_single_dns_label(const char *value, const char *field_name) {
+    size_t len;
+    const unsigned char *p;
+
+    if (value == NULL || value[0] == '\0') {
+        fprintf(stderr, "%s must not be empty\n", field_name);
+        return -1;
+    }
+
+    len = strlen(value);
+    if (len > MAX_LABEL) {
+        fprintf(stderr, "%s must be %d bytes or fewer\n", field_name, MAX_LABEL);
+        return -1;
+    }
+
+    if (strchr(value, '.') != NULL) {
+        fprintf(stderr, "%s must not contain dots\n", field_name);
+        return -1;
+    }
+
+    for (p = (const unsigned char *)value; *p != '\0'; p++) {
+        if (*p < 0x20 || *p == 0x7f) {
+            fprintf(stderr, "%s contains an invalid control character\n", field_name);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int build_instance_fqdn(char *out, size_t out_len, const char *instance_name, const char *service_type) {
+    int written;
+
+    written = snprintf(out, out_len, "%s.%s", instance_name, service_type);
+    if (written < 0 || (size_t)written >= out_len) {
+        return -1;
+    }
+
+    return 0;
+}
+
 static int encode_name(uint8_t *buf, size_t *off, size_t cap, const char *name) {
     char temp[MAX_NAME];
     char *token;
@@ -326,7 +367,9 @@ static int add_adisk_records(uint8_t *buf, size_t *off, size_t cap, const struct
         return 0;
     }
 
-    snprintf(instance_fqdn, sizeof(instance_fqdn), "%s.%s", cfg->instance_name, cfg->adisk_service_type);
+    if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->adisk_service_type) != 0) {
+        return -1;
+    }
     snprintf(txt1, sizeof(txt1), "sys=waMa=0,adVF=0x100");
     snprintf(txt2, sizeof(txt2), "dk0=adVN=%s,adVF=0x82", cfg->adisk_share_name);
     txts[0] = txt1;
@@ -351,7 +394,9 @@ static int add_device_info_records(uint8_t *buf, size_t *off, size_t cap, const 
         return 0;
     }
 
-    snprintf(instance_fqdn, sizeof(instance_fqdn), "%s.%s", cfg->instance_name, cfg->device_info_service_type);
+    if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->device_info_service_type) != 0) {
+        return -1;
+    }
     snprintf(model_txt, sizeof(model_txt), "model=%s", cfg->device_model);
     txts[0] = model_txt;
 
@@ -372,7 +417,9 @@ static int send_announcement(int sockfd, const struct sockaddr_in *dest, const s
     char instance_fqdn[MAX_NAME];
     int answers = 0;
 
-    snprintf(instance_fqdn, sizeof(instance_fqdn), "%s.%s", cfg->instance_name, cfg->service_type);
+    if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->service_type) != 0) {
+        return -1;
+    }
 
     memset(&hdr, 0, sizeof(hdr));
     hdr.flags = htons(DNS_FLAG_QR | DNS_FLAG_AA);
@@ -429,9 +476,17 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
     }
 
     qdcount = ntohs(hdr.qdcount);
-    snprintf(instance_fqdn, sizeof(instance_fqdn), "%s.%s", cfg->instance_name, cfg->service_type);
-    snprintf(adisk_instance_fqdn, sizeof(adisk_instance_fqdn), "%s.%s", cfg->instance_name, cfg->adisk_service_type);
-    snprintf(device_info_instance_fqdn, sizeof(device_info_instance_fqdn), "%s.%s", cfg->instance_name, cfg->device_info_service_type);
+    if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->service_type) != 0) {
+        return 0;
+    }
+    if (cfg->adisk_share_name[0] != '\0' &&
+        build_instance_fqdn(adisk_instance_fqdn, sizeof(adisk_instance_fqdn), cfg->instance_name, cfg->adisk_service_type) != 0) {
+        return 0;
+    }
+    if (cfg->device_model[0] != '\0' &&
+        build_instance_fqdn(device_info_instance_fqdn, sizeof(device_info_instance_fqdn), cfg->instance_name, cfg->device_info_service_type) != 0) {
+        return 0;
+    }
 
     for (i = 0; i < qdcount; i++) {
         char qname[MAX_NAME];
@@ -673,6 +728,11 @@ int main(int argc, char **argv) {
 
     if (cfg.instance_name[0] == '\0' || cfg.host_label[0] == '\0' || cfg.ipv4_addr == 0) {
         usage(argv[0]);
+        return 2;
+    }
+
+    if (validate_single_dns_label(cfg.instance_name, "instance name") != 0 ||
+        validate_single_dns_label(cfg.host_label, "host label") != 0) {
         return 2;
     }
 

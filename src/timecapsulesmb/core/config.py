@@ -104,6 +104,19 @@ def extract_host(target: str) -> str:
     return target.split("@", 1)[1] if "@" in target else target
 
 
+def validate_single_dns_label(value: str, field_name: str) -> Optional[str]:
+    if not value:
+        return f"{field_name} cannot be blank."
+    if len(value) > 63:
+        return f"{field_name} must be 63 characters or fewer."
+    if "." in value:
+        return f"{field_name} must not contain dots."
+    for ch in value:
+        if ord(ch) < 0x20 or ord(ch) == 0x7F:
+            return f"{field_name} contains an invalid control character."
+    return None
+
+
 def render_env_text(values: dict[str, str]) -> str:
     lines = [CONFIG_HEADER.rstrip(), ""]
     for key, _, _, _ in CONFIG_FIELDS:

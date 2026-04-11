@@ -3,7 +3,15 @@ from __future__ import annotations
 import getpass
 from typing import Optional
 
-from timecapsulesmb.core.config import CONFIG_FIELDS, DEFAULTS, ENV_PATH, extract_host, parse_env_values, write_env_file
+from timecapsulesmb.core.config import (
+    CONFIG_FIELDS,
+    DEFAULTS,
+    ENV_PATH,
+    extract_host,
+    parse_env_values,
+    validate_single_dns_label,
+    write_env_file,
+)
 from timecapsulesmb.device.compat import infer_mdns_device_model_hint
 from timecapsulesmb.discovery.bonjour import discover, prefer_routable_ipv4, preferred_host
 from timecapsulesmb.transport.local import tcp_open
@@ -143,7 +151,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         if key == "TC_MDNS_DEVICE_MODEL" and inferred_mdns_device_model:
             if not current or current == DEFAULTS["TC_MDNS_DEVICE_MODEL"]:
                 current = inferred_mdns_device_model
-        values[key] = prompt(label, current, secret)
+        while True:
+            candidate = prompt(label, current, secret)
+            if key in {"TC_MDNS_INSTANCE_NAME", "TC_MDNS_HOST_LABEL"}:
+                error = validate_single_dns_label(candidate, label)
+                if error:
+                    print(error)
+                    current = candidate
+                    continue
+            values[key] = candidate
+            break
 
     write_env_file(ENV_PATH, values)
     print(f"\nWrote {ENV_PATH}")
