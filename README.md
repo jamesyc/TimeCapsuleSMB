@@ -1,16 +1,16 @@
 # TimeCapsuleSMB
 
-Apple AirPort Time Capsules are still perfectly usable pieces of hardware, but they only support AFP and SMB1. Apple has removed SMB1 support from MacOS a long time ago, and AFP support is being removed for MacOS 27.
+Apple AirPort Time Capsules are still perfectly usable pieces of hardware, but they only support AFP and SMB1. Apple has removed SMB1 support from macOS a long time ago, and AFP support is being removed for macOS 27.
 
 **NOTE THAT TIME MACHINE ON MACOS 26.4 IS CURRENTLY BROKEN**, see https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups  
-Macs running MacOS 26.4 can still use the device as a standard Samba network share in Finder.
+Macs running macOS 26.4 can still use the device as a standard Samba network share in Finder.
 
-This repo configures a modern SMB3 Samba setup that runs directly on the Time Capsule itself. The goal is that a Time Capsule can once again show up as a normal SMB server on your network, and modern MacOS can connect to it as a network share. This project is currently confirmed to work for NetBSD 6 based Time Capsules! Your Time Capsule should work if it looks like this:  
+This repo configures a modern SMB3 Samba setup that runs directly on the Time Capsule itself. The goal is that a Time Capsule can once again show up as a normal SMB server on your network, and modern macOS can connect to it as a network share. This project is currently confirmed to work for NetBSD 6 based Time Capsules! Your Time Capsule should work if it looks like this:  
 <img width="256" height="192" alt="image" src="https://github.com/user-attachments/assets/5d0b044f-2137-4bb7-8d65-3d1bb251754c" />
 
 ## Expectations
 
-If the setup completes successfully, your Time Capsule will boot its own Samba 4 server automatically, advertise itself over Bonjour (show up automatically in the "Network" folder on MacOS), and accept authenticated SMB connections from macOS. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack. **This will disable Apple's AFP and SMB file server**, so do not expect those to be running at the same time. 
+If the setup completes successfully, your Time Capsule will boot its own Samba 4 server automatically, advertise itself over Bonjour (show up automatically in the "Network" folder on macOS), and accept authenticated SMB connections from macOS. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack. **This will disable Apple's AFP and SMB file server**, so do not expect those to be running at the same time. 
 
 If you are not using your old Time Capsule as a main Wifi router, and you are okay with wiping the old backup/data on it, great! This is currently working well enough for you to try it out. If you find any problems, I would appreciate it if you [file an issue here](https://github.com/jamesyc/TimeCapsuleSMB/issues); I am actively working on it, so expect improvements! However **this is not supported by a trillion dollar company**, this is built by a guy in his free time. Therefore, I honestly do *not* recommend using this if you are still using the Time Capsule as your primary router, or if you have data on it that you are not comfortable losing. I would suggest waiting 1-2 months for me to clean it up a bit more; you can click the star/watch button for this repo to get updates. Right now, this project is most suited for "people who just plug in their old Time Capsule into their newer Wifi router, so they can have easy backups of their Macbook in case it gets lost/stolen"; ideally you are the type of person who wouldn't mind having to reset the Time Capsule in case something goes wrong. I do *not* expect this to permanently break the Time Capsule if something goes wrong, but it *may* mess up your configuration/data so you would need to reset/wipe the device. **My goal is to have it be usable for the general public in 1-2 months**, before the deadline of "the macOS 27 release date", when Apple kills support for the Time Capsule.
 
@@ -30,7 +30,7 @@ For the typical setup path, you need only:
 
 - a Mac on the same local network as the Time Capsule
 - the Time Capsule password
-- Python 3 and Homebrew installed on your Mac.
+- Python 3.9+ and Homebrew installed on your Mac.
 
 ## Quick Start
 
@@ -152,7 +152,8 @@ This is a non-destructive diagnostic command. `tcapsule doctor` checks:
 - that SSH is reachable
 - that SMB is reachable
 - that Bonjour `_smb._tcp` advertisement is visible
-- that an authenticated SMB listing actually works
+- that an authenticated SMB listing actually works and includes the configured share name
+- that authenticated SMB file operations also work on the share
 
 If you want the results in JSON instead of human-readable text, use:
 
