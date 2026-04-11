@@ -3,7 +3,16 @@ from __future__ import annotations
 import getpass
 from typing import Optional
 
-from timecapsulesmb.core.config import CONFIG_FIELDS, DEFAULTS, ENV_PATH, extract_host, parse_env_values, write_env_file
+from timecapsulesmb.core.config import (
+    CONFIG_VALIDATORS,
+    CONFIG_FIELDS,
+    DEFAULTS,
+    ENV_PATH,
+    extract_host,
+    parse_env_values,
+    write_env_file,
+)
+from timecapsulesmb.device.compat import infer_mdns_device_model_hint
 from timecapsulesmb.discovery.bonjour import discover, prefer_routable_ipv4, preferred_host
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import run_ssh
@@ -104,6 +113,7 @@ def validate_ssh_target_if_reachable(host: str, password: str, ssh_opts: str) ->
 def main(argv: Optional[list[str]] = None) -> int:
     existing = parse_env_values(ENV_PATH, defaults={})
     values: dict[str, str] = {}
+    inferred_mdns_device_model: Optional[str] = None
 
     print("This writes a local .env configuration file in this folder. The other tcapsule commands use that file.")
     print(f"Writing {ENV_PATH}")
@@ -130,9 +140,28 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("Please enter the SSH target and password again.\n")
         prompt_host_and_password(existing, values, discovered_host)
 
+    if validation_result:
+        try:
+            inferred_mdns_device_model = infer_mdns_device_model_hint(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
+        except SystemExit:
+            inferred_mdns_device_model = None
+
     for key, label, default, secret in CONFIG_FIELDS[2:]:
         current = existing.get(key, default)
-        values[key] = prompt(label, current, secret)
+        if key == "TC_MDNS_DEVICE_MODEL" and inferred_mdns_device_model:
+            if not current or current == DEFAULTS["TC_MDNS_DEVICE_MODEL"]:
+                current = inferred_mdns_device_model
+        while True:
+            candidate = prompt(label, current, secret)
+            validator = CONFIG_VALIDATORS.get(key)
+            if validator is not None:
+                error = validator(candidate, label)
+                if error:
+                    print(error)
+                    current = candidate
+                    continue
+            values[key] = candidate
+            break
 
     write_env_file(ENV_PATH, values)
     print(f"\nWrote {ENV_PATH}")

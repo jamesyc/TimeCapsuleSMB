@@ -25,8 +25,14 @@ if [ ! -f "$MDNS_SRC" ]; then
 fi
 
 mkdir -p "$MDNS_STAGE"
+mkdir -p "$(dirname "$MDNS_LOG")"
 
-{
+if ! : >"$MDNS_LOG"; then
+    echo "Cannot write log file: $MDNS_LOG"
+    exit 1
+fi
+
+if ! {
     echo "MDNS_SRC=$MDNS_SRC"
     echo "MDNS_STAGE=$MDNS_STAGE"
     echo "MDNS_BIN_NAME=$MDNS_BIN_NAME"
@@ -53,7 +59,11 @@ mkdir -p "$MDNS_STAGE"
 
     "$TOOLDIR/bin/nbfile" "$MDNS_STAGE/$MDNS_BIN_NAME"
     "$TOOLDIR/bin/nbfile" "$MDNS_STAGE/$MDNS_BIN_NAME.stripped"
-} >"$MDNS_LOG" 2>&1
+} >"$MDNS_LOG" 2>&1; then
+    echo "mDNS build failed."
+    echo "Log: $MDNS_LOG"
+    exit 1
+fi
 
 printf 'mDNS build complete.\n'
 printf 'Log: %s\n' "$MDNS_LOG"

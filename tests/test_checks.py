@@ -40,6 +40,7 @@ class CheckTests(unittest.TestCase):
             "TC_PAYLOAD_DIR_NAME": "samba4",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
         }
         with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
             with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
@@ -88,6 +89,7 @@ class CheckTests(unittest.TestCase):
             "TC_PAYLOAD_DIR_NAME": "samba4",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
         }
         with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
             with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
@@ -115,6 +117,7 @@ class CheckTests(unittest.TestCase):
             "TC_PAYLOAD_DIR_NAME": "samba4",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
         }
         emitted: list[str] = []
         with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):

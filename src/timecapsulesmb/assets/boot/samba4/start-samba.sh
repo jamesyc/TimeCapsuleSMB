@@ -38,6 +38,7 @@ SMB_NETBIOS_NAME=__SMB_NETBIOS_NAME__
 NET_IFACE=__NET_IFACE__
 MDNS_INSTANCE_NAME=__MDNS_INSTANCE_NAME__
 MDNS_HOST_LABEL=__MDNS_HOST_LABEL__
+MDNS_DEVICE_MODEL=__MDNS_DEVICE_MODEL__
 
 log() {
     log_dir=${RAM_LOG%/*}
@@ -301,6 +302,7 @@ start_mdns() {
     "$RAM_SBIN/mdns-smbd-advertiser" \
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
+        --device-model "$MDNS_DEVICE_MODEL" \
         --adisk-share "$SMB_SHARE_NAME" \
         --ipv4 "$BRIDGE0_IP" \
         >/dev/null 2>&1 &

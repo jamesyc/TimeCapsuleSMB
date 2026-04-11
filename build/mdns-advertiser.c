@@ -19,7 +19,11 @@
 #define BUF_SIZE 1500
 #define MAX_NAME 256
 #define MAX_LABEL 63
+#define MAX_TXT_STRING 255
 #define ANNOUNCE_INTERVAL 30
+#define MODEL_TXT_PREFIX "model="
+#define ADISK_SHARE_TXT_PREFIX "dk0=adVN="
+#define ADISK_SHARE_TXT_SUFFIX ",adVF=0x82"
 
 #define DNS_TYPE_A 1
 #define DNS_TYPE_PTR 12
@@ -40,6 +44,8 @@ struct config {
     char host_fqdn[MAX_NAME];
     char adisk_service_type[MAX_NAME];
     char adisk_share_name[MAX_NAME];
+    char device_info_service_type[MAX_NAME];
+    char device_model[MAX_NAME];
     uint32_t ipv4_addr;
     uint16_t port;
     uint16_t adisk_port;
@@ -66,6 +72,7 @@ static void usage(const char *prog) {
             "Options:\n"
             "  --service <type>   Service type (default: _smb._tcp.local.)\n"
             "  --adisk-share <n>  Also advertise _adisk._tcp for Time Machine\n"
+            "  --device-model <m> Also advertise _device-info._tcp with model=<m>\n"
             "  --port <port>      Service port (default: 445)\n"
             "  --ttl <seconds>    Record TTL (default: 120)\n",
             prog);
@@ -88,6 +95,150 @@ static int append_u16(uint8_t *buf, size_t *off, size_t cap, uint16_t value) {
 static int append_u32(uint8_t *buf, size_t *off, size_t cap, uint32_t value) {
     uint32_t net = htonl(value);
     return append_bytes(buf, off, cap, &net, sizeof(net));
+}
+
+static int validate_single_dns_label(const char *value, const char *field_name) {
+    size_t len;
+    const unsigned char *p;
+
+    if (value == NULL || value[0] == '\0') {
+        fprintf(stderr, "%s must not be empty\n", field_name);
+        return -1;
+    }
+
+    len = strlen(value);
+    if (len > MAX_LABEL) {
+        fprintf(stderr, "%s must be %d bytes or fewer\n", field_name, MAX_LABEL);
+        return -1;
+    }
+
+    if (strchr(value, '.') != NULL) {
+        fprintf(stderr, "%s must not contain dots\n", field_name);
+        return -1;
+    }
+
+    for (p = (const unsigned char *)value; *p != '\0'; p++) {
+        if (*p < 0x20 || *p == 0x7f) {
+            fprintf(stderr, "%s contains an invalid control character\n", field_name);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int build_instance_fqdn(char *out, size_t out_len, const char *instance_name, const char *service_type) {
+    int written;
+
+    written = snprintf(out, out_len, "%s.%s", instance_name, service_type);
+    if (written < 0 || (size_t)written >= out_len) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int build_model_txt(char *out, size_t out_len, const char *device_model) {
+    int written;
+
+    if (device_model == NULL || device_model[0] == '\0') {
+        return -1;
+    }
+
+    if (strlen(MODEL_TXT_PREFIX) + strlen(device_model) > MAX_TXT_STRING) {
+        fprintf(stderr, "device model must be %d bytes or fewer\n", MAX_TXT_STRING - (int)strlen(MODEL_TXT_PREFIX));
+        return -1;
+    }
+
+    written = snprintf(out, out_len, MODEL_TXT_PREFIX "%s", device_model);
+    if (written < 0 || (size_t)written >= out_len) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int build_adisk_share_txt(char *out, size_t out_len, const char *share_name) {
+    int written;
+    const unsigned char *p;
+
+    if (share_name == NULL || share_name[0] == '\0') {
+        return -1;
+    }
+
+    for (p = (const unsigned char *)share_name; *p != '\0'; p++) {
+        if (*p < 0x20 || *p == 0x7f) {
+            fprintf(stderr, "adisk share name contains an invalid control character\n");
+            return -1;
+        }
+    }
+
+    if (strlen(ADISK_SHARE_TXT_PREFIX) + strlen(share_name) + strlen(ADISK_SHARE_TXT_SUFFIX) > MAX_TXT_STRING) {
+        fprintf(stderr, "adisk share name must be %d bytes or fewer\n",
+                MAX_TXT_STRING - (int)strlen(ADISK_SHARE_TXT_PREFIX) - (int)strlen(ADISK_SHARE_TXT_SUFFIX));
+        return -1;
+    }
+
+    written = snprintf(out, out_len, ADISK_SHARE_TXT_PREFIX "%s" ADISK_SHARE_TXT_SUFFIX, share_name);
+    if (written < 0 || (size_t)written >= out_len) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int validate_dns_name(const char *value, const char *field_name) {
+    const unsigned char *p;
+    size_t label_len = 0;
+    size_t total_len;
+
+    if (value == NULL || value[0] == '\0') {
+        fprintf(stderr, "%s must not be empty\n", field_name);
+        return -1;
+    }
+
+    total_len = strlen(value);
+    if (total_len >= MAX_NAME) {
+        fprintf(stderr, "%s must be %d bytes or fewer\n", field_name, MAX_NAME - 1);
+        return -1;
+    }
+
+    for (p = (const unsigned char *)value; *p != '\0'; p++) {
+        if (*p < 0x20 || *p == 0x7f) {
+            fprintf(stderr, "%s contains an invalid control character\n", field_name);
+            return -1;
+        }
+        if (*p == '.') {
+            if (label_len == 0) {
+                if (*(p + 1) == '\0' && p != (const unsigned char *)value) {
+                    return 0;
+                }
+                fprintf(stderr, "%s contains an empty label\n", field_name);
+                return -1;
+            }
+            if (label_len > MAX_LABEL) {
+                fprintf(stderr, "%s contains a label longer than %d bytes\n", field_name, MAX_LABEL);
+                return -1;
+            }
+            label_len = 0;
+            continue;
+        }
+        label_len++;
+        if (label_len > MAX_LABEL) {
+            fprintf(stderr, "%s contains a label longer than %d bytes\n", field_name, MAX_LABEL);
+            return -1;
+        }
+    }
+
+    if (label_len == 0) {
+        if (total_len > 1 && value[total_len - 1] == '.') {
+            return 0;
+        }
+        fprintf(stderr, "%s contains an empty label\n", field_name);
+        return -1;
+    }
+
+    return 0;
 }
 
 static int encode_name(uint8_t *buf, size_t *off, size_t cap, const char *name) {
@@ -323,15 +474,46 @@ static int add_adisk_records(uint8_t *buf, size_t *off, size_t cap, const struct
         return 0;
     }
 
-    snprintf(instance_fqdn, sizeof(instance_fqdn), "%s.%s", cfg->instance_name, cfg->adisk_service_type);
+    if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->adisk_service_type) != 0) {
+        return -1;
+    }
     snprintf(txt1, sizeof(txt1), "sys=waMa=0,adVF=0x100");
-    snprintf(txt2, sizeof(txt2), "dk0=adVN=%s,adVF=0x82", cfg->adisk_share_name);
+    if (build_adisk_share_txt(txt2, sizeof(txt2), cfg->adisk_share_name) != 0) {
+        return -1;
+    }
     txts[0] = txt1;
     txts[1] = txt2;
 
     if (add_rr_ptr(buf, off, cap, cfg->adisk_service_type, instance_fqdn, cfg->ttl) != 0 ||
         add_rr_srv(buf, off, cap, instance_fqdn, cfg->host_fqdn, cfg->adisk_port, cfg->ttl) != 0 ||
         add_rr_txt_strings(buf, off, cap, instance_fqdn, cfg->ttl, txts, 2) != 0) {
+        return -1;
+    }
+
+    *answers += 3;
+    return 0;
+}
+
+static int add_device_info_records(uint8_t *buf, size_t *off, size_t cap, const struct config *cfg, int *answers) {
+    char instance_fqdn[MAX_NAME];
+    char model_txt[MAX_NAME + 16];
+    const char *txts[1];
+
+    if (cfg->device_model[0] == '\0') {
+        return 0;
+    }
+
+    if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->device_info_service_type) != 0) {
+        return -1;
+    }
+    if (build_model_txt(model_txt, sizeof(model_txt), cfg->device_model) != 0) {
+        return -1;
+    }
+    txts[0] = model_txt;
+
+    if (add_rr_ptr(buf, off, cap, cfg->device_info_service_type, instance_fqdn, cfg->ttl) != 0 ||
+        add_rr_srv(buf, off, cap, instance_fqdn, cfg->host_fqdn, 0, cfg->ttl) != 0 ||
+        add_rr_txt_strings(buf, off, cap, instance_fqdn, cfg->ttl, txts, 1) != 0) {
         return -1;
     }
 
@@ -346,7 +528,9 @@ static int send_announcement(int sockfd, const struct sockaddr_in *dest, const s
     char instance_fqdn[MAX_NAME];
     int answers = 0;
 
-    snprintf(instance_fqdn, sizeof(instance_fqdn), "%s.%s", cfg->instance_name, cfg->service_type);
+    if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->service_type) != 0) {
+        return -1;
+    }
 
     memset(&hdr, 0, sizeof(hdr));
     hdr.flags = htons(DNS_FLAG_QR | DNS_FLAG_AA);
@@ -360,6 +544,9 @@ static int send_announcement(int sockfd, const struct sockaddr_in *dest, const s
     answers = 4;
 
     if (add_adisk_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {
+        return -1;
+    }
+    if (add_device_info_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {
         return -1;
     }
 
@@ -377,6 +564,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
     size_t off = sizeof(struct dns_header);
     char instance_fqdn[MAX_NAME];
     char adisk_instance_fqdn[MAX_NAME];
+    char device_info_instance_fqdn[MAX_NAME];
     int want_ptr = 0;
     int want_srv = 0;
     int want_txt = 0;
@@ -384,6 +572,9 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
     int want_adisk_ptr = 0;
     int want_adisk_srv = 0;
     int want_adisk_txt = 0;
+    int want_device_info_ptr = 0;
+    int want_device_info_srv = 0;
+    int want_device_info_txt = 0;
     int answers = 0;
     uint16_t i;
 
@@ -396,8 +587,17 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
     }
 
     qdcount = ntohs(hdr.qdcount);
-    snprintf(instance_fqdn, sizeof(instance_fqdn), "%s.%s", cfg->instance_name, cfg->service_type);
-    snprintf(adisk_instance_fqdn, sizeof(adisk_instance_fqdn), "%s.%s", cfg->instance_name, cfg->adisk_service_type);
+    if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->service_type) != 0) {
+        return 0;
+    }
+    if (cfg->adisk_share_name[0] != '\0' &&
+        build_instance_fqdn(adisk_instance_fqdn, sizeof(adisk_instance_fqdn), cfg->instance_name, cfg->adisk_service_type) != 0) {
+        return 0;
+    }
+    if (cfg->device_model[0] != '\0' &&
+        build_instance_fqdn(device_info_instance_fqdn, sizeof(device_info_instance_fqdn), cfg->instance_name, cfg->device_info_service_type) != 0) {
+        return 0;
+    }
 
     for (i = 0; i < qdcount; i++) {
         char qname[MAX_NAME];
@@ -423,25 +623,38 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
                    name_equals(qname, cfg->adisk_service_type) &&
                    (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
             want_adisk_ptr = 1;
+        } else if (cfg->device_model[0] != '\0' &&
+                   name_equals(qname, cfg->device_info_service_type) &&
+                   (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
+            want_device_info_ptr = 1;
         } else if (name_equals(qname, instance_fqdn) && (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY)) {
             want_srv = 1;
         } else if (name_equals(qname, instance_fqdn) && (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY)) {
             want_txt = 1;
         } else if (cfg->adisk_share_name[0] != '\0' &&
-                   name_equals(qname, adisk_instance_fqdn) &&
-                   (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY)) {
-            want_adisk_srv = 1;
-        } else if (cfg->adisk_share_name[0] != '\0' &&
-                   name_equals(qname, adisk_instance_fqdn) &&
-                   (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY)) {
-            want_adisk_txt = 1;
+                   name_equals(qname, adisk_instance_fqdn)) {
+            if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
+                want_adisk_srv = 1;
+            }
+            if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
+                want_adisk_txt = 1;
+            }
+        } else if (cfg->device_model[0] != '\0' &&
+                   name_equals(qname, device_info_instance_fqdn)) {
+            if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
+                want_device_info_srv = 1;
+            }
+            if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
+                want_device_info_txt = 1;
+            }
         } else if (name_equals(qname, cfg->host_fqdn) && (qtype == DNS_TYPE_A || qtype == DNS_TYPE_ANY)) {
             want_a = 1;
         }
     }
 
     if (!want_ptr && !want_srv && !want_txt && !want_a &&
-        !want_adisk_ptr && !want_adisk_srv && !want_adisk_txt) {
+        !want_adisk_ptr && !want_adisk_srv && !want_adisk_txt &&
+        !want_device_info_ptr && !want_device_info_srv && !want_device_info_txt) {
         return 0;
     }
 
@@ -472,7 +685,9 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
         const char *txts[2];
 
         snprintf(txt1, sizeof(txt1), "sys=waMa=0,adVF=0x100");
-        snprintf(txt2, sizeof(txt2), "dk0=adVN=%s,adVF=0x82", cfg->adisk_share_name);
+        if (build_adisk_share_txt(txt2, sizeof(txt2), cfg->adisk_share_name) != 0) {
+            return -1;
+        }
         txts[0] = txt1;
         txts[1] = txt2;
 
@@ -490,6 +705,34 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
         }
         if (want_adisk_txt) {
             if (add_rr_txt_strings(reply, &off, sizeof(reply), adisk_instance_fqdn, cfg->ttl, txts, 2) != 0) {
+                return -1;
+            }
+            answers++;
+        }
+    }
+    if (want_device_info_ptr || want_device_info_srv || want_device_info_txt) {
+        char model_txt[MAX_NAME + 16];
+        const char *txts[1];
+
+        if (build_model_txt(model_txt, sizeof(model_txt), cfg->device_model) != 0) {
+            return -1;
+        }
+        txts[0] = model_txt;
+
+        if (want_device_info_ptr) {
+            if (add_rr_ptr(reply, &off, sizeof(reply), cfg->device_info_service_type, device_info_instance_fqdn, cfg->ttl) != 0) {
+                return -1;
+            }
+            answers++;
+        }
+        if (want_device_info_srv) {
+            if (add_rr_srv(reply, &off, sizeof(reply), device_info_instance_fqdn, cfg->host_fqdn, 0, cfg->ttl) != 0) {
+                return -1;
+            }
+            answers++;
+        }
+        if (want_device_info_txt) {
+            if (add_rr_txt_strings(reply, &off, sizeof(reply), device_info_instance_fqdn, cfg->ttl, txts, 1) != 0) {
                 return -1;
             }
             answers++;
@@ -567,6 +810,7 @@ int main(int argc, char **argv) {
     memset(&cfg, 0, sizeof(cfg));
     strcpy(cfg.service_type, "_smb._tcp.local.");
     strcpy(cfg.adisk_service_type, "_adisk._tcp.local.");
+    strcpy(cfg.device_info_service_type, "_device-info._tcp.local.");
     cfg.port = 445;
     cfg.adisk_port = 9;
     cfg.ttl = 120;
@@ -576,6 +820,8 @@ int main(int argc, char **argv) {
             strncpy(cfg.service_type, argv[++i], sizeof(cfg.service_type) - 1);
         } else if (strcmp(argv[i], "--adisk-share") == 0 && i + 1 < argc) {
             strncpy(cfg.adisk_share_name, argv[++i], sizeof(cfg.adisk_share_name) - 1);
+        } else if (strcmp(argv[i], "--device-model") == 0 && i + 1 < argc) {
+            strncpy(cfg.device_model, argv[++i], sizeof(cfg.device_model) - 1);
         } else if (strcmp(argv[i], "--instance") == 0 && i + 1 < argc) {
             strncpy(cfg.instance_name, argv[++i], sizeof(cfg.instance_name) - 1);
         } else if (strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
@@ -598,6 +844,26 @@ int main(int argc, char **argv) {
     if (cfg.instance_name[0] == '\0' || cfg.host_label[0] == '\0' || cfg.ipv4_addr == 0) {
         usage(argv[0]);
         return 2;
+    }
+
+    if (validate_single_dns_label(cfg.instance_name, "instance name") != 0 ||
+        validate_single_dns_label(cfg.host_label, "host label") != 0) {
+        return 2;
+    }
+    if (validate_dns_name(cfg.service_type, "service type") != 0) {
+        return 2;
+    }
+    if (cfg.adisk_share_name[0] != '\0') {
+        char adisk_txt[MAX_NAME + 16];
+        if (build_adisk_share_txt(adisk_txt, sizeof(adisk_txt), cfg.adisk_share_name) != 0) {
+            return 2;
+        }
+    }
+    if (cfg.device_model[0] != '\0') {
+        char model_txt[MAX_NAME + 16];
+        if (build_model_txt(model_txt, sizeof(model_txt), cfg.device_model) != 0) {
+            return 2;
+        }
     }
 
     snprintf(cfg.host_fqdn, sizeof(cfg.host_fqdn), "%s.local.", cfg.host_label);
