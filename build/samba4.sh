@@ -53,6 +53,7 @@ export PKG_CONFIG_LIBDIR=
 export PKG_CONFIG_SYSROOT_DIR="$SYSROOT"
 
 CROSS_EXECUTE="$(cd "$(dirname "$0")" && pwd)/samba4-cross-exec.sh"
+SAMBA4_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_acl_xattr'
 
 {
     echo "SAMBA4_VERSION=$SAMBA4_VERSION"

@@ -10,8 +10,6 @@ mkdir -p "$OUT" "$SAMBA4_WORK"
     echo "SAMBA4_VERSION=$SAMBA4_VERSION"
     echo "SAMBA4_GIT_URL=$SAMBA4_GIT_URL"
     echo "SAMBA4_GIT_REF=$SAMBA4_GIT_REF"
-    echo "SAMBA4_FALLBACK_VERSION=$SAMBA4_FALLBACK_VERSION"
-    echo "SAMBA4_FALLBACK_GIT_REF=$SAMBA4_FALLBACK_GIT_REF"
     echo "SAMBA4_SRC_DIR=$SAMBA4_SRC_DIR"
 
     # Samba 4.2 waf expects a host-side Python 2 environment on the VM.
