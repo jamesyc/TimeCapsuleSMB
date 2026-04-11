@@ -14,14 +14,21 @@ What is working now:
 - boot-time runtime staging via `/mnt/Flash/rc.local`
 - boot-time watchdog for `smbd` and the mDNS helper
 - direct SMB service on port `445`
-- Bonjour advertisement under a separate service name
+- Bonjour advertisement for:
+  - `_smb._tcp`
+  - optional `_adisk._tcp`
+  - `_device-info._tcp`
 - authenticated SMB access using:
   - Samba username: `admin`
   - password: the same password provided in `.env` as `TC_PASSWORD`
 - guest access disabled
+- deploy-time device compatibility detection
+- clean uninstall via `tcapsule uninstall`
 
 Current user experience:
 - the Time Capsule advertises `_smb._tcp`
+- the Time Capsule can advertise `_adisk._tcp` for Time Machine
+- the Time Capsule advertises `_device-info._tcp` with a Finder model hint
 - the default instance name is `Time Capsule Samba 4`
 - the default host label is `timecapsulesamba4`
 - the share is available at:
@@ -59,6 +66,10 @@ Current live storage numbers observed during development:
 - `/Volumes/dk2`: effectively the large 2 TB data disk
 
 These constraints drive almost every design decision in this repo.
+
+Current compatibility classification in the repo is:
+- NetBSD 6.x `evbarm`: current supported deploy target, corresponding to 5th generation Time Capsules
+- NetBSD 4.x `evbarm`: detected explicitly as older 1st-4th generation hardware, but not supported by the current checked-in Samba 4 payload
 
 ## Why The Current Architecture Exists
 
@@ -114,7 +125,7 @@ Samba 3.x worked well enough to prove the device could serve files, and was a sm
 
 ### Samba 4.0
 
-Tried 4.0 as it in theory had better SMB2 support than 3.x but it had the same directory traveral bug. It was significantly harder to compile than 3.x but a lot easier than 4.2-4.8, so it served well as a stepping stone in getting 4.8 to work as trying to compile 4.8 from scratch at first drove me crazy.
+Tried 4.0 as it in theory had better SMB2 support than 3.x but it had the same directory traversal bug. It was significantly harder to compile than 3.x but a lot easier than 4.2-4.8, so it served well as a stepping stone in getting 4.8 to work as trying to compile 4.8 from scratch at first drove me crazy.
 
 ### Samba 4.2
 
@@ -136,12 +147,13 @@ Samba 4.8 is the current target because it gives the project a usable Time Machi
 With the current static-module build, the shipped config supports:
 - `fruit`
 - `streams_xattr`
+- `acl_xattr`
 - `xattr_tdb`
 - `fruit:time machine = yes`
 
 ## NetBSD 6 build path
 
-As the Time Capsule ran NetBSD 6, intial attempts used the NetBSD 6 source code to attempt to build. This failed terribly, as it turns out the NetBSD 6 source did not support earmv4 build output. I presume Apple used some custom toolchain. 
+As the Time Capsule ran NetBSD 6, initial attempts used the NetBSD 6 source code to attempt to build. This failed terribly, as it turns out the NetBSD 6 source did not support earmv4 build output. I presume Apple used some custom toolchain. 
 
 ### NetBSD 10 build path
 
@@ -178,7 +190,7 @@ Important findings:
 - when Apple’s stack owns that path, Finder tends to reconnect through Apple SMB/AFP rather than our Samba service
 - letting Apple reclaim that path conflicts with the goal of running our own `smbd`
 
-So the current system deliberately does not use Apple’s SMB advertisement path.
+So the current system deliberately does not use Apple’s SMB advertisement path or Apple’s ownership of those records.
 
 Instead it uses a separate tiny helper:
 - [bin/mdns/mdns-smbd-advertiser](bin/mdns/mdns-smbd-advertiser)
@@ -186,6 +198,7 @@ Instead it uses a separate tiny helper:
 This helper:
 - advertises `_smb._tcp.local.`
 - can also advertise `_adisk._tcp.local.` for Time Machine when started with `--adisk-share`
+- advertises `_device-info._tcp.local.` with a `model=...` TXT record for Finder device identification
 - resolves to the custom host label, by default `timecapsulesamba4.local`
 - points clients at our `smbd` on port `445`
 
@@ -279,12 +292,13 @@ Current rendered Samba config characteristics:
 - `force user = root`
 - `force group = wheel`
 - `path = /Volumes/dk2/ShareRoot` on the tested box
-- `vfs objects = catia fruit streams_xattr xattr_tdb`
+- `vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb`
 - `fruit:resource = file`
 - `fruit:metadata = stream`
 - `fruit:time machine = yes`
 - `fruit:posix_rename = yes`
 - `streams_xattr:store_stream_type = no`
+- `acl_xattr:ignore system acls = yes`
 - `xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb` on the tested box
 
 Current auth mapping:
@@ -315,17 +329,27 @@ It is built from:
 
 Important properties:
 - static NetBSD 7 `earmv4` binary
-- about `190 KiB` stripped
+- about `198 KiB` stripped in the current checked-in artifact
 - small enough to stage into RAM without materially changing the overall design
 
 At runtime it advertises:
 - service type: `_smb._tcp.local.`
 - optional Time Machine service type: `_adisk._tcp.local.`
+- device metadata service type: `_device-info._tcp.local.`
 - instance name: by default `Time Capsule Samba 4`
 - host label: by default `timecapsulesamba4`
 - port: `445`
 - A record: current IPv4 from the configured network interface
   - default: `bridge0`
+- `_device-info._tcp` TXT:
+  - `model=<configured-device-model>`
+
+Current validation and behavior notes:
+- service instance names and host labels are validated as single DNS labels
+- service types are validated as dotted DNS names
+- `_adisk._tcp` TXT payload sizing is validated before advertisement
+- `_device-info._tcp` `model=...` TXT sizing is validated before advertisement
+- `_device-info._tcp` exists to influence Finder identification and icon behavior, not to expose a separate connectable service
 
 ## Current User-Facing Workflow
 
@@ -333,14 +357,16 @@ The intended user flow is:
 
 1. bootstrap the local host
    - [`./tcapsule bootstrap`](./tcapsule)
-2. discover the Time Capsule and enable SSH
-   - [src/timecapsulesmb/cli/prep_device.py](src/timecapsulesmb/cli/prep_device.py)
-3. generate local config
+2. generate local config
    - [src/timecapsulesmb/cli/configure.py](src/timecapsulesmb/cli/configure.py)
+3. enable or disable SSH as needed
+   - [src/timecapsulesmb/cli/prep_device.py](src/timecapsulesmb/cli/prep_device.py)
 4. deploy and reboot
    - [src/timecapsulesmb/cli/deploy.py](src/timecapsulesmb/cli/deploy.py)
 5. run local diagnostics
    - [src/timecapsulesmb/cli/doctor.py](src/timecapsulesmb/cli/doctor.py)
+6. remove the payload later if needed
+   - [src/timecapsulesmb/cli/uninstall.py](src/timecapsulesmb/cli/uninstall.py)
 
 `tcapsule configure` writes repo-root `.env`.
 
@@ -354,6 +380,7 @@ Current important `.env` values include:
 - `TC_PAYLOAD_DIR_NAME`
 - `TC_MDNS_INSTANCE_NAME`
 - `TC_MDNS_HOST_LABEL`
+- `TC_MDNS_DEVICE_MODEL`
 
 Current defaults:
 - `TC_SHARE_NAME=Data`
@@ -362,8 +389,12 @@ Current defaults:
 - `TC_PAYLOAD_DIR_NAME=samba4`
 - `TC_MDNS_INSTANCE_NAME=Time Capsule Samba 4`
 - `TC_MDNS_HOST_LABEL=timecapsulesamba4`
+- `TC_MDNS_DEVICE_MODEL=TimeCapsule`
 
 Workflow details:
+- `configure` now starts by attempting mDNS discovery of the Time Capsule on the local network
+- if SSH is already reachable, `configure` validates the SSH target/password and can infer an `mDNS device model hint` from the detected device generation
+- `configure` validates user-facing mDNS/share inputs before writing `.env`
 - the command entrypoints live under [src/timecapsulesmb/cli/](src/timecapsulesmb/cli)
 - the deploy/runtime logic lives under [src/timecapsulesmb/deploy/](src/timecapsulesmb/deploy) and [src/timecapsulesmb/device/](src/timecapsulesmb/device)
 - the checked-in binaries and build tooling are visible in the repo, so advanced users can swap binaries, rebuild artifacts, or trace the exact boot/runtime layout
@@ -371,15 +402,16 @@ Workflow details:
 ## Host-Side Architecture
 
 Current important package areas:
-- [src/timecapsulesmb/cli/](src/timecapsulesmb/cli): command entrypoints for `bootstrap`, `discover`, `prep-device`, `configure`, `deploy`, and `doctor`
+- [src/timecapsulesmb/cli/](src/timecapsulesmb/cli): command entrypoints for `bootstrap`, `discover`, `configure`, `prep-device`, `deploy`, `doctor`, and `uninstall`
 - [src/timecapsulesmb/core/](src/timecapsulesmb/core): shared config parsing, defaults, and common models
 - [src/timecapsulesmb/transport/](src/timecapsulesmb/transport): local command execution plus SSH and SCP helpers
 - [src/timecapsulesmb/discovery/](src/timecapsulesmb/discovery): Bonjour-based device discovery
 - [src/timecapsulesmb/integrations/](src/timecapsulesmb/integrations): AirPyrt-backed SSH enable and disable flows
 - [src/timecapsulesmb/checks/](src/timecapsulesmb/checks): reusable local, network, Bonjour, and SMB verification checks
-- [src/timecapsulesmb/device/](src/timecapsulesmb/device): remote probing for device-specific layout such as the active `dk2` or `dk3` volume root
+- [src/timecapsulesmb/device/](src/timecapsulesmb/device): remote probing for device-specific layout such as the active `dk2` or `dk3` volume root, plus generation / compatibility classification
 - [src/timecapsulesmb/deploy/](src/timecapsulesmb/deploy): auth generation, template rendering, deployment planning, execution, dry-run formatting, artifact resolution, and post-deploy verification
 - [src/timecapsulesmb/assets/](src/timecapsulesmb/assets): packaged boot templates and artifact metadata
+- [build/](build): maintainer build tooling, including Samba cross-exec record/replay helpers
 
 Practical consequence:
 - if you want to modify how the box is discovered, start in `discovery/`
@@ -399,11 +431,17 @@ It checks:
 - SMB reachability
 - `_smb._tcp` browse and resolve
 - authenticated `smbutil view`
+- authenticated SMB file operations on the mounted share
+- that the configured share name is present in the authenticated SMB listing
 
 It does not:
 - deploy
 - reboot
 - change the device
+
+Current output behavior:
+- in normal human-readable mode, checks are printed as they complete rather than being buffered until the end
+- `--json` still emits one structured payload at the end
 
 Typical usage:
 
@@ -439,6 +477,7 @@ Current deploy flow:
 - loads `.env`
 - validates the required binary artifacts against the artifact manifest
 - discovers the correct volume root on the Time Capsule
+- probes device compatibility and rejects unsupported targets before upload
 - computes the device-specific runtime and payload paths
 - builds a deployment plan before execution
 - creates the persistent payload dir under `/Volumes/dkX/samba4`
@@ -457,6 +496,11 @@ Current deploy flow:
 - applies the required permissions on files and directories
 - reboots by default
 - verifies Bonjour and authenticated SMB access after reboot in the normal path using the same shared checks used by `doctor`
+
+Current compatibility behavior:
+- NetBSD 6 `evbarm` devices are accepted for the current `samba4` payload family
+- NetBSD 4 `evbarm` devices are detected as older hardware and rejected by `deploy`
+- `configure` reuses the same classification logic to choose a better default Finder model hint
 
 The current password flow is:
 - `TC_PASSWORD` is also used as the Samba password
@@ -504,6 +548,20 @@ It assumes:
 
 Important note:
 - the active supported build path is NetBSD 7, not NetBSD 10
+
+Current Samba configure probe modes:
+- live mode:
+  - [build/samba4.sh](build/samba4.sh)
+- record mode:
+  - [build/samba4record.sh](build/samba4record.sh)
+  - writes cross-exec probe captures under `$OUT/compat` by default
+- replay mode:
+  - [build/samba4replay.sh](build/samba4replay.sh)
+  - reuses a previously recorded compat file instead of SSHing to a live device
+
+This is useful when comparing NetBSD 4 and NetBSD 6 devices:
+- one replay file can be captured per device family
+- later configure runs can be replayed offline from those saved probe results
 
 ## Important Historical Findings
 
