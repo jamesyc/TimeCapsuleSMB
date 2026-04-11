@@ -152,7 +152,7 @@ def validate_dns_name(value: str, field_name: str) -> Optional[str]:
         return f"{field_name} cannot be blank."
     if len(value.encode("utf-8")) > MAX_DNS_NAME_BYTES:
         return f"{field_name} must be {MAX_DNS_NAME_BYTES} bytes or fewer."
-    if value.startswith(".") or ".." in value:
+    if value.startswith("."):
         return f"{field_name} contains an empty label."
     stripped = value[:-1] if value.endswith(".") else value
     if not stripped:
@@ -160,6 +160,8 @@ def validate_dns_name(value: str, field_name: str) -> Optional[str]:
     if _contains_invalid_control_character(value):
         return f"{field_name} contains an invalid control character."
     for label in stripped.split("."):
+        if not label:
+            return f"{field_name} contains an empty label."
         if len(label.encode("utf-8")) > MAX_DNS_LABEL_BYTES:
             return f"{field_name} contains a label longer than {MAX_DNS_LABEL_BYTES} bytes."
     return None

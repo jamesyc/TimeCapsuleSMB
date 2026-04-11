@@ -231,6 +231,9 @@ static int validate_dns_name(const char *value, const char *field_name) {
     }
 
     if (label_len == 0) {
+        if (total_len > 1 && value[total_len - 1] == '.') {
+            return 0;
+        }
         fprintf(stderr, "%s contains an empty label\n", field_name);
         return -1;
     }

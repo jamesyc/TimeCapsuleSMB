@@ -89,6 +89,9 @@ class ConfigTests(unittest.TestCase):
             "service type contains an empty label.",
         )
 
+    def test_validate_dns_name_allows_trailing_dot(self) -> None:
+        self.assertIsNone(validate_dns_name("_smb._tcp.local.", "service type"))
+
     def test_build_instance_fqdn_returns_none_when_too_long(self) -> None:
         self.assertIsNone(build_instance_fqdn("a" * 63, ("b" * 63 + ".") * 4))
 
