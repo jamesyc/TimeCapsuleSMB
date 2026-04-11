@@ -54,6 +54,33 @@ export PKG_CONFIG_SYSROOT_DIR="$SYSROOT"
 
 CROSS_EXECUTE="$(cd "$(dirname "$0")" && pwd)/samba4-cross-exec.sh"
 
+case "${SAMBA4_CROSS_EXEC_MODE:-live}" in
+    live)
+        ;;
+    record)
+        if [ -z "${SAMBA4_COMPAT_REPLAY_OUT:-}" ]; then
+            echo "SAMBA4_COMPAT_REPLAY_OUT is required in record mode"
+            exit 2
+        fi
+        mkdir -p "$(dirname "$SAMBA4_COMPAT_REPLAY_OUT")"
+        : >"$SAMBA4_COMPAT_REPLAY_OUT"
+        ;;
+    replay)
+        if [ -z "${SAMBA4_COMPAT_REPLAY_IN:-}" ]; then
+            echo "SAMBA4_COMPAT_REPLAY_IN is required in replay mode"
+            exit 2
+        fi
+        if [ ! -f "$SAMBA4_COMPAT_REPLAY_IN" ]; then
+            echo "Replay file not found: $SAMBA4_COMPAT_REPLAY_IN"
+            exit 2
+        fi
+        ;;
+    *)
+        echo "Unsupported SAMBA4_CROSS_EXEC_MODE: ${SAMBA4_CROSS_EXEC_MODE:-live}"
+        exit 2
+        ;;
+esac
+
 {
     echo "SAMBA4_VERSION=$SAMBA4_VERSION"
     echo "TOOLDIR=$TOOLDIR"
@@ -65,6 +92,9 @@ CROSS_EXECUTE="$(cd "$(dirname "$0")" && pwd)/samba4-cross-exec.sh"
     echo "SRC_DIR=$SAMBA4_SRC_DIR"
     echo "STATIC_MODULES=$SAMBA4_STATIC_MODULES"
     echo "CROSS_EXECUTE=$CROSS_EXECUTE"
+    echo "CROSS_EXEC_MODE=${SAMBA4_CROSS_EXEC_MODE:-live}"
+    echo "COMPAT_REPLAY_IN=${SAMBA4_COMPAT_REPLAY_IN:-}"
+    echo "COMPAT_REPLAY_OUT=${SAMBA4_COMPAT_REPLAY_OUT:-}"
 
     if [ ! -f "$SAMBA4_SRC_DIR/configure" ]; then
         echo "Missing Samba 4 source tree at $SAMBA4_SRC_DIR"
