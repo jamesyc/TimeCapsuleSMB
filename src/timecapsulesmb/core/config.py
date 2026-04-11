@@ -107,8 +107,8 @@ def extract_host(target: str) -> str:
 def validate_single_dns_label(value: str, field_name: str) -> Optional[str]:
     if not value:
         return f"{field_name} cannot be blank."
-    if len(value) > 63:
-        return f"{field_name} must be 63 characters or fewer."
+    if len(value.encode('utf-8')) > 63:
+        return f"{field_name} must be 63 bytes or fewer."
     if "." in value:
         return f"{field_name} must not contain dots."
     for ch in value:
