@@ -74,7 +74,7 @@ class ConfigTests(unittest.TestCase):
     def test_validate_single_dns_label_rejects_long_values(self) -> None:
         self.assertEqual(
             validate_single_dns_label("a" * 64, "mDNS SMB instance name"),
-            "mDNS SMB instance name must be 63 characters or fewer.",
+            "mDNS SMB instance name must be 63 bytes or fewer.",
         )
 
     def test_app_config_require_raises_for_missing_value(self) -> None:

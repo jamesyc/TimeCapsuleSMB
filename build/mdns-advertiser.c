@@ -401,7 +401,7 @@ static int add_device_info_records(uint8_t *buf, size_t *off, size_t cap, const 
     txts[0] = model_txt;
 
     if (add_rr_ptr(buf, off, cap, cfg->device_info_service_type, instance_fqdn, cfg->ttl) != 0 ||
-        add_rr_srv(buf, off, cap, instance_fqdn, cfg->host_fqdn, cfg->port, cfg->ttl) != 0 ||
+        add_rr_srv(buf, off, cap, instance_fqdn, cfg->host_fqdn, 0, cfg->ttl) != 0 ||
         add_rr_txt_strings(buf, off, cap, instance_fqdn, cfg->ttl, txts, 1) != 0) {
         return -1;
     }
@@ -611,7 +611,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
             answers++;
         }
         if (want_device_info_srv) {
-            if (add_rr_srv(reply, &off, sizeof(reply), device_info_instance_fqdn, cfg->host_fqdn, cfg->port, cfg->ttl) != 0) {
+            if (add_rr_srv(reply, &off, sizeof(reply), device_info_instance_fqdn, cfg->host_fqdn, 0, cfg->ttl) != 0) {
                 return -1;
             }
             answers++;
