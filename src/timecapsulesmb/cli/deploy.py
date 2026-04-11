@@ -20,7 +20,7 @@ from timecapsulesmb.deploy.executor import (
 from timecapsulesmb.deploy.planner import build_deployment_plan
 from timecapsulesmb.deploy.templates import build_template_bundle, render_template, write_boot_asset
 from timecapsulesmb.deploy.verify import verify_post_deploy
-from timecapsulesmb.device.compat import probe_device_compatibility, require_supported_device
+from timecapsulesmb.device.compat import probe_device_compatibility
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root, wait_for_ssh_state
 from timecapsulesmb.transport.ssh import run_ssh
 
@@ -41,6 +41,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--yes", action="store_true", help="Do not prompt before reboot")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without making changes")
     parser.add_argument("--json", action="store_true", help="Output the dry-run deployment plan as JSON")
+    parser.add_argument("--allow-unsupported", action="store_true", help="Proceed even if the detected device is not currently supported")
     args = parser.parse_args(argv)
 
     if args.json and not args.dry_run:
@@ -64,8 +65,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     template_bundle = build_template_bundle(values)
 
     volume_root = discover_volume_root(host, password, ssh_opts)
-    compatibility = require_supported_device(probe_device_compatibility(host, password, ssh_opts))
-    if not args.json:
+    compatibility = probe_device_compatibility(host, password, ssh_opts)
+    if not compatibility.supported:
+        if not args.allow_unsupported:
+            raise SystemExit(compatibility.message)
+        if not args.json:
+            print(f"Warning: {compatibility.message}")
+            print("Continuing because --allow-unsupported was provided.")
+    elif not args.json:
         print(compatibility.message)
     device_paths = build_device_paths(volume_root, values["TC_PAYLOAD_DIR_NAME"])
     plan = build_deployment_plan(host, device_paths, smbd_path, mdns_path)

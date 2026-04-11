@@ -79,13 +79,5 @@ def probe_device_compatibility(host: str, password: str, ssh_opts: str) -> Devic
     if len(lines) < 3:
         raise SystemExit("Failed to determine remote device OS compatibility.")
     return classify_device_compatibility(lines[0], lines[1], lines[2])
-
-
-def require_supported_device(compatibility: DeviceCompatibility) -> DeviceCompatibility:
-    if not compatibility.supported:
-        raise SystemExit(compatibility.message)
-    return compatibility
-
-
 def infer_mdns_device_model_hint(host: str, password: str, ssh_opts: str) -> str:
     return probe_device_compatibility(host, password, ssh_opts).mdns_device_model_hint

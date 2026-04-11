@@ -706,6 +706,46 @@ class CliTests(unittest.TestCase):
                             deploy.main(["--dry-run"])
         self.assertIn("NetBSD 4", str(ctx.exception))
 
+    def test_deploy_can_allow_unsupported_netbsd4_device(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        unsupported = DeviceCompatibility(
+            os_name="NetBSD",
+            os_release="4.0",
+            arch="earmv4",
+            payload_family=None,
+            device_generation="gen1-4",
+            mdns_device_model_hint="TimeCapsule6,106",
+            supported=False,
+            message="This Time Capsule is running NetBSD 4, which is an older 4th gen or earlier model. The checked-in Samba payload only supports NetBSD 6 (5th gen) devices right now.",
+        )
+        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
+                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=unsupported):
+                        with mock.patch("timecapsulesmb.cli.deploy.build_device_paths", return_value=mock.Mock()):
+                            with mock.patch("timecapsulesmb.cli.deploy.build_deployment_plan", return_value={"plan": "ok"}):
+                                with mock.patch("timecapsulesmb.cli.deploy.format_deployment_plan", return_value="plan text"):
+                                    with redirect_stdout(output):
+                                        rc = deploy.main(["--dry-run", "--allow-unsupported"])
+        self.assertEqual(rc, 0)
+        text = output.getvalue()
+        self.assertIn("Warning:", text)
+        self.assertIn("--allow-unsupported", text)
+        self.assertIn("NetBSD 4", text)
+
     def test_prep_device_returns_error_when_env_missing(self) -> None:
         output = io.StringIO()
         with mock.patch("timecapsulesmb.cli.prep_device.parse_env_values", return_value={}):
