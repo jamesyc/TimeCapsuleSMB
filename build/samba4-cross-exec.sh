@@ -207,7 +207,7 @@ for arg in "$@"; do
 done
 
 if [ "$MODE" = "replay" ]; then
-    status=$(replay_probe "$SAMBA4_COMPAT_REPLAY_IN" command "$LOCAL_CMD" "$stdout_file" "$stderr_file" "$@")
+    status=$(replay_probe "$SAMBA4_COMPAT_REPLAY_IN" command "$LOCAL_CMD" "$stdout_file" "$stderr_file" "$@") || exit $?
     emit_captured_output "$stdout_file" "$stderr_file"
     exit "$status"
 fi
