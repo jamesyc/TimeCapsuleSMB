@@ -3,11 +3,17 @@ from __future__ import annotations
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ENV_PATH = REPO_ROOT / ".env"
+MAX_DNS_LABEL_BYTES = 63
+MAX_DNS_NAME_BYTES = 255
+MAX_DNS_TXT_BYTES = 255
+MODEL_TXT_PREFIX = "model="
+ADISK_SHARE_TXT_PREFIX = "dk0=adVN="
+ADISK_SHARE_TXT_SUFFIX = ",adVF=0x82"
 
 DEFAULTS = {
     "TC_HOST": "root@192.168.1.101",
@@ -104,28 +110,91 @@ def extract_host(target: str) -> str:
     return target.split("@", 1)[1] if "@" in target else target
 
 
-def validate_single_dns_label(value: str, field_name: str) -> Optional[str]:
+def _contains_invalid_control_character(value: str) -> bool:
+    return any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value)
+
+
+def build_instance_fqdn(instance_name: str, service_type: str) -> Optional[str]:
+    value = f"{instance_name}.{service_type}"
+    if len(value.encode("utf-8")) > MAX_DNS_NAME_BYTES:
+        return None
+    return value
+
+
+def build_mdns_device_model_txt(value: str) -> Optional[str]:
+    txt = MODEL_TXT_PREFIX + value
+    if len(txt.encode("utf-8")) > MAX_DNS_TXT_BYTES:
+        return None
+    return txt
+
+
+def build_adisk_share_txt(value: str) -> Optional[str]:
+    txt = f"{ADISK_SHARE_TXT_PREFIX}{value}{ADISK_SHARE_TXT_SUFFIX}"
+    if len(txt.encode("utf-8")) > MAX_DNS_TXT_BYTES:
+        return None
+    return txt
+
+
+def validate_dns_label(value: str, field_name: str) -> Optional[str]:
     if not value:
         return f"{field_name} cannot be blank."
-    if len(value.encode('utf-8')) > 63:
-        return f"{field_name} must be 63 bytes or fewer."
+    if len(value.encode("utf-8")) > MAX_DNS_LABEL_BYTES:
+        return f"{field_name} must be {MAX_DNS_LABEL_BYTES} bytes or fewer."
     if "." in value:
         return f"{field_name} must not contain dots."
-    for ch in value:
-        if ord(ch) < 0x20 or ord(ch) == 0x7F:
-            return f"{field_name} contains an invalid control character."
+    if _contains_invalid_control_character(value):
+        return f"{field_name} contains an invalid control character."
     return None
+
+
+def validate_dns_name(value: str, field_name: str) -> Optional[str]:
+    if not value:
+        return f"{field_name} cannot be blank."
+    if len(value.encode("utf-8")) > MAX_DNS_NAME_BYTES:
+        return f"{field_name} must be {MAX_DNS_NAME_BYTES} bytes or fewer."
+    if value.startswith(".") or ".." in value:
+        return f"{field_name} contains an empty label."
+    stripped = value[:-1] if value.endswith(".") else value
+    if not stripped:
+        return f"{field_name} contains an empty label."
+    if _contains_invalid_control_character(value):
+        return f"{field_name} contains an invalid control character."
+    for label in stripped.split("."):
+        if len(label.encode("utf-8")) > MAX_DNS_LABEL_BYTES:
+            return f"{field_name} contains a label longer than {MAX_DNS_LABEL_BYTES} bytes."
+    return None
+
+
+def validate_single_dns_label(value: str, field_name: str) -> Optional[str]:
+    return validate_dns_label(value, field_name)
 
 
 def validate_mdns_device_model(value: str, field_name: str) -> Optional[str]:
     if not value:
         return f"{field_name} cannot be blank."
-    if len(("model=" + value).encode("utf-8")) > 255:
+    if build_mdns_device_model_txt(value) is None:
         return f"{field_name} must be 249 bytes or fewer."
-    for ch in value:
-        if ord(ch) < 0x20 or ord(ch) == 0x7F:
-            return f"{field_name} contains an invalid control character."
+    if _contains_invalid_control_character(value):
+        return f"{field_name} contains an invalid control character."
     return None
+
+
+def validate_adisk_share_name(value: str, field_name: str) -> Optional[str]:
+    if not value:
+        return f"{field_name} cannot be blank."
+    if build_adisk_share_txt(value) is None:
+        return f"{field_name} must be 236 bytes or fewer."
+    if _contains_invalid_control_character(value):
+        return f"{field_name} contains an invalid control character."
+    return None
+
+
+CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
+    "TC_SHARE_NAME": validate_adisk_share_name,
+    "TC_MDNS_INSTANCE_NAME": validate_dns_label,
+    "TC_MDNS_HOST_LABEL": validate_dns_label,
+    "TC_MDNS_DEVICE_MODEL": validate_mdns_device_model,
+}
 
 
 def render_env_text(values: dict[str, str]) -> str:

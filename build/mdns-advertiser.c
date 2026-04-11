@@ -22,6 +22,8 @@
 #define MAX_TXT_STRING 255
 #define ANNOUNCE_INTERVAL 30
 #define MODEL_TXT_PREFIX "model="
+#define ADISK_SHARE_TXT_PREFIX "dk0=adVN="
+#define ADISK_SHARE_TXT_SUFFIX ",adVF=0x82"
 
 #define DNS_TYPE_A 1
 #define DNS_TYPE_PTR 12
@@ -150,6 +152,86 @@ static int build_model_txt(char *out, size_t out_len, const char *device_model) 
 
     written = snprintf(out, out_len, MODEL_TXT_PREFIX "%s", device_model);
     if (written < 0 || (size_t)written >= out_len) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int build_adisk_share_txt(char *out, size_t out_len, const char *share_name) {
+    int written;
+    const unsigned char *p;
+
+    if (share_name == NULL || share_name[0] == '\0') {
+        return -1;
+    }
+
+    for (p = (const unsigned char *)share_name; *p != '\0'; p++) {
+        if (*p < 0x20 || *p == 0x7f) {
+            fprintf(stderr, "adisk share name contains an invalid control character\n");
+            return -1;
+        }
+    }
+
+    if (strlen(ADISK_SHARE_TXT_PREFIX) + strlen(share_name) + strlen(ADISK_SHARE_TXT_SUFFIX) > MAX_TXT_STRING) {
+        fprintf(stderr, "adisk share name must be %d bytes or fewer\n",
+                MAX_TXT_STRING - (int)strlen(ADISK_SHARE_TXT_PREFIX) - (int)strlen(ADISK_SHARE_TXT_SUFFIX));
+        return -1;
+    }
+
+    written = snprintf(out, out_len, ADISK_SHARE_TXT_PREFIX "%s" ADISK_SHARE_TXT_SUFFIX, share_name);
+    if (written < 0 || (size_t)written >= out_len) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int validate_dns_name(const char *value, const char *field_name) {
+    const unsigned char *p;
+    size_t label_len = 0;
+    size_t total_len;
+
+    if (value == NULL || value[0] == '\0') {
+        fprintf(stderr, "%s must not be empty\n", field_name);
+        return -1;
+    }
+
+    total_len = strlen(value);
+    if (total_len >= MAX_NAME) {
+        fprintf(stderr, "%s must be %d bytes or fewer\n", field_name, MAX_NAME - 1);
+        return -1;
+    }
+
+    for (p = (const unsigned char *)value; *p != '\0'; p++) {
+        if (*p < 0x20 || *p == 0x7f) {
+            fprintf(stderr, "%s contains an invalid control character\n", field_name);
+            return -1;
+        }
+        if (*p == '.') {
+            if (label_len == 0) {
+                if (*(p + 1) == '\0' && p != (const unsigned char *)value) {
+                    return 0;
+                }
+                fprintf(stderr, "%s contains an empty label\n", field_name);
+                return -1;
+            }
+            if (label_len > MAX_LABEL) {
+                fprintf(stderr, "%s contains a label longer than %d bytes\n", field_name, MAX_LABEL);
+                return -1;
+            }
+            label_len = 0;
+            continue;
+        }
+        label_len++;
+        if (label_len > MAX_LABEL) {
+            fprintf(stderr, "%s contains a label longer than %d bytes\n", field_name, MAX_LABEL);
+            return -1;
+        }
+    }
+
+    if (label_len == 0) {
+        fprintf(stderr, "%s contains an empty label\n", field_name);
         return -1;
     }
 
@@ -393,7 +475,9 @@ static int add_adisk_records(uint8_t *buf, size_t *off, size_t cap, const struct
         return -1;
     }
     snprintf(txt1, sizeof(txt1), "sys=waMa=0,adVF=0x100");
-    snprintf(txt2, sizeof(txt2), "dk0=adVN=%s,adVF=0x82", cfg->adisk_share_name);
+    if (build_adisk_share_txt(txt2, sizeof(txt2), cfg->adisk_share_name) != 0) {
+        return -1;
+    }
     txts[0] = txt1;
     txts[1] = txt2;
 
@@ -545,21 +629,21 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
         } else if (name_equals(qname, instance_fqdn) && (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY)) {
             want_txt = 1;
         } else if (cfg->adisk_share_name[0] != '\0' &&
-                   name_equals(qname, adisk_instance_fqdn) &&
-                   (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY)) {
-            want_adisk_srv = 1;
-        } else if (cfg->adisk_share_name[0] != '\0' &&
-                   name_equals(qname, adisk_instance_fqdn) &&
-                   (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY)) {
-            want_adisk_txt = 1;
+                   name_equals(qname, adisk_instance_fqdn)) {
+            if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
+                want_adisk_srv = 1;
+            }
+            if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
+                want_adisk_txt = 1;
+            }
         } else if (cfg->device_model[0] != '\0' &&
-                   name_equals(qname, device_info_instance_fqdn) &&
-                   (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY)) {
-            want_device_info_srv = 1;
-        } else if (cfg->device_model[0] != '\0' &&
-                   name_equals(qname, device_info_instance_fqdn) &&
-                   (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY)) {
-            want_device_info_txt = 1;
+                   name_equals(qname, device_info_instance_fqdn)) {
+            if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
+                want_device_info_srv = 1;
+            }
+            if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
+                want_device_info_txt = 1;
+            }
         } else if (name_equals(qname, cfg->host_fqdn) && (qtype == DNS_TYPE_A || qtype == DNS_TYPE_ANY)) {
             want_a = 1;
         }
@@ -598,7 +682,9 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
         const char *txts[2];
 
         snprintf(txt1, sizeof(txt1), "sys=waMa=0,adVF=0x100");
-        snprintf(txt2, sizeof(txt2), "dk0=adVN=%s,adVF=0x82", cfg->adisk_share_name);
+        if (build_adisk_share_txt(txt2, sizeof(txt2), cfg->adisk_share_name) != 0) {
+            return -1;
+        }
         txts[0] = txt1;
         txts[1] = txt2;
 
@@ -760,6 +846,15 @@ int main(int argc, char **argv) {
     if (validate_single_dns_label(cfg.instance_name, "instance name") != 0 ||
         validate_single_dns_label(cfg.host_label, "host label") != 0) {
         return 2;
+    }
+    if (validate_dns_name(cfg.service_type, "service type") != 0) {
+        return 2;
+    }
+    if (cfg.adisk_share_name[0] != '\0') {
+        char adisk_txt[MAX_NAME + 16];
+        if (build_adisk_share_txt(adisk_txt, sizeof(adisk_txt), cfg.adisk_share_name) != 0) {
+            return 2;
+        }
     }
     if (cfg.device_model[0] != '\0') {
         char model_txt[MAX_NAME + 16];

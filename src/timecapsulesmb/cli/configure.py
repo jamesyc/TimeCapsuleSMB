@@ -4,13 +4,12 @@ import getpass
 from typing import Optional
 
 from timecapsulesmb.core.config import (
+    CONFIG_VALIDATORS,
     CONFIG_FIELDS,
     DEFAULTS,
     ENV_PATH,
     extract_host,
     parse_env_values,
-    validate_mdns_device_model,
-    validate_single_dns_label,
     write_env_file,
 )
 from timecapsulesmb.device.compat import infer_mdns_device_model_hint
@@ -154,14 +153,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 current = inferred_mdns_device_model
         while True:
             candidate = prompt(label, current, secret)
-            if key in {"TC_MDNS_INSTANCE_NAME", "TC_MDNS_HOST_LABEL"}:
-                error = validate_single_dns_label(candidate, label)
-                if error:
-                    print(error)
-                    current = candidate
-                    continue
-            if key == "TC_MDNS_DEVICE_MODEL":
-                error = validate_mdns_device_model(candidate, label)
+            validator = CONFIG_VALIDATORS.get(key)
+            if validator is not None:
+                error = validator(candidate, label)
                 if error:
                     print(error)
                     current = candidate
