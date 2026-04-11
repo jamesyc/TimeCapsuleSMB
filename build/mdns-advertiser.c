@@ -19,7 +19,9 @@
 #define BUF_SIZE 1500
 #define MAX_NAME 256
 #define MAX_LABEL 63
+#define MAX_TXT_STRING 255
 #define ANNOUNCE_INTERVAL 30
+#define MODEL_TXT_PREFIX "model="
 
 #define DNS_TYPE_A 1
 #define DNS_TYPE_PTR 12
@@ -127,6 +129,26 @@ static int build_instance_fqdn(char *out, size_t out_len, const char *instance_n
     int written;
 
     written = snprintf(out, out_len, "%s.%s", instance_name, service_type);
+    if (written < 0 || (size_t)written >= out_len) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int build_model_txt(char *out, size_t out_len, const char *device_model) {
+    int written;
+
+    if (device_model == NULL || device_model[0] == '\0') {
+        return -1;
+    }
+
+    if (strlen(MODEL_TXT_PREFIX) + strlen(device_model) > MAX_TXT_STRING) {
+        fprintf(stderr, "device model must be %d bytes or fewer\n", MAX_TXT_STRING - (int)strlen(MODEL_TXT_PREFIX));
+        return -1;
+    }
+
+    written = snprintf(out, out_len, MODEL_TXT_PREFIX "%s", device_model);
     if (written < 0 || (size_t)written >= out_len) {
         return -1;
     }
@@ -397,7 +419,9 @@ static int add_device_info_records(uint8_t *buf, size_t *off, size_t cap, const 
     if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->device_info_service_type) != 0) {
         return -1;
     }
-    snprintf(model_txt, sizeof(model_txt), "model=%s", cfg->device_model);
+    if (build_model_txt(model_txt, sizeof(model_txt), cfg->device_model) != 0) {
+        return -1;
+    }
     txts[0] = model_txt;
 
     if (add_rr_ptr(buf, off, cap, cfg->device_info_service_type, instance_fqdn, cfg->ttl) != 0 ||
@@ -601,7 +625,9 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
         char model_txt[MAX_NAME + 16];
         const char *txts[1];
 
-        snprintf(model_txt, sizeof(model_txt), "model=%s", cfg->device_model);
+        if (build_model_txt(model_txt, sizeof(model_txt), cfg->device_model) != 0) {
+            return -1;
+        }
         txts[0] = model_txt;
 
         if (want_device_info_ptr) {
@@ -734,6 +760,12 @@ int main(int argc, char **argv) {
     if (validate_single_dns_label(cfg.instance_name, "instance name") != 0 ||
         validate_single_dns_label(cfg.host_label, "host label") != 0) {
         return 2;
+    }
+    if (cfg.device_model[0] != '\0') {
+        char model_txt[MAX_NAME + 16];
+        if (build_model_txt(model_txt, sizeof(model_txt), cfg.device_model) != 0) {
+            return 2;
+        }
     }
 
     snprintf(cfg.host_fqdn, sizeof(cfg.host_fqdn), "%s.local.", cfg.host_label);

@@ -6,7 +6,7 @@
     },
     "mdns-smbd-advertiser": {
       "path": "bin/mdns/mdns-smbd-advertiser",
-      "sha256": "38271c9f57bc2a1e364597994e9abe0413535570ab7efeaff079d2e16457e6aa"
+      "sha256": "9a9ac4eb29459c8b71b564fa38764675abddafc373dacf7f9a31edfdb8110454"
     }
   }
 }

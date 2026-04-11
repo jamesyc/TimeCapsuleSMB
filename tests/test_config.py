@@ -19,6 +19,7 @@ from timecapsulesmb.core.config import (
     parse_env_value,
     parse_env_values,
     render_env_text,
+    validate_mdns_device_model,
     validate_single_dns_label,
     write_env_file,
 )
@@ -75,6 +76,12 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(
             validate_single_dns_label("a" * 64, "mDNS SMB instance name"),
             "mDNS SMB instance name must be 63 bytes or fewer.",
+        )
+
+    def test_validate_mdns_device_model_rejects_long_values(self) -> None:
+        self.assertEqual(
+            validate_mdns_device_model("a" * 250, "mDNS device model hint"),
+            "mDNS device model hint must be 249 bytes or fewer.",
         )
 
     def test_app_config_require_raises_for_missing_value(self) -> None:

@@ -9,6 +9,7 @@ from timecapsulesmb.core.config import (
     ENV_PATH,
     extract_host,
     parse_env_values,
+    validate_mdns_device_model,
     validate_single_dns_label,
     write_env_file,
 )
@@ -155,6 +156,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             candidate = prompt(label, current, secret)
             if key in {"TC_MDNS_INSTANCE_NAME", "TC_MDNS_HOST_LABEL"}:
                 error = validate_single_dns_label(candidate, label)
+                if error:
+                    print(error)
+                    current = candidate
+                    continue
+            if key == "TC_MDNS_DEVICE_MODEL":
+                error = validate_mdns_device_model(candidate, label)
                 if error:
                     print(error)
                     current = candidate
