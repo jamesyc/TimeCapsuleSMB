@@ -12,6 +12,7 @@ from timecapsulesmb.deploy.artifact_resolver import resolve_required_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
 from timecapsulesmb.deploy.dry_run import deployment_plan_to_jsonable, format_deployment_plan
 from timecapsulesmb.deploy.executor import (
+    remote_ensure_adisk_uuid,
     remote_install_auth_files,
     remote_install_permissions,
     remote_prepare_dirs,
@@ -62,8 +63,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     smbd_path = resolved_artifacts["smbd"].absolute_path
     mdns_path = resolved_artifacts["mdns-smbd-advertiser"].absolute_path
 
-    template_bundle = build_template_bundle(values)
-
     volume_root = discover_volume_root(host, password, ssh_opts)
     compatibility = probe_device_compatibility(host, password, ssh_opts)
     if not compatibility.supported:
@@ -85,6 +84,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     remote_prepare_dirs(host, password, ssh_opts, plan.payload_dir)
+    adisk_uuid = remote_ensure_adisk_uuid(host, password, ssh_opts, plan.private_dir)
+    template_bundle = build_template_bundle(values, adisk_disk_key=plan.disk_key, adisk_uuid=adisk_uuid)
 
     with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp:
         tmpdir = Path(tmp)

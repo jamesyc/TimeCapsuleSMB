@@ -18,6 +18,7 @@ class DeploymentPlan:
     host: str
     volume_root: str
     payload_dir: str
+    disk_key: str
     smbd_path: Path
     mdns_path: Path
     flash_targets: dict[str, str]
@@ -60,6 +61,7 @@ def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path,
         host=host,
         volume_root=device_paths.volume_root,
         payload_dir=payload_dir,
+        disk_key=device_paths.disk_key,
         smbd_path=smbd_path,
         mdns_path=mdns_path,
         flash_targets=flash_targets,
@@ -82,11 +84,12 @@ def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path,
         generated_auth_files=[
             FileTransfer(source="generated smbpasswd", destination=f"{private_dir}/smbpasswd", kind="generated auth"),
             FileTransfer(source="generated username.map", destination=f"{private_dir}/username.map", kind="generated auth"),
+            FileTransfer(source="generated adisk UUID", destination=f"{private_dir}/adisk.uuid", kind="generated metadata"),
         ],
         permission_commands=[
             "chmod 755 /mnt/Flash/rc.local /mnt/Flash/start-samba.sh /mnt/Flash/watchdog.sh /mnt/Flash/dfree.sh",
             f"chmod 700 {private_dir}",
-            f"chmod 600 {private_dir}/smbpasswd {private_dir}/username.map",
+            f"chmod 600 {private_dir}/smbpasswd {private_dir}/username.map {private_dir}/adisk.uuid",
         ],
         reboot_required=True,
     )

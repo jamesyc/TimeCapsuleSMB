@@ -500,7 +500,7 @@ class CliTests(unittest.TestCase):
                                     rc = configure.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_SHARE_NAME"], "Data")
-        self.assertIn("SMB share name must be 236 bytes or fewer.", output.getvalue())
+        self.assertIn("SMB share name must be 192 bytes or fewer.", output.getvalue())
 
     def test_doctor_returns_failure_when_checks_fatal(self) -> None:
         output = io.StringIO()
@@ -602,12 +602,16 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.remote_prepare_dirs"):
-                            with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
-                                with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
-                                    with mock.patch("timecapsulesmb.cli.deploy.remote_install_permissions"):
-                                        with mock.patch("timecapsulesmb.cli.deploy.run_ssh") as run_ssh_mock:
-                                            with redirect_stdout(output):
-                                                rc = deploy.main(["--no-reboot"])
+                            with mock.patch(
+                                "timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid",
+                                return_value="12345678-1234-1234-1234-123456789012",
+                            ):
+                                with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
+                                    with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
+                                        with mock.patch("timecapsulesmb.cli.deploy.remote_install_permissions"):
+                                            with mock.patch("timecapsulesmb.cli.deploy.run_ssh") as run_ssh_mock:
+                                                with redirect_stdout(output):
+                                                    rc = deploy.main(["--no-reboot"])
         self.assertEqual(rc, 0)
         run_ssh_mock.assert_not_called()
         self.assertIn("Skipping reboot.", output.getvalue())
@@ -632,13 +636,17 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.remote_prepare_dirs"):
-                            with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
-                                with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
-                                    with mock.patch("timecapsulesmb.cli.deploy.remote_install_permissions"):
-                                        with mock.patch("builtins.input", return_value="n"):
-                                            with mock.patch("timecapsulesmb.cli.deploy.run_ssh") as run_ssh_mock:
-                                                with redirect_stdout(output):
-                                                    rc = deploy.main([])
+                            with mock.patch(
+                                "timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid",
+                                return_value="12345678-1234-1234-1234-123456789012",
+                            ):
+                                with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
+                                    with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
+                                        with mock.patch("timecapsulesmb.cli.deploy.remote_install_permissions"):
+                                            with mock.patch("builtins.input", return_value="n"):
+                                                with mock.patch("timecapsulesmb.cli.deploy.run_ssh") as run_ssh_mock:
+                                                    with redirect_stdout(output):
+                                                        rc = deploy.main([])
         self.assertEqual(rc, 0)
         run_ssh_mock.assert_not_called()
         self.assertIn("Deployment complete without reboot.", output.getvalue())
@@ -663,14 +671,18 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.remote_prepare_dirs"):
-                            with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
-                                with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
-                                    with mock.patch("timecapsulesmb.cli.deploy.remote_install_permissions"):
-                                        with mock.patch("builtins.input", return_value="y"):
-                                            with mock.patch("timecapsulesmb.cli.deploy.run_ssh"):
-                                                with mock.patch("timecapsulesmb.cli.deploy.wait_for_ssh_state", side_effect=[True, False]):
-                                                    with redirect_stdout(output):
-                                                        rc = deploy.main([])
+                            with mock.patch(
+                                "timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid",
+                                return_value="12345678-1234-1234-1234-123456789012",
+                            ):
+                                with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
+                                    with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
+                                        with mock.patch("timecapsulesmb.cli.deploy.remote_install_permissions"):
+                                            with mock.patch("builtins.input", return_value="y"):
+                                                with mock.patch("timecapsulesmb.cli.deploy.run_ssh"):
+                                                    with mock.patch("timecapsulesmb.cli.deploy.wait_for_ssh_state", side_effect=[True, False]):
+                                                        with redirect_stdout(output):
+                                                            rc = deploy.main([])
         self.assertEqual(rc, 1)
         self.assertIn("Timed out waiting for SSH after reboot.", output.getvalue())
 

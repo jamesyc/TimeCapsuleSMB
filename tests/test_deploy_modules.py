@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+import uuid
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -13,7 +17,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.deploy.auth import nt_hash_hex, render_smbpasswd
 from timecapsulesmb.deploy.dry_run import format_deployment_plan
-from timecapsulesmb.deploy.executor import remote_install_permissions, remote_prepare_dirs, upload_deployment_payload
+from timecapsulesmb.deploy.executor import remote_ensure_adisk_uuid, remote_install_permissions, remote_prepare_dirs, upload_deployment_payload
 from timecapsulesmb.deploy.planner import build_deployment_plan
 from timecapsulesmb.deploy.templates import build_template_bundle, load_boot_asset_text, render_template, render_template_text
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root
@@ -43,6 +47,8 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("__SMB_SHARE_NAME__", bundle.start_script_replacements)
         self.assertIn("__SMB_SAMBA_USER__", bundle.smbconf_replacements)
         self.assertEqual(bundle.start_script_replacements["__MDNS_DEVICE_MODEL__"], "TimeCapsule")
+        self.assertEqual(bundle.start_script_replacements["__ADISK_DISK_KEY__"], "dk0")
+        self.assertEqual(bundle.start_script_replacements["__ADISK_UUID__"], "''")
 
     def test_build_template_bundle_defaults_mdns_device_model(self) -> None:
         values = {
@@ -63,6 +69,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertEqual(plan.payload_dir, "/Volumes/dk2/samba4")
         self.assertEqual(plan.private_dir, "/Volumes/dk2/samba4/private")
         self.assertEqual(plan.volume_root, "/Volumes/dk2")
+        self.assertEqual(plan.disk_key, "dk2")
         self.assertEqual(plan.remote_directories[0], "/Volumes/dk2/samba4")
 
     def test_render_template_text_replaces_tokens(self) -> None:
@@ -87,6 +94,14 @@ class DeployModuleTests(unittest.TestCase):
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn('MDNS_DEVICE_MODEL=AirPortTimeCapsule', rendered)
         self.assertIn('--device-model "$MDNS_DEVICE_MODEL"', rendered)
+        self.assertIn('ADISK_DISK_KEY=dk0', rendered)
+        self.assertIn("ADISK_UUID=''", rendered)
+        self.assertIn('--adisk-disk-key "$ADISK_DISK_KEY"', rendered)
+        self.assertIn('--adisk-uuid "$ADISK_UUID"', rendered)
+        self.assertIn('--adisk-sys-wama "$iface_mac"', rendered)
+        self.assertIn("ether[[:space:]]", rendered)
+        self.assertIn("address[[:space:]]", rendered)
+        self.assertNotIn("tr '[:lower:]' '[:upper:]'", rendered)
 
     def test_render_watchdog_script_includes_device_model_flag(self) -> None:
         values = {
@@ -103,6 +118,66 @@ class DeployModuleTests(unittest.TestCase):
         rendered = render_template("watchdog.sh", bundle.watchdog_replacements)
         self.assertIn('MDNS_DEVICE_MODEL=AirPortTimeCapsule', rendered)
         self.assertIn('--device-model "$MDNS_DEVICE_MODEL"', rendered)
+        self.assertIn('ADISK_DISK_KEY=dk0', rendered)
+        self.assertIn("ADISK_UUID=''", rendered)
+        self.assertIn('--adisk-disk-key "$ADISK_DISK_KEY"', rendered)
+        self.assertIn('--adisk-uuid "$ADISK_UUID"', rendered)
+        self.assertIn('--adisk-sys-wama "$iface_mac"', rendered)
+        self.assertIn("ether[[:space:]]", rendered)
+        self.assertIn("address[[:space:]]", rendered)
+        self.assertNotIn("tr '[:lower:]' '[:upper:]'", rendered)
+
+    def test_build_template_bundle_accepts_adisk_values(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(values, adisk_disk_key="dk3", adisk_uuid="12345678-1234-1234-1234-123456789012")
+        self.assertEqual(bundle.start_script_replacements["__ADISK_DISK_KEY__"], "dk3")
+        self.assertEqual(bundle.start_script_replacements["__ADISK_UUID__"], "12345678-1234-1234-1234-123456789012")
+
+    def test_mdns_advertiser_accepts_lowercase_wama_and_normalizes_output(self) -> None:
+        if shutil.which("cc") is None:
+            self.skipTest("cc not available")
+
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <stdio.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+int main(void) {{
+    char out[256];
+    if (build_adisk_system_txt(out, sizeof(out), "80:ea:96:e6:58:68") != 0) {{
+        return 1;
+    }}
+    puts(out);
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            c_path = tmp / "mdns_test.c"
+            bin_path = tmp / "mdns_test"
+            c_path.write_text(source)
+            proc = subprocess.run(
+                ["cc", "-Wall", "-Wextra", "-Werror", str(c_path), "-o", str(bin_path)],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            run = subprocess.run([str(bin_path)], capture_output=True, text=True, check=False)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertEqual(run.stdout.strip(), "sys=waMA=80:EA:96:E6:58:68,adVF=0x1010")
 
     def test_discover_volume_root_raises_when_no_output(self) -> None:
         proc = mock.Mock(stdout="\n")
@@ -123,6 +198,23 @@ class DeployModuleTests(unittest.TestCase):
         command = run_ssh_mock.call_args.args[3]
         self.assertIn("chmod 755 /mnt/Flash/rc.local", command)
         self.assertIn("chmod 700", command)
+        self.assertIn("/Volumes/dk2/samba4/private/adisk.uuid", command)
+
+    def test_remote_ensure_adisk_uuid_reuses_existing_file(self) -> None:
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh", return_value=mock.Mock(stdout="12345678-1234-1234-1234-123456789012\n")):
+            with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
+                result = remote_ensure_adisk_uuid("host", "pw", "-o foo", "/Volumes/dk2/samba4/private")
+        self.assertEqual(result, "12345678-1234-1234-1234-123456789012")
+        scp_mock.assert_not_called()
+
+    def test_remote_ensure_adisk_uuid_creates_new_file_when_missing(self) -> None:
+        fixed_uuid = uuid.UUID("12345678-1234-1234-1234-123456789012")
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh", return_value=mock.Mock(stdout="\n")):
+            with mock.patch("timecapsulesmb.deploy.executor.uuid.uuid4", return_value=fixed_uuid):
+                with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
+                    result = remote_ensure_adisk_uuid("host", "pw", "-o foo", "/Volumes/dk2/samba4/private")
+        self.assertEqual(result, str(fixed_uuid))
+        self.assertEqual(scp_mock.call_count, 1)
 
     def test_upload_deployment_payload_uploads_all_expected_files(self) -> None:
         paths = build_device_paths("/Volumes/dk2", "samba4")
@@ -148,6 +240,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("volume root: /Volumes/dk2", text)
         self.assertIn("mkdir -p /Volumes/dk2/samba4", text)
         self.assertIn("generated smbpasswd -> /Volumes/dk2/samba4/private/smbpasswd", text)
+        self.assertIn("generated adisk UUID -> /Volumes/dk2/samba4/private/adisk.uuid", text)
         self.assertIn("chmod 700 /Volumes/dk2/samba4/private", text)
 
 

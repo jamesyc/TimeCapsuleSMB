@@ -99,7 +99,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(build_mdns_device_model_txt("TimeCapsule"), "model=TimeCapsule")
 
     def test_build_adisk_share_txt(self) -> None:
-        self.assertEqual(build_adisk_share_txt("Data"), "dk0=adVN=Data,adVF=0x82")
+        self.assertEqual(
+            build_adisk_share_txt("Data"),
+            "dk2=adVF=0x1093,adVN=Data,adVU=12345678-1234-1234-1234-123456789012",
+        )
 
     def test_validate_mdns_device_model_rejects_long_values(self) -> None:
         self.assertEqual(
@@ -109,8 +112,8 @@ class ConfigTests(unittest.TestCase):
 
     def test_validate_adisk_share_name_rejects_long_values(self) -> None:
         self.assertEqual(
-            validate_adisk_share_name("a" * 237, "SMB share name"),
-            "SMB share name must be 236 bytes or fewer.",
+            validate_adisk_share_name("a" * 193, "SMB share name"),
+            "SMB share name must be 192 bytes or fewer.",
         )
 
     def test_app_config_require_raises_for_missing_value(self) -> None:

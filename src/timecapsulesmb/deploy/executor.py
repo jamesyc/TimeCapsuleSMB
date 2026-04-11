@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shlex
 import tempfile
+import uuid
 from pathlib import Path
 
 from timecapsulesmb.deploy.auth import render_smbpasswd
@@ -19,7 +20,7 @@ def remote_install_permissions(host: str, password: str, ssh_opts: str, payload_
     cmd = (
         "chmod 755 /mnt/Flash/rc.local /mnt/Flash/start-samba.sh /mnt/Flash/watchdog.sh /mnt/Flash/dfree.sh && "
         f"chmod 700 {shlex.quote(private_dir)} && "
-        f"chmod 600 {shlex.quote(private_dir + '/smbpasswd')} {shlex.quote(private_dir + '/username.map')}"
+        f"chmod 600 {shlex.quote(private_dir + '/smbpasswd')} {shlex.quote(private_dir + '/username.map')} {shlex.quote(private_dir + '/adisk.uuid')}"
     )
     run_ssh(host, password, ssh_opts, cmd)
 
@@ -34,6 +35,28 @@ def remote_install_auth_files(host: str, password: str, ssh_opts: str, private_d
         username_map_path.write_text(username_map_text)
         run_scp(host, password, ssh_opts, smbpasswd_path, f"{private_dir}/smbpasswd")
         run_scp(host, password, ssh_opts, username_map_path, f"{private_dir}/username.map")
+
+
+def remote_ensure_adisk_uuid(host: str, password: str, ssh_opts: str, private_dir: str) -> str:
+    remote_path = f"{private_dir}/adisk.uuid"
+    proc = run_ssh(
+        host,
+        password,
+        ssh_opts,
+        f"/bin/sh -c {shlex.quote(f'if [ -f {shlex.quote(remote_path)} ]; then cat {shlex.quote(remote_path)}; fi')}",
+        check=False,
+    )
+    existing = proc.stdout.strip()
+    if existing:
+        return existing
+
+    adisk_uuid = str(uuid.uuid4())
+    with tempfile.TemporaryDirectory(prefix="tc-deploy-adisk-") as tmp:
+        tmpdir = Path(tmp)
+        uuid_path = tmpdir / "adisk.uuid"
+        uuid_path.write_text(f"{adisk_uuid}\n")
+        run_scp(host, password, ssh_opts, uuid_path, remote_path)
+    return adisk_uuid
 
 
 def upload_deployment_payload(

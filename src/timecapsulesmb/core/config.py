@@ -12,8 +12,10 @@ MAX_DNS_LABEL_BYTES = 63
 MAX_DNS_NAME_BYTES = 255
 MAX_DNS_TXT_BYTES = 255
 MODEL_TXT_PREFIX = "model="
-ADISK_SHARE_TXT_PREFIX = "dk0=adVN="
-ADISK_SHARE_TXT_SUFFIX = ",adVF=0x82"
+ADISK_DEFAULT_DISK_KEY = "dk2"
+ADISK_DISK_UUID_EXAMPLE = "12345678-1234-1234-1234-123456789012"
+ADISK_DISK_TXT_MID = "=adVF=0x1093,adVN="
+ADISK_DISK_TXT_SUFFIX = ",adVU="
 
 DEFAULTS = {
     "TC_HOST": "root@192.168.1.101",
@@ -129,7 +131,7 @@ def build_mdns_device_model_txt(value: str) -> Optional[str]:
 
 
 def build_adisk_share_txt(value: str) -> Optional[str]:
-    txt = f"{ADISK_SHARE_TXT_PREFIX}{value}{ADISK_SHARE_TXT_SUFFIX}"
+    txt = f"{ADISK_DEFAULT_DISK_KEY}{ADISK_DISK_TXT_MID}{value}{ADISK_DISK_TXT_SUFFIX}{ADISK_DISK_UUID_EXAMPLE}"
     if len(txt.encode("utf-8")) > MAX_DNS_TXT_BYTES:
         return None
     return txt
@@ -185,7 +187,14 @@ def validate_adisk_share_name(value: str, field_name: str) -> Optional[str]:
     if not value:
         return f"{field_name} cannot be blank."
     if build_adisk_share_txt(value) is None:
-        return f"{field_name} must be 236 bytes or fewer."
+        max_share_bytes = (
+            MAX_DNS_TXT_BYTES
+            - len(ADISK_DEFAULT_DISK_KEY.encode("utf-8"))
+            - len(ADISK_DISK_TXT_MID.encode("utf-8"))
+            - len(ADISK_DISK_TXT_SUFFIX.encode("utf-8"))
+            - len(ADISK_DISK_UUID_EXAMPLE.encode("utf-8"))
+        )
+        return f"{field_name} must be {max_share_bytes} bytes or fewer."
     if _contains_invalid_control_character(value):
         return f"{field_name} contains an invalid control character."
     return None

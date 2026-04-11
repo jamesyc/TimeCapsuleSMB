@@ -22,8 +22,14 @@
 #define MAX_TXT_STRING 255
 #define ANNOUNCE_INTERVAL 30
 #define MODEL_TXT_PREFIX "model="
-#define ADISK_SHARE_TXT_PREFIX "dk0=adVN="
-#define ADISK_SHARE_TXT_SUFFIX ",adVF=0x82"
+#define ADISK_DEFAULT_DISK_KEY "dk0"
+#define ADISK_SYS_ADVF "0x1010"
+#define ADISK_DISK_ADVF "0x1093"
+#define ADISK_DISK_UUID_LEN 36
+#define ADISK_SYS_TXT_PREFIX "sys=waMA="
+#define ADISK_SYS_TXT_SUFFIX ",adVF=" ADISK_SYS_ADVF
+#define ADISK_DISK_TXT_MID "=adVF=" ADISK_DISK_ADVF ",adVN="
+#define ADISK_DISK_TXT_SUFFIX ",adVU="
 
 #define DNS_TYPE_A 1
 #define DNS_TYPE_PTR 12
@@ -44,6 +50,9 @@ struct config {
     char host_fqdn[MAX_NAME];
     char adisk_service_type[MAX_NAME];
     char adisk_share_name[MAX_NAME];
+    char adisk_disk_key[MAX_LABEL + 1];
+    char adisk_uuid[ADISK_DISK_UUID_LEN + 1];
+    char adisk_sys_wama[18];
     char device_info_service_type[MAX_NAME];
     char device_model[MAX_NAME];
     uint32_t ipv4_addr;
@@ -72,6 +81,9 @@ static void usage(const char *prog) {
             "Options:\n"
             "  --service <type>   Service type (default: _smb._tcp.local.)\n"
             "  --adisk-share <n>  Also advertise _adisk._tcp for Time Machine\n"
+            "  --adisk-disk-key <k> Disk key for _adisk TXT (default: dk0)\n"
+            "  --adisk-uuid <u>   Stable UUID for _adisk TXT\n"
+            "  --adisk-sys-wama <m> MAC address for _adisk sys TXT\n"
             "  --device-model <m> Also advertise _device-info._tcp with model=<m>\n"
             "  --port <port>      Service port (default: 445)\n"
             "  --ttl <seconds>    Record TTL (default: 120)\n",
@@ -158,11 +170,55 @@ static int build_model_txt(char *out, size_t out_len, const char *device_model) 
     return 0;
 }
 
-static int build_adisk_share_txt(char *out, size_t out_len, const char *share_name) {
+static int build_adisk_system_txt(char *out, size_t out_len, const char *wama) {
+    int written;
+    const unsigned char *p;
+    char normalized[18];
+    size_t i;
+
+    if (wama == NULL || wama[0] == '\0') {
+        return -1;
+    }
+
+    if (strlen(wama) >= sizeof(normalized)) {
+        fprintf(stderr, "adisk sys waMA must be a MAC address\n");
+        return -1;
+    }
+
+    for (p = (const unsigned char *)wama; *p != '\0'; p++) {
+        if (!((*p >= '0' && *p <= '9') || (*p >= 'A' && *p <= 'F') || (*p >= 'a' && *p <= 'f') || *p == ':')) {
+            fprintf(stderr, "adisk sys waMA must be a MAC address\n");
+            return -1;
+        }
+    }
+
+    for (i = 0; wama[i] != '\0'; i++) {
+        normalized[i] = (char)toupper((unsigned char)wama[i]);
+    }
+    normalized[i] = '\0';
+
+    if (strlen(ADISK_SYS_TXT_PREFIX) + strlen(normalized) + strlen(ADISK_SYS_TXT_SUFFIX) > MAX_TXT_STRING) {
+        return -1;
+    }
+
+    written = snprintf(out, out_len, ADISK_SYS_TXT_PREFIX "%s" ADISK_SYS_TXT_SUFFIX, normalized);
+    if (written < 0 || (size_t)written >= out_len) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int build_adisk_disk_txt(char *out, size_t out_len, const char *disk_key, const char *share_name, const char *adisk_uuid) {
     int written;
     const unsigned char *p;
 
-    if (share_name == NULL || share_name[0] == '\0') {
+    if (disk_key == NULL || disk_key[0] == '\0' || share_name == NULL || share_name[0] == '\0' ||
+        adisk_uuid == NULL || adisk_uuid[0] == '\0') {
+        return -1;
+    }
+
+    if (validate_single_dns_label(disk_key, "adisk disk key") != 0) {
         return -1;
     }
 
@@ -173,13 +229,18 @@ static int build_adisk_share_txt(char *out, size_t out_len, const char *share_na
         }
     }
 
-    if (strlen(ADISK_SHARE_TXT_PREFIX) + strlen(share_name) + strlen(ADISK_SHARE_TXT_SUFFIX) > MAX_TXT_STRING) {
-        fprintf(stderr, "adisk share name must be %d bytes or fewer\n",
-                MAX_TXT_STRING - (int)strlen(ADISK_SHARE_TXT_PREFIX) - (int)strlen(ADISK_SHARE_TXT_SUFFIX));
+    if (strlen(adisk_uuid) != ADISK_DISK_UUID_LEN) {
+        fprintf(stderr, "adisk uuid must be %d characters\n", ADISK_DISK_UUID_LEN);
         return -1;
     }
 
-    written = snprintf(out, out_len, ADISK_SHARE_TXT_PREFIX "%s" ADISK_SHARE_TXT_SUFFIX, share_name);
+    if (strlen(disk_key) + strlen(ADISK_DISK_TXT_MID) + strlen(share_name) + strlen(ADISK_DISK_TXT_SUFFIX) + strlen(adisk_uuid) > MAX_TXT_STRING) {
+        fprintf(stderr, "adisk share name must be %d bytes or fewer\n",
+                MAX_TXT_STRING - (int)strlen(disk_key) - (int)strlen(ADISK_DISK_TXT_MID) - (int)strlen(ADISK_DISK_TXT_SUFFIX) - (int)strlen(adisk_uuid));
+        return -1;
+    }
+
+    written = snprintf(out, out_len, "%s" ADISK_DISK_TXT_MID "%s" ADISK_DISK_TXT_SUFFIX "%s", disk_key, share_name, adisk_uuid);
     if (written < 0 || (size_t)written >= out_len) {
         return -1;
     }
@@ -470,15 +531,17 @@ static int add_adisk_records(uint8_t *buf, size_t *off, size_t cap, const struct
     char txt2[256];
     const char *txts[2];
 
-    if (cfg->adisk_share_name[0] == '\0') {
+    if (cfg->adisk_share_name[0] == '\0' || cfg->adisk_uuid[0] == '\0' || cfg->adisk_sys_wama[0] == '\0') {
         return 0;
     }
 
     if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->adisk_service_type) != 0) {
         return -1;
     }
-    snprintf(txt1, sizeof(txt1), "sys=waMa=0,adVF=0x100");
-    if (build_adisk_share_txt(txt2, sizeof(txt2), cfg->adisk_share_name) != 0) {
+    if (build_adisk_system_txt(txt1, sizeof(txt1), cfg->adisk_sys_wama) != 0) {
+        return -1;
+    }
+    if (build_adisk_disk_txt(txt2, sizeof(txt2), cfg->adisk_disk_key, cfg->adisk_share_name, cfg->adisk_uuid) != 0) {
         return -1;
     }
     txts[0] = txt1;
@@ -590,7 +653,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
     if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->service_type) != 0) {
         return 0;
     }
-    if (cfg->adisk_share_name[0] != '\0' &&
+    if (cfg->adisk_share_name[0] != '\0' && cfg->adisk_uuid[0] != '\0' &&
         build_instance_fqdn(adisk_instance_fqdn, sizeof(adisk_instance_fqdn), cfg->instance_name, cfg->adisk_service_type) != 0) {
         return 0;
     }
@@ -684,8 +747,10 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
         char txt2[256];
         const char *txts[2];
 
-        snprintf(txt1, sizeof(txt1), "sys=waMa=0,adVF=0x100");
-        if (build_adisk_share_txt(txt2, sizeof(txt2), cfg->adisk_share_name) != 0) {
+        if (build_adisk_system_txt(txt1, sizeof(txt1), cfg->adisk_sys_wama) != 0) {
+            return -1;
+        }
+        if (build_adisk_disk_txt(txt2, sizeof(txt2), cfg->adisk_disk_key, cfg->adisk_share_name, cfg->adisk_uuid) != 0) {
             return -1;
         }
         txts[0] = txt1;
@@ -810,6 +875,7 @@ int main(int argc, char **argv) {
     memset(&cfg, 0, sizeof(cfg));
     strcpy(cfg.service_type, "_smb._tcp.local.");
     strcpy(cfg.adisk_service_type, "_adisk._tcp.local.");
+    strcpy(cfg.adisk_disk_key, ADISK_DEFAULT_DISK_KEY);
     strcpy(cfg.device_info_service_type, "_device-info._tcp.local.");
     cfg.port = 445;
     cfg.adisk_port = 9;
@@ -820,6 +886,12 @@ int main(int argc, char **argv) {
             strncpy(cfg.service_type, argv[++i], sizeof(cfg.service_type) - 1);
         } else if (strcmp(argv[i], "--adisk-share") == 0 && i + 1 < argc) {
             strncpy(cfg.adisk_share_name, argv[++i], sizeof(cfg.adisk_share_name) - 1);
+        } else if (strcmp(argv[i], "--adisk-disk-key") == 0 && i + 1 < argc) {
+            strncpy(cfg.adisk_disk_key, argv[++i], sizeof(cfg.adisk_disk_key) - 1);
+        } else if (strcmp(argv[i], "--adisk-uuid") == 0 && i + 1 < argc) {
+            strncpy(cfg.adisk_uuid, argv[++i], sizeof(cfg.adisk_uuid) - 1);
+        } else if (strcmp(argv[i], "--adisk-sys-wama") == 0 && i + 1 < argc) {
+            strncpy(cfg.adisk_sys_wama, argv[++i], sizeof(cfg.adisk_sys_wama) - 1);
         } else if (strcmp(argv[i], "--device-model") == 0 && i + 1 < argc) {
             strncpy(cfg.device_model, argv[++i], sizeof(cfg.device_model) - 1);
         } else if (strcmp(argv[i], "--instance") == 0 && i + 1 < argc) {
@@ -854,8 +926,12 @@ int main(int argc, char **argv) {
         return 2;
     }
     if (cfg.adisk_share_name[0] != '\0') {
-        char adisk_txt[MAX_NAME + 16];
-        if (build_adisk_share_txt(adisk_txt, sizeof(adisk_txt), cfg.adisk_share_name) != 0) {
+        char adisk_sys_txt[128];
+        char adisk_disk_txt[256];
+        if (build_adisk_system_txt(adisk_sys_txt, sizeof(adisk_sys_txt), cfg.adisk_sys_wama) != 0) {
+            return 2;
+        }
+        if (build_adisk_disk_txt(adisk_disk_txt, sizeof(adisk_disk_txt), cfg.adisk_disk_key, cfg.adisk_share_name, cfg.adisk_uuid) != 0) {
             return 2;
         }
     }

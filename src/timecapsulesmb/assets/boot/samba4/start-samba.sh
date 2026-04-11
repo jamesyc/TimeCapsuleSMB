@@ -39,6 +39,8 @@ NET_IFACE=__NET_IFACE__
 MDNS_INSTANCE_NAME=__MDNS_INSTANCE_NAME__
 MDNS_HOST_LABEL=__MDNS_HOST_LABEL__
 MDNS_DEVICE_MODEL=__MDNS_DEVICE_MODEL__
+ADISK_DISK_KEY=__ADISK_DISK_KEY__
+ADISK_UUID=__ADISK_UUID__
 
 log() {
     log_dir=${RAM_LOG%/*}
@@ -78,6 +80,14 @@ prepare_ram_root() {
 
 get_iface_ipv4() {
     /sbin/ifconfig "$NET_IFACE" 2>/dev/null | sed -n 's/^[[:space:]]*inet[[:space:]]\([0-9.]*\).*/\1/p' | sed -n '1p'
+}
+
+get_iface_mac() {
+    /sbin/ifconfig "$NET_IFACE" 2>/dev/null \
+        | sed -n \
+            -e 's/^[[:space:]]*ether[[:space:]]\([0-9A-Fa-f:]*\).*/\1/p' \
+            -e 's/^[[:space:]]*address[[:space:]]\([0-9A-Fa-f:]*\).*/\1/p' \
+        | sed -n '1p'
 }
 
 wait_for_bind_interfaces() {
@@ -299,11 +309,20 @@ start_mdns() {
         return 0
     fi
 
+    iface_mac=$(get_iface_mac || true)
+    if [ -z "$iface_mac" ]; then
+        log "mdns advertiser launch skipped; missing $NET_IFACE MAC address"
+        return 0
+    fi
+
     "$RAM_SBIN/mdns-smbd-advertiser" \
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
         --device-model "$MDNS_DEVICE_MODEL" \
         --adisk-share "$SMB_SHARE_NAME" \
+        --adisk-disk-key "$ADISK_DISK_KEY" \
+        --adisk-uuid "$ADISK_UUID" \
+        --adisk-sys-wama "$iface_mac" \
         --ipv4 "$BRIDGE0_IP" \
         >/dev/null 2>&1 &
     log "mdns advertiser launch requested"

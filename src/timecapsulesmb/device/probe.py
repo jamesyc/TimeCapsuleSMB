@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shlex
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import run_ssh
@@ -11,6 +12,7 @@ from timecapsulesmb.transport.ssh import run_ssh
 class DevicePaths:
     volume_root: str
     payload_dir: str
+    disk_key: str
 
 
 def discover_volume_root(host: str, password: str, ssh_opts: str) -> str:
@@ -37,9 +39,11 @@ exit 1
 
 
 def build_device_paths(volume_root: str, payload_dir_name: str) -> DevicePaths:
+    disk_key = PurePosixPath(volume_root).name
     return DevicePaths(
         volume_root=volume_root,
         payload_dir=f"{volume_root}/{payload_dir_name}",
+        disk_key=disk_key,
     )
 
 
