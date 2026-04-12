@@ -218,6 +218,22 @@ class CheckTests(unittest.TestCase):
         )
         self.assertEqual(extract_nbns_response_ip(packet), "192.168.1.217")
 
+    def test_extract_nbns_response_ip_returns_none_for_truncated_name(self) -> None:
+        packet = (
+            b"\x13\x37\x85\x00\x00\x01\x00\x01\x00\x00\x00\x00"
+            + b"\x20" + b"FEEFFDFECACACACACACACACACACACAAA"
+        )
+        self.assertIsNone(extract_nbns_response_ip(packet))
+
+    def test_extract_nbns_response_ip_returns_none_for_truncated_answer_header(self) -> None:
+        packet = (
+            b"\x13\x37\x85\x00\x00\x01\x00\x01\x00\x00\x00\x00"
+            + b"\x20" + b"FEEFFDFECACACACACACACACACACACAAA" + b"\x00"
+            + b"\x00\x20\x00\x01"
+            + b"\xc0\x0c\x00\x20\x00\x01\x00\x00"
+        )
+        self.assertIsNone(extract_nbns_response_ip(packet))
+
     def test_build_nbns_query_has_expected_header_and_question(self) -> None:
         packet = build_nbns_query("TimeCapsule", transaction_id=0x1337)
         self.assertEqual(packet[:2], b"\x13\x37")

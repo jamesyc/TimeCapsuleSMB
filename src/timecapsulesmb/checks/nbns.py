@@ -43,27 +43,30 @@ def extract_nbns_response_ip(packet: bytes) -> Optional[str]:
     if len(packet) < 12:
         return None
 
-    _, flags, qdcount, ancount, _, _ = struct.unpack("!HHHHHH", packet[:12])
-    if (flags & 0x8000) == 0 or ancount < 1:
-        return None
-
-    offset = 12
-    for _ in range(qdcount):
-        offset = _skip_name(packet, offset)
-        offset += 4
-        if offset > len(packet):
+    try:
+        _, flags, qdcount, ancount, _, _ = struct.unpack("!HHHHHH", packet[:12])
+        if (flags & 0x8000) == 0 or ancount < 1:
             return None
 
-    offset = _skip_name(packet, offset)
-    if offset + 10 > len(packet):
-        return None
+        offset = 12
+        for _ in range(qdcount):
+            offset = _skip_name(packet, offset)
+            offset += 4
+            if offset > len(packet):
+                return None
 
-    rtype, rclass, _ttl, rdlength = struct.unpack("!HHIH", packet[offset : offset + 10])
-    offset += 10
-    if rtype != NB_TYPE_NB or rclass != DNS_CLASS_IN or rdlength < 6 or offset + rdlength > len(packet):
-        return None
+        offset = _skip_name(packet, offset)
+        if offset + 10 > len(packet):
+            return None
 
-    return socket.inet_ntoa(packet[offset + 2 : offset + 6])
+        rtype, rclass, _ttl, rdlength = struct.unpack("!HHIH", packet[offset : offset + 10])
+        offset += 10
+        if rtype != NB_TYPE_NB or rclass != DNS_CLASS_IN or rdlength < 6 or offset + rdlength > len(packet):
+            return None
+
+        return socket.inet_ntoa(packet[offset + 2 : offset + 6])
+    except (IndexError, OSError, ValueError, struct.error):
+        return None
 
 
 def check_nbns_name_resolution(netbios_name: str, target_host: str, expected_ip: str, *, timeout: float = 2.0) -> CheckResult:
