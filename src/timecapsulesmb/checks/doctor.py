@@ -4,6 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Optional
 import shlex
+import socket
 
 from timecapsulesmb.checks.bonjour import run_bonjour_checks
 from timecapsulesmb.checks.local_tools import check_required_artifacts, check_required_local_tools
@@ -80,7 +81,8 @@ def run_doctor_checks(
                 check=False,
             )
             if proc.stdout.strip() == "enabled":
-                add_result(check_nbns_name_resolution(values["TC_NETBIOS_NAME"], host, host))
+                expected_ip = socket.gethostbyname(host)
+                add_result(check_nbns_name_resolution(values["TC_NETBIOS_NAME"], host, expected_ip))
             else:
                 add_result(CheckResult("SKIP", "NBNS responder not enabled"))
         except Exception as e:
