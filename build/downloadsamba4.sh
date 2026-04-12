@@ -7,6 +7,7 @@ mkdir -p "$OUT" "$SAMBA4_WORK"
 
 {
     echo "Starting Samba 4 download workflow at $(date -u)"
+    echo "BUILD_TARGET=$BUILD_TARGET"
     echo "SAMBA4_VERSION=$SAMBA4_VERSION"
     echo "SAMBA4_GIT_URL=$SAMBA4_GIT_URL"
     echo "SAMBA4_GIT_REF=$SAMBA4_GIT_REF"
@@ -17,7 +18,7 @@ mkdir -p "$OUT" "$SAMBA4_WORK"
     if pkg_info python27 >/dev/null 2>&1; then
         echo "python27 is already installed on the VM; skipping pkgin install."
     else
-        /usr/pkg/bin/pkgin -y install python27
+        /usr/pkg/bin/pkgin -4 -y install python27
     fi
 
     if [ -d "$SAMBA4_SRC_DIR/.git" ]; then

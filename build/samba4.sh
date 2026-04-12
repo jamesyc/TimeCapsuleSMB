@@ -56,6 +56,7 @@ CROSS_EXECUTE="$(cd "$(dirname "$0")" && pwd)/samba4-cross-exec.sh"
 SAMBA4_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_acl_xattr'
 
 {
+    echo "BUILD_TARGET=$BUILD_TARGET"
     echo "SAMBA4_VERSION=$SAMBA4_VERSION"
     echo "TOOLDIR=$TOOLDIR"
     echo "DESTDIR=$DESTDIR"
@@ -64,6 +65,7 @@ SAMBA4_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_a
     echo "WORK=$SAMBA4_WORK"
     echo "STAGE=$SAMBA4_STAGE"
     echo "SRC_DIR=$SAMBA4_SRC_DIR"
+    echo "HOST_ALIAS=$SAMBA4_HOST_ALIAS"
     echo "STATIC_MODULES=$SAMBA4_STATIC_MODULES"
     echo "CROSS_EXECUTE=$CROSS_EXECUTE"
 

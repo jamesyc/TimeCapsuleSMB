@@ -7,9 +7,6 @@ TOOLDIR="$TOOLS"
 DESTDIR="$OBJ/destdir.evbarm"
 TRIPLE="$(basename "$(ls "$TOOLDIR"/bin/*-netbsdelf-*gcc | head -n1)" | sed 's/-gcc$//')"
 MDNS_SRC="$SCRIPT_DIR/mdns-advertiser.c"
-MDNS_STAGE="${MDNS_STAGE:-/root/tc-stage-mdns}"
-MDNS_LOG="${MDNS_LOG:-$OUT/mdns.log}"
-MDNS_BIN_NAME="${MDNS_BIN_NAME:-mdns-smbd-advertiser}"
 MDNS_CFLAGS="${MDNS_CFLAGS:--Os -fomit-frame-pointer -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident}"
 MDNS_LDFLAGS="${MDNS_LDFLAGS:--static -Wl,--gc-sections}"
 
@@ -33,6 +30,7 @@ if ! : >"$MDNS_LOG"; then
 fi
 
 if ! {
+    echo "BUILD_TARGET=$BUILD_TARGET"
     echo "MDNS_SRC=$MDNS_SRC"
     echo "MDNS_STAGE=$MDNS_STAGE"
     echo "MDNS_BIN_NAME=$MDNS_BIN_NAME"

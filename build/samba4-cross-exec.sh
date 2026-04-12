@@ -16,7 +16,7 @@ LOCAL_CMD=$1
 shift
 
 if [ -f "$LOCAL_CMD" ]; then
-    REMOTE_DIR="/tmp/tc-samba4-probes"
+    REMOTE_DIR="${CROSS_EXEC_REMOTE_DIR:-/tmp/tc-samba4-probes}"
     REMOTE_BIN="$REMOTE_DIR/$(basename "$LOCAL_CMD").$$"
     REMOTE_CMD=$(quote_arg "$REMOTE_BIN")
 
