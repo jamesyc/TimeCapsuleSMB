@@ -85,7 +85,7 @@ def run_doctor_checks(
                 add_result(check_nbns_name_resolution(values["TC_NETBIOS_NAME"], host, expected_ip))
             else:
                 add_result(CheckResult("SKIP", "NBNS responder not enabled"))
-        except Exception as e:
+        except (Exception, SystemExit) as e:
             add_result(CheckResult("WARN", f"NBNS check skipped: {e}"))
 
     if not skip_smb:
