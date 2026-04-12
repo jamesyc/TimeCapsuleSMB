@@ -6,26 +6,23 @@ import uuid
 from pathlib import Path
 
 from timecapsulesmb.deploy.auth import render_smbpasswd
+from timecapsulesmb.deploy.commands import (
+    enable_nbns_action,
+    install_permissions_action,
+    prepare_dirs_action,
+    render_remote_action,
+    render_remote_actions,
+)
 from timecapsulesmb.deploy.planner import DeploymentPlan, UninstallPlan
 from timecapsulesmb.transport.ssh import run_scp, run_ssh
 
 
 def remote_prepare_dirs(host: str, password: str, ssh_opts: str, payload_dir: str) -> None:
-    cmd = f"mkdir -p {shlex.quote(payload_dir)} {shlex.quote(payload_dir + '/private')} /mnt/Flash"
-    run_ssh(host, password, ssh_opts, cmd)
+    run_ssh(host, password, ssh_opts, render_remote_action(prepare_dirs_action(payload_dir)))
 
 
 def remote_install_permissions(host: str, password: str, ssh_opts: str, payload_dir: str) -> None:
-    private_dir = f"{payload_dir}/private"
-    cmd = (
-        f"chmod 755 {shlex.quote(payload_dir + '/smbd')} {shlex.quote(payload_dir + '/mdns-smbd-advertiser')} {shlex.quote(payload_dir + '/nbns-advertiser')} && "
-        "chmod 755 /mnt/Flash/rc.local /mnt/Flash/start-samba.sh /mnt/Flash/watchdog.sh /mnt/Flash/dfree.sh && "
-        f"chmod 700 {shlex.quote(private_dir)} && "
-        f"(chmod 600 {shlex.quote(private_dir + '/smbpasswd')} {shlex.quote(private_dir + '/username.map')} "
-        f"{shlex.quote(private_dir + '/adisk.uuid')} {shlex.quote(private_dir + '/nbns.enabled')} "
-        f"|| chmod 600 {shlex.quote(private_dir + '/smbpasswd')} {shlex.quote(private_dir + '/username.map')} {shlex.quote(private_dir + '/adisk.uuid')})"
-    )
-    run_ssh(host, password, ssh_opts, cmd)
+    run_ssh(host, password, ssh_opts, render_remote_action(install_permissions_action(payload_dir)))
 
 
 def remote_install_auth_files(host: str, password: str, ssh_opts: str, private_dir: str, samba_user: str, samba_password: str) -> None:
@@ -85,16 +82,13 @@ def upload_deployment_payload(
 
 
 def remote_enable_nbns(host: str, password: str, ssh_opts: str, private_dir: str) -> None:
-    marker_path = private_dir + "/nbns.enabled"
-    run_ssh(
-        host,
-        password,
-        ssh_opts,
-        f"/bin/sh -c {shlex.quote(f': > {shlex.quote(marker_path)}')}",
-    )
+    run_ssh(host, password, ssh_opts, render_remote_action(enable_nbns_action(private_dir)))
+
+
+def run_remote_actions(host: str, password: str, ssh_opts: str, actions) -> None:
+    for command in render_remote_actions(list(actions)):
+        run_ssh(host, password, ssh_opts, command)
 
 
 def remote_uninstall_payload(host: str, password: str, ssh_opts: str, plan: UninstallPlan) -> None:
-    cmd_parts = [*plan.stop_commands]
-    cmd_parts.extend(f"rm -rf {shlex.quote(target)}" for target in plan.remove_targets)
-    run_ssh(host, password, ssh_opts, " && ".join(cmd_parts))
+    run_ssh(host, password, ssh_opts, " && ".join(render_remote_actions(plan.remote_actions)))

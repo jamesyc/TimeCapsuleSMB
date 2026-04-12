@@ -13,10 +13,8 @@ from timecapsulesmb.deploy.artifacts import validate_artifacts
 from timecapsulesmb.deploy.dry_run import deployment_plan_to_jsonable, format_deployment_plan
 from timecapsulesmb.deploy.executor import (
     remote_ensure_adisk_uuid,
-    remote_enable_nbns,
     remote_install_auth_files,
-    remote_install_permissions,
-    remote_prepare_dirs,
+    run_remote_actions,
     upload_deployment_payload,
 )
 from timecapsulesmb.deploy.planner import build_deployment_plan
@@ -86,10 +84,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(format_deployment_plan(plan))
         return 0
 
-    remote_prepare_dirs(host, password, ssh_opts, plan.payload_dir)
+    run_remote_actions(host, password, ssh_opts, plan.pre_upload_actions)
     adisk_uuid = remote_ensure_adisk_uuid(host, password, ssh_opts, plan.private_dir)
-    if args.install_nbns:
-        remote_enable_nbns(host, password, ssh_opts, plan.private_dir)
     template_bundle = build_template_bundle(values, adisk_disk_key=plan.disk_key, adisk_uuid=adisk_uuid)
 
     with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp:
@@ -118,7 +114,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
 
     remote_install_auth_files(host, password, ssh_opts, plan.private_dir, values["TC_SAMBA_USER"], password)
-    remote_install_permissions(host, password, ssh_opts, plan.payload_dir)
+    run_remote_actions(host, password, ssh_opts, plan.post_auth_actions)
 
     print(f"Deployed Samba payload to {plan.payload_dir}")
     print("Updated /mnt/Flash boot files.")
