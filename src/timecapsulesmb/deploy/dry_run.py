@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
+from timecapsulesmb.deploy.commands import render_remote_actions
 from timecapsulesmb.deploy.planner import DeploymentPlan, UninstallPlan
 
 
@@ -14,9 +15,9 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     lines.append(f"  volume root: {plan.volume_root}")
     lines.append(f"  payload dir: {plan.payload_dir}")
     lines.append("")
-    lines.append("Remote directories:")
-    for directory in plan.remote_directories:
-        lines.append(f"  mkdir -p {directory}")
+    lines.append("Remote actions (pre-upload):")
+    for command in render_remote_actions(plan.pre_upload_actions):
+        lines.append(f"  {command}")
     lines.append("")
     lines.append("Uploads:")
     for upload in plan.uploads:
@@ -26,8 +27,8 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     for generated in plan.generated_auth_files:
         lines.append(f"  {generated.source} -> {generated.destination}")
     lines.append("")
-    lines.append("Permissions:")
-    for command in plan.permission_commands:
+    lines.append("Remote actions (post-auth):")
+    for command in render_remote_actions(plan.post_auth_actions):
         lines.append(f"  {command}")
     lines.append("")
     lines.append("Reboot:")
@@ -43,6 +44,7 @@ def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
     data = asdict(plan)
     data["smbd_path"] = str(plan.smbd_path)
     data["mdns_path"] = str(plan.mdns_path)
+    data["nbns_path"] = str(plan.nbns_path)
     data["post_deploy_checks"] = [
         "bonjour_browse_resolve",
         "authenticated_smb_listing",
@@ -59,13 +61,9 @@ def format_uninstall_plan(plan: UninstallPlan) -> str:
     lines.append(f"  volume root: {plan.volume_root}")
     lines.append(f"  payload dir: {plan.payload_dir}")
     lines.append("")
-    lines.append("Stop commands:")
-    for command in plan.stop_commands:
+    lines.append("Remote actions:")
+    for command in render_remote_actions(plan.remote_actions):
         lines.append(f"  {command}")
-    lines.append("")
-    lines.append("Removals:")
-    for target in plan.remove_targets:
-        lines.append(f"  rm -rf {target}")
     lines.append("")
     lines.append("Reboot:")
     lines.append("  yes")

@@ -25,6 +25,7 @@ from timecapsulesmb.core.config import (
     validate_adisk_share_name,
     validate_dns_name,
     validate_mdns_device_model,
+    validate_netbios_name,
     validate_single_dns_label,
     write_env_file,
 )
@@ -114,6 +115,12 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(
             validate_adisk_share_name("a" * 193, "SMB share name"),
             "SMB share name must be 192 bytes or fewer.",
+        )
+
+    def test_validate_netbios_name_rejects_long_values(self) -> None:
+        self.assertEqual(
+            validate_netbios_name("A" * 16, "Samba NetBIOS name"),
+            "Samba NetBIOS name must be 15 bytes or fewer.",
         )
 
     def test_app_config_require_raises_for_missing_value(self) -> None:

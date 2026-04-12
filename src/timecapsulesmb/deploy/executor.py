@@ -6,23 +6,23 @@ import uuid
 from pathlib import Path
 
 from timecapsulesmb.deploy.auth import render_smbpasswd
+from timecapsulesmb.deploy.commands import (
+    enable_nbns_action,
+    install_permissions_action,
+    prepare_dirs_action,
+    render_remote_action,
+    render_remote_actions,
+)
 from timecapsulesmb.deploy.planner import DeploymentPlan, UninstallPlan
 from timecapsulesmb.transport.ssh import run_scp, run_ssh
 
 
 def remote_prepare_dirs(host: str, password: str, ssh_opts: str, payload_dir: str) -> None:
-    cmd = f"mkdir -p {shlex.quote(payload_dir)} {shlex.quote(payload_dir + '/private')} /mnt/Flash"
-    run_ssh(host, password, ssh_opts, cmd)
+    run_ssh(host, password, ssh_opts, render_remote_action(prepare_dirs_action(payload_dir)))
 
 
 def remote_install_permissions(host: str, password: str, ssh_opts: str, payload_dir: str) -> None:
-    private_dir = f"{payload_dir}/private"
-    cmd = (
-        "chmod 755 /mnt/Flash/rc.local /mnt/Flash/start-samba.sh /mnt/Flash/watchdog.sh /mnt/Flash/dfree.sh && "
-        f"chmod 700 {shlex.quote(private_dir)} && "
-        f"chmod 600 {shlex.quote(private_dir + '/smbpasswd')} {shlex.quote(private_dir + '/username.map')} {shlex.quote(private_dir + '/adisk.uuid')}"
-    )
-    run_ssh(host, password, ssh_opts, cmd)
+    run_ssh(host, password, ssh_opts, render_remote_action(install_permissions_action(payload_dir)))
 
 
 def remote_install_auth_files(host: str, password: str, ssh_opts: str, private_dir: str, samba_user: str, samba_password: str) -> None:
@@ -73,6 +73,7 @@ def upload_deployment_payload(
 ) -> None:
     run_scp(host, password, ssh_opts, plan.smbd_path, plan.payload_targets["smbd"])
     run_scp(host, password, ssh_opts, plan.mdns_path, plan.payload_targets["mdns-smbd-advertiser"])
+    run_scp(host, password, ssh_opts, plan.nbns_path, plan.payload_targets["nbns-advertiser"])
     run_scp(host, password, ssh_opts, rc_local, plan.flash_targets["rc.local"])
     run_scp(host, password, ssh_opts, rendered_start, plan.flash_targets["start-samba.sh"])
     run_scp(host, password, ssh_opts, rendered_watchdog, plan.flash_targets["watchdog.sh"])
@@ -80,7 +81,14 @@ def upload_deployment_payload(
     run_scp(host, password, ssh_opts, rendered_smbconf, plan.payload_targets["smb.conf.template"])
 
 
+def remote_enable_nbns(host: str, password: str, ssh_opts: str, private_dir: str) -> None:
+    run_ssh(host, password, ssh_opts, render_remote_action(enable_nbns_action(private_dir)))
+
+
+def run_remote_actions(host: str, password: str, ssh_opts: str, actions) -> None:
+    for command in render_remote_actions(list(actions)):
+        run_ssh(host, password, ssh_opts, command)
+
+
 def remote_uninstall_payload(host: str, password: str, ssh_opts: str, plan: UninstallPlan) -> None:
-    cmd_parts = [*plan.stop_commands]
-    cmd_parts.extend(f"rm -rf {shlex.quote(target)}" for target in plan.remove_targets)
-    run_ssh(host, password, ssh_opts, " && ".join(cmd_parts))
+    run_ssh(host, password, ssh_opts, " && ".join(render_remote_actions(plan.remote_actions)))

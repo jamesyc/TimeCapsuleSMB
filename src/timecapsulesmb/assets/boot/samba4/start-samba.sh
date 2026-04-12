@@ -29,6 +29,7 @@ RAM_PRIVATE="$RAM_ROOT/private"
 RAM_LOG="$RAM_VAR/rc.local.log"
 SMBD_LOG="$RAM_VAR/log.smbd"
 LEGACY_PREFIX=/root/tc-stage4
+NBNS_PROC_NAME=nbns-advertiser
 
 PAYLOAD_DIR_NAME=__PAYLOAD_DIR_NAME__
 PAYLOAD_TEMPLATE_NAME=smb.conf.template
@@ -60,6 +61,7 @@ log() {
 cleanup_old_runtime() {
     /usr/bin/pkill smbd >/dev/null 2>&1 || true
     /usr/bin/pkill mdns-smbd-advertiser >/dev/null 2>&1 || true
+    /usr/bin/pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true
     sleep 1
     rm -rf /mnt/Memory/samba4
 }
@@ -219,10 +221,22 @@ find_payload_mdns() {
     return 1
 }
 
+find_payload_nbns() {
+    payload_dir=$1
+
+    if [ -x "$payload_dir/nbns-advertiser" ]; then
+        echo "$payload_dir/nbns-advertiser"
+        return 0
+    fi
+
+    return 1
+}
+
 stage_runtime() {
     payload_dir=$1
     smbd_src=$2
     mdns_src=${3:-}
+    nbns_src=${4:-}
 
     cp "$smbd_src" "$RAM_SBIN/smbd"
     chmod 755 "$RAM_SBIN/smbd"
@@ -230,6 +244,13 @@ stage_runtime() {
     if [ -n "$mdns_src" ] && [ -x "$mdns_src" ]; then
         cp "$mdns_src" "$RAM_SBIN/mdns-smbd-advertiser"
         chmod 755 "$RAM_SBIN/mdns-smbd-advertiser"
+    fi
+
+    if [ -f "$payload_dir/private/nbns.enabled" ] && [ -n "$nbns_src" ] && [ -x "$nbns_src" ]; then
+        cp "$nbns_src" "$RAM_SBIN/nbns-advertiser"
+        chmod 755 "$RAM_SBIN/nbns-advertiser"
+        cp "$payload_dir/private/nbns.enabled" "$RAM_PRIVATE/nbns.enabled"
+        chmod 600 "$RAM_PRIVATE/nbns.enabled"
     fi
 
     if [ -f "$payload_dir/$PAYLOAD_TEMPLATE_NAME" ]; then
@@ -328,6 +349,26 @@ start_mdns() {
     log "mdns advertiser launch requested"
 }
 
+start_nbns() {
+    if [ ! -f "$PAYLOAD_DIR/private/nbns.enabled" ]; then
+        return 0
+    fi
+
+    if [ ! -x "$RAM_SBIN/nbns-advertiser" ]; then
+        log "nbns responder launch skipped; missing runtime binary"
+        return 0
+    fi
+
+    /usr/bin/pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true
+    sleep 1
+
+    "$RAM_SBIN/nbns-advertiser" \
+        --name "$SMB_NETBIOS_NAME" \
+        --ipv4 "$BRIDGE0_IP" \
+        >/dev/null 2>&1 &
+    log "nbns responder launch requested"
+}
+
 cleanup_old_runtime
 prepare_ram_root
 prepare_legacy_prefix
@@ -363,10 +404,18 @@ else
     MDNS_SRC=
 fi
 
-stage_runtime "$PAYLOAD_DIR" "$SMBD_SRC" "$MDNS_SRC"
+NBNS_SRC=
+if NBNS_SRC=$(find_payload_nbns "$PAYLOAD_DIR"); then
+    :
+else
+    NBNS_SRC=
+fi
+
+stage_runtime "$PAYLOAD_DIR" "$SMBD_SRC" "$MDNS_SRC" "$NBNS_SRC"
 log "runtime staged under $RAM_ROOT"
 
 start_mdns
+start_nbns
 start_smbd
 log "smbd launch requested"
 

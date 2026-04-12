@@ -3,6 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from timecapsulesmb.deploy.commands import (
+    RemoteAction,
+    enable_nbns_action,
+    install_permissions_action,
+    prepare_dirs_action,
+    remove_path_action,
+    stop_process_action,
+)
 from timecapsulesmb.device.probe import DevicePaths
 
 
@@ -21,13 +29,15 @@ class DeploymentPlan:
     disk_key: str
     smbd_path: Path
     mdns_path: Path
+    nbns_path: Path
     flash_targets: dict[str, str]
     payload_targets: dict[str, str]
     private_dir: str
     remote_directories: list[str]
     uploads: list[FileTransfer]
     generated_auth_files: list[FileTransfer]
-    permission_commands: list[str]
+    pre_upload_actions: list[RemoteAction]
+    post_auth_actions: list[RemoteAction]
     reboot_required: bool
 
 
@@ -37,13 +47,12 @@ class UninstallPlan:
     volume_root: str
     payload_dir: str
     flash_targets: dict[str, str]
-    remove_targets: list[str]
     verify_absent_targets: list[str]
-    stop_commands: list[str]
+    remote_actions: list[RemoteAction]
     reboot_required: bool
 
 
-def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path, mdns_path: Path) -> DeploymentPlan:
+def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path, mdns_path: Path, nbns_path: Path, *, install_nbns: bool = False) -> DeploymentPlan:
     payload_dir = device_paths.payload_dir
     flash_targets = {
         "rc.local": "/mnt/Flash/rc.local",
@@ -54,6 +63,7 @@ def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path,
     payload_targets = {
         "smbd": f"{payload_dir}/smbd",
         "mdns-smbd-advertiser": f"{payload_dir}/mdns-smbd-advertiser",
+        "nbns-advertiser": f"{payload_dir}/nbns-advertiser",
         "smb.conf.template": f"{payload_dir}/smb.conf.template",
     }
     private_dir = f"{payload_dir}/private"
@@ -64,6 +74,7 @@ def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path,
         disk_key=device_paths.disk_key,
         smbd_path=smbd_path,
         mdns_path=mdns_path,
+        nbns_path=nbns_path,
         flash_targets=flash_targets,
         payload_targets=payload_targets,
         private_dir=private_dir,
@@ -75,6 +86,7 @@ def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path,
         uploads=[
             FileTransfer(source=str(smbd_path), destination=payload_targets["smbd"], kind="checked-in binary"),
             FileTransfer(source=str(mdns_path), destination=payload_targets["mdns-smbd-advertiser"], kind="checked-in binary"),
+            FileTransfer(source=str(nbns_path), destination=payload_targets["nbns-advertiser"], kind="checked-in binary"),
             FileTransfer(source="packaged rc.local", destination=flash_targets["rc.local"], kind="packaged asset"),
             FileTransfer(source="rendered start-samba.sh", destination=flash_targets["start-samba.sh"], kind="rendered asset"),
             FileTransfer(source="rendered watchdog.sh", destination=flash_targets["watchdog.sh"], kind="rendered asset"),
@@ -85,12 +97,12 @@ def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path,
             FileTransfer(source="generated smbpasswd", destination=f"{private_dir}/smbpasswd", kind="generated auth"),
             FileTransfer(source="generated username.map", destination=f"{private_dir}/username.map", kind="generated auth"),
             FileTransfer(source="generated adisk UUID", destination=f"{private_dir}/adisk.uuid", kind="generated metadata"),
-        ],
-        permission_commands=[
-            "chmod 755 /mnt/Flash/rc.local /mnt/Flash/start-samba.sh /mnt/Flash/watchdog.sh /mnt/Flash/dfree.sh",
-            f"chmod 700 {private_dir}",
-            f"chmod 600 {private_dir}/smbpasswd {private_dir}/username.map {private_dir}/adisk.uuid",
-        ],
+        ]
+        + ([
+            FileTransfer(source="generated nbns marker", destination=f"{private_dir}/nbns.enabled", kind="generated metadata"),
+        ] if install_nbns else []),
+        pre_upload_actions=[prepare_dirs_action(payload_dir)] + ([enable_nbns_action(private_dir)] if install_nbns else []),
+        post_auth_actions=[install_permissions_action(payload_dir)],
         reboot_required=True,
     )
 
@@ -103,27 +115,27 @@ def build_uninstall_plan(host: str, device_paths: DevicePaths) -> UninstallPlan:
         "watchdog.sh": "/mnt/Flash/watchdog.sh",
         "dfree.sh": "/mnt/Flash/dfree.sh",
     }
-    remove_targets = [
-        payload_dir,
-        *flash_targets.values(),
-        "/mnt/Memory/samba4",
-        "/root/tc-stage4",
-    ]
     verify_absent_targets = [
         payload_dir,
         *flash_targets.values(),
-    ]
-    stop_commands = [
-        "pkill smbd >/dev/null 2>&1 || true",
-        "pkill mdns-smbd-advertiser >/dev/null 2>&1 || true",
     ]
     return UninstallPlan(
         host=host,
         volume_root=device_paths.volume_root,
         payload_dir=payload_dir,
         flash_targets=flash_targets,
-        remove_targets=remove_targets,
         verify_absent_targets=verify_absent_targets,
-        stop_commands=stop_commands,
+        remote_actions=[
+            stop_process_action("smbd"),
+            stop_process_action("mdns-smbd-advert"),
+            stop_process_action("nbns-advertiser"),
+            remove_path_action(payload_dir),
+            remove_path_action(flash_targets["rc.local"]),
+            remove_path_action(flash_targets["start-samba.sh"]),
+            remove_path_action(flash_targets["watchdog.sh"]),
+            remove_path_action(flash_targets["dfree.sh"]),
+            remove_path_action("/mnt/Memory/samba4"),
+            remove_path_action("/root/tc-stage4"),
+        ],
         reboot_required=True,
     )

@@ -17,6 +17,7 @@ import subprocess
 from timecapsulesmb.checks.bonjour import parse_browse_instance, parse_lookup_target, run_bonjour_checks
 from timecapsulesmb.checks.doctor import run_doctor_checks
 from timecapsulesmb.checks.local_tools import check_required_local_tools
+from timecapsulesmb.checks.nbns import build_nbns_query, check_nbns_name_resolution, extract_nbns_response_ip
 from timecapsulesmb.checks.smb import check_authenticated_smb_file_ops, exercise_mounted_share_file_ops, try_authenticated_smb_listing
 
 
@@ -49,7 +50,9 @@ class CheckTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.checks.doctor.run_bonjour_checks", return_value=([], None, None)):
                             with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing"):
                                 with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops"):
-                                    results, fatal = run_doctor_checks(values, env_exists=False, repo_root=REPO_ROOT)
+                                    with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root", return_value="/Volumes/dk2"):
+                                        with mock.patch("timecapsulesmb.checks.doctor.run_ssh", return_value=mock.Mock(stdout="")):
+                                            results, fatal = run_doctor_checks(values, env_exists=False, repo_root=REPO_ROOT)
         self.assertTrue(fatal)
         self.assertEqual(results[0].status, "FAIL")
 
@@ -82,6 +85,7 @@ class CheckTests(unittest.TestCase):
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
             "TC_NET_IFACE": "bridge0",
             "TC_SHARE_NAME": "Data",
             "TC_SAMBA_USER": "admin",
@@ -94,17 +98,50 @@ class CheckTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
             with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
                 with mock.patch("timecapsulesmb.checks.doctor.check_smb_port") as smb_port_mock:
-                    results, fatal = run_doctor_checks(
-                        values,
-                        env_exists=True,
-                        repo_root=REPO_ROOT,
-                        skip_ssh=True,
+                    with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root", return_value="/Volumes/dk2"):
+                        with mock.patch("timecapsulesmb.checks.doctor.run_ssh", return_value=mock.Mock(stdout="")):
+                            results, fatal = run_doctor_checks(
+                                values,
+                                env_exists=True,
+                                repo_root=REPO_ROOT,
+                                skip_ssh=True,
                         skip_bonjour=True,
                         skip_smb=True,
                     )
         smb_port_mock.assert_called_once()
         self.assertFalse(fatal)
         self.assertEqual(results[0].status, "PASS")
+
+    def test_run_doctor_checks_skip_ssh_does_not_probe_nbns_marker(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+        }
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
+                    with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root") as discover_mock:
+                        with mock.patch("timecapsulesmb.checks.doctor.run_ssh") as run_ssh_mock:
+                            results, fatal = run_doctor_checks(
+                                values,
+                                env_exists=True,
+                                repo_root=REPO_ROOT,
+                                skip_ssh=True,
+                                skip_bonjour=True,
+                                skip_smb=True,
+                            )
+        self.assertFalse(fatal)
+        discover_mock.assert_not_called()
+        run_ssh_mock.assert_not_called()
 
     def test_run_doctor_checks_reports_results_as_they_complete(self) -> None:
         values = {
@@ -127,12 +164,14 @@ class CheckTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.checks.doctor.run_bonjour_checks", return_value=([mock.Mock(status="PASS", message="bonjour ok")], None, None)):
                             with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=mock.Mock(status="PASS", message="listing ok")):
                                 with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops", return_value=mock.Mock(status="PASS", message="file ops ok")):
-                                    results, fatal = run_doctor_checks(
-                                        values,
-                                        env_exists=True,
-                                        repo_root=REPO_ROOT,
-                                        on_result=lambda result: emitted.append(result.message),
-                                    )
+                                    with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root", return_value="/Volumes/dk2"):
+                                        with mock.patch("timecapsulesmb.checks.doctor.run_ssh", return_value=mock.Mock(stdout="")):
+                                            results, fatal = run_doctor_checks(
+                                                values,
+                                                env_exists=True,
+                                                repo_root=REPO_ROOT,
+                                                on_result=lambda result: emitted.append(result.message),
+                                            )
         self.assertFalse(fatal)
         self.assertEqual([result.message for result in results], emitted)
 
@@ -168,6 +207,264 @@ class CheckTests(unittest.TestCase):
                         result = check_authenticated_smb_file_ops("admin", "pw", "server.local", "Data")
         self.assertEqual(result.status, "PASS")
         self.assertIn("via existing mount", result.message)
+
+    def test_extract_nbns_response_ip_reads_first_answer_ipv4(self) -> None:
+        packet = (
+            b"\x13\x37\x85\x00\x00\x01\x00\x01\x00\x00\x00\x00"
+            + b"\x20" + b"FEEFFDFECACACACACACACACACACACAAA" + b"\x00"
+            + b"\x00\x20\x00\x01"
+            + b"\xc0\x0c\x00\x20\x00\x01\x00\x00\x01,\x00\x06\x00\x00"
+            + b"\xc0\xa8\x01\xd9"
+        )
+        self.assertEqual(extract_nbns_response_ip(packet), "192.168.1.217")
+
+    def test_extract_nbns_response_ip_returns_none_for_truncated_name(self) -> None:
+        packet = (
+            b"\x13\x37\x85\x00\x00\x01\x00\x01\x00\x00\x00\x00"
+            + b"\x20" + b"FEEFFDFECACACACACACACACACACACAAA"
+        )
+        self.assertIsNone(extract_nbns_response_ip(packet))
+
+    def test_extract_nbns_response_ip_returns_none_for_truncated_answer_header(self) -> None:
+        packet = (
+            b"\x13\x37\x85\x00\x00\x01\x00\x01\x00\x00\x00\x00"
+            + b"\x20" + b"FEEFFDFECACACACACACACACACACACAAA" + b"\x00"
+            + b"\x00\x20\x00\x01"
+            + b"\xc0\x0c\x00\x20\x00\x01\x00\x00"
+        )
+        self.assertIsNone(extract_nbns_response_ip(packet))
+
+    def test_build_nbns_query_has_expected_header_and_question(self) -> None:
+        packet = build_nbns_query("TimeCapsule", transaction_id=0x1337)
+        self.assertEqual(packet[:2], b"\x13\x37")
+        self.assertEqual(packet[2:4], b"\x00\x00")
+        self.assertEqual(packet[4:6], b"\x00\x01")
+        self.assertEqual(packet[-4:], b"\x00\x20\x00\x01")
+
+    def test_check_nbns_name_resolution_reports_timeout(self) -> None:
+        fake_sock = mock.Mock()
+        fake_sock.recvfrom.side_effect = TimeoutError()
+        with mock.patch("timecapsulesmb.checks.nbns.socket.socket", return_value=fake_sock):
+            result = check_nbns_name_resolution("TimeCapsule", "192.168.1.217", "192.168.1.217")
+        self.assertEqual(result.status, "FAIL")
+        self.assertIn("timed out", result.message)
+
+    def test_check_nbns_name_resolution_reports_success(self) -> None:
+        fake_sock = mock.Mock()
+        fake_sock.recvfrom.return_value = (
+            b"\x13\x37\x85\x00\x00\x01\x00\x01\x00\x00\x00\x00"
+            + b"\x20" + b"FEEFFDFECACACACACACACACACACACAAA" + b"\x00"
+            + b"\x00\x20\x00\x01"
+            + b"\xc0\x0c\x00\x20\x00\x01\x00\x00\x01,\x00\x06\x00\x00"
+            + b"\xc0\xa8\x01\xd9",
+            ("192.168.1.217", 137),
+        )
+        with mock.patch("timecapsulesmb.checks.nbns.socket.socket", return_value=fake_sock):
+            result = check_nbns_name_resolution("TimeCapsule", "192.168.1.217", "192.168.1.217")
+        self.assertEqual(result.status, "PASS")
+        self.assertIn("192.168.1.217", result.message)
+        fake_sock.sendto.assert_called_once()
+
+    def test_check_nbns_name_resolution_reports_wrong_ip(self) -> None:
+        fake_sock = mock.Mock()
+        fake_sock.recvfrom.return_value = (
+            b"\x13\x37\x85\x00\x00\x01\x00\x01\x00\x00\x00\x00"
+            + b"\x20" + b"FEEFFDFECACACACACACACACACACACAAA" + b"\x00"
+            + b"\x00\x20\x00\x01"
+            + b"\xc0\x0c\x00\x20\x00\x01\x00\x00\x01,\x00\x06\x00\x00"
+            + b"\xc0\xa8\x01\x10",
+            ("192.168.1.217", 137),
+        )
+        with mock.patch("timecapsulesmb.checks.nbns.socket.socket", return_value=fake_sock):
+            result = check_nbns_name_resolution("TimeCapsule", "192.168.1.217", "192.168.1.217")
+        self.assertEqual(result.status, "FAIL")
+        self.assertIn("resolved to 192.168.1.16", result.message)
+
+    def test_run_doctor_checks_skips_nbns_when_marker_absent(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+        }
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.check_ssh_reachability", return_value=mock.Mock(status="PASS", message="ssh ok")):
+                    with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
+                        with mock.patch("timecapsulesmb.checks.doctor.run_bonjour_checks", return_value=([], None, None)):
+                            with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=mock.Mock(status="PASS", message="listing ok")):
+                                with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops", return_value=mock.Mock(status="PASS", message="file ops ok")):
+                                    with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root", return_value="/Volumes/dk2"):
+                                        with mock.patch("timecapsulesmb.checks.doctor.run_ssh", return_value=mock.Mock(stdout="")):
+                                            results, fatal = run_doctor_checks(values, env_exists=True, repo_root=REPO_ROOT)
+        self.assertFalse(fatal)
+        nbns_result = next(result for result in results if "NBNS responder not enabled" in result.message)
+        self.assertEqual(nbns_result.status, "SKIP")
+        nbns_index = results.index(nbns_result)
+        listing_index = next(i for i, result in enumerate(results) if result.message == "listing ok")
+        self.assertLess(nbns_index, listing_index)
+
+    def test_run_doctor_checks_checks_nbns_when_marker_present(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+        }
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.check_ssh_reachability", return_value=mock.Mock(status="PASS", message="ssh ok")):
+                    with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
+                        with mock.patch("timecapsulesmb.checks.doctor.run_bonjour_checks", return_value=([], None, None)):
+                            with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=mock.Mock(status="PASS", message="listing ok")):
+                                with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops", return_value=mock.Mock(status="PASS", message="file ops ok")):
+                                    with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root", return_value="/Volumes/dk2"):
+                                        with mock.patch(
+                                            "timecapsulesmb.checks.doctor.run_ssh",
+                                            side_effect=[mock.Mock(stdout="enabled\n"), mock.Mock(stdout="192.168.1.217\n")],
+                                        ) as run_ssh_mock:
+                                            with mock.patch("timecapsulesmb.checks.doctor.check_nbns_name_resolution", return_value=mock.Mock(status="PASS", message="nbns ok")) as nbns_mock:
+                                                results, fatal = run_doctor_checks(values, env_exists=True, repo_root=REPO_ROOT)
+        self.assertFalse(fatal)
+        nbns_result = next(result for result in results if result.message == "nbns ok")
+        self.assertEqual(nbns_result.status, "PASS")
+        nbns_index = results.index(nbns_result)
+        listing_index = next(i for i, result in enumerate(results) if result.message == "listing ok")
+        self.assertLess(nbns_index, listing_index)
+        self.assertEqual(run_ssh_mock.call_count, 2)
+        nbns_mock.assert_called_once_with("TimeCapsule", "10.0.0.2", "192.168.1.217")
+
+    def test_run_doctor_checks_resolves_nbns_expected_ip_from_hostname(self) -> None:
+        values = {
+            "TC_HOST": "root@timecapsule.local",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+        }
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.check_ssh_reachability", return_value=mock.Mock(status="PASS", message="ssh ok")):
+                    with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
+                        with mock.patch("timecapsulesmb.checks.doctor.run_bonjour_checks", return_value=([], None, None)):
+                            with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=mock.Mock(status="PASS", message="listing ok")):
+                                with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops", return_value=mock.Mock(status="PASS", message="file ops ok")):
+                                    with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root", return_value="/Volumes/dk2"):
+                                        with mock.patch(
+                                            "timecapsulesmb.checks.doctor.run_ssh",
+                                            side_effect=[mock.Mock(stdout="enabled\n"), mock.Mock(stdout="192.168.1.217\n")],
+                                        ):
+                                            with mock.patch("timecapsulesmb.checks.doctor.check_nbns_name_resolution", return_value=mock.Mock(status="PASS", message="nbns ok")) as nbns_mock:
+                                                results, fatal = run_doctor_checks(values, env_exists=True, repo_root=REPO_ROOT)
+        self.assertFalse(fatal)
+        self.assertEqual(next(result for result in results if result.message == "nbns ok").status, "PASS")
+        nbns_mock.assert_called_once_with("TimeCapsule", "timecapsule.local", "192.168.1.217")
+
+    def test_run_doctor_checks_uses_interface_ip_for_nbns_expected_ip(self) -> None:
+        values = {
+            "TC_HOST": "root@wan.example.com",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+        }
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.check_ssh_reachability", return_value=mock.Mock(status="PASS", message="ssh ok")):
+                    with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
+                        with mock.patch("timecapsulesmb.checks.doctor.run_bonjour_checks", return_value=([], None, None)):
+                            with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=mock.Mock(status="PASS", message="listing ok")):
+                                with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops", return_value=mock.Mock(status="PASS", message="file ops ok")):
+                                    with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root", return_value="/Volumes/dk2"):
+                                        with mock.patch(
+                                            "timecapsulesmb.checks.doctor.run_ssh",
+                                            side_effect=[mock.Mock(stdout="enabled\n"), mock.Mock(stdout="192.168.1.217\n")],
+                                        ):
+                                            with mock.patch("timecapsulesmb.checks.doctor.check_nbns_name_resolution", return_value=mock.Mock(status="PASS", message="nbns ok")) as nbns_mock:
+                                                results, fatal = run_doctor_checks(values, env_exists=True, repo_root=REPO_ROOT)
+        self.assertFalse(fatal)
+        self.assertEqual(next(result for result in results if result.message == "nbns ok").status, "PASS")
+        nbns_mock.assert_called_once_with("TimeCapsule", "wan.example.com", "192.168.1.217")
+
+    def test_run_doctor_checks_warns_when_nbns_marker_probe_fails(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+        }
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.check_ssh_reachability", return_value=mock.Mock(status="PASS", message="ssh ok")):
+                    with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
+                        with mock.patch("timecapsulesmb.checks.doctor.run_bonjour_checks", return_value=([], None, None)):
+                            with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=mock.Mock(status="PASS", message="listing ok")):
+                                with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops", return_value=mock.Mock(status="PASS", message="file ops ok")):
+                                    with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root", side_effect=RuntimeError("volume probe failed")):
+                                        results, fatal = run_doctor_checks(values, env_exists=True, repo_root=REPO_ROOT)
+        self.assertFalse(fatal)
+        nbns_result = next(result for result in results if result.status == "WARN" and result.message.startswith("NBNS check skipped:"))
+        self.assertIn("volume probe failed", nbns_result.message)
+
+    def test_run_doctor_checks_warns_when_nbns_marker_probe_raises_system_exit(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+        }
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.check_ssh_reachability", return_value=mock.Mock(status="PASS", message="ssh ok")):
+                    with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
+                        with mock.patch("timecapsulesmb.checks.doctor.run_bonjour_checks", return_value=([], None, None)):
+                            with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=mock.Mock(status="PASS", message="listing ok")):
+                                with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops", return_value=mock.Mock(status="PASS", message="file ops ok")):
+                                    with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root", side_effect=SystemExit("ssh failed")):
+                                        results, fatal = run_doctor_checks(values, env_exists=True, repo_root=REPO_ROOT)
+        self.assertFalse(fatal)
+        nbns_result = next(result for result in results if result.status == "WARN" and result.message.startswith("NBNS check skipped:"))
+        self.assertIn("ssh failed", nbns_result.message)
 
 
 if __name__ == "__main__":

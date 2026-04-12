@@ -7,6 +7,10 @@
     "mdns-smbd-advertiser": {
       "path": "bin/mdns/mdns-smbd-advertiser",
       "sha256": "a3abe0e1110198100a52334bfe9f5ba7b5e815cff691440228f74b4040d45284"
+    },
+    "nbns-advertiser": {
+      "path": "bin/nbns/nbns-advertiser",
+      "sha256": "a1616bf32396cc4f003d89ce9f11e2a3bb7e402a6f9cfffed84a7a4fefdeb6b3"
     }
   }
 }

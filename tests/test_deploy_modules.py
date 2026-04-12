@@ -16,9 +16,21 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.deploy.auth import nt_hash_hex, render_smbpasswd
+from timecapsulesmb.deploy.commands import (
+    enable_nbns_action,
+    install_permissions_action,
+    prepare_dirs_action,
+    render_remote_action,
+)
 from timecapsulesmb.deploy.dry_run import format_deployment_plan
-from timecapsulesmb.deploy.executor import remote_ensure_adisk_uuid, remote_install_permissions, remote_prepare_dirs, upload_deployment_payload
-from timecapsulesmb.deploy.planner import build_deployment_plan
+from timecapsulesmb.deploy.executor import (
+    remote_enable_nbns,
+    remote_ensure_adisk_uuid,
+    remote_install_permissions,
+    remote_prepare_dirs,
+    upload_deployment_payload,
+)
+from timecapsulesmb.deploy.planner import build_deployment_plan, build_uninstall_plan
 from timecapsulesmb.deploy.templates import build_template_bundle, load_boot_asset_text, render_template, render_template_text
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root
 
@@ -65,12 +77,15 @@ class DeployModuleTests(unittest.TestCase):
 
     def test_build_deployment_plan_uses_device_paths(self) -> None:
         paths = build_device_paths("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"))
+        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
         self.assertEqual(plan.payload_dir, "/Volumes/dk2/samba4")
         self.assertEqual(plan.private_dir, "/Volumes/dk2/samba4/private")
         self.assertEqual(plan.volume_root, "/Volumes/dk2")
         self.assertEqual(plan.disk_key, "dk2")
         self.assertEqual(plan.remote_directories[0], "/Volumes/dk2/samba4")
+        self.assertEqual(plan.payload_targets["nbns-advertiser"], "/Volumes/dk2/samba4/nbns-advertiser")
+        self.assertEqual(plan.pre_upload_actions, [prepare_dirs_action("/Volumes/dk2/samba4")])
+        self.assertEqual(plan.post_auth_actions, [install_permissions_action("/Volumes/dk2/samba4")])
 
     def test_render_template_text_replaces_tokens(self) -> None:
         self.assertEqual(render_template_text("hello __TOKEN__", {"__TOKEN__": "world"}), "hello world")
@@ -102,6 +117,10 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("ether[[:space:]]", rendered)
         self.assertIn("address[[:space:]]", rendered)
         self.assertNotIn("tr '[:lower:]' '[:upper:]'", rendered)
+        self.assertIn('if [ -f "$payload_dir/private/nbns.enabled" ]', rendered)
+        self.assertIn('cp "$nbns_src" "$RAM_SBIN/nbns-advertiser"', rendered)
+        self.assertIn('"$RAM_SBIN/nbns-advertiser" \\', rendered)
+        self.assertNotIn('cp "$nbns_src" "$RAM_SBIN/nbns-advertiser"\n    chmod 755 "$RAM_SBIN/nbns-advertiser"', rendered)
 
     def test_render_watchdog_script_includes_device_model_flag(self) -> None:
         values = {
@@ -126,6 +145,10 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("ether[[:space:]]", rendered)
         self.assertIn("address[[:space:]]", rendered)
         self.assertNotIn("tr '[:lower:]' '[:upper:]'", rendered)
+        self.assertIn('if [ ! -f "$RAM_PRIVATE/nbns.enabled" ]; then', rendered)
+        self.assertIn('"$NBNS_BIN" \\', rendered)
+        self.assertIn('--name "$SMB_NETBIOS_NAME"', rendered)
+        self.assertNotIn('if [ ! -f "$RAM_PRIVATE/nbns.enabled" ]; then\n        return 0\n    fi\n\n    if [ ! -x "$NBNS_BIN" ]; then\n        log_msg "NBNS restart skipped; missing $NBNS_BIN"\n        return 0\n    fi\n\n    iface_ip="$(get_iface_ipv4 "$NET_IFACE")"\n    if [ -z "$iface_ip" ]; then\n        log_msg "NBNS restart skipped; missing IPv4 for $NET_IFACE"\n        return 0\n    fi\n\n    pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true\n    "$NBNS_BIN"', rendered)
 
     def test_build_template_bundle_accepts_adisk_values(self) -> None:
         values = {
@@ -179,6 +202,31 @@ int main(void) {{
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertEqual(run.stdout.strip(), "sys=waMA=80:EA:96:E6:58:68,adVF=0x1010")
 
+    def test_nbns_advertiser_rejects_overlong_name_before_truncation(self) -> None:
+        if shutil.which("cc") is None:
+            self.skipTest("cc not available")
+
+        source_path = REPO_ROOT / "build" / "nbns-advertiser.c"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bin_path = tmp / "nbns-advertiser"
+            proc = subprocess.run(
+                ["cc", "-Wall", "-Wextra", "-Werror", str(source_path), "-o", str(bin_path)],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            run = subprocess.run(
+                [str(bin_path), "--name", "ABCDEFGHIJKLMNOP", "--ipv4", "192.168.1.217"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(run.returncode, 2)
+            self.assertIn("15 bytes or fewer", run.stderr)
+
     def test_discover_volume_root_raises_when_no_output(self) -> None:
         proc = mock.Mock(stdout="\n")
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
@@ -189,16 +237,13 @@ int main(void) {{
         with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
             remote_prepare_dirs("host", "pw", "-o foo", "/Volumes/dk2/samba4")
         command = run_ssh_mock.call_args.args[3]
-        self.assertIn("mkdir -p", command)
-        self.assertIn("/Volumes/dk2/samba4/private", command)
+        self.assertEqual(command, render_remote_action(prepare_dirs_action("/Volumes/dk2/samba4")))
 
     def test_remote_install_permissions_builds_expected_command(self) -> None:
         with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
             remote_install_permissions("host", "pw", "-o foo", "/Volumes/dk2/samba4")
         command = run_ssh_mock.call_args.args[3]
-        self.assertIn("chmod 755 /mnt/Flash/rc.local", command)
-        self.assertIn("chmod 700", command)
-        self.assertIn("/Volumes/dk2/samba4/private/adisk.uuid", command)
+        self.assertEqual(command, render_remote_action(install_permissions_action("/Volumes/dk2/samba4")))
 
     def test_remote_ensure_adisk_uuid_reuses_existing_file(self) -> None:
         with mock.patch("timecapsulesmb.deploy.executor.run_ssh", return_value=mock.Mock(stdout="12345678-1234-1234-1234-123456789012\n")):
@@ -216,9 +261,14 @@ int main(void) {{
         self.assertEqual(result, str(fixed_uuid))
         self.assertEqual(scp_mock.call_count, 1)
 
+    def test_remote_enable_nbns_creates_marker_without_touch(self) -> None:
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
+            remote_enable_nbns("host", "pw", "-o foo", "/Volumes/dk2/samba4/private")
+        self.assertEqual(run_ssh_mock.call_args.args[3], render_remote_action(enable_nbns_action("/Volumes/dk2/samba4/private")))
+
     def test_upload_deployment_payload_uploads_all_expected_files(self) -> None:
         paths = build_device_paths("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"))
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
         with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
             upload_deployment_payload(
                 plan,
@@ -231,17 +281,57 @@ int main(void) {{
                 rendered_watchdog=Path("/tmp/watchdog.sh"),
                 rendered_smbconf=Path("/tmp/smb.conf.template"),
             )
-        self.assertEqual(scp_mock.call_count, 7)
+        self.assertEqual(scp_mock.call_count, 8)
+        destinations = [call.args[4] for call in scp_mock.call_args_list]
+        self.assertEqual(
+            destinations,
+            [
+                "/Volumes/dk2/samba4/smbd",
+                "/Volumes/dk2/samba4/mdns-smbd-advertiser",
+                "/Volumes/dk2/samba4/nbns-advertiser",
+                "/mnt/Flash/rc.local",
+                "/mnt/Flash/start-samba.sh",
+                "/mnt/Flash/watchdog.sh",
+                "/mnt/Flash/dfree.sh",
+                "/Volumes/dk2/samba4/smb.conf.template",
+            ],
+        )
 
     def test_format_deployment_plan_contains_concrete_actions(self) -> None:
         paths = build_device_paths("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"))
+        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), install_nbns=True)
         text = format_deployment_plan(plan)
         self.assertIn("volume root: /Volumes/dk2", text)
-        self.assertIn("mkdir -p /Volumes/dk2/samba4", text)
+        self.assertIn("mkdir -p /Volumes/dk2/samba4 /Volumes/dk2/samba4/private /mnt/Flash", text)
+        self.assertIn("/bin/sh -c ': > /Volumes/dk2/samba4/private/nbns.enabled'", text)
         self.assertIn("generated smbpasswd -> /Volumes/dk2/samba4/private/smbpasswd", text)
         self.assertIn("generated adisk UUID -> /Volumes/dk2/samba4/private/adisk.uuid", text)
+        self.assertIn("generated nbns marker -> /Volumes/dk2/samba4/private/nbns.enabled", text)
         self.assertIn("chmod 700 /Volumes/dk2/samba4/private", text)
+
+    def test_build_uninstall_plan_stops_nbns_process(self) -> None:
+        paths = build_device_paths("/Volumes/dk2", "samba4")
+        plan = build_uninstall_plan("root@10.0.0.2", paths)
+        self.assertIn("pkill nbns-advertiser >/dev/null 2>&1 || true", [render_remote_action(action) for action in plan.remote_actions])
+
+    def test_remote_action_rendering_quotes_payload_paths_with_spaces(self) -> None:
+        payload_dir = "/Volumes/dk2/Time Capsule Samba 4"
+        prepare_cmd = render_remote_action(prepare_dirs_action(payload_dir))
+        permissions_cmd = render_remote_action(install_permissions_action(payload_dir))
+        enable_cmd = render_remote_action(enable_nbns_action(payload_dir + "/private"))
+        self.assertIn("'/Volumes/dk2/Time Capsule Samba 4'", prepare_cmd)
+        self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/private'", prepare_cmd)
+        self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/nbns-advertiser'", permissions_cmd)
+        self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/private/nbns.enabled'", permissions_cmd)
+        self.assertIn("if [ -f '/Volumes/dk2/Time Capsule Samba 4/private/nbns.enabled' ]; then", permissions_cmd)
+        self.assertNotIn("|| chmod 600", permissions_cmd)
+        self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/private/nbns.enabled'", enable_cmd)
+
+    def test_deployment_plan_and_executor_share_permission_command_generation(self) -> None:
+        payload_dir = "/Volumes/dk2/Time Capsule Samba 4"
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
+            remote_install_permissions("host", "pw", "-o foo", payload_dir)
+        self.assertEqual(run_ssh_mock.call_args.args[3], render_remote_action(install_permissions_action(payload_dir)))
 
 
 if __name__ == "__main__":

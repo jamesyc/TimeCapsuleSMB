@@ -48,6 +48,7 @@ def build_template_bundle(values: dict[str, str], *, adisk_disk_key: str = "dk0"
         },
         watchdog_replacements={
             "__SMB_SHARE_NAME__": shell_quote(values["TC_SHARE_NAME"]),
+            "__SMB_NETBIOS_NAME__": shell_quote(values["TC_NETBIOS_NAME"]),
             "__NET_IFACE__": shell_quote(values["TC_NET_IFACE"]),
             "__MDNS_INSTANCE_NAME__": shell_quote(values["TC_MDNS_INSTANCE_NAME"]),
             "__MDNS_HOST_LABEL__": shell_quote(values["TC_MDNS_HOST_LABEL"]),
