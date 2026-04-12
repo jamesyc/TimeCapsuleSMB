@@ -21,6 +21,7 @@ class ArtifactTests(unittest.TestCase):
         manifest = load_artifact_manifest()
         self.assertIn("smbd", manifest)
         self.assertIn("mdns-smbd-advertiser", manifest)
+        self.assertIn("nbns-name-advertiser", manifest)
 
     def test_sha256_file_matches_known_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

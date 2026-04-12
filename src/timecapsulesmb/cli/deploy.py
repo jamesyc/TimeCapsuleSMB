@@ -13,6 +13,7 @@ from timecapsulesmb.deploy.artifacts import validate_artifacts
 from timecapsulesmb.deploy.dry_run import deployment_plan_to_jsonable, format_deployment_plan
 from timecapsulesmb.deploy.executor import (
     remote_ensure_adisk_uuid,
+    remote_enable_nbns,
     remote_install_auth_files,
     remote_install_permissions,
     remote_prepare_dirs,
@@ -43,6 +44,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="Print actions without making changes")
     parser.add_argument("--json", action="store_true", help="Output the dry-run deployment plan as JSON")
     parser.add_argument("--allow-unsupported", action="store_true", help="Proceed even if the detected device is not currently supported")
+    parser.add_argument("--install-nbns", action="store_true", help="Enable the bundled NBNS responder on the next boot")
     args = parser.parse_args(argv)
 
     if args.json and not args.dry_run:
@@ -59,9 +61,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     failures = [message for _, ok, message in artifact_results if not ok]
     if failures:
         raise SystemExit("; ".join(failures))
-    resolved_artifacts = resolve_required_artifacts(REPO_ROOT, ["smbd", "mdns-smbd-advertiser"])
+    resolved_artifacts = resolve_required_artifacts(REPO_ROOT, ["smbd", "mdns-smbd-advertiser", "nbns-name-advertiser"])
     smbd_path = resolved_artifacts["smbd"].absolute_path
     mdns_path = resolved_artifacts["mdns-smbd-advertiser"].absolute_path
+    nbns_path = resolved_artifacts["nbns-name-advertiser"].absolute_path
 
     volume_root = discover_volume_root(host, password, ssh_opts)
     compatibility = probe_device_compatibility(host, password, ssh_opts)
@@ -74,7 +77,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     elif not args.json:
         print(compatibility.message)
     device_paths = build_device_paths(volume_root, values["TC_PAYLOAD_DIR_NAME"])
-    plan = build_deployment_plan(host, device_paths, smbd_path, mdns_path)
+    plan = build_deployment_plan(host, device_paths, smbd_path, mdns_path, nbns_path, install_nbns=args.install_nbns)
 
     if args.dry_run:
         if args.json:
@@ -85,6 +88,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     remote_prepare_dirs(host, password, ssh_opts, plan.payload_dir)
     adisk_uuid = remote_ensure_adisk_uuid(host, password, ssh_opts, plan.private_dir)
+    if args.install_nbns:
+        remote_enable_nbns(host, password, ssh_opts, plan.private_dir)
     template_bundle = build_template_bundle(values, adisk_disk_key=plan.disk_key, adisk_uuid=adisk_uuid)
 
     with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp:

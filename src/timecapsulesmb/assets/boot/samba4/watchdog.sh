@@ -7,14 +7,18 @@ RAM_ROOT=/mnt/Memory/samba4
 RAM_SBIN="$RAM_ROOT/sbin"
 RAM_ETC="$RAM_ROOT/etc"
 RAM_VAR="$RAM_ROOT/var"
+RAM_PRIVATE="$RAM_ROOT/private"
 WATCHDOG_LOG="$RAM_VAR/watchdog.log"
 SMBD_BIN="$RAM_SBIN/smbd"
 SMBD_CONF="$RAM_ETC/smb.conf"
 MDNS_BIN="$RAM_SBIN/mdns-smbd-advertiser"
 MDNS_PROC_NAME=mdns-smbd-advert
+NBNS_BIN="$RAM_SBIN/nbns-name-advertiser"
+NBNS_PROC_NAME=nbns-name-advertiser
 
 NET_IFACE=__NET_IFACE__
 SMB_SHARE_NAME=__SMB_SHARE_NAME__
+SMB_NETBIOS_NAME=__SMB_NETBIOS_NAME__
 MDNS_INSTANCE_NAME=__MDNS_INSTANCE_NAME__
 MDNS_HOST_LABEL=__MDNS_HOST_LABEL__
 MDNS_DEVICE_MODEL=__MDNS_DEVICE_MODEL__
@@ -96,6 +100,32 @@ restart_mdns() {
     log "mdns restart requested"
 }
 
+restart_nbns() {
+    if [ ! -f "$RAM_PRIVATE/nbns.enabled" ]; then
+        return 0
+    fi
+
+    if [ ! -x "$NBNS_BIN" ]; then
+        log "nbns restart skipped; missing runtime binary"
+        return 0
+    fi
+
+    iface_ip=$(get_iface_ipv4 || true)
+    if [ -z "$iface_ip" ] || [ "$iface_ip" = "0.0.0.0" ]; then
+        log "nbns restart skipped; missing $NET_IFACE IPv4"
+        return 0
+    fi
+
+    /usr/bin/pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true
+    sleep 1
+
+    "$NBNS_BIN" \
+        --name "$SMB_NETBIOS_NAME" \
+        --ipv4 "$iface_ip" \
+        >/dev/null 2>&1 &
+    log "nbns restart requested"
+}
+
 elapsed=0
 log "watchdog start"
 
@@ -106,6 +136,12 @@ while :; do
         :
     else
         restart_mdns
+    fi
+
+    if /usr/bin/pkill -0 "$NBNS_PROC_NAME" >/dev/null 2>&1; then
+        :
+    else
+        restart_nbns
     fi
 
     sleep "$POLL_SECONDS"

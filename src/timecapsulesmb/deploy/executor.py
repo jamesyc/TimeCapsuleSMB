@@ -18,9 +18,12 @@ def remote_prepare_dirs(host: str, password: str, ssh_opts: str, payload_dir: st
 def remote_install_permissions(host: str, password: str, ssh_opts: str, payload_dir: str) -> None:
     private_dir = f"{payload_dir}/private"
     cmd = (
+        f"chmod 755 {shlex.quote(payload_dir + '/smbd')} {shlex.quote(payload_dir + '/mdns-smbd-advertiser')} {shlex.quote(payload_dir + '/nbns-name-advertiser')} && "
         "chmod 755 /mnt/Flash/rc.local /mnt/Flash/start-samba.sh /mnt/Flash/watchdog.sh /mnt/Flash/dfree.sh && "
         f"chmod 700 {shlex.quote(private_dir)} && "
-        f"chmod 600 {shlex.quote(private_dir + '/smbpasswd')} {shlex.quote(private_dir + '/username.map')} {shlex.quote(private_dir + '/adisk.uuid')}"
+        f"(chmod 600 {shlex.quote(private_dir + '/smbpasswd')} {shlex.quote(private_dir + '/username.map')} "
+        f"{shlex.quote(private_dir + '/adisk.uuid')} {shlex.quote(private_dir + '/nbns.enabled')} "
+        f"|| chmod 600 {shlex.quote(private_dir + '/smbpasswd')} {shlex.quote(private_dir + '/username.map')} {shlex.quote(private_dir + '/adisk.uuid')})"
     )
     run_ssh(host, password, ssh_opts, cmd)
 
@@ -73,11 +76,22 @@ def upload_deployment_payload(
 ) -> None:
     run_scp(host, password, ssh_opts, plan.smbd_path, plan.payload_targets["smbd"])
     run_scp(host, password, ssh_opts, plan.mdns_path, plan.payload_targets["mdns-smbd-advertiser"])
+    run_scp(host, password, ssh_opts, plan.nbns_path, plan.payload_targets["nbns-name-advertiser"])
     run_scp(host, password, ssh_opts, rc_local, plan.flash_targets["rc.local"])
     run_scp(host, password, ssh_opts, rendered_start, plan.flash_targets["start-samba.sh"])
     run_scp(host, password, ssh_opts, rendered_watchdog, plan.flash_targets["watchdog.sh"])
     run_scp(host, password, ssh_opts, rendered_dfree, plan.flash_targets["dfree.sh"])
     run_scp(host, password, ssh_opts, rendered_smbconf, plan.payload_targets["smb.conf.template"])
+
+
+def remote_enable_nbns(host: str, password: str, ssh_opts: str, private_dir: str) -> None:
+    marker_path = private_dir + "/nbns.enabled"
+    run_ssh(
+        host,
+        password,
+        ssh_opts,
+        f"/bin/sh -c {shlex.quote(f': > {shlex.quote(marker_path)}')}",
+    )
 
 
 def remote_uninstall_payload(host: str, password: str, ssh_opts: str, plan: UninstallPlan) -> None:

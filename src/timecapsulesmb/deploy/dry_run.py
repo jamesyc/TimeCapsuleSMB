@@ -43,6 +43,7 @@ def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
     data = asdict(plan)
     data["smbd_path"] = str(plan.smbd_path)
     data["mdns_path"] = str(plan.mdns_path)
+    data["nbns_path"] = str(plan.nbns_path)
     data["post_deploy_checks"] = [
         "bonjour_browse_resolve",
         "authenticated_smb_listing",

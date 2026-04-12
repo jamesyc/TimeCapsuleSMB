@@ -686,6 +686,34 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("Timed out waiting for SSH after reboot.", output.getvalue())
 
+    def test_deploy_install_nbns_touches_marker(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
+                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+                        with mock.patch("timecapsulesmb.cli.deploy.remote_prepare_dirs"):
+                            with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value="12345678-1234-1234-1234-123456789012"):
+                                with mock.patch("timecapsulesmb.cli.deploy.remote_enable_nbns") as enable_nbns_mock:
+                                    with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
+                                        with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
+                                            with mock.patch("timecapsulesmb.cli.deploy.remote_install_permissions"):
+                                                rc = deploy.main(["--install-nbns", "--no-reboot"])
+        self.assertEqual(rc, 0)
+        enable_nbns_mock.assert_called_once()
+
     def test_deploy_rejects_unsupported_netbsd4_device(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
