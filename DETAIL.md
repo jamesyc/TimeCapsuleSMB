@@ -11,8 +11,9 @@ The current system works end to end on the target Apple AirPort Time Capsule.
 What is working now:
 - static Samba 4.8.x built from NetBSD 7 sources
 - static tiny SMB / Time Machine mDNS advertiser
+- optional static NBNS responder for NetBIOS name discovery
 - boot-time runtime staging via `/mnt/Flash/rc.local`
-- boot-time watchdog for `smbd` and the mDNS helper
+- boot-time watchdog for `smbd`, the mDNS helper, and the optional NBNS helper
 - direct SMB service on port `445`
 - Bonjour advertisement for:
   - `_smb._tcp`
@@ -29,6 +30,7 @@ Current user experience:
 - the Time Capsule advertises `_smb._tcp`
 - the Time Capsule can advertise `_adisk._tcp` for Time Machine
 - the Time Capsule advertises `_device-info._tcp` with a Finder model hint
+- the Time Capsule can optionally answer NBNS name queries for the configured NetBIOS name
 - the default instance name is `Time Capsule Samba 4`
 - the default host label is `timecapsulesamba4`
 - the share is available at:
@@ -98,9 +100,11 @@ The actual working split is:
 - persistent payload on HDD:
   - `/Volumes/dkX/samba4/smbd`
   - `/Volumes/dkX/samba4/mdns-smbd-advertiser`
+  - `/Volumes/dkX/samba4/nbns-name-advertiser`
   - `/Volumes/dkX/samba4/smb.conf.template`
   - `/Volumes/dkX/samba4/private/smbpasswd`
   - `/Volumes/dkX/samba4/private/username.map`
+  - `/Volumes/dkX/samba4/private/nbns.enabled`
   - `/Volumes/dkX/samba4/private/xattr.tdb`
 - tiny persistent boot hook on flash:
   - `/mnt/Flash/rc.local`
@@ -222,7 +226,7 @@ This matters because:
 
 `start-samba.sh` does the real work:
 
-1. kills any prior `smbd` and mDNS advertiser
+1. kills any prior `smbd`, mDNS advertiser, and NBNS responder
 2. recreates the RAM runtime tree
 3. waits for `/dev/dk2` or `/dev/dk3`
 4. mounts the corresponding volume under `/Volumes/dk2` or `/Volumes/dk3`
@@ -233,9 +237,11 @@ This matters because:
    - default: `bridge0`
 7. finds the persistent payload directory
 8. copies `smbd` and `mdns-smbd-advertiser` into `/mnt/Memory/samba4/sbin`
-9. renders `smb.conf` from the template
-10. starts the mDNS advertiser
-11. starts `smbd`
+9. if `private/nbns.enabled` exists in the persistent payload, also copies `nbns-name-advertiser` into `/mnt/Memory/samba4/sbin`
+10. renders `smb.conf` from the template
+11. starts the mDNS advertiser
+12. starts the NBNS responder if enabled
+13. starts `smbd`
 
 The boot log is written to:
 - `/mnt/Memory/samba4/var/rc.local.log`
@@ -254,6 +260,7 @@ Current behavior:
 - polls every `300` seconds
 - if `smbd` is missing, starts it again
 - if `mdns-smbd-advertiser` is missing, starts it again
+- if `nbns-name-advertiser` is enabled and missing, starts it again
 
 This is intentionally simple:
 - SMB transfers are not interrupted because `smbd` is only restarted when absent
@@ -271,6 +278,7 @@ Important implementation detail:
 When boot succeeds, the runtime tree under `/mnt/Memory/samba4` contains:
 - `sbin/smbd`
 - `sbin/mdns-smbd-advertiser`
+- optionally `sbin/nbns-name-advertiser`
 - `etc/smb.conf`
 - `var/`
 - `locks/`
@@ -279,6 +287,10 @@ When boot succeeds, the runtime tree under `/mnt/Memory/samba4` contains:
 Current persistent auth files live on the HDD:
 - `/Volumes/dk2/samba4/private/smbpasswd`
 - `/Volumes/dk2/samba4/private/username.map`
+
+Current optional NBNS state lives on the HDD:
+- `/Volumes/dk2/samba4/nbns-name-advertiser`
+- `/Volumes/dk2/samba4/private/nbns.enabled`
 
 Current persistent Time Machine metadata state also lives on the HDD:
 - `/Volumes/dk2/samba4/private/xattr.tdb`
@@ -351,6 +363,37 @@ Current validation and behavior notes:
 - `_device-info._tcp` `model=...` TXT sizing is validated before advertisement
 - `_device-info._tcp` exists to influence Finder identification and icon behavior, not to expose a separate connectable service
 
+## NBNS Responder Details
+
+The optional NBNS helper is:
+- [bin/nbns/nbns-name-advertiser](bin/nbns/nbns-name-advertiser)
+
+It is built from:
+- [build/nbns-name-advertiser.c](build/nbns-name-advertiser.c)
+- [build/nbns.sh](build/nbns.sh)
+
+Important properties:
+- static NetBSD 7 `earmv4` binary
+- about `188 KiB` stripped in the current checked-in artifact
+- not enabled by default at runtime
+- always deployed to the HDD payload, but only staged into RAM when explicitly enabled
+
+Current behavior:
+- binds UDP port `137`
+- answers NBNS name queries for the configured NetBIOS name
+- replies for both NetBIOS suffixes:
+  - `0x00`
+  - `0x20`
+- returns the current IPv4 for the configured interface
+
+Enablement model:
+- the binary is uploaded to `/Volumes/dkX/samba4/nbns-name-advertiser` on every deploy
+- runtime enablement is controlled by the marker file:
+  - `/Volumes/dkX/samba4/private/nbns.enabled`
+- `tcapsule deploy --install-nbns` creates that marker
+- plain `deploy` leaves the marker unchanged
+- `uninstall` removes both the binary and the marker because it removes the entire payload tree
+
 ## Current User-Facing Workflow
 
 The intended user flow is:
@@ -381,6 +424,10 @@ Current important `.env` values include:
 - `TC_MDNS_INSTANCE_NAME`
 - `TC_MDNS_HOST_LABEL`
 - `TC_MDNS_DEVICE_MODEL`
+
+Optional deploy flag:
+- `--install-nbns`
+  - enables the bundled NBNS responder on the next boot by creating `private/nbns.enabled`
 
 Current defaults:
 - `TC_SHARE_NAME=Data`
@@ -430,6 +477,7 @@ It checks:
 - SSH reachability
 - SMB reachability
 - `_smb._tcp` browse and resolve
+- optional NBNS name resolution when `private/nbns.enabled` is present on the device
 - authenticated `smbutil view`
 - authenticated SMB file operations on the mounted share
 - that the configured share name is present in the authenticated SMB listing
@@ -484,6 +532,7 @@ Current deploy flow:
 - uploads the checked-in binaries:
   - `smbd`
   - `mdns-smbd-advertiser`
+  - `nbns-name-advertiser`
 - renders and uploads the packaged boot/runtime files:
   - `smb.conf.template`
   - `rc.local`
@@ -493,6 +542,8 @@ Current deploy flow:
 - generates and installs:
   - `private/smbpasswd`
   - `private/username.map`
+- optionally enables:
+  - `private/nbns.enabled` when `--install-nbns` is used
 - applies the required permissions on files and directories
 - reboots by default
 - verifies Bonjour and authenticated SMB access after reboot in the normal path using the same shared checks used by `doctor`
