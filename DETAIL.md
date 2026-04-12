@@ -292,10 +292,6 @@ Current optional NBNS state lives on the HDD:
 - `/Volumes/dk2/samba4/nbns-name-advertiser`
 - `/Volumes/dk2/samba4/private/nbns.enabled`
 
-Current optional NBNS runtime state in RAM:
-- `/mnt/Memory/samba4/sbin/nbns-name-advertiser`
-- `/mnt/Memory/samba4/private/nbns.enabled`
-
 Current persistent Time Machine metadata state also lives on the HDD:
 - `/Volumes/dk2/samba4/private/xattr.tdb`
 
