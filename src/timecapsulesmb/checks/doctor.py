@@ -4,7 +4,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Optional
 import shlex
-import socket
 
 from timecapsulesmb.checks.bonjour import run_bonjour_checks
 from timecapsulesmb.checks.local_tools import check_required_artifacts, check_required_local_tools
@@ -15,6 +14,20 @@ from timecapsulesmb.checks.smb import check_authenticated_smb_file_ops, check_au
 from timecapsulesmb.core.config import extract_host, missing_required_keys
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root
 from timecapsulesmb.transport.ssh import run_ssh
+
+
+def _read_interface_ipv4(host: str, password: str, ssh_opts: str, iface: str) -> str:
+    proc = run_ssh(
+        host,
+        password,
+        ssh_opts,
+        f"/bin/sh -c {shlex.quote(f'/sbin/ifconfig {shlex.quote(iface)} 2>/dev/null | sed -n \"s/^[[:space:]]*inet[[:space:]]\\\\([0-9.]*\\\\).*/\\\\1/p\" | sed -n \"1p\"')}",
+        check=False,
+    )
+    iface_ip = proc.stdout.strip()
+    if not iface_ip:
+        raise SystemExit(f"could not determine IPv4 for interface {iface}")
+    return iface_ip
 
 
 def run_doctor_checks(
@@ -81,7 +94,12 @@ def run_doctor_checks(
                 check=False,
             )
             if proc.stdout.strip() == "enabled":
-                expected_ip = socket.gethostbyname(host)
+                expected_ip = _read_interface_ipv4(
+                    values["TC_HOST"],
+                    values["TC_PASSWORD"],
+                    values["TC_SSH_OPTS"],
+                    values["TC_NET_IFACE"],
+                )
                 add_result(check_nbns_name_resolution(values["TC_NETBIOS_NAME"], host, expected_ip))
             else:
                 add_result(CheckResult("SKIP", "NBNS responder not enabled"))
