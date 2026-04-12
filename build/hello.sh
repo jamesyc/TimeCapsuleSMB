@@ -3,6 +3,17 @@ set -eu
 
 . "$(dirname "$0")/env.sh"
 
+dump_elf_diagnostics() {
+    label="$1"
+    path="$2"
+
+    echo "===== $label ====="
+    "$TOOLDIR/bin/$TRIPLE-readelf" -h -l "$path" | sed -n '1,120p'
+    "$TOOLDIR/bin/$TRIPLE-readelf" -S "$path" | sed -n '1,120p'
+    "$TOOLDIR/bin/$TRIPLE-readelf" -d "$path" 2>&1 | sed -n '1,80p'
+    "$TOOLDIR/bin/$TRIPLE-objdump" -p "$path" | sed -n '1,120p'
+}
+
 expect_probe_format() {
     probe_flags_output=$("$TOOLDIR/bin/$TRIPLE-objdump" -p "$PROBE_BIN")
     if probe_file_output=$("$TOOLDIR/bin/nbfile" "$PROBE_BIN" 2>/dev/null); then
@@ -87,6 +98,7 @@ EOF
       -o "$PROBE_BIN" "$PROBE_SRC"
 
     expect_probe_format
+    dump_elf_diagnostics "hello probe" "$PROBE_BIN"
 
     cat "$PROBE_BIN" | tc_ssh "$TC_HOST" 'cat > /tmp/hello-clean'
     tc_ssh "$TC_HOST" \

@@ -3,6 +3,24 @@ set -eu
 
 . "$(dirname "$0")/env.sh"
 
+dump_elf_diagnostics() {
+    label="$1"
+    path="$2"
+
+    echo "===== $label ====="
+    "$TOOLDIR/bin/$TRIPLE-readelf" -h -l "$path" | sed -n '1,140p'
+    "$TOOLDIR/bin/$TRIPLE-readelf" -S "$path" | sed -n '1,140p'
+    "$TOOLDIR/bin/$TRIPLE-readelf" -d "$path" 2>&1 | sed -n '1,80p'
+    "$TOOLDIR/bin/$TRIPLE-objdump" -p "$path" | sed -n '1,120p'
+    dd if="$path" bs=64 count=1 2>/dev/null | od -Ax -tx1
+}
+
+has_netbsd_notes() {
+    path="$1"
+    "$TOOLDIR/bin/$TRIPLE-readelf" -S "$path" 2>/dev/null | \
+        grep -F '.note.netbsd.iden' >/dev/null 2>&1
+}
+
 TOOLDIR="$TOOLS"
 DESTDIR="$OBJ/destdir.evbarm"
 TRIPLE="$(basename "$(ls "$TOOLDIR"/bin/*-netbsdelf-*gcc | head -n1)" | sed 's/-gcc$//')"
@@ -46,7 +64,10 @@ export LD="$TOOLDIR/bin/$TRIPLE-ld"
 export CFLAGS="-Os -fomit-frame-pointer -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu -I$DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES"
 export CXXFLAGS="$CFLAGS"
 export CPPFLAGS="-I$DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES"
-export LDFLAGS="-static -Wl,--gc-sections -L$DESTDIR/lib -L$DESTDIR/usr/lib -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu"
+# Do not add --gc-sections here. On NetBSD 4 it garbage-collects the
+# .note.netbsd.ident/.note.netbsd.pax sections contributed by crti.o, and the
+# Time Capsule kernel then rejects the ELF as a non-native executable.
+export LDFLAGS="-static -L$DESTDIR/lib -L$DESTDIR/usr/lib -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu"
 export LIBS="-lintl"
 export ac_cv_func_memmove=yes
 export ac_cv_func_strcasecmp=yes
@@ -59,6 +80,8 @@ export samba_cv_CC_NEGATIVE_ENUM_VALUES=yes
 export samba_cv_HAVE_GETTIMEOFDAY_TZ=yes
 
 SAMBA3_SOURCE3_DIR="$SAMBA3_SRC_DIR/source3"
+SAMBA3_LINK_PLAN="$SAMBA3_BUILD/smbd.linkplan"
+SAMBA3_TC_SHELL="$SAMBA3_BUILD/timecapsule-bin-sh"
 
 {
     echo "BUILD_TARGET=$BUILD_TARGET"
@@ -88,6 +111,9 @@ SAMBA3_SOURCE3_DIR="$SAMBA3_SRC_DIR/source3"
     mkdir -p "$SAMBA3_BUILD"
     cd "$SAMBA3_SOURCE3_DIR"
     make distclean >/dev/null 2>&1 || true
+    # Samba 3.6.x bundles pidl code that predates modern Perl rejecting
+    # defined(@array). Patch the two offending call sites in-place so the
+    # release tarball can still regenerate or validate generated IDL stubs.
     perl -0pi -e 's/if \\(defined\\(@\\$podl\\)\\) \\{/if (\\$podl) {/g' \
         "$SAMBA3_SRC_DIR/pidl/lib/Parse/Pidl/ODL.pm"
     perl -0pi -e 's/defined \\@\\$pidl/defined(\\$pidl)/g' \
@@ -119,6 +145,20 @@ SAMBA3_SOURCE3_DIR="$SAMBA3_SRC_DIR/source3"
       --with-pic=no"
 
     PYTHON="$PYTHON2_BIN" ./configure $CONFIGURE_ARGS
+    # Samba's configure enables PIE on this toolchain. Leaving -pie/-fPIE in the
+    # generated Makefile produced ET_DYN output with /usr/lib/ld.so.1, which the
+    # NetBSD 4 Time Capsule cannot run. Scrub those flags after configure so the
+    # final smbd link remains static ET_EXEC while keeping the NetBSD ELF notes.
+    perl -0pi -e 's/(^LDFLAGS\s*=\s*)-pie\s+/$1/mg; s/\s-pie(\s|$)/$1/g; s/(^LDSHFLAGS\s*=\s*)-fPIE\s+/$1/mg; s/\s-fPIE(\s|$)/$1/g' \
+        "$SAMBA3_SOURCE3_DIR/Makefile"
+    gmake -n bin/smbd >"$SAMBA3_LINK_PLAN" 2>&1 || true
+    echo "===== planned smbd link ====="
+    awk '
+        /Linking bin\/smbd/ { capture=1 }
+        capture { print }
+        capture && /-o bin\/smbd([[:space:]]|$)/ { exit }
+    ' "$SAMBA3_LINK_PLAN" | sed -n '1,160p'
+
     gmake -j"$SAMBA3_JOBS"
 
     SAMBA3_SMBD=""
@@ -161,6 +201,38 @@ SAMBA3_SOURCE3_DIR="$SAMBA3_SRC_DIR/source3"
     cp "$SAMBA3_SMBD" "$SAMBA3_STAGE/sbin/smbd"
     cp "$SAMBA3_SMBD" "$SAMBA3_STAGE/sbin/smbd.stripped"
     "$STRIP" --strip-unneeded "$SAMBA3_STAGE/sbin/smbd.stripped"
+
+    if [ -f "$OUT/probe/hello" ]; then
+        dump_elf_diagnostics "hello probe" "$OUT/probe/hello"
+    else
+        echo "WARNING: hello probe not found at $OUT/probe/hello"
+    fi
+    dump_elf_diagnostics "samba3 smbd" "$SAMBA3_STAGE/sbin/smbd"
+    dump_elf_diagnostics "samba3 smbd stripped" "$SAMBA3_STAGE/sbin/smbd.stripped"
+
+    if [ -f "$OUT/probe/hello" ]; then
+        if has_netbsd_notes "$OUT/probe/hello"; then
+            echo "hello probe has NetBSD ELF notes"
+        else
+            echo "hello probe is missing NetBSD ELF notes"
+        fi
+    fi
+    if has_netbsd_notes "$SAMBA3_STAGE/sbin/smbd"; then
+        echo "samba3 smbd has NetBSD ELF notes"
+    else
+        echo "samba3 smbd is missing NetBSD ELF notes"
+    fi
+
+    if tc_ssh "$TC_HOST" 'cat /bin/sh' >"$SAMBA3_TC_SHELL"; then
+        dump_elf_diagnostics "time capsule /bin/sh" "$SAMBA3_TC_SHELL"
+        if has_netbsd_notes "$SAMBA3_TC_SHELL"; then
+            echo "time capsule /bin/sh has NetBSD ELF notes"
+        else
+            echo "time capsule /bin/sh is missing NetBSD ELF notes"
+        fi
+    else
+        echo "WARNING: unable to fetch /bin/sh from the time capsule"
+    fi
 } >"$SAMBA3_LOG" 2>&1
 
 printf 'Samba 3 build complete.\n'
