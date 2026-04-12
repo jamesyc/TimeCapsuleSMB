@@ -12,7 +12,7 @@ NBNS_LDFLAGS="${NBNS_LDFLAGS:--static -Wl,--gc-sections}"
 
 if [ ! -x "$TOOLDIR/bin/nbmake" ] || [ ! -d "$DESTDIR" ]; then
     echo "Missing toolchain/sysroot under $OUT"
-    echo "Run build/bootstrap.sh first."
+    echo "Run $SDK_BOOTSTRAP_WRAPPER first."
     exit 1
 fi
 
@@ -30,7 +30,7 @@ if ! : >"$NBNS_LOG"; then
 fi
 
 if ! {
-    echo "BUILD_TARGET=$BUILD_TARGET"
+    echo "SDK_FAMILY=$SDK_FAMILY"
     echo "NBNS_SRC=$NBNS_SRC"
     echo "NBNS_STAGE=$NBNS_STAGE"
     echo "NBNS_BIN_NAME=$NBNS_BIN_NAME"

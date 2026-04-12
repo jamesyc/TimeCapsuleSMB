@@ -12,7 +12,7 @@ MDNS_LDFLAGS="${MDNS_LDFLAGS:--static -Wl,--gc-sections}"
 
 if [ ! -x "$TOOLDIR/bin/nbmake" ] || [ ! -d "$DESTDIR" ]; then
     echo "Missing toolchain/sysroot under $OUT"
-    echo "Run build/bootstrap.sh first."
+    echo "Run $SDK_BOOTSTRAP_WRAPPER first."
     exit 1
 fi
 
@@ -30,7 +30,7 @@ if ! : >"$MDNS_LOG"; then
 fi
 
 if ! {
-    echo "BUILD_TARGET=$BUILD_TARGET"
+    echo "SDK_FAMILY=$SDK_FAMILY"
     echo "MDNS_SRC=$MDNS_SRC"
     echo "MDNS_STAGE=$MDNS_STAGE"
     echo "MDNS_BIN_NAME=$MDNS_BIN_NAME"

@@ -47,7 +47,7 @@ expect_probe_format() {
 
 if [ ! -x "$TOOLS/bin/nbmake" ] || [ ! -d "$OBJ/destdir.evbarm" ]; then
     echo "Missing toolchain/sysroot under $OUT"
-    echo "Run build/bootstrap.sh first."
+    echo "Run $SDK_BOOTSTRAP_WRAPPER first."
     exit 1
 fi
 
@@ -79,7 +79,8 @@ main(void)
 EOF
 
 {
-    echo "BUILD_TARGET=$BUILD_TARGET"
+    echo "SDK_FAMILY=$SDK_FAMILY"
+    echo "DEVICE_FAMILY=$DEVICE_FAMILY"
     echo "TOOLDIR=$TOOLDIR"
     echo "DESTDIR=$DESTDIR"
     echo "TRIPLE=$TRIPLE"

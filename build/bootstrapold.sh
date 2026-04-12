@@ -1,4 +1,4 @@
 #!/bin/sh
 set -eu
 
-BUILD_TARGET=netbsd4 exec "$(dirname "$0")/bootstrap.sh" "$@"
+SDK_FAMILY=netbsd4 exec "$(dirname "$0")/_bootstrap_sdk.sh" "$@"
