@@ -127,7 +127,7 @@ def build_uninstall_plan(host: str, device_paths: DevicePaths) -> UninstallPlan:
         verify_absent_targets=verify_absent_targets,
         remote_actions=[
             stop_process_action("smbd"),
-            stop_process_action("mdns-smbd-advertiser"),
+            stop_process_action("mdns-smbd-advert"),
             stop_process_action("nbns-advertiser"),
             remove_path_action(payload_dir),
             remove_path_action(flash_targets["rc.local"]),
