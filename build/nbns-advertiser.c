@@ -315,7 +315,11 @@ int main(int argc, char **argv) {
 
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--name") == 0 && i + 1 < argc) {
-            strncpy(cfg.netbios_name, argv[++i], sizeof(cfg.netbios_name) - 1);
+            const char *name_arg = argv[++i];
+            if (validate_netbios_name(name_arg) != 0) {
+                return 2;
+            }
+            memcpy(cfg.netbios_name, name_arg, strlen(name_arg) + 1);
         } else if (strcmp(argv[i], "--ipv4") == 0 && i + 1 < argc) {
             if (inet_aton(argv[++i], (struct in_addr *)&cfg.ipv4_addr) == 0) {
                 fprintf(stderr, "invalid IPv4 address\n");
@@ -337,7 +341,8 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (validate_netbios_name(cfg.netbios_name) != 0) {
+    if (cfg.netbios_name[0] == '\0') {
+        fprintf(stderr, "missing required option: --name\n");
         return 2;
     }
     if (cfg.ipv4_addr == 0) {

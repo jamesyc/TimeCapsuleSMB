@@ -11,6 +11,7 @@ ENV_PATH = REPO_ROOT / ".env"
 MAX_DNS_LABEL_BYTES = 63
 MAX_DNS_NAME_BYTES = 255
 MAX_DNS_TXT_BYTES = 255
+MAX_NETBIOS_NAME_BYTES = 15
 MODEL_TXT_PREFIX = "model="
 ADISK_DEFAULT_DISK_KEY = "dk2"
 ADISK_DISK_UUID_EXAMPLE = "12345678-1234-1234-1234-123456789012"
@@ -200,8 +201,19 @@ def validate_adisk_share_name(value: str, field_name: str) -> Optional[str]:
     return None
 
 
+def validate_netbios_name(value: str, field_name: str) -> Optional[str]:
+    if not value:
+        return f"{field_name} cannot be blank."
+    if len(value.encode("utf-8")) > MAX_NETBIOS_NAME_BYTES:
+        return f"{field_name} must be {MAX_NETBIOS_NAME_BYTES} bytes or fewer."
+    if _contains_invalid_control_character(value):
+        return f"{field_name} contains an invalid control character."
+    return None
+
+
 CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
     "TC_SHARE_NAME": validate_adisk_share_name,
+    "TC_NETBIOS_NAME": validate_netbios_name,
     "TC_MDNS_INSTANCE_NAME": validate_dns_label,
     "TC_MDNS_HOST_LABEL": validate_dns_label,
     "TC_MDNS_DEVICE_MODEL": validate_mdns_device_model,

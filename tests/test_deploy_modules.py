@@ -194,6 +194,31 @@ int main(void) {{
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertEqual(run.stdout.strip(), "sys=waMA=80:EA:96:E6:58:68,adVF=0x1010")
 
+    def test_nbns_advertiser_rejects_overlong_name_before_truncation(self) -> None:
+        if shutil.which("cc") is None:
+            self.skipTest("cc not available")
+
+        source_path = REPO_ROOT / "build" / "nbns-advertiser.c"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bin_path = tmp / "nbns-advertiser"
+            proc = subprocess.run(
+                ["cc", "-Wall", "-Wextra", "-Werror", str(source_path), "-o", str(bin_path)],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            run = subprocess.run(
+                [str(bin_path), "--name", "ABCDEFGHIJKLMNOP", "--ipv4", "192.168.1.217"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(run.returncode, 2)
+            self.assertIn("15 bytes or fewer", run.stderr)
+
     def test_discover_volume_root_raises_when_no_output(self) -> None:
         proc = mock.Mock(stdout="\n")
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):

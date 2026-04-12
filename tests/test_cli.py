@@ -502,6 +502,41 @@ class CliTests(unittest.TestCase):
         self.assertEqual(fake_values["TC_SHARE_NAME"], "Data")
         self.assertIn("SMB share name must be 192 bytes or fewer.", output.getvalue())
 
+    def test_configure_reprompts_invalid_netbios_name(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        prompt_values = iter([
+            "root@10.0.0.2",
+            "goodpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "ABCDEFGHIJKLMNOP",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+            "TimeCapsule8,119",
+        ])
+
+        def fake_prompt(_label, _default, _secret):
+            return next(prompt_values)
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=True):
+                        with mock.patch("timecapsulesmb.cli.configure.validate_ssh_target", return_value=True):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(fake_values["TC_NETBIOS_NAME"], "TimeCapsule")
+        self.assertIn("Samba NetBIOS name must be 15 bytes or fewer.", output.getvalue())
+
     def test_doctor_returns_failure_when_checks_fatal(self) -> None:
         output = io.StringIO()
         fake_result = doctor.CheckResult("FAIL", "broken")
