@@ -316,10 +316,16 @@ int main(int argc, char **argv) {
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--name") == 0 && i + 1 < argc) {
             const char *name_arg = argv[++i];
+            size_t name_len;
             if (validate_netbios_name(name_arg) != 0) {
                 return 2;
             }
-            memcpy(cfg.netbios_name, name_arg, strlen(name_arg) + 1);
+            name_len = strlen(name_arg);
+            if (name_len >= sizeof(cfg.netbios_name)) {
+                fprintf(stderr, "netbios name must be 15 bytes or fewer\n");
+                return 2;
+            }
+            memcpy(cfg.netbios_name, name_arg, name_len + 1);
         } else if (strcmp(argv[i], "--ipv4") == 0 && i + 1 < argc) {
             if (inet_aton(argv[++i], (struct in_addr *)&cfg.ipv4_addr) == 0) {
                 fprintf(stderr, "invalid IPv4 address\n");

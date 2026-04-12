@@ -51,13 +51,12 @@ def render_remote_action(action: RemoteAction) -> str:
             f"{shlex.quote('/mnt/Flash/watchdog.sh')} "
             f"{shlex.quote('/mnt/Flash/dfree.sh')} && "
             f"chmod 700 {shlex.quote(private_dir)} && "
-            f"(chmod 600 {shlex.quote(private_dir + '/smbpasswd')} "
+            f"chmod 600 {shlex.quote(private_dir + '/smbpasswd')} "
             f"{shlex.quote(private_dir + '/username.map')} "
-            f"{shlex.quote(private_dir + '/adisk.uuid')} "
-            f"{shlex.quote(private_dir + '/nbns.enabled')} "
-            f"|| chmod 600 {shlex.quote(private_dir + '/smbpasswd')} "
-            f"{shlex.quote(private_dir + '/username.map')} "
-            f"{shlex.quote(private_dir + '/adisk.uuid')})"
+            f"{shlex.quote(private_dir + '/adisk.uuid')} && "
+            f"if [ -f {shlex.quote(private_dir + '/nbns.enabled')} ]; then "
+            f"chmod 600 {shlex.quote(private_dir + '/nbns.enabled')}; "
+            f"fi"
         )
 
     if action.kind == "enable_nbns":
@@ -76,4 +75,3 @@ def render_remote_action(action: RemoteAction) -> str:
 
 def render_remote_actions(actions: list[RemoteAction]) -> list[str]:
     return [render_remote_action(action) for action in actions]
-

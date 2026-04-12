@@ -323,6 +323,8 @@ int main(void) {{
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/private'", prepare_cmd)
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/nbns-advertiser'", permissions_cmd)
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/private/nbns.enabled'", permissions_cmd)
+        self.assertIn("if [ -f '/Volumes/dk2/Time Capsule Samba 4/private/nbns.enabled' ]; then", permissions_cmd)
+        self.assertNotIn("|| chmod 600", permissions_cmd)
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/private/nbns.enabled'", enable_cmd)
 
     def test_deployment_plan_and_executor_share_permission_command_generation(self) -> None:

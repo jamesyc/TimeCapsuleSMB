@@ -17,11 +17,16 @@ from timecapsulesmb.transport.ssh import run_ssh
 
 
 def _read_interface_ipv4(host: str, password: str, ssh_opts: str, iface: str) -> str:
+    probe_cmd = (
+        f"/sbin/ifconfig {shlex.quote(iface)} 2>/dev/null | "
+        "sed -n 's/^[[:space:]]*inet[[:space:]]\\([0-9.]*\\).*/\\1/p' | "
+        "sed -n '1p'"
+    )
     proc = run_ssh(
         host,
         password,
         ssh_opts,
-        f"/bin/sh -c {shlex.quote(f'/sbin/ifconfig {shlex.quote(iface)} 2>/dev/null | sed -n \"s/^[[:space:]]*inet[[:space:]]\\\\([0-9.]*\\\\).*/\\\\1/p\" | sed -n \"1p\"')}",
+        f"/bin/sh -c {shlex.quote(probe_cmd)}",
         check=False,
     )
     iface_ip = proc.stdout.strip()

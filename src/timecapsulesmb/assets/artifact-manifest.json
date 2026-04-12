@@ -10,7 +10,7 @@
     },
     "nbns-advertiser": {
       "path": "bin/nbns/nbns-advertiser",
-      "sha256": "5715f304bb1c5529c4a3ff5128a459c39661a1d50dd54275dd15498b656fef26"
+      "sha256": "a1616bf32396cc4f003d89ce9f11e2a3bb7e402a6f9cfffed84a7a4fefdeb6b3"
     }
   }
 }
