@@ -123,6 +123,12 @@ Run:
 
 This is the installation step. It validates the checked-in binaries, copies the payload and boot files to the Time Capsule, sets up the Samba password files, installs the boot hook, and reboots the device so the new runtime comes up cleanly.
 
+If you also want to enable the optional NBNS responder during deploy, run:
+
+```bash
+.venv/bin/tcapsule deploy --install-nbns
+```
+
 By default, `tcapsule deploy` reboots the Time Capsule after deployment and then waits for it to come back. If you want to skip the reboot confirmation prompt, you can run:
 
 ```bash
