@@ -77,7 +77,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertEqual(plan.volume_root, "/Volumes/dk2")
         self.assertEqual(plan.disk_key, "dk2")
         self.assertEqual(plan.remote_directories[0], "/Volumes/dk2/samba4")
-        self.assertEqual(plan.payload_targets["nbns-name-advertiser"], "/Volumes/dk2/samba4/nbns-name-advertiser")
+        self.assertEqual(plan.payload_targets["nbns-advertiser"], "/Volumes/dk2/samba4/nbns-advertiser")
 
     def test_render_template_text_replaces_tokens(self) -> None:
         self.assertEqual(render_template_text("hello __TOKEN__", {"__TOKEN__": "world"}), "hello world")
@@ -110,9 +110,9 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("address[[:space:]]", rendered)
         self.assertNotIn("tr '[:lower:]' '[:upper:]'", rendered)
         self.assertIn('if [ -f "$payload_dir/private/nbns.enabled" ]', rendered)
-        self.assertIn('cp "$nbns_src" "$RAM_SBIN/nbns-name-advertiser"', rendered)
-        self.assertIn('"$RAM_SBIN/nbns-name-advertiser" \\', rendered)
-        self.assertNotIn('cp "$nbns_src" "$RAM_SBIN/nbns-name-advertiser"\n    chmod 755 "$RAM_SBIN/nbns-name-advertiser"', rendered)
+        self.assertIn('cp "$nbns_src" "$RAM_SBIN/nbns-advertiser"', rendered)
+        self.assertIn('"$RAM_SBIN/nbns-advertiser" \\', rendered)
+        self.assertNotIn('cp "$nbns_src" "$RAM_SBIN/nbns-advertiser"\n    chmod 755 "$RAM_SBIN/nbns-advertiser"', rendered)
 
     def test_render_watchdog_script_includes_device_model_flag(self) -> None:
         values = {
@@ -213,7 +213,7 @@ int main(void) {{
         command = run_ssh_mock.call_args.args[3]
         self.assertIn("chmod 755 /mnt/Flash/rc.local", command)
         self.assertIn("chmod 700", command)
-        self.assertIn("/Volumes/dk2/samba4/nbns-name-advertiser", command)
+        self.assertIn("/Volumes/dk2/samba4/nbns-advertiser", command)
         self.assertIn("/Volumes/dk2/samba4/private/adisk.uuid", command)
 
     def test_remote_ensure_adisk_uuid_reuses_existing_file(self) -> None:
@@ -260,7 +260,7 @@ int main(void) {{
             [
                 "/Volumes/dk2/samba4/smbd",
                 "/Volumes/dk2/samba4/mdns-smbd-advertiser",
-                "/Volumes/dk2/samba4/nbns-name-advertiser",
+                "/Volumes/dk2/samba4/nbns-advertiser",
                 "/mnt/Flash/rc.local",
                 "/mnt/Flash/start-samba.sh",
                 "/mnt/Flash/watchdog.sh",
@@ -283,7 +283,7 @@ int main(void) {{
     def test_build_uninstall_plan_stops_nbns_process(self) -> None:
         paths = build_device_paths("/Volumes/dk2", "samba4")
         plan = build_uninstall_plan("root@10.0.0.2", paths)
-        self.assertIn("pkill nbns-name-advertiser >/dev/null 2>&1 || true", plan.stop_commands)
+        self.assertIn("pkill nbns-advertiser >/dev/null 2>&1 || true", plan.stop_commands)
 
 
 if __name__ == "__main__":

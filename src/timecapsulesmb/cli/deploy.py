@@ -61,10 +61,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     failures = [message for _, ok, message in artifact_results if not ok]
     if failures:
         raise SystemExit("; ".join(failures))
-    resolved_artifacts = resolve_required_artifacts(REPO_ROOT, ["smbd", "mdns-smbd-advertiser", "nbns-name-advertiser"])
+    resolved_artifacts = resolve_required_artifacts(REPO_ROOT, ["smbd", "mdns-smbd-advertiser", "nbns-advertiser"])
     smbd_path = resolved_artifacts["smbd"].absolute_path
     mdns_path = resolved_artifacts["mdns-smbd-advertiser"].absolute_path
-    nbns_path = resolved_artifacts["nbns-name-advertiser"].absolute_path
+    nbns_path = resolved_artifacts["nbns-advertiser"].absolute_path
 
     volume_root = discover_volume_root(host, password, ssh_opts)
     compatibility = probe_device_compatibility(host, password, ssh_opts)

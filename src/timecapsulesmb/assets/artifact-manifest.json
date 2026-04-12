@@ -8,8 +8,8 @@
       "path": "bin/mdns/mdns-smbd-advertiser",
       "sha256": "a3abe0e1110198100a52334bfe9f5ba7b5e815cff691440228f74b4040d45284"
     },
-    "nbns-name-advertiser": {
-      "path": "bin/nbns/nbns-name-advertiser",
+    "nbns-advertiser": {
+      "path": "bin/nbns/nbns-advertiser",
       "sha256": "5715f304bb1c5529c4a3ff5128a459c39661a1d50dd54275dd15498b656fef26"
     }
   }

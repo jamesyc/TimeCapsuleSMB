@@ -55,7 +55,7 @@ def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path,
     payload_targets = {
         "smbd": f"{payload_dir}/smbd",
         "mdns-smbd-advertiser": f"{payload_dir}/mdns-smbd-advertiser",
-        "nbns-name-advertiser": f"{payload_dir}/nbns-name-advertiser",
+        "nbns-advertiser": f"{payload_dir}/nbns-advertiser",
         "smb.conf.template": f"{payload_dir}/smb.conf.template",
     }
     private_dir = f"{payload_dir}/private"
@@ -78,7 +78,7 @@ def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path,
         uploads=[
             FileTransfer(source=str(smbd_path), destination=payload_targets["smbd"], kind="checked-in binary"),
             FileTransfer(source=str(mdns_path), destination=payload_targets["mdns-smbd-advertiser"], kind="checked-in binary"),
-            FileTransfer(source=str(nbns_path), destination=payload_targets["nbns-name-advertiser"], kind="checked-in binary"),
+            FileTransfer(source=str(nbns_path), destination=payload_targets["nbns-advertiser"], kind="checked-in binary"),
             FileTransfer(source="packaged rc.local", destination=flash_targets["rc.local"], kind="packaged asset"),
             FileTransfer(source="rendered start-samba.sh", destination=flash_targets["start-samba.sh"], kind="rendered asset"),
             FileTransfer(source="rendered watchdog.sh", destination=flash_targets["watchdog.sh"], kind="rendered asset"),
@@ -95,7 +95,7 @@ def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path,
         ] if install_nbns else []),
         permission_commands=[
             "chmod 755 /mnt/Flash/rc.local /mnt/Flash/start-samba.sh /mnt/Flash/watchdog.sh /mnt/Flash/dfree.sh",
-            f"chmod 755 {payload_targets['smbd']} {payload_targets['mdns-smbd-advertiser']} {payload_targets['nbns-name-advertiser']}",
+            f"chmod 755 {payload_targets['smbd']} {payload_targets['mdns-smbd-advertiser']} {payload_targets['nbns-advertiser']}",
             f"chmod 700 {private_dir}",
             f"chmod 600 {private_dir}/smbpasswd {private_dir}/username.map {private_dir}/adisk.uuid {private_dir}/nbns.enabled >/dev/null 2>&1 || "
             f"chmod 600 {private_dir}/smbpasswd {private_dir}/username.map {private_dir}/adisk.uuid",
@@ -125,7 +125,7 @@ def build_uninstall_plan(host: str, device_paths: DevicePaths) -> UninstallPlan:
     stop_commands = [
         "pkill smbd >/dev/null 2>&1 || true",
         "pkill mdns-smbd-advertiser >/dev/null 2>&1 || true",
-        "pkill nbns-name-advertiser >/dev/null 2>&1 || true",
+        "pkill nbns-advertiser >/dev/null 2>&1 || true",
     ]
     return UninstallPlan(
         host=host,

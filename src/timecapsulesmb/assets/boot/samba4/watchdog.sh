@@ -13,8 +13,8 @@ SMBD_BIN="$RAM_SBIN/smbd"
 SMBD_CONF="$RAM_ETC/smb.conf"
 MDNS_BIN="$RAM_SBIN/mdns-smbd-advertiser"
 MDNS_PROC_NAME=mdns-smbd-advert
-NBNS_BIN="$RAM_SBIN/nbns-name-advertiser"
-NBNS_PROC_NAME=nbns-name-advertiser
+NBNS_BIN="$RAM_SBIN/nbns-advertiser"
+NBNS_PROC_NAME=nbns-advertiser
 
 NET_IFACE=__NET_IFACE__
 SMB_SHARE_NAME=__SMB_SHARE_NAME__

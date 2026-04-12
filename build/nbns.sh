@@ -6,10 +6,10 @@ set -eu
 TOOLDIR="$TOOLS"
 DESTDIR="$OBJ/destdir.evbarm"
 TRIPLE="$(basename "$(ls "$TOOLDIR"/bin/*-netbsdelf-*gcc | head -n1)" | sed 's/-gcc$//')"
-NBNS_SRC="$SCRIPT_DIR/nbns-name-advertiser.c"
+NBNS_SRC="$SCRIPT_DIR/nbns-advertiser.c"
 NBNS_STAGE="${NBNS_STAGE:-/root/tc-stage-nbns}"
 NBNS_LOG="${NBNS_LOG:-$OUT/nbns.log}"
-NBNS_BIN_NAME="${NBNS_BIN_NAME:-nbns-name-advertiser}"
+NBNS_BIN_NAME="${NBNS_BIN_NAME:-nbns-advertiser}"
 NBNS_CFLAGS="${NBNS_CFLAGS:--Os -fomit-frame-pointer -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident}"
 NBNS_LDFLAGS="${NBNS_LDFLAGS:--static -Wl,--gc-sections}"
 

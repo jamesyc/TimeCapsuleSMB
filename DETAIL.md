@@ -100,7 +100,7 @@ The actual working split is:
 - persistent payload on HDD:
   - `/Volumes/dkX/samba4/smbd`
   - `/Volumes/dkX/samba4/mdns-smbd-advertiser`
-  - `/Volumes/dkX/samba4/nbns-name-advertiser`
+  - `/Volumes/dkX/samba4/nbns-advertiser`
   - `/Volumes/dkX/samba4/smb.conf.template`
   - `/Volumes/dkX/samba4/private/smbpasswd`
   - `/Volumes/dkX/samba4/private/username.map`
@@ -237,7 +237,7 @@ This matters because:
    - default: `bridge0`
 7. finds the persistent payload directory
 8. copies `smbd` and `mdns-smbd-advertiser` into `/mnt/Memory/samba4/sbin`
-9. if `private/nbns.enabled` exists in the persistent payload, also copies `nbns-name-advertiser` into `/mnt/Memory/samba4/sbin`
+9. if `private/nbns.enabled` exists in the persistent payload, also copies `nbns-advertiser` into `/mnt/Memory/samba4/sbin`
 10. renders `smb.conf` from the template
 11. starts the mDNS advertiser
 12. starts the NBNS responder if enabled
@@ -260,7 +260,7 @@ Current behavior:
 - polls every `300` seconds
 - if `smbd` is missing, starts it again
 - if `mdns-smbd-advertiser` is missing, starts it again
-- if `nbns-name-advertiser` is enabled and missing, starts it again
+- if `nbns-advertiser` is enabled and missing, starts it again
 
 This is intentionally simple:
 - SMB transfers are not interrupted because `smbd` is only restarted when absent
@@ -278,7 +278,7 @@ Important implementation detail:
 When boot succeeds, the runtime tree under `/mnt/Memory/samba4` contains:
 - `sbin/smbd`
 - `sbin/mdns-smbd-advertiser`
-- optionally `sbin/nbns-name-advertiser`
+- optionally `sbin/nbns-advertiser`
 - `etc/smb.conf`
 - `var/`
 - `locks/`
@@ -289,7 +289,7 @@ Current persistent auth files live on the HDD:
 - `/Volumes/dk2/samba4/private/username.map`
 
 Current optional NBNS state lives on the HDD:
-- `/Volumes/dk2/samba4/nbns-name-advertiser`
+- `/Volumes/dk2/samba4/nbns-advertiser`
 - `/Volumes/dk2/samba4/private/nbns.enabled`
 
 Current persistent Time Machine metadata state also lives on the HDD:
@@ -366,10 +366,10 @@ Current validation and behavior notes:
 ## NBNS Responder Details
 
 The optional NBNS helper is:
-- [bin/nbns/nbns-name-advertiser](bin/nbns/nbns-name-advertiser)
+- [bin/nbns/nbns-advertiser](bin/nbns/nbns-advertiser)
 
 It is built from:
-- [build/nbns-name-advertiser.c](build/nbns-name-advertiser.c)
+- [build/nbns-advertiser.c](build/nbns-advertiser.c)
 - [build/nbns.sh](build/nbns.sh)
 
 Important properties:
@@ -387,7 +387,7 @@ Current behavior:
 - returns the current IPv4 for the configured interface
 
 Enablement model:
-- the binary is uploaded to `/Volumes/dkX/samba4/nbns-name-advertiser` on every deploy
+- the binary is uploaded to `/Volumes/dkX/samba4/nbns-advertiser` on every deploy
 - runtime enablement is controlled by the marker file:
   - `/Volumes/dkX/samba4/private/nbns.enabled`
 - `tcapsule deploy --install-nbns` creates that marker
@@ -532,7 +532,7 @@ Current deploy flow:
 - uploads the checked-in binaries:
   - `smbd`
   - `mdns-smbd-advertiser`
-  - `nbns-name-advertiser`
+  - `nbns-advertiser`
 - renders and uploads the packaged boot/runtime files:
   - `smb.conf.template`
   - `rc.local`

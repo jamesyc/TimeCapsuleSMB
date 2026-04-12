@@ -737,7 +737,7 @@ class CliTests(unittest.TestCase):
                             rc = deploy.main(["--dry-run"])
         self.assertEqual(rc, 0)
         text = output.getvalue()
-        self.assertIn("bin/nbns/nbns-name-advertiser -> /Volumes/dk2/samba4/nbns-name-advertiser", text)
+        self.assertIn("bin/nbns/nbns-advertiser -> /Volumes/dk2/samba4/nbns-advertiser", text)
         self.assertNotIn("generated nbns marker -> /Volumes/dk2/samba4/private/nbns.enabled", text)
 
     def test_deploy_install_nbns_dry_run_mentions_marker(self) -> None:
@@ -923,8 +923,8 @@ class CliTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["host"], "root@10.0.0.2")
         self.assertEqual(payload["volume_root"], "/Volumes/dk2")
-        self.assertTrue(payload["nbns_path"].endswith("/bin/nbns/nbns-name-advertiser"))
-        self.assertEqual(payload["payload_targets"]["nbns-name-advertiser"], "/Volumes/dk2/samba4/nbns-name-advertiser")
+        self.assertTrue(payload["nbns_path"].endswith("/bin/nbns/nbns-advertiser"))
+        self.assertEqual(payload["payload_targets"]["nbns-advertiser"], "/Volumes/dk2/samba4/nbns-advertiser")
         self.assertIn("post_deploy_checks", payload)
 
     def test_uninstall_dry_run_prints_target_host(self) -> None:

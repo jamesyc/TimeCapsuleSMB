@@ -29,7 +29,7 @@ RAM_PRIVATE="$RAM_ROOT/private"
 RAM_LOG="$RAM_VAR/rc.local.log"
 SMBD_LOG="$RAM_VAR/log.smbd"
 LEGACY_PREFIX=/root/tc-stage4
-NBNS_PROC_NAME=nbns-name-advertiser
+NBNS_PROC_NAME=nbns-advertiser
 
 PAYLOAD_DIR_NAME=__PAYLOAD_DIR_NAME__
 PAYLOAD_TEMPLATE_NAME=smb.conf.template
@@ -224,8 +224,8 @@ find_payload_mdns() {
 find_payload_nbns() {
     payload_dir=$1
 
-    if [ -x "$payload_dir/nbns-name-advertiser" ]; then
-        echo "$payload_dir/nbns-name-advertiser"
+    if [ -x "$payload_dir/nbns-advertiser" ]; then
+        echo "$payload_dir/nbns-advertiser"
         return 0
     fi
 
@@ -247,8 +247,8 @@ stage_runtime() {
     fi
 
     if [ -f "$payload_dir/private/nbns.enabled" ] && [ -n "$nbns_src" ] && [ -x "$nbns_src" ]; then
-        cp "$nbns_src" "$RAM_SBIN/nbns-name-advertiser"
-        chmod 755 "$RAM_SBIN/nbns-name-advertiser"
+        cp "$nbns_src" "$RAM_SBIN/nbns-advertiser"
+        chmod 755 "$RAM_SBIN/nbns-advertiser"
         cp "$payload_dir/private/nbns.enabled" "$RAM_PRIVATE/nbns.enabled"
         chmod 600 "$RAM_PRIVATE/nbns.enabled"
     fi
@@ -354,7 +354,7 @@ start_nbns() {
         return 0
     fi
 
-    if [ ! -x "$RAM_SBIN/nbns-name-advertiser" ]; then
+    if [ ! -x "$RAM_SBIN/nbns-advertiser" ]; then
         log "nbns responder launch skipped; missing runtime binary"
         return 0
     fi
@@ -362,7 +362,7 @@ start_nbns() {
     /usr/bin/pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true
     sleep 1
 
-    "$RAM_SBIN/nbns-name-advertiser" \
+    "$RAM_SBIN/nbns-advertiser" \
         --name "$SMB_NETBIOS_NAME" \
         --ipv4 "$BRIDGE0_IP" \
         >/dev/null 2>&1 &
