@@ -19,6 +19,11 @@ class ArtifactResolverTests(unittest.TestCase):
         self.assertEqual(artifact.repo_relative_path, "bin/samba4/smbd")
         self.assertEqual(artifact.absolute_path, REPO_ROOT / "bin" / "samba4" / "smbd")
 
+    def test_resolve_nbns_artifact_returns_expected_repo_path(self) -> None:
+        artifact = resolve_artifact(REPO_ROOT, "nbns-name-advertiser")
+        self.assertEqual(artifact.repo_relative_path, "bin/nbns/nbns-name-advertiser")
+        self.assertEqual(artifact.absolute_path, REPO_ROOT / "bin" / "nbns" / "nbns-name-advertiser")
+
     def test_resolve_required_artifacts_returns_named_mapping(self) -> None:
         artifacts = resolve_required_artifacts(REPO_ROOT, ["smbd", "mdns-smbd-advertiser", "nbns-name-advertiser"])
         self.assertIn("smbd", artifacts)

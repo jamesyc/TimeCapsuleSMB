@@ -24,7 +24,7 @@ from timecapsulesmb.deploy.executor import (
     remote_prepare_dirs,
     upload_deployment_payload,
 )
-from timecapsulesmb.deploy.planner import build_deployment_plan
+from timecapsulesmb.deploy.planner import build_deployment_plan, build_uninstall_plan
 from timecapsulesmb.deploy.templates import build_template_bundle, load_boot_asset_text, render_template, render_template_text
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root
 
@@ -112,6 +112,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('if [ -f "$payload_dir/private/nbns.enabled" ]', rendered)
         self.assertIn('cp "$nbns_src" "$RAM_SBIN/nbns-name-advertiser"', rendered)
         self.assertIn('"$RAM_SBIN/nbns-name-advertiser" \\', rendered)
+        self.assertNotIn('cp "$nbns_src" "$RAM_SBIN/nbns-name-advertiser"\n    chmod 755 "$RAM_SBIN/nbns-name-advertiser"', rendered)
 
     def test_render_watchdog_script_includes_device_model_flag(self) -> None:
         values = {
@@ -139,6 +140,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('if [ ! -f "$RAM_PRIVATE/nbns.enabled" ]; then', rendered)
         self.assertIn('"$NBNS_BIN" \\', rendered)
         self.assertIn('--name "$SMB_NETBIOS_NAME"', rendered)
+        self.assertNotIn('if [ ! -f "$RAM_PRIVATE/nbns.enabled" ]; then\n        return 0\n    fi\n\n    if [ ! -x "$NBNS_BIN" ]; then\n        log_msg "NBNS restart skipped; missing $NBNS_BIN"\n        return 0\n    fi\n\n    iface_ip="$(get_iface_ipv4 "$NET_IFACE")"\n    if [ -z "$iface_ip" ]; then\n        log_msg "NBNS restart skipped; missing IPv4 for $NET_IFACE"\n        return 0\n    fi\n\n    pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true\n    "$NBNS_BIN"', rendered)
 
     def test_build_template_bundle_accepts_adisk_values(self) -> None:
         values = {
@@ -211,6 +213,7 @@ int main(void) {{
         command = run_ssh_mock.call_args.args[3]
         self.assertIn("chmod 755 /mnt/Flash/rc.local", command)
         self.assertIn("chmod 700", command)
+        self.assertIn("/Volumes/dk2/samba4/nbns-name-advertiser", command)
         self.assertIn("/Volumes/dk2/samba4/private/adisk.uuid", command)
 
     def test_remote_ensure_adisk_uuid_reuses_existing_file(self) -> None:
@@ -251,6 +254,20 @@ int main(void) {{
                 rendered_smbconf=Path("/tmp/smb.conf.template"),
             )
         self.assertEqual(scp_mock.call_count, 8)
+        destinations = [call.args[4] for call in scp_mock.call_args_list]
+        self.assertEqual(
+            destinations,
+            [
+                "/Volumes/dk2/samba4/smbd",
+                "/Volumes/dk2/samba4/mdns-smbd-advertiser",
+                "/Volumes/dk2/samba4/nbns-name-advertiser",
+                "/mnt/Flash/rc.local",
+                "/mnt/Flash/start-samba.sh",
+                "/mnt/Flash/watchdog.sh",
+                "/mnt/Flash/dfree.sh",
+                "/Volumes/dk2/samba4/smb.conf.template",
+            ],
+        )
 
     def test_format_deployment_plan_contains_concrete_actions(self) -> None:
         paths = build_device_paths("/Volumes/dk2", "samba4")
@@ -262,6 +279,11 @@ int main(void) {{
         self.assertIn("generated adisk UUID -> /Volumes/dk2/samba4/private/adisk.uuid", text)
         self.assertIn("generated nbns marker -> /Volumes/dk2/samba4/private/nbns.enabled", text)
         self.assertIn("chmod 700 /Volumes/dk2/samba4/private", text)
+
+    def test_build_uninstall_plan_stops_nbns_process(self) -> None:
+        paths = build_device_paths("/Volumes/dk2", "samba4")
+        plan = build_uninstall_plan("root@10.0.0.2", paths)
+        self.assertIn("pkill nbns-name-advertiser >/dev/null 2>&1 || true", plan.stop_commands)
 
 
 if __name__ == "__main__":

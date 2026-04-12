@@ -714,6 +714,56 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         enable_nbns_mock.assert_called_once()
 
+    def test_deploy_dry_run_includes_nbns_upload_without_marker_by_default(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
+                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+                        with redirect_stdout(output):
+                            rc = deploy.main(["--dry-run"])
+        self.assertEqual(rc, 0)
+        text = output.getvalue()
+        self.assertIn("bin/nbns/nbns-name-advertiser -> /Volumes/dk2/samba4/nbns-name-advertiser", text)
+        self.assertNotIn("generated nbns marker -> /Volumes/dk2/samba4/private/nbns.enabled", text)
+
+    def test_deploy_install_nbns_dry_run_mentions_marker(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
+                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+                        with redirect_stdout(output):
+                            rc = deploy.main(["--dry-run", "--install-nbns"])
+        self.assertEqual(rc, 0)
+        self.assertIn("generated nbns marker -> /Volumes/dk2/samba4/private/nbns.enabled", output.getvalue())
+
     def test_deploy_rejects_unsupported_netbsd4_device(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
@@ -864,7 +914,7 @@ class CliTests(unittest.TestCase):
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
                         with redirect_stdout(output):
@@ -873,6 +923,8 @@ class CliTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["host"], "root@10.0.0.2")
         self.assertEqual(payload["volume_root"], "/Volumes/dk2")
+        self.assertTrue(payload["nbns_path"].endswith("/bin/nbns/nbns-name-advertiser"))
+        self.assertEqual(payload["payload_targets"]["nbns-name-advertiser"], "/Volumes/dk2/samba4/nbns-name-advertiser")
         self.assertIn("post_deploy_checks", payload)
 
     def test_uninstall_dry_run_prints_target_host(self) -> None:

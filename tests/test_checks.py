@@ -17,7 +17,7 @@ import subprocess
 from timecapsulesmb.checks.bonjour import parse_browse_instance, parse_lookup_target, run_bonjour_checks
 from timecapsulesmb.checks.doctor import run_doctor_checks
 from timecapsulesmb.checks.local_tools import check_required_local_tools
-from timecapsulesmb.checks.nbns import check_nbns_name_resolution, extract_nbns_response_ip
+from timecapsulesmb.checks.nbns import build_nbns_query, check_nbns_name_resolution, extract_nbns_response_ip
 from timecapsulesmb.checks.smb import check_authenticated_smb_file_ops, exercise_mounted_share_file_ops, try_authenticated_smb_listing
 
 
@@ -218,6 +218,13 @@ class CheckTests(unittest.TestCase):
         )
         self.assertEqual(extract_nbns_response_ip(packet), "192.168.1.217")
 
+    def test_build_nbns_query_has_expected_header_and_question(self) -> None:
+        packet = build_nbns_query("TimeCapsule", transaction_id=0x1337)
+        self.assertEqual(packet[:2], b"\x13\x37")
+        self.assertEqual(packet[2:4], b"\x00\x00")
+        self.assertEqual(packet[4:6], b"\x00\x01")
+        self.assertEqual(packet[-4:], b"\x00\x20\x00\x01")
+
     def test_check_nbns_name_resolution_reports_timeout(self) -> None:
         fake_sock = mock.Mock()
         fake_sock.recvfrom.side_effect = TimeoutError()
@@ -225,6 +232,37 @@ class CheckTests(unittest.TestCase):
             result = check_nbns_name_resolution("TimeCapsule", "192.168.1.217", "192.168.1.217")
         self.assertEqual(result.status, "FAIL")
         self.assertIn("timed out", result.message)
+
+    def test_check_nbns_name_resolution_reports_success(self) -> None:
+        fake_sock = mock.Mock()
+        fake_sock.recvfrom.return_value = (
+            b"\x13\x37\x85\x00\x00\x01\x00\x01\x00\x00\x00\x00"
+            + b"\x20" + b"FEEFFDFECACACACACACACACACACACAAA" + b"\x00"
+            + b"\x00\x20\x00\x01"
+            + b"\xc0\x0c\x00\x20\x00\x01\x00\x00\x01,\x00\x06\x00\x00"
+            + b"\xc0\xa8\x01\xd9",
+            ("192.168.1.217", 137),
+        )
+        with mock.patch("timecapsulesmb.checks.nbns.socket.socket", return_value=fake_sock):
+            result = check_nbns_name_resolution("TimeCapsule", "192.168.1.217", "192.168.1.217")
+        self.assertEqual(result.status, "PASS")
+        self.assertIn("192.168.1.217", result.message)
+        fake_sock.sendto.assert_called_once()
+
+    def test_check_nbns_name_resolution_reports_wrong_ip(self) -> None:
+        fake_sock = mock.Mock()
+        fake_sock.recvfrom.return_value = (
+            b"\x13\x37\x85\x00\x00\x01\x00\x01\x00\x00\x00\x00"
+            + b"\x20" + b"FEEFFDFECACACACACACACACACACACAAA" + b"\x00"
+            + b"\x00\x20\x00\x01"
+            + b"\xc0\x0c\x00\x20\x00\x01\x00\x00\x01,\x00\x06\x00\x00"
+            + b"\xc0\xa8\x01\x10",
+            ("192.168.1.217", 137),
+        )
+        with mock.patch("timecapsulesmb.checks.nbns.socket.socket", return_value=fake_sock):
+            result = check_nbns_name_resolution("TimeCapsule", "192.168.1.217", "192.168.1.217")
+        self.assertEqual(result.status, "FAIL")
+        self.assertIn("resolved to 192.168.1.16", result.message)
 
     def test_run_doctor_checks_skips_nbns_when_marker_absent(self) -> None:
         values = {
@@ -288,6 +326,33 @@ class CheckTests(unittest.TestCase):
         nbns_index = results.index(nbns_result)
         listing_index = next(i for i, result in enumerate(results) if result.message == "listing ok")
         self.assertLess(nbns_index, listing_index)
+
+    def test_run_doctor_checks_warns_when_nbns_marker_probe_fails(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+        }
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.check_ssh_reachability", return_value=mock.Mock(status="PASS", message="ssh ok")):
+                    with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
+                        with mock.patch("timecapsulesmb.checks.doctor.run_bonjour_checks", return_value=([], None, None)):
+                            with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=mock.Mock(status="PASS", message="listing ok")):
+                                with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops", return_value=mock.Mock(status="PASS", message="file ops ok")):
+                                    with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root", side_effect=RuntimeError("volume probe failed")):
+                                        results, fatal = run_doctor_checks(values, env_exists=True, repo_root=REPO_ROOT)
+        self.assertFalse(fatal)
+        nbns_result = next(result for result in results if result.status == "WARN" and result.message.startswith("NBNS check skipped:"))
+        self.assertIn("volume probe failed", nbns_result.message)
 
 
 if __name__ == "__main__":
