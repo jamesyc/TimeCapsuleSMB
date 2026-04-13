@@ -178,6 +178,22 @@ That combination:
 
 The important build logic is now under [build/](build).
 
+Current maintainer build lanes:
+- NetBSD 7 SDK lane:
+  - [build/download.sh](build/download.sh)
+  - [build/bootstrap.sh](build/bootstrap.sh)
+- NetBSD 4 SDK lane:
+  - [build/downloadold.sh](build/downloadold.sh)
+  - [build/bootstrapold.sh](build/bootstrapold.sh)
+- NetBSD 7 Samba 4 lane:
+  - [build/downloadsamba4.sh](build/downloadsamba4.sh)
+  - [build/samba4.sh](build/samba4.sh)
+- NetBSD 4 Samba 3 lane:
+  - [build/downloadsamba3old.sh](build/downloadsamba3old.sh)
+  - [build/samba3old.sh](build/samba3old.sh)
+
+The direct scripts target the NetBSD 7 lane by default. The `*old.sh` wrappers select the NetBSD 4 lane.
+
 ## Why We Do Not Use Apple’s Native SMB Bonjour Path
 
 This was investigated deeply.
@@ -591,6 +607,7 @@ The build pipeline under [build/](build) is for maintainers, not normal users.
 Current important outputs:
 - [bin/samba4/smbd](bin/samba4/smbd)
 - [bin/mdns/mdns-advertiser](bin/mdns/mdns-advertiser)
+- [bin/nbns/nbns-advertiser](bin/nbns/nbns-advertiser)
 
 It assumes:
 - a NetBSD VM
@@ -600,19 +617,26 @@ It assumes:
 Important note:
 - the active supported build path is NetBSD 7, not NetBSD 10
 
-Current Samba configure probe modes:
-- live mode:
+Current validated maintainer flows:
+- NetBSD 7 full path:
+  - [build/download.sh](build/download.sh)
+  - [build/bootstrap.sh](build/bootstrap.sh)
+  - [build/downloadsamba4.sh](build/downloadsamba4.sh)
   - [build/samba4.sh](build/samba4.sh)
-- record mode:
-  - [build/samba4record.sh](build/samba4record.sh)
-  - writes cross-exec probe captures under `$OUT/compat` by default
-- replay mode:
-  - [build/samba4replay.sh](build/samba4replay.sh)
-  - reuses a previously recorded compat file instead of SSHing to a live device
+  - [build/mdns.sh](build/mdns.sh)
+  - [build/nbns.sh](build/nbns.sh)
+- NetBSD 4 partial path:
+  - [build/downloadold.sh](build/downloadold.sh)
+  - [build/bootstrapold.sh](build/bootstrapold.sh)
+  - [build/helloold.sh](build/helloold.sh)
+  - [build/downloadsamba3old.sh](build/downloadsamba3old.sh)
+  - [build/samba3old.sh](build/samba3old.sh)
 
-This is useful when comparing NetBSD 4 and NetBSD 6 devices:
-- one replay file can be captured per device family
-- later configure runs can be replayed offline from those saved probe results
+Current path split:
+- NetBSD 7 SDK output defaults under `/root/tc-earmv4-netbsd7`
+- NetBSD 4 SDK output defaults under `/root/tc-earmv4-netbsd4`
+- NetBSD 7 staged runtime outputs default under `/root/tc-netbsd7`
+- NetBSD 4 staged runtime outputs default under `/root/tc-netbsd4`
 
 ## Important Historical Findings
 
