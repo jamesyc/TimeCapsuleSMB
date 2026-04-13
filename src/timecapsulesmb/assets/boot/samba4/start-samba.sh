@@ -61,7 +61,7 @@ log() {
 
 cleanup_old_runtime() {
     /usr/bin/pkill smbd >/dev/null 2>&1 || true
-    /usr/bin/pkill mdns-smbd-advertiser >/dev/null 2>&1 || true
+    /usr/bin/pkill mdns-advertiser >/dev/null 2>&1 || true
     /usr/bin/pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true
     sleep 1
     rm -rf /mnt/Memory/samba4
@@ -222,8 +222,8 @@ find_payload_smbd() {
 find_payload_mdns() {
     payload_dir=$1
 
-    if [ -x "$payload_dir/mdns-smbd-advertiser" ]; then
-        echo "$payload_dir/mdns-smbd-advertiser"
+    if [ -x "$payload_dir/mdns-advertiser" ]; then
+        echo "$payload_dir/mdns-advertiser"
         return 0
     fi
 
@@ -251,8 +251,8 @@ stage_runtime() {
     chmod 755 "$RAM_SBIN/smbd"
 
     if [ -n "$mdns_src" ] && [ -x "$mdns_src" ]; then
-        cp "$mdns_src" "$RAM_SBIN/mdns-smbd-advertiser"
-        chmod 755 "$RAM_SBIN/mdns-smbd-advertiser"
+        cp "$mdns_src" "$RAM_SBIN/mdns-advertiser"
+        chmod 755 "$RAM_SBIN/mdns-advertiser"
     fi
 
     if [ -f "$payload_dir/private/nbns.enabled" ] && [ -n "$nbns_src" ] && [ -x "$nbns_src" ]; then
@@ -335,7 +335,7 @@ start_smbd() {
 }
 
 start_mdns() {
-    if [ ! -x "$RAM_SBIN/mdns-smbd-advertiser" ]; then
+    if [ ! -x "$RAM_SBIN/mdns-advertiser" ]; then
         return 0
     fi
 
@@ -345,7 +345,7 @@ start_mdns() {
         return 0
     fi
 
-    "$RAM_SBIN/mdns-smbd-advertiser" \
+    "$RAM_SBIN/mdns-advertiser" \
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
         --device-model "$MDNS_DEVICE_MODEL" \

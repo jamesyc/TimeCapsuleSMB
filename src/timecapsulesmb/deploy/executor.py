@@ -72,7 +72,7 @@ def upload_deployment_payload(
     rendered_smbconf: Path,
 ) -> None:
     run_scp(host, password, ssh_opts, plan.smbd_path, plan.payload_targets["smbd"])
-    run_scp(host, password, ssh_opts, plan.mdns_path, plan.payload_targets["mdns-smbd-advertiser"])
+    run_scp(host, password, ssh_opts, plan.mdns_path, plan.payload_targets["mdns-advertiser"])
     run_scp(host, password, ssh_opts, plan.nbns_path, plan.payload_targets["nbns-advertiser"])
     run_scp(host, password, ssh_opts, rc_local, plan.flash_targets["rc.local"])
     run_scp(host, password, ssh_opts, rendered_start, plan.flash_targets["start-samba.sh"])

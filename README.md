@@ -237,7 +237,7 @@ Unfortunately, it was not an option to "copy one binary somewhere and call it a 
 That is the reason the repository contains both:
 
 - [bin/samba4/smbd](bin/samba4/smbd)
-- [bin/mdns/mdns-smbd-advertiser](bin/mdns/mdns-smbd-advertiser)
+- [bin/mdns/mdns-advertiser](bin/mdns/mdns-advertiser)
 
 and boot files such as:
 
@@ -328,6 +328,6 @@ The checked-in binaries are already built. If you want to rebuild them yourself,
 The main build outputs are:
 
 - [bin/samba4/smbd](bin/samba4/smbd)
-- [bin/mdns/mdns-smbd-advertiser](bin/mdns/mdns-smbd-advertiser)
+- [bin/mdns/mdns-advertiser](bin/mdns/mdns-advertiser)
 
 If you want the actual engineering details, read [DETAIL.md](DETAIL.md)

@@ -62,7 +62,7 @@ def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path,
     }
     payload_targets = {
         "smbd": f"{payload_dir}/smbd",
-        "mdns-smbd-advertiser": f"{payload_dir}/mdns-smbd-advertiser",
+        "mdns-advertiser": f"{payload_dir}/mdns-advertiser",
         "nbns-advertiser": f"{payload_dir}/nbns-advertiser",
         "smb.conf.template": f"{payload_dir}/smb.conf.template",
     }
@@ -85,7 +85,7 @@ def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path,
         ],
         uploads=[
             FileTransfer(source=str(smbd_path), destination=payload_targets["smbd"], kind="checked-in binary"),
-            FileTransfer(source=str(mdns_path), destination=payload_targets["mdns-smbd-advertiser"], kind="checked-in binary"),
+            FileTransfer(source=str(mdns_path), destination=payload_targets["mdns-advertiser"], kind="checked-in binary"),
             FileTransfer(source=str(nbns_path), destination=payload_targets["nbns-advertiser"], kind="checked-in binary"),
             FileTransfer(source="packaged rc.local", destination=flash_targets["rc.local"], kind="packaged asset"),
             FileTransfer(source="rendered start-samba.sh", destination=flash_targets["start-samba.sh"], kind="rendered asset"),
@@ -130,7 +130,7 @@ def build_uninstall_plan(host: str, device_paths: DevicePaths) -> UninstallPlan:
         verify_absent_targets=verify_absent_targets,
         remote_actions=[
             stop_process_action("smbd"),
-            stop_process_action("mdns-smbd-advert"),
+            stop_process_action("mdns-advertiser"),
             stop_process_action("nbns-advertiser"),
             remove_path_action(payload_dir),
             remove_path_action(flash_targets["rc.local"]),

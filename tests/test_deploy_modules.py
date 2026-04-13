@@ -287,7 +287,7 @@ int main(void) {{
             destinations,
             [
                 "/Volumes/dk2/samba4/smbd",
-                "/Volumes/dk2/samba4/mdns-smbd-advertiser",
+                "/Volumes/dk2/samba4/mdns-advertiser",
                 "/Volumes/dk2/samba4/nbns-advertiser",
                 "/mnt/Flash/rc.local",
                 "/mnt/Flash/start-samba.sh",

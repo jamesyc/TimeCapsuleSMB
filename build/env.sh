@@ -79,7 +79,7 @@ MDNS_STAGE_NETBSD7="${MDNS_STAGE_NETBSD7:-/root/tc-netbsd7}"
 NBNS_STAGE_NETBSD7="${NBNS_STAGE_NETBSD7:-/root/tc-netbsd7}"
 MDNS_STAGE_NETBSD4="${MDNS_STAGE_NETBSD4:-/root/tc-netbsd4}"
 NBNS_STAGE_NETBSD4="${NBNS_STAGE_NETBSD4:-/root/tc-netbsd4}"
-MDNS_BIN_NAME="${MDNS_BIN_NAME:-mdns-smbd-advertiser}"
+MDNS_BIN_NAME="${MDNS_BIN_NAME:-mdns-advertiser}"
 NBNS_BIN_NAME="${NBNS_BIN_NAME:-nbns-advertiser}"
 
 SAMBA4_CROSS_EXEC_TMP_NETBSD7="${SAMBA4_CROSS_EXEC_TMP_NETBSD7:-/tmp/tc-samba-probes-netbsd7}"

@@ -44,7 +44,7 @@ def render_remote_action(action: RemoteAction) -> str:
         private_dir = f"{payload_dir}/private"
         return (
             f"chmod 755 {shlex.quote(payload_dir + '/smbd')} "
-            f"{shlex.quote(payload_dir + '/mdns-smbd-advertiser')} "
+            f"{shlex.quote(payload_dir + '/mdns-advertiser')} "
             f"{shlex.quote(payload_dir + '/nbns-advertiser')} && "
             f"chmod 755 {shlex.quote('/mnt/Flash/rc.local')} "
             f"{shlex.quote('/mnt/Flash/start-samba.sh')} "

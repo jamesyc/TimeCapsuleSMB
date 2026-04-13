@@ -99,7 +99,7 @@ The actual working split is:
 
 - persistent payload on HDD:
   - `/Volumes/dkX/samba4/smbd`
-  - `/Volumes/dkX/samba4/mdns-smbd-advertiser`
+  - `/Volumes/dkX/samba4/mdns-advertiser`
   - `/Volumes/dkX/samba4/nbns-advertiser`
   - `/Volumes/dkX/samba4/smb.conf.template`
   - `/Volumes/dkX/samba4/private/smbpasswd`
@@ -197,7 +197,7 @@ Important findings:
 So the current system deliberately does not use Apple’s SMB advertisement path or Apple’s ownership of those records.
 
 Instead it uses a separate tiny helper:
-- [bin/mdns/mdns-smbd-advertiser](bin/mdns/mdns-smbd-advertiser)
+- [bin/mdns/mdns-advertiser](bin/mdns/mdns-advertiser)
 
 This helper:
 - advertises `_smb._tcp.local.`
@@ -236,7 +236,7 @@ This matters because:
 6. waits for the device IP on the configured network interface
    - default: `bridge0`
 7. finds the persistent payload directory
-8. copies `smbd` and `mdns-smbd-advertiser` into `/mnt/Memory/samba4/sbin`
+8. copies `smbd` and `mdns-advertiser` into `/mnt/Memory/samba4/sbin`
 9. if `private/nbns.enabled` exists in the persistent payload, also copies `nbns-advertiser` into `/mnt/Memory/samba4/sbin`
 10. renders `smb.conf` from the template
 11. starts the mDNS advertiser
@@ -259,7 +259,7 @@ Important bug lessons from getting this stable:
 Current behavior:
 - polls every `300` seconds
 - if `smbd` is missing, starts it again
-- if `mdns-smbd-advertiser` is missing, starts it again
+- if `mdns-advertiser` is missing, starts it again
 - if `nbns-advertiser` is enabled and missing, starts it again
 
 This is intentionally simple:
@@ -270,14 +270,14 @@ The watchdog log is written to:
 - `/mnt/Memory/samba4/var/watchdog.log`
 
 Important implementation detail:
-- on this NetBSD firmware, `pkill` matches the truncated process name `mdns-smbd-advert`, not the full `mdns-smbd-advertiser`
+- `mdns-advertiser` is short enough to match directly with `pkill`
 - the watchdog therefore uses the truncated process name for liveness checks and restarts
 
 ## SMB Runtime Layout
 
 When boot succeeds, the runtime tree under `/mnt/Memory/samba4` contains:
 - `sbin/smbd`
-- `sbin/mdns-smbd-advertiser`
+- `sbin/mdns-advertiser`
 - optionally `sbin/nbns-advertiser`
 - `etc/smb.conf`
 - `var/`
@@ -333,7 +333,7 @@ Operational note:
 ## mDNS Advertiser Details
 
 The mDNS helper is:
-- [bin/mdns/mdns-smbd-advertiser](bin/mdns/mdns-smbd-advertiser)
+- [bin/mdns/mdns-advertiser](bin/mdns/mdns-advertiser)
 
 It is built from:
 - [build/mdns-advertiser.c](build/mdns-advertiser.c)
@@ -531,7 +531,7 @@ Current deploy flow:
 - creates the persistent payload dir under `/Volumes/dkX/samba4`
 - uploads the checked-in binaries:
   - `smbd`
-  - `mdns-smbd-advertiser`
+  - `mdns-advertiser`
   - `nbns-advertiser`
 - renders and uploads the packaged boot/runtime files:
   - `smb.conf.template`
@@ -590,7 +590,7 @@ The build pipeline under [build/](build) is for maintainers, not normal users.
 
 Current important outputs:
 - [bin/samba4/smbd](bin/samba4/smbd)
-- [bin/mdns/mdns-smbd-advertiser](bin/mdns/mdns-smbd-advertiser)
+- [bin/mdns/mdns-advertiser](bin/mdns/mdns-advertiser)
 
 It assumes:
 - a NetBSD VM

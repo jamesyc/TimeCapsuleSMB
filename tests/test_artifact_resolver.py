@@ -25,9 +25,9 @@ class ArtifactResolverTests(unittest.TestCase):
         self.assertEqual(artifact.absolute_path, REPO_ROOT / "bin" / "nbns" / "nbns-advertiser")
 
     def test_resolve_required_artifacts_returns_named_mapping(self) -> None:
-        artifacts = resolve_required_artifacts(REPO_ROOT, ["smbd", "mdns-smbd-advertiser", "nbns-advertiser"])
+        artifacts = resolve_required_artifacts(REPO_ROOT, ["smbd", "mdns-advertiser", "nbns-advertiser"])
         self.assertIn("smbd", artifacts)
-        self.assertIn("mdns-smbd-advertiser", artifacts)
+        self.assertIn("mdns-advertiser", artifacts)
         self.assertIn("nbns-advertiser", artifacts)
 
     def test_resolve_artifact_raises_for_unknown_name(self) -> None:

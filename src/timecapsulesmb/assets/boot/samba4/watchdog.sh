@@ -11,8 +11,8 @@ RAM_PRIVATE="$RAM_ROOT/private"
 WATCHDOG_LOG="$RAM_VAR/watchdog.log"
 SMBD_BIN="$RAM_SBIN/smbd"
 SMBD_CONF="$RAM_ETC/smb.conf"
-MDNS_BIN="$RAM_SBIN/mdns-smbd-advertiser"
-MDNS_PROC_NAME=mdns-smbd-advert
+MDNS_BIN="$RAM_SBIN/mdns-advertiser"
+MDNS_PROC_NAME=mdns-advertiser
 NBNS_BIN="$RAM_SBIN/nbns-advertiser"
 NBNS_PROC_NAME=nbns-advertiser
 
