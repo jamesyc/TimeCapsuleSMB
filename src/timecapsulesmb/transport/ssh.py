@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import shlex
+import shutil
 import subprocess
+import os
 from pathlib import Path
 
 
@@ -48,12 +50,45 @@ def run_ssh(host: str, password: str, ssh_opts: str, remote_cmd: str, *, check: 
 
 
 def run_scp(host: str, password: str, ssh_opts: str, src: Path, dest: str, *, timeout: int = 120) -> None:
-    cmd = ["scp", "-O", *shlex.split(ssh_opts), str(src), f"{host}:{dest}"]
-    rc, stdout = _spawn_with_password(
-        cmd,
+    probe = run_ssh(
+        host,
         password,
-        timeout=timeout,
-        timeout_message=f"Timed out copying {src} to {dest}",
+        ssh_opts,
+        "/bin/sh -c 'command -v scp >/dev/null 2>&1'",
+        check=False,
+        timeout=30,
     )
-    if rc != 0:
-        raise SystemExit(stdout.strip() or f"scp failed with rc={rc}")
+    if probe.returncode == 0:
+        cmd = ["scp", "-O", *shlex.split(ssh_opts), str(src), f"{host}:{dest}"]
+        rc, stdout = _spawn_with_password(
+            cmd,
+            password,
+            timeout=timeout,
+            timeout_message=f"Timed out copying {src} to {dest}",
+        )
+        if rc != 0:
+            raise SystemExit(stdout.strip() or f"scp failed with rc={rc}")
+        return
+
+    if shutil.which("sshpass") is None:
+        raise SystemExit("Remote scp is unavailable and local sshpass is required for streaming upload fallback.")
+
+    remote_cmd = f"/bin/sh -c {shlex.quote('cat > ' + shlex.quote(dest))}"
+    cmd = ["sshpass", "-e", "ssh", *shlex.split(ssh_opts), host, remote_cmd]
+    env = dict(os.environ)
+    env["SSHPASS"] = password
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=src.read_bytes(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise SystemExit(f"Timed out copying {src} to {dest}") from e
+    if proc.returncode != 0:
+        stdout = proc.stdout.decode("utf-8", errors="replace").strip()
+        raise SystemExit(stdout or f"ssh cat upload failed with rc={proc.returncode}")

@@ -26,6 +26,25 @@ def resolve_required_artifacts(repo_root: Path, names: list[str]) -> dict[str, R
     return {name: resolve_artifact(repo_root, name) for name in names}
 
 
+def resolve_payload_artifacts(repo_root: Path, payload_family: str) -> dict[str, ResolvedArtifact]:
+    if payload_family == "netbsd4_samba4":
+        names = {
+            "smbd": "smbd-samba3-netbsd4",
+            "mdns-advertiser": "mdns-advertiser-netbsd4",
+            "nbns-advertiser": "nbns-advertiser-netbsd4",
+        }
+    elif payload_family == "netbsd6_samba4":
+        names = {
+            "smbd": "smbd",
+            "mdns-advertiser": "mdns-advertiser",
+            "nbns-advertiser": "nbns-advertiser",
+        }
+    else:
+        raise KeyError(f"Unknown payload family: {payload_family}")
+
+    return {logical_name: resolve_artifact(repo_root, artifact_name) for logical_name, artifact_name in names.items()}
+
+
 def resolved_artifact_from_record(repo_root: Path, record: ArtifactRecord) -> ResolvedArtifact:
     return ResolvedArtifact(
         name=record.name,

@@ -34,6 +34,18 @@ class CliTests(unittest.TestCase):
             message="Detected supported device: NetBSD 6.0 (earmv4).",
         )
 
+    def make_supported_netbsd4_compatibility(self) -> DeviceCompatibility:
+        return DeviceCompatibility(
+            os_name="NetBSD",
+            os_release="4.0",
+            arch="earmv4",
+            payload_family="netbsd4_samba4",
+            device_generation="gen1-4",
+            mdns_device_model_hint="TimeCapsule6,106",
+            supported=True,
+            message="Detected supported older device: NetBSD 4.0 (earmv4).",
+        )
+
     def test_dispatches_to_command_handler(self) -> None:
         with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"doctor": mock.Mock(return_value=7)}):
             rc = main(["doctor", "--skip-smb"])
@@ -314,9 +326,10 @@ class CliTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=True):
                         with mock.patch("timecapsulesmb.cli.configure.validate_ssh_target", side_effect=[False, True]):
                             with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=False):
-                                with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
-                                    with redirect_stdout(output):
-                                        rc = configure.main([])
+                                with mock.patch("timecapsulesmb.cli.configure.infer_mdns_device_model_hint", return_value="TimeCapsule"):
+                                    with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                        with redirect_stdout(output):
+                                            rc = configure.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_HOST"], "root@10.0.0.3")
         self.assertEqual(fake_values["TC_PASSWORD"], "goodpw")
@@ -423,9 +436,10 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=True):
                         with mock.patch("timecapsulesmb.cli.configure.validate_ssh_target", return_value=True):
-                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
-                                with redirect_stdout(output):
-                                    rc = configure.main([])
+                            with mock.patch("timecapsulesmb.cli.configure.infer_mdns_device_model_hint", return_value="TimeCapsule"):
+                                with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                    with redirect_stdout(output):
+                                        rc = configure.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_MDNS_INSTANCE_NAME"], "Time Capsule Samba 4")
         self.assertEqual(fake_values["TC_MDNS_HOST_LABEL"], "timecapsulesamba4")
@@ -460,9 +474,10 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=True):
                         with mock.patch("timecapsulesmb.cli.configure.validate_ssh_target", return_value=True):
-                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
-                                with redirect_stdout(output):
-                                    rc = configure.main([])
+                            with mock.patch("timecapsulesmb.cli.configure.infer_mdns_device_model_hint", return_value="TimeCapsule"):
+                                with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                    with redirect_stdout(output):
+                                        rc = configure.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
         self.assertIn("mDNS device model hint must be 249 bytes or fewer.", output.getvalue())
@@ -495,9 +510,10 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=True):
                         with mock.patch("timecapsulesmb.cli.configure.validate_ssh_target", return_value=True):
-                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
-                                with redirect_stdout(output):
-                                    rc = configure.main([])
+                            with mock.patch("timecapsulesmb.cli.configure.infer_mdns_device_model_hint", return_value="TimeCapsule"):
+                                with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                    with redirect_stdout(output):
+                                        rc = configure.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_SHARE_NAME"], "Data")
         self.assertIn("SMB share name must be 192 bytes or fewer.", output.getvalue())
@@ -530,9 +546,10 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=True):
                         with mock.patch("timecapsulesmb.cli.configure.validate_ssh_target", return_value=True):
-                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
-                                with redirect_stdout(output):
-                                    rc = configure.main([])
+                            with mock.patch("timecapsulesmb.cli.configure.infer_mdns_device_model_hint", return_value="TimeCapsule"):
+                                with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                    with redirect_stdout(output):
+                                        rc = configure.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_NETBIOS_NAME"], "TimeCapsule")
         self.assertIn("Samba NetBIOS name must be 15 bytes or fewer.", output.getvalue())
@@ -769,6 +786,34 @@ class CliTests(unittest.TestCase):
         self.assertIn("bin/nbns/nbns-advertiser -> /Volumes/dk2/samba4/nbns-advertiser", text)
         self.assertNotIn("generated nbns marker -> /Volumes/dk2/samba4/private/nbns.enabled", text)
 
+    def test_deploy_dry_run_uses_netbsd4_artifact_set_for_netbsd4_device(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-samba3-netbsd4", True, "ok")]):
+                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                        with redirect_stdout(output):
+                            rc = deploy.main(["--dry-run"])
+        self.assertEqual(rc, 0)
+        text = output.getvalue()
+        self.assertIn("Detected supported older device: NetBSD 4.0", text)
+        self.assertIn("bin/samba3-netbsd4/smbd -> /Volumes/dk2/samba4/smbd", text)
+        self.assertIn("bin/mdns-netbsd4/mdns-advertiser -> /Volumes/dk2/samba4/mdns-advertiser", text)
+        self.assertIn("bin/nbns-netbsd4/nbns-advertiser -> /Volumes/dk2/samba4/nbns-advertiser", text)
+
     def test_deploy_install_nbns_dry_run_mentions_marker(self) -> None:
         output = io.StringIO()
         values = {
@@ -793,7 +838,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("generated nbns marker -> /Volumes/dk2/samba4/private/nbns.enabled", output.getvalue())
 
-    def test_deploy_rejects_unsupported_netbsd4_device(self) -> None:
+    def test_deploy_rejects_unsupported_device(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
@@ -808,14 +853,14 @@ class CliTests(unittest.TestCase):
             "TC_SAMBA_USER": "admin",
         }
         unsupported = DeviceCompatibility(
-            os_name="NetBSD",
-            os_release="4.0",
-            arch="earmv4",
+            os_name="Linux",
+            os_release="6.8",
+            arch="armv7",
             payload_family=None,
-            device_generation="gen1-4",
-            mdns_device_model_hint="TimeCapsule6,106",
+            device_generation="unknown",
+            mdns_device_model_hint="TimeCapsule",
             supported=False,
-            message="This Time Capsule is running NetBSD 4, which is an older 4th gen or earlier model. The checked-in Samba payload only supports NetBSD 6 (5th gen) devices right now.",
+            message="Unsupported device OS: Linux 6.8.",
         )
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
@@ -823,9 +868,9 @@ class CliTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=unsupported):
                         with self.assertRaises(SystemExit) as ctx:
                             deploy.main(["--dry-run"])
-        self.assertIn("NetBSD 4", str(ctx.exception))
+        self.assertIn("Linux", str(ctx.exception))
 
-    def test_deploy_can_allow_unsupported_netbsd4_device(self) -> None:
+    def test_deploy_can_allow_unsupported_device(self) -> None:
         output = io.StringIO()
         values = {
             "TC_HOST": "root@10.0.0.2",
@@ -841,14 +886,14 @@ class CliTests(unittest.TestCase):
             "TC_SAMBA_USER": "admin",
         }
         unsupported = DeviceCompatibility(
-            os_name="NetBSD",
-            os_release="4.0",
-            arch="earmv4",
+            os_name="Linux",
+            os_release="6.8",
+            arch="armv7",
             payload_family=None,
-            device_generation="gen1-4",
-            mdns_device_model_hint="TimeCapsule6,106",
+            device_generation="unknown",
+            mdns_device_model_hint="TimeCapsule",
             supported=False,
-            message="This Time Capsule is running NetBSD 4, which is an older 4th gen or earlier model. The checked-in Samba payload only supports NetBSD 6 (5th gen) devices right now.",
+            message="Unsupported device OS: Linux 6.8.",
         )
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
@@ -863,7 +908,7 @@ class CliTests(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("Warning:", text)
         self.assertIn("--allow-unsupported", text)
-        self.assertIn("NetBSD 4", text)
+        self.assertIn("Linux", text)
 
     def test_prep_device_returns_error_when_env_missing(self) -> None:
         output = io.StringIO()

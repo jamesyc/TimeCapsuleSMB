@@ -33,7 +33,7 @@ def classify_device_compatibility(os_name: str, os_release: str, arch: str) -> D
             device_generation="unknown",
             mdns_device_model_hint="TimeCapsule",
             supported=False,
-            message=f"Unsupported device OS: {normalized_name or 'unknown'} {normalized_release or 'unknown'}. This repo currently supports NetBSD 6 Time Capsules only.",
+            message=f"Unsupported device OS: {normalized_name or 'unknown'} {normalized_release or 'unknown'}. This repo currently supports NetBSD 4 and NetBSD 6 Time Capsules.",
         )
 
     major = normalized_release.split(".", 1)[0]
@@ -53,11 +53,11 @@ def classify_device_compatibility(os_name: str, os_release: str, arch: str) -> D
             os_name=normalized_name,
             os_release=normalized_release,
             arch=normalized_arch,
-            payload_family=None,
+            payload_family="netbsd4_samba4",
             device_generation="gen1-4",
             mdns_device_model_hint="TimeCapsule6,106",
-            supported=False,
-            message="This Time Capsule is running NetBSD 4, which is an older 4th gen or earlier model. The checked-in Samba payload only supports NetBSD 6 (5th gen) devices right now.",
+            supported=True,
+            message=f"Detected supported older device: NetBSD {normalized_release} ({normalized_arch}).",
         )
 
     return DeviceCompatibility(
@@ -68,7 +68,7 @@ def classify_device_compatibility(os_name: str, os_release: str, arch: str) -> D
         device_generation="unknown",
         mdns_device_model_hint="TimeCapsule",
         supported=False,
-        message=f"This Time Capsule is running NetBSD {normalized_release}, which is not supported by the current checked-in Samba payload. Only NetBSD 6 devices are supported right now.",
+        message=f"This Time Capsule is running NetBSD {normalized_release}, which is not supported by the current checked-in Samba payload. Only NetBSD 4 and NetBSD 6 devices are supported right now.",
     )
 
 

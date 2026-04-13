@@ -21,10 +21,10 @@ class CompatibilityTests(unittest.TestCase):
         self.assertEqual(compat.device_generation, "gen5")
         self.assertEqual(compat.mdns_device_model_hint, "TimeCapsule8,119")
 
-    def test_classify_netbsd4_as_unsupported(self) -> None:
+    def test_classify_netbsd4_as_supported(self) -> None:
         compat = classify_device_compatibility("NetBSD", "4.0", "earmv4")
-        self.assertFalse(compat.supported)
-        self.assertIsNone(compat.payload_family)
+        self.assertTrue(compat.supported)
+        self.assertEqual(compat.payload_family, "netbsd4_samba4")
         self.assertEqual(compat.device_generation, "gen1-4")
         self.assertEqual(compat.mdns_device_model_hint, "TimeCapsule6,106")
         self.assertIn("NetBSD 4", compat.message)

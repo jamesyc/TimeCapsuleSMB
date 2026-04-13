@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.core.config import ENV_PATH, extract_host, parse_env_values
-from timecapsulesmb.deploy.artifact_resolver import resolve_required_artifacts
+from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
 from timecapsulesmb.deploy.dry_run import deployment_plan_to_jsonable, format_deployment_plan
 from timecapsulesmb.deploy.executor import (
@@ -59,11 +59,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     failures = [message for _, ok, message in artifact_results if not ok]
     if failures:
         raise SystemExit("; ".join(failures))
-    resolved_artifacts = resolve_required_artifacts(REPO_ROOT, ["smbd", "mdns-advertiser", "nbns-advertiser"])
-    smbd_path = resolved_artifacts["smbd"].absolute_path
-    mdns_path = resolved_artifacts["mdns-advertiser"].absolute_path
-    nbns_path = resolved_artifacts["nbns-advertiser"].absolute_path
-
     volume_root = discover_volume_root(host, password, ssh_opts)
     compatibility = probe_device_compatibility(host, password, ssh_opts)
     if not compatibility.supported:
@@ -74,6 +69,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("Continuing because --allow-unsupported was provided.")
     elif not args.json:
         print(compatibility.message)
+    payload_family = compatibility.payload_family or "netbsd6_samba4"
+    resolved_artifacts = resolve_payload_artifacts(REPO_ROOT, payload_family)
+    smbd_path = resolved_artifacts["smbd"].absolute_path
+    mdns_path = resolved_artifacts["mdns-advertiser"].absolute_path
+    nbns_path = resolved_artifacts["nbns-advertiser"].absolute_path
     device_paths = build_device_paths(volume_root, values["TC_PAYLOAD_DIR_NAME"])
     plan = build_deployment_plan(host, device_paths, smbd_path, mdns_path, nbns_path, install_nbns=args.install_nbns)
 
