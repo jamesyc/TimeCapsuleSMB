@@ -36,17 +36,34 @@ mkdir -p "$SAMBA4_WORK" "$SAMBA4_STAGE" "$SAMBA4_BUILD"
 
 export PATH="$TOOLDIR/bin:/usr/pkg/libexec/heimdal:/usr/local/libexec/heimdal:/usr/pkg/bin:$PATH"
 export TOOLDIR DESTDIR TRIPLE SYSROOT
-export CC="$TOOLDIR/bin/$TRIPLE-gcc --sysroot=$SYSROOT"
-export CXX="$TOOLDIR/bin/$TRIPLE-g++ --sysroot=$SYSROOT"
-export CPP="$TOOLDIR/bin/$TRIPLE-cpp --sysroot=$SYSROOT"
 export AR="$TOOLDIR/bin/$TRIPLE-ar"
 export RANLIB="$TOOLDIR/bin/$TRIPLE-ranlib"
 export STRIP="$TOOLDIR/bin/$TRIPLE-strip"
-export LD="$TOOLDIR/bin/$TRIPLE-ld --sysroot=$SYSROOT"
-export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie"
-export CXXFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie"
-export CPPFLAGS="-I$SYSROOT/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES"
-export LDFLAGS="-static -Wl,--gc-sections -L$SYSROOT/lib -L$SYSROOT/usr/lib"
+
+if [ "$SDK_FAMILY" = "netbsd4" ]; then
+    export CC="$TOOLDIR/bin/$TRIPLE-gcc"
+    export CXX="$TOOLDIR/bin/$TRIPLE-g++"
+    export CPP="$TOOLDIR/bin/$TRIPLE-cpp"
+    export LD="$TOOLDIR/bin/$TRIPLE-ld"
+    # Keep NetBSD headers available without making them outrank Samba's own
+    # embedded Heimdal headers. A leading -I$DESTDIR/usr/include causes mixed
+    # system/embedded GSSAPI typedefs on NetBSD 4.
+    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu -isystem $DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES"
+    export CXXFLAGS="$CFLAGS"
+    export CPPFLAGS="-isystem $DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES"
+    # NetBSD 4's arm--netbsdelf linker was not configured for --sysroot, and
+    # --gc-sections strips the NetBSD note sections contributed by crti.o.
+    export LDFLAGS="-static -L$DESTDIR/lib -L$DESTDIR/usr/lib -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu"
+else
+    export CC="$TOOLDIR/bin/$TRIPLE-gcc --sysroot=$SYSROOT"
+    export CXX="$TOOLDIR/bin/$TRIPLE-g++ --sysroot=$SYSROOT"
+    export CPP="$TOOLDIR/bin/$TRIPLE-cpp --sysroot=$SYSROOT"
+    export LD="$TOOLDIR/bin/$TRIPLE-ld --sysroot=$SYSROOT"
+    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie"
+    export CXXFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie"
+    export CPPFLAGS="-I$SYSROOT/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES"
+    export LDFLAGS="-static -Wl,--gc-sections -L$SYSROOT/lib -L$SYSROOT/usr/lib"
+fi
 export PKG_CONFIG_DIR=
 export PKG_CONFIG_PATH=
 export PKG_CONFIG_LIBDIR=
@@ -114,6 +131,13 @@ SAMBA4_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_a
         CONFIGURE_ARGS="$CONFIGURE_ARGS --with-static-modules=$SAMBA4_STATIC_MODULES"
     fi
 
+    if [ "$SDK_FAMILY" = "netbsd4" ]; then
+        # The NetBSD 4 Time Capsule crashes inside libc gettext/citrus during
+        # early smbd option handling. Samba does not need translated messages on
+        # the appliance, so keep the old static binary off that libc path.
+        CONFIGURE_ARGS="$CONFIGURE_ARGS --without-gettext"
+    fi
+
     # NetBSD 6 on the Time Capsule does not expose the POSIX ACL API Samba
     # probes for in configure (`sys/acl.h`, libacl). We use the acl_xattr VFS
     # module to provide Windows ACL semantics via xattrs/tdb instead of native
@@ -138,6 +162,23 @@ SAMBA4_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_a
             perl -0pi -e "s/^LIB_pthread = \\['pthread'\\]$/LIB_pthread = []/m" "$cache_file"
             perl -0pi -e "s/^LIB_PTHREAD = 'pthread'$/LIB_PTHREAD = ''/m" "$cache_file"
             perl -0pi -e "s/'pthread': 'SYSLIB'/'pthread': 'EMPTY'/g" "$cache_file"
+            # Samba's lib/replace probe can add pthread globally even after the
+            # direct library variables are cleared. Remove those global flags so
+            # the final smbd link line does not pull in NetBSD libpthread.
+            perl -0pi -e "s/'-lpthread',\\s*//g; s/'-pthread',\\s*//g; s/\\s*'\\-pthread'\\s*//g" "$cache_file"
+            perl -0pi -e "s/'-D_REENTRANT',\\s*//g; s/'-D_POSIX_PTHREAD_SEMANTICS',\\s*//g" "$cache_file"
+            perl -0pi -e 's/^replace_add_global_pthread = True$/replace_add_global_pthread = False/m' "$cache_file"
+            perl -0pi -e "s/'HAVE_PTHREAD': '1'/'HAVE_PTHREAD': ()/g" "$cache_file"
+            perl -0pi -e "s/'HAVE_PTHREAD_CREATE': 1/'HAVE_PTHREAD_CREATE': ()/g" "$cache_file"
+            perl -0pi -e "s/'HAVE_PTHREAD_ATTR_INIT': 1/'HAVE_PTHREAD_ATTR_INIT': ()/g" "$cache_file"
+            perl -0pi -e "s/'HAVE_LIBPTHREAD': 1/'HAVE_LIBPTHREAD': ()/g" "$cache_file"
+            perl -0pi -e "s/'WITH_PTHREADPOOL': '1'/'WITH_PTHREADPOOL': ()/g" "$cache_file"
+        fi
+        if [ "$SDK_FAMILY" = "netbsd4" ]; then
+            # The old appliance is sensitive to newer runtime support glue in
+            # fully static binaries. Keep stack-protector out of the final
+            # NetBSD 4 smbd until we can prove the target runtime accepts it.
+            perl -0pi -e "s/'-fstack-protector',\\s*//g; s/\\s*'\\-fstack-protector'\\s*//g" "$cache_file"
         fi
         # Keep the optional execinfo/backtrace feature disabled in the
         # generated cache too. The source-tree patches remove the direct deps,
@@ -166,6 +207,7 @@ SAMBA4_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_a
             perl -0pi -e 's/^#define HAVE_PTHREAD_ATTR_INIT 1$/\/\* #undef HAVE_PTHREAD_ATTR_INIT \*\//m' "$config_header"
             perl -0pi -e 's/^#define HAVE_LIBPTHREAD 1$/\/\* #undef HAVE_LIBPTHREAD \*\//m' "$config_header"
             perl -0pi -e 's/^#define WITH_PTHREADPOOL "1"$/\/\* #undef WITH_PTHREADPOOL \*\//m' "$config_header"
+            perl -0pi -e 's/^#define WITH_PTHREADPOOL 1$/\/\* #undef WITH_PTHREADPOOL \*\//m' "$config_header"
         fi
         perl -0pi -e 's/^#define HAVE_EXECINFO_H 1$/\/\* #undef HAVE_EXECINFO_H \*\//m' "$config_header"
         perl -0pi -e 's/^#define HAVE_BACKTRACE 1$/\/\* #undef HAVE_BACKTRACE \*\//m' "$config_header"
@@ -180,16 +222,14 @@ SAMBA4_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_a
         exit 1
     fi
 
-    SAMBA4_FILE_OUTPUT="$("$TOOLDIR/bin/nbfile" "$SAMBA4_SMBD")"
+    SAMBA4_FILE_OUTPUT="$("$TOOLDIR/bin/nbfile" "$SAMBA4_SMBD" 2>&1 || true)"
     echo "$SAMBA4_FILE_OUTPUT"
-    case "$SAMBA4_FILE_OUTPUT" in
-        *"statically linked"*)
-            ;;
-        *)
-            echo "Samba 4 smbd is not statically linked; refusing to stage it."
-            exit 1
-            ;;
-    esac
+    # NetBSD 4 nbfile can lack a magic database, so use program headers as the
+    # authoritative static check. Dynamic ELFs have INTERP/DYNAMIC headers.
+    if "$TOOLDIR/bin/$TRIPLE-objdump" -p "$SAMBA4_SMBD" | grep -Eq '^[[:space:]]+(INTERP|DYNAMIC)'; then
+        echo "Samba 4 smbd has dynamic ELF headers; refusing to stage it."
+        exit 1
+    fi
 
     mkdir -p "$SAMBA4_STAGE/sbin"
     cp "$SAMBA4_SMBD" "$SAMBA4_STAGE/sbin/smbd"

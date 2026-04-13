@@ -24,15 +24,15 @@ if [ -f "$LOCAL_CMD" ]; then
         REMOTE_CMD="$REMOTE_CMD $(quote_arg "$arg")"
     done
 
-    tc_ssh "$TC_HOST" "mkdir -p \"$REMOTE_DIR\""
-    cat "$LOCAL_CMD" | tc_ssh "$TC_HOST" "cat > \"$REMOTE_BIN\""
+    tc_ssh "$TC_HOST" "mkdir -p \"$REMOTE_DIR\"" </dev/null
+    tc_ssh "$TC_HOST" "cat > \"$REMOTE_BIN\"" <"$LOCAL_CMD"
 
     status=0
-    if ! tc_ssh "$TC_HOST" "chmod +x \"$REMOTE_BIN\" && exec $REMOTE_CMD"; then
-        status=$?
-    fi
+    tc_ssh "$TC_HOST" "chmod +x \"$REMOTE_BIN\" && exec $REMOTE_CMD" </dev/null || status=$?
 
-    tc_ssh "$TC_HOST" "rm -f \"$REMOTE_BIN\"" >/dev/null 2>&1 || true
+    # NetBSD 4 behind the SSH jump can leave cleanup ssh sessions open even
+    # after the probe has returned. Probe binaries are tiny and live under the
+    # configured scratch directory, so do not let cleanup block waf configure.
     exit "$status"
 fi
 
@@ -41,4 +41,4 @@ for arg in "$@"; do
     REMOTE_CMD="$REMOTE_CMD $(quote_arg "$arg")"
 done
 
-tc_ssh "$TC_HOST" "exec $REMOTE_CMD"
+tc_ssh "$TC_HOST" "exec $REMOTE_CMD" </dev/null

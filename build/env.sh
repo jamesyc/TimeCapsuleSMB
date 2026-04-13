@@ -83,7 +83,7 @@ MDNS_BIN_NAME="${MDNS_BIN_NAME:-mdns-advertiser}"
 NBNS_BIN_NAME="${NBNS_BIN_NAME:-nbns-advertiser}"
 
 SAMBA4_CROSS_EXEC_TMP_NETBSD7="${SAMBA4_CROSS_EXEC_TMP_NETBSD7:-/tmp/tc-samba-probes-netbsd7}"
-SAMBA4_CROSS_EXEC_TMP_NETBSD4="${SAMBA4_CROSS_EXEC_TMP_NETBSD4:-/tmp/tc-samba-probes-netbsd4}"
+SAMBA4_CROSS_EXEC_TMP_NETBSD4="${SAMBA4_CROSS_EXEC_TMP_NETBSD4:-/Volumes/dk2/tc-samba-probes-netbsd4}"
 
 TC_NEW_HOST="${TC_NEW_HOST:-root@192.168.1.217}"
 TC_NEW_SSH_OPTS="${TC_NEW_SSH_OPTS:--o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1}"
@@ -98,9 +98,9 @@ TC_NEW_CIFS_COMMENT="${TC_NEW_CIFS_COMMENT:-James AirPort Time Capsule}"
 TC_NEW_CIFS_SYSDNSNAME="${TC_NEW_CIFS_SYSDNSNAME:-James AirPort Time Capsule}"
 TC_NEW_CIFS_VOLUME_NAME="${TC_NEW_CIFS_VOLUME_NAME:-AirPort Disk}"
 
-TC_OLD_HOST="${TC_OLD_HOST:-root@timecapsule}"
+TC_OLD_HOST="${TC_OLD_HOST:-root@timecapsule.local}"
 TC_OLD_SSH_OPTS="${TC_OLD_SSH_OPTS:--o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null}"
-TC_OLD_SSH_PROXYCOMMAND="${TC_OLD_SSH_PROXYCOMMAND:-ssh -i ~/.ssh/id_ed25519 -W %h:%p -p 22123 jamesyc@ig1wx38mgh6to6vo.myfritz.net}"
+TC_OLD_SSH_PROXYCOMMAND="${TC_OLD_SSH_PROXYCOMMAND:-ssh -4 -i /home/james/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p -p 22123 jamesyc@ig1wx38mgh6to6vo.myfritz.net}"
 TC_OLD_PASSWORD_FILE="${TC_OLD_PASSWORD_FILE:-}"
 TC_OLD_PASSWORD="${TC_OLD_PASSWORD:-back and forth}"
 TC_OLD_NET_IFACE="${TC_OLD_NET_IFACE:-bridge0}"
@@ -307,20 +307,21 @@ if [ ! -f "$TC_PASSWORD_FILE" ] && [ -n "$TC_PASSWORD" ]; then
 fi
 
 tc_ssh() {
+    base_ssh_opts="-o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o NumberOfPasswordPrompts=1"
     if [ -n "${TC_PASSWORD_FILE:-}" ] && [ -f "$TC_PASSWORD_FILE" ]; then
         SSHPASS=$(cat "$TC_PASSWORD_FILE")
         export SSHPASS
         if [ -n "$TC_SSH_PROXYCOMMAND" ]; then
-            sshpass -e ssh $TC_SSH_OPTS -o "ProxyCommand=$TC_SSH_PROXYCOMMAND" "$@"
+            sshpass -e ssh $base_ssh_opts $TC_SSH_OPTS -o "ProxyCommand=$TC_SSH_PROXYCOMMAND" "$@"
         else
-            sshpass -e ssh $TC_SSH_OPTS "$@"
+            sshpass -e ssh $base_ssh_opts $TC_SSH_OPTS "$@"
         fi
         return
     fi
     if [ -n "$TC_SSH_PROXYCOMMAND" ]; then
-        ssh $TC_SSH_OPTS -o "ProxyCommand=$TC_SSH_PROXYCOMMAND" "$@"
+        ssh $base_ssh_opts $TC_SSH_OPTS -o "ProxyCommand=$TC_SSH_PROXYCOMMAND" "$@"
     else
-        ssh $TC_SSH_OPTS "$@"
+        ssh $base_ssh_opts $TC_SSH_OPTS "$@"
     fi
 }
 

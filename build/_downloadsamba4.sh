@@ -59,6 +59,48 @@ mkdir -p "$OUT" "$SAMBA4_WORK"
     perl -0pi -e "s/deps='replace',\\n/deps='replace',\\n                        includes='include',\\n/" \
         "$SAMBA4_SRC_DIR/dynconfig/wscript"
 
+    # Samba 4.8 bundles a very old waf. During long cross-configure runs it can
+    # attempt to save .wafpickle under a transient conf-check build directory
+    # before recreating that directory, which aborts configure with ENOENT.
+    # Create the cache directory defensively before writing the temporary file.
+    awk '
+        {
+            print
+            if ($0 ~ /^[[:space:]]*db = os\.path\.join\(self\.bdir, DBFILE\)/ &&
+                inserted != 1) {
+                print "\t\ttry: os.makedirs(self.bdir)"
+                print "\t\texcept OSError: pass"
+                inserted = 1
+            }
+        }
+    ' "$SAMBA4_SRC_DIR/third_party/waf/wafadmin/Build.py" >"$SAMBA4_SRC_DIR/third_party/waf/wafadmin/Build.py.tmp"
+    mv "$SAMBA4_SRC_DIR/third_party/waf/wafadmin/Build.py.tmp" \
+        "$SAMBA4_SRC_DIR/third_party/waf/wafadmin/Build.py"
+    awk '
+        {
+            if ($0 ~ /^[[:space:]]*dest = open\(os\.path\.join\(dir, test_f_name\), '\''w'\''\)/ &&
+                inserted != 1) {
+                print "\ttry: os.makedirs(dir)"
+                print "\texcept OSError: pass"
+                inserted = 1
+            }
+            print
+        }
+    ' "$SAMBA4_SRC_DIR/third_party/waf/wafadmin/Tools/config_c.py" >"$SAMBA4_SRC_DIR/third_party/waf/wafadmin/Tools/config_c.py.tmp"
+    mv "$SAMBA4_SRC_DIR/third_party/waf/wafadmin/Tools/config_c.py.tmp" \
+        "$SAMBA4_SRC_DIR/third_party/waf/wafadmin/Tools/config_c.py"
+
+    # On the NetBSD 4 Time Capsule, Samba's first talloc NULL-context
+    # allocation is stamped with the constructor-derived magic value, then the
+    # process later observes the original non-random static initializer again.
+    # The next talloc(NULL, ...) path aborts with "Bad talloc magic value" in
+    # lp_set_logfile(). Keep talloc's magic stable for this static NetBSD4
+    # target by disabling the randomized constructor update.
+    if [ "$SDK_FAMILY" = "netbsd4" ]; then
+        perl -0pi -e 's/(void talloc_lib_init\(void\)\n\{\n)/$1\treturn;\n\n/s' \
+            "$SAMBA4_SRC_DIR/lib/talloc/talloc.c"
+    fi
+
     awk '
         BEGIN { wrap = 0 }
         !wrap && /^bld\.SAMBA_SUBSYSTEM\('\''pyrpc_util'\''/ {

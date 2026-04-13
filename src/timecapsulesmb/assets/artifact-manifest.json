@@ -4,6 +4,10 @@
       "path": "bin/samba4/smbd",
       "sha256": "ce3db7f09ced2bc423f76357d0c82187eb2c8eb350168e46d82f3d80dea3f0c3"
     },
+    "smbd-netbsd4": {
+      "path": "bin/samba4-netbsd4/smbd",
+      "sha256": "d02fbffa7a2b02d7bd5398739140b406ffe9179efaaad6eb325e46034661fd53"
+    },
     "mdns-advertiser": {
       "path": "bin/mdns/mdns-advertiser",
       "sha256": "a3abe0e1110198100a52334bfe9f5ba7b5e815cff691440228f74b4040d45284"

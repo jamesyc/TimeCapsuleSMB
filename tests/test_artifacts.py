@@ -20,6 +20,7 @@ class ArtifactTests(unittest.TestCase):
     def test_load_artifact_manifest_contains_expected_records(self) -> None:
         manifest = load_artifact_manifest()
         self.assertIn("smbd", manifest)
+        self.assertIn("smbd-netbsd4", manifest)
         self.assertIn("mdns-advertiser", manifest)
         self.assertIn("nbns-advertiser", manifest)
 

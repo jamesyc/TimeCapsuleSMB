@@ -1,5 +1,10 @@
 #!/bin/sh
 set -eu
 
-echo "./build/downloadsamba4old.sh is not implemented yet."
-exit 1
+SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
+
+export SDK_FAMILY=netbsd4
+export DEVICE_FAMILY=old
+export SAMBA_FAMILY=samba4
+
+exec "$SCRIPT_DIR/_downloadsamba4.sh" "$@"
