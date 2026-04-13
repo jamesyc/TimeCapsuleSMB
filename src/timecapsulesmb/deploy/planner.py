@@ -118,6 +118,9 @@ def build_uninstall_plan(host: str, device_paths: DevicePaths) -> UninstallPlan:
     verify_absent_targets = [
         payload_dir,
         *flash_targets.values(),
+        "/mnt/Memory/samba4",
+        "/root/tc-netbsd7",
+        "/root/tc-netbsd4",
     ]
     return UninstallPlan(
         host=host,
@@ -135,7 +138,8 @@ def build_uninstall_plan(host: str, device_paths: DevicePaths) -> UninstallPlan:
             remove_path_action(flash_targets["watchdog.sh"]),
             remove_path_action(flash_targets["dfree.sh"]),
             remove_path_action("/mnt/Memory/samba4"),
-            remove_path_action("/root/tc-stage4"),
+            remove_path_action("/root/tc-netbsd7"),
+            remove_path_action("/root/tc-netbsd4"),
         ],
         reboot_required=True,
     )

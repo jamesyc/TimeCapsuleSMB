@@ -28,7 +28,8 @@ RAM_LOCKS="$RAM_ROOT/locks"
 RAM_PRIVATE="$RAM_ROOT/private"
 RAM_LOG="$RAM_VAR/rc.local.log"
 SMBD_LOG="$RAM_VAR/log.smbd"
-LEGACY_PREFIX=/root/tc-stage4
+LEGACY_PREFIX_NETBSD7=/root/tc-netbsd7
+LEGACY_PREFIX_NETBSD4=/root/tc-netbsd4
 NBNS_PROC_NAME=nbns-advertiser
 
 PAYLOAD_DIR_NAME=__PAYLOAD_DIR_NAME__
@@ -68,8 +69,16 @@ cleanup_old_runtime() {
 
 prepare_legacy_prefix() {
     mkdir -p /root
-    rm -rf "$LEGACY_PREFIX"
-    ln -s "$RAM_ROOT" "$LEGACY_PREFIX"
+    # The checked-in smbd can embed the stage prefix it was built with. Keep
+    # compatibility symlinks for both current lane names so the boot-time 
+    # runtime path exists regardless of which build lane produced the binary.
+    for legacy_prefix in \
+        "$LEGACY_PREFIX_NETBSD7" \
+        "$LEGACY_PREFIX_NETBSD4"
+    do
+        rm -rf "$legacy_prefix"
+        ln -s "$RAM_ROOT" "$legacy_prefix"
+    done
 }
 
 prepare_ram_root() {
