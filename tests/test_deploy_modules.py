@@ -307,6 +307,7 @@ int main(void) {{
         self.assertIn("generated smbpasswd -> /Volumes/dk2/samba4/private/smbpasswd", text)
         self.assertIn("generated adisk UUID -> /Volumes/dk2/samba4/private/adisk.uuid", text)
         self.assertIn("generated nbns marker -> /Volumes/dk2/samba4/private/nbns.enabled", text)
+        self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4", text)
         self.assertIn("chmod 700 /Volumes/dk2/samba4/private", text)
 
     def test_build_uninstall_plan_stops_nbns_process(self) -> None:
@@ -325,6 +326,7 @@ int main(void) {{
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/private/nbns.enabled'", permissions_cmd)
         self.assertIn("if [ -f '/Volumes/dk2/Time Capsule Samba 4/private/nbns.enabled' ]; then", permissions_cmd)
         self.assertNotIn("|| chmod 600", permissions_cmd)
+        self.assertNotIn("|| true", permissions_cmd)
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/private/nbns.enabled'", enable_cmd)
 
     def test_deployment_plan_and_executor_share_permission_command_generation(self) -> None:

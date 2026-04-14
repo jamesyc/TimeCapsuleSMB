@@ -33,10 +33,23 @@ def remove_path_action(path: str) -> RemoteAction:
 def render_remote_action(action: RemoteAction) -> str:
     if action.kind == "prepare_dirs":
         payload_dir = action.args[0]
-        return "mkdir -p {} {} {}".format(
+        return (
+            "mkdir -p {} {} {} {} {} && "
+            "rm -rf {} {} && "
+            "ln -s {} {} && "
+            "ln -s {} {}"
+        ).format(
             shlex.quote(payload_dir),
             shlex.quote(payload_dir + "/private"),
             shlex.quote("/mnt/Flash"),
+            shlex.quote("/root"),
+            shlex.quote("/mnt/Memory/samba4"),
+            shlex.quote("/root/tc-netbsd4"),
+            shlex.quote("/root/tc-netbsd7"),
+            shlex.quote("/mnt/Memory/samba4"),
+            shlex.quote("/root/tc-netbsd4"),
+            shlex.quote("/mnt/Memory/samba4"),
+            shlex.quote("/root/tc-netbsd7"),
         )
 
     if action.kind == "install_permissions":

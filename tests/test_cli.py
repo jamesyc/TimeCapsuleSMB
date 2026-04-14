@@ -802,7 +802,7 @@ class CliTests(unittest.TestCase):
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-samba3-netbsd4", True, "ok")]):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with redirect_stdout(output):
@@ -810,7 +810,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("Detected supported older device: NetBSD 4.0", text)
-        self.assertIn("bin/samba3-netbsd4/smbd -> /Volumes/dk2/samba4/smbd", text)
+        self.assertIn("bin/samba4-netbsd4/smbd -> /Volumes/dk2/samba4/smbd", text)
         self.assertIn("bin/mdns-netbsd4/mdns-advertiser -> /Volumes/dk2/samba4/mdns-advertiser", text)
         self.assertIn("bin/nbns-netbsd4/nbns-advertiser -> /Volumes/dk2/samba4/nbns-advertiser", text)
 

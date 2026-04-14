@@ -19,20 +19,36 @@ if [ -f "$LOCAL_CMD" ]; then
     REMOTE_DIR="${CROSS_EXEC_REMOTE_DIR:-/tmp/tc-samba4-probes}"
     REMOTE_BIN="$REMOTE_DIR/$(basename "$LOCAL_CMD").$$"
     REMOTE_CMD=$(quote_arg "$REMOTE_BIN")
+    REMOTE_BIN_Q=$(quote_arg "$REMOTE_BIN")
+    REMOTE_DIR_Q=$(quote_arg "$REMOTE_DIR")
 
     for arg in "$@"; do
         REMOTE_CMD="$REMOTE_CMD $(quote_arg "$arg")"
     done
 
-    tc_ssh "$TC_HOST" "mkdir -p \"$REMOTE_DIR\"" </dev/null
-    tc_ssh "$TC_HOST" "cat > \"$REMOTE_BIN\"" <"$LOCAL_CMD"
+    # NetBSD4 does not always have the disk mounted at /Volumes/dk2. If that
+    # path is only a directory on /, configure probes can fill the 10MB root
+    # filesystem. Refuse /Volumes scratch space unless df shows it is a mounted
+    # filesystem distinct from /.
+    case "$REMOTE_DIR" in
+        /Volumes/*)
+            tc_ssh "$TC_HOST" "df -k $REMOTE_DIR_Q 2>/dev/null | sed -n '2p' | sed -n '/[[:space:]]\\/Volumes\\//p'" </dev/null | grep . >/dev/null || {
+                echo "Refusing CROSS_EXEC_REMOTE_DIR=$REMOTE_DIR because it is not a mounted /Volumes filesystem." >&2
+                exit 1
+            }
+            ;;
+    esac
+
+    tc_ssh "$TC_HOST" "mkdir -p $REMOTE_DIR_Q" </dev/null
+    status=0
+    tc_ssh "$TC_HOST" "cat > $REMOTE_BIN_Q" <"$LOCAL_CMD" || status=$?
+    if [ "$status" -ne 0 ]; then
+        tc_ssh "$TC_HOST" "rm -f $REMOTE_BIN_Q" </dev/null || true
+        exit "$status"
+    fi
 
     status=0
-    tc_ssh "$TC_HOST" "chmod +x \"$REMOTE_BIN\" && exec $REMOTE_CMD" </dev/null || status=$?
-
-    # NetBSD 4 behind the SSH jump can leave cleanup ssh sessions open even
-    # after the probe has returned. Probe binaries are tiny and live under the
-    # configured scratch directory, so do not let cleanup block waf configure.
+    tc_ssh "$TC_HOST" "chmod +x \"$REMOTE_BIN\" && $REMOTE_CMD; rc=\$?; rm -f $REMOTE_BIN_Q; exit \$rc" </dev/null || status=$?
     exit "$status"
 fi
 

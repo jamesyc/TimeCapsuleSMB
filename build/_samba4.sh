@@ -32,7 +32,100 @@ pick_python2() {
     return 1
 }
 
+has_elf_section() {
+    path="$1"
+    section="$2"
+    # This old readelf truncates long section names in its default -S output
+    # (for example .note.netbsd.ident becomes .note.netbsd.iden), which made
+    # the NetBSD4 note repair reject a valid donor binary. objdump -h prints
+    # the full section name, so use it for exact section-name checks.
+    "$TOOLDIR/bin/$TRIPLE-objdump" -h "$path" 2>/dev/null | \
+        awk '{print $2}' | grep -Fx "$section" >/dev/null 2>&1
+}
+
+dump_elf_notes() {
+    label="$1"
+    path="$2"
+
+    echo "===== $label ELF notes/headers ====="
+    "$TOOLDIR/bin/$TRIPLE-readelf" -S "$path" 2>&1 | \
+        grep -E 'note\.netbsd|Name|Section Headers' || true
+    "$TOOLDIR/bin/$TRIPLE-objdump" -p "$path" 2>&1 | sed -n '1,80p'
+}
+
+prepare_netbsd4_gc_note_inputs() {
+    SAMBA4_NETBSD4_NOTE_ASM="$SAMBA4_BUILD/netbsd4-notes.S"
+    SAMBA4_NETBSD4_NOTE_OBJ="$SAMBA4_BUILD/netbsd4-notes.o"
+    SAMBA4_NETBSD4_DEFAULT_LD="$SAMBA4_BUILD/netbsd4-default.ld"
+    SAMBA4_NETBSD4_KEEP_NOTES_LD="$SAMBA4_BUILD/netbsd4-keep-notes.ld"
+
+    cat >"$SAMBA4_NETBSD4_NOTE_ASM" <<'EOF'
+    .section .note.netbsd.ident,"a",%note
+    .balign 4
+    .long 7
+    .long 4
+    .long 1
+    .asciz "NetBSD"
+    .balign 4
+    .long 0x17d78403
+
+    .section .note.netbsd.pax,"a",%note
+    .balign 4
+    .long 4
+    .long 4
+    .long 3
+    .asciz "PaX"
+    .balign 4
+    .long 0
+EOF
+
+    "$TOOLDIR/bin/$TRIPLE-gcc" -c "$SAMBA4_NETBSD4_NOTE_ASM" -o "$SAMBA4_NETBSD4_NOTE_OBJ"
+
+    "$TOOLDIR/bin/$TRIPLE-ld" --verbose | awk '
+        /^====/ { seen++; next }
+        seen == 1 { print }
+    ' >"$SAMBA4_NETBSD4_DEFAULT_LD"
+
+    # --gc-sections drops the crt-provided NetBSD identity notes unless the
+    # linker script explicitly marks them live. Keeping them at link time is
+    # required because post-link objcopy can add sections but cannot reliably
+    # recreate the PT_NOTE program headers that NetBSD 4 needs to exec smbd.
+    awk '
+        /SIZEOF_HEADERS;/ {
+            print
+            print "  .note.netbsd.ident : { KEEP(*(.note.netbsd.ident)) }"
+            print "  .note.netbsd.pax : { KEEP(*(.note.netbsd.pax)) }"
+            next
+        }
+        { print }
+    ' "$SAMBA4_NETBSD4_DEFAULT_LD" >"$SAMBA4_NETBSD4_KEEP_NOTES_LD"
+
+    export SAMBA4_NETBSD4_NOTE_OBJ SAMBA4_NETBSD4_KEEP_NOTES_LD
+}
+
+validate_netbsd4_notes() {
+    path="$1"
+
+    if [ "$SDK_FAMILY" != "netbsd4" ] || [ "$SAMBA4_NETBSD4_GC_SECTIONS" != "1" ]; then
+        return 0
+    fi
+
+    if has_elf_section "$path" ".note.netbsd.ident" &&
+       has_elf_section "$path" ".note.netbsd.pax"; then
+        echo "NetBSD note sections are present in $path"
+        return 0
+    fi
+
+    echo "NetBSD note sections are missing from $path"
+    dump_elf_notes "missing-note smbd" "$path"
+    exit 1
+}
+
 mkdir -p "$SAMBA4_WORK" "$SAMBA4_STAGE" "$SAMBA4_BUILD"
+
+if [ "$SDK_FAMILY" = "netbsd4" ] && [ "$SAMBA4_NETBSD4_GC_SECTIONS" = "1" ]; then
+    prepare_netbsd4_gc_note_inputs
+fi
 
 export PATH="$TOOLDIR/bin:/usr/pkg/libexec/heimdal:/usr/local/libexec/heimdal:/usr/pkg/bin:$PATH"
 export TOOLDIR DESTDIR TRIPLE SYSROOT
@@ -51,9 +144,22 @@ if [ "$SDK_FAMILY" = "netbsd4" ]; then
     export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu -isystem $DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES"
     export CXXFLAGS="$CFLAGS"
     export CPPFLAGS="-isystem $DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES"
-    # NetBSD 4's arm--netbsdelf linker was not configured for --sysroot, and
-    # --gc-sections strips the NetBSD note sections contributed by crti.o.
-    export LDFLAGS="-static -L$DESTDIR/lib -L$DESTDIR/usr/lib -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu"
+    # NetBSD 4's arm--netbsdelf linker was not configured for --sysroot.
+    # Enabling --gc-sections is the main size win for the old Samba 4 binary,
+    # but it can collect the NetBSD note sections from crt objects. For the
+    # final build, link a tiny note object and use a generated linker script to
+    # KEEP those sections so the output still has PT_NOTE headers.
+    SAMBA4_NETBSD4_BASE_LDFLAGS="-static -L$DESTDIR/lib -L$DESTDIR/usr/lib -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu"
+    SAMBA4_NETBSD4_FINAL_LDFLAGS="$SAMBA4_NETBSD4_BASE_LDFLAGS"
+    SAMBA4_NETBSD4_FINAL_LINKFLAGS=""
+    if [ "$SAMBA4_NETBSD4_GC_SECTIONS" = "1" ]; then
+        SAMBA4_NETBSD4_FINAL_LDFLAGS="-static -L$DESTDIR/lib -L$DESTDIR/usr/lib -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu"
+        SAMBA4_NETBSD4_FINAL_LINKFLAGS="'-Wl,--gc-sections', '-Wl,-T,$SAMBA4_NETBSD4_KEEP_NOTES_LD', '$SAMBA4_NETBSD4_NOTE_OBJ', '-static', '-L$DESTDIR/lib', '-L$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib/csu'"
+    fi
+    # Configure runs cross-exec probes on the Time Capsule. Those probe ELFs
+    # need their native NetBSD notes too, so keep configure on the safe no-GC
+    # path and add --gc-sections only to the final smbd build below.
+    export LDFLAGS="$SAMBA4_NETBSD4_BASE_LDFLAGS"
 else
     export CC="$TOOLDIR/bin/$TRIPLE-gcc --sysroot=$SYSROOT"
     export CXX="$TOOLDIR/bin/$TRIPLE-g++ --sysroot=$SYSROOT"
@@ -85,6 +191,11 @@ SAMBA4_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_a
     echo "SRC_DIR=$SAMBA4_SRC_DIR"
     echo "HOST_ALIAS=$SAMBA4_HOST_ALIAS"
     echo "STATIC_MODULES=$SAMBA4_STATIC_MODULES"
+    echo "SAMBA4_NETBSD4_GC_SECTIONS=$SAMBA4_NETBSD4_GC_SECTIONS"
+    echo "SAMBA4_NETBSD4_FINAL_LDFLAGS=${SAMBA4_NETBSD4_FINAL_LDFLAGS:-$LDFLAGS}"
+    echo "SAMBA4_NETBSD4_FINAL_LINKFLAGS=${SAMBA4_NETBSD4_FINAL_LINKFLAGS:-}"
+    echo "CFLAGS=$CFLAGS"
+    echo "LDFLAGS=$LDFLAGS"
     echo "CROSS_EXECUTE=$CROSS_EXECUTE"
 
     if [ ! -f "$SAMBA4_SRC_DIR/configure" ]; then
@@ -179,6 +290,24 @@ SAMBA4_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_a
             # fully static binaries. Keep stack-protector out of the final
             # NetBSD 4 smbd until we can prove the target runtime accepts it.
             perl -0pi -e "s/'-fstack-protector',\\s*//g; s/\\s*'\\-fstack-protector'\\s*//g" "$cache_file"
+            if [ "$SAMBA4_NETBSD4_GC_SECTIONS" = "1" ]; then
+                # Configure probes use no-GC link flags so their NetBSD notes
+                # survive cross-exec. After configure, force only the real build
+                # cache to link with --gc-sections; the staged smbd is validated
+                # and note-repaired below.
+                # Waf's smbd link path honors LINKFLAGS for linker switches
+                # and object-like extra inputs; LDFLAGS alone is not enough.
+                if grep -q '^LINKFLAGS = \[' "$cache_file"; then
+                    perl -0pi -e "s|^LINKFLAGS = \\[.*?\\]\$|LINKFLAGS = [$SAMBA4_NETBSD4_FINAL_LINKFLAGS]|m" "$cache_file"
+                else
+                    printf '%s\n' "LINKFLAGS = [$SAMBA4_NETBSD4_FINAL_LINKFLAGS]" >>"$cache_file"
+                fi
+                if grep -q '^LDFLAGS = ' "$cache_file"; then
+                    perl -0pi -e "s/^LDFLAGS = .*$/LDFLAGS = '$SAMBA4_NETBSD4_FINAL_LDFLAGS'/m" "$cache_file"
+                else
+                    printf '%s\n' "LDFLAGS = '$SAMBA4_NETBSD4_FINAL_LDFLAGS'" >>"$cache_file"
+                fi
+            fi
         fi
         # Keep the optional execinfo/backtrace feature disabled in the
         # generated cache too. The source-tree patches remove the direct deps,
@@ -214,6 +343,11 @@ SAMBA4_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_a
         perl -0pi -e 's/^#define HAVE_BACKTRACE_SYMBOLS 1$/\/\* #undef HAVE_BACKTRACE_SYMBOLS \*\//m' "$config_header"
     done
 
+    if [ "$SDK_FAMILY" = "netbsd4" ] && [ "$SAMBA4_NETBSD4_GC_SECTIONS" = "1" ]; then
+        export LDFLAGS="$SAMBA4_NETBSD4_FINAL_LDFLAGS"
+        echo "Final NetBSD4 build LDFLAGS=$LDFLAGS"
+    fi
+
     PYTHON="$PYTHON2_BIN" ./buildtools/bin/waf -v -j"$SAMBA4_JOBS" build --targets=smbd/smbd
 
     SAMBA4_SMBD="$(find "$SAMBA4_SRC_DIR/bin" -path '*/source3/smbd/smbd' | head -n1)"
@@ -230,11 +364,15 @@ SAMBA4_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_a
         echo "Samba 4 smbd has dynamic ELF headers; refusing to stage it."
         exit 1
     fi
+    dump_elf_notes "built smbd" "$SAMBA4_SMBD"
+    validate_netbsd4_notes "$SAMBA4_SMBD"
 
     mkdir -p "$SAMBA4_STAGE/sbin"
     cp "$SAMBA4_SMBD" "$SAMBA4_STAGE/sbin/smbd"
     cp "$SAMBA4_SMBD" "$SAMBA4_STAGE/sbin/smbd.stripped"
     "$STRIP" --strip-unneeded "$SAMBA4_STAGE/sbin/smbd.stripped"
+    validate_netbsd4_notes "$SAMBA4_STAGE/sbin/smbd.stripped"
+    dump_elf_notes "staged stripped smbd" "$SAMBA4_STAGE/sbin/smbd.stripped"
 } >"$SAMBA4_LOG" 2>&1
 
 printf 'Samba 4 build complete.\n'

@@ -4,6 +4,7 @@ import shlex
 import shutil
 import subprocess
 import os
+import re
 from pathlib import Path
 
 
@@ -49,6 +50,26 @@ def run_ssh(host: str, password: str, ssh_opts: str, remote_cmd: str, *, check: 
     return subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr="")
 
 
+def _verify_remote_size(host: str, password: str, ssh_opts: str, src: Path, dest: str, *, timeout: int) -> None:
+    expected_size = src.stat().st_size
+    quoted_dest = shlex.quote(dest)
+    remote_script = (
+        f"[ -f {quoted_dest} ] || exit 1; "
+        f"if command -v wc >/dev/null 2>&1; then "
+        f"wc -c < {quoted_dest}; "
+        f"else set -- $(ls -l {quoted_dest}); echo \"$5\"; fi"
+    )
+    remote_cmd = f"/bin/sh -c {shlex.quote(remote_script)}"
+    proc = run_ssh(host, password, ssh_opts, remote_cmd, check=False, timeout=timeout)
+    matches = re.findall(r"^\s*([0-9]+)\s*$", proc.stdout, flags=re.MULTILINE)
+    actual_size = int(matches[-1]) if matches else None
+    if proc.returncode != 0 or actual_size != expected_size:
+        raise SystemExit(
+            f"upload verification failed for {dest}: expected {expected_size} bytes, "
+            f"got {actual_size if actual_size is not None else 'unknown'} bytes"
+        )
+
+
 def run_scp(host: str, password: str, ssh_opts: str, src: Path, dest: str, *, timeout: int = 120) -> None:
     probe = run_ssh(
         host,
@@ -68,6 +89,7 @@ def run_scp(host: str, password: str, ssh_opts: str, src: Path, dest: str, *, ti
         )
         if rc != 0:
             raise SystemExit(stdout.strip() or f"scp failed with rc={rc}")
+        _verify_remote_size(host, password, ssh_opts, src, dest, timeout=30)
         return
 
     if shutil.which("sshpass") is None:
@@ -92,3 +114,4 @@ def run_scp(host: str, password: str, ssh_opts: str, src: Path, dest: str, *, ti
     if proc.returncode != 0:
         stdout = proc.stdout.decode("utf-8", errors="replace").strip()
         raise SystemExit(stdout or f"ssh cat upload failed with rc={proc.returncode}")
+    _verify_remote_size(host, password, ssh_opts, src, dest, timeout=30)
