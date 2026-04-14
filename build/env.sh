@@ -100,7 +100,7 @@ TC_NEW_CIFS_VOLUME_NAME="${TC_NEW_CIFS_VOLUME_NAME:-AirPort Disk}"
 
 TC_OLD_HOST="${TC_OLD_HOST:-root@timecapsule.local}"
 TC_OLD_SSH_OPTS="${TC_OLD_SSH_OPTS:--o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null}"
-TC_OLD_SSH_PROXYCOMMAND="${TC_OLD_SSH_PROXYCOMMAND:-ssh -4 -i /home/james/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p -p 22123 jamesyc@ig1wx38mgh6to6vo.myfritz.net}"
+TC_OLD_SSH_PROXYCOMMAND="${TC_OLD_SSH_PROXYCOMMAND:-}"
 TC_OLD_PASSWORD_FILE="${TC_OLD_PASSWORD_FILE:-}"
 TC_OLD_PASSWORD="${TC_OLD_PASSWORD:-back and forth}"
 TC_OLD_NET_IFACE="${TC_OLD_NET_IFACE:-bridge0}"
