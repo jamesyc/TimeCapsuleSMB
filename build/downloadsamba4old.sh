@@ -1,10 +1,5 @@
 #!/bin/sh
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
-
-export SDK_FAMILY=netbsd4
-export DEVICE_FAMILY=old
-export SAMBA_FAMILY=samba4
-
-exec "$SCRIPT_DIR/_downloadsamba4.sh" "$@"
+SDK_FAMILY=netbsd4 DEVICE_FAMILY=old SAMBA_FAMILY=samba4 \
+    exec "$(dirname "$0")/_downloadsamba4.sh" "$@"
