@@ -4,6 +4,11 @@ set -eu
 PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
 /mnt/Flash/start-samba.sh >/dev/null 2>&1 &
-/mnt/Flash/watchdog.sh >/dev/null 2>&1 &
+
+if /usr/bin/pkill -0 -f /mnt/Flash/watchdog.sh >/dev/null 2>&1; then
+    :
+else
+    /mnt/Flash/watchdog.sh >/dev/null 2>&1 &
+fi
 
 exit 0

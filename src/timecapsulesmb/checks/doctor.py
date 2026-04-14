@@ -8,7 +8,7 @@ import shlex
 from timecapsulesmb.checks.bonjour import run_bonjour_checks
 from timecapsulesmb.checks.local_tools import check_required_artifacts, check_required_local_tools
 from timecapsulesmb.checks.models import CheckResult, is_fatal
-from timecapsulesmb.checks.network import check_smb_port, check_ssh_reachability
+from timecapsulesmb.checks.network import check_smb_port, check_ssh_login, ssh_opts_use_proxy
 from timecapsulesmb.checks.nbns import check_nbns_name_resolution
 from timecapsulesmb.checks.smb import check_authenticated_smb_file_ops, check_authenticated_smb_listing
 from timecapsulesmb.core.config import extract_host, missing_required_keys
@@ -67,18 +67,25 @@ def run_doctor_checks(
         add_result(result)
 
     host = extract_host(values["TC_HOST"])
+    ssh_opts = values.get("TC_SSH_OPTS", "")
+    proxied_ssh = ssh_opts_use_proxy(ssh_opts)
     ssh_ok = False
 
     if not skip_ssh:
-        ssh_result = check_ssh_reachability(host)
+        ssh_result = check_ssh_login(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
         add_result(ssh_result)
         ssh_ok = ssh_result.status == "PASS"
     else:
         ssh_ok = True
 
-    add_result(check_smb_port(host))
+    if proxied_ssh:
+        add_result(CheckResult("SKIP", f"direct SMB port check skipped for SSH-proxied target {host}"))
+    else:
+        add_result(check_smb_port(host))
 
-    if not skip_bonjour:
+    if proxied_ssh and not skip_bonjour:
+        add_result(CheckResult("SKIP", "Bonjour check skipped for SSH-proxied target; local mDNS may find a different Time Capsule"))
+    elif not skip_bonjour:
         try:
             bonjour_results, _, _ = run_bonjour_checks(values["TC_MDNS_INSTANCE_NAME"])
             for result in bonjour_results:
@@ -99,19 +106,24 @@ def run_doctor_checks(
                 check=False,
             )
             if proc.stdout.strip() == "enabled":
-                expected_ip = _read_interface_ipv4(
-                    values["TC_HOST"],
-                    values["TC_PASSWORD"],
-                    values["TC_SSH_OPTS"],
-                    values["TC_NET_IFACE"],
-                )
-                add_result(check_nbns_name_resolution(values["TC_NETBIOS_NAME"], host, expected_ip))
+                if proxied_ssh:
+                    add_result(CheckResult("SKIP", "NBNS check skipped for SSH-proxied target; UDP/137 is not reachable through the SSH jump host"))
+                else:
+                    expected_ip = _read_interface_ipv4(
+                        values["TC_HOST"],
+                        values["TC_PASSWORD"],
+                        values["TC_SSH_OPTS"],
+                        values["TC_NET_IFACE"],
+                    )
+                    add_result(check_nbns_name_resolution(values["TC_NETBIOS_NAME"], host, expected_ip))
             else:
                 add_result(CheckResult("SKIP", "NBNS responder not enabled"))
         except (Exception, SystemExit) as e:
             add_result(CheckResult("WARN", f"NBNS check skipped: {e}"))
 
-    if not skip_smb:
+    if proxied_ssh and not skip_smb:
+        add_result(CheckResult("SKIP", "authenticated SMB checks skipped for SSH-proxied target; TCP/445 is not reachable through the SSH jump host"))
+    elif not skip_smb:
         add_result(
             check_authenticated_smb_listing(
                 values["TC_SAMBA_USER"],
