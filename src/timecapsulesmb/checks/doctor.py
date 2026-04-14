@@ -54,17 +54,23 @@ def run_doctor_checks(
 
     if not env_exists:
         add_result(CheckResult("FAIL", f"missing {repo_root / '.env'}"))
+        env_valid = False
     else:
         missing = missing_required_keys(values)
         if missing:
             add_result(CheckResult("FAIL", f".env is missing required keys: {', '.join(missing)}"))
+            env_valid = False
         else:
             add_result(CheckResult("PASS", ".env contains all required keys"))
+            env_valid = True
 
     for result in check_required_local_tools():
         add_result(result)
     for result in check_required_artifacts(repo_root):
         add_result(result)
+
+    if not env_valid:
+        return results, any(is_fatal(result) for result in results)
 
     host = extract_host(values["TC_HOST"])
     ssh_opts = values.get("TC_SSH_OPTS", "")
