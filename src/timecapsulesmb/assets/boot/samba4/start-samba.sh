@@ -36,6 +36,7 @@ NBNS_PROC_NAME=nbns-advertiser
 
 PAYLOAD_DIR_NAME=__PAYLOAD_DIR_NAME__
 PAYLOAD_TEMPLATE_NAME=smb.conf.template
+CACHE_DIRECTORY=__CACHE_DIRECTORY__
 
 SMB_SHARE_NAME=__SMB_SHARE_NAME__
 SMB_NETBIOS_NAME=__SMB_NETBIOS_NAME__
@@ -279,7 +280,7 @@ stage_runtime() {
     pid directory = $RAM_VAR
     lock directory = $RAM_LOCKS
     state directory = $RAM_VAR
-    cache directory = $DATA_ROOT/../$PAYLOAD_DIR_NAME/cache
+    cache directory = $CACHE_DIRECTORY
     private dir = $RAM_PRIVATE
     log file = $SMBD_LOG
     max log size = 256

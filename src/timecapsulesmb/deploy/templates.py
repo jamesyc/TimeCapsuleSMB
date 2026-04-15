@@ -14,6 +14,15 @@ class TemplateBundle:
     smbconf_replacements: dict[str, str]
 
 
+def cache_directory_replacements(payload_family: str, payload_dir_name: str) -> tuple[str, str]:
+    if payload_family == "netbsd4_samba4":
+        return (
+            "$DATA_ROOT/../$PAYLOAD_DIR_NAME/cache",
+            f"__DATA_ROOT__/../{payload_dir_name}/cache",
+        )
+    return ("/mnt/Memory/samba4/var", "/mnt/Memory/samba4/var")
+
+
 def load_boot_asset_text(name: str) -> str:
     return resources.files("timecapsulesmb.assets.boot.samba4").joinpath(name).read_text()
 
@@ -32,11 +41,22 @@ def write_boot_asset(name: str, destination: Path) -> None:
     destination.write_text(load_boot_asset_text(name))
 
 
-def build_template_bundle(values: dict[str, str], *, adisk_disk_key: str = "dk0", adisk_uuid: str = "") -> TemplateBundle:
+def build_template_bundle(
+    values: dict[str, str],
+    *,
+    adisk_disk_key: str = "dk0",
+    adisk_uuid: str = "",
+    payload_family: str = "netbsd6_samba4",
+) -> TemplateBundle:
     device_model = values.get("TC_MDNS_DEVICE_MODEL", DEFAULTS["TC_MDNS_DEVICE_MODEL"])
+    start_cache_directory, smbconf_cache_directory = cache_directory_replacements(
+        payload_family,
+        values["TC_PAYLOAD_DIR_NAME"],
+    )
     return TemplateBundle(
         start_script_replacements={
             "__PAYLOAD_DIR_NAME__": shell_quote(values["TC_PAYLOAD_DIR_NAME"]),
+            "__CACHE_DIRECTORY__": start_cache_directory,
             "__SMB_SHARE_NAME__": shell_quote(values["TC_SHARE_NAME"]),
             "__SMB_NETBIOS_NAME__": shell_quote(values["TC_NETBIOS_NAME"]),
             "__NET_IFACE__": shell_quote(values["TC_NET_IFACE"]),
@@ -62,5 +82,6 @@ def build_template_bundle(values: dict[str, str], *, adisk_disk_key: str = "dk0"
             "__SMB_SAMBA_USER__": values["TC_SAMBA_USER"],
             "__SMB_NETBIOS_NAME__": values["TC_NETBIOS_NAME"],
             "__NET_IFACE__": values["TC_NET_IFACE"],
+            "__CACHE_DIRECTORY__": smbconf_cache_directory,
         },
     )

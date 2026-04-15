@@ -21,7 +21,7 @@
     pid directory = /mnt/Memory/samba4/var
     lock directory = /mnt/Memory/samba4/locks
     state directory = /mnt/Memory/samba4/var
-    cache directory = __DATA_ROOT__/../__PAYLOAD_DIR_NAME__/cache
+    cache directory = __CACHE_DIRECTORY__
     private dir = /mnt/Memory/samba4/private
     log file = /mnt/Memory/samba4/var/log.smbd
     max log size = 256

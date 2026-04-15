@@ -88,7 +88,12 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     run_remote_actions(host, password, ssh_opts, plan.pre_upload_actions)
     adisk_uuid = remote_ensure_adisk_uuid(host, password, ssh_opts, plan.private_dir)
-    template_bundle = build_template_bundle(values, adisk_disk_key=plan.disk_key, adisk_uuid=adisk_uuid)
+    template_bundle = build_template_bundle(
+        values,
+        adisk_disk_key=plan.disk_key,
+        adisk_uuid=adisk_uuid,
+        payload_family=payload_family,
+    )
 
     with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp:
         tmpdir = Path(tmp)
