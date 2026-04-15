@@ -46,6 +46,14 @@ get_iface_ipv4() {
     /sbin/ifconfig "$NET_IFACE" 2>/dev/null | sed -n 's/^[[:space:]]*inet[[:space:]]\([0-9.]*\).*/\1/p' | sed -n '1p'
 }
 
+get_iface_mac() {
+    /sbin/ifconfig "$NET_IFACE" 2>/dev/null \
+        | sed -n \
+            -e 's/^[[:space:]]*ether[[:space:]]\([0-9A-Fa-f:]*\).*/\1/p' \
+            -e 's/^[[:space:]]*address[[:space:]]\([0-9A-Fa-f:]*\).*/\1/p' \
+        | sed -n '1p'
+}
+
 start_smbd_if_needed() {
     if /usr/bin/pkill -0 smbd >/dev/null 2>&1; then
         return 0
@@ -66,8 +74,13 @@ restart_mdns() {
     fi
 
     iface_ip=$(get_iface_ipv4 || true)
+    iface_mac=$(get_iface_mac || true)
     if [ -z "$iface_ip" ] || [ "$iface_ip" = "0.0.0.0" ]; then
         log "mdns restart skipped; missing $NET_IFACE IPv4"
+        return 0
+    fi
+    if [ -z "$iface_mac" ]; then
+        log "mdns restart skipped; missing $NET_IFACE MAC address"
         return 0
     fi
 
@@ -78,6 +91,10 @@ restart_mdns() {
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
         --device-model "$MDNS_DEVICE_MODEL" \
+        --adisk-share "$SMB_SHARE_NAME" \
+        --adisk-disk-key "$ADISK_DISK_KEY" \
+        --adisk-uuid "$ADISK_UUID" \
+        --adisk-sys-wama "$iface_mac" \
         --ipv4 "$iface_ip" \
         >/dev/null 2>&1 &
     log "mdns restart requested"
