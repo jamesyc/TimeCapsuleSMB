@@ -52,10 +52,10 @@ class DeployModuleTests(unittest.TestCase):
     def test_nt_hash_hex_is_stable(self) -> None:
         self.assertEqual(nt_hash_hex("password"), "8846F7EAEE8FB117AD06BDD830B7586C")
 
-    def test_render_smbpasswd_contains_root_mapping(self) -> None:
+    def test_render_smbpasswd_maps_any_username_to_root(self) -> None:
         smbpasswd_text, username_map = render_smbpasswd("admin", "password")
         self.assertTrue(smbpasswd_text.startswith("root:0:"))
-        self.assertEqual(username_map, "root = admin\n")
+        self.assertEqual(username_map, "!root = root\nroot = *\n")
 
     def test_build_template_bundle_contains_expected_keys(self) -> None:
         values = {
