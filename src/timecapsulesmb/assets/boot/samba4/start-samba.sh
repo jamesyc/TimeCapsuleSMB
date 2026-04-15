@@ -96,14 +96,6 @@ get_iface_ipv4() {
     /sbin/ifconfig "$NET_IFACE" 2>/dev/null | sed -n 's/^[[:space:]]*inet[[:space:]]\([0-9.]*\).*/\1/p' | sed -n '1p'
 }
 
-get_iface_mac() {
-    /sbin/ifconfig "$NET_IFACE" 2>/dev/null \
-        | sed -n \
-            -e 's/^[[:space:]]*ether[[:space:]]\([0-9A-Fa-f:]*\).*/\1/p' \
-            -e 's/^[[:space:]]*address[[:space:]]\([0-9A-Fa-f:]*\).*/\1/p' \
-        | sed -n '1p'
-}
-
 wait_for_bind_interfaces() {
     attempt=0
 
@@ -326,12 +318,6 @@ start_mdns() {
         return 0
     fi
 
-    iface_mac=$(get_iface_mac || true)
-    if [ -z "$iface_mac" ]; then
-        log "mdns advertiser launch skipped; missing $NET_IFACE MAC address"
-        return 0
-    fi
-
     /usr/bin/pkill "$MDNS_PROC_NAME" >/dev/null 2>&1 || true
     sleep 1
 
@@ -339,10 +325,6 @@ start_mdns() {
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
         --device-model "$MDNS_DEVICE_MODEL" \
-        --adisk-share "$SMB_SHARE_NAME" \
-        --adisk-disk-key "$ADISK_DISK_KEY" \
-        --adisk-uuid "$ADISK_UUID" \
-        --adisk-sys-wama "$iface_mac" \
         --ipv4 "$BRIDGE0_IP" \
         >/dev/null 2>&1 &
     log "mdns advertiser launch requested"
