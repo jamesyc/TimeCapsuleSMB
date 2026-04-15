@@ -28,6 +28,11 @@ What is working now:
 - manual NetBSD 4 activation via `tcapsule activate`
 - clean uninstall via `tcapsule uninstall`
 
+Current validation status:
+- NetBSD 6 is validated end to end with reboot-persistent startup
+- tested NetBSD 4 gen1 hardware is validated with manual `tcapsule activate` after reboot
+- other NetBSD 4 generations may auto-start if their firmware runs `/mnt/Flash/rc.local` early in boot, but that is not yet confirmed
+
 Current user experience:
 - the Time Capsule advertises `_smb._tcp`
 - the Time Capsule can advertise `_adisk._tcp` for Time Machine
@@ -74,6 +79,8 @@ These constraints drive almost every design decision in this repo.
 Current compatibility classification in the repo is:
 - NetBSD 6.x `evbarm`: current supported deploy target, corresponding to 5th generation Time Capsules
 - NetBSD 4.x `evbarm`: supported as older 1st-4th generation hardware, with a separate NetBSD 4 artifact set and activation path
+  - tested gen1 hardware needs manual `activate` after reboot
+  - other generations may auto-start if their firmware runs `/mnt/Flash/rc.local`, but that is not yet confirmed
 
 ## Why The Current Architecture Exists
 
@@ -100,15 +107,15 @@ However, Apple may later unmount or sleep the disk. Running `smbd` directly from
 The actual working split is:
 
 - persistent payload on HDD:
-  - `/Volumes/dkX/samba4/smbd`
-  - `/Volumes/dkX/samba4/mdns-advertiser`
-  - `/Volumes/dkX/samba4/nbns-advertiser`
-  - `/Volumes/dkX/samba4/smb.conf.template`
-  - `/Volumes/dkX/samba4/private/smbpasswd`
-  - `/Volumes/dkX/samba4/private/username.map`
-  - `/Volumes/dkX/samba4/private/nbns.enabled`
-  - `/Volumes/dkX/samba4/private/xattr.tdb`
-  - `/Volumes/dkX/samba4/cache`
+  - `/Volumes/dkX/<TC_PAYLOAD_DIR_NAME>/smbd`
+  - `/Volumes/dkX/<TC_PAYLOAD_DIR_NAME>/mdns-advertiser`
+  - `/Volumes/dkX/<TC_PAYLOAD_DIR_NAME>/nbns-advertiser`
+  - `/Volumes/dkX/<TC_PAYLOAD_DIR_NAME>/smb.conf.template`
+  - `/Volumes/dkX/<TC_PAYLOAD_DIR_NAME>/private/smbpasswd`
+  - `/Volumes/dkX/<TC_PAYLOAD_DIR_NAME>/private/username.map`
+  - `/Volumes/dkX/<TC_PAYLOAD_DIR_NAME>/private/nbns.enabled`
+  - `/Volumes/dkX/<TC_PAYLOAD_DIR_NAME>/private/xattr.tdb`
+  - `/Volumes/dkX/<TC_PAYLOAD_DIR_NAME>/cache`
 - tiny persistent boot hook on flash:
   - `/mnt/Flash/rc.local`
   - `/mnt/Flash/start-samba.sh`
@@ -122,6 +129,10 @@ This gives:
 - persistence on disk
 - safe execution from RAM
 - only tiny always-mounted files on flash
+
+Current naming split:
+- `TC_PAYLOAD_DIR_NAME` controls the persistent HDD payload directory
+- the live RAM runtime path is intentionally fixed at `/mnt/Memory/samba4`
 
 ## Why Samba 4.8
 
@@ -192,7 +203,18 @@ Current maintainer build lanes:
 - NetBSD 7 Samba 4 lane:
   - [build/downloadsamba4.sh](build/downloadsamba4.sh)
   - [build/samba4.sh](build/samba4.sh)
-- NetBSD 4 Samba 3 lane:
+- NetBSD 4 Samba 4 lane:
+  - [build/downloadsamba4old.sh](build/downloadsamba4old.sh)
+  - [build/samba4old.sh](build/samba4old.sh)
+- NetBSD 7 utility lanes:
+  - [build/hello.sh](build/hello.sh)
+  - [build/mdns.sh](build/mdns.sh)
+  - [build/nbns.sh](build/nbns.sh)
+- NetBSD 4 utility lanes:
+  - [build/helloold.sh](build/helloold.sh)
+  - [build/mdnsold.sh](build/mdnsold.sh)
+  - [build/nbnsold.sh](build/nbnsold.sh)
+- NetBSD 4 Samba 3 exploratory lane:
   - [build/downloadsamba3old.sh](build/downloadsamba3old.sh)
   - [build/samba3old.sh](build/samba3old.sh)
 
@@ -296,7 +318,7 @@ Important implementation detail:
 - the watchdog therefore uses the truncated process name for liveness checks and restarts
 
 NetBSD 4-specific shell note:
-- `rc.local` disables `set -e` only around the watchdog probe/start block
+- `rc.local` uses a subshell-scoped `set +e` workaround only around the watchdog probe/start block
 - this avoids a NetBSD 4 `/bin/sh` edge case where launching a background job from an `if` branch can make the script report status `1`
 - backgrounded jobs redirect stdin from `/dev/null` so they do not hold the SSH session open during manual activation
 
@@ -527,6 +549,7 @@ It checks:
 - authenticated `smbutil view`
 - authenticated SMB file operations on the mounted share
 - that the configured share name is present in the authenticated SMB listing
+- that the active runtime `xattr_tdb:file` path in `/mnt/Memory/samba4/etc/smb.conf` points at persistent storage instead of the ramdisk
 
 It does not:
 - deploy
@@ -561,6 +584,10 @@ The normal goal is to use it as a quick health check after:
 - local setup
 - deploy
 - reboot
+
+Current doctor caveats:
+- for SSH-proxied targets, direct SMB client checks may be skipped if only SSH is reachable through the jump host
+- the xattr persistence check inspects the active runtime config under `/mnt/Memory/samba4`, not the persistent template on disk
 
 ## Repair Xattrs Command
 
@@ -621,7 +648,7 @@ Current deploy flow:
 - probes device compatibility and rejects unsupported targets before upload
 - computes the device-specific runtime and payload paths
 - builds a deployment plan before execution
-- creates the persistent payload dir under `/Volumes/dkX/samba4`
+- creates the persistent payload dir under `/Volumes/dkX/<TC_PAYLOAD_DIR_NAME>` (usually `/Volumes/dkX/samba4`)
 - uploads the checked-in binaries:
   - `smbd`
   - `mdns-advertiser`
@@ -653,7 +680,7 @@ NetBSD 4 activation behavior:
 - `tcapsule activate` repeats that activation sequence without re-uploading files
 - tested 1st-generation NetBSD 4 hardware does not persist an `/etc` boot hook and therefore needs manual activation after reboot
 - other NetBSD 4 generations may auto-start if their firmware runs `/mnt/Flash/rc.local` early in boot, but that is not yet proven
-- `activate` is intentionally idempotent: it stops the existing watchdog, stops Apple SMB/mDNS if present, and starts the packaged runtime again
+- `activate` is intentionally conservative: if `smbd` already owns TCP `445` and `mdns-advertiser` already owns UDP `5353`, it skips running `/mnt/Flash/rc.local`
 
 The current password flow is:
 - `TC_PASSWORD` is also used as the Samba password
@@ -673,6 +700,13 @@ Useful operator modes:
 ```
 
 The dry-run modes are intended for users who want to inspect the exact remote actions before touching the box.
+
+Current uninstall behavior:
+- stops the watchdog first so it cannot restart `smbd` during teardown
+- removes the managed payload, flash hooks, runtime tree, and compatibility symlinks
+- runs remote uninstall actions sequentially over SSH
+- prompts before reboot by default
+- supports `--no-reboot`
 
 ## Artifact Resolution
 
