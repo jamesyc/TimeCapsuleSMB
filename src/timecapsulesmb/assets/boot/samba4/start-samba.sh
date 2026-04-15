@@ -30,6 +30,7 @@ RAM_PRIVATE="$RAM_ROOT/private"
 RAM_LOG="$RAM_VAR/rc.local.log"
 SMBD_LOG="$RAM_VAR/log.smbd"
 MDNS_BIN=/mnt/Flash/mdns-advertiser
+MDNS_PROC_NAME=mdns-advertiser
 LEGACY_PREFIX_NETBSD7=/root/tc-netbsd7
 LEGACY_PREFIX_NETBSD4=/root/tc-netbsd4
 NBNS_PROC_NAME=nbns-advertiser
@@ -63,7 +64,7 @@ log() {
 
 cleanup_old_runtime() {
     /usr/bin/pkill smbd >/dev/null 2>&1 || true
-    /usr/bin/pkill mdns-advertiser >/dev/null 2>&1 || true
+    /usr/bin/pkill "$MDNS_PROC_NAME" >/dev/null 2>&1 || true
     /usr/bin/pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true
     sleep 1
     rm -rf /mnt/Memory/samba4
@@ -330,6 +331,9 @@ start_mdns() {
         log "mdns advertiser launch skipped; missing $NET_IFACE MAC address"
         return 0
     fi
+
+    /usr/bin/pkill "$MDNS_PROC_NAME" >/dev/null 2>&1 || true
+    sleep 1
 
     "$MDNS_BIN" \
         --instance "$MDNS_INSTANCE_NAME" \
