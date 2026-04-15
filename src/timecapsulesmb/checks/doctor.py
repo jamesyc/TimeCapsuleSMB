@@ -35,6 +35,41 @@ def _read_interface_ipv4(host: str, password: str, ssh_opts: str, iface: str) ->
     return iface_ip
 
 
+def _parse_xattr_tdb_paths(smb_conf: str) -> list[str]:
+    paths: list[str] = []
+    for line in smb_conf.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", ";")):
+            continue
+        key, separator, value = stripped.partition("=")
+        if separator and key.strip().lower() == "xattr_tdb:file":
+            paths.append(value.strip())
+    return paths
+
+
+def check_xattr_tdb_persistence(host: str, password: str, ssh_opts: str, payload_dir_name: str) -> CheckResult:
+    smb_conf = f"/mnt/Memory/{payload_dir_name}/etc/smb.conf"
+    proc = run_ssh(
+        host,
+        password,
+        ssh_opts,
+        f"/bin/sh -c {shlex.quote(f'if [ -f {shlex.quote(smb_conf)} ]; then cat {shlex.quote(smb_conf)}; fi')}",
+        check=False,
+    )
+    if not proc.stdout.strip():
+        return CheckResult("WARN", f"could not inspect active smb.conf at {smb_conf}")
+
+    paths = _parse_xattr_tdb_paths(proc.stdout)
+    if not paths:
+        return CheckResult("WARN", "active smb.conf does not contain xattr_tdb:file")
+
+    memory_paths = [path for path in paths if path == "/mnt/Memory" or path.startswith("/mnt/Memory/")]
+    if memory_paths:
+        return CheckResult("FAIL", f"xattr_tdb:file points at non-persistent ramdisk: {', '.join(memory_paths)}")
+
+    return CheckResult("PASS", f"xattr_tdb:file is persistent: {', '.join(paths)}")
+
+
 def run_doctor_checks(
     values: dict[str, str],
     *,
@@ -83,6 +118,19 @@ def run_doctor_checks(
         ssh_ok = ssh_result.status == "PASS"
     else:
         ssh_ok = True
+
+    if not skip_ssh and ssh_ok:
+        try:
+            add_result(
+                check_xattr_tdb_persistence(
+                    values["TC_HOST"],
+                    values["TC_PASSWORD"],
+                    ssh_opts,
+                    values["TC_PAYLOAD_DIR_NAME"],
+                )
+            )
+        except (Exception, SystemExit) as e:
+            add_result(CheckResult("WARN", f"xattr_tdb:file check skipped: {e}"))
 
     if proxied_ssh:
         add_result(CheckResult("SKIP", f"direct SMB port check skipped for SSH-proxied target {host}"))
