@@ -14,9 +14,26 @@ def _smbclient_base_args() -> list[str]:
     return ["smbclient", "-s", "/dev/null"]
 
 
-def _run_smbclient_listing(server: str, username: str, password: str, *, timeout: int) -> subprocess.CompletedProcess[str]:
+def _smbclient_target_args(server: str, *, port: Optional[int] = None) -> list[str]:
+    args = [f"//{server}"]
+    if port is not None:
+        return ["-p", str(port), *args]
+    return args
+
+
+def _run_smbclient_listing(
+    server: str,
+    username: str,
+    password: str,
+    *,
+    port: Optional[int] = None,
+    timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    args = _smbclient_base_args() + ["-g"]
+    if port is not None:
+        args += ["-p", str(port)]
     return run_local_capture(
-        _smbclient_base_args() + ["-g", "-L", f"//{server}", "-U", f"{username}%{password}"],
+        args + ["-L", f"//{server}", "-U", f"{username}%{password}"],
         timeout=timeout,
     )
 
@@ -27,12 +44,13 @@ def check_authenticated_smb_listing(
     server: str,
     *,
     expected_share_name: Optional[str] = None,
+    port: Optional[int] = None,
     timeout: int = 20,
 ) -> CheckResult:
     if not command_exists("smbclient"):
         return CheckResult("FAIL", "missing local tool smbclient")
 
-    proc = _run_smbclient_listing(server, username, password, timeout=timeout)
+    proc = _run_smbclient_listing(server, username, password, port=port, timeout=timeout)
     if proc.returncode == 0:
         if expected_share_name is not None and expected_share_name not in proc.stdout:
             return CheckResult(
@@ -45,14 +63,21 @@ def check_authenticated_smb_listing(
     return CheckResult("FAIL", f"authenticated SMB listing failed: {msg}")
 
 
-def try_authenticated_smb_listing(username: str, password: str, servers: list[str], *, timeout: int = 12) -> CheckResult:
+def try_authenticated_smb_listing(
+    username: str,
+    password: str,
+    servers: list[str],
+    *,
+    port: Optional[int] = None,
+    timeout: int = 12,
+) -> CheckResult:
     if not command_exists("smbclient"):
         return CheckResult("WARN", "SMB listing verification skipped: smbclient not found")
 
     failure_msg = "not attempted"
     for server in servers:
         try:
-            proc = _run_smbclient_listing(server, username, password, timeout=timeout)
+            proc = _run_smbclient_listing(server, username, password, port=port, timeout=timeout)
         except subprocess.TimeoutExpired:
             failure_msg = f"timed out via {server}"
             continue
@@ -94,6 +119,7 @@ def check_authenticated_smb_file_ops(
     server: str,
     share_name: str,
     *,
+    port: Optional[int] = None,
     timeout: int = 20,
 ) -> CheckResult:
     results = check_authenticated_smb_file_ops_detailed(
@@ -101,6 +127,7 @@ def check_authenticated_smb_file_ops(
         password,
         server,
         share_name,
+        port=port,
         timeout=timeout,
     )
     first_fail = next((result for result in results if result.status == "FAIL"), None)
@@ -115,6 +142,7 @@ def check_authenticated_smb_file_ops_detailed(
     server: str,
     share_name: str,
     *,
+    port: Optional[int] = None,
     timeout: int = 20,
 ) -> list[CheckResult]:
     if not command_exists("smbclient"):
@@ -127,7 +155,9 @@ def check_authenticated_smb_file_ops_detailed(
 
     def run_share_commands(remote: str, commands: list[str]) -> subprocess.CompletedProcess[str]:
         return run_local_capture(
-            _smbclient_base_args() + [remote, "-U", f"{username}%{password}", "-c", "; ".join(commands)],
+            _smbclient_base_args()
+            + ([ "-p", str(port) ] if port is not None else [])
+            + [remote, "-U", f"{username}%{password}", "-c", "; ".join(commands)],
             timeout=timeout,
         )
 

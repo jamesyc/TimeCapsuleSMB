@@ -16,7 +16,8 @@ from timecapsulesmb.checks.smb import (
 )
 from timecapsulesmb.core.config import extract_host, missing_required_keys
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root
-from timecapsulesmb.transport.ssh import run_ssh
+from timecapsulesmb.transport.local import find_free_local_port
+from timecapsulesmb.transport.ssh import proxy_local_forward, run_ssh
 
 
 def _read_interface_ipv4(host: str, password: str, ssh_opts: str, iface: str) -> str:
@@ -178,7 +179,33 @@ def run_doctor_checks(
             add_result(CheckResult("WARN", f"NBNS check skipped: {e}"))
 
     if proxied_ssh and not skip_smb:
-        add_result(CheckResult("SKIP", "authenticated SMB checks skipped for SSH-proxied target; TCP/445 is not reachable through the SSH jump host"))
+        local_port = find_free_local_port()
+        try:
+            with proxy_local_forward(
+                values["TC_SSH_OPTS"],
+                local_port=local_port,
+                remote_host=host,
+                remote_port=445,
+            ):
+                add_result(
+                    check_authenticated_smb_listing(
+                        values["TC_SAMBA_USER"],
+                        values["TC_PASSWORD"],
+                        "127.0.0.1",
+                        expected_share_name=values["TC_SHARE_NAME"],
+                        port=local_port,
+                    )
+                )
+                for result in check_authenticated_smb_file_ops_detailed(
+                    values["TC_SAMBA_USER"],
+                    values["TC_PASSWORD"],
+                    "127.0.0.1",
+                    values["TC_SHARE_NAME"],
+                    port=local_port,
+                ):
+                    add_result(result)
+        except (Exception, SystemExit) as e:
+            add_result(CheckResult("FAIL", f"authenticated SMB checks failed through SSH tunnel: {e}"))
     elif not skip_smb:
         add_result(
             check_authenticated_smb_listing(

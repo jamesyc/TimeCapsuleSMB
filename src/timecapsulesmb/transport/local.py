@@ -27,6 +27,12 @@ def tcp_open(host: str, port: int, timeout: float = 2.0) -> bool:
     return False
 
 
+def find_free_local_port(host: str = "127.0.0.1") -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((host, 0))
+        return int(sock.getsockname()[1])
+
+
 def run_local_capture(cmd: list[str], timeout: int = 15) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
