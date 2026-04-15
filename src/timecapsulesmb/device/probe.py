@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import shlex
+import time
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import run_ssh
 
 
@@ -47,12 +47,22 @@ def build_device_paths(volume_root: str, payload_dir_name: str) -> DevicePaths:
     )
 
 
-def wait_for_ssh_state(hostname: str, *, expected_up: bool, timeout_seconds: int = 180) -> bool:
-    import time
-
+def wait_for_ssh_state(
+    host: str,
+    password: str,
+    ssh_opts: str,
+    *,
+    expected_up: bool,
+    timeout_seconds: int = 180,
+) -> bool:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
-        if tcp_open(hostname, 22) == expected_up:
+        try:
+            proc = run_ssh(host, password, ssh_opts, "/bin/echo ok", check=False, timeout=10)
+            is_up = proc.returncode == 0 and proc.stdout.strip().endswith("ok")
+        except SystemExit:
+            is_up = False
+        if is_up == expected_up:
             return True
         time.sleep(5)
     return False

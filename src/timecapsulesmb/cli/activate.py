@@ -52,14 +52,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("  fstat shows smbd bound to TCP 445")
         print("  fstat shows mdns-advertiser bound to UDP 5353")
         print("")
-        print("Note: activation is immediate. Tested gen1 NetBSD4 devices need this after reboot;")
+        print("Note: activation is immediate. Tested NetBSD4 devices need this after reboot;")
         print("      other NetBSD4 generations may auto-start if their firmware runs rc.local.")
         return 0
 
     if not args.yes:
         print("This will stop Apple SMB/mDNS and start the already-deployed Samba payload.")
-        print("Tested gen1 NetBSD4 devices need this after reboot; other NetBSD4 generations")
-        print("may auto-start if their firmware runs /mnt/Flash/rc.local.")
+        print("Tested NetBSD4 devices need to run `activate` after reboot; other NetBSD4 generations may auto-start if their firmware runs /mnt/Flash/rc.local after a reboot.")
         answer = input("Continue with NetBSD4 activation? [y/N]: ").strip().lower()
         if answer not in {"y", "yes"}:
             print("Activation cancelled.")

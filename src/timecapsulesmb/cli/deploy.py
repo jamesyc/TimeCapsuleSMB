@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from timecapsulesmb.core.config import ENV_PATH, extract_host, parse_env_values
+from timecapsulesmb.core.config import ENV_PATH, parse_env_values
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
 from timecapsulesmb.deploy.dry_run import deployment_plan_to_jsonable, format_deployment_plan
@@ -100,9 +100,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if is_netbsd4 and not args.yes:
         print("Detected NetBSD 4 Time Capsule.")
-        print("Tested gen1 NetBSD4 devices do not auto-run /mnt/Flash/rc.local, so deploy")
-        print("will activate Samba immediately without rebooting. Other NetBSD4 generations")
-        print("may auto-start after reboot if their firmware runs rc.local.")
+        print("Tested NetBSD4 devices cannot auto-run Samba after a reboot, so deploy will activate Samba immediately without rebooting.")
+        print("Other NetBSD4 generations may auto-start after reboot, if their firmware automatically runs the /mnt/Flash/rc.local script.")
+        print("Run `activate` after a reboot if the device did not auto-start Samba.")
         answer = input("Continue with NetBSD4 deploy + activation? [y/N]: ").strip().lower()
         if answer not in {"y", "yes"}:
             print("Deployment cancelled.")
@@ -168,11 +168,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 0
 
     run_ssh(host, password, ssh_opts, "/sbin/reboot", check=False)
-    hostname = extract_host(host)
     print("Reboot requested. Waiting for the device to go down...")
-    wait_for_ssh_state(hostname, expected_up=False, timeout_seconds=60)
+    wait_for_ssh_state(host, password, ssh_opts, expected_up=False, timeout_seconds=60)
     print("Waiting for the device to come back up...")
-    if wait_for_ssh_state(hostname, expected_up=True, timeout_seconds=240):
+    if wait_for_ssh_state(host, password, ssh_opts, expected_up=True, timeout_seconds=240):
         print("Device is back online.")
         verify_post_deploy(values)
         return 0

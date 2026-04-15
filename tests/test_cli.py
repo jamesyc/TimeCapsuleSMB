@@ -733,10 +733,20 @@ class CliTests(unittest.TestCase):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
                                         with mock.patch("builtins.input", return_value="y"):
                                             with mock.patch("timecapsulesmb.cli.deploy.run_ssh"):
-                                                with mock.patch("timecapsulesmb.cli.deploy.wait_for_ssh_state", side_effect=[True, False]):
+                                                with mock.patch("timecapsulesmb.cli.deploy.wait_for_ssh_state", side_effect=[True, False]) as wait_mock:
                                                     with redirect_stdout(output):
                                                         rc = deploy.main([])
         self.assertEqual(rc, 1)
+        self.assertEqual(
+            wait_mock.call_args_list[0].args,
+            ("root@10.0.0.2", "pw", "-o foo"),
+        )
+        self.assertEqual(wait_mock.call_args_list[0].kwargs, {"expected_up": False, "timeout_seconds": 60})
+        self.assertEqual(
+            wait_mock.call_args_list[1].args,
+            ("root@10.0.0.2", "pw", "-o foo"),
+        )
+        self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 240})
         self.assertIn("Timed out waiting for SSH after reboot.", output.getvalue())
 
     def test_deploy_install_nbns_touches_marker(self) -> None:
@@ -1410,13 +1420,23 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root", return_value="/Volumes/dk2"):
                 with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload") as uninstall_mock:
                     with mock.patch("timecapsulesmb.cli.uninstall.run_ssh") as run_ssh_mock:
-                        with mock.patch("timecapsulesmb.cli.uninstall.wait_for_ssh_state", side_effect=[True, True]):
+                        with mock.patch("timecapsulesmb.cli.uninstall.wait_for_ssh_state", side_effect=[True, True]) as wait_mock:
                             with mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall", return_value=True) as verify_mock:
                                 with redirect_stdout(output):
                                     rc = uninstall.main(["--yes"])
         self.assertEqual(rc, 0)
         uninstall_mock.assert_called_once()
         run_ssh_mock.assert_called_once()
+        self.assertEqual(
+            wait_mock.call_args_list[0].args,
+            ("root@10.0.0.2", "pw", "-o foo"),
+        )
+        self.assertEqual(wait_mock.call_args_list[0].kwargs, {"expected_up": False, "timeout_seconds": 60})
+        self.assertEqual(
+            wait_mock.call_args_list[1].args,
+            ("root@10.0.0.2", "pw", "-o foo"),
+        )
+        self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 240})
         verify_mock.assert_called_once()
         self.assertIn("Device is back online.", output.getvalue())
 

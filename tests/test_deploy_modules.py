@@ -33,6 +33,7 @@ from timecapsulesmb.deploy.executor import (
     remote_ensure_adisk_uuid,
     remote_install_permissions,
     remote_prepare_dirs,
+    remote_uninstall_payload,
     upload_deployment_payload,
 )
 from timecapsulesmb.deploy.planner import build_deployment_plan, build_uninstall_plan
@@ -44,7 +45,7 @@ from timecapsulesmb.deploy.templates import (
     render_template_text,
 )
 from timecapsulesmb.deploy.verify import verify_netbsd4_activation
-from timecapsulesmb.device.probe import build_device_paths, discover_volume_root
+from timecapsulesmb.device.probe import build_device_paths, discover_volume_root, wait_for_ssh_state
 
 
 class DeployModuleTests(unittest.TestCase):
@@ -578,6 +579,51 @@ PASS:mdns-advertiser bound to UDP 5353
         with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
             remote_install_permissions("host", "pw", "-o foo", payload_dir)
         self.assertEqual(run_ssh_mock.call_args.args[3], render_remote_action(install_permissions_action(payload_dir)))
+
+    def test_remote_uninstall_payload_runs_actions_sequentially(self) -> None:
+        paths = build_device_paths("/Volumes/dk2", "samba4")
+        plan = build_uninstall_plan("root@10.0.0.2", paths)
+        expected = [render_remote_action(action) for action in plan.remote_actions]
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
+            remote_uninstall_payload("host", "pw", "-o foo", plan)
+        self.assertEqual([call.args[3] for call in run_ssh_mock.call_args_list], expected)
+
+    def test_wait_for_ssh_state_uses_real_ssh_probe_for_expected_up(self) -> None:
+        proc = mock.Mock(returncode=0, stdout="ok\n")
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
+            self.assertTrue(wait_for_ssh_state("root@10.0.0.2", "pw", "-o ProxyCommand=jump", expected_up=True, timeout_seconds=1))
+        run_ssh_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o ProxyCommand=jump", "/bin/echo ok", check=False, timeout=10)
+
+    def test_wait_for_ssh_state_treats_probe_failure_as_down(self) -> None:
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=SystemExit("timeout")) as run_ssh_mock:
+            self.assertTrue(wait_for_ssh_state("root@10.0.0.2", "pw", "-o ProxyCommand=jump", expected_up=False, timeout_seconds=1))
+        run_ssh_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o ProxyCommand=jump", "/bin/echo ok", check=False, timeout=10)
+
+    def test_wait_for_ssh_state_retries_until_up(self) -> None:
+        fail = mock.Mock(returncode=255, stdout="")
+        ok = mock.Mock(returncode=0, stdout="ok\n")
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=[fail, ok]) as run_ssh_mock:
+            with mock.patch("timecapsulesmb.device.probe.time.sleep") as sleep_mock:
+                self.assertTrue(wait_for_ssh_state("root@10.0.0.2", "pw", "-o ProxyCommand=jump", expected_up=True, timeout_seconds=6))
+        self.assertEqual(run_ssh_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(5)
+
+    def test_wait_for_ssh_state_retries_until_down(self) -> None:
+        ok = mock.Mock(returncode=0, stdout="ok\n")
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=[ok, SystemExit("down")]) as run_ssh_mock:
+            with mock.patch("timecapsulesmb.device.probe.time.sleep") as sleep_mock:
+                self.assertTrue(wait_for_ssh_state("root@10.0.0.2", "pw", "-o ProxyCommand=jump", expected_up=False, timeout_seconds=6))
+        self.assertEqual(run_ssh_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(5)
+
+    def test_wait_for_ssh_state_times_out_when_state_never_matches(self) -> None:
+        ok = mock.Mock(returncode=0, stdout="ok\n")
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=ok) as run_ssh_mock:
+            with mock.patch("timecapsulesmb.device.probe.time.time", side_effect=[0.0, 0.0, 2.0]):
+                with mock.patch("timecapsulesmb.device.probe.time.sleep") as sleep_mock:
+                    self.assertFalse(wait_for_ssh_state("root@10.0.0.2", "pw", "-o ProxyCommand=jump", expected_up=False, timeout_seconds=1))
+        run_ssh_mock.assert_called_once()
+        sleep_mock.assert_called_once_with(5)
 
 
 if __name__ == "__main__":

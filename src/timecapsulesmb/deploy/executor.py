@@ -92,4 +92,5 @@ def run_remote_actions(host: str, password: str, ssh_opts: str, actions) -> None
 
 
 def remote_uninstall_payload(host: str, password: str, ssh_opts: str, plan: UninstallPlan) -> None:
-    run_ssh(host, password, ssh_opts, " && ".join(render_remote_actions(plan.remote_actions)))
+    for command in render_remote_actions(plan.remote_actions):
+        run_ssh(host, password, ssh_opts, command)

@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from timecapsulesmb.core.config import ENV_PATH, extract_host, parse_env_values
+from timecapsulesmb.core.config import ENV_PATH, parse_env_values
 from timecapsulesmb.deploy.dry_run import format_uninstall_plan, uninstall_plan_to_jsonable
 from timecapsulesmb.deploy.executor import remote_uninstall_payload
 from timecapsulesmb.deploy.planner import build_uninstall_plan
@@ -32,6 +32,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.json and not args.dry_run:
         parser.error("--json currently requires --dry-run")
+
+    if not args.json:
+        print("Uninstalling...")
 
     values = parse_env_values(ENV_PATH)
     host = require(values, "TC_HOST")
@@ -66,11 +69,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 0
 
     run_ssh(host, password, ssh_opts, "/sbin/reboot", check=False)
-    hostname = extract_host(host)
     print("Reboot requested. Waiting for the device to go down...")
-    wait_for_ssh_state(hostname, expected_up=False, timeout_seconds=60)
+    wait_for_ssh_state(host, password, ssh_opts, expected_up=False, timeout_seconds=60)
     print("Waiting for the device to come back up...")
-    if not wait_for_ssh_state(hostname, expected_up=True, timeout_seconds=240):
+    if not wait_for_ssh_state(host, password, ssh_opts, expected_up=True, timeout_seconds=240):
         print("Timed out waiting for SSH after reboot.")
         return 1
 
