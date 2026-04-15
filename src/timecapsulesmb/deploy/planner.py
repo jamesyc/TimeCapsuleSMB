@@ -130,10 +130,12 @@ def build_deployment_plan(
         ] if install_nbns else []),
         pre_upload_actions=[
             # Existing installs run mdns-advertiser directly from /mnt/Flash.
-            # Stop the watchdog first so it does not restart the binary while
-            # deploy is overwriting it.
+            # Stop the watchdog first so it does not restart daemons while
+            # deploy is overwriting the payload and auth files.
             stop_process_full_action("[w]atchdog.sh"),
+            stop_process_action("smbd"),
             stop_process_action("mdns-advertiser"),
+            stop_process_action("nbns-advertiser"),
             prepare_dirs_action(payload_dir),
         ]
         + ([enable_nbns_action(private_dir)] if install_nbns else []),

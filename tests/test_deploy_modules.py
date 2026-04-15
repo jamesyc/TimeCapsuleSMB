@@ -122,7 +122,9 @@ class DeployModuleTests(unittest.TestCase):
             plan.pre_upload_actions,
             [
                 stop_process_full_action("[w]atchdog.sh"),
+                stop_process_action("smbd"),
                 stop_process_action("mdns-advertiser"),
+                stop_process_action("nbns-advertiser"),
                 prepare_dirs_action("/Volumes/dk2/samba4"),
             ],
         )
