@@ -116,6 +116,9 @@ class CheckTests(unittest.TestCase):
     def test_ssh_opts_use_proxy_detects_proxycommand_and_proxyjump(self) -> None:
         self.assertTrue(ssh_opts_use_proxy("-o ProxyCommand=ssh\\ -W\\ %h:%p\\ bastion"))
         self.assertTrue(ssh_opts_use_proxy("-J bastion.example.com"))
+        self.assertTrue(ssh_opts_use_proxy("-Jbastion.example.com"))
+        self.assertTrue(ssh_opts_use_proxy("-o ProxyJump=bastion.example.com"))
+        self.assertTrue(ssh_opts_use_proxy("-oProxyCommand=ssh\\ -W\\ %h:%p\\ bastion"))
         self.assertFalse(ssh_opts_use_proxy("-o HostKeyAlgorithms=+ssh-rsa"))
 
     def test_check_ssh_login_uses_configured_ssh_transport(self) -> None:
@@ -161,6 +164,43 @@ class CheckTests(unittest.TestCase):
                                                 results, fatal = run_doctor_checks(values, env_exists=True, repo_root=REPO_ROOT)
         self.assertFalse(fatal)
         ssh_mock.assert_called_once_with("root@192.168.1.118", "pw", values["TC_SSH_OPTS"])
+        smb_port_mock.assert_not_called()
+        bonjour_mock.assert_not_called()
+        smb_listing_mock.assert_not_called()
+        smb_file_ops_mock.assert_not_called()
+        nbns_mock.assert_not_called()
+        messages = [result.message for result in results if result.status == "SKIP"]
+        self.assertTrue(any("direct SMB port check skipped" in message for message in messages))
+        self.assertTrue(any("Bonjour check skipped" in message for message in messages))
+        self.assertTrue(any("NBNS check skipped" in message for message in messages))
+        self.assertTrue(any("authenticated SMB checks skipped" in message for message in messages))
+
+    def test_run_doctor_checks_compact_jump_option_skips_local_network_checks(self) -> None:
+        values = {
+            "TC_HOST": "root@192.168.1.118",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-Jbastion.example.com -o HostKeyAlgorithms=+ssh-rsa",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+        }
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.check_ssh_login", return_value=mock.Mock(status="PASS", message="ssh ok")):
+                    with mock.patch("timecapsulesmb.checks.doctor.check_smb_port") as smb_port_mock:
+                        with mock.patch("timecapsulesmb.checks.doctor.run_bonjour_checks") as bonjour_mock:
+                            with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing") as smb_listing_mock:
+                                with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops") as smb_file_ops_mock:
+                                    with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root", return_value="/Volumes/dk2"):
+                                        with mock.patch("timecapsulesmb.checks.doctor.run_ssh", return_value=mock.Mock(stdout="enabled\n")):
+                                            with mock.patch("timecapsulesmb.checks.doctor.check_nbns_name_resolution") as nbns_mock:
+                                                results, fatal = run_doctor_checks(values, env_exists=True, repo_root=REPO_ROOT)
+        self.assertFalse(fatal)
         smb_port_mock.assert_not_called()
         bonjour_mock.assert_not_called()
         smb_listing_mock.assert_not_called()
