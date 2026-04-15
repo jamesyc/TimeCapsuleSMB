@@ -106,11 +106,13 @@ The actual working split is:
   - `/Volumes/dkX/samba4/private/username.map`
   - `/Volumes/dkX/samba4/private/nbns.enabled`
   - `/Volumes/dkX/samba4/private/xattr.tdb`
+  - `/Volumes/dkX/samba4/cache`
 - tiny persistent boot hook on flash:
   - `/mnt/Flash/rc.local`
   - `/mnt/Flash/start-samba.sh`
   - `/mnt/Flash/watchdog.sh`
   - `/mnt/Flash/dfree.sh`
+  - `/mnt/Flash/mdns-advertiser`
 - transient runtime on RAM disk:
   - `/mnt/Memory/samba4`
 
@@ -311,6 +313,9 @@ Current optional NBNS state lives on the HDD:
 Current persistent Time Machine metadata state also lives on the HDD:
 - `/Volumes/dk2/samba4/private/xattr.tdb`
 
+Current Samba cache state lives on the HDD to preserve RAM headroom:
+- `/Volumes/dk2/samba4/cache`
+
 Current rendered Samba config characteristics:
 - `security = user`
 - `min protocol = SMB2`
@@ -320,6 +325,11 @@ Current rendered Samba config characteristics:
 - `force user = root`
 - `force group = wheel`
 - `path = /Volumes/dk2/ShareRoot` on the tested box
+- `pid directory = /mnt/Memory/samba4/var`
+- `lock directory = /mnt/Memory/samba4/locks`
+- `state directory = /mnt/Memory/samba4/var`
+- `cache directory = /Volumes/dk2/samba4/cache` on the tested box
+- `private dir = /mnt/Memory/samba4/private`
 - `vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb`
 - `fruit:resource = file`
 - `fruit:metadata = stream`

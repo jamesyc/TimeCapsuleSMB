@@ -83,6 +83,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertEqual(plan.volume_root, "/Volumes/dk2")
         self.assertEqual(plan.disk_key, "dk2")
         self.assertEqual(plan.remote_directories[0], "/Volumes/dk2/samba4")
+        self.assertIn("/Volumes/dk2/samba4/cache", plan.remote_directories)
         self.assertEqual(plan.payload_targets["nbns-advertiser"], "/Volumes/dk2/samba4/nbns-advertiser")
         self.assertEqual(plan.pre_upload_actions, [prepare_dirs_action("/Volumes/dk2/samba4")])
         self.assertEqual(plan.post_auth_actions, [install_permissions_action("/Volumes/dk2/samba4")])
@@ -120,7 +121,28 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('if [ -f "$payload_dir/private/nbns.enabled" ]', rendered)
         self.assertIn('cp "$nbns_src" "$RAM_SBIN/nbns-advertiser"', rendered)
         self.assertIn('"$RAM_SBIN/nbns-advertiser" \\', rendered)
+        self.assertIn("cache directory = $DATA_ROOT/../$PAYLOAD_DIR_NAME/cache", rendered)
+        self.assertIn("lock directory = $RAM_LOCKS", rendered)
+        self.assertIn("state directory = $RAM_VAR", rendered)
         self.assertNotIn('cp "$nbns_src" "$RAM_SBIN/nbns-advertiser"\n    chmod 755 "$RAM_SBIN/nbns-advertiser"', rendered)
+
+    def test_render_smb_conf_uses_persistent_cache_directory(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(values)
+        rendered = render_template("smb.conf.template", bundle.smbconf_replacements)
+        self.assertIn("cache directory = __DATA_ROOT__/../samba4/cache", rendered)
+        self.assertIn("lock directory = /mnt/Memory/samba4/locks", rendered)
+        self.assertIn("state directory = /mnt/Memory/samba4/var", rendered)
+        self.assertIn("private dir = /mnt/Memory/samba4/private", rendered)
 
     def test_render_watchdog_script_includes_device_model_flag(self) -> None:
         values = {
@@ -303,12 +325,13 @@ int main(void) {{
         plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), install_nbns=True)
         text = format_deployment_plan(plan)
         self.assertIn("volume root: /Volumes/dk2", text)
-        self.assertIn("mkdir -p /Volumes/dk2/samba4 /Volumes/dk2/samba4/private /mnt/Flash", text)
+        self.assertIn("mkdir -p /Volumes/dk2/samba4 /Volumes/dk2/samba4/private /Volumes/dk2/samba4/cache /mnt/Flash", text)
         self.assertIn("/bin/sh -c ': > /Volumes/dk2/samba4/private/nbns.enabled'", text)
         self.assertIn("generated smbpasswd -> /Volumes/dk2/samba4/private/smbpasswd", text)
         self.assertIn("generated adisk UUID -> /Volumes/dk2/samba4/private/adisk.uuid", text)
         self.assertIn("generated nbns marker -> /Volumes/dk2/samba4/private/nbns.enabled", text)
         self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4", text)
+        self.assertIn("chmod 755 /Volumes/dk2/samba4/cache", text)
         self.assertIn("chmod 700 /Volumes/dk2/samba4/private", text)
 
     def test_build_uninstall_plan_stops_nbns_process(self) -> None:
@@ -323,6 +346,8 @@ int main(void) {{
         enable_cmd = render_remote_action(enable_nbns_action(payload_dir + "/private"))
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4'", prepare_cmd)
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/private'", prepare_cmd)
+        self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/cache'", prepare_cmd)
+        self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/cache'", permissions_cmd)
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/nbns-advertiser'", permissions_cmd)
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/private/nbns.enabled'", permissions_cmd)
         self.assertIn("if [ -f '/Volumes/dk2/Time Capsule Samba 4/private/nbns.enabled' ]; then", permissions_cmd)

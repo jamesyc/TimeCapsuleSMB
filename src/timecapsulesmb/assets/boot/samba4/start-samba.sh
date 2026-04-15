@@ -279,7 +279,7 @@ stage_runtime() {
     pid directory = $RAM_VAR
     lock directory = $RAM_LOCKS
     state directory = $RAM_VAR
-    cache directory = $RAM_VAR
+    cache directory = $DATA_ROOT/../$PAYLOAD_DIR_NAME/cache
     private dir = $RAM_PRIVATE
     log file = $SMBD_LOG
     max log size = 256

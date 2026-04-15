@@ -68,6 +68,7 @@ def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path,
         "smb.conf.template": f"{payload_dir}/smb.conf.template",
     }
     private_dir = f"{payload_dir}/private"
+    cache_dir = f"{payload_dir}/cache"
     return DeploymentPlan(
         host=host,
         volume_root=device_paths.volume_root,
@@ -82,6 +83,7 @@ def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path,
         remote_directories=[
             payload_dir,
             private_dir,
+            cache_dir,
             "/mnt/Flash",
         ],
         uploads=[

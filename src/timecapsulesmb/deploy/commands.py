@@ -34,13 +34,14 @@ def render_remote_action(action: RemoteAction) -> str:
     if action.kind == "prepare_dirs":
         payload_dir = action.args[0]
         return (
-            "mkdir -p {} {} {} {} {} && "
+            "mkdir -p {} {} {} {} {} {} && "
             "rm -rf {} {} && "
             "ln -s {} {} && "
             "ln -s {} {}"
         ).format(
             shlex.quote(payload_dir),
             shlex.quote(payload_dir + "/private"),
+            shlex.quote(payload_dir + "/cache"),
             shlex.quote("/mnt/Flash"),
             shlex.quote("/root"),
             shlex.quote("/mnt/Memory/samba4"),
@@ -64,6 +65,7 @@ def render_remote_action(action: RemoteAction) -> str:
             f"{shlex.quote('/mnt/Flash/watchdog.sh')} "
             f"{shlex.quote('/mnt/Flash/dfree.sh')} "
             f"{shlex.quote('/mnt/Flash/mdns-advertiser')} && "
+            f"chmod 755 {shlex.quote(payload_dir + '/cache')} && "
             f"chmod 700 {shlex.quote(private_dir)} && "
             f"chmod 600 {shlex.quote(private_dir + '/smbpasswd')} "
             f"{shlex.quote(private_dir + '/username.map')} "
