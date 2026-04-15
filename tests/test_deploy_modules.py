@@ -134,6 +134,17 @@ class DeployModuleTests(unittest.TestCase):
         content = load_boot_asset_text("rc.local")
         self.assertIn("/mnt/Flash/start-samba.sh", content)
 
+    def test_rc_local_disables_errexit_around_watchdog_start(self) -> None:
+        content = load_boot_asset_text("rc.local")
+        watchdog_probe_index = content.index("/usr/bin/pkill -0 -f /mnt/Flash/watchdog.sh")
+        self.assertLess(content.index("set +e"), watchdog_probe_index)
+        self.assertGreater(content.index("set -e", watchdog_probe_index), watchdog_probe_index)
+
+    def test_rc_local_detaches_background_jobs_from_stdin(self) -> None:
+        content = load_boot_asset_text("rc.local")
+        self.assertIn("/mnt/Flash/start-samba.sh </dev/null >/dev/null 2>&1 &", content)
+        self.assertIn("/mnt/Flash/watchdog.sh </dev/null >/dev/null 2>&1 &", content)
+
     def test_render_start_script_includes_device_model_flag(self) -> None:
         values = {
             "TC_PAYLOAD_DIR_NAME": "samba4",
@@ -517,15 +528,17 @@ PASS:mdns-advertiser bound to UDP 5353
             activate_netbsd4=True,
         )
         self.assertFalse(plan.reboot_required)
-        self.assertEqual([action.kind for action in plan.activation_actions], ["stop_process", "stop_process", "run_script"])
-        self.assertEqual([action.args[0] for action in plan.activation_actions], ["mDNSResponder", "wcifsfs", "/mnt/Flash/rc.local"])
+        self.assertEqual([action.kind for action in plan.activation_actions], ["stop_process_full", "stop_process", "stop_process", "run_script"])
+        self.assertEqual([action.args[0] for action in plan.activation_actions], ["[w]atchdog.sh", "mDNSResponder", "wcifsfs", "/mnt/Flash/rc.local"])
 
         text = format_deployment_plan(plan)
         self.assertIn("Remote actions (NetBSD4 activation):", text)
+        self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
         self.assertIn("pkill mDNSResponder >/dev/null 2>&1 || true", text)
         self.assertIn("pkill wcifsfs >/dev/null 2>&1 || true", text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
-        self.assertIn("NetBSD4 activation is immediate and does not persist across device reboot.", text)
+        self.assertIn("NetBSD4 activation is immediate.", text)
+        self.assertIn("other generations may auto-start rc.local", text)
         self.assertIn("fstat shows smbd bound to TCP 445", text)
 
     def test_build_uninstall_plan_stops_nbns_process(self) -> None:

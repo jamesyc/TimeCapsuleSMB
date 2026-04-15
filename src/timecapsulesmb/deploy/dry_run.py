@@ -39,7 +39,8 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     lines.append("Reboot:")
     lines.append(f"  {'yes' if plan.reboot_required else 'no'}")
     if plan.activation_actions:
-        lines.append("  NetBSD4 activation is immediate and does not persist across device reboot.")
+        lines.append("  NetBSD4 activation is immediate.")
+        lines.append("  Tested gen1 devices need activate after reboot; other generations may auto-start rc.local.")
     lines.append("")
     lines.append("Post-deploy checks:")
     if plan.activation_actions:

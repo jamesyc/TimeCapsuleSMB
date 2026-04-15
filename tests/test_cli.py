@@ -15,7 +15,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.cli import bootstrap, configure, deploy, discover, doctor, prep_device, uninstall
+from timecapsulesmb.cli import activate, bootstrap, configure, deploy, discover, doctor, prep_device, uninstall
 from timecapsulesmb.cli.main import main
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.discovery.bonjour import Discovered
@@ -50,6 +50,12 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"doctor": mock.Mock(return_value=7)}):
             rc = main(["doctor", "--skip-smb"])
         self.assertEqual(rc, 7)
+
+    def test_activate_command_is_registered(self) -> None:
+        with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"activate": mock.Mock(return_value=0)}) as commands:
+            rc = main(["activate", "--dry-run"])
+        self.assertEqual(rc, 0)
+        commands["activate"].assert_called_once_with(["--dry-run"])
 
     def test_bootstrap_prints_full_next_steps(self) -> None:
         output = io.StringIO()
@@ -816,10 +822,12 @@ class CliTests(unittest.TestCase):
         self.assertIn("bin/mdns-netbsd4/mdns-advertiser -> /mnt/Flash/mdns-advertiser", text)
         self.assertIn("bin/nbns-netbsd4/nbns-advertiser -> /Volumes/dk2/samba4/nbns-advertiser", text)
         self.assertIn("Remote actions (NetBSD4 activation):", text)
+        self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
         self.assertIn("pkill mDNSResponder >/dev/null 2>&1 || true", text)
         self.assertIn("pkill wcifsfs >/dev/null 2>&1 || true", text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
-        self.assertIn("NetBSD4 activation is immediate and does not persist across device reboot.", text)
+        self.assertIn("NetBSD4 activation is immediate.", text)
+        self.assertIn("other generations may auto-start rc.local", text)
 
     def test_deploy_netbsd4_prompt_decline_cancels_before_remote_actions(self) -> None:
         output = io.StringIO()
@@ -877,7 +885,7 @@ class CliTests(unittest.TestCase):
                                                     rc = deploy.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(actions_mock.call_count, 3)
-        self.assertIn("NetBSD4 activation complete.", output.getvalue())
+        self.assertIn("Run activate after reboot if the device did not auto-start Samba.", output.getvalue())
 
     def test_deploy_renders_templates_with_netbsd4_payload_family(self) -> None:
         values = {
@@ -948,8 +956,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(actions_mock.call_count, 3)
         activation_action_kinds = [action.kind for action in actions_mock.call_args_list[2].args[3]]
         activation_action_args = [action.args[0] for action in actions_mock.call_args_list[2].args[3]]
-        self.assertEqual(activation_action_kinds, ["stop_process", "stop_process", "run_script"])
-        self.assertEqual(activation_action_args, ["mDNSResponder", "wcifsfs", "/mnt/Flash/rc.local"])
+        self.assertEqual(activation_action_kinds, ["stop_process_full", "stop_process", "stop_process", "run_script"])
+        self.assertEqual(activation_action_args, ["[w]atchdog.sh", "mDNSResponder", "wcifsfs", "/mnt/Flash/rc.local"])
+        self.assertEqual(actions_mock.call_args_list[2].kwargs, {})
         verify_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o foo")
         run_ssh_mock.assert_not_called()
         self.assertIn("Activating NetBSD4 payload without reboot.", output.getvalue())
@@ -1251,16 +1260,107 @@ class CliTests(unittest.TestCase):
         self.assertFalse(payload["reboot_required"])
         self.assertEqual(
             [action["kind"] for action in payload["activation_actions"]],
-            ["stop_process", "stop_process", "run_script"],
+            ["stop_process_full", "stop_process", "stop_process", "run_script"],
         )
         self.assertEqual(
             [action["args"][0] for action in payload["activation_actions"]],
-            ["mDNSResponder", "wcifsfs", "/mnt/Flash/rc.local"],
+            ["[w]atchdog.sh", "mDNSResponder", "wcifsfs", "/mnt/Flash/rc.local"],
         )
         self.assertEqual(
             payload["post_deploy_checks"],
             ["netbsd4_smbd_bound_445", "netbsd4_mdns_bound_5353"],
         )
+
+    def test_activate_dry_run_prints_netbsd4_activation_plan(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+        }
+        with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
+                    with redirect_stdout(output):
+                        rc = activate.main(["--dry-run"])
+        self.assertEqual(rc, 0)
+        actions_mock.assert_not_called()
+        text = output.getvalue()
+        self.assertIn("Dry run: NetBSD4 activation plan", text)
+        self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
+        self.assertIn("pkill mDNSResponder >/dev/null 2>&1 || true", text)
+        self.assertIn("pkill wcifsfs >/dev/null 2>&1 || true", text)
+        self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
+        self.assertIn("Tested gen1 NetBSD4 devices need this after reboot", text)
+        self.assertIn("other NetBSD4 generations may auto-start", text)
+
+    def test_activate_rejects_non_netbsd4_device(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+        }
+        with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+                with self.assertRaises(SystemExit) as cm:
+                    activate.main(["--dry-run"])
+        self.assertIn("only supported for NetBSD4", str(cm.exception))
+
+    def test_activate_prompt_decline_cancels_before_remote_actions(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+        }
+        with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                with mock.patch("builtins.input", return_value="n"):
+                    with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
+                        with redirect_stdout(output):
+                            rc = activate.main([])
+        self.assertEqual(rc, 0)
+        actions_mock.assert_not_called()
+        self.assertIn("Activation cancelled.", output.getvalue())
+
+    def test_activate_yes_runs_idempotent_actions_and_verifies(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+        }
+        with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
+                    with mock.patch("timecapsulesmb.cli.activate.verify_netbsd4_activation", return_value=True) as verify_mock:
+                        with redirect_stdout(output):
+                            rc = activate.main(["--yes"])
+        self.assertEqual(rc, 0)
+        actions_mock.assert_called_once()
+        action_kinds = [action.kind for action in actions_mock.call_args.args[3]]
+        action_args = [action.args[0] for action in actions_mock.call_args.args[3]]
+        self.assertEqual(action_kinds, ["stop_process_full", "stop_process", "stop_process", "run_script"])
+        self.assertEqual(action_args, ["[w]atchdog.sh", "mDNSResponder", "wcifsfs", "/mnt/Flash/rc.local"])
+        self.assertEqual(actions_mock.call_args.kwargs, {})
+        verify_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o foo")
+        self.assertIn("without file transfer", output.getvalue())
+
+    def test_activate_returns_nonzero_when_verification_fails(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+        }
+        with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                with mock.patch("timecapsulesmb.cli.activate.run_remote_actions"):
+                    with mock.patch("timecapsulesmb.cli.activate.verify_netbsd4_activation", return_value=False):
+                        with redirect_stdout(output):
+                            rc = activate.main(["--yes"])
+        self.assertEqual(rc, 1)
+        self.assertIn("NetBSD4 activation failed.", output.getvalue())
 
     def test_uninstall_dry_run_prints_target_host(self) -> None:
         output = io.StringIO()

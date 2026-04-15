@@ -55,6 +55,17 @@ class UninstallPlan:
     reboot_required: bool
 
 
+def build_netbsd4_activation_actions() -> list[RemoteAction]:
+    return [
+        # NetBSD4 activation is re-runnable after deploy or reboot. Stop the
+        # old watchdog first so it cannot race the fresh rc.local launch.
+        stop_process_full_action("[w]atchdog.sh"),
+        stop_process_action("mDNSResponder"),
+        stop_process_action("wcifsfs"),
+        run_script_action("/mnt/Flash/rc.local"),
+    ]
+
+
 def build_deployment_plan(
     host: str,
     device_paths: DevicePaths,
@@ -127,15 +138,7 @@ def build_deployment_plan(
         ]
         + ([enable_nbns_action(private_dir)] if install_nbns else []),
         post_auth_actions=[install_permissions_action(payload_dir)],
-        activation_actions=(
-            [
-                stop_process_action("mDNSResponder"),
-                stop_process_action("wcifsfs"),
-                run_script_action("/mnt/Flash/rc.local"),
-            ]
-            if activate_netbsd4
-            else []
-        ),
+        activation_actions=build_netbsd4_activation_actions() if activate_netbsd4 else [],
         reboot_required=not activate_netbsd4,
     )
 

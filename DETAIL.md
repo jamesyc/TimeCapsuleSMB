@@ -9,7 +9,8 @@ It is intentionally denser than [README.md](README.md). The README is the user-f
 The current system works end to end on the target Apple AirPort Time Capsule.
 
 What is working now:
-- static Samba 4.8.x built from NetBSD 7 sources
+- static Samba 4.8.x built from NetBSD 7 sources for NetBSD 6-era Time Capsules
+- static Samba 4.8.x built from NetBSD 4 sources for older NetBSD 4-era Time Capsules
 - static tiny SMB / Time Machine mDNS advertiser
 - optional static NBNS responder for NetBIOS name discovery
 - boot-time runtime staging via `/mnt/Flash/rc.local`
@@ -24,6 +25,7 @@ What is working now:
   - password: the same password provided in `.env` as `TC_PASSWORD`
 - guest access disabled
 - deploy-time device compatibility detection
+- manual NetBSD 4 activation via `tcapsule activate`
 - clean uninstall via `tcapsule uninstall`
 
 Current user experience:
@@ -71,7 +73,7 @@ These constraints drive almost every design decision in this repo.
 
 Current compatibility classification in the repo is:
 - NetBSD 6.x `evbarm`: current supported deploy target, corresponding to 5th generation Time Capsules
-- NetBSD 4.x `evbarm`: detected explicitly as older 1st-4th generation hardware, but not supported by the current checked-in Samba 4 payload
+- NetBSD 4.x `evbarm`: supported as older 1st-4th generation hardware, with a separate NetBSD 4 artifact set and activation path
 
 ## Why The Current Architecture Exists
 
@@ -254,7 +256,7 @@ This matters because:
 6. waits for the device IP on the configured network interface
    - default: `bridge0`
 7. finds the persistent payload directory
-8. copies `smbd` and `mdns-advertiser` into `/mnt/Memory/samba4/sbin`
+8. copies `smbd` into `/mnt/Memory/samba4/sbin`
 9. if `private/nbns.enabled` exists in the persistent payload, also copies `nbns-advertiser` into `/mnt/Memory/samba4/sbin`
 10. renders `smb.conf` from the template
 11. starts the mDNS advertiser
@@ -269,6 +271,8 @@ Important bug lessons from getting this stable:
 - the script must use `-b` for block devices, not `-c`
 - it cannot call non-existent utilities like `dirname`
 - it must tolerate a long delay before the disk appears
+- on NetBSD 4, cache state is kept on the HDD instead of `/mnt/Memory` to preserve RAM-disk headroom
+- the persistent `xattr.tdb` must stay on the HDD because it records extended attribute state for files on the share
 
 ### `watchdog.sh`
 
@@ -291,11 +295,15 @@ Important implementation detail:
 - `mdns-advertiser` is short enough to match directly with `pkill`
 - the watchdog therefore uses the truncated process name for liveness checks and restarts
 
+NetBSD 4-specific shell note:
+- `rc.local` disables `set -e` only around the watchdog probe/start block
+- this avoids a NetBSD 4 `/bin/sh` edge case where launching a background job from an `if` branch can make the script report status `1`
+- backgrounded jobs redirect stdin from `/dev/null` so they do not hold the SSH session open during manual activation
+
 ## SMB Runtime Layout
 
 When boot succeeds, the runtime tree under `/mnt/Memory/samba4` contains:
 - `sbin/smbd`
-- `sbin/mdns-advertiser`
 - optionally `sbin/nbns-advertiser`
 - `etc/smb.conf`
 - `var/`
@@ -313,8 +321,12 @@ Current optional NBNS state lives on the HDD:
 Current persistent Time Machine metadata state also lives on the HDD:
 - `/Volumes/dk2/samba4/private/xattr.tdb`
 
-Current Samba cache state lives on the HDD to preserve RAM headroom:
+Current NetBSD 4 Samba cache state lives on the HDD to preserve RAM headroom:
 - `/Volumes/dk2/samba4/cache`
+
+NetBSD 6 note:
+- the normal NetBSD 6 runtime keeps Samba cache state in `/mnt/Memory/samba4/var`
+- the HDD cache path above is used for the NetBSD 4 payload family because the NetBSD 4 RAM disk is too tight for the full runtime plus cache TDB growth
 
 Current rendered Samba config characteristics:
 - `security = user`
@@ -328,7 +340,8 @@ Current rendered Samba config characteristics:
 - `pid directory = /mnt/Memory/samba4/var`
 - `lock directory = /mnt/Memory/samba4/locks`
 - `state directory = /mnt/Memory/samba4/var`
-- `cache directory = /Volumes/dk2/samba4/cache` on the tested box
+- `cache directory = /mnt/Memory/samba4/var` on NetBSD 6
+- `cache directory = /Volumes/dk2/samba4/cache` on NetBSD 4
 - `private dir = /mnt/Memory/samba4/private`
 - `vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb`
 - `fruit:resource = file`
@@ -366,9 +379,11 @@ It is built from:
 - [build/mdns.sh](build/mdns.sh)
 
 Important properties:
-- static NetBSD 7 `earmv4` binary
+- static NetBSD 7 `earmv4` binary for the NetBSD 6 payload
+- static NetBSD 4 `earmv4` binary for the NetBSD 4 payload
 - about `198 KiB` stripped in the current checked-in artifact
-- small enough to stage into RAM without materially changing the overall design
+- installed on both the HDD payload and `/mnt/Flash`
+- run from `/mnt/Flash` to save RAM-disk space
 
 At runtime it advertises:
 - service type: `_smb._tcp.local.`
@@ -399,7 +414,8 @@ It is built from:
 - [build/nbns.sh](build/nbns.sh)
 
 Important properties:
-- static NetBSD 7 `earmv4` binary
+- static NetBSD 7 `earmv4` binary for the NetBSD 6 payload
+- static NetBSD 4 `earmv4` binary for the NetBSD 4 payload
 - about `188 KiB` stripped in the current checked-in artifact
 - not enabled by default at runtime
 - always deployed to the HDD payload, but only staged into RAM when explicitly enabled
@@ -417,6 +433,7 @@ Enablement model:
 - runtime enablement is controlled by the marker file:
   - `/Volumes/dkX/samba4/private/nbns.enabled`
 - `tcapsule deploy --install-nbns` creates that marker
+- `--install-nbns` is rejected on NetBSD 4 because the RAM disk is too constrained
 - plain `deploy` leaves the marker unchanged
 - `uninstall` removes both the binary and the marker because it removes the entire payload tree
 
@@ -432,9 +449,11 @@ The intended user flow is:
    - [src/timecapsulesmb/cli/prep_device.py](src/timecapsulesmb/cli/prep_device.py)
 4. deploy and reboot
    - [src/timecapsulesmb/cli/deploy.py](src/timecapsulesmb/cli/deploy.py)
-5. run local diagnostics
+5. activate older NetBSD 4 devices if they do not auto-start Samba after reboot
+   - [src/timecapsulesmb/cli/activate.py](src/timecapsulesmb/cli/activate.py)
+6. run local diagnostics
    - [src/timecapsulesmb/cli/doctor.py](src/timecapsulesmb/cli/doctor.py)
-6. remove the payload later if needed
+7. remove the payload later if needed
    - [src/timecapsulesmb/cli/uninstall.py](src/timecapsulesmb/cli/uninstall.py)
 
 `tcapsule configure` writes repo-root `.env`.
@@ -454,6 +473,7 @@ Current important `.env` values include:
 Optional deploy flag:
 - `--install-nbns`
   - enables the bundled NBNS responder on the next boot by creating `private/nbns.enabled`
+  - rejected on NetBSD 4 because the RAM disk does not have enough headroom for NBNS in the normal payload
 
 Current defaults:
 - `TC_SHARE_NAME=Data`
@@ -475,7 +495,7 @@ Workflow details:
 ## Host-Side Architecture
 
 Current important package areas:
-- [src/timecapsulesmb/cli/](src/timecapsulesmb/cli): command entrypoints for `bootstrap`, `discover`, `configure`, `prep-device`, `deploy`, `doctor`, and `uninstall`
+- [src/timecapsulesmb/cli/](src/timecapsulesmb/cli): command entrypoints for `bootstrap`, `discover`, `configure`, `prep-device`, `deploy`, `activate`, `doctor`, `repair-xattrs`, and `uninstall`
 - [src/timecapsulesmb/core/](src/timecapsulesmb/core): shared config parsing, defaults, and common models
 - [src/timecapsulesmb/transport/](src/timecapsulesmb/transport): local command execution plus SSH and SCP helpers
 - [src/timecapsulesmb/discovery/](src/timecapsulesmb/discovery): Bonjour-based device discovery
@@ -620,11 +640,20 @@ Current deploy flow:
 - applies the required permissions on files and directories
 - reboots by default
 - verifies Bonjour and authenticated SMB access after reboot in the normal path using the same shared checks used by `doctor`
+- on NetBSD 4, deploy uploads the NetBSD 4 artifact set and immediately runs the activation sequence instead of rebooting
 
 Current compatibility behavior:
 - NetBSD 6 `evbarm` devices are accepted for the current `samba4` payload family
-- NetBSD 4 `evbarm` devices are detected as older hardware and rejected by `deploy`
+- NetBSD 4 `evbarm` devices are accepted as older hardware and use the `netbsd4_samba4` payload family
+- `deploy --install-nbns` is rejected on NetBSD 4 because there is not enough RAM-disk space for the NBNS helper
 - `configure` reuses the same classification logic to choose a better default Finder model hint
+
+NetBSD 4 activation behavior:
+- `tcapsule deploy` stops Apple SMB/mDNS, runs `/mnt/Flash/rc.local`, and verifies `smbd` on TCP `445` plus `mdns-advertiser` on UDP `5353`
+- `tcapsule activate` repeats that activation sequence without re-uploading files
+- tested 1st-generation NetBSD 4 hardware does not persist an `/etc` boot hook and therefore needs manual activation after reboot
+- other NetBSD 4 generations may auto-start if their firmware runs `/mnt/Flash/rc.local` early in boot, but that is not yet proven
+- `activate` is intentionally idempotent: it stops the existing watchdog, stops Apple SMB/mDNS if present, and starts the packaged runtime again
 
 The current password flow is:
 - `TC_PASSWORD` is also used as the Samba password
@@ -639,9 +668,11 @@ Useful operator modes:
 ```bash
 .venv/bin/tcapsule deploy --dry-run
 .venv/bin/tcapsule deploy --dry-run --json
+.venv/bin/tcapsule activate --dry-run
+.venv/bin/tcapsule activate
 ```
 
-Those are intended for users who want to inspect the exact remote actions before touching the box.
+The dry-run modes are intended for users who want to inspect the exact remote actions before touching the box.
 
 ## Artifact Resolution
 
@@ -663,8 +694,12 @@ The build pipeline under [build/](build) is for maintainers, not normal users.
 
 Current important outputs:
 - [bin/samba4/smbd](bin/samba4/smbd)
+- [bin/samba4-netbsd4/smbd](bin/samba4-netbsd4/smbd)
+- [bin/samba3-netbsd4/smbd](bin/samba3-netbsd4/smbd)
 - [bin/mdns/mdns-advertiser](bin/mdns/mdns-advertiser)
+- [bin/mdns-netbsd4/mdns-advertiser](bin/mdns-netbsd4/mdns-advertiser)
 - [bin/nbns/nbns-advertiser](bin/nbns/nbns-advertiser)
+- [bin/nbns-netbsd4/nbns-advertiser](bin/nbns-netbsd4/nbns-advertiser)
 
 It assumes:
 - a NetBSD VM
@@ -672,7 +707,8 @@ It assumes:
 - `su` for the actual build steps
 
 Important note:
-- the active supported build path is NetBSD 7, not NetBSD 10
+- the active supported build paths are NetBSD 7 for NetBSD 6-era devices and NetBSD 4 for older NetBSD 4-era devices
+- NetBSD 10 was useful for early experiments but is not the supported Samba 4 build source path
 
 Current validated maintainer flows:
 - NetBSD 7 full path:
@@ -682,12 +718,16 @@ Current validated maintainer flows:
   - [build/samba4.sh](build/samba4.sh)
   - [build/mdns.sh](build/mdns.sh)
   - [build/nbns.sh](build/nbns.sh)
-- NetBSD 4 partial path:
+- NetBSD 4 path:
   - [build/downloadold.sh](build/downloadold.sh)
   - [build/bootstrapold.sh](build/bootstrapold.sh)
   - [build/helloold.sh](build/helloold.sh)
   - [build/downloadsamba3old.sh](build/downloadsamba3old.sh)
   - [build/samba3old.sh](build/samba3old.sh)
+  - [build/downloadsamba4old.sh](build/downloadsamba4old.sh)
+  - [build/samba4old.sh](build/samba4old.sh)
+  - [build/mdnsold.sh](build/mdnsold.sh)
+  - [build/nbnsold.sh](build/nbnsold.sh)
 
 Current path split:
 - NetBSD 7 SDK output defaults under `/root/tc-earmv4-netbsd7`
@@ -707,9 +747,9 @@ This was a major breakthrough. The Time Capsule can locally mount `/dev/dk2` wit
 
 The HDD may be unmounted or slept by Apple later. That is why `smbd` is staged into RAM.
 
-### Running the mDNS helper from the HDD would be less catastrophic, but we currently keep it in RAM too
+### Running the mDNS helper from the HDD would be less catastrophic, but we keep it off the HDD
 
-If it died, discovery would break but file serving would remain up. For now it is still staged into RAM.
+If it died, discovery would break but file serving would remain up. The current runtime starts it from `/mnt/Flash` instead of the HDD or RAM disk, which saves RAM headroom and avoids depending on the HDD staying mounted.
 
 ### Apple’s SMB advertisement path is not a harmless metadata layer
 
@@ -794,7 +834,8 @@ Short overview:
 The current system is no longer just an experiment:
 - it builds reproducibly
 - deploys from checked-in artifacts
-- survives reboot
+- survives reboot on the NetBSD 6 path
+- can be manually reactivated after reboot on tested NetBSD 4 gen1 hardware
 - advertises itself over Bonjour
 - authenticates as `admin`
 - serves the internal disk through Samba 4.8

@@ -3,11 +3,12 @@ from __future__ import annotations
 import argparse
 from typing import Optional
 
-from . import bootstrap, configure, deploy, discover, doctor, prep_device, repair_xattrs, uninstall
+from . import activate, bootstrap, configure, deploy, discover, doctor, prep_device, repair_xattrs, uninstall
 
 
 COMMANDS = {
     "bootstrap": bootstrap.main,
+    "activate": activate.main,
     "configure": configure.main,
     "deploy": deploy.main,
     "discover": discover.main,

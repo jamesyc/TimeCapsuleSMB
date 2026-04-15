@@ -97,9 +97,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if is_netbsd4 and not args.yes:
         print("Detected NetBSD 4 Time Capsule.")
-        print("This device cannot persist boot hooks in /etc, so deploy must stop Apple SMB/mDNS")
-        print("and activate Samba immediately without rebooting. This activation does not survive")
-        print("a device reboot.")
+        print("Tested gen1 NetBSD4 devices do not auto-run /mnt/Flash/rc.local, so deploy")
+        print("will activate Samba immediately without rebooting. Other NetBSD4 generations")
+        print("may auto-start after reboot if their firmware runs rc.local.")
         answer = input("Continue with NetBSD4 deploy + activation? [y/N]: ").strip().lower()
         if answer not in {"y", "yes"}:
             print("Deployment cancelled.")
@@ -151,7 +151,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not verify_netbsd4_activation(host, password, ssh_opts):
             print("NetBSD4 activation failed.")
             return 1
-        print("NetBSD4 activation complete. Run deploy again after any device reboot.")
+        print("NetBSD4 activation complete. Run activate after reboot if the device did not auto-start Samba.")
         return 0
 
     if args.no_reboot:
