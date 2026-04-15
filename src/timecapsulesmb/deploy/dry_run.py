@@ -31,12 +31,23 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     for command in render_remote_actions(plan.post_auth_actions):
         lines.append(f"  {command}")
     lines.append("")
+    if plan.activation_actions:
+        lines.append("Remote actions (NetBSD4 activation):")
+        for command in render_remote_actions(plan.activation_actions):
+            lines.append(f"  {command}")
+        lines.append("")
     lines.append("Reboot:")
     lines.append(f"  {'yes' if plan.reboot_required else 'no'}")
+    if plan.activation_actions:
+        lines.append("  NetBSD4 activation is immediate and does not persist across device reboot.")
     lines.append("")
     lines.append("Post-deploy checks:")
-    lines.append("  Bonjour _smb._tcp browse/resolve")
-    lines.append("  Authenticated SMB listing")
+    if plan.activation_actions:
+        lines.append("  fstat shows smbd bound to TCP 445")
+        lines.append("  fstat shows mdns-advertiser bound to UDP 5353")
+    else:
+        lines.append("  Bonjour _smb._tcp browse/resolve")
+        lines.append("  Authenticated SMB listing")
     return "\n".join(lines)
 
 
@@ -45,10 +56,16 @@ def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
     data["smbd_path"] = str(plan.smbd_path)
     data["mdns_path"] = str(plan.mdns_path)
     data["nbns_path"] = str(plan.nbns_path)
-    data["post_deploy_checks"] = [
-        "bonjour_browse_resolve",
-        "authenticated_smb_listing",
-    ]
+    if plan.activation_actions:
+        data["post_deploy_checks"] = [
+            "netbsd4_smbd_bound_445",
+            "netbsd4_mdns_bound_5353",
+        ]
+    else:
+        data["post_deploy_checks"] = [
+            "bonjour_browse_resolve",
+            "authenticated_smb_listing",
+        ]
     return data
 
 

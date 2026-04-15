@@ -815,6 +815,69 @@ class CliTests(unittest.TestCase):
         self.assertIn("bin/mdns-netbsd4/mdns-advertiser -> /Volumes/dk2/samba4/mdns-advertiser", text)
         self.assertIn("bin/mdns-netbsd4/mdns-advertiser -> /mnt/Flash/mdns-advertiser", text)
         self.assertIn("bin/nbns-netbsd4/nbns-advertiser -> /Volumes/dk2/samba4/nbns-advertiser", text)
+        self.assertIn("Remote actions (NetBSD4 activation):", text)
+        self.assertIn("pkill mDNSResponder >/dev/null 2>&1 || true", text)
+        self.assertIn("pkill wcifsfs >/dev/null 2>&1 || true", text)
+        self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
+        self.assertIn("NetBSD4 activation is immediate and does not persist across device reboot.", text)
+
+    def test_deploy_netbsd4_prompt_decline_cancels_before_remote_actions(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
+                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                        with mock.patch("builtins.input", return_value="n"):
+                            with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
+                                with redirect_stdout(output):
+                                    rc = deploy.main([])
+        self.assertEqual(rc, 0)
+        actions_mock.assert_not_called()
+        self.assertIn("Deployment cancelled.", output.getvalue())
+
+    def test_deploy_netbsd4_prompt_accepts_uppercase_yes(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
+                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                        with mock.patch("builtins.input", return_value="YES"):
+                            with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
+                                with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
+                                    with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
+                                        with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
+                                            with mock.patch("timecapsulesmb.cli.deploy.verify_netbsd4_activation", return_value=True):
+                                                with redirect_stdout(output):
+                                                    rc = deploy.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(actions_mock.call_count, 3)
+        self.assertIn("NetBSD4 activation complete.", output.getvalue())
 
     def test_deploy_renders_templates_with_netbsd4_payload_family(self) -> None:
         values = {
@@ -844,7 +907,8 @@ class CliTests(unittest.TestCase):
                                 with mock.patch("timecapsulesmb.cli.deploy.build_template_bundle", return_value=template_bundle) as template_mock:
                                     with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
                                         with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
-                                            rc = deploy.main(["--no-reboot"])
+                                            with mock.patch("timecapsulesmb.cli.deploy.verify_netbsd4_activation", return_value=True):
+                                                rc = deploy.main(["--yes", "--no-reboot"])
         self.assertEqual(rc, 0)
         template_mock.assert_called_once_with(
             values,
@@ -852,6 +916,105 @@ class CliTests(unittest.TestCase):
             adisk_uuid="",
             payload_family="netbsd4_samba4",
         )
+
+    def test_deploy_netbsd4_yes_runs_activation_and_skips_reboot(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
+                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                        with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
+                            with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
+                                with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
+                                    with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
+                                        with mock.patch("timecapsulesmb.cli.deploy.verify_netbsd4_activation", return_value=True) as verify_mock:
+                                            with mock.patch("timecapsulesmb.cli.deploy.run_ssh") as run_ssh_mock:
+                                                with redirect_stdout(output):
+                                                    rc = deploy.main(["--yes"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(actions_mock.call_count, 3)
+        activation_action_kinds = [action.kind for action in actions_mock.call_args_list[2].args[3]]
+        activation_action_args = [action.args[0] for action in actions_mock.call_args_list[2].args[3]]
+        self.assertEqual(activation_action_kinds, ["stop_process", "stop_process", "run_script"])
+        self.assertEqual(activation_action_args, ["mDNSResponder", "wcifsfs", "/mnt/Flash/rc.local"])
+        verify_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o foo")
+        run_ssh_mock.assert_not_called()
+        self.assertIn("Activating NetBSD4 payload without reboot.", output.getvalue())
+
+    def test_deploy_netbsd4_no_reboot_still_runs_activation(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
+                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                        with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
+                            with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
+                                with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
+                                    with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
+                                        with mock.patch("timecapsulesmb.cli.deploy.verify_netbsd4_activation", return_value=True):
+                                            with mock.patch("timecapsulesmb.cli.deploy.run_ssh") as run_ssh_mock:
+                                                with redirect_stdout(output):
+                                                    rc = deploy.main(["--yes", "--no-reboot"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(actions_mock.call_count, 3)
+        run_ssh_mock.assert_not_called()
+        self.assertNotIn("Skipping reboot.", output.getvalue())
+        self.assertIn("Activating NetBSD4 payload without reboot.", output.getvalue())
+
+    def test_deploy_netbsd4_activation_failure_returns_nonzero(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
+                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                        with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
+                            with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
+                                with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
+                                    with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
+                                        with mock.patch("timecapsulesmb.cli.deploy.verify_netbsd4_activation", return_value=False):
+                                            with redirect_stdout(output):
+                                                rc = deploy.main(["--yes"])
+        self.assertEqual(rc, 1)
+        self.assertIn("NetBSD4 activation failed.", output.getvalue())
 
     def test_deploy_install_nbns_rejects_netbsd4_device(self) -> None:
         values = {
@@ -1061,6 +1224,43 @@ class CliTests(unittest.TestCase):
         self.assertTrue(payload["nbns_path"].endswith("/bin/nbns/nbns-advertiser"))
         self.assertEqual(payload["payload_targets"]["nbns-advertiser"], "/Volumes/dk2/samba4/nbns-advertiser")
         self.assertIn("post_deploy_checks", payload)
+
+    def test_deploy_netbsd4_dry_run_json_outputs_activation_plan(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
+                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                        with redirect_stdout(output):
+                            rc = deploy.main(["--dry-run", "--json"])
+        self.assertEqual(rc, 0)
+        payload = json.loads(output.getvalue())
+        self.assertFalse(payload["reboot_required"])
+        self.assertEqual(
+            [action["kind"] for action in payload["activation_actions"]],
+            ["stop_process", "stop_process", "run_script"],
+        )
+        self.assertEqual(
+            [action["args"][0] for action in payload["activation_actions"]],
+            ["mDNSResponder", "wcifsfs", "/mnt/Flash/rc.local"],
+        )
+        self.assertEqual(
+            payload["post_deploy_checks"],
+            ["netbsd4_smbd_bound_445", "netbsd4_mdns_bound_5353"],
+        )
 
     def test_uninstall_dry_run_prints_target_host(self) -> None:
         output = io.StringIO()

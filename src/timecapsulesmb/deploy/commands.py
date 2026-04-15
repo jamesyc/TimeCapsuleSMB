@@ -34,6 +34,10 @@ def remove_path_action(path: str) -> RemoteAction:
     return RemoteAction("remove_path", (path,))
 
 
+def run_script_action(path: str) -> RemoteAction:
+    return RemoteAction("run_script", (path,))
+
+
 def render_remote_action(action: RemoteAction) -> str:
     if action.kind == "prepare_dirs":
         payload_dir = action.args[0]
@@ -92,6 +96,9 @@ def render_remote_action(action: RemoteAction) -> str:
 
     if action.kind == "remove_path":
         return f"rm -rf {shlex.quote(action.args[0])}"
+
+    if action.kind == "run_script":
+        return f"/bin/sh {shlex.quote(action.args[0])}"
 
     raise ValueError(f"Unknown remote action kind: {action.kind}")
 

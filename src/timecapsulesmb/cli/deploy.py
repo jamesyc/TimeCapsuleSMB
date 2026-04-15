@@ -19,7 +19,7 @@ from timecapsulesmb.deploy.executor import (
 )
 from timecapsulesmb.deploy.planner import build_deployment_plan
 from timecapsulesmb.deploy.templates import build_template_bundle, render_template, write_boot_asset
-from timecapsulesmb.deploy.verify import verify_post_deploy
+from timecapsulesmb.deploy.verify import verify_netbsd4_activation, verify_post_deploy
 from timecapsulesmb.device.compat import probe_device_compatibility
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root, wait_for_ssh_state
 from timecapsulesmb.transport.ssh import run_ssh
@@ -70,6 +70,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     elif not args.json:
         print(compatibility.message)
     payload_family = compatibility.payload_family or "netbsd6_samba4"
+    is_netbsd4 = payload_family == "netbsd4_samba4"
     if args.install_nbns and payload_family == "netbsd4_samba4":
         raise SystemExit("NBNS responder cannot be enabled on NetBSD4 devices; the ramdisk does not have enough space.")
     resolved_artifacts = resolve_payload_artifacts(REPO_ROOT, payload_family)
@@ -77,7 +78,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     mdns_path = resolved_artifacts["mdns-advertiser"].absolute_path
     nbns_path = resolved_artifacts["nbns-advertiser"].absolute_path
     device_paths = build_device_paths(volume_root, values["TC_PAYLOAD_DIR_NAME"])
-    plan = build_deployment_plan(host, device_paths, smbd_path, mdns_path, nbns_path, install_nbns=args.install_nbns)
+    plan = build_deployment_plan(
+        host,
+        device_paths,
+        smbd_path,
+        mdns_path,
+        nbns_path,
+        install_nbns=args.install_nbns,
+        activate_netbsd4=is_netbsd4,
+    )
 
     if args.dry_run:
         if args.json:
@@ -85,6 +94,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             print(format_deployment_plan(plan))
         return 0
+
+    if is_netbsd4 and not args.yes:
+        print("Detected NetBSD 4 Time Capsule.")
+        print("This device cannot persist boot hooks in /etc, so deploy must stop Apple SMB/mDNS")
+        print("and activate Samba immediately without rebooting. This activation does not survive")
+        print("a device reboot.")
+        answer = input("Continue with NetBSD4 deploy + activation? [y/N]: ").strip().lower()
+        if answer not in {"y", "yes"}:
+            print("Deployment cancelled.")
+            return 0
 
     run_remote_actions(host, password, ssh_opts, plan.pre_upload_actions)
     adisk_uuid = remote_ensure_adisk_uuid(host, password, ssh_opts, plan.private_dir)
@@ -125,6 +144,15 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     print(f"Deployed Samba payload to {plan.payload_dir}")
     print("Updated /mnt/Flash boot files.")
+
+    if is_netbsd4:
+        print("Activating NetBSD4 payload without reboot.")
+        run_remote_actions(host, password, ssh_opts, plan.activation_actions)
+        if not verify_netbsd4_activation(host, password, ssh_opts):
+            print("NetBSD4 activation failed.")
+            return 1
+        print("NetBSD4 activation complete. Run deploy again after any device reboot.")
+        return 0
 
     if args.no_reboot:
         print("Skipping reboot.")

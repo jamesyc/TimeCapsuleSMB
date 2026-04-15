@@ -5,6 +5,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import io
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 import uuid
@@ -21,6 +23,7 @@ from timecapsulesmb.deploy.commands import (
     install_permissions_action,
     prepare_dirs_action,
     render_remote_action,
+    run_script_action,
     stop_process_action,
     stop_process_full_action,
 )
@@ -40,6 +43,7 @@ from timecapsulesmb.deploy.templates import (
     render_template,
     render_template_text,
 )
+from timecapsulesmb.deploy.verify import verify_netbsd4_activation
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root
 
 
@@ -213,6 +217,23 @@ class DeployModuleTests(unittest.TestCase):
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn("CACHE_DIRECTORY=$DATA_ROOT/../$PAYLOAD_DIR_NAME/cache", rendered)
         self.assertIn("cache directory = $CACHE_DIRECTORY", rendered)
+
+    def test_render_start_script_defers_netbsd4_cache_assignment_until_data_root_exists(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(values, payload_family="netbsd4_samba4")
+        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
+        data_root_index = rendered.index("DATA_ROOT=$(ensure_data_root)")
+        cache_index = rendered.index("CACHE_DIRECTORY=$DATA_ROOT/../$PAYLOAD_DIR_NAME/cache")
+        self.assertGreater(cache_index, data_root_index)
 
     def test_render_smb_conf_uses_custom_persistent_cache_directory_for_netbsd4(self) -> None:
         values = {
@@ -407,6 +428,68 @@ int main(void) {{
             ],
         )
 
+    def test_verify_netbsd4_activation_passes_when_fstat_has_smb_and_mdns_ports(self) -> None:
+        fstat_output = """
+root     smbd        2846   28* internet stream tcp c2b3a310 192.168.1.118:445
+root     mdns-advertiser  3056    3* internet dgram udp c2ad757c *:5353
+PASS:smbd bound to TCP 445
+PASS:mdns-advertiser bound to UDP 5353
+"""
+        with mock.patch(
+            "timecapsulesmb.deploy.verify.run_ssh",
+            return_value=mock.Mock(returncode=0, stdout=fstat_output),
+        ):
+            with redirect_stdout(io.StringIO()):
+                self.assertTrue(verify_netbsd4_activation("host", "pw", "-o foo"))
+
+    def test_verify_netbsd4_activation_fails_when_fstat_check_fails(self) -> None:
+        fstat_output = """
+FAIL:smbd is not bound to TCP 445
+PASS:mdns-advertiser bound to UDP 5353
+"""
+        with mock.patch(
+            "timecapsulesmb.deploy.verify.run_ssh",
+            return_value=mock.Mock(returncode=1, stdout=fstat_output),
+        ):
+            with redirect_stdout(io.StringIO()):
+                self.assertFalse(verify_netbsd4_activation("host", "pw", "-o foo"))
+
+    def test_verify_netbsd4_activation_fails_when_fstat_is_missing(self) -> None:
+        fstat_output = """
+FAIL:fstat missing
+"""
+        with mock.patch(
+            "timecapsulesmb.deploy.verify.run_ssh",
+            return_value=mock.Mock(returncode=1, stdout=fstat_output),
+        ):
+            with redirect_stdout(io.StringIO()):
+                self.assertFalse(verify_netbsd4_activation("host", "pw", "-o foo"))
+
+    def test_verify_netbsd4_activation_polls_for_background_launcher(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.deploy.verify.run_ssh",
+            return_value=mock.Mock(returncode=1, stdout="FAIL:smbd is not bound to TCP 445\n"),
+        ) as run_ssh_mock:
+            with redirect_stdout(io.StringIO()):
+                verify_netbsd4_activation("host", "pw", "-o foo")
+        remote_command = run_ssh_mock.call_args.args[3]
+        self.assertIn('while [ "$attempt" -lt 30 ]; do', remote_command)
+        self.assertIn("sleep 1", remote_command)
+
+    def test_verify_netbsd4_activation_requires_smbd_process_name_for_445(self) -> None:
+        fstat_output = """
+root     otherd      1111   28* internet stream tcp c2b3a310 192.168.1.118:445
+root     mdns-advertiser  3056    3* internet dgram udp c2ad757c *:5353
+FAIL:smbd is not bound to TCP 445
+PASS:mdns-advertiser bound to UDP 5353
+"""
+        with mock.patch(
+            "timecapsulesmb.deploy.verify.run_ssh",
+            return_value=mock.Mock(returncode=1, stdout=fstat_output),
+        ):
+            with redirect_stdout(io.StringIO()):
+                self.assertFalse(verify_netbsd4_activation("host", "pw", "-o foo"))
+
     def test_format_deployment_plan_contains_concrete_actions(self) -> None:
         paths = build_device_paths("/Volumes/dk2", "samba4")
         plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), install_nbns=True)
@@ -422,6 +505,28 @@ int main(void) {{
         self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4", text)
         self.assertIn("chmod 755 /Volumes/dk2/samba4/cache", text)
         self.assertIn("chmod 700 /Volumes/dk2/samba4/private", text)
+
+    def test_netbsd4_activation_plan_contains_no_reboot_actions(self) -> None:
+        paths = build_device_paths("/Volumes/dk2", "samba4")
+        plan = build_deployment_plan(
+            "root@10.0.0.2",
+            paths,
+            Path("bin/smbd"),
+            Path("bin/mdns"),
+            Path("bin/nbns"),
+            activate_netbsd4=True,
+        )
+        self.assertFalse(plan.reboot_required)
+        self.assertEqual([action.kind for action in plan.activation_actions], ["stop_process", "stop_process", "run_script"])
+        self.assertEqual([action.args[0] for action in plan.activation_actions], ["mDNSResponder", "wcifsfs", "/mnt/Flash/rc.local"])
+
+        text = format_deployment_plan(plan)
+        self.assertIn("Remote actions (NetBSD4 activation):", text)
+        self.assertIn("pkill mDNSResponder >/dev/null 2>&1 || true", text)
+        self.assertIn("pkill wcifsfs >/dev/null 2>&1 || true", text)
+        self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
+        self.assertIn("NetBSD4 activation is immediate and does not persist across device reboot.", text)
+        self.assertIn("fstat shows smbd bound to TCP 445", text)
 
     def test_build_uninstall_plan_stops_nbns_process(self) -> None:
         paths = build_device_paths("/Volumes/dk2", "samba4")
@@ -443,6 +548,11 @@ int main(void) {{
         self.assertNotIn("|| chmod 600", permissions_cmd)
         self.assertNotIn("|| true", permissions_cmd)
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/private/nbns.enabled'", enable_cmd)
+        self.assertEqual(render_remote_action(run_script_action("/mnt/Flash/rc.local")), "/bin/sh /mnt/Flash/rc.local")
+        self.assertEqual(
+            render_remote_action(run_script_action("/mnt/Flash/Time Capsule SMB/rc.local")),
+            "/bin/sh '/mnt/Flash/Time Capsule SMB/rc.local'",
+        )
 
     def test_deployment_plan_and_executor_share_permission_command_generation(self) -> None:
         payload_dir = "/Volumes/dk2/Time Capsule Samba 4"

@@ -9,6 +9,7 @@ from timecapsulesmb.deploy.commands import (
     install_permissions_action,
     prepare_dirs_action,
     remove_path_action,
+    run_script_action,
     stop_process_full_action,
     stop_process_action,
 )
@@ -39,6 +40,7 @@ class DeploymentPlan:
     generated_auth_files: list[FileTransfer]
     pre_upload_actions: list[RemoteAction]
     post_auth_actions: list[RemoteAction]
+    activation_actions: list[RemoteAction]
     reboot_required: bool
 
 
@@ -53,7 +55,16 @@ class UninstallPlan:
     reboot_required: bool
 
 
-def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path, mdns_path: Path, nbns_path: Path, *, install_nbns: bool = False) -> DeploymentPlan:
+def build_deployment_plan(
+    host: str,
+    device_paths: DevicePaths,
+    smbd_path: Path,
+    mdns_path: Path,
+    nbns_path: Path,
+    *,
+    install_nbns: bool = False,
+    activate_netbsd4: bool = False,
+) -> DeploymentPlan:
     payload_dir = device_paths.payload_dir
     flash_targets = {
         "rc.local": "/mnt/Flash/rc.local",
@@ -116,7 +127,16 @@ def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path,
         ]
         + ([enable_nbns_action(private_dir)] if install_nbns else []),
         post_auth_actions=[install_permissions_action(payload_dir)],
-        reboot_required=True,
+        activation_actions=(
+            [
+                stop_process_action("mDNSResponder"),
+                stop_process_action("wcifsfs"),
+                run_script_action("/mnt/Flash/rc.local"),
+            ]
+            if activate_netbsd4
+            else []
+        ),
+        reboot_required=not activate_netbsd4,
     )
 
 

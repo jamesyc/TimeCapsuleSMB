@@ -36,7 +36,6 @@ NBNS_PROC_NAME=nbns-advertiser
 
 PAYLOAD_DIR_NAME=__PAYLOAD_DIR_NAME__
 PAYLOAD_TEMPLATE_NAME=smb.conf.template
-CACHE_DIRECTORY=__CACHE_DIRECTORY__
 
 SMB_SHARE_NAME=__SMB_SHARE_NAME__
 SMB_NETBIOS_NAME=__SMB_NETBIOS_NAME__
@@ -373,6 +372,7 @@ DATA_ROOT=$(ensure_data_root) || {
     log "failed to discover data root"
     exit 1
 }
+CACHE_DIRECTORY=__CACHE_DIRECTORY__
 log "data root: $DATA_ROOT"
 
 BIND_INTERFACES=$(wait_for_bind_interfaces) || {

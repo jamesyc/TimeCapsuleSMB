@@ -50,6 +50,47 @@ def verify_post_deploy(values: dict[str, str]) -> None:
         print("  SMB listing verification skipped: smbutil not found")
 
 
+def verify_netbsd4_activation(host: str, password: str, ssh_opts: str) -> bool:
+    print("NetBSD4 activation verification:")
+    script = r'''
+if ! command -v fstat >/dev/null 2>&1; then
+    echo "FAIL:fstat missing"
+    exit 1
+fi
+attempt=0
+while [ "$attempt" -lt 30 ]; do
+    out="$(fstat 2>&1)"
+    case "$out" in
+        *smbd*":445"*mdns-advertiser*":5353"*|*mdns-advertiser*":5353"*smbd*":445"*)
+            break
+            ;;
+    esac
+    attempt=$((attempt + 1))
+    sleep 1
+done
+echo "$out" | sed -n '/\.445/p;/\.5353/p'
+status=0
+case "$out" in
+    *smbd*":445"*) echo "PASS:smbd bound to TCP 445" ;;
+    *) echo "FAIL:smbd is not bound to TCP 445"; status=1 ;;
+esac
+case "$out" in
+    *mdns-advertiser*":5353"*) echo "PASS:mdns-advertiser bound to UDP 5353" ;;
+    *) echo "FAIL:mdns-advertiser is not bound to UDP 5353"; status=1 ;;
+esac
+exit "$status"
+'''
+    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}", check=False)
+    for line in proc.stdout.strip().splitlines():
+        if line.startswith("PASS:"):
+            print(f"  ok: {line.removeprefix('PASS:')}")
+        elif line.startswith("FAIL:"):
+            print(f"  failed: {line.removeprefix('FAIL:')}")
+        elif line:
+            print(f"  {line}")
+    return proc.returncode == 0
+
+
 def verify_post_uninstall(host: str, password: str, ssh_opts: str, plan: UninstallPlan) -> bool:
     print("Post-uninstall verification:")
     script_lines = [
