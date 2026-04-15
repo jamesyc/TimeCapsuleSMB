@@ -206,20 +206,20 @@ class CheckTests(unittest.TestCase):
     def test_check_xattr_tdb_persistence_passes_for_disk_path(self) -> None:
         smb_conf = "    xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n"
         with mock.patch("timecapsulesmb.checks.doctor.run_ssh", return_value=mock.Mock(stdout=smb_conf)):
-            result = check_xattr_tdb_persistence("root@tc", "pw", "-o foo", "samba4")
+            result = check_xattr_tdb_persistence("root@tc", "pw", "-o foo")
         self.assertEqual(result.status, "PASS")
         self.assertIn("/Volumes/dk2/samba4/private/xattr.tdb", result.message)
 
     def test_check_xattr_tdb_persistence_fails_for_ramdisk_path(self) -> None:
         smb_conf = "    xattr_tdb:file = /mnt/Memory/samba4/private/xattr.tdb\n"
         with mock.patch("timecapsulesmb.checks.doctor.run_ssh", return_value=mock.Mock(stdout=smb_conf)):
-            result = check_xattr_tdb_persistence("root@tc", "pw", "-o foo", "samba4")
+            result = check_xattr_tdb_persistence("root@tc", "pw", "-o foo")
         self.assertEqual(result.status, "FAIL")
         self.assertIn("non-persistent ramdisk", result.message)
 
     def test_check_xattr_tdb_persistence_warns_when_missing(self) -> None:
         with mock.patch("timecapsulesmb.checks.doctor.run_ssh", return_value=mock.Mock(stdout="[global]\n")):
-            result = check_xattr_tdb_persistence("root@tc", "pw", "-o foo", "samba4")
+            result = check_xattr_tdb_persistence("root@tc", "pw", "-o foo")
         self.assertEqual(result.status, "WARN")
         self.assertIn("does not contain xattr_tdb:file", result.message)
 

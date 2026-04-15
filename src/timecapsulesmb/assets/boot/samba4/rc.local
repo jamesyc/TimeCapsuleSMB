@@ -6,15 +6,15 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin
 /mnt/Flash/start-samba.sh </dev/null >/dev/null 2>&1 &
 
 # NetBSD4 /bin/sh can exit rc.local with status 1 under set -e when
-# the else branch launches only a background job. Disable errexit just
-# around the watchdog probe/start block; the launcher is idempotent and
-# deploy/activate verify the resulting daemons explicitly.
-set +e
-if /usr/bin/pkill -0 -f /mnt/Flash/watchdog.sh >/dev/null 2>&1; then
-    :
-else
-    /mnt/Flash/watchdog.sh </dev/null >/dev/null 2>&1 &
-fi
-set -e
+# the else branch launches only a background job. Keep that workaround
+# scoped to a subshell so the parent shell's global state stays strict.
+(
+    set +e
+    if /usr/bin/pkill -0 -f /mnt/Flash/watchdog.sh >/dev/null 2>&1; then
+        :
+    else
+        /mnt/Flash/watchdog.sh </dev/null >/dev/null 2>&1 &
+    fi
+)
 
 exit 0

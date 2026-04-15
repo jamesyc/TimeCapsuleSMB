@@ -47,8 +47,8 @@ def _parse_xattr_tdb_paths(smb_conf: str) -> list[str]:
     return paths
 
 
-def check_xattr_tdb_persistence(host: str, password: str, ssh_opts: str, payload_dir_name: str) -> CheckResult:
-    smb_conf = f"/mnt/Memory/{payload_dir_name}/etc/smb.conf"
+def check_xattr_tdb_persistence(host: str, password: str, ssh_opts: str) -> CheckResult:
+    smb_conf = "/mnt/Memory/samba4/etc/smb.conf"
     proc = run_ssh(
         host,
         password,
@@ -126,7 +126,6 @@ def run_doctor_checks(
                     values["TC_HOST"],
                     values["TC_PASSWORD"],
                     ssh_opts,
-                    values["TC_PAYLOAD_DIR_NAME"],
                 )
             )
         except (Exception, SystemExit) as e:

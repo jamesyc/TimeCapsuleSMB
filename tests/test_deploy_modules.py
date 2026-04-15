@@ -135,11 +135,12 @@ class DeployModuleTests(unittest.TestCase):
         content = load_boot_asset_text("rc.local")
         self.assertIn("/mnt/Flash/start-samba.sh", content)
 
-    def test_rc_local_disables_errexit_around_watchdog_start(self) -> None:
+    def test_rc_local_scopes_watchdog_errexit_workaround_in_subshell(self) -> None:
         content = load_boot_asset_text("rc.local")
+        self.assertIn("(\n    set +e\n", content)
         watchdog_probe_index = content.index("/usr/bin/pkill -0 -f /mnt/Flash/watchdog.sh")
         self.assertLess(content.index("set +e"), watchdog_probe_index)
-        self.assertGreater(content.index("set -e", watchdog_probe_index), watchdog_probe_index)
+        self.assertNotIn("set -e", content[watchdog_probe_index:])
 
     def test_rc_local_detaches_background_jobs_from_stdin(self) -> None:
         content = load_boot_asset_text("rc.local")
