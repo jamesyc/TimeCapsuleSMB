@@ -44,7 +44,7 @@ from timecapsulesmb.deploy.templates import (
     render_template,
     render_template_text,
 )
-from timecapsulesmb.deploy.verify import verify_netbsd4_activation
+from timecapsulesmb.deploy.verify import verify_netbsd4_activation, verify_post_deploy
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root, wait_for_ssh_state
 
 
@@ -507,6 +507,24 @@ PASS:mdns-advertiser bound to UDP 5353
         ):
             with redirect_stdout(io.StringIO()):
                 self.assertFalse(verify_netbsd4_activation("host", "pw", "-o foo"))
+
+    def test_verify_post_deploy_uses_ip_host_label_without_appending_local(self) -> None:
+        values = {
+            "TC_SAMBA_USER": "admin",
+            "TC_PASSWORD": "pw",
+            "TC_MDNS_HOST_LABEL": "10.0.1.99",
+            "TC_MDNS_INSTANCE_NAME": "Home-Samba",
+            "TC_HOST": "root@10.0.0.2",
+        }
+        with mock.patch("timecapsulesmb.deploy.verify.run_bonjour_checks", return_value=([], None, None)):
+            with mock.patch("timecapsulesmb.deploy.verify.command_exists", return_value=True):
+                with mock.patch(
+                    "timecapsulesmb.deploy.verify.try_authenticated_smb_listing",
+                    return_value=mock.Mock(status="PASS", message="authenticated SMB listing works for admin@10.0.1.99"),
+                ) as listing_mock:
+                    with redirect_stdout(io.StringIO()):
+                        verify_post_deploy(values)
+        listing_mock.assert_called_once_with("admin", "pw", ["10.0.1.99", "10.0.0.2"])
 
     def test_format_deployment_plan_contains_concrete_actions(self) -> None:
         paths = build_device_paths("/Volumes/dk2", "samba4")

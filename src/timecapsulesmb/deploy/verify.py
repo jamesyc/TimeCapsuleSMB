@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import shlex
 
 from timecapsulesmb.checks.bonjour import run_bonjour_checks
@@ -7,6 +8,20 @@ from timecapsulesmb.checks.smb import try_authenticated_smb_listing
 from timecapsulesmb.deploy.planner import UninstallPlan
 from timecapsulesmb.transport.local import command_exists
 from timecapsulesmb.transport.ssh import run_ssh
+
+
+def _configured_smb_server(host_label: str) -> str:
+    value = host_label.strip()
+    if not value:
+        return value
+    try:
+        ipaddress.ip_address(value)
+        return value
+    except ValueError:
+        pass
+    if "." in value:
+        return value
+    return f"{value}.local"
 
 
 def verify_post_deploy(values: dict[str, str]) -> None:
@@ -30,7 +45,7 @@ def verify_post_deploy(values: dict[str, str]) -> None:
         print(f"  Bonjour verification failed: {e}")
 
     if command_exists("smbclient"):
-        servers = [f"{host_label}.local"]
+        servers = [_configured_smb_server(host_label)]
         tc_host = values.get("TC_HOST", "")
         if "@" in tc_host:
             tc_host = tc_host.split("@", 1)[1]

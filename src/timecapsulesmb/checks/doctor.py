@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import ipaddress
 from pathlib import Path
 from typing import Optional
 import shlex
@@ -51,7 +52,29 @@ def _parse_xattr_tdb_paths(smb_conf: str) -> list[str]:
     return paths
 
 
-def check_xattr_tdb_persistence(host: str, password: str, ssh_opts: str) -> CheckResult:
+def _parse_active_netbios_name(smb_conf: str) -> Optional[str]:
+    for line in smb_conf.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", ";")):
+            continue
+        key, separator, value = stripped.partition("=")
+        if separator and key.strip().lower() == "netbios name":
+            return value.strip()
+    return None
+
+
+def _parse_active_share_names(smb_conf: str) -> list[str]:
+    shares: list[str] = []
+    for line in smb_conf.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]") and len(stripped) > 2:
+            section_name = stripped[1:-1].strip()
+            if section_name and section_name.lower() != "global":
+                shares.append(section_name)
+    return shares
+
+
+def _read_active_smb_conf(host: str, password: str, ssh_opts: str) -> str:
     smb_conf = "/mnt/Memory/samba4/etc/smb.conf"
     proc = run_ssh(
         host,
@@ -60,10 +83,41 @@ def check_xattr_tdb_persistence(host: str, password: str, ssh_opts: str) -> Chec
         f"/bin/sh -c {shlex.quote(f'if [ -f {shlex.quote(smb_conf)} ]; then cat {shlex.quote(smb_conf)}; fi')}",
         check=False,
     )
-    if not proc.stdout.strip():
+    return proc.stdout
+
+
+def _parse_bonjour_host_label(target: Optional[str]) -> Optional[str]:
+    if not target:
+        return None
+    host = target.rsplit(":", 1)[0].rstrip(".")
+    if not host:
+        return None
+    if host.endswith(".local"):
+        return host[:-len(".local")]
+    return host
+
+
+def _configured_smb_server(host_label: str) -> str:
+    value = host_label.strip()
+    if not value:
+        return value
+    try:
+        ipaddress.ip_address(value)
+        return value
+    except ValueError:
+        pass
+    if "." in value:
+        return value
+    return f"{value}.local"
+
+
+def check_xattr_tdb_persistence(host: str, password: str, ssh_opts: str) -> CheckResult:
+    smb_conf = "/mnt/Memory/samba4/etc/smb.conf"
+    proc_stdout = _read_active_smb_conf(host, password, ssh_opts)
+    if not proc_stdout.strip():
         return CheckResult("WARN", f"could not inspect active smb.conf at {smb_conf}")
 
-    paths = _parse_xattr_tdb_paths(proc.stdout)
+    paths = _parse_xattr_tdb_paths(proc_stdout)
     if not paths:
         return CheckResult("WARN", "active smb.conf does not contain xattr_tdb:file")
 
@@ -115,6 +169,11 @@ def run_doctor_checks(
     ssh_opts = values.get("TC_SSH_OPTS", "")
     proxied_ssh = ssh_opts_use_proxy(ssh_opts)
     ssh_ok = False
+    bonjour_instance: Optional[str] = None
+    bonjour_target: Optional[str] = None
+    bonjour_reason = "Bonjour check not run"
+    active_smb_conf: Optional[str] = None
+    active_smb_conf_reason = "SSH check not run"
 
     if not skip_ssh:
         ssh_result = check_ssh_login(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
@@ -122,9 +181,19 @@ def run_doctor_checks(
         ssh_ok = ssh_result.status == "PASS"
     else:
         ssh_ok = True
+        active_smb_conf_reason = "SSH check skipped"
 
     if not skip_ssh and ssh_ok:
         try:
+            active_smb_conf = _read_active_smb_conf(
+                values["TC_HOST"],
+                values["TC_PASSWORD"],
+                ssh_opts,
+            )
+            if not active_smb_conf.strip():
+                active_smb_conf_reason = "active smb.conf unavailable"
+            else:
+                active_smb_conf_reason = ""
             add_result(
                 check_xattr_tdb_persistence(
                     values["TC_HOST"],
@@ -133,7 +202,10 @@ def run_doctor_checks(
                 )
             )
         except (Exception, SystemExit) as e:
+            active_smb_conf_reason = str(e)
             add_result(CheckResult("WARN", f"xattr_tdb:file check skipped: {e}"))
+    elif not skip_ssh and not ssh_ok:
+        active_smb_conf_reason = "SSH login failed"
 
     if proxied_ssh:
         add_result(CheckResult("SKIP", f"direct SMB port check skipped for SSH-proxied target {host}"))
@@ -141,14 +213,45 @@ def run_doctor_checks(
         add_result(check_smb_port(host))
 
     if proxied_ssh and not skip_bonjour:
+        bonjour_reason = "Bonjour check skipped for SSH-proxied target"
         add_result(CheckResult("SKIP", "Bonjour check skipped for SSH-proxied target; local mDNS may find a different Time Capsule"))
     elif not skip_bonjour:
         try:
-            bonjour_results, _, _ = run_bonjour_checks(values["TC_MDNS_INSTANCE_NAME"])
+            bonjour_results, bonjour_instance, bonjour_target = run_bonjour_checks(values["TC_MDNS_INSTANCE_NAME"])
+            bonjour_reason = ""
             for result in bonjour_results:
                 add_result(result)
         except Exception as e:
+            bonjour_reason = str(e)
             add_result(CheckResult("FAIL", f"Bonjour check failed: {e}"))
+    else:
+        bonjour_reason = "Bonjour check skipped"
+
+    if bonjour_instance is not None:
+        add_result(CheckResult("INFO", f"advertised Bonjour instance: {bonjour_instance}"))
+    else:
+        add_result(CheckResult("INFO", f"advertised Bonjour instance: unavailable ({bonjour_reason})"))
+
+    bonjour_host_label = _parse_bonjour_host_label(bonjour_target)
+    if bonjour_host_label is not None:
+        add_result(CheckResult("INFO", f"advertised Bonjour host label: {bonjour_host_label}"))
+    else:
+        add_result(CheckResult("INFO", f"advertised Bonjour host label: unavailable ({bonjour_reason})"))
+
+    if active_smb_conf and active_smb_conf.strip():
+        active_netbios = _parse_active_netbios_name(active_smb_conf)
+        share_names = _parse_active_share_names(active_smb_conf)
+        if active_netbios is not None:
+            add_result(CheckResult("INFO", f"active Samba NetBIOS name: {active_netbios}"))
+        else:
+            add_result(CheckResult("INFO", "active Samba NetBIOS name: unavailable (netbios name not found in active smb.conf)"))
+        if share_names:
+            add_result(CheckResult("INFO", f"active Samba share names: {', '.join(share_names)}"))
+        else:
+            add_result(CheckResult("INFO", "active Samba share names: unavailable (no share sections found in active smb.conf)"))
+    else:
+        add_result(CheckResult("INFO", f"active Samba NetBIOS name: unavailable ({active_smb_conf_reason})"))
+        add_result(CheckResult("INFO", f"active Samba share names: unavailable ({active_smb_conf_reason})"))
 
     if not skip_ssh and ssh_ok:
         try:
@@ -209,18 +312,19 @@ def run_doctor_checks(
         except (Exception, SystemExit) as e:
             add_result(CheckResult("FAIL", f"authenticated SMB checks failed through SSH tunnel: {e}"))
     elif not skip_smb:
+        smb_server = _configured_smb_server(values["TC_MDNS_HOST_LABEL"])
         add_result(
             check_authenticated_smb_listing(
                 values["TC_SAMBA_USER"],
                 values["TC_PASSWORD"],
-                f"{values['TC_MDNS_HOST_LABEL']}.local",
+                smb_server,
                 expected_share_name=values["TC_SHARE_NAME"],
             )
         )
         for result in check_authenticated_smb_file_ops_detailed(
             values["TC_SAMBA_USER"],
             values["TC_PASSWORD"],
-            f"{values['TC_MDNS_HOST_LABEL']}.local",
+            smb_server,
             values["TC_SHARE_NAME"],
         ):
             add_result(result)
