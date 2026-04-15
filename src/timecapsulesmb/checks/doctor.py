@@ -17,7 +17,7 @@ from timecapsulesmb.checks.smb import (
 from timecapsulesmb.core.config import extract_host, missing_required_keys
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root
 from timecapsulesmb.transport.local import find_free_local_port
-from timecapsulesmb.transport.ssh import proxy_local_forward, run_ssh
+from timecapsulesmb.transport.ssh import run_ssh, ssh_local_forward
 
 
 def _read_interface_ipv4(host: str, password: str, ssh_opts: str, iface: str) -> str:
@@ -181,7 +181,9 @@ def run_doctor_checks(
     if proxied_ssh and not skip_smb:
         local_port = find_free_local_port()
         try:
-            with proxy_local_forward(
+            with ssh_local_forward(
+                values["TC_HOST"],
+                values["TC_PASSWORD"],
                 values["TC_SSH_OPTS"],
                 local_port=local_port,
                 remote_host=host,

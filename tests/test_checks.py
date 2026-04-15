@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sys
 import tempfile
 import unittest
@@ -27,7 +26,6 @@ from timecapsulesmb.checks.smb import (
     exercise_mounted_share_file_ops,
     try_authenticated_smb_listing,
 )
-from timecapsulesmb.transport.ssh import build_proxy_tunnel_command
 
 
 class CheckTests(unittest.TestCase):
@@ -180,7 +178,7 @@ class CheckTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.checks.doctor.check_smb_port") as smb_port_mock:
                         with mock.patch("timecapsulesmb.checks.doctor.run_bonjour_checks") as bonjour_mock:
                             with mock.patch("timecapsulesmb.checks.doctor.find_free_local_port", return_value=1445):
-                                with mock.patch("timecapsulesmb.checks.doctor.proxy_local_forward") as tunnel_mock:
+                                with mock.patch("timecapsulesmb.checks.doctor.ssh_local_forward") as tunnel_mock:
                                     tunnel_mock.return_value.__enter__.return_value = None
                                     tunnel_mock.return_value.__exit__.return_value = None
                                     with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=mock.Mock(status="PASS", message="listing ok")) as smb_listing_mock:
@@ -195,6 +193,8 @@ class CheckTests(unittest.TestCase):
         bonjour_mock.assert_not_called()
         nbns_mock.assert_not_called()
         tunnel_mock.assert_called_once_with(
+            "root@192.168.1.118",
+            "pw",
             values["TC_SSH_OPTS"],
             local_port=1445,
             remote_host="192.168.1.118",
@@ -240,7 +240,7 @@ class CheckTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.checks.doctor.check_smb_port") as smb_port_mock:
                         with mock.patch("timecapsulesmb.checks.doctor.run_bonjour_checks") as bonjour_mock:
                             with mock.patch("timecapsulesmb.checks.doctor.find_free_local_port", return_value=1446):
-                                with mock.patch("timecapsulesmb.checks.doctor.proxy_local_forward") as tunnel_mock:
+                                with mock.patch("timecapsulesmb.checks.doctor.ssh_local_forward") as tunnel_mock:
                                     tunnel_mock.return_value.__enter__.return_value = None
                                     tunnel_mock.return_value.__exit__.return_value = None
                                     with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=mock.Mock(status="PASS", message="listing ok")) as smb_listing_mock:
@@ -563,64 +563,6 @@ class CheckTests(unittest.TestCase):
             captured_args,
             ["smbclient", "-s", "/dev/null", "-g", "-p", "1445", "-L", "//127.0.0.1", "-U", "admin%pw"],
         )
-
-    def test_build_proxy_tunnel_command_from_proxycommand_reuses_jump_host_settings(self) -> None:
-        cmd = build_proxy_tunnel_command(
-            "-o HostKeyAlgorithms=+ssh-rsa -o ProxyCommand=ssh\\ -4\\ -i\\ ~/.ssh/id_ed25519\\ -o\\ IdentitiesOnly=yes\\ -W\\ %h:%p\\ -p\\ 22123\\ jamesyc@example.com",
-            local_port=1445,
-            remote_host="192.168.1.118",
-            remote_port=445,
-        )
-        self.assertEqual(
-            cmd,
-            [
-                "ssh",
-                "-N",
-                "-o",
-                "ExitOnForwardFailure=yes",
-                "-L",
-                "1445:192.168.1.118:445",
-                "-4",
-                "-i",
-                os.path.expanduser("~/.ssh/id_ed25519"),
-                "-o",
-                "IdentitiesOnly=yes",
-                "-p",
-                "22123",
-                "jamesyc@example.com",
-            ],
-        )
-
-    def test_build_proxy_tunnel_command_from_proxyjump_uses_jump_target(self) -> None:
-        cmd = build_proxy_tunnel_command(
-            "-J bastion.example.com -o StrictHostKeyChecking=no",
-            local_port=2445,
-            remote_host="10.0.0.2",
-            remote_port=445,
-        )
-        self.assertEqual(
-            cmd,
-            [
-                "ssh",
-                "-N",
-                "-o",
-                "ExitOnForwardFailure=yes",
-                "-L",
-                "2445:10.0.0.2:445",
-                "-o",
-                "StrictHostKeyChecking=no",
-                "bastion.example.com",
-            ],
-        )
-
-    def test_build_proxy_tunnel_command_returns_none_for_non_ssh_proxycommand(self) -> None:
-        cmd = build_proxy_tunnel_command(
-            "-o ProxyCommand=nc\\ %h\\ %p",
-            local_port=2445,
-            remote_host="10.0.0.2",
-            remote_port=445,
-        )
-        self.assertIsNone(cmd)
 
     def test_try_authenticated_smb_listing_forwards_custom_port(self) -> None:
         captured_args = None
@@ -952,7 +894,7 @@ class CheckTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
                 with mock.patch("timecapsulesmb.checks.doctor.check_ssh_login", return_value=mock.Mock(status="PASS", message="ssh ok")):
                     with mock.patch("timecapsulesmb.checks.doctor.find_free_local_port", return_value=1445):
-                        with mock.patch("timecapsulesmb.checks.doctor.proxy_local_forward", side_effect=SystemExit("tunnel failed")):
+                        with mock.patch("timecapsulesmb.checks.doctor.ssh_local_forward", side_effect=SystemExit("tunnel failed")):
                             with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root", return_value="/Volumes/dk2"):
                                 with mock.patch("timecapsulesmb.checks.doctor.run_ssh", return_value=mock.Mock(stdout="")):
                                     results, fatal = run_doctor_checks(values, env_exists=True, repo_root=REPO_ROOT, skip_bonjour=True)
