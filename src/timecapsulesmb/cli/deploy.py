@@ -48,6 +48,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.json and not args.dry_run:
         parser.error("--json currently requires --dry-run")
 
+    if not args.json:
+        print("Deploying...")
+
     values = parse_env_values(ENV_PATH)
     host = require(values, "TC_HOST")
     password = values.get("TC_PASSWORD", "")
