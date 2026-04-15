@@ -91,6 +91,25 @@ exit "$status"
     return proc.returncode == 0
 
 
+def netbsd4_activation_is_already_healthy(host: str, password: str, ssh_opts: str) -> bool:
+    script = r'''
+if ! command -v fstat >/dev/null 2>&1; then
+    exit 1
+fi
+out="$(fstat 2>&1)"
+case "$out" in
+    *smbd*":445"*mdns-advertiser*":5353"*|*mdns-advertiser*":5353"*smbd*":445"*)
+        exit 0
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+'''
+    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}", check=False)
+    return proc.returncode == 0
+
+
 def verify_post_uninstall(host: str, password: str, ssh_opts: str, plan: UninstallPlan) -> bool:
     print("Post-uninstall verification:")
     script_lines = [

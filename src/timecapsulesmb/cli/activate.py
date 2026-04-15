@@ -8,7 +8,7 @@ from timecapsulesmb.core.config import ENV_PATH, parse_env_values
 from timecapsulesmb.deploy.commands import render_remote_actions
 from timecapsulesmb.deploy.executor import run_remote_actions
 from timecapsulesmb.deploy.planner import build_netbsd4_activation_actions
-from timecapsulesmb.deploy.verify import verify_netbsd4_activation
+from timecapsulesmb.deploy.verify import netbsd4_activation_is_already_healthy, verify_netbsd4_activation
 from timecapsulesmb.device.compat import probe_device_compatibility
 
 
@@ -63,6 +63,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         if answer not in {"y", "yes"}:
             print("Activation cancelled.")
             return 0
+
+    if netbsd4_activation_is_already_healthy(host, password, ssh_opts):
+        print("NetBSD4 payload already active; skipping rc.local.")
+        return 0
 
     print("Activating NetBSD4 payload without file transfer.")
     run_remote_actions(host, password, ssh_opts, actions)

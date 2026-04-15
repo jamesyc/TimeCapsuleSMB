@@ -1301,7 +1301,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("pkill mDNSResponder >/dev/null 2>&1 || true", text)
         self.assertIn("pkill wcifsfs >/dev/null 2>&1 || true", text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
-        self.assertIn("Tested gen1 NetBSD4 devices need this after reboot", text)
+        self.assertIn("Tested NetBSD4 devices need this after reboot", text)
         self.assertIn("other NetBSD4 generations may auto-start", text)
 
     def test_activate_rejects_non_netbsd4_device(self) -> None:
@@ -1342,10 +1342,11 @@ class CliTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
-                with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
-                    with mock.patch("timecapsulesmb.cli.activate.verify_netbsd4_activation", return_value=True) as verify_mock:
-                        with redirect_stdout(output):
-                            rc = activate.main(["--yes"])
+                with mock.patch("timecapsulesmb.cli.activate.netbsd4_activation_is_already_healthy", return_value=False):
+                    with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
+                        with mock.patch("timecapsulesmb.cli.activate.verify_netbsd4_activation", return_value=True) as verify_mock:
+                            with redirect_stdout(output):
+                                rc = activate.main(["--yes"])
         self.assertEqual(rc, 0)
         actions_mock.assert_called_once()
         action_kinds = [action.kind for action in actions_mock.call_args.args[3]]
@@ -1356,6 +1357,25 @@ class CliTests(unittest.TestCase):
         verify_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o foo")
         self.assertIn("without file transfer", output.getvalue())
 
+    def test_activate_skips_rc_local_when_payload_is_already_healthy(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+        }
+        with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                with mock.patch("timecapsulesmb.cli.activate.netbsd4_activation_is_already_healthy", return_value=True):
+                    with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
+                        with mock.patch("timecapsulesmb.cli.activate.verify_netbsd4_activation") as verify_mock:
+                            with redirect_stdout(output):
+                                rc = activate.main(["--yes"])
+        self.assertEqual(rc, 0)
+        actions_mock.assert_not_called()
+        verify_mock.assert_not_called()
+        self.assertIn("already active; skipping rc.local", output.getvalue())
+
     def test_activate_returns_nonzero_when_verification_fails(self) -> None:
         output = io.StringIO()
         values = {
@@ -1365,10 +1385,11 @@ class CliTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
-                with mock.patch("timecapsulesmb.cli.activate.run_remote_actions"):
-                    with mock.patch("timecapsulesmb.cli.activate.verify_netbsd4_activation", return_value=False):
-                        with redirect_stdout(output):
-                            rc = activate.main(["--yes"])
+                with mock.patch("timecapsulesmb.cli.activate.netbsd4_activation_is_already_healthy", return_value=False):
+                    with mock.patch("timecapsulesmb.cli.activate.run_remote_actions"):
+                        with mock.patch("timecapsulesmb.cli.activate.verify_netbsd4_activation", return_value=False):
+                            with redirect_stdout(output):
+                                rc = activate.main(["--yes"])
         self.assertEqual(rc, 1)
         self.assertIn("NetBSD4 activation failed.", output.getvalue())
 
