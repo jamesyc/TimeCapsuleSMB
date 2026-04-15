@@ -41,7 +41,10 @@ if [ -f "$LOCAL_CMD" ]; then
 
     tc_ssh "$TC_HOST" "mkdir -p $REMOTE_DIR_Q" </dev/null
     status=0
-    tc_ssh "$TC_HOST" "cat > $REMOTE_BIN_Q" <"$LOCAL_CMD" || status=$?
+    # The NetBSD 4 Time Capsule does not ship scp, so cross-exec has to upload
+    # probe binaries over ssh. Keep this as an explicit pipeline: it proved more
+    # reliable through the bastion than redirecting the ssh wrapper's stdin.
+    cat "$LOCAL_CMD" | tc_ssh "$TC_HOST" "cat > $REMOTE_BIN_Q" || status=$?
     if [ "$status" -ne 0 ]; then
         tc_ssh "$TC_HOST" "rm -f $REMOTE_BIN_Q" </dev/null || true
         exit "$status"

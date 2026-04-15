@@ -121,7 +121,8 @@ validate_netbsd4_notes() {
     exit 1
 }
 
-mkdir -p "$SAMBA4_WORK" "$SAMBA4_STAGE" "$SAMBA4_BUILD"
+mkdir -p "$SAMBA4_WORK" "$SAMBA4_STAGE" "$SAMBA4_BUILD" "$SAMBA4_STAGE/sbin"
+MAP_FILE="$SAMBA4_STAGE/sbin/smbd.map"
 
 if [ "$SDK_FAMILY" = "netbsd4" ] && [ "$SAMBA4_NETBSD4_GC_SECTIONS" = "1" ]; then
     prepare_netbsd4_gc_note_inputs
@@ -154,7 +155,7 @@ if [ "$SDK_FAMILY" = "netbsd4" ]; then
     SAMBA4_NETBSD4_FINAL_LINKFLAGS=""
     if [ "$SAMBA4_NETBSD4_GC_SECTIONS" = "1" ]; then
         SAMBA4_NETBSD4_FINAL_LDFLAGS="-static -L$DESTDIR/lib -L$DESTDIR/usr/lib -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu"
-        SAMBA4_NETBSD4_FINAL_LINKFLAGS="'-Wl,--gc-sections', '-Wl,-T,$SAMBA4_NETBSD4_KEEP_NOTES_LD', '$SAMBA4_NETBSD4_NOTE_OBJ', '-static', '-L$DESTDIR/lib', '-L$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib/csu'"
+        SAMBA4_NETBSD4_FINAL_LINKFLAGS="'-Wl,--gc-sections', '-Wl,-Map=$MAP_FILE', '-Wl,-T,$SAMBA4_NETBSD4_KEEP_NOTES_LD', '$SAMBA4_NETBSD4_NOTE_OBJ', '-static', '-L$DESTDIR/lib', '-L$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib/csu'"
     fi
     # Configure runs cross-exec probes on the Time Capsule. Those probe ELFs
     # need their native NetBSD notes too, so keep configure on the safe no-GC
@@ -168,7 +169,7 @@ else
     export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie"
     export CXXFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie"
     export CPPFLAGS="-I$SYSROOT/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES"
-    export LDFLAGS="-static -Wl,--gc-sections -L$SYSROOT/lib -L$SYSROOT/usr/lib"
+    export LDFLAGS="-static -Wl,--gc-sections -Wl,-Map=$MAP_FILE -L$SYSROOT/lib -L$SYSROOT/usr/lib"
 fi
 export PKG_CONFIG_DIR=
 export PKG_CONFIG_PATH=
@@ -194,6 +195,7 @@ SAMBA4_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_a
     echo "SAMBA4_NETBSD4_GC_SECTIONS=$SAMBA4_NETBSD4_GC_SECTIONS"
     echo "SAMBA4_NETBSD4_FINAL_LDFLAGS=${SAMBA4_NETBSD4_FINAL_LDFLAGS:-$LDFLAGS}"
     echo "SAMBA4_NETBSD4_FINAL_LINKFLAGS=${SAMBA4_NETBSD4_FINAL_LINKFLAGS:-}"
+    echo "MAP_FILE=$MAP_FILE"
     echo "CFLAGS=$CFLAGS"
     echo "LDFLAGS=$LDFLAGS"
     echo "CROSS_EXECUTE=$CROSS_EXECUTE"
@@ -227,12 +229,16 @@ SAMBA4_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_a
       --prefix=$SAMBA4_STAGE \
       --bundled-libraries=!asn1_compile,!compile_et \
       --without-pie \
+      --disable-avahi \
       --without-acl-support \
       --without-ad-dc \
       --without-ads \
+      --without-automount \
+      --without-dmapi \
       --without-ldap \
       --without-pam \
       --disable-cups \
+      --disable-iprint \
       --without-winbind \
       --without-utmp \
       --without-syslog \
@@ -249,6 +255,11 @@ SAMBA4_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_a
         CONFIGURE_ARGS="$CONFIGURE_ARGS --without-gettext"
     fi
 
+    # The Time Capsule image does not expose a normal always-on Avahi daemon.
+    # Use the dedicated mdns-advertiser payload instead. Printing and spoolss
+    # are patched out in _downloadsamba4.sh, so keep configure on the no-printing
+    # path too.
+    #
     # NetBSD 6 on the Time Capsule does not expose the POSIX ACL API Samba
     # probes for in configure (`sys/acl.h`, libacl). We use the acl_xattr VFS
     # module to provide Windows ACL semantics via xattrs/tdb instead of native
