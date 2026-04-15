@@ -198,6 +198,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("lock directory = /mnt/Memory/samba4/locks", rendered)
         self.assertIn("state directory = /mnt/Memory/samba4/var", rendered)
         self.assertIn("private dir = /mnt/Memory/samba4/private", rendered)
+        self.assertIn("reset on zero vc = yes", rendered)
 
     def test_render_smb_conf_uses_persistent_cache_directory_for_netbsd4(self) -> None:
         values = {
@@ -216,6 +217,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("lock directory = /mnt/Memory/samba4/locks", rendered)
         self.assertIn("state directory = /mnt/Memory/samba4/var", rendered)
         self.assertIn("private dir = /mnt/Memory/samba4/private", rendered)
+        self.assertIn("reset on zero vc = yes", rendered)
 
     def test_render_start_script_uses_persistent_cache_directory_for_netbsd4_fallback(self) -> None:
         values = {
@@ -232,6 +234,7 @@ class DeployModuleTests(unittest.TestCase):
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn("CACHE_DIRECTORY=$DATA_ROOT/../$PAYLOAD_DIR_NAME/cache", rendered)
         self.assertIn("cache directory = $CACHE_DIRECTORY", rendered)
+        self.assertIn("reset on zero vc = yes", rendered)
 
     def test_render_start_script_defers_netbsd4_cache_assignment_until_data_root_exists(self) -> None:
         values = {

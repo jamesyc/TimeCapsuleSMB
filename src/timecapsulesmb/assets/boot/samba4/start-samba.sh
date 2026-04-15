@@ -285,6 +285,7 @@ stage_runtime() {
     max log size = 256
     smb ports = 445
     deadtime = 15
+    reset on zero vc = yes
     fruit:aapl = yes
     fruit:model = MacSamba
     fruit:advertise_fullsync = true
