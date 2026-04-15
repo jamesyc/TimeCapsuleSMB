@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 import shlex
 import shutil
 import subprocess
@@ -37,8 +38,50 @@ def _spawn_with_password(cmd: list[str], password: str, *, timeout: int, timeout
     return rc, "".join(output)
 
 
+@lru_cache(maxsize=None)
+def _ssh_option_supported(option_name: str) -> bool:
+    try:
+        proc = subprocess.run(
+            ["ssh", "-F", "/dev/null", "-G", "localhost", "-o", f"{option_name}=+ssh-rsa"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    stderr = proc.stderr or ""
+    return proc.returncode == 0 and "Bad configuration option" not in stderr
+
+
+def _normalize_ssh_tokens(ssh_opts: str) -> list[str]:
+    tokens = shlex.split(ssh_opts)
+    if _ssh_option_supported("PubkeyAcceptedAlgorithms"):
+        return tokens
+    if not _ssh_option_supported("PubkeyAcceptedKeyTypes"):
+        return tokens
+
+    rewritten: list[str] = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "-o" and i + 1 < len(tokens):
+            value = tokens[i + 1]
+            if value.startswith("PubkeyAcceptedAlgorithms="):
+                value = value.replace("PubkeyAcceptedAlgorithms=", "PubkeyAcceptedKeyTypes=", 1)
+            rewritten.extend([token, value])
+            i += 2
+            continue
+        if token.startswith("-oPubkeyAcceptedAlgorithms="):
+            rewritten.append(token.replace("-oPubkeyAcceptedAlgorithms=", "-oPubkeyAcceptedKeyTypes=", 1))
+        else:
+            rewritten.append(token)
+        i += 1
+    return rewritten
+
+
 def run_ssh(host: str, password: str, ssh_opts: str, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
-    cmd = ["ssh", *shlex.split(ssh_opts), host, remote_cmd]
+    cmd = ["ssh", *_normalize_ssh_tokens(ssh_opts), host, remote_cmd]
     rc, stdout = _spawn_with_password(
         cmd,
         password,
@@ -80,7 +123,7 @@ def run_scp(host: str, password: str, ssh_opts: str, src: Path, dest: str, *, ti
         timeout=30,
     )
     if probe.returncode == 0:
-        cmd = ["scp", "-O", *shlex.split(ssh_opts), str(src), f"{host}:{dest}"]
+        cmd = ["scp", "-O", *_normalize_ssh_tokens(ssh_opts), str(src), f"{host}:{dest}"]
         rc, stdout = _spawn_with_password(
             cmd,
             password,
@@ -96,7 +139,7 @@ def run_scp(host: str, password: str, ssh_opts: str, src: Path, dest: str, *, ti
         raise SystemExit("Remote scp is unavailable and local sshpass is required for streaming upload fallback.")
 
     remote_cmd = f"/bin/sh -c {shlex.quote('cat > ' + shlex.quote(dest))}"
-    cmd = ["sshpass", "-e", "ssh", *shlex.split(ssh_opts), host, remote_cmd]
+    cmd = ["sshpass", "-e", "ssh", *_normalize_ssh_tokens(ssh_opts), host, remote_cmd]
     env = dict(os.environ)
     env["SSHPASS"] = password
     try:
