@@ -1420,7 +1420,28 @@ class CliTests(unittest.TestCase):
         verify_mock.assert_called_once()
         self.assertIn("Device is back online.", output.getvalue())
 
-    def test_uninstall_declined_reboot_returns_failure(self) -> None:
+    def test_uninstall_no_reboot_skips_reboot_and_returns_success(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+        }
+        with mock.patch("timecapsulesmb.cli.uninstall.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload") as uninstall_mock:
+                    with mock.patch("timecapsulesmb.cli.uninstall.run_ssh") as run_ssh_mock:
+                        with mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall") as verify_mock:
+                            with redirect_stdout(output):
+                                rc = uninstall.main(["--no-reboot"])
+        self.assertEqual(rc, 0)
+        uninstall_mock.assert_called_once()
+        run_ssh_mock.assert_not_called()
+        verify_mock.assert_not_called()
+        self.assertIn("Skipping reboot.", output.getvalue())
+
+    def test_uninstall_declined_reboot_skips_reboot_and_returns_success(self) -> None:
         output = io.StringIO()
         values = {
             "TC_HOST": "root@10.0.0.2",
@@ -1435,9 +1456,9 @@ class CliTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.cli.uninstall.run_ssh") as run_ssh_mock:
                             with redirect_stdout(output):
                                 rc = uninstall.main([])
-        self.assertEqual(rc, 1)
+        self.assertEqual(rc, 0)
         run_ssh_mock.assert_not_called()
-        self.assertIn("Uninstall requires a reboot to complete.", output.getvalue())
+        self.assertIn("Skipped reboot.", output.getvalue())
 
     def test_discover_json_outputs_records(self) -> None:
         output = io.StringIO()

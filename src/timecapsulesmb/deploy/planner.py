@@ -166,6 +166,7 @@ def build_uninstall_plan(host: str, device_paths: DevicePaths) -> UninstallPlan:
         flash_targets=flash_targets,
         verify_absent_targets=verify_absent_targets,
         remote_actions=[
+            stop_process_full_action("[w]atchdog.sh"),
             stop_process_action("smbd"),
             stop_process_action("mdns-advertiser"),
             stop_process_action("nbns-advertiser"),

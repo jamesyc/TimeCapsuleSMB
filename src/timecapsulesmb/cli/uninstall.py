@@ -25,6 +25,7 @@ def require(values: dict[str, str], key: str) -> str:
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Remove the managed TimeCapsuleSMB payload from a Time Capsule.")
     parser.add_argument("--yes", action="store_true", help="Do not prompt before reboot")
+    parser.add_argument("--no-reboot", action="store_true", help="Remove files but do not reboot the device")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without making changes")
     parser.add_argument("--json", action="store_true", help="Output the dry-run uninstall plan as JSON")
     args = parser.parse_args(argv)
@@ -54,11 +55,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     remote_uninstall_payload(host, password, ssh_opts, plan)
     print("Removed managed payload, flash hooks, and runtime state.")
 
+    if args.no_reboot:
+        print("Skipping reboot.")
+        return 0
+
     if not args.yes:
         answer = input("This will reboot the Time Capsule now. Continue? [Y/n]: ").strip().lower()
         if answer not in {"", "y", "yes"}:
-            print("Uninstall requires a reboot to complete.")
-            return 1
+            print("Skipped reboot. The Time Capsule may need a manual reboot to fully clear running processes.")
+            return 0
 
     run_ssh(host, password, ssh_opts, "/sbin/reboot", check=False)
     hostname = extract_host(host)

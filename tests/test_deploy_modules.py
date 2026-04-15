@@ -546,6 +546,12 @@ PASS:mdns-advertiser bound to UDP 5353
         plan = build_uninstall_plan("root@10.0.0.2", paths)
         self.assertIn("pkill nbns-advertiser >/dev/null 2>&1 || true", [render_remote_action(action) for action in plan.remote_actions])
 
+    def test_build_uninstall_plan_stops_watchdog_first(self) -> None:
+        paths = build_device_paths("/Volumes/dk2", "samba4")
+        plan = build_uninstall_plan("root@10.0.0.2", paths)
+        rendered = [render_remote_action(action) for action in plan.remote_actions]
+        self.assertEqual(rendered[0], "pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true")
+
     def test_remote_action_rendering_quotes_payload_paths_with_spaces(self) -> None:
         payload_dir = "/Volumes/dk2/Time Capsule Samba 4"
         prepare_cmd = render_remote_action(prepare_dirs_action(payload_dir))
