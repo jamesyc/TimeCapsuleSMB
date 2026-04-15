@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from typing import Optional
 
-from . import bootstrap, configure, deploy, discover, doctor, prep_device, uninstall
+from . import bootstrap, configure, deploy, discover, doctor, prep_device, repair_xattrs, uninstall
 
 
 COMMANDS = {
@@ -13,6 +13,7 @@ COMMANDS = {
     "discover": discover.main,
     "doctor": doctor.main,
     "prep-device": prep_device.main,
+    "repair-xattrs": repair_xattrs.main,
     "uninstall": uninstall.main,
 }
 

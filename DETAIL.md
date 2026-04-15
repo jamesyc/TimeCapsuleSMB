@@ -532,6 +532,53 @@ The normal goal is to use it as a quick health check after:
 - deploy
 - reboot
 
+## Repair Xattrs Command
+
+[src/timecapsulesmb/cli/repair_xattrs.py](src/timecapsulesmb/cli/repair_xattrs.py) is a macOS-side repair helper for files whose SMB extended-attribute metadata became unreadable.
+
+This was added after observing files on the mounted Samba share where:
+- normal POSIX permissions looked fine
+- TextEdit could open the file but could not save it back in place
+- `xattr -l <file>` failed with `Invalid argument`
+- `ls -lO@ <file>` showed the macOS `arch` file flag
+
+The repair is intentionally narrow. It scans regular files, identifies files where `xattr -l` fails and the `arch` flag is present, then repairs by running:
+
+```bash
+chflags noarch <file>
+```
+
+Typical scan-and-prompt usage:
+
+```bash
+.venv/bin/tcapsule repair-xattrs --path /Volumes/Data
+```
+
+If `TC_SHARE_NAME` is set in `.env` and the share is mounted under `/Volumes/<TC_SHARE_NAME>`, `--path` can be omitted:
+
+```bash
+.venv/bin/tcapsule repair-xattrs
+```
+
+Useful modes:
+
+```bash
+.venv/bin/tcapsule repair-xattrs --path /Volumes/Data --dry-run
+.venv/bin/tcapsule repair-xattrs --path /Volumes/Data --yes
+.venv/bin/tcapsule repair-xattrs --path /Volumes/Data/some-folder --no-recursive
+.venv/bin/tcapsule repair-xattrs --path /Volumes/Data --max-depth 2
+```
+
+Default safety behavior:
+- prompts before changing files unless `--yes` is passed
+- verifies file size is unchanged after repair
+- verifies `xattr -l` succeeds after repair
+- skips symlinks
+- skips hidden dot paths unless `--include-hidden` is passed
+- skips Time Machine and bundle-like paths unless `--include-time-machine` is passed
+
+This command should be treated as a targeted cleanup tool for user files, not as a general metadata migration command. Do not run it over Time Machine backup bundles unless you are deliberately investigating that path.
+
 ## Deploy Details
 
 [src/timecapsulesmb/cli/deploy.py](src/timecapsulesmb/cli/deploy.py) is now mostly an orchestrator over shared modules in [src/timecapsulesmb/deploy/](src/timecapsulesmb/deploy) and [src/timecapsulesmb/device/](src/timecapsulesmb/device).
