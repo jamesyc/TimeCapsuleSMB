@@ -7,8 +7,9 @@ set -eu
 # - wait for the internal HFS data device to appear
 # - mount it at Apple's expected mountpoint
 # - discover the real data root by looking for .com.apple.timemachine.supported
-# - copy the Samba runtime into /mnt/Memory so smbd does not execute from a
-#   volume that Apple may later unmount
+# - copy smbd into /mnt/Memory so it does not execute from a volume that Apple
+#   may later unmount
+# - run mdns-advertiser from /mnt/Flash to save ramdisk space
 # - generate smb.conf with the discovered data root
 # - launch smbd from /mnt/Memory
 #
@@ -28,6 +29,7 @@ RAM_LOCKS="$RAM_ROOT/locks"
 RAM_PRIVATE="$RAM_ROOT/private"
 RAM_LOG="$RAM_VAR/rc.local.log"
 SMBD_LOG="$RAM_VAR/log.smbd"
+MDNS_BIN=/mnt/Flash/mdns-advertiser
 LEGACY_PREFIX_NETBSD7=/root/tc-netbsd7
 LEGACY_PREFIX_NETBSD4=/root/tc-netbsd4
 NBNS_PROC_NAME=nbns-advertiser
@@ -219,17 +221,6 @@ find_payload_smbd() {
     return 1
 }
 
-find_payload_mdns() {
-    payload_dir=$1
-
-    if [ -x "$payload_dir/mdns-advertiser" ]; then
-        echo "$payload_dir/mdns-advertiser"
-        return 0
-    fi
-
-    return 1
-}
-
 find_payload_nbns() {
     payload_dir=$1
 
@@ -244,16 +235,10 @@ find_payload_nbns() {
 stage_runtime() {
     payload_dir=$1
     smbd_src=$2
-    mdns_src=${3:-}
-    nbns_src=${4:-}
+    nbns_src=${3:-}
 
     cp "$smbd_src" "$RAM_SBIN/smbd"
     chmod 755 "$RAM_SBIN/smbd"
-
-    if [ -n "$mdns_src" ] && [ -x "$mdns_src" ]; then
-        cp "$mdns_src" "$RAM_SBIN/mdns-advertiser"
-        chmod 755 "$RAM_SBIN/mdns-advertiser"
-    fi
 
     if [ -f "$payload_dir/private/nbns.enabled" ] && [ -n "$nbns_src" ] && [ -x "$nbns_src" ]; then
         cp "$nbns_src" "$RAM_SBIN/nbns-advertiser"
@@ -335,7 +320,7 @@ start_smbd() {
 }
 
 start_mdns() {
-    if [ ! -x "$RAM_SBIN/mdns-advertiser" ]; then
+    if [ ! -x "$MDNS_BIN" ]; then
         return 0
     fi
 
@@ -345,7 +330,7 @@ start_mdns() {
         return 0
     fi
 
-    "$RAM_SBIN/mdns-advertiser" \
+    "$MDNS_BIN" \
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
         --device-model "$MDNS_DEVICE_MODEL" \
@@ -406,13 +391,6 @@ SMBD_SRC=$(find_payload_smbd "$PAYLOAD_DIR") || {
     exit 1
 }
 
-MDNS_SRC=
-if MDNS_SRC=$(find_payload_mdns "$PAYLOAD_DIR"); then
-    :
-else
-    MDNS_SRC=
-fi
-
 NBNS_SRC=
 if NBNS_SRC=$(find_payload_nbns "$PAYLOAD_DIR"); then
     :
@@ -420,7 +398,7 @@ else
     NBNS_SRC=
 fi
 
-stage_runtime "$PAYLOAD_DIR" "$SMBD_SRC" "$MDNS_SRC" "$NBNS_SRC"
+stage_runtime "$PAYLOAD_DIR" "$SMBD_SRC" "$NBNS_SRC"
 log "runtime staged under $RAM_ROOT"
 
 start_mdns

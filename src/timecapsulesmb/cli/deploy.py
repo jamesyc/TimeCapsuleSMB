@@ -70,6 +70,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     elif not args.json:
         print(compatibility.message)
     payload_family = compatibility.payload_family or "netbsd6_samba4"
+    if args.install_nbns and payload_family == "netbsd4_samba4":
+        raise SystemExit("NBNS responder cannot be enabled on NetBSD4 devices; the ramdisk does not have enough space.")
     resolved_artifacts = resolve_payload_artifacts(REPO_ROOT, payload_family)
     smbd_path = resolved_artifacts["smbd"].absolute_path
     mdns_path = resolved_artifacts["mdns-advertiser"].absolute_path

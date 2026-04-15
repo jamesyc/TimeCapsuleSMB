@@ -812,7 +812,30 @@ class CliTests(unittest.TestCase):
         self.assertIn("Detected supported older device: NetBSD 4.0", text)
         self.assertIn("bin/samba4-netbsd4/smbd -> /Volumes/dk2/samba4/smbd", text)
         self.assertIn("bin/mdns-netbsd4/mdns-advertiser -> /Volumes/dk2/samba4/mdns-advertiser", text)
+        self.assertIn("bin/mdns-netbsd4/mdns-advertiser -> /mnt/Flash/mdns-advertiser", text)
         self.assertIn("bin/nbns-netbsd4/nbns-advertiser -> /Volumes/dk2/samba4/nbns-advertiser", text)
+
+    def test_deploy_install_nbns_rejects_netbsd4_device(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
+                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                        with self.assertRaises(SystemExit) as cm:
+                            deploy.main(["--install-nbns", "--no-reboot"])
+        self.assertIn("NBNS responder cannot be enabled on NetBSD4", str(cm.exception))
 
     def test_deploy_install_nbns_dry_run_mentions_marker(self) -> None:
         output = io.StringIO()

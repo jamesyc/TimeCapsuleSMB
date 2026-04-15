@@ -59,6 +59,7 @@ def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path,
         "start-samba.sh": "/mnt/Flash/start-samba.sh",
         "watchdog.sh": "/mnt/Flash/watchdog.sh",
         "dfree.sh": "/mnt/Flash/dfree.sh",
+        "mdns-advertiser": "/mnt/Flash/mdns-advertiser",
     }
     payload_targets = {
         "smbd": f"{payload_dir}/smbd",
@@ -86,6 +87,7 @@ def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path,
         uploads=[
             FileTransfer(source=str(smbd_path), destination=payload_targets["smbd"], kind="checked-in binary"),
             FileTransfer(source=str(mdns_path), destination=payload_targets["mdns-advertiser"], kind="checked-in binary"),
+            FileTransfer(source=str(mdns_path), destination=flash_targets["mdns-advertiser"], kind="checked-in binary"),
             FileTransfer(source=str(nbns_path), destination=payload_targets["nbns-advertiser"], kind="checked-in binary"),
             FileTransfer(source="packaged rc.local", destination=flash_targets["rc.local"], kind="packaged asset"),
             FileTransfer(source="rendered start-samba.sh", destination=flash_targets["start-samba.sh"], kind="rendered asset"),
@@ -114,6 +116,7 @@ def build_uninstall_plan(host: str, device_paths: DevicePaths) -> UninstallPlan:
         "start-samba.sh": "/mnt/Flash/start-samba.sh",
         "watchdog.sh": "/mnt/Flash/watchdog.sh",
         "dfree.sh": "/mnt/Flash/dfree.sh",
+        "mdns-advertiser": "/mnt/Flash/mdns-advertiser",
     }
     verify_absent_targets = [
         payload_dir,
@@ -137,6 +140,7 @@ def build_uninstall_plan(host: str, device_paths: DevicePaths) -> UninstallPlan:
             remove_path_action(flash_targets["start-samba.sh"]),
             remove_path_action(flash_targets["watchdog.sh"]),
             remove_path_action(flash_targets["dfree.sh"]),
+            remove_path_action(flash_targets["mdns-advertiser"]),
             remove_path_action("/mnt/Memory/samba4"),
             remove_path_action("/root/tc-netbsd7"),
             remove_path_action("/root/tc-netbsd4"),

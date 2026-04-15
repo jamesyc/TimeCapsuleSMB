@@ -281,13 +281,14 @@ int main(void) {{
                 rendered_watchdog=Path("/tmp/watchdog.sh"),
                 rendered_smbconf=Path("/tmp/smb.conf.template"),
             )
-        self.assertEqual(scp_mock.call_count, 8)
+        self.assertEqual(scp_mock.call_count, 9)
         destinations = [call.args[4] for call in scp_mock.call_args_list]
         self.assertEqual(
             destinations,
             [
                 "/Volumes/dk2/samba4/smbd",
                 "/Volumes/dk2/samba4/mdns-advertiser",
+                "/mnt/Flash/mdns-advertiser",
                 "/Volumes/dk2/samba4/nbns-advertiser",
                 "/mnt/Flash/rc.local",
                 "/mnt/Flash/start-samba.sh",
