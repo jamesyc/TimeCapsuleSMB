@@ -41,6 +41,46 @@ def install_python_requirements(venv_python: Path) -> None:
     run([str(venv_python), "-m", "pip", "install", "-e", str(REPO_ROOT)])
 
 
+def maybe_install_smbclient() -> None:
+    if shutil.which("smbclient"):
+        return
+
+    print("smbclient is required for cross-platform SMB verification in 'tcapsule doctor'.", flush=True)
+
+    if sys.platform == "darwin":
+        brew = shutil.which("brew")
+        if not brew:
+            print("Homebrew not found, so bootstrap cannot install smbclient automatically.", flush=True)
+            print("Install Homebrew from https://brew.sh and then run: brew install samba", flush=True)
+            return
+        print("On macOS, smbclient is provided by the Homebrew 'samba' formula.", flush=True)
+        if not confirm("Install smbclient now via 'brew install samba'?", default=True):
+            print("Skipping smbclient install. Later, run 'brew install samba' before using 'tcapsule doctor'.", flush=True)
+            return
+        print("Installing smbclient via 'brew install samba'", flush=True)
+        try:
+            run([brew, "install", "samba"])
+        except subprocess.CalledProcessError as exc:
+            print("Warning: smbclient install failed. Host bootstrap will continue without it.", flush=True)
+            print("Later, run 'brew install samba' and rerun './tcapsule bootstrap' or use '.venv/bin/tcapsule doctor' once smbclient is available.", flush=True)
+            print(f"smbclient install command failed with exit code {exc.returncode}: {exc.cmd}", flush=True)
+        return
+
+    print("Automatic smbclient installation is not implemented for this platform.", flush=True)
+    if shutil.which("apt-get"):
+        print("Install it with: sudo apt-get update && sudo apt-get install -y smbclient", flush=True)
+    elif shutil.which("dnf"):
+        print("Install it with: sudo dnf install -y samba-client", flush=True)
+    elif shutil.which("yum"):
+        print("Install it with: sudo yum install -y samba-client", flush=True)
+    elif shutil.which("zypper"):
+        print("Install it with: sudo zypper install smbclient", flush=True)
+    elif shutil.which("pacman"):
+        print("Install it with your distro package manager before running 'tcapsule doctor'.", flush=True)
+    else:
+        print("Install smbclient with your distro package manager before running 'tcapsule doctor'.", flush=True)
+
+
 def maybe_install_airpyrt(skip_airpyrt: bool) -> None:
     if skip_airpyrt:
         print("Skipping AirPyrt setup.", flush=True)
@@ -85,6 +125,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         venv_python = ensure_venv(args.python)
         install_python_requirements(venv_python)
+        maybe_install_smbclient()
         maybe_install_airpyrt(args.skip_airpyrt)
     except subprocess.CalledProcessError as e:
         print(f"Command failed with exit code {e.returncode}: {e.cmd}", file=sys.stderr)

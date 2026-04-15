@@ -194,7 +194,9 @@ def discover(timeout: float = 5.0) -> list[Discovered]:
         )
         sys.exit(1)
 
-    zc = Zeroconf(ip_version=IPVersion.All)
+    # Our Time Capsule targets advertise over IPv4, and zeroconf 0.147.x can
+    # miss _smb._tcp browse results on macOS when run in dual-stack mode.
+    zc = Zeroconf(ip_version=IPVersion.V4Only)
     try:
         collector = Collector(zc, SERVICE_TYPES)
         collector.start()

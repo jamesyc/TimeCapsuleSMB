@@ -10,7 +10,10 @@ from timecapsulesmb.checks.local_tools import check_required_artifacts, check_re
 from timecapsulesmb.checks.models import CheckResult, is_fatal
 from timecapsulesmb.checks.network import check_smb_port, check_ssh_login, ssh_opts_use_proxy
 from timecapsulesmb.checks.nbns import check_nbns_name_resolution
-from timecapsulesmb.checks.smb import check_authenticated_smb_file_ops, check_authenticated_smb_listing
+from timecapsulesmb.checks.smb import (
+    check_authenticated_smb_file_ops_detailed,
+    check_authenticated_smb_listing,
+)
 from timecapsulesmb.core.config import extract_host, missing_required_keys
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root
 from timecapsulesmb.transport.ssh import run_ssh
@@ -185,14 +188,13 @@ def run_doctor_checks(
                 expected_share_name=values["TC_SHARE_NAME"],
             )
         )
-        add_result(
-            check_authenticated_smb_file_ops(
-                values["TC_SAMBA_USER"],
-                values["TC_PASSWORD"],
-                f"{values['TC_MDNS_HOST_LABEL']}.local",
-                values["TC_SHARE_NAME"],
-            )
-        )
+        for result in check_authenticated_smb_file_ops_detailed(
+            values["TC_SAMBA_USER"],
+            values["TC_PASSWORD"],
+            f"{values['TC_MDNS_HOST_LABEL']}.local",
+            values["TC_SHARE_NAME"],
+        ):
+            add_result(result)
 
     fatal = any(is_fatal(result) for result in results)
     return results, fatal

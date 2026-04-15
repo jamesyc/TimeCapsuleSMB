@@ -1,16 +1,24 @@
 from __future__ import annotations
 
-import os
-import re
 import subprocess
 import tempfile
 import uuid
 from pathlib import Path
 from typing import Optional
-from urllib.parse import quote
 
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.transport.local import command_exists, run_local_capture
+
+
+def _smbclient_base_args() -> list[str]:
+    return ["smbclient", "-s", "/dev/null"]
+
+
+def _run_smbclient_listing(server: str, username: str, password: str, *, timeout: int) -> subprocess.CompletedProcess[str]:
+    return run_local_capture(
+        _smbclient_base_args() + ["-g", "-L", f"//{server}", "-U", f"{username}%{password}"],
+        timeout=timeout,
+    )
 
 
 def check_authenticated_smb_listing(
@@ -21,10 +29,10 @@ def check_authenticated_smb_listing(
     expected_share_name: Optional[str] = None,
     timeout: int = 20,
 ) -> CheckResult:
-    if not command_exists("smbutil"):
-        return CheckResult("FAIL", "missing local tool smbutil")
+    if not command_exists("smbclient"):
+        return CheckResult("FAIL", "missing local tool smbclient")
 
-    proc = run_local_capture(["smbutil", "view", f"//{username}:{password}@{server}"], timeout=timeout)
+    proc = _run_smbclient_listing(server, username, password, timeout=timeout)
     if proc.returncode == 0:
         if expected_share_name is not None and expected_share_name not in proc.stdout:
             return CheckResult(
@@ -38,13 +46,13 @@ def check_authenticated_smb_listing(
 
 
 def try_authenticated_smb_listing(username: str, password: str, servers: list[str], *, timeout: int = 12) -> CheckResult:
-    if not command_exists("smbutil"):
-        return CheckResult("WARN", "SMB listing verification skipped: smbutil not found")
+    if not command_exists("smbclient"):
+        return CheckResult("WARN", "SMB listing verification skipped: smbclient not found")
 
     failure_msg = "not attempted"
     for server in servers:
         try:
-            proc = run_local_capture(["smbutil", "view", f"//{username}:{password}@{server}"], timeout=timeout)
+            proc = _run_smbclient_listing(server, username, password, timeout=timeout)
         except subprocess.TimeoutExpired:
             failure_msg = f"timed out via {server}"
             continue
@@ -80,31 +88,6 @@ def exercise_mounted_share_file_ops(root: Path, *, prefix: str = "doctor-fileops
     test_dir.rmdir()
 
 
-def _mount_smb_share(username: str, password: str, server: str, share_name: str, mountpoint: Path, *, timeout: int) -> subprocess.CompletedProcess[str]:
-    remote = f"//{quote(username, safe='')}:{quote(password, safe='')}@{server}/{quote(share_name, safe='')}"
-    return run_local_capture(["/sbin/mount_smbfs", remote, str(mountpoint)], timeout=timeout)
-
-
-def _find_existing_smb_mount(username: str, share_name: str, *, timeout: int) -> Optional[Path]:
-    proc = run_local_capture(["/sbin/mount"], timeout=timeout)
-    if proc.returncode != 0:
-        return None
-    pattern = re.compile(rf"^//{re.escape(username)}@[^/]+/{re.escape(share_name)} on (.+?) \(smbfs[,)]")
-    for line in proc.stdout.splitlines():
-        match = pattern.search(line.strip())
-        if match:
-            return Path(match.group(1))
-    return None
-
-
-def _unmount_smb_share(mountpoint: Path, *, timeout: int) -> None:
-    proc = run_local_capture(["/sbin/umount", str(mountpoint)], timeout=timeout)
-    if proc.returncode == 0:
-        return
-    if command_exists("diskutil"):
-        run_local_capture(["/usr/sbin/diskutil", "unmount", "force", str(mountpoint)], timeout=timeout)
-
-
 def check_authenticated_smb_file_ops(
     username: str,
     password: str,
@@ -113,35 +96,138 @@ def check_authenticated_smb_file_ops(
     *,
     timeout: int = 20,
 ) -> CheckResult:
-    if not command_exists("mount_smbfs"):
-        return CheckResult("WARN", "SMB file-ops verification skipped: mount_smbfs not found")
+    results = check_authenticated_smb_file_ops_detailed(
+        username,
+        password,
+        server,
+        share_name,
+        timeout=timeout,
+    )
+    first_fail = next((result for result in results if result.status == "FAIL"), None)
+    if first_fail is not None:
+        return first_fail
+    return results[-1]
+
+
+def check_authenticated_smb_file_ops_detailed(
+    username: str,
+    password: str,
+    server: str,
+    share_name: str,
+    *,
+    timeout: int = 20,
+) -> list[CheckResult]:
+    if not command_exists("smbclient"):
+        return [CheckResult("WARN", "SMB file-ops verification skipped: smbclient not found")]
+
+    test_dir_name = f"doctor-fileops-{uuid.uuid4().hex[:8]}"
+    upload_name = "sample.txt"
+    renamed_name = "sample-renamed.txt"
+    copy_name = "sample-copy.txt"
+
+    def run_share_commands(remote: str, commands: list[str]) -> subprocess.CompletedProcess[str]:
+        return run_local_capture(
+            _smbclient_base_args() + [remote, "-U", f"{username}%{password}", "-c", "; ".join(commands)],
+            timeout=timeout,
+        )
+
+    def fail_result(prefix: str, proc: subprocess.CompletedProcess[str]) -> list[CheckResult]:
+        detail = (proc.stderr or proc.stdout).strip().splitlines()
+        msg = detail[-1] if detail else f"failed with rc={proc.returncode}"
+        return results + [CheckResult("FAIL", f"{prefix}: {msg}")]
 
     with tempfile.TemporaryDirectory(prefix="tcapsule-doctor-") as tmpdir:
-        mountpoint = Path(tmpdir) / "share"
-        mountpoint.mkdir()
-        mounted = False
-        try:
-            proc = _mount_smb_share(username, password, server, share_name, mountpoint, timeout=timeout)
-            if proc.returncode != 0:
-                detail = (proc.stderr or proc.stdout).strip().splitlines()
-                msg = detail[-1] if detail else f"failed with rc={proc.returncode}"
-                if "File exists" in msg:
-                    existing_mount = _find_existing_smb_mount(username, share_name, timeout=timeout)
-                    if existing_mount is not None:
-                        exercise_mounted_share_file_ops(existing_mount, prefix="doctor-fileops-reuse")
-                        return CheckResult(
-                            "PASS",
-                            f"authenticated SMB file ops work for {username}@{server}/{share_name} via existing mount {existing_mount}",
-                        )
-                return CheckResult("FAIL", f"authenticated SMB file ops failed to mount share: {msg}")
-            mounted = True
-            exercise_mounted_share_file_ops(mountpoint)
-            return CheckResult("PASS", f"authenticated SMB file ops work for {username}@{server}/{share_name}")
-        except Exception as exc:
-            return CheckResult("FAIL", f"authenticated SMB file ops failed: {exc}")
-        finally:
-            if mounted:
-                try:
-                    _unmount_smb_share(mountpoint, timeout=timeout)
-                except Exception:
-                    pass
+        tmp_root = Path(tmpdir)
+        upload_path = tmp_root / upload_name
+        update_path = tmp_root / "sample-update.txt"
+        readback_path = tmp_root / "sample-readback.txt"
+        copy_source_path = tmp_root / "sample-copy-source.txt"
+        copy_readback_path = tmp_root / "sample-copy-readback.txt"
+        upload_contents = "line1\nline2\nline3\n"
+        updated_contents = "line1\nline2\nline3\nline4-updated\n"
+        upload_path.write_text(upload_contents, encoding="utf-8")
+        update_path.write_text(updated_contents, encoding="utf-8")
+
+        remote = f"//{server}/{share_name}"
+        results: list[CheckResult] = []
+
+        proc = run_share_commands(remote, [f'mkdir "{test_dir_name}"'])
+        if proc.returncode != 0:
+            return [CheckResult("FAIL", f"SMB directory create failed: {((proc.stderr or proc.stdout).strip().splitlines() or [f'failed with rc={proc.returncode}'])[-1]}")]
+        results.append(CheckResult("PASS", f"SMB directory create works for {username}@{server}/{share_name}"))
+
+        proc = run_share_commands(remote, [f'cd "{test_dir_name}"', f'put "{upload_path}" "{upload_name}"'])
+        if proc.returncode != 0:
+            return fail_result("SMB file create failed", proc)
+        results.append(CheckResult("PASS", f"SMB file create works for {username}@{server}/{share_name}"))
+
+        proc = run_share_commands(remote, [f'cd "{test_dir_name}"', f'put "{update_path}" "{upload_name}"'])
+        if proc.returncode != 0:
+            return fail_result("SMB file overwrite/edit failed", proc)
+        results.append(CheckResult("PASS", f"SMB file overwrite/edit works for {username}@{server}/{share_name}"))
+
+        proc = run_share_commands(
+            remote,
+            [f'cd "{test_dir_name}"', f'get "{upload_name}" "{readback_path}"'],
+        )
+        if proc.returncode != 0:
+            return fail_result("SMB file read failed", proc)
+        if not readback_path.exists():
+            return results + [CheckResult("FAIL", "SMB file read failed: downloaded file missing after get")]
+        if readback_path.read_text(encoding="utf-8") != updated_contents:
+            return results + [CheckResult("FAIL", "SMB file read failed: downloaded contents did not match overwritten contents")]
+        results.append(CheckResult("PASS", f"SMB file read works for {username}@{server}/{share_name}"))
+
+        proc = run_share_commands(
+            remote,
+            [f'cd "{test_dir_name}"', f'rename "{upload_name}" "{renamed_name}"'],
+        )
+        if proc.returncode != 0:
+            return fail_result("SMB file rename failed", proc)
+        results.append(CheckResult("PASS", f"SMB file rename works for {username}@{server}/{share_name}"))
+
+        proc = run_share_commands(
+            remote,
+            [
+                f'cd "{test_dir_name}"',
+                f'get "{renamed_name}" "{copy_source_path}"',
+                f'put "{copy_source_path}" "{copy_name}"',
+                f'get "{copy_name}" "{copy_readback_path}"',
+            ],
+        )
+        if proc.returncode != 0:
+            return fail_result("SMB file copy failed", proc)
+        if not copy_readback_path.exists():
+            return results + [CheckResult("FAIL", "SMB file copy failed: copied file missing after get")]
+        if copy_readback_path.read_text(encoding="utf-8") != updated_contents:
+            return results + [CheckResult("FAIL", "SMB file copy failed: copied file contents did not match source")]
+        results.append(CheckResult("PASS", f"SMB file copy works for {username}@{server}/{share_name}"))
+
+        proc = run_share_commands(remote, [f'cd "{test_dir_name}"', f'del "{copy_name}"', "ls"])
+        if proc.returncode != 0:
+            return fail_result("SMB file delete failed", proc)
+        ls_after_delete = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+        if any(copy_name in line for line in ls_after_delete):
+            return results + [CheckResult("FAIL", f"SMB file delete failed: ls output still contained {copy_name!r}")]
+        results.append(CheckResult("PASS", f"SMB file delete works for {username}@{server}/{share_name}"))
+
+        if not any(renamed_name in line for line in ls_after_delete):
+            return results + [CheckResult("FAIL", f"SMB directory ls list failed: ls output did not contain {renamed_name!r}")]
+        results.append(CheckResult("PASS", f"SMB directory ls list works for {username}@{server}/{share_name}"))
+
+        proc = run_share_commands(
+            remote,
+            [f'cd "{test_dir_name}"', f'del "{renamed_name}"', 'cd ".."', f'rmdir "{test_dir_name}"'],
+        )
+        if proc.returncode != 0:
+            return fail_result("SMB directory delete failed", proc)
+        results.append(CheckResult("PASS", f"SMB directory delete works for {username}@{server}/{share_name}"))
+
+        proc = run_share_commands(remote, ["ls"])
+        if proc.returncode != 0:
+            return fail_result("SMB final cleanup check failed", proc)
+        final_ls = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+        if any(test_dir_name in line for line in final_ls):
+            return results + [CheckResult("FAIL", f"SMB final cleanup check failed: share still contained {test_dir_name!r}")]
+        results.append(CheckResult("PASS", f"SMB final cleanup check passed for {username}@{server}/{share_name}"))
+        return results

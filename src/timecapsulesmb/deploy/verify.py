@@ -16,23 +16,20 @@ def verify_post_deploy(values: dict[str, str]) -> None:
 
     print("Post-deploy verification:")
 
-    if command_exists("dns-sd"):
-        try:
-            _, discovered_instance, target = run_bonjour_checks(values["TC_MDNS_INSTANCE_NAME"])
-            if discovered_instance:
-                print(f"  Advertised service name: {discovered_instance}")
-            else:
-                print("  Advertised service name: not found")
-            if target:
-                print(f"  Advertised hostname: {target}")
-            else:
-                print("  Advertised hostname: not resolved")
-        except Exception as e:
-            print(f"  Bonjour verification failed: {e}")
-    else:
-        print("  Bonjour verification skipped: dns-sd not found")
+    try:
+        _, discovered_instance, target = run_bonjour_checks(values["TC_MDNS_INSTANCE_NAME"])
+        if discovered_instance:
+            print(f"  Advertised service name: {discovered_instance}")
+        else:
+            print("  Advertised service name: not found")
+        if target:
+            print(f"  Advertised hostname: {target}")
+        else:
+            print("  Advertised hostname: not resolved")
+    except Exception as e:
+        print(f"  Bonjour verification failed: {e}")
 
-    if command_exists("smbutil"):
+    if command_exists("smbclient"):
         servers = [f"{host_label}.local"]
         tc_host = values.get("TC_HOST", "")
         if "@" in tc_host:
@@ -47,7 +44,7 @@ def verify_post_deploy(values: dict[str, str]) -> None:
             failure = result.message.removeprefix("authenticated SMB listing failed: ")
             print(f"  Authenticated SMB listing: failed ({failure})")
     else:
-        print("  SMB listing verification skipped: smbutil not found")
+        print("  SMB listing verification skipped: smbclient not found")
 
 
 def verify_netbsd4_activation(host: str, password: str, ssh_opts: str) -> bool:

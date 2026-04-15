@@ -1,30 +1,9 @@
 from __future__ import annotations
 
-import shlex
 from typing import Optional, Tuple
 
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.transport.local import command_exists, run_local_capture
-
-
-def capture_dns_sd_browse(service_type: str, duration_seconds: int = 5) -> str:
-    script = (
-        f'dns-sd -B {shlex.quote(service_type)} local. & '
-        f'pid=$!; sleep {duration_seconds}; kill "$pid" >/dev/null 2>&1 || true; '
-        f'wait "$pid" >/dev/null 2>&1 || true'
-    )
-    proc = run_local_capture(["/bin/sh", "-c", script], timeout=duration_seconds + 5)
-    return proc.stdout
-
-
-def capture_dns_sd_lookup(instance_name: str, service_type: str, duration_seconds: int = 5) -> str:
-    script = (
-        f'dns-sd -L {shlex.quote(instance_name)} {shlex.quote(service_type)} local. & '
-        f'pid=$!; sleep {duration_seconds}; kill "$pid" >/dev/null 2>&1 || true; '
-        f'wait "$pid" >/dev/null 2>&1 || true'
-    )
-    proc = run_local_capture(["/bin/sh", "-c", script], timeout=duration_seconds + 5)
-    return proc.stdout
+from timecapsulesmb.discovery.bonjour import discover
 
 
 def parse_browse_instance(output: str) -> Optional[str]:
@@ -44,13 +23,24 @@ def parse_lookup_target(output: str) -> Optional[str]:
     return None
 
 
-def run_bonjour_checks(expected_instance_name: str, *, service_type: str = "_smb._tcp") -> Tuple[list[CheckResult], Optional[str], Optional[str]]:
-    if not command_exists("dns-sd"):
-        return [CheckResult("FAIL", "missing local tool dns-sd")], None, None
+def run_bonjour_checks(
+    expected_instance_name: str,
+    *,
+    service_type: str = "_smb._tcp.local.",
+    timeout: float = 5.0,
+) -> Tuple[list[CheckResult], Optional[str], Optional[str]]:
+    try:
+        records = discover(timeout=timeout)
+    except SystemExit as e:
+        return [CheckResult("FAIL", f"Bonjour check failed: {e}")], None, None
+    except Exception as e:
+        return [CheckResult("FAIL", f"Bonjour check failed: {e}")], None, None
 
     results: list[CheckResult] = []
-    browse_output = capture_dns_sd_browse(service_type)
-    discovered_instance = parse_browse_instance(browse_output)
+    matching = [record for record in records if service_type in record.services]
+    discovered_instance = matching[0].name if matching else None
+    target = None
+
     if discovered_instance:
         if discovered_instance == expected_instance_name:
             results.append(CheckResult("PASS", f"discovered _smb._tcp instance {discovered_instance!r}"))
@@ -59,12 +49,17 @@ def run_bonjour_checks(expected_instance_name: str, *, service_type: str = "_smb
     else:
         results.append(CheckResult("FAIL", "could not discover any _smb._tcp instance"))
 
-    lookup_name = discovered_instance or expected_instance_name
-    lookup_output = capture_dns_sd_lookup(lookup_name, service_type)
-    target = parse_lookup_target(lookup_output)
-    if target:
-        results.append(CheckResult("PASS", f"resolved {lookup_name!r} to {target}"))
+    if matching:
+        record = matching[0]
+        host = record.hostname or (record.ipv4[0] if record.ipv4 else (record.ipv6[0] if record.ipv6 else ""))
+        if host:
+            target = f"{host}:445"
+            lookup_name = discovered_instance or expected_instance_name
+            results.append(CheckResult("PASS", f"resolved {lookup_name!r} to {target}"))
+        else:
+            lookup_name = discovered_instance or expected_instance_name
+            results.append(CheckResult("FAIL", f"could not resolve {lookup_name!r}"))
     else:
-        results.append(CheckResult("FAIL", f"could not resolve {lookup_name!r}"))
+        results.append(CheckResult("FAIL", f"could not resolve {expected_instance_name!r}"))
 
     return results, discovered_instance, target

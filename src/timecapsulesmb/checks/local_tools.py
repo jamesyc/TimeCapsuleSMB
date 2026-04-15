@@ -9,7 +9,7 @@ from timecapsulesmb.transport.local import command_exists
 
 def check_required_local_tools() -> list[CheckResult]:
     results: list[CheckResult] = []
-    for tool in ("dns-sd", "smbutil", "ssh"):
+    for tool in ("smbclient", "ssh"):
         if command_exists(tool):
             results.append(CheckResult("PASS", f"found local tool {tool}"))
         else:

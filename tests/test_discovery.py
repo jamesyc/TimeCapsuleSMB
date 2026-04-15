@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -10,7 +11,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.discovery.bonjour import Discovered, looks_like_time_capsule, prefer_routable_ipv4, preferred_host
+from timecapsulesmb.discovery.bonjour import Discovered, discover, looks_like_time_capsule, prefer_routable_ipv4, preferred_host
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -24,6 +25,23 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_looks_like_time_capsule_matches_model_hint(self) -> None:
         self.assertTrue(looks_like_time_capsule("Base Station", "router.local", {"model": "AirPort Time Capsule"}))
+
+    def test_discover_uses_ipv4_only_zeroconf(self) -> None:
+        fake_zc = mock.Mock()
+        fake_collector = mock.Mock()
+        fake_collector.results.return_value = []
+        fake_ip_version = mock.Mock()
+        fake_ip_version.V4Only = object()
+        fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
+
+        with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
+            with mock.patch("timecapsulesmb.discovery.bonjour.Collector", return_value=fake_collector):
+                with mock.patch("timecapsulesmb.discovery.bonjour.time.sleep"):
+                    discover(timeout=0.1)
+
+        fake_zeroconf_module.Zeroconf.assert_called_once_with(ip_version=fake_ip_version.V4Only)
+        fake_collector.start.assert_called_once()
+        fake_zc.close.assert_called_once()
 
 
 if __name__ == "__main__":
