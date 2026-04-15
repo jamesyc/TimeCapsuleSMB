@@ -63,15 +63,36 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", return_value=bootstrap.VENVDIR / "bin" / "python"):
                 with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
                     with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_smbclient"):
-                        with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_airpyrt"):
-                            with redirect_stdout(output):
-                                rc = bootstrap.main(["--skip-airpyrt"])
+                        with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_airpyrt", return_value=True):
+                            with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
+                                with redirect_stdout(output):
+                                    rc = bootstrap.main(["--skip-airpyrt"])
         self.assertEqual(rc, 0)
         text = output.getvalue()
+        self.assertIn("Detected host platform", text)
         self.assertIn("prep-device", text)
         self.assertIn("configure", text)
         self.assertIn("deploy", text)
         self.assertIn("doctor", text)
+
+    def test_bootstrap_prints_linux_next_steps_without_prep_device_when_airpyrt_unavailable(self) -> None:
+        output = io.StringIO()
+        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
+            with mock.patch("pathlib.Path.exists", return_value=True):
+                with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", return_value=bootstrap.VENVDIR / "bin" / "python"):
+                    with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
+                        with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_smbclient"):
+                            with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_airpyrt", return_value=False):
+                                with redirect_stdout(output):
+                                    rc = bootstrap.main(["--skip-airpyrt"])
+        self.assertEqual(rc, 0)
+        text = output.getvalue()
+        self.assertIn("Detected host platform: Linux", text)
+        self.assertNotIn("  2. /Users", text)
+        self.assertIn("  2. If SSH is already enabled on the Time Capsule, continue to deploy. ", text)
+        self.assertIn("\033[31mOtherwise enable SSH manually with `prep-device` from a Mac.\033[0m", text)
+        self.assertIn("  3. ", text)
+        self.assertIn("  4. ", text)
 
     def test_bootstrap_explains_long_running_airpyrt_step(self) -> None:
         output = io.StringIO()
@@ -82,8 +103,9 @@ class CliTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.cli.bootstrap.run") as run_mock:
                             with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", return_value="/usr/bin/make"):
                                 with mock.patch("timecapsulesmb.cli.bootstrap.confirm", return_value=True):
-                                    with redirect_stdout(output):
-                                        rc = bootstrap.main([])
+                                    with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
+                                        with redirect_stdout(output):
+                                            rc = bootstrap.main([])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("Provisioning AirPyrt via 'make airpyrt'", text)
@@ -100,8 +122,9 @@ class CliTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.cli.bootstrap.run") as run_mock:
                             with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", return_value="/usr/bin/make"):
                                 with mock.patch("timecapsulesmb.cli.bootstrap.confirm", return_value=False):
-                                    with redirect_stdout(output):
-                                        rc = bootstrap.main([])
+                                    with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
+                                        with redirect_stdout(output):
+                                            rc = bootstrap.main([])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("AirPyrt support is optional", text)
@@ -128,8 +151,9 @@ class CliTests(unittest.TestCase):
                         ):
                             with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", return_value="/usr/bin/make"):
                                 with mock.patch("timecapsulesmb.cli.bootstrap.confirm", return_value=True):
-                                    with redirect_stdout(output):
-                                        rc = bootstrap.main([])
+                                    with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
+                                        with redirect_stdout(output):
+                                            rc = bootstrap.main([])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("Warning: AirPyrt setup failed", text)
@@ -137,7 +161,7 @@ class CliTests(unittest.TestCase):
 
     def test_bootstrap_installs_smbclient_via_homebrew_on_macos(self) -> None:
         output = io.StringIO()
-        with mock.patch("timecapsulesmb.cli.bootstrap.sys.platform", "darwin"):
+        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
             with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", side_effect=lambda name: None if name == "smbclient" else "/opt/homebrew/bin/brew"):
                 with mock.patch("timecapsulesmb.cli.bootstrap.confirm", return_value=True):
                     with mock.patch(
@@ -152,7 +176,7 @@ class CliTests(unittest.TestCase):
 
     def test_bootstrap_prints_linux_smbclient_instructions_when_missing(self) -> None:
         output = io.StringIO()
-        with mock.patch("timecapsulesmb.cli.bootstrap.sys.platform", "linux"):
+        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
             def fake_which(name: str):
                 if name == "smbclient":
                     return None
@@ -165,6 +189,19 @@ class CliTests(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("smbclient is required", text)
         self.assertIn("sudo apt-get update && sudo apt-get install -y smbclient", text)
+        self.assertIn("After installing smbclient", text)
+
+    def test_bootstrap_prints_linux_airpyrt_guidance(self) -> None:
+        output = io.StringIO()
+        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
+            with redirect_stdout(output):
+                ready = bootstrap.maybe_install_airpyrt(skip_airpyrt=False)
+        self.assertFalse(ready)
+        text = output.getvalue()
+        self.assertIn("Automatic AirPyrt setup is not implemented for Linux", text)
+        self.assertIn("If SSH is already enabled", text)
+        self.assertIn("use a Mac for 'prep-device'.", text)
+        self.assertIn("\033[31m", text)
 
     def test_configure_writes_values_from_prompts(self) -> None:
         output = io.StringIO()

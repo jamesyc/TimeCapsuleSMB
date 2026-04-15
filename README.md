@@ -27,9 +27,12 @@ Also, if you are an expert and want to DIY the install, you can copy the binary 
 
 For the typical setup path, you need only:
 
-- a Mac on the same local network as the Time Capsule
+- a Mac or Linux machine on the same local network as the Time Capsule
 - the Time Capsule password
-- Python 3.9+ and Homebrew installed on your Mac.
+- Python 3.9+
+- `smbclient` installed locally for `doctor`
+
+For the smoothest first-time setup, a Mac is still the easiest path because `prep-device` can provision AirPyrt automatically when SSH must be enabled on the Time Capsule. Linux works well once SSH is already enabled.
 
 ## Quick Start
 
@@ -57,7 +60,7 @@ tcapsule activate
 tcapsule uninstall
 ```
 
-## Step 1: Prepare Your Mac
+## Step 1: Prepare Your Host
 
 Run:
 
@@ -66,6 +69,8 @@ Run:
 ```
 
 This command prepares the local Python environment in this folder. It creates the `.venv` folder, installs in there the Python dependencies needed for discovery, deployment, and verification, installs the local `tcapsule` command into that virtualenv, and optionally provisions AirPyrt support.
+
+On macOS, `bootstrap` can also offer to install `smbclient` via Homebrew and can provision AirPyrt for `prep-device`. On Linux, `bootstrap` will guide you to install `smbclient` with your distro package manager. AirPyrt auto-install is not implemented there yet, so Linux users should usually skip `prep-device` if SSH is already enabled on the Time Capsule.
 
 If this is your first time using the repo, this is the only command you should run with the repo-local launcher. After this step, use `.venv/bin/tcapsule ...` or activate `.venv`.
 
@@ -106,6 +111,8 @@ Run:
 ```
 
 This step uses the `.env` configuration you just wrote. In particular, it uses the configured `TC_HOST` and `TC_PASSWORD` values and then enables or disables SSH through AirPyrt as needed.
+
+If you are on Linux and SSH is already enabled on the Time Capsule, you should skip `prep-device` and continue directly to `deploy`.
 
 In practical terms, this script will:
 

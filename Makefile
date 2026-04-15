@@ -1,8 +1,8 @@
 # TimeCapsuleSMB Makefile
 #
-# Prerequisites (macOS):
-#   - Homebrew: https://brew.sh
-#   - Build deps: brew install zlib bzip2 readline
+# Prerequisites:
+#   - macOS: Homebrew recommended, plus brew install zlib bzip2 readline for AirPyrt
+#   - Linux: python3 and smbclient are enough for configure/deploy/doctor if SSH is already enabled
 #
 # Quick start:
 #   1) ./tcapsule bootstrap
@@ -15,7 +15,7 @@
 #   make discover                - run tcapsule discover (depends on install)
 #   make bootstrap-host          - run the host bootstrap helper
 #   make prep-device             - discover the device and enable SSH if needed
-#   make airpyrt                 - clone+install AirPyrt into local .airpyrt-venv (auto-installs pyenv if needed)
+#   make airpyrt                 - clone+install AirPyrt into local .airpyrt-venv (macOS/Homebrew-oriented helper)
 #   make airpyrt-clone           - clone AirPyrt repo only
 #   make airpyrt-bootstrap       - ensure pyenv Python 2.7.18 is installed
 #   make airpyrt-venv            - create local Python 2 venv from pyenv version
@@ -59,6 +59,8 @@ clean: airpyrt-clean
 # --- AirPyrt (acp) installation helpers ---
 # AirPyrt is Python 2.x-based. We isolate it in .airpyrt-venv using pyenv's Python 2.7.18.
 # pyenv does not need shell initialization here because we invoke the binary directly.
+# These helpers are primarily for the macOS/Homebrew path. Linux users should prefer
+# running deploy/doctor directly if SSH is already enabled on the Time Capsule.
 DEPSDIR := .deps
 AIRPYRT_DIR := $(DEPSDIR)/airpyrt-tools
 AIRPYRT_ENV := .airpyrt-venv
