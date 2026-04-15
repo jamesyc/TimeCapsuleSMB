@@ -758,7 +758,8 @@ class CliTests(unittest.TestCase):
                                         rc = deploy.main(["--install-nbns", "--no-reboot"])
         self.assertEqual(rc, 0)
         self.assertEqual(actions_mock.call_count, 2)
-        self.assertEqual(actions_mock.call_args_list[0].args[3][1].kind, "enable_nbns")
+        pre_upload_action_kinds = [action.kind for action in actions_mock.call_args_list[0].args[3]]
+        self.assertEqual(pre_upload_action_kinds, ["stop_process_full", "stop_process", "prepare_dirs", "enable_nbns"])
 
     def test_deploy_dry_run_includes_nbns_upload_without_marker_by_default(self) -> None:
         output = io.StringIO()

@@ -26,6 +26,10 @@ def stop_process_action(name: str) -> RemoteAction:
     return RemoteAction("stop_process", (name,))
 
 
+def stop_process_full_action(pattern: str) -> RemoteAction:
+    return RemoteAction("stop_process_full", (pattern,))
+
+
 def remove_path_action(path: str) -> RemoteAction:
     return RemoteAction("remove_path", (path,))
 
@@ -82,6 +86,9 @@ def render_remote_action(action: RemoteAction) -> str:
 
     if action.kind == "stop_process":
         return f"pkill {shlex.quote(action.args[0])} >/dev/null 2>&1 || true"
+
+    if action.kind == "stop_process_full":
+        return f"pkill -f {shlex.quote(action.args[0])} >/dev/null 2>&1 || true"
 
     if action.kind == "remove_path":
         return f"rm -rf {shlex.quote(action.args[0])}"

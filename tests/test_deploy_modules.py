@@ -21,6 +21,8 @@ from timecapsulesmb.deploy.commands import (
     install_permissions_action,
     prepare_dirs_action,
     render_remote_action,
+    stop_process_action,
+    stop_process_full_action,
 )
 from timecapsulesmb.deploy.dry_run import format_deployment_plan
 from timecapsulesmb.deploy.executor import (
@@ -85,7 +87,14 @@ class DeployModuleTests(unittest.TestCase):
         self.assertEqual(plan.remote_directories[0], "/Volumes/dk2/samba4")
         self.assertIn("/Volumes/dk2/samba4/cache", plan.remote_directories)
         self.assertEqual(plan.payload_targets["nbns-advertiser"], "/Volumes/dk2/samba4/nbns-advertiser")
-        self.assertEqual(plan.pre_upload_actions, [prepare_dirs_action("/Volumes/dk2/samba4")])
+        self.assertEqual(
+            plan.pre_upload_actions,
+            [
+                stop_process_full_action("[w]atchdog.sh"),
+                stop_process_action("mdns-advertiser"),
+                prepare_dirs_action("/Volumes/dk2/samba4"),
+            ],
+        )
         self.assertEqual(plan.post_auth_actions, [install_permissions_action("/Volumes/dk2/samba4")])
 
     def test_render_template_text_replaces_tokens(self) -> None:
@@ -325,6 +334,8 @@ int main(void) {{
         plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), install_nbns=True)
         text = format_deployment_plan(plan)
         self.assertIn("volume root: /Volumes/dk2", text)
+        self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
+        self.assertIn("pkill mdns-advertiser >/dev/null 2>&1 || true", text)
         self.assertIn("mkdir -p /Volumes/dk2/samba4 /Volumes/dk2/samba4/private /Volumes/dk2/samba4/cache /mnt/Flash", text)
         self.assertIn("/bin/sh -c ': > /Volumes/dk2/samba4/private/nbns.enabled'", text)
         self.assertIn("generated smbpasswd -> /Volumes/dk2/samba4/private/smbpasswd", text)

@@ -9,6 +9,7 @@ from timecapsulesmb.deploy.commands import (
     install_permissions_action,
     prepare_dirs_action,
     remove_path_action,
+    stop_process_full_action,
     stop_process_action,
 )
 from timecapsulesmb.device.probe import DevicePaths
@@ -105,7 +106,15 @@ def build_deployment_plan(host: str, device_paths: DevicePaths, smbd_path: Path,
         + ([
             FileTransfer(source="generated nbns marker", destination=f"{private_dir}/nbns.enabled", kind="generated metadata"),
         ] if install_nbns else []),
-        pre_upload_actions=[prepare_dirs_action(payload_dir)] + ([enable_nbns_action(private_dir)] if install_nbns else []),
+        pre_upload_actions=[
+            # Existing installs run mdns-advertiser directly from /mnt/Flash.
+            # Stop the watchdog first so it does not restart the binary while
+            # deploy is overwriting it.
+            stop_process_full_action("[w]atchdog.sh"),
+            stop_process_action("mdns-advertiser"),
+            prepare_dirs_action(payload_dir),
+        ]
+        + ([enable_nbns_action(private_dir)] if install_nbns else []),
         post_auth_actions=[install_permissions_action(payload_dir)],
         reboot_required=True,
     )
