@@ -18,7 +18,7 @@
     },
     "mdns-advertiser-netbsd4": {
       "path": "bin/mdns-netbsd4/mdns-advertiser",
-      "sha256": "a3abe0e1110198100a52334bfe9f5ba7b5e815cff691440228f74b4040d45284"
+      "sha256": "29fae54e852f3fa92186929cb6e94bb2540568de00020848dca31d2bf4fcc81d"
     },
     "nbns-advertiser": {
       "path": "bin/nbns/nbns-advertiser",
@@ -26,7 +26,7 @@
     },
     "nbns-advertiser-netbsd4": {
       "path": "bin/nbns-netbsd4/nbns-advertiser",
-      "sha256": "a1616bf32396cc4f003d89ce9f11e2a3bb7e402a6f9cfffed84a7a4fefdeb6b3"
+      "sha256": "da83673e06c05997e9d30ff6f92423d3d7a76c61ef9a9169f6c52d2f7f1ea54d"
     }
   }
 }

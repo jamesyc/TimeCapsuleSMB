@@ -10,6 +10,17 @@ MDNS_SRC="$SCRIPT_DIR/mdns-advertiser.c"
 MDNS_CFLAGS="${MDNS_CFLAGS:--Os -fomit-frame-pointer -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident}"
 MDNS_LDFLAGS="${MDNS_LDFLAGS:--static -Wl,--gc-sections}"
 
+if [ "$SDK_FAMILY" = "netbsd4" ]; then
+    # NetBSD 4's arm--netbsdelf linker was not configured for --sysroot.
+    # Keep this helper on the conservative no-GC link path so crt note
+    # sections survive and the binary remains executable on the old kernel.
+    MDNS_CC_SYSROOT_FLAGS=""
+    MDNS_CFLAGS="$MDNS_CFLAGS -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu"
+    MDNS_LDFLAGS="${MDNS_LDFLAGS_NETBSD4:--static -L$DESTDIR/lib -L$DESTDIR/usr/lib -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu}"
+else
+    MDNS_CC_SYSROOT_FLAGS="--sysroot=$DESTDIR"
+fi
+
 if [ ! -x "$TOOLDIR/bin/nbmake" ] || [ ! -d "$DESTDIR" ]; then
     echo "Missing toolchain/sysroot under $OUT"
     echo "Run $SDK_BOOTSTRAP_WRAPPER first."
@@ -37,9 +48,12 @@ if ! {
     echo "TOOLDIR=$TOOLDIR"
     echo "DESTDIR=$DESTDIR"
     echo "TRIPLE=$TRIPLE"
+    echo "MDNS_CC_SYSROOT_FLAGS=$MDNS_CC_SYSROOT_FLAGS"
+    echo "MDNS_CFLAGS=$MDNS_CFLAGS"
+    echo "MDNS_LDFLAGS=$MDNS_LDFLAGS"
 
     "$TOOLDIR/bin/$TRIPLE-gcc" \
-        --sysroot="$DESTDIR" \
+        $MDNS_CC_SYSROOT_FLAGS \
         $MDNS_CFLAGS \
         -I"$DESTDIR/usr/include" \
         -D_NETBSD_SOURCE \
@@ -48,15 +62,14 @@ if ! {
         -D_LARGE_FILES \
         "$MDNS_SRC" \
         -o "$MDNS_STAGE/$MDNS_BIN_NAME" \
-        $MDNS_LDFLAGS \
-        -L"$DESTDIR/lib" \
-        -L"$DESTDIR/usr/lib"
+        $MDNS_LDFLAGS
 
     cp "$MDNS_STAGE/$MDNS_BIN_NAME" "$MDNS_STAGE/$MDNS_BIN_NAME.stripped"
     "$TOOLDIR/bin/$TRIPLE-strip" --strip-unneeded "$MDNS_STAGE/$MDNS_BIN_NAME.stripped"
 
     "$TOOLDIR/bin/nbfile" "$MDNS_STAGE/$MDNS_BIN_NAME"
     "$TOOLDIR/bin/nbfile" "$MDNS_STAGE/$MDNS_BIN_NAME.stripped"
+    "$TOOLDIR/bin/$TRIPLE-objdump" -p "$MDNS_STAGE/$MDNS_BIN_NAME.stripped" | sed -n '1,120p'
 } >"$MDNS_LOG" 2>&1; then
     echo "mDNS build failed."
     echo "Log: $MDNS_LOG"
