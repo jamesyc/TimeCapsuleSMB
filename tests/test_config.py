@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import tempfile
 import unittest
 from pathlib import Path
@@ -106,6 +107,22 @@ class ConfigTests(unittest.TestCase):
             write_env_file(path, values)
             reparsed = parse_env_values(path)
         self.assertEqual(reparsed["TC_SSH_OPTS"], values["TC_SSH_OPTS"])
+
+    def test_render_env_text_falls_back_to_default_ssh_opts_when_missing(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.5",
+            "TC_PASSWORD": "secret",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_PAYLOAD_DIR_NAME": ".samba4",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+        }
+        rendered = render_env_text(values)
+        self.assertIn(f"TC_SSH_OPTS={shlex.quote(DEFAULTS['TC_SSH_OPTS'])}", rendered)
 
     def test_extract_host_removes_user_prefix(self) -> None:
         self.assertEqual(extract_host("root@10.0.0.5"), "10.0.0.5")

@@ -120,6 +120,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     print("\033[31mPress Enter\033[0m to accept the current/default value.\n")
 
     ssh_opts = existing.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"])
+    values["TC_SSH_OPTS"] = ssh_opts
     discovered_host = discover_default_host(existing)
     prompt_host_and_password(existing, values, discovered_host)
     while True:

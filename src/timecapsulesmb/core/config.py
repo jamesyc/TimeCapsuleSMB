@@ -245,7 +245,8 @@ CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
 def render_env_text(values: dict[str, str]) -> str:
     lines = [CONFIG_HEADER.rstrip(), ""]
     for key in ENV_FILE_KEYS:
-        lines.append(f"{key}={shell_quote(values[key])}")
+        rendered_value = values.get(key, DEFAULTS.get(key, ""))
+        lines.append(f"{key}={shell_quote(rendered_value)}")
     lines.append("")
     return "\n".join(lines)
 
