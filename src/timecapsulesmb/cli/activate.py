@@ -21,7 +21,7 @@ def require(values: dict[str, str], key: str) -> str:
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Manually activate an already-deployed NetBSD4 Time Capsule payload.")
-    parser.add_argument("--yes", action="store_true", help="Do not prompt before stopping Apple SMB/mDNS")
+    parser.add_argument("--yes", action="store_true", help="Do not prompt before restarting the deployed Samba services")
     parser.add_argument("--dry-run", action="store_true", help="Print activation actions without making changes")
     args = parser.parse_args(argv)
 
@@ -57,7 +57,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     if not args.yes:
-        print("This will stop Apple SMB/mDNS and start the already-deployed Samba payload.")
+        print("This will restart the deployed Samba payload on the Time Capsule.")
         print("Tested NetBSD4 devices need to run `activate` after reboot; other NetBSD4 generations may auto-start if their firmware runs /mnt/Flash/rc.local after a reboot.")
         answer = input("Continue with NetBSD4 activation? [y/N]: ").strip().lower()
         if answer not in {"y", "yes"}:

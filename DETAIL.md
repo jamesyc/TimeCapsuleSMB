@@ -676,8 +676,9 @@ Current compatibility behavior:
 - `configure` reuses the same classification logic to choose a better default Finder model hint
 
 NetBSD 4 activation behavior:
-- `tcapsule deploy` stops Apple SMB/mDNS, runs `/mnt/Flash/rc.local`, and verifies `smbd` on TCP `445` plus `mdns-advertiser` on UDP `5353`
+- `tcapsule deploy` uploads the NetBSD 4 payload, stops the old watchdog plus `wcifsfs`, runs `/mnt/Flash/rc.local`, and verifies `smbd` on TCP `445` plus `mdns-advertiser` on UDP `5353`
 - `tcapsule activate` repeats that activation sequence without re-uploading files
+- current activation intentionally does not kill Apple `mDNSResponder`; Apple Bonjour stays up while the managed `mdns-advertiser` publishes the custom SMB / Time Machine records
 - tested 1st-generation NetBSD 4 hardware does not persist an `/etc` boot hook and therefore needs manual activation after reboot
 - other NetBSD 4 generations may auto-start if their firmware runs `/mnt/Flash/rc.local` early in boot, but that is not yet proven
 - `activate` is intentionally conservative: if `smbd` already owns TCP `445` and `mdns-advertiser` already owns UDP `5353`, it skips running `/mnt/Flash/rc.local`

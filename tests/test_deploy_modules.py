@@ -556,13 +556,12 @@ PASS:mdns-advertiser bound to UDP 5353
             activate_netbsd4=True,
         )
         self.assertFalse(plan.reboot_required)
-        self.assertEqual([action.kind for action in plan.activation_actions], ["stop_process_full", "stop_process", "stop_process", "run_script"])
-        self.assertEqual([action.args[0] for action in plan.activation_actions], ["[w]atchdog.sh", "mDNSResponder", "wcifsfs", "/mnt/Flash/rc.local"])
+        self.assertEqual([action.kind for action in plan.activation_actions], ["stop_process_full", "stop_process", "run_script"])
+        self.assertEqual([action.args[0] for action in plan.activation_actions], ["[w]atchdog.sh", "wcifsfs", "/mnt/Flash/rc.local"])
 
         text = format_deployment_plan(plan)
         self.assertIn("Remote actions (NetBSD4 activation):", text)
         self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill mDNSResponder >/dev/null 2>&1 || true", text)
         self.assertIn("pkill wcifsfs >/dev/null 2>&1 || true", text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
         self.assertIn("NetBSD4 activation is immediate.", text)

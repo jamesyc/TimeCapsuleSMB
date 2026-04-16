@@ -923,7 +923,6 @@ class CliTests(unittest.TestCase):
         self.assertIn("bin/nbns-netbsd4/nbns-advertiser -> /Volumes/dk2/samba4/nbns-advertiser", text)
         self.assertIn("Remote actions (NetBSD4 activation):", text)
         self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill mDNSResponder >/dev/null 2>&1 || true", text)
         self.assertIn("pkill wcifsfs >/dev/null 2>&1 || true", text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
         self.assertIn("NetBSD4 activation is immediate.", text)
@@ -1056,8 +1055,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(actions_mock.call_count, 3)
         activation_action_kinds = [action.kind for action in actions_mock.call_args_list[2].args[3]]
         activation_action_args = [action.args[0] for action in actions_mock.call_args_list[2].args[3]]
-        self.assertEqual(activation_action_kinds, ["stop_process_full", "stop_process", "stop_process", "run_script"])
-        self.assertEqual(activation_action_args, ["[w]atchdog.sh", "mDNSResponder", "wcifsfs", "/mnt/Flash/rc.local"])
+        self.assertEqual(activation_action_kinds, ["stop_process_full", "stop_process", "run_script"])
+        self.assertEqual(activation_action_args, ["[w]atchdog.sh", "wcifsfs", "/mnt/Flash/rc.local"])
         self.assertEqual(actions_mock.call_args_list[2].kwargs, {})
         verify_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o foo")
         run_ssh_mock.assert_not_called()
@@ -1360,11 +1359,11 @@ class CliTests(unittest.TestCase):
         self.assertFalse(payload["reboot_required"])
         self.assertEqual(
             [action["kind"] for action in payload["activation_actions"]],
-            ["stop_process_full", "stop_process", "stop_process", "run_script"],
+            ["stop_process_full", "stop_process", "run_script"],
         )
         self.assertEqual(
             [action["args"][0] for action in payload["activation_actions"]],
-            ["[w]atchdog.sh", "mDNSResponder", "wcifsfs", "/mnt/Flash/rc.local"],
+            ["[w]atchdog.sh", "wcifsfs", "/mnt/Flash/rc.local"],
         )
         self.assertEqual(
             payload["post_deploy_checks"],
@@ -1388,7 +1387,6 @@ class CliTests(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("Dry run: NetBSD4 activation plan", text)
         self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill mDNSResponder >/dev/null 2>&1 || true", text)
         self.assertIn("pkill wcifsfs >/dev/null 2>&1 || true", text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
         self.assertIn("Tested NetBSD4 devices need this after reboot", text)
@@ -1441,8 +1439,8 @@ class CliTests(unittest.TestCase):
         actions_mock.assert_called_once()
         action_kinds = [action.kind for action in actions_mock.call_args.args[3]]
         action_args = [action.args[0] for action in actions_mock.call_args.args[3]]
-        self.assertEqual(action_kinds, ["stop_process_full", "stop_process", "stop_process", "run_script"])
-        self.assertEqual(action_args, ["[w]atchdog.sh", "mDNSResponder", "wcifsfs", "/mnt/Flash/rc.local"])
+        self.assertEqual(action_kinds, ["stop_process_full", "stop_process", "run_script"])
+        self.assertEqual(action_args, ["[w]atchdog.sh", "wcifsfs", "/mnt/Flash/rc.local"])
         self.assertEqual(actions_mock.call_args.kwargs, {})
         verify_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o foo")
         self.assertIn("without file transfer", output.getvalue())
