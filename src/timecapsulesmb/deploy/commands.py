@@ -14,6 +14,10 @@ def prepare_dirs_action(payload_dir: str) -> RemoteAction:
     return RemoteAction("prepare_dirs", (payload_dir,))
 
 
+def initialize_data_root_action(data_root: str, marker_path: str) -> RemoteAction:
+    return RemoteAction("initialize_data_root", (data_root, marker_path))
+
+
 def install_permissions_action(payload_dir: str) -> RemoteAction:
     return RemoteAction("install_permissions", (payload_dir,))
 
@@ -59,6 +63,13 @@ def render_remote_action(action: RemoteAction) -> str:
             shlex.quote("/root/tc-netbsd4"),
             shlex.quote("/mnt/Memory/samba4"),
             shlex.quote("/root/tc-netbsd7"),
+        )
+
+    if action.kind == "initialize_data_root":
+        data_root, marker_path = action.args
+        return (
+            f"mkdir -p {shlex.quote(data_root)} && "
+            f"/bin/sh -c {shlex.quote(f': > {shlex.quote(marker_path)}')}"
         )
 
     if action.kind == "install_permissions":

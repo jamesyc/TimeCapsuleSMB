@@ -13,21 +13,49 @@ class DevicePaths:
     volume_root: str
     payload_dir: str
     disk_key: str
+    data_root: str
+    data_root_marker: str
 
 
 def discover_volume_root(host: str, password: str, ssh_opts: str) -> str:
     script = r'''
+best_any=""
+best_existing=""
+
 for dev in dk2 dk3; do
-  if [ -b "/dev/$dev" ]; then
-    volume="/Volumes/$dev"
-    [ -d "$volume" ] || mkdir -p "$volume"
-    /sbin/mount_hfs "/dev/$dev" "$volume" >/dev/null 2>&1 || true
-    if [ -d "$volume" ]; then
-      echo "$volume"
-      exit 0
+  if [ ! -b "/dev/$dev" ]; then
+    continue
+  fi
+
+  volume="/Volumes/$dev"
+  [ -d "$volume" ] || mkdir -p "$volume"
+  /sbin/mount_hfs "/dev/$dev" "$volume" >/dev/null 2>&1 || true
+
+  if [ ! -d "$volume" ]; then
+    continue
+  fi
+
+  if [ -w "$volume" ]; then
+    if [ -d "$volume/ShareRoot" ] || [ -d "$volume/Shared" ]; then
+      best_existing="$volume"
+      break
+    fi
+    if [ -z "$best_any" ]; then
+      best_any="$volume"
     fi
   fi
 done
+
+if [ -n "$best_existing" ]; then
+  echo "$best_existing"
+  exit 0
+fi
+
+if [ -n "$best_any" ]; then
+  echo "$best_any"
+  exit 0
+fi
+
 exit 1
     '''
     proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}")
@@ -40,10 +68,13 @@ exit 1
 
 def build_device_paths(volume_root: str, payload_dir_name: str) -> DevicePaths:
     disk_key = PurePosixPath(volume_root).name
+    data_root = f"{volume_root}/ShareRoot"
     return DevicePaths(
         volume_root=volume_root,
         payload_dir=f"{volume_root}/{payload_dir_name}",
         disk_key=disk_key,
+        data_root=data_root,
+        data_root_marker=f"{data_root}/.com.apple.timemachine.supported",
     )
 
 

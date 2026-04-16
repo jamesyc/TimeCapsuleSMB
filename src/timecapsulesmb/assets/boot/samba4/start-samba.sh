@@ -6,7 +6,8 @@ set -eu
 # Design:
 # - wait for the internal HFS data device to appear
 # - mount it at Apple's expected mountpoint
-# - discover the real data root by looking for .com.apple.timemachine.supported
+# - discover the real data root by preferring Apple-style markers, but recover
+#   freshly reset disks by creating ShareRoot when needed
 # - copy smbd into /mnt/Memory so it does not execute from a volume that Apple
 #   may later unmount
 # - run mdns-advertiser from /mnt/Flash to save ramdisk space
@@ -14,7 +15,7 @@ set -eu
 # - launch smbd from /mnt/Memory
 #
 # Expected persistent payload layout on the mounted disk:
-#   /Volumes/dkX/samba4/
+#   /Volumes/dkX/__PAYLOAD_DIR_NAME__/
 #     smbd                  or sbin/smbd
 #     smb.conf.template     optional; uses __DATA_ROOT__ and
 #                           __BIND_INTERFACES__ tokens
@@ -135,7 +136,27 @@ find_data_root_under_volume() {
         return 0
     fi
 
+    if [ -d "$volume_root/ShareRoot" ]; then
+        echo "$volume_root/ShareRoot"
+        return 0
+    fi
+
+    if [ -d "$volume_root/Shared" ]; then
+        echo "$volume_root/Shared"
+        return 0
+    fi
+
     return 1
+}
+
+initialize_data_root_under_volume() {
+    volume_root=$1
+    data_root="$volume_root/ShareRoot"
+    marker="$data_root/.com.apple.timemachine.supported"
+
+    mkdir -p "$data_root"
+    : >"$marker"
+    echo "$data_root"
 }
 
 mount_device_if_possible() {
@@ -169,10 +190,18 @@ ensure_data_root() {
             echo "$data_root"
             return 0
         fi
+        if [ -d /Volumes/dk2/"$PAYLOAD_DIR_NAME" ]; then
+            initialize_data_root_under_volume /Volumes/dk2
+            return 0
+        fi
 
         mount_device_if_possible /dev/dk3 /Volumes/dk3
         if data_root=$(find_data_root_under_volume /Volumes/dk3); then
             echo "$data_root"
+            return 0
+        fi
+        if [ -d /Volumes/dk3/"$PAYLOAD_DIR_NAME" ]; then
+            initialize_data_root_under_volume /Volumes/dk3
             return 0
         fi
 

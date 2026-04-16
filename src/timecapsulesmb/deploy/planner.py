@@ -6,6 +6,7 @@ from pathlib import Path
 from timecapsulesmb.deploy.commands import (
     RemoteAction,
     enable_nbns_action,
+    initialize_data_root_action,
     install_permissions_action,
     prepare_dirs_action,
     remove_path_action,
@@ -135,6 +136,7 @@ def build_deployment_plan(
             stop_process_action("smbd"),
             stop_process_action("mdns-advertiser"),
             stop_process_action("nbns-advertiser"),
+            initialize_data_root_action(device_paths.data_root, device_paths.data_root_marker),
             prepare_dirs_action(payload_dir),
         ]
         + ([enable_nbns_action(private_dir)] if install_nbns else []),

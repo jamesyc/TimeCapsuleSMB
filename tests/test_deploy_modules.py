@@ -20,6 +20,7 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.deploy.auth import nt_hash_hex, render_smbpasswd
 from timecapsulesmb.deploy.commands import (
     enable_nbns_action,
+    initialize_data_root_action,
     install_permissions_action,
     prepare_dirs_action,
     render_remote_action,
@@ -31,6 +32,7 @@ from timecapsulesmb.deploy.dry_run import format_deployment_plan
 from timecapsulesmb.deploy.executor import (
     remote_enable_nbns,
     remote_ensure_adisk_uuid,
+    remote_initialize_data_root,
     remote_install_permissions,
     remote_prepare_dirs,
     remote_uninstall_payload,
@@ -117,6 +119,8 @@ class DeployModuleTests(unittest.TestCase):
         self.assertEqual(plan.private_dir, f"{payload_dir}/private")
         self.assertEqual(plan.volume_root, "/Volumes/dk2")
         self.assertEqual(plan.disk_key, "dk2")
+        self.assertEqual(paths.data_root, "/Volumes/dk2/ShareRoot")
+        self.assertEqual(paths.data_root_marker, "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported")
         self.assertEqual(plan.remote_directories[0], payload_dir)
         self.assertIn(f"{payload_dir}/cache", plan.remote_directories)
         self.assertEqual(plan.payload_targets["nbns-advertiser"], f"{payload_dir}/nbns-advertiser")
@@ -127,6 +131,7 @@ class DeployModuleTests(unittest.TestCase):
                 stop_process_action("smbd"),
                 stop_process_action("mdns-advertiser"),
                 stop_process_action("nbns-advertiser"),
+                initialize_data_root_action("/Volumes/dk2/ShareRoot", "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported"),
                 prepare_dirs_action(payload_dir),
             ],
         )
@@ -185,6 +190,9 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("lock directory = $RAM_LOCKS", rendered)
         self.assertIn("state directory = $RAM_VAR", rendered)
         self.assertNotIn('cp "$nbns_src" "$RAM_SBIN/nbns-advertiser"\n    chmod 755 "$RAM_SBIN/nbns-advertiser"', rendered)
+        self.assertIn('if [ -d /Volumes/dk2/"$PAYLOAD_DIR_NAME" ]; then', rendered)
+        self.assertIn('initialize_data_root_under_volume /Volumes/dk2', rendered)
+        self.assertIn(': >"$marker"', rendered)
 
     def test_render_smb_conf_uses_ram_cache_directory_by_default(self) -> None:
         values = {
@@ -386,11 +394,36 @@ int main(void) {{
             with self.assertRaises(SystemExit):
                 discover_volume_root("root@10.0.0.2", "pw", "-o foo")
 
+    def test_discover_volume_root_prefers_existing_share_root(self) -> None:
+        proc = mock.Mock(stdout="/Volumes/dk3\n")
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            self.assertEqual(discover_volume_root("root@10.0.0.2", "pw", "-o foo"), "/Volumes/dk3")
+
     def test_remote_prepare_dirs_builds_expected_command(self) -> None:
         with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
             remote_prepare_dirs("host", "pw", "-o foo", "/Volumes/dk2/samba4")
         command = run_ssh_mock.call_args.args[3]
         self.assertEqual(command, render_remote_action(prepare_dirs_action("/Volumes/dk2/samba4")))
+
+    def test_remote_initialize_data_root_builds_expected_command(self) -> None:
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
+            remote_initialize_data_root(
+                "host",
+                "pw",
+                "-o foo",
+                "/Volumes/dk2/ShareRoot",
+                "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported",
+            )
+        command = run_ssh_mock.call_args.args[3]
+        self.assertEqual(
+            command,
+            render_remote_action(
+                initialize_data_root_action(
+                    "/Volumes/dk2/ShareRoot",
+                    "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported",
+                )
+            ),
+        )
 
     def test_remote_install_permissions_builds_expected_command(self) -> None:
         with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
@@ -540,6 +573,8 @@ PASS:mdns-advertiser bound to UDP 5353
         self.assertIn("volume root: /Volumes/dk2", text)
         self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
         self.assertIn("pkill mdns-advertiser >/dev/null 2>&1 || true", text)
+        self.assertIn("mkdir -p /Volumes/dk2/ShareRoot", text)
+        self.assertIn("/bin/sh -c ': > /Volumes/dk2/ShareRoot/.com.apple.timemachine.supported'", text)
         self.assertIn(f"mkdir -p {payload_dir} {payload_dir}/private {payload_dir}/cache /mnt/Flash", text)
         self.assertIn(f"/bin/sh -c ': > {payload_dir}/private/nbns.enabled'", text)
         self.assertIn(f"generated smbpasswd -> {payload_dir}/private/smbpasswd", text)
@@ -603,6 +638,14 @@ PASS:mdns-advertiser bound to UDP 5353
             render_remote_action(run_script_action("/mnt/Flash/Time Capsule SMB/rc.local")),
             "/bin/sh '/mnt/Flash/Time Capsule SMB/rc.local'",
         )
+        initialize_cmd = render_remote_action(
+            initialize_data_root_action(
+                "/Volumes/dk2/Time Capsule ShareRoot",
+                "/Volumes/dk2/Time Capsule ShareRoot/.com.apple.timemachine.supported",
+            )
+        )
+        self.assertIn("'/Volumes/dk2/Time Capsule ShareRoot'", initialize_cmd)
+        self.assertIn("'/Volumes/dk2/Time Capsule ShareRoot/.com.apple.timemachine.supported'", initialize_cmd)
 
     def test_deployment_plan_and_executor_share_permission_command_generation(self) -> None:
         payload_dir = "/Volumes/dk2/Time Capsule Samba 4"

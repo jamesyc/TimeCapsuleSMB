@@ -8,6 +8,7 @@ from pathlib import Path
 from timecapsulesmb.deploy.auth import render_smbpasswd
 from timecapsulesmb.deploy.commands import (
     enable_nbns_action,
+    initialize_data_root_action,
     install_permissions_action,
     prepare_dirs_action,
     render_remote_action,
@@ -19,6 +20,10 @@ from timecapsulesmb.transport.ssh import run_scp, run_ssh
 
 def remote_prepare_dirs(host: str, password: str, ssh_opts: str, payload_dir: str) -> None:
     run_ssh(host, password, ssh_opts, render_remote_action(prepare_dirs_action(payload_dir)))
+
+
+def remote_initialize_data_root(host: str, password: str, ssh_opts: str, data_root: str, marker_path: str) -> None:
+    run_ssh(host, password, ssh_opts, render_remote_action(initialize_data_root_action(data_root, marker_path)))
 
 
 def remote_install_permissions(host: str, password: str, ssh_opts: str, payload_dir: str) -> None:

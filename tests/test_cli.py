@@ -864,7 +864,7 @@ class CliTests(unittest.TestCase):
         pre_upload_action_kinds = [action.kind for action in actions_mock.call_args_list[0].args[3]]
         self.assertEqual(
             pre_upload_action_kinds,
-            ["stop_process_full", "stop_process", "stop_process", "stop_process", "prepare_dirs", "enable_nbns"],
+            ["stop_process_full", "stop_process", "stop_process", "stop_process", "initialize_data_root", "prepare_dirs", "enable_nbns"],
         )
 
     def test_deploy_dry_run_includes_nbns_upload_without_marker_by_default(self) -> None:
