@@ -180,6 +180,11 @@ This is a non-destructive diagnostic command. `tcapsule doctor` checks:
 - that the required local tools exist
 - that the checked-in binaries are present and match the expected checksums
 - that SSH is reachable
+- what the box is currently advertising and serving for:
+  - Bonjour instance name
+  - Bonjour host label
+  - Samba NetBIOS name
+  - Samba share names
 - that SMB is reachable
 - that Bonjour `_smb._tcp` advertisement is visible
 - that an authenticated SMB listing actually works and includes the configured share name

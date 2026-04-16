@@ -35,7 +35,7 @@ Current validation status:
 
 Current user experience:
 - the Time Capsule advertises `_smb._tcp`
-- the Time Capsule can advertise `_adisk._tcp` for Time Machine
+- the Time Capsule currently advertises `_adisk._tcp` for Time Machine
 - the Time Capsule advertises `_device-info._tcp` with a Finder model hint
 - the Time Capsule can optionally answer NBNS name queries for the configured NetBIOS name
 - the default instance name is `Time Capsule Samba 4`
@@ -358,6 +358,7 @@ Current rendered Samba config characteristics:
 - `valid users = admin root`
 - `force user = root`
 - `force group = wheel`
+- `reset on zero vc = yes`
 - `path = /Volumes/dk2/ShareRoot` on the tested box
 - `pid directory = /mnt/Memory/samba4/var`
 - `lock directory = /mnt/Memory/samba4/locks`
@@ -543,11 +544,15 @@ It checks:
 - required local tools
 - whether the required checked-in binaries exist and match the expected checksums
 - SSH reachability
+- advertised Bonjour instance name
+- advertised Bonjour host label
+- active Samba NetBIOS name
+- active Samba share names
 - SMB reachability
 - `_smb._tcp` browse and resolve
 - optional NBNS name resolution when `private/nbns.enabled` is present on the device
-- authenticated `smbutil view`
-- authenticated SMB file operations on the mounted share
+- authenticated `smbclient -L` listing
+- authenticated SMB CRUD operations via `smbclient`
 - that the configured share name is present in the authenticated SMB listing
 - that the active runtime `xattr_tdb:file` path in `/mnt/Memory/samba4/etc/smb.conf` points at persistent storage instead of the ramdisk
 
@@ -586,7 +591,7 @@ The normal goal is to use it as a quick health check after:
 - reboot
 
 Current doctor caveats:
-- for SSH-proxied targets, direct SMB client checks may be skipped if only SSH is reachable through the jump host
+- for SSH-proxied targets, `doctor` now creates a temporary local SMB tunnel and runs the authenticated SMB checks through that forwarded port
 - the xattr persistence check inspects the active runtime config under `/mnt/Memory/samba4`, not the persistent template on disk
 
 ## Repair Xattrs Command
