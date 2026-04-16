@@ -890,8 +890,9 @@ class CliTests(unittest.TestCase):
                             rc = deploy.main(["--dry-run"])
         self.assertEqual(rc, 0)
         text = output.getvalue()
-        self.assertIn("bin/nbns/nbns-advertiser -> /Volumes/dk2/samba4/nbns-advertiser", text)
-        self.assertNotIn("generated nbns marker -> /Volumes/dk2/samba4/private/nbns.enabled", text)
+        payload_dir = f"/Volumes/dk2/{values['TC_PAYLOAD_DIR_NAME']}"
+        self.assertIn(f"bin/nbns/nbns-advertiser -> {payload_dir}/nbns-advertiser", text)
+        self.assertNotIn(f"generated nbns marker -> {payload_dir}/private/nbns.enabled", text)
 
     def test_deploy_dry_run_uses_netbsd4_artifact_set_for_netbsd4_device(self) -> None:
         output = io.StringIO()
@@ -916,11 +917,12 @@ class CliTests(unittest.TestCase):
                             rc = deploy.main(["--dry-run"])
         self.assertEqual(rc, 0)
         text = output.getvalue()
+        payload_dir = f"/Volumes/dk2/{values['TC_PAYLOAD_DIR_NAME']}"
         self.assertIn("Detected supported older device: NetBSD 4.0", text)
-        self.assertIn("bin/samba4-netbsd4/smbd -> /Volumes/dk2/samba4/smbd", text)
-        self.assertIn("bin/mdns-netbsd4/mdns-advertiser -> /Volumes/dk2/samba4/mdns-advertiser", text)
+        self.assertIn(f"bin/samba4-netbsd4/smbd -> {payload_dir}/smbd", text)
+        self.assertIn(f"bin/mdns-netbsd4/mdns-advertiser -> {payload_dir}/mdns-advertiser", text)
         self.assertIn("bin/mdns-netbsd4/mdns-advertiser -> /mnt/Flash/mdns-advertiser", text)
-        self.assertIn("bin/nbns-netbsd4/nbns-advertiser -> /Volumes/dk2/samba4/nbns-advertiser", text)
+        self.assertIn(f"bin/nbns-netbsd4/nbns-advertiser -> {payload_dir}/nbns-advertiser", text)
         self.assertIn("Remote actions (NetBSD4 activation):", text)
         self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
         self.assertIn("pkill wcifsfs >/dev/null 2>&1 || true", text)
@@ -1330,7 +1332,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["host"], "root@10.0.0.2")
         self.assertEqual(payload["volume_root"], "/Volumes/dk2")
         self.assertTrue(payload["nbns_path"].endswith("/bin/nbns/nbns-advertiser"))
-        self.assertEqual(payload["payload_targets"]["nbns-advertiser"], "/Volumes/dk2/samba4/nbns-advertiser")
+        self.assertEqual(payload["payload_targets"]["nbns-advertiser"], f"/Volumes/dk2/{values['TC_PAYLOAD_DIR_NAME']}/nbns-advertiser")
         self.assertIn("post_deploy_checks", payload)
 
     def test_deploy_netbsd4_dry_run_json_outputs_activation_plan(self) -> None:
@@ -1497,7 +1499,7 @@ class CliTests(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("Dry run: uninstall plan", text)
         self.assertIn("host: root@10.0.0.2", text)
-        self.assertIn("payload dir: /Volumes/dk2/samba4", text)
+        self.assertIn(f"payload dir: /Volumes/dk2/{values['TC_PAYLOAD_DIR_NAME']}", text)
 
     def test_uninstall_json_outputs_plan(self) -> None:
         output = io.StringIO()

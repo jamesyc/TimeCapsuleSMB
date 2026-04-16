@@ -25,7 +25,7 @@ DEFAULTS = {
     "TC_SHARE_NAME": "Data",
     "TC_SAMBA_USER": "admin",
     "TC_NETBIOS_NAME": "TimeCapsule",
-    "TC_PAYLOAD_DIR_NAME": "samba4",
+    "TC_PAYLOAD_DIR_NAME": ".samba4",
     "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
     "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
     "TC_MDNS_DEVICE_MODEL": "TimeCapsule",

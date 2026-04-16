@@ -502,7 +502,7 @@ Current defaults:
 - `TC_SHARE_NAME=Data`
 - `TC_SAMBA_USER=admin`
 - `TC_NETBIOS_NAME=TimeCapsule`
-- `TC_PAYLOAD_DIR_NAME=samba4`
+- `TC_PAYLOAD_DIR_NAME=.samba4`
 - `TC_MDNS_INSTANCE_NAME=Time Capsule Samba 4`
 - `TC_MDNS_HOST_LABEL=timecapsulesamba4`
 - `TC_MDNS_DEVICE_MODEL=TimeCapsule`
@@ -653,7 +653,7 @@ Current deploy flow:
 - probes device compatibility and rejects unsupported targets before upload
 - computes the device-specific runtime and payload paths
 - builds a deployment plan before execution
-- creates the persistent payload dir under `/Volumes/dkX/<TC_PAYLOAD_DIR_NAME>` (usually `/Volumes/dkX/samba4`)
+- creates the persistent payload dir under `/Volumes/dkX/<TC_PAYLOAD_DIR_NAME>` (usually `/Volumes/dkX/.samba4`)
 - uploads the checked-in binaries:
   - `smbd`
   - `mdns-advertiser`

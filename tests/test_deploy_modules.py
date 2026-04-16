@@ -109,15 +109,17 @@ class DeployModuleTests(unittest.TestCase):
         self.assertEqual(smbconf_cache, "__DATA_ROOT__/../samba4-test/cache")
 
     def test_build_deployment_plan_uses_device_paths(self) -> None:
-        paths = build_device_paths("/Volumes/dk2", "samba4")
+        payload_dir_name = "samba4"
+        paths = build_device_paths("/Volumes/dk2", payload_dir_name)
         plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
-        self.assertEqual(plan.payload_dir, "/Volumes/dk2/samba4")
-        self.assertEqual(plan.private_dir, "/Volumes/dk2/samba4/private")
+        payload_dir = f"/Volumes/dk2/{payload_dir_name}"
+        self.assertEqual(plan.payload_dir, payload_dir)
+        self.assertEqual(plan.private_dir, f"{payload_dir}/private")
         self.assertEqual(plan.volume_root, "/Volumes/dk2")
         self.assertEqual(plan.disk_key, "dk2")
-        self.assertEqual(plan.remote_directories[0], "/Volumes/dk2/samba4")
-        self.assertIn("/Volumes/dk2/samba4/cache", plan.remote_directories)
-        self.assertEqual(plan.payload_targets["nbns-advertiser"], "/Volumes/dk2/samba4/nbns-advertiser")
+        self.assertEqual(plan.remote_directories[0], payload_dir)
+        self.assertIn(f"{payload_dir}/cache", plan.remote_directories)
+        self.assertEqual(plan.payload_targets["nbns-advertiser"], f"{payload_dir}/nbns-advertiser")
         self.assertEqual(
             plan.pre_upload_actions,
             [
@@ -125,10 +127,10 @@ class DeployModuleTests(unittest.TestCase):
                 stop_process_action("smbd"),
                 stop_process_action("mdns-advertiser"),
                 stop_process_action("nbns-advertiser"),
-                prepare_dirs_action("/Volumes/dk2/samba4"),
+                prepare_dirs_action(payload_dir),
             ],
         )
-        self.assertEqual(plan.post_auth_actions, [install_permissions_action("/Volumes/dk2/samba4")])
+        self.assertEqual(plan.post_auth_actions, [install_permissions_action(payload_dir)])
 
     def test_render_template_text_replaces_tokens(self) -> None:
         self.assertEqual(render_template_text("hello __TOKEN__", {"__TOKEN__": "world"}), "hello world")
@@ -530,20 +532,22 @@ PASS:mdns-advertiser bound to UDP 5353
         listing_mock.assert_called_once_with("admin", "pw", ["10.0.1.99", "10.0.0.2"])
 
     def test_format_deployment_plan_contains_concrete_actions(self) -> None:
-        paths = build_device_paths("/Volumes/dk2", "samba4")
+        payload_dir_name = "samba4"
+        payload_dir = f"/Volumes/dk2/{payload_dir_name}"
+        paths = build_device_paths("/Volumes/dk2", payload_dir_name)
         plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), install_nbns=True)
         text = format_deployment_plan(plan)
         self.assertIn("volume root: /Volumes/dk2", text)
         self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
         self.assertIn("pkill mdns-advertiser >/dev/null 2>&1 || true", text)
-        self.assertIn("mkdir -p /Volumes/dk2/samba4 /Volumes/dk2/samba4/private /Volumes/dk2/samba4/cache /mnt/Flash", text)
-        self.assertIn("/bin/sh -c ': > /Volumes/dk2/samba4/private/nbns.enabled'", text)
-        self.assertIn("generated smbpasswd -> /Volumes/dk2/samba4/private/smbpasswd", text)
-        self.assertIn("generated adisk UUID -> /Volumes/dk2/samba4/private/adisk.uuid", text)
-        self.assertIn("generated nbns marker -> /Volumes/dk2/samba4/private/nbns.enabled", text)
+        self.assertIn(f"mkdir -p {payload_dir} {payload_dir}/private {payload_dir}/cache /mnt/Flash", text)
+        self.assertIn(f"/bin/sh -c ': > {payload_dir}/private/nbns.enabled'", text)
+        self.assertIn(f"generated smbpasswd -> {payload_dir}/private/smbpasswd", text)
+        self.assertIn(f"generated adisk UUID -> {payload_dir}/private/adisk.uuid", text)
+        self.assertIn(f"generated nbns marker -> {payload_dir}/private/nbns.enabled", text)
         self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4", text)
-        self.assertIn("chmod 755 /Volumes/dk2/samba4/cache", text)
-        self.assertIn("chmod 700 /Volumes/dk2/samba4/private", text)
+        self.assertIn(f"chmod 755 {payload_dir}/cache", text)
+        self.assertIn(f"chmod 700 {payload_dir}/private", text)
 
     def test_netbsd4_activation_plan_contains_no_reboot_actions(self) -> None:
         paths = build_device_paths("/Volumes/dk2", "samba4")
