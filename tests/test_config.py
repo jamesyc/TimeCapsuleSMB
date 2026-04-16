@@ -52,6 +52,7 @@ class ConfigTests(unittest.TestCase):
         values["TC_PASSWORD"] = "secret"
         rendered = render_env_text(values)
         self.assertIn("TC_PASSWORD=secret", rendered)
+        self.assertIn("TC_SSH_OPTS='-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'", rendered)
         self.assertIn("TC_MDNS_INSTANCE_NAME='Time Capsule Samba 4'", rendered)
         self.assertIn("TC_MDNS_DEVICE_MODEL=TimeCapsule", rendered)
 
@@ -67,6 +68,44 @@ class ConfigTests(unittest.TestCase):
 
     def test_parse_env_value_falls_back_for_unbalanced_quotes(self) -> None:
         self.assertEqual(parse_env_value("'unterminated"), "unterminated")
+
+    def test_parse_env_value_preserves_unquoted_multi_token_string(self) -> None:
+        value = "-o HostKeyAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1"
+        self.assertEqual(parse_env_value(value), value)
+
+    def test_parse_env_value_unquotes_multi_token_quoted_string(self) -> None:
+        value = "'-o HostKeyAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1'"
+        self.assertEqual(
+            parse_env_value(value),
+            "-o HostKeyAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1",
+        )
+
+    def test_parse_env_values_preserves_full_ssh_opts_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            ssh_opts = (
+                "-o HostKeyAlgorithms=+ssh-rsa "
+                "-o PubkeyAcceptedAlgorithms=+ssh-rsa "
+                "-o KexAlgorithms=+diffie-hellman-group14-sha1 "
+                "-o ProxyCommand=ssh\\ -4\\ -W\\ %h:%p\\ jump.example.com"
+            )
+            path.write_text(f"TC_SSH_OPTS='{ssh_opts}'\n")
+            values = parse_env_values(path)
+        self.assertEqual(values["TC_SSH_OPTS"], ssh_opts)
+
+    def test_write_env_file_round_trips_full_ssh_opts(self) -> None:
+        values = dict(DEFAULTS)
+        values["TC_PASSWORD"] = "secret"
+        values["TC_SSH_OPTS"] = (
+            "-J user@jump.example.com:22123 "
+            "-o HostKeyAlgorithms=+ssh-rsa "
+            "-o KexAlgorithms=+diffie-hellman-group14-sha1"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            write_env_file(path, values)
+            reparsed = parse_env_values(path)
+        self.assertEqual(reparsed["TC_SSH_OPTS"], values["TC_SSH_OPTS"])
 
     def test_extract_host_removes_user_prefix(self) -> None:
         self.assertEqual(extract_host("root@10.0.0.5"), "10.0.0.5")
