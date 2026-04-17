@@ -91,7 +91,7 @@ for dev in dk2 dk3; do
 
   echo "$volume"
   exit 0
-fi
+done
 
 exit 1
     '''
