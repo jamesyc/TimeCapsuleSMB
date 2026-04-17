@@ -10,8 +10,8 @@
     guest account = nobody
     null passwords = no
     ea support = yes
-    passdb backend = smbpasswd:__DATA_ROOT__/../__PAYLOAD_DIR_NAME__/private/smbpasswd
-    username map = __DATA_ROOT__/../__PAYLOAD_DIR_NAME__/private/username.map
+    passdb backend = smbpasswd:__PAYLOAD_DIR__/private/smbpasswd
+    username map = __PAYLOAD_DIR__/private/username.map
     dos charset = ASCII
     min protocol = SMB2
     max protocol = SMB3
@@ -50,7 +50,7 @@
     fruit:time machine = yes
     fruit:posix_rename = yes
     fruit:locking = none
-    xattr_tdb:file = __DATA_ROOT__/../__PAYLOAD_DIR_NAME__/private/xattr.tdb
+    xattr_tdb:file = __PAYLOAD_DIR__/private/xattr.tdb
     force user = root
     force group = wheel
     create mask = 0644

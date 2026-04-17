@@ -217,12 +217,16 @@ initialize_data_root_under_volume() {
 mount_device_if_possible() {
     dev_path=$1
     volume_root=$2
+    created_mountpoint=0
 
     if [ ! -b "$dev_path" ]; then
         return 1
     fi
 
-    [ -d "$volume_root" ] || mkdir -p "$volume_root"
+    if [ ! -d "$volume_root" ]; then
+        mkdir -p "$volume_root"
+        created_mountpoint=1
+    fi
 
     /sbin/mount_hfs "$dev_path" "$volume_root" >/dev/null 2>&1 &
     mount_pid=$!
@@ -233,6 +237,9 @@ mount_device_if_possible() {
             sleep 1
             kill -9 "$mount_pid" >/dev/null 2>&1 || true
             wait "$mount_pid" >/dev/null 2>&1 || true
+            if [ "$created_mountpoint" -eq 1 ]; then
+                /bin/rmdir "$volume_root" >/dev/null 2>&1 || true
+            fi
             log "mount_hfs timed out for $dev_path at $volume_root"
             return 1
         fi
@@ -240,6 +247,10 @@ mount_device_if_possible() {
         sleep 1
     done
     wait "$mount_pid" >/dev/null 2>&1 || true
+
+    if ! is_volume_root_mounted "$volume_root" && [ "$created_mountpoint" -eq 1 ]; then
+        /bin/rmdir "$volume_root" >/dev/null 2>&1 || true
+    fi
 }
 
 discover_preexisting_data_root() {
@@ -324,6 +335,16 @@ mount_fallback_volume() {
 
 find_payload_dir() {
     data_root=$1
+    volume_root=${data_root%/*}
+
+    payload_dir="$volume_root/$PAYLOAD_DIR_NAME"
+    if [ -d "$payload_dir" ]; then
+        echo "$payload_dir"
+        return 0
+    fi
+
+    # Temporary compatibility fallback for older experiments that placed the
+    # payload under the share root instead of at the volume root.
     payload_dir="$data_root/$PAYLOAD_DIR_NAME"
     if [ -d "$payload_dir" ]; then
         echo "$payload_dir"
@@ -378,6 +399,7 @@ stage_runtime() {
     if [ -f "$payload_dir/$PAYLOAD_TEMPLATE_NAME" ]; then
         sed \
             -e "s#__DATA_ROOT__#$DATA_ROOT#g" \
+            -e "s#__PAYLOAD_DIR__#$PAYLOAD_DIR#g" \
             -e "s#__BIND_INTERFACES__#$BIND_INTERFACES#g" \
             "$payload_dir/$PAYLOAD_TEMPLATE_NAME" >"$RAM_ETC/smb.conf"
         return 0
@@ -396,8 +418,8 @@ stage_runtime() {
     guest account = nobody
     null passwords = no
     ea support = yes
-    passdb backend = smbpasswd:$DATA_ROOT/$PAYLOAD_DIR_NAME/private/smbpasswd
-    username map = $DATA_ROOT/$PAYLOAD_DIR_NAME/private/username.map
+    passdb backend = smbpasswd:$PAYLOAD_DIR/private/smbpasswd
+    username map = $PAYLOAD_DIR/private/username.map
     dos charset = ASCII
     min protocol = SMB2
     max protocol = SMB3
@@ -436,7 +458,7 @@ stage_runtime() {
     fruit:time machine = yes
     fruit:posix_rename = yes
     fruit:locking = none
-    xattr_tdb:file = $DATA_ROOT/$PAYLOAD_DIR_NAME/private/xattr.tdb
+    xattr_tdb:file = $PAYLOAD_DIR/private/xattr.tdb
     force user = root
     force group = wheel
     create mask = 0644
@@ -528,8 +550,6 @@ else
     }
     log "found data root after manual mount: $DATA_ROOT"
 fi
-CACHE_DIRECTORY=__CACHE_DIRECTORY__
-log "data root: $DATA_ROOT"
 
 BIND_INTERFACES=$(wait_for_bind_interfaces) || {
     log "failed to determine $NET_IFACE IPv4 address"
@@ -542,6 +562,8 @@ PAYLOAD_DIR=$(find_payload_dir "$DATA_ROOT") || {
     log "missing payload directory under mounted volume"
     exit 1
 }
+CACHE_DIRECTORY=__CACHE_DIRECTORY__
+log "data root: $DATA_ROOT"
 
 SMBD_SRC=$(find_payload_smbd "$PAYLOAD_DIR") || {
     log "missing smbd in payload directory"

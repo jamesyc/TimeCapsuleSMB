@@ -28,21 +28,70 @@ for dev in dk2 dk3; do
   fi
 
   volume="/Volumes/$dev"
-  [ -d "$volume" ] || mkdir -p "$volume"
-  /sbin/mount_hfs "/dev/$dev" "$volume" >/dev/null 2>&1 || true
-
   if [ ! -d "$volume" ]; then
     continue
   fi
 
-  if [ -w "$volume" ]; then
-    if [ -d "$volume/ShareRoot" ] || [ -d "$volume/Shared" ]; then
-      best_existing="$volume"
-      break
-    fi
-    if [ -z "$best_any" ]; then
-      best_any="$volume"
-    fi
+  df_line=$(/bin/df -k "$volume" 2>/dev/null | /usr/bin/tail -n +2 || true)
+  case "$df_line" in
+    *" $volume")
+      :
+      ;;
+    *)
+      continue
+      ;;
+  esac
+
+  if [ ! -w "$volume" ]; then
+    continue
+  fi
+
+  if [ -d "$volume/ShareRoot" ] || [ -d "$volume/Shared" ]; then
+    best_existing="$volume"
+    break
+  fi
+  if [ -z "$best_any" ]; then
+    best_any="$volume"
+  fi
+done
+
+for dev in dk2 dk3; do
+  if [ ! -b "/dev/$dev" ]; then
+    continue
+  fi
+
+  volume="/Volumes/$dev"
+  created_mountpoint=0
+  if [ ! -d "$volume" ]; then
+    mkdir -p "$volume"
+    created_mountpoint=1
+  fi
+
+  /sbin/mount_hfs "/dev/$dev" "$volume" >/dev/null 2>&1 || true
+
+  df_line=$(/bin/df -k "$volume" 2>/dev/null | /usr/bin/tail -n +2 || true)
+  case "$df_line" in
+    *" $volume")
+      :
+      ;;
+    *)
+      if [ "$created_mountpoint" -eq 1 ]; then
+        /bin/rmdir "$volume" >/dev/null 2>&1 || true
+      fi
+      continue
+      ;;
+  esac
+
+  if [ ! -w "$volume" ]; then
+    continue
+  fi
+
+  if [ -d "$volume/ShareRoot" ] || [ -d "$volume/Shared" ]; then
+    best_existing="$volume"
+    break
+  fi
+  if [ -z "$best_any" ]; then
+    best_any="$volume"
   fi
 done
 

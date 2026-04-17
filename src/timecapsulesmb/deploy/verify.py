@@ -48,7 +48,14 @@ while [ "$attempt" -lt {timeout_seconds} ]; do
 done
 exit 1
 '''
-    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}", check=False)
+    proc = run_ssh(
+        host,
+        password,
+        ssh_opts,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=timeout_seconds + 30,
+    )
     return proc.returncode == 0
 
 

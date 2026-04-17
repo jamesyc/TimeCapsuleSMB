@@ -17,8 +17,8 @@ class TemplateBundle:
 def cache_directory_replacements(payload_family: str, payload_dir_name: str) -> tuple[str, str]:
     if payload_family == "netbsd4_samba4":
         return (
-            "$DATA_ROOT/../$PAYLOAD_DIR_NAME/cache",
-            f"__DATA_ROOT__/../{payload_dir_name}/cache",
+            "$PAYLOAD_DIR/cache",
+            "__PAYLOAD_DIR__/cache",
         )
     return ("/mnt/Memory/samba4/var", "/mnt/Memory/samba4/var")
 

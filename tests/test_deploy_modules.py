@@ -100,15 +100,15 @@ class DeployModuleTests(unittest.TestCase):
 
     def test_cache_directory_replacements_keep_netbsd4_start_expression_unquoted(self) -> None:
         start_cache, smbconf_cache = cache_directory_replacements("netbsd4_samba4", "samba4")
-        self.assertEqual(start_cache, "$DATA_ROOT/../$PAYLOAD_DIR_NAME/cache")
-        self.assertEqual(smbconf_cache, "__DATA_ROOT__/../samba4/cache")
+        self.assertEqual(start_cache, "$PAYLOAD_DIR/cache")
+        self.assertEqual(smbconf_cache, "__PAYLOAD_DIR__/cache")
         self.assertFalse(start_cache.startswith("'"))
         self.assertFalse(start_cache.endswith("'"))
 
     def test_cache_directory_replacements_use_custom_payload_dir_for_netbsd4_smbconf(self) -> None:
         start_cache, smbconf_cache = cache_directory_replacements("netbsd4_samba4", "samba4-test")
-        self.assertEqual(start_cache, "$DATA_ROOT/../$PAYLOAD_DIR_NAME/cache")
-        self.assertEqual(smbconf_cache, "__DATA_ROOT__/../samba4-test/cache")
+        self.assertEqual(start_cache, "$PAYLOAD_DIR/cache")
+        self.assertEqual(smbconf_cache, "__PAYLOAD_DIR__/cache")
 
     def test_build_deployment_plan_uses_device_paths(self) -> None:
         payload_dir_name = "samba4"
@@ -484,6 +484,47 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('log "missing smbd in payload directory"', rendered)
         self.assertIn('log "smbd did not become ready"', rendered)
 
+    def test_render_start_script_prefers_root_level_payload_dir_with_share_root_fallback(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(values)
+        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
+        payload_start = rendered.index("find_payload_dir()")
+        payload_end = rendered.index("find_payload_smbd()")
+        payload_section = rendered[payload_start:payload_end]
+        self.assertIn('volume_root=${data_root%/*}', payload_section)
+        self.assertIn('payload_dir="$volume_root/$PAYLOAD_DIR_NAME"', payload_section)
+        self.assertIn('payload_dir="$data_root/$PAYLOAD_DIR_NAME"', payload_section)
+        self.assertLess(
+            payload_section.index('payload_dir="$volume_root/$PAYLOAD_DIR_NAME"'),
+            payload_section.index('payload_dir="$data_root/$PAYLOAD_DIR_NAME"'),
+        )
+
+    def test_render_start_script_fallback_smb_conf_uses_root_level_payload_private_paths(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(values)
+        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
+        self.assertIn("passdb backend = smbpasswd:$PAYLOAD_DIR/private/smbpasswd", rendered)
+        self.assertIn("username map = $PAYLOAD_DIR/private/username.map", rendered)
+        self.assertIn("xattr_tdb:file = $PAYLOAD_DIR/private/xattr.tdb", rendered)
+
     def test_render_start_script_logs_mount_and_recovery_failures(self) -> None:
         values = {
             "TC_PAYLOAD_DIR_NAME": "samba4",
@@ -577,6 +618,9 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('while kill -0 "$mount_pid" >/dev/null 2>&1; do', mount_section)
         self.assertIn('kill "$mount_pid" >/dev/null 2>&1 || true', mount_section)
         self.assertIn('kill -9 "$mount_pid" >/dev/null 2>&1 || true', mount_section)
+        self.assertIn('created_mountpoint=0', mount_section)
+        self.assertIn('created_mountpoint=1', mount_section)
+        self.assertIn('/bin/rmdir "$volume_root" >/dev/null 2>&1 || true', mount_section)
         self.assertIn('log "mount_hfs timed out for $dev_path at $volume_root"', mount_section)
 
     def test_render_start_script_waits_for_smbd_ready_after_launch(self) -> None:
@@ -628,7 +672,7 @@ class DeployModuleTests(unittest.TestCase):
         }
         bundle = build_template_bundle(values, payload_family="netbsd4_samba4")
         rendered = render_template("smb.conf.template", bundle.smbconf_replacements)
-        self.assertIn("cache directory = __DATA_ROOT__/../samba4/cache", rendered)
+        self.assertIn("cache directory = __PAYLOAD_DIR__/cache", rendered)
         self.assertIn("lock directory = /mnt/Memory/samba4/locks", rendered)
         self.assertIn("state directory = /mnt/Memory/samba4/var", rendered)
         self.assertIn("private dir = /mnt/Memory/samba4/private", rendered)
@@ -647,7 +691,7 @@ class DeployModuleTests(unittest.TestCase):
         }
         bundle = build_template_bundle(values, payload_family="netbsd4_samba4")
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn("CACHE_DIRECTORY=$DATA_ROOT/../$PAYLOAD_DIR_NAME/cache", rendered)
+        self.assertIn("CACHE_DIRECTORY=$PAYLOAD_DIR/cache", rendered)
         self.assertIn("cache directory = $CACHE_DIRECTORY", rendered)
         self.assertIn("reset on zero vc = yes", rendered)
 
@@ -665,8 +709,10 @@ class DeployModuleTests(unittest.TestCase):
         bundle = build_template_bundle(values, payload_family="netbsd4_samba4")
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         data_root_index = rendered.index('if DATA_ROOT=$(discover_preexisting_data_root); then')
-        cache_index = rendered.index("CACHE_DIRECTORY=$DATA_ROOT/../$PAYLOAD_DIR_NAME/cache")
-        self.assertGreater(cache_index, data_root_index)
+        payload_index = rendered.index('PAYLOAD_DIR=$(find_payload_dir "$DATA_ROOT") || {')
+        cache_index = rendered.index("CACHE_DIRECTORY=$PAYLOAD_DIR/cache")
+        self.assertGreater(payload_index, data_root_index)
+        self.assertGreater(cache_index, payload_index)
 
     def test_render_smb_conf_uses_custom_persistent_cache_directory_for_netbsd4(self) -> None:
         values = {
@@ -681,7 +727,7 @@ class DeployModuleTests(unittest.TestCase):
         }
         bundle = build_template_bundle(values, payload_family="netbsd4_samba4")
         rendered = render_template("smb.conf.template", bundle.smbconf_replacements)
-        self.assertIn("cache directory = __DATA_ROOT__/../samba4-test/cache", rendered)
+        self.assertIn("cache directory = __PAYLOAD_DIR__/cache", rendered)
         self.assertNotIn("__CACHE_DIRECTORY__", rendered)
         self.assertNotIn("__PAYLOAD_DIR_NAME__", rendered)
 
@@ -857,6 +903,25 @@ int main(void) {{
         proc = mock.Mock(stdout="/Volumes/dk3\n")
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
             self.assertEqual(discover_volume_root("root@10.0.0.2", "pw", "-o foo"), "/Volumes/dk3")
+
+    def test_discover_volume_root_checks_existing_mounts_before_mounting_candidates(self) -> None:
+        proc = mock.Mock(stdout="/Volumes/dk2\n")
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
+            discover_volume_root("root@10.0.0.2", "pw", "-o foo")
+        cmd = run_ssh_mock.call_args.args[3]
+        self.assertIn('if [ ! -d "$volume" ]; then\n    continue\n  fi', cmd)
+        self.assertIn('df_line=$(/bin/df -k "$volume" 2>/dev/null | /usr/bin/tail -n +2 || true)', cmd)
+        self.assertLess(cmd.index('if [ ! -d "$volume" ]; then\n    continue\n  fi'), cmd.index('mkdir -p "$volume"'))
+        self.assertLess(cmd.index('for dev in dk2 dk3; do'), cmd.rindex('for dev in dk2 dk3; do'))
+
+    def test_discover_volume_root_cleans_up_unused_mountpoint_after_failed_fallback_mount(self) -> None:
+        proc = mock.Mock(stdout="/Volumes/dk2\n")
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
+            discover_volume_root("root@10.0.0.2", "pw", "-o foo")
+        cmd = run_ssh_mock.call_args.args[3]
+        self.assertIn('created_mountpoint=0', cmd)
+        self.assertIn('created_mountpoint=1', cmd)
+        self.assertIn('/bin/rmdir "$volume" >/dev/null 2>&1 || true', cmd)
 
     def test_remote_prepare_dirs_builds_expected_command(self) -> None:
         with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
