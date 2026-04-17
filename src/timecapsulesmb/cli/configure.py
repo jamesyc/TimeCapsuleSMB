@@ -17,6 +17,14 @@ from timecapsulesmb.discovery.bonjour import Discovered, discover, prefer_routab
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import run_ssh
 
+AIRPORT_SYAP_TO_MODEL = {
+    "106": "TimeCapsule6,106",
+    "109": "TimeCapsule6,109",
+    "113": "TimeCapsule6,113",
+    "116": "TimeCapsule6,116",
+    "119": "TimeCapsule8,119",
+}
+
 
 def prompt(label: str, default: str, secret: bool) -> str:
     suffix = f" [{default}]" if default and not secret else ""
@@ -84,12 +92,6 @@ def discover_default_record(existing: dict[str, str]) -> Optional[Discovered]:
     if not records:
         print("No Time Capsules discovered. Falling back to manual SSH target entry.\n", flush=True)
         return None
-    if len(records) == 1:
-        selected = records[0]
-        chosen_host = prefer_routable_ipv4(selected) or preferred_host(selected)
-        print(f"Discovered: {selected.name} ({chosen_host})\n", flush=True)
-        return selected
-
     list_devices(records)
     selected = choose_device(records)
     if selected is None:
@@ -113,6 +115,10 @@ def validate_ssh_target_if_reachable(host: str, password: str, ssh_opts: str) ->
     if not tcp_open(extract_host(host), 22):
         return None
     return validate_ssh_target(host, password, ssh_opts)
+
+
+def infer_mdns_device_model_from_syap(syap: str) -> Optional[str]:
+    return AIRPORT_SYAP_TO_MODEL.get(syap)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -160,12 +166,28 @@ def main(argv: Optional[list[str]] = None) -> int:
     if discovered_airport_syap and not existing.get("TC_AIRPORT_SYAP"):
         values["TC_AIRPORT_SYAP"] = discovered_airport_syap
 
+    discovered_airport_identity = discovered_record is not None
+    hidden_mdns_device_model = existing.get("TC_MDNS_DEVICE_MODEL", "")
+    validator = CONFIG_VALIDATORS.get("TC_MDNS_DEVICE_MODEL")
+    if validator is not None and hidden_mdns_device_model:
+        if validator(hidden_mdns_device_model, "mDNS device model hint"):
+            hidden_mdns_device_model = ""
+    current_airport_syap = values.get("TC_AIRPORT_SYAP", "")
+    if not hidden_mdns_device_model and current_airport_syap:
+        hidden_mdns_device_model = infer_mdns_device_model_from_syap(current_airport_syap) or ""
+    if not hidden_mdns_device_model and inferred_mdns_device_model:
+        hidden_mdns_device_model = inferred_mdns_device_model
+    if not hidden_mdns_device_model:
+        hidden_mdns_device_model = DEFAULTS["TC_MDNS_DEVICE_MODEL"]
+
     for key, label, default, secret in CONFIG_FIELDS[2:]:
         current = existing.get(key, default)
         if key == "TC_AIRPORT_SYAP":
             current = values.get("TC_AIRPORT_SYAP", current)
-            if current:
+            if discovered_airport_identity or current:
                 values[key] = current
+                if not existing.get("TC_MDNS_DEVICE_MODEL"):
+                    hidden_mdns_device_model = infer_mdns_device_model_from_syap(current) or hidden_mdns_device_model
                 continue
             print("\nWarning: configure could not discover Airport Utility syAP from _airport._tcp.")
             print("Enter the device's syAP code so _airport._tcp can be cloned accurately.")
@@ -177,9 +199,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("3rd gen (late 2009)       TimeCapsule6,113    113")
             print("4th gen (mid 2011)        TimeCapsule6,116    116")
             print("5th gen (mid 2013)        TimeCapsule8,119    119")
-        if key == "TC_MDNS_DEVICE_MODEL" and inferred_mdns_device_model:
-            if not current or current == DEFAULTS["TC_MDNS_DEVICE_MODEL"]:
-                current = inferred_mdns_device_model
+        if key == "TC_MDNS_DEVICE_MODEL":
+            if discovered_airport_identity:
+                values[key] = hidden_mdns_device_model
+                continue
+            current = hidden_mdns_device_model
         while True:
             candidate = prompt(label, current, secret)
             validator = CONFIG_VALIDATORS.get(key)
@@ -190,6 +214,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                     current = candidate
                     continue
             values[key] = candidate
+            if key == "TC_AIRPORT_SYAP" and not existing.get("TC_MDNS_DEVICE_MODEL"):
+                hidden_mdns_device_model = infer_mdns_device_model_from_syap(candidate) or hidden_mdns_device_model
             break
 
     write_env_file(ENV_PATH, values)
