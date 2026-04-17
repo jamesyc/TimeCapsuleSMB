@@ -284,15 +284,15 @@ static int build_adisk_disk_txt(char *out, size_t out_len, const char *disk_key,
 }
 
 static int is_airport_enabled(const struct config *cfg) {
-    return cfg->airport_wama[0] != '\0' &&
-           cfg->airport_rama[0] != '\0' &&
-           cfg->airport_ram2[0] != '\0' &&
-           cfg->airport_rast[0] != '\0' &&
-           cfg->airport_rana[0] != '\0' &&
-           cfg->airport_syfl[0] != '\0' &&
-           cfg->airport_syap[0] != '\0' &&
-           cfg->airport_syvs[0] != '\0' &&
-           cfg->airport_srcv[0] != '\0' &&
+    return cfg->airport_wama[0] != '\0' ||
+           cfg->airport_rama[0] != '\0' ||
+           cfg->airport_ram2[0] != '\0' ||
+           cfg->airport_rast[0] != '\0' ||
+           cfg->airport_rana[0] != '\0' ||
+           cfg->airport_syfl[0] != '\0' ||
+           cfg->airport_syap[0] != '\0' ||
+           cfg->airport_syvs[0] != '\0' ||
+           cfg->airport_srcv[0] != '\0' ||
            cfg->airport_bjsd[0] != '\0';
 }
 
@@ -316,46 +316,68 @@ static int validate_airport_ascii_field(const char *value, const char *field_nam
 
 static int build_airport_txt(char *out, size_t out_len, const struct config *cfg) {
     int written;
+    size_t off = 0;
+    int appended = 0;
+
+    #define APPEND_AIRPORT_CHUNK(...) \
+        do { \
+            written = snprintf(out + off, out_len - off, __VA_ARGS__); \
+            if (written < 0 || (size_t)written >= out_len - off) { \
+                return -1; \
+            } \
+            off += (size_t)written; \
+            appended = 1; \
+        } while (0)
+
+    #define APPEND_AIRPORT_FIELD(fmt, value) \
+        do { \
+            if ((value)[0] != '\0') { \
+                APPEND_AIRPORT_CHUNK("%s" fmt, appended ? "," : "", value); \
+            } \
+        } while (0)
 
     if (!is_airport_enabled(cfg)) {
         return -1;
     }
-    if (validate_mac_addr(cfg->airport_wama, "airport waMA") != 0 ||
-        validate_mac_addr(cfg->airport_rama, "airport raMA") != 0 ||
-        validate_mac_addr(cfg->airport_ram2, "airport raM2") != 0 ||
-        validate_airport_ascii_field(cfg->airport_rast, "airport raSt") != 0 ||
-        validate_airport_ascii_field(cfg->airport_rana, "airport raNA") != 0 ||
-        validate_airport_ascii_field(cfg->airport_syfl, "airport syFl") != 0 ||
-        validate_airport_ascii_field(cfg->airport_syap, "airport syAP") != 0 ||
-        validate_airport_ascii_field(cfg->airport_syvs, "airport syVs") != 0 ||
-        validate_airport_ascii_field(cfg->airport_srcv, "airport srcv") != 0 ||
-        validate_airport_ascii_field(cfg->airport_bjsd, "airport bjSd") != 0) {
+    if ((cfg->airport_wama[0] != '\0' && validate_mac_addr(cfg->airport_wama, "airport waMA") != 0) ||
+        (cfg->airport_rama[0] != '\0' && validate_mac_addr(cfg->airport_rama, "airport raMA") != 0) ||
+        (cfg->airport_ram2[0] != '\0' && validate_mac_addr(cfg->airport_ram2, "airport raM2") != 0) ||
+        (cfg->airport_rast[0] != '\0' && validate_airport_ascii_field(cfg->airport_rast, "airport raSt") != 0) ||
+        (cfg->airport_rana[0] != '\0' && validate_airport_ascii_field(cfg->airport_rana, "airport raNA") != 0) ||
+        (cfg->airport_syfl[0] != '\0' && validate_airport_ascii_field(cfg->airport_syfl, "airport syFl") != 0) ||
+        (cfg->airport_syvs[0] != '\0' && validate_airport_ascii_field(cfg->airport_syvs, "airport syVs") != 0) ||
+        (cfg->airport_srcv[0] != '\0' && validate_airport_ascii_field(cfg->airport_srcv, "airport srcv") != 0) ||
+        (cfg->airport_bjsd[0] != '\0' && validate_airport_ascii_field(cfg->airport_bjsd, "airport bjSd") != 0)) {
+        return -1;
+    }
+    if (cfg->airport_syap[0] != '\0' &&
+        validate_airport_ascii_field(cfg->airport_syap, "airport syAP") != 0) {
         return -1;
     }
 
-    written = snprintf(
-        out,
-        out_len,
-        "waMA=%s,raMA=%s,raM2=%s,raSt=%s,raNA=%s,syFl=%s,syAP=%s,syVs=%s,srcv=%s,bjSd=%s",
-        cfg->airport_wama,
-        cfg->airport_rama,
-        cfg->airport_ram2,
-        cfg->airport_rast,
-        cfg->airport_rana,
-        cfg->airport_syfl,
-        cfg->airport_syap,
-        cfg->airport_syvs,
-        cfg->airport_srcv,
-        cfg->airport_bjsd
-    );
-    if (written < 0 || (size_t)written >= out_len) {
+    APPEND_AIRPORT_FIELD("waMA=%s", cfg->airport_wama);
+    APPEND_AIRPORT_FIELD("raMA=%s", cfg->airport_rama);
+    APPEND_AIRPORT_FIELD("raM2=%s", cfg->airport_ram2);
+    APPEND_AIRPORT_FIELD("raSt=%s", cfg->airport_rast);
+    APPEND_AIRPORT_FIELD("raNA=%s", cfg->airport_rana);
+    APPEND_AIRPORT_FIELD("syFl=%s", cfg->airport_syfl);
+    APPEND_AIRPORT_FIELD("syAP=%s", cfg->airport_syap);
+    APPEND_AIRPORT_FIELD("syVs=%s", cfg->airport_syvs);
+    APPEND_AIRPORT_FIELD("srcv=%s", cfg->airport_srcv);
+    APPEND_AIRPORT_FIELD("bjSd=%s", cfg->airport_bjsd);
+
+    if (!appended) {
         return -1;
     }
-    if ((size_t)written > MAX_TXT_STRING) {
+
+    if (off > MAX_TXT_STRING) {
         fprintf(stderr, "_airport._tcp TXT must be %d bytes or fewer\n", MAX_TXT_STRING);
         return -1;
     }
     return 0;
+
+    #undef APPEND_AIRPORT_FIELD
+    #undef APPEND_AIRPORT_CHUNK
 }
 
 static int validate_dns_name(const char *value, const char *field_name) {
