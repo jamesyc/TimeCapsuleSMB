@@ -46,7 +46,12 @@ from timecapsulesmb.deploy.templates import (
     render_template,
     render_template_text,
 )
-from timecapsulesmb.deploy.verify import verify_netbsd4_activation, verify_post_deploy, wait_for_post_reboot_smbd
+from timecapsulesmb.deploy.verify import (
+    verify_netbsd4_activation,
+    verify_post_deploy,
+    wait_for_post_reboot_bonjour,
+    wait_for_post_reboot_smbd,
+)
 from timecapsulesmb.device.probe import build_device_paths, discover_mounted_volume, discover_volume_root, wait_for_ssh_state
 
 
@@ -323,7 +328,26 @@ class DeployModuleTests(unittest.TestCase):
         pre_mount_end = rendered.index("resolve_data_root_on_mounted_volume()")
         pre_mount_section = rendered[pre_mount_start:pre_mount_end]
         self.assertNotIn("initialize_data_root_under_volume", pre_mount_section)
-        self.assertNotIn("mount_hfs", pre_mount_section)
+
+    def test_render_start_script_only_accepts_existing_data_root_from_mounted_volumes(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(values)
+        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
+        start = rendered.index("find_existing_data_root() {")
+        end = rendered.index("\nis_volume_root_mounted() {")
+        section = rendered[start:end]
+        self.assertIn('if is_volume_root_mounted /Volumes/dk2 && data_root=$(find_data_root_under_volume /Volumes/dk2); then', section)
+        self.assertIn('if is_volume_root_mounted /Volumes/dk3 && data_root=$(find_data_root_under_volume /Volumes/dk3); then', section)
+        self.assertNotIn("mount_hfs", section)
 
     def test_render_start_script_initializes_share_root_only_after_confirmed_mount(self) -> None:
         values = {
@@ -836,6 +860,8 @@ class DeployModuleTests(unittest.TestCase):
         rendered = render_template("watchdog.sh", bundle.watchdog_replacements)
         self.assertIn("RECOVERY_POLL_SECONDS=5", rendered)
         self.assertIn("STEADY_POLL_SECONDS=300", rendered)
+        self.assertIn("INITIAL_STARTUP_DELAY_SECONDS=30", rendered)
+        self.assertIn('sleep "$INITIAL_STARTUP_DELAY_SECONDS"', rendered)
         self.assertIn("all_managed_services_healthy()", rendered)
         self.assertIn('sleep "$RECOVERY_POLL_SECONDS"', rendered)
         self.assertIn('sleep "$STEADY_POLL_SECONDS"', rendered)
@@ -1198,7 +1224,7 @@ PASS:mdns-advertiser bound to UDP 5353
             "TC_MDNS_INSTANCE_NAME": "Home-Samba",
             "TC_HOST": "root@10.0.0.2",
         }
-        with mock.patch("timecapsulesmb.deploy.verify.run_bonjour_checks", return_value=([], None, None)):
+        with mock.patch("timecapsulesmb.deploy.verify.wait_for_post_reboot_bonjour", return_value=([], None, None)):
             with mock.patch("timecapsulesmb.deploy.verify.command_exists", return_value=True):
                 with mock.patch(
                     "timecapsulesmb.deploy.verify.try_authenticated_smb_listing",
@@ -1207,6 +1233,38 @@ PASS:mdns-advertiser bound to UDP 5353
                     with redirect_stdout(io.StringIO()):
                         verify_post_deploy(values)
         listing_mock.assert_called_once_with("admin", "pw", ["10.0.1.99", "10.0.0.2"])
+
+    def test_wait_for_post_reboot_bonjour_returns_early_when_instance_and_target_appear(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.deploy.verify.run_bonjour_checks",
+            side_effect=[
+                ([], None, None),
+                ([mock.Mock()], "Time Capsule Samba 4", "timecapsulesamba4.local:445"),
+            ],
+        ) as bonjour_mock:
+            with mock.patch("timecapsulesmb.deploy.verify.time.sleep") as sleep_mock:
+                results, instance, target = wait_for_post_reboot_bonjour("Time Capsule Samba 4", timeout_seconds=30.0)
+        self.assertEqual(instance, "Time Capsule Samba 4")
+        self.assertEqual(target, "timecapsulesamba4.local:445")
+        self.assertEqual(bonjour_mock.call_count, 2)
+        sleep_mock.assert_called_once()
+
+    def test_wait_for_post_reboot_bonjour_returns_last_result_on_timeout(self) -> None:
+        monotonic_values = iter([0.0, 1.0, 3.0, 4.0, 6.1])
+        with mock.patch(
+            "timecapsulesmb.deploy.verify.run_bonjour_checks",
+            side_effect=[
+                ([mock.Mock(status="FAIL")], None, None),
+                ([mock.Mock(status="WARN")], "Other Samba", None),
+            ],
+        ):
+            with mock.patch("timecapsulesmb.deploy.verify.time.monotonic", side_effect=lambda: next(monotonic_values)):
+                with mock.patch("timecapsulesmb.deploy.verify.time.sleep") as sleep_mock:
+                    results, instance, target = wait_for_post_reboot_bonjour("Time Capsule Samba 4", timeout_seconds=5.0, poll_interval_seconds=2.0)
+        self.assertEqual(instance, "Other Samba")
+        self.assertIsNone(target)
+        self.assertEqual(len(results), 1)
+        sleep_mock.assert_called()
 
     def test_wait_for_post_reboot_smbd_passes_when_managed_smbd_is_ready(self) -> None:
         with mock.patch(
@@ -1259,12 +1317,21 @@ PASS:mdns-advertiser bound to UDP 5353
             activate_netbsd4=True,
         )
         self.assertFalse(plan.reboot_required)
-        self.assertEqual([action.kind for action in plan.activation_actions], ["stop_process_full", "stop_process", "run_script"])
-        self.assertEqual([action.args[0] for action in plan.activation_actions], ["[w]atchdog.sh", "wcifsfs", "/mnt/Flash/rc.local"])
+        self.assertEqual(
+            [action.kind for action in plan.activation_actions],
+            ["stop_process_full", "stop_process", "stop_process", "stop_process", "stop_process", "run_script"],
+        )
+        self.assertEqual(
+            [action.args[0] for action in plan.activation_actions],
+            ["[w]atchdog.sh", "smbd", "mdns-advertiser", "nbns-advertiser", "wcifsfs", "/mnt/Flash/rc.local"],
+        )
 
         text = format_deployment_plan(plan)
         self.assertIn("Remote actions (NetBSD4 activation):", text)
         self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
+        self.assertIn("pkill smbd >/dev/null 2>&1 || true", text)
+        self.assertIn("pkill mdns-advertiser >/dev/null 2>&1 || true", text)
+        self.assertIn("pkill nbns-advertiser >/dev/null 2>&1 || true", text)
         self.assertIn("pkill wcifsfs >/dev/null 2>&1 || true", text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
         self.assertIn("NetBSD4 activation is immediate.", text)
@@ -1329,13 +1396,15 @@ PASS:mdns-advertiser bound to UDP 5353
     def test_render_stop_process_action_waits_for_exit(self) -> None:
         command = render_remote_action(stop_process_action("mdns-advertiser"))
         self.assertIn("pkill mdns-advertiser >/dev/null 2>&1 || true;", command)
-        self.assertIn("while pkill -0 mdns-advertiser >/dev/null 2>&1; do", command)
+        self.assertIn("while /bin/sh -c 'found=1; if ps ax -o ucomm= >/tmp/tcapsule-ps.", command)
+        self.assertIn('case \"$line\" in mdns-advertiser) found=1; break ;; esac;', command)
         self.assertIn('if [ "$attempt" -ge 10 ]; then break; fi;', command)
 
     def test_render_stop_process_full_action_waits_for_exit(self) -> None:
         command = render_remote_action(stop_process_full_action("[w]atchdog.sh"))
         self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true;", command)
-        self.assertIn("while pkill -0 -f '[w]atchdog.sh' >/dev/null 2>&1; do", command)
+        self.assertIn("while /bin/sh -c 'found=1; if ps ax -o command= >/tmp/tcapsule-ps.", command)
+        self.assertIn('case "$line" in *[w]atchdog.sh*) found=1; break ;; esac;', command)
 
     def test_wait_for_ssh_state_uses_real_ssh_probe_for_expected_up(self) -> None:
         proc = mock.Mock(returncode=0, stdout="ok\n")

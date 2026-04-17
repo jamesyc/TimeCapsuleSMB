@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import shlex
+import time
 
 from timecapsulesmb.checks.bonjour import run_bonjour_checks
 from timecapsulesmb.checks.smb import try_authenticated_smb_listing
@@ -59,6 +60,37 @@ exit 1
     return proc.returncode == 0
 
 
+def wait_for_post_reboot_bonjour(
+    expected_instance_name: str,
+    *,
+    timeout_seconds: float = 30.0,
+    poll_interval_seconds: float = 2.0,
+) -> tuple[object, str | None, str | None]:
+    deadline = time.monotonic() + timeout_seconds
+    last_results = []
+    last_instance = None
+    last_target = None
+
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return last_results, last_instance, last_target
+
+        browse_timeout = min(5.0, remaining)
+        results, discovered_instance, target = run_bonjour_checks(
+            expected_instance_name,
+            timeout=browse_timeout,
+        )
+        last_results, last_instance, last_target = results, discovered_instance, target
+        if discovered_instance and target:
+            return results, discovered_instance, target
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return last_results, last_instance, last_target
+        time.sleep(min(poll_interval_seconds, remaining))
+
+
 def verify_post_deploy(values: dict[str, str]) -> None:
     samba_user = values["TC_SAMBA_USER"]
     password = values["TC_PASSWORD"]
@@ -67,7 +99,7 @@ def verify_post_deploy(values: dict[str, str]) -> None:
     print("Post-deploy verification:")
 
     try:
-        _, discovered_instance, target = run_bonjour_checks(values["TC_MDNS_INSTANCE_NAME"])
+        _, discovered_instance, target = wait_for_post_reboot_bonjour(values["TC_MDNS_INSTANCE_NAME"])
         if discovered_instance:
             print(f"  Advertised service name: {discovered_instance}")
         else:

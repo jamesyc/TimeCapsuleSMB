@@ -115,12 +115,12 @@ wait_for_bind_interfaces() {
 }
 
 find_existing_data_root() {
-    if data_root=$(find_data_root_under_volume /Volumes/dk2); then
+    if is_volume_root_mounted /Volumes/dk2 && data_root=$(find_data_root_under_volume /Volumes/dk2); then
         echo "$data_root"
         return 0
     fi
 
-    if data_root=$(find_data_root_under_volume /Volumes/dk3); then
+    if is_volume_root_mounted /Volumes/dk3 && data_root=$(find_data_root_under_volume /Volumes/dk3); then
         echo "$data_root"
         return 0
     fi
