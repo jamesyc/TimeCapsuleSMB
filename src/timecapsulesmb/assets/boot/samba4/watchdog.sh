@@ -3,6 +3,8 @@ set -eu
 
 PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
+. /mnt/Flash/common.sh
+
 RAM_ROOT=/mnt/Memory/samba4
 RAM_SBIN="$RAM_ROOT/sbin"
 RAM_ETC="$RAM_ROOT/etc"
@@ -22,6 +24,7 @@ SMB_NETBIOS_NAME=__SMB_NETBIOS_NAME__
 MDNS_INSTANCE_NAME=__MDNS_INSTANCE_NAME__
 MDNS_HOST_LABEL=__MDNS_HOST_LABEL__
 MDNS_DEVICE_MODEL=__MDNS_DEVICE_MODEL__
+AIRPORT_SYAP=__AIRPORT_SYAP__
 ADISK_DISK_KEY=__ADISK_DISK_KEY__
 ADISK_UUID=__ADISK_UUID__
 
@@ -43,18 +46,6 @@ log() {
     mv "$tmp_log" "$WATCHDOG_LOG"
 }
 
-get_iface_ipv4() {
-    /sbin/ifconfig "$NET_IFACE" 2>/dev/null | sed -n 's/^[[:space:]]*inet[[:space:]]\([0-9.]*\).*/\1/p' | sed -n '1p'
-}
-
-get_iface_mac() {
-    /sbin/ifconfig "$NET_IFACE" 2>/dev/null \
-        | sed -n \
-            -e 's/^[[:space:]]*ether[[:space:]]\([0-9A-Fa-f:]*\).*/\1/p' \
-            -e 's/^[[:space:]]*address[[:space:]]\([0-9A-Fa-f:]*\).*/\1/p' \
-        | sed -n '1p'
-}
-
 start_smbd_if_needed() {
     if /usr/bin/pkill -0 smbd >/dev/null 2>&1; then
         return 0
@@ -74,8 +65,8 @@ restart_mdns() {
         return 0
     fi
 
-    iface_ip=$(get_iface_ipv4 || true)
-    iface_mac=$(get_iface_mac || true)
+    iface_ip=$(get_iface_ipv4 "$NET_IFACE" || true)
+    iface_mac=$(get_iface_mac "$NET_IFACE" || true)
     if [ -z "$iface_ip" ] || [ "$iface_ip" = "0.0.0.0" ]; then
         log "mdns restart skipped; missing $NET_IFACE IPv4"
         return 0
@@ -88,16 +79,32 @@ restart_mdns() {
     /usr/bin/pkill "$MDNS_PROC_NAME" >/dev/null 2>&1 || true
     sleep 1
 
-    "$MDNS_BIN" \
+    set -- "$MDNS_BIN" \
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
-        --device-model "$MDNS_DEVICE_MODEL" \
+        --device-model "$MDNS_DEVICE_MODEL"
+    if derive_airport_fields "$iface_mac"; then
+        set -- "$@" \
+            --airport-wama "$AIRPORT_WAMA" \
+            --airport-rama "$AIRPORT_RAMA" \
+            --airport-ram2 "$AIRPORT_RAM2" \
+            --airport-syvs "$AIRPORT_SYVS" \
+            --airport-srcv "$AIRPORT_SRCV"
+        if [ -n "$AIRPORT_SYAP" ]; then
+            set -- "$@" --airport-syap "$AIRPORT_SYAP"
+        else
+            log "airport syAP missing; advertising _airport._tcp without syAP"
+        fi
+    else
+        log "airport clone fields incomplete; skipping _airport._tcp advertisement"
+    fi
+    set -- "$@" \
         --adisk-share "$SMB_SHARE_NAME" \
         --adisk-disk-key "$ADISK_DISK_KEY" \
         --adisk-uuid "$ADISK_UUID" \
         --adisk-sys-wama "$iface_mac" \
-        --ipv4 "$iface_ip" \
-        >/dev/null 2>&1 &
+        --ipv4 "$iface_ip"
+    "$@" >/dev/null 2>&1 &
     log "mdns restart requested"
 }
 
@@ -111,7 +118,7 @@ restart_nbns() {
         return 0
     fi
 
-    iface_ip=$(get_iface_ipv4 || true)
+    iface_ip=$(get_iface_ipv4 "$NET_IFACE" || true)
     if [ -z "$iface_ip" ] || [ "$iface_ip" = "0.0.0.0" ]; then
         log "nbns restart skipped; missing $NET_IFACE IPv4"
         return 0

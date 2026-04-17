@@ -79,6 +79,7 @@ def build_deployment_plan(
     payload_dir = device_paths.payload_dir
     flash_targets = {
         "rc.local": "/mnt/Flash/rc.local",
+        "common.sh": "/mnt/Flash/common.sh",
         "start-samba.sh": "/mnt/Flash/start-samba.sh",
         "watchdog.sh": "/mnt/Flash/watchdog.sh",
         "dfree.sh": "/mnt/Flash/dfree.sh",
@@ -115,6 +116,7 @@ def build_deployment_plan(
             FileTransfer(source=str(mdns_path), destination=flash_targets["mdns-advertiser"], kind="checked-in binary"),
             FileTransfer(source=str(nbns_path), destination=payload_targets["nbns-advertiser"], kind="checked-in binary"),
             FileTransfer(source="packaged rc.local", destination=flash_targets["rc.local"], kind="packaged asset"),
+            FileTransfer(source="packaged common.sh", destination=flash_targets["common.sh"], kind="packaged asset"),
             FileTransfer(source="rendered start-samba.sh", destination=flash_targets["start-samba.sh"], kind="rendered asset"),
             FileTransfer(source="rendered watchdog.sh", destination=flash_targets["watchdog.sh"], kind="rendered asset"),
             FileTransfer(source="packaged dfree.sh", destination=flash_targets["dfree.sh"], kind="packaged asset"),
@@ -150,6 +152,7 @@ def build_uninstall_plan(host: str, device_paths: DevicePaths) -> UninstallPlan:
     payload_dir = device_paths.payload_dir
     flash_targets = {
         "rc.local": "/mnt/Flash/rc.local",
+        "common.sh": "/mnt/Flash/common.sh",
         "start-samba.sh": "/mnt/Flash/start-samba.sh",
         "watchdog.sh": "/mnt/Flash/watchdog.sh",
         "dfree.sh": "/mnt/Flash/dfree.sh",
@@ -175,6 +178,7 @@ def build_uninstall_plan(host: str, device_paths: DevicePaths) -> UninstallPlan:
             stop_process_action("nbns-advertiser"),
             remove_path_action(payload_dir),
             remove_path_action(flash_targets["rc.local"]),
+            remove_path_action(flash_targets["common.sh"]),
             remove_path_action(flash_targets["start-samba.sh"]),
             remove_path_action(flash_targets["watchdog.sh"]),
             remove_path_action(flash_targets["dfree.sh"]),

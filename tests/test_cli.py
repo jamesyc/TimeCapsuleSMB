@@ -213,13 +213,26 @@ class CliTests(unittest.TestCase):
     def test_configure_writes_values_from_prompts(self) -> None:
         output = io.StringIO()
         fake_values = {}
+        prompt_values = iter([
+            "root@10.0.0.2",
+            "pw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+            "119",
+            "TimeCapsule",
+        ])
 
         def fake_write_env_file(path, values):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
             with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
-                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=lambda _l, default, _s: default or "pw"):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=lambda _l, _d, _s: next(prompt_values)):
                     with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=False):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
                             with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
@@ -247,6 +260,7 @@ class CliTests(unittest.TestCase):
             "samba4",
             "Time Capsule Samba 4",
             "timecapsulesamba4",
+            "119",
             "TimeCapsule",
         ])
 
@@ -279,6 +293,7 @@ class CliTests(unittest.TestCase):
             "samba4",
             "Time Capsule Samba 4",
             "timecapsulesamba4",
+            "119",
         ])
         seen_defaults = {}
 
@@ -306,10 +321,52 @@ class CliTests(unittest.TestCase):
         self.assertEqual(seen_defaults["mDNS device model hint"], "TimeCapsule8,119")
         self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
 
+    def test_configure_saves_airport_syap_from_discovery_without_prompting(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        record = Discovered(
+            name="Time Capsule Samba 4",
+            hostname="timecapsulesamba4.local",
+            ipv4=["192.168.1.217"],
+            services={"_airport._tcp.local.", "_smb._tcp.local."},
+            properties={"syAP": "119"},
+        )
+        prompt_values = iter([
+            "rootpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+            "TimeCapsule8,119",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            if label == "Time Capsule SSH target":
+                return default
+            return next(prompt_values)
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[record]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=False):
+                        with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(fake_values["TC_AIRPORT_SYAP"], "119")
+
     def test_configure_preserves_existing_mdns_device_model_override(self) -> None:
         output = io.StringIO()
         fake_values = {}
         existing = {
+            "TC_AIRPORT_SYAP": "119",
             "TC_MDNS_DEVICE_MODEL": "CustomCapsuleModel",
             "TC_SSH_OPTS": "-o foo",
         }
@@ -361,6 +418,7 @@ class CliTests(unittest.TestCase):
             "samba4",
             "Time Capsule Samba 4",
             "timecapsulesamba4",
+            "119",
             "TimeCapsule",
         ])
         password_values = iter(["", "goodpw"])
@@ -396,6 +454,7 @@ class CliTests(unittest.TestCase):
             "samba4",
             "Time Capsule Samba 4",
             "timecapsulesamba4",
+            "119",
             "TimeCapsule",
         ])
 
@@ -433,6 +492,7 @@ class CliTests(unittest.TestCase):
             "samba4",
             "Time Capsule Samba 4",
             "timecapsulesamba4",
+            "119",
             "TimeCapsule",
         ])
 
@@ -470,6 +530,7 @@ class CliTests(unittest.TestCase):
             "samba4",
             "Time Capsule Samba 4",
             "timecapsulesamba4",
+            "119",
             "TimeCapsule",
         ])
 
@@ -507,6 +568,7 @@ class CliTests(unittest.TestCase):
             "Time Capsule Samba 4",
             "time.capsule",
             "timecapsulesamba4",
+            "119",
             "TimeCapsule",
         ])
 
@@ -544,6 +606,7 @@ class CliTests(unittest.TestCase):
             "samba4",
             "Time Capsule Samba 4",
             "timecapsulesamba4",
+            "119",
             "a" * 250,
             "TimeCapsule8,119",
         ])
@@ -581,6 +644,7 @@ class CliTests(unittest.TestCase):
             "samba4",
             "Time Capsule Samba 4",
             "timecapsulesamba4",
+            "119",
             "TimeCapsule8,119",
         ])
 
@@ -617,6 +681,7 @@ class CliTests(unittest.TestCase):
             "samba4",
             "Time Capsule Samba 4",
             "timecapsulesamba4",
+            "119",
             "TimeCapsule8,119",
         ])
 

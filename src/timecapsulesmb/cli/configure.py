@@ -13,7 +13,7 @@ from timecapsulesmb.core.config import (
     write_env_file,
 )
 from timecapsulesmb.device.compat import infer_mdns_device_model_hint
-from timecapsulesmb.discovery.bonjour import discover, prefer_routable_ipv4, preferred_host
+from timecapsulesmb.discovery.bonjour import Discovered, discover, prefer_routable_ipv4, preferred_host
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import run_ssh
 
@@ -73,7 +73,12 @@ def choose_device(records):
         return records[idx - 1]
 
 
-def discover_default_host(existing: dict[str, str]) -> Optional[str]:
+def _discovered_root_host(record: Discovered) -> Optional[str]:
+    chosen_host = prefer_routable_ipv4(record) or preferred_host(record)
+    return f"root@{chosen_host}" if chosen_host else None
+
+
+def discover_default_record(existing: dict[str, str]) -> Optional[Discovered]:
     print("Attempting to discover Time Capsules on the local network via mDNS...", flush=True)
     records = discover(timeout=5.0)
     if not records:
@@ -83,7 +88,7 @@ def discover_default_host(existing: dict[str, str]) -> Optional[str]:
         selected = records[0]
         chosen_host = prefer_routable_ipv4(selected) or preferred_host(selected)
         print(f"Discovered: {selected.name} ({chosen_host})\n", flush=True)
-        return f"root@{chosen_host}" if chosen_host else None
+        return selected
 
     list_devices(records)
     selected = choose_device(records)
@@ -94,7 +99,7 @@ def discover_default_host(existing: dict[str, str]) -> Optional[str]:
 
     chosen_host = prefer_routable_ipv4(selected) or preferred_host(selected)
     print(f"Selected: {selected.name} ({chosen_host})\n", flush=True)
-    return f"root@{chosen_host}" if chosen_host else None
+    return selected
 
 
 def prompt_host_and_password(existing: dict[str, str], values: dict[str, str], discovered_host: Optional[str]) -> None:
@@ -114,6 +119,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     existing = parse_env_values(ENV_PATH, defaults={})
     values: dict[str, str] = {}
     inferred_mdns_device_model: Optional[str] = None
+    discovered_airport_syap: Optional[str] = None
 
     print("This writes a local .env configuration file in this folder. The other tcapsule commands use that file.")
     print(f"Writing {ENV_PATH}")
@@ -121,7 +127,10 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     ssh_opts = existing.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"])
     values["TC_SSH_OPTS"] = ssh_opts
-    discovered_host = discover_default_host(existing)
+    discovered_record = discover_default_record(existing)
+    discovered_host = _discovered_root_host(discovered_record) if discovered_record else None
+    if discovered_record is not None:
+        discovered_airport_syap = discovered_record.properties.get("syAP") or None
     prompt_host_and_password(existing, values, discovered_host)
     while True:
         validation_result = validate_ssh_target_if_reachable(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
@@ -147,8 +156,27 @@ def main(argv: Optional[list[str]] = None) -> int:
         except SystemExit:
             inferred_mdns_device_model = None
 
+    values["TC_AIRPORT_SYAP"] = existing.get("TC_AIRPORT_SYAP", discovered_airport_syap or DEFAULTS["TC_AIRPORT_SYAP"])
+    if discovered_airport_syap and not existing.get("TC_AIRPORT_SYAP"):
+        values["TC_AIRPORT_SYAP"] = discovered_airport_syap
+
     for key, label, default, secret in CONFIG_FIELDS[2:]:
         current = existing.get(key, default)
+        if key == "TC_AIRPORT_SYAP":
+            current = values.get("TC_AIRPORT_SYAP", current)
+            if current:
+                values[key] = current
+                continue
+            print("\nWarning: configure could not discover Airport Utility syAP from _airport._tcp.")
+            print("Enter the device's syAP code so _airport._tcp can be cloned accurately.")
+            print("")
+            print("Generation                Model identifier    syAP")
+            print("------------------------  ------------------  ----")
+            print("1st gen (early 2008)      TimeCapsule6,106    106")
+            print("2nd gen (early 2009)      TimeCapsule6,109    109")
+            print("3rd gen (late 2009)       TimeCapsule6,113    113")
+            print("4th gen (mid 2011)        TimeCapsule6,116    116")
+            print("5th gen (mid 2013)        TimeCapsule8,119    119")
         if key == "TC_MDNS_DEVICE_MODEL" and inferred_mdns_device_model:
             if not current or current == DEFAULTS["TC_MDNS_DEVICE_MODEL"]:
                 current = inferred_mdns_device_model

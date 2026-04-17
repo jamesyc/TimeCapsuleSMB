@@ -119,11 +119,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp:
         tmpdir = Path(tmp)
         rendered_rc_local = tmpdir / "rc.local"
+        rendered_common = tmpdir / "common.sh"
         rendered_start = tmpdir / "start-samba.sh"
         rendered_dfree = tmpdir / "dfree.sh"
         rendered_watchdog = tmpdir / "watchdog.sh"
         rendered_smbconf = tmpdir / "smb.conf.template"
         write_boot_asset("rc.local", rendered_rc_local)
+        write_boot_asset("common.sh", rendered_common)
         rendered_start.write_text(render_template("start-samba.sh", template_bundle.start_script_replacements))
         write_boot_asset("dfree.sh", rendered_dfree)
         rendered_watchdog.write_text(render_template("watchdog.sh", template_bundle.watchdog_replacements))
@@ -135,6 +137,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             password=password,
             ssh_opts=ssh_opts,
             rc_local=rendered_rc_local,
+            common_sh=rendered_common,
             rendered_start=rendered_start,
             rendered_dfree=rendered_dfree,
             rendered_watchdog=rendered_watchdog,

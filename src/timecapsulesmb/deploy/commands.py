@@ -104,6 +104,7 @@ def render_remote_action(action: RemoteAction) -> str:
             f"{shlex.quote(payload_dir + '/mdns-advertiser')} "
             f"{shlex.quote(payload_dir + '/nbns-advertiser')} && "
             f"chmod 755 {shlex.quote('/mnt/Flash/rc.local')} "
+            f"{shlex.quote('/mnt/Flash/common.sh')} "
             f"{shlex.quote('/mnt/Flash/start-samba.sh')} "
             f"{shlex.quote('/mnt/Flash/watchdog.sh')} "
             f"{shlex.quote('/mnt/Flash/dfree.sh')} "

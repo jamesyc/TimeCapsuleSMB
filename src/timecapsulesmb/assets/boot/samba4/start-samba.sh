@@ -22,6 +22,8 @@ set -eu
 
 PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
+. /mnt/Flash/common.sh
+
 RAM_ROOT=/mnt/Memory/samba4
 RAM_SBIN="$RAM_ROOT/sbin"
 RAM_ETC="$RAM_ROOT/etc"
@@ -45,6 +47,7 @@ NET_IFACE=__NET_IFACE__
 MDNS_INSTANCE_NAME=__MDNS_INSTANCE_NAME__
 MDNS_HOST_LABEL=__MDNS_HOST_LABEL__
 MDNS_DEVICE_MODEL=__MDNS_DEVICE_MODEL__
+AIRPORT_SYAP=__AIRPORT_SYAP__
 ADISK_DISK_KEY=__ADISK_DISK_KEY__
 ADISK_UUID=__ADISK_UUID__
 
@@ -93,24 +96,12 @@ prepare_ram_root() {
     chmod 700 "$RAM_VAR/cores"
 }
 
-get_iface_ipv4() {
-    /sbin/ifconfig "$NET_IFACE" 2>/dev/null | sed -n 's/^[[:space:]]*inet[[:space:]]\([0-9.]*\).*/\1/p' | sed -n '1p'
-}
-
-get_iface_mac() {
-    /sbin/ifconfig "$NET_IFACE" 2>/dev/null \
-        | sed -n \
-            -e 's/^[[:space:]]*ether[[:space:]]\([0-9A-Fa-f:]*\).*/\1/p' \
-            -e 's/^[[:space:]]*address[[:space:]]\([0-9A-Fa-f:]*\).*/\1/p' \
-        | sed -n '1p'
-}
-
 wait_for_bind_interfaces() {
     attempt=0
 
     sleep 5
     while [ "$attempt" -lt 60 ]; do
-        iface_ip=$(get_iface_ipv4 || true)
+        iface_ip=$(get_iface_ipv4 "$NET_IFACE" || true)
         if [ -n "$iface_ip" ] && [ "$iface_ip" != "0.0.0.0" ]; then
             echo "127.0.0.1/8 $iface_ip/24"
             return 0
@@ -120,36 +111,6 @@ wait_for_bind_interfaces() {
         sleep 1
     done
 
-    return 1
-}
-
-wait_for_process() {
-    proc_name=$1
-    attempt=0
-    while [ "$attempt" -lt 10 ]; do
-        if /usr/bin/pkill -0 "$proc_name" >/dev/null 2>&1; then
-            return 0
-        fi
-        attempt=$((attempt + 1))
-        sleep 1
-    done
-    return 1
-}
-
-wait_for_smbd_ready() {
-    attempt=0
-    while [ "$attempt" -lt 15 ]; do
-        if [ -f "$SMBD_LOG" ]; then
-            smbd_log=$(/bin/cat "$SMBD_LOG" 2>/dev/null || true)
-            case "$smbd_log" in
-                *daemon_ready*)
-                    return 0
-                    ;;
-            esac
-        fi
-        attempt=$((attempt + 1))
-        sleep 1
-    done
     return 1
 }
 
@@ -468,7 +429,7 @@ EOF
 
 start_smbd() {
     "$RAM_SBIN/smbd" -D -s "$RAM_ETC/smb.conf"
-    wait_for_smbd_ready
+    wait_for_smbd_ready "$SMBD_LOG"
 }
 
 start_mdns() {
@@ -476,26 +437,43 @@ start_mdns() {
         return 0
     fi
 
-    iface_mac=$(get_iface_mac || true)
+    iface_mac=$(get_iface_mac "$NET_IFACE" || true)
     if [ -z "$iface_mac" ]; then
         log "mdns advertiser launch skipped; missing $NET_IFACE MAC address"
         return 0
     fi
 
+    /usr/bin/pkill mDNSResponder >/dev/null 2>&1 || true
     /usr/bin/pkill "$MDNS_PROC_NAME" >/dev/null 2>&1 || true
     sleep 1
 
     log "starting mdns advertiser for $BRIDGE0_IP on $NET_IFACE"
-    "$MDNS_BIN" \
+    set -- "$MDNS_BIN" \
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
-        --device-model "$MDNS_DEVICE_MODEL" \
+        --device-model "$MDNS_DEVICE_MODEL"
+    if derive_airport_fields "$iface_mac"; then
+        set -- "$@" \
+            --airport-wama "$AIRPORT_WAMA" \
+            --airport-rama "$AIRPORT_RAMA" \
+            --airport-ram2 "$AIRPORT_RAM2" \
+            --airport-syvs "$AIRPORT_SYVS" \
+            --airport-srcv "$AIRPORT_SRCV"
+        if [ -n "$AIRPORT_SYAP" ]; then
+            set -- "$@" --airport-syap "$AIRPORT_SYAP"
+        else
+            log "airport syAP missing; advertising _airport._tcp without syAP"
+        fi
+    else
+        log "airport clone fields incomplete; skipping _airport._tcp advertisement"
+    fi
+    set -- "$@" \
         --adisk-share "$SMB_SHARE_NAME" \
         --adisk-disk-key "$ADISK_DISK_KEY" \
         --adisk-uuid "$ADISK_UUID" \
         --adisk-sys-wama "$iface_mac" \
-        --ipv4 "$BRIDGE0_IP" \
-        >/dev/null 2>&1 &
+        --ipv4 "$BRIDGE0_IP"
+    "$@" >/dev/null 2>&1 &
     if wait_for_process "$MDNS_PROC_NAME"; then
         log "mdns advertiser launch requested"
     else

@@ -68,6 +68,7 @@ class DeployModuleTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         bundle = build_template_bundle(values)
@@ -76,6 +77,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("__CACHE_DIRECTORY__", bundle.start_script_replacements)
         self.assertIn("__CACHE_DIRECTORY__", bundle.smbconf_replacements)
         self.assertEqual(bundle.start_script_replacements["__MDNS_DEVICE_MODEL__"], "TimeCapsule")
+        self.assertEqual(bundle.start_script_replacements["__AIRPORT_SYAP__"], "119")
         self.assertEqual(bundle.start_script_replacements["__ADISK_DISK_KEY__"], "dk0")
         self.assertEqual(bundle.start_script_replacements["__ADISK_UUID__"], "''")
 
@@ -91,6 +93,7 @@ class DeployModuleTests(unittest.TestCase):
         }
         bundle = build_template_bundle(values)
         self.assertEqual(bundle.start_script_replacements["__MDNS_DEVICE_MODEL__"], "TimeCapsule")
+        self.assertEqual(bundle.start_script_replacements["__AIRPORT_SYAP__"], "''")
 
     def test_cache_directory_replacements_default_unknown_family_to_ram_cache(self) -> None:
         self.assertEqual(
@@ -143,6 +146,49 @@ class DeployModuleTests(unittest.TestCase):
     def test_load_boot_asset_text_reads_packaged_asset(self) -> None:
         content = load_boot_asset_text("rc.local")
         self.assertIn("/mnt/Flash/start-samba.sh", content)
+        common = load_boot_asset_text("common.sh")
+        self.assertIn("get_airport_syvs()", common)
+        self.assertIn("ether[[:space:]]", common)
+        self.assertIn("address[[:space:]]", common)
+        self.assertNotIn("tr '[:lower:]' '[:upper:]'", common)
+
+    def test_common_sh_contains_shared_network_and_airport_helpers(self) -> None:
+        content = load_boot_asset_text("common.sh")
+        self.assertIn("get_iface_ipv4()", content)
+        self.assertIn("get_iface_mac()", content)
+        self.assertIn("get_radio_mac()", content)
+        self.assertIn("get_airport_srcv()", content)
+        self.assertIn("get_airport_syvs()", content)
+        self.assertIn("wait_for_process()", content)
+        self.assertIn("wait_for_smbd_ready()", content)
+        self.assertIn("derive_airport_fields()", content)
+        self.assertIn("get_airport_syvs()", content)
+        self.assertIn("sed -n 's/^\\([0-9]\\)\\([0-9]\\)\\([0-9]\\).*/\\1.\\2.\\3/p'", content)
+
+    def test_common_sh_helpers_take_iface_argument(self) -> None:
+        content = load_boot_asset_text("common.sh")
+        self.assertIn("iface=$1", content)
+        self.assertIn('ifconfig "$iface"', content)
+        self.assertIn("radio_iface=$1", content)
+        self.assertIn('ifconfig "$radio_iface"', content)
+
+    def test_common_sh_allows_partial_airport_field_derivation(self) -> None:
+        content = load_boot_asset_text("common.sh")
+        self.assertIn('if [ -n "$AIRPORT_WAMA" ] || [ -n "$AIRPORT_RAMA" ] || [ -n "$AIRPORT_RAM2" ] || [ -n "$AIRPORT_SRCV" ] || [ -n "$AIRPORT_SYVS" ]; then', content)
+
+    def test_start_and_watchdog_source_common_sh(self) -> None:
+        start = load_boot_asset_text("start-samba.sh")
+        watchdog = load_boot_asset_text("watchdog.sh")
+        self.assertIn(". /mnt/Flash/common.sh", start)
+        self.assertIn(". /mnt/Flash/common.sh", watchdog)
+        self.assertNotIn("get_radio_mac()", start)
+        self.assertNotIn("get_airport_srcv()", start)
+        self.assertNotIn("get_airport_syvs()", start)
+        self.assertNotIn("wait_for_process()", start)
+        self.assertNotIn("wait_for_smbd_ready()", start)
+        self.assertNotIn("get_radio_mac()", watchdog)
+        self.assertNotIn("get_airport_srcv()", watchdog)
+        self.assertNotIn("get_airport_syvs()", watchdog)
 
     def test_rc_local_scopes_watchdog_errexit_workaround_around_probe_block(self) -> None:
         content = load_boot_asset_text("rc.local")
@@ -165,12 +211,22 @@ class DeployModuleTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         bundle = build_template_bundle(values)
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn('MDNS_DEVICE_MODEL=AirPortTimeCapsule', rendered)
+        self.assertIn("AIRPORT_SYAP=119", rendered)
         self.assertIn('--device-model "$MDNS_DEVICE_MODEL"', rendered)
+        self.assertIn('. /mnt/Flash/common.sh', rendered)
+        self.assertIn('--airport-wama "$AIRPORT_WAMA"', rendered)
+        self.assertIn('--airport-rama "$AIRPORT_RAMA"', rendered)
+        self.assertIn('--airport-ram2 "$AIRPORT_RAM2"', rendered)
+        self.assertIn('--airport-syap "$AIRPORT_SYAP"', rendered)
+        self.assertIn('--airport-syvs "$AIRPORT_SYVS"', rendered)
+        self.assertIn('--airport-srcv "$AIRPORT_SRCV"', rendered)
+        self.assertIn('airport clone fields incomplete; skipping _airport._tcp advertisement', rendered)
         self.assertIn('ADISK_DISK_KEY=dk0', rendered)
         self.assertIn("ADISK_UUID=''", rendered)
         self.assertIn('--adisk-disk-key "$ADISK_DISK_KEY"', rendered)
@@ -179,9 +235,6 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('MDNS_PROC_NAME=mdns-advertiser', rendered)
         self.assertIn('/usr/bin/pkill "$MDNS_PROC_NAME" >/dev/null 2>&1 || true', rendered)
         self.assertIn('/usr/bin/pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true', rendered)
-        self.assertIn("ether[[:space:]]", rendered)
-        self.assertIn("address[[:space:]]", rendered)
-        self.assertNotIn("tr '[:lower:]' '[:upper:]'", rendered)
         self.assertIn('if [ -f "$payload_dir/private/nbns.enabled" ]', rendered)
         self.assertIn('cp "$nbns_src" "$RAM_SBIN/nbns-advertiser"', rendered)
         self.assertIn('"$RAM_SBIN/nbns-advertiser" \\', rendered)
@@ -210,8 +263,9 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('log "no Apple-mounted data root found; falling back to manual mount"', rendered)
         self.assertIn('log "found data root after manual mount: $DATA_ROOT"', rendered)
         self.assertIn('log "starting nbns responder for $SMB_NETBIOS_NAME at $BRIDGE0_IP"', rendered)
-        self.assertIn("wait_for_process()", rendered)
-        self.assertIn("wait_for_smbd_ready()", rendered)
+        self.assertNotIn("wait_for_process()", rendered)
+        self.assertNotIn("wait_for_smbd_ready()", rendered)
+        self.assertIn('/usr/bin/pkill mDNSResponder >/dev/null 2>&1 || true', rendered)
 
     def test_render_start_script_waits_for_existing_mounts_before_manual_mount(self) -> None:
         values = {
@@ -740,20 +794,28 @@ class DeployModuleTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         bundle = build_template_bundle(values)
         rendered = render_template("watchdog.sh", bundle.watchdog_replacements)
         self.assertIn('MDNS_DEVICE_MODEL=AirPortTimeCapsule', rendered)
+        self.assertIn('AIRPORT_SYAP=119', rendered)
         self.assertIn('--device-model "$MDNS_DEVICE_MODEL"', rendered)
+        self.assertIn('. /mnt/Flash/common.sh', rendered)
+        self.assertIn('--airport-wama "$AIRPORT_WAMA"', rendered)
+        self.assertIn('--airport-rama "$AIRPORT_RAMA"', rendered)
+        self.assertIn('--airport-ram2 "$AIRPORT_RAM2"', rendered)
+        self.assertIn('--airport-syap "$AIRPORT_SYAP"', rendered)
+        self.assertIn('--airport-syvs "$AIRPORT_SYVS"', rendered)
+        self.assertIn('--airport-srcv "$AIRPORT_SRCV"', rendered)
+        self.assertIn('airport syAP missing; advertising _airport._tcp without syAP', rendered)
+        self.assertIn('airport clone fields incomplete; skipping _airport._tcp advertisement', rendered)
         self.assertIn('ADISK_DISK_KEY=dk0', rendered)
         self.assertIn("ADISK_UUID=''", rendered)
         self.assertIn('--adisk-disk-key "$ADISK_DISK_KEY"', rendered)
         self.assertIn('--adisk-uuid "$ADISK_UUID"', rendered)
         self.assertIn('--adisk-sys-wama "$iface_mac"', rendered)
-        self.assertIn("ether[[:space:]]", rendered)
-        self.assertIn("address[[:space:]]", rendered)
-        self.assertNotIn("tr '[:lower:]' '[:upper:]'", rendered)
         self.assertIn('if [ ! -f "$RAM_PRIVATE/nbns.enabled" ]; then', rendered)
         self.assertIn('"$NBNS_BIN" \\', rendered)
         self.assertIn('--name "$SMB_NETBIOS_NAME"', rendered)
@@ -1018,12 +1080,13 @@ int main(void) {{
                 password="pw",
                 ssh_opts="-o foo",
                 rc_local=Path("/tmp/rc.local"),
+                common_sh=Path("/tmp/common.sh"),
                 rendered_start=Path("/tmp/start-samba.sh"),
                 rendered_dfree=Path("/tmp/dfree.sh"),
                 rendered_watchdog=Path("/tmp/watchdog.sh"),
                 rendered_smbconf=Path("/tmp/smb.conf.template"),
             )
-        self.assertEqual(scp_mock.call_count, 9)
+        self.assertEqual(scp_mock.call_count, 10)
         destinations = [call.args[4] for call in scp_mock.call_args_list]
         self.assertEqual(
             destinations,
@@ -1033,6 +1096,7 @@ int main(void) {{
                 "/mnt/Flash/mdns-advertiser",
                 "/Volumes/dk2/samba4/nbns-advertiser",
                 "/mnt/Flash/rc.local",
+                "/mnt/Flash/common.sh",
                 "/mnt/Flash/start-samba.sh",
                 "/mnt/Flash/watchdog.sh",
                 "/mnt/Flash/dfree.sh",

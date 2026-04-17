@@ -29,6 +29,7 @@ DEFAULTS = {
     "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
     "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
     "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+    "TC_AIRPORT_SYAP": "",
 }
 
 REQUIRED_ENV_KEYS = [
@@ -54,6 +55,7 @@ CONFIG_FIELDS = [
     ("TC_PAYLOAD_DIR_NAME", "Persistent payload directory name", DEFAULTS["TC_PAYLOAD_DIR_NAME"], False),
     ("TC_MDNS_INSTANCE_NAME", "mDNS SMB instance name", DEFAULTS["TC_MDNS_INSTANCE_NAME"], False),
     ("TC_MDNS_HOST_LABEL", "mDNS host label", DEFAULTS["TC_MDNS_HOST_LABEL"], False),
+    ("TC_AIRPORT_SYAP", "Airport Utility syAP code", DEFAULTS["TC_AIRPORT_SYAP"], False),
     ("TC_MDNS_DEVICE_MODEL", "mDNS device model hint", DEFAULTS["TC_MDNS_DEVICE_MODEL"], False),
 ]
 
@@ -69,6 +71,7 @@ ENV_FILE_KEYS = [
     "TC_MDNS_INSTANCE_NAME",
     "TC_MDNS_HOST_LABEL",
     "TC_MDNS_DEVICE_MODEL",
+    "TC_AIRPORT_SYAP",
 ]
 
 CONFIG_HEADER = """# Local user/device configuration for TimeCapsuleSMB.
@@ -233,11 +236,20 @@ def validate_netbios_name(value: str, field_name: str) -> Optional[str]:
     return None
 
 
+def validate_airport_syap(value: str, field_name: str) -> Optional[str]:
+    if not value:
+        return f"{field_name} cannot be blank."
+    if not value.isdigit():
+        return f"{field_name} must contain only digits."
+    return None
+
+
 CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
     "TC_SHARE_NAME": validate_adisk_share_name,
     "TC_NETBIOS_NAME": validate_netbios_name,
     "TC_MDNS_INSTANCE_NAME": validate_dns_label,
     "TC_MDNS_HOST_LABEL": validate_dns_label,
+    "TC_AIRPORT_SYAP": validate_airport_syap,
     "TC_MDNS_DEVICE_MODEL": validate_mdns_device_model,
 }
 

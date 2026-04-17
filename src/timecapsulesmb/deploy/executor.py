@@ -71,6 +71,7 @@ def upload_deployment_payload(
     password: str,
     ssh_opts: str,
     rc_local: Path,
+    common_sh: Path,
     rendered_start: Path,
     rendered_dfree: Path,
     rendered_watchdog: Path,
@@ -81,6 +82,7 @@ def upload_deployment_payload(
     run_scp(host, password, ssh_opts, plan.mdns_path, plan.flash_targets["mdns-advertiser"])
     run_scp(host, password, ssh_opts, plan.nbns_path, plan.payload_targets["nbns-advertiser"])
     run_scp(host, password, ssh_opts, rc_local, plan.flash_targets["rc.local"])
+    run_scp(host, password, ssh_opts, common_sh, plan.flash_targets["common.sh"])
     run_scp(host, password, ssh_opts, rendered_start, plan.flash_targets["start-samba.sh"])
     run_scp(host, password, ssh_opts, rendered_watchdog, plan.flash_targets["watchdog.sh"])
     run_scp(host, password, ssh_opts, rendered_dfree, plan.flash_targets["dfree.sh"])
