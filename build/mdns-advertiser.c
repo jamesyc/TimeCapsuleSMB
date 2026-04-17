@@ -26,6 +26,8 @@
 #define ADISK_SYS_ADVF "0x1010"
 #define ADISK_DISK_ADVF "0x1093"
 #define ADISK_DISK_UUID_LEN 36
+#define AIRPORT_SERVICE_TYPE "_airport._tcp.local."
+#define AIRPORT_DEFAULT_PORT 5009
 #define ADISK_SYS_TXT_PREFIX "sys=waMA="
 #define ADISK_SYS_TXT_SUFFIX ",adVF=" ADISK_SYS_ADVF
 #define ADISK_DISK_TXT_MID "=adVF=" ADISK_DISK_ADVF ",adVN="
@@ -55,9 +57,21 @@ struct config {
     char adisk_sys_wama[18];
     char device_info_service_type[MAX_NAME];
     char device_model[MAX_NAME];
+    char airport_service_type[MAX_NAME];
+    char airport_wama[18];
+    char airport_rama[18];
+    char airport_ram2[18];
+    char airport_rast[16];
+    char airport_rana[16];
+    char airport_syfl[32];
+    char airport_syap[16];
+    char airport_syvs[32];
+    char airport_srcv[32];
+    char airport_bjsd[16];
     uint32_t ipv4_addr;
     uint16_t port;
     uint16_t adisk_port;
+    uint16_t airport_port;
     uint32_t ttl;
 };
 
@@ -85,6 +99,17 @@ static void usage(const char *prog) {
             "  --adisk-uuid <u>   Stable UUID for _adisk TXT\n"
             "  --adisk-sys-wama <m> MAC address for _adisk sys TXT\n"
             "  --device-model <m> Also advertise _device-info._tcp with model=<m>\n"
+            "  --airport-wama <m> Also advertise _airport._tcp with Apple-style TXT\n"
+            "  --airport-rama <m> 5 GHz radio MAC for _airport._tcp\n"
+            "  --airport-ram2 <m> 2.4 GHz radio MAC for _airport._tcp\n"
+            "  --airport-rast <n> Radio state field for _airport._tcp\n"
+            "  --airport-rana <n> Radio network-assist field for _airport._tcp\n"
+            "  --airport-syfl <n> System feature flags for _airport._tcp\n"
+            "  --airport-syap <n> Apple platform code for _airport._tcp\n"
+            "  --airport-syvs <v> Firmware version for _airport._tcp\n"
+            "  --airport-srcv <v> Source/build version for _airport._tcp\n"
+            "  --airport-bjsd <n> Bonjour seed/build field for _airport._tcp\n"
+            "  --airport-port <p> _airport._tcp service port (default: 5009)\n"
             "  --port <port>      Service port (default: 445)\n"
             "  --ttl <seconds>    Record TTL (default: 120)\n",
             prog);
@@ -209,6 +234,16 @@ static int build_adisk_system_txt(char *out, size_t out_len, const char *wama) {
     return 0;
 }
 
+static int validate_mac_addr(const char *value, const char *field_name) {
+    char scratch[128];
+
+    if (build_adisk_system_txt(scratch, sizeof(scratch), value) != 0) {
+        fprintf(stderr, "%s must be a MAC address\n", field_name);
+        return -1;
+    }
+    return 0;
+}
+
 static int build_adisk_disk_txt(char *out, size_t out_len, const char *disk_key, const char *share_name, const char *adisk_uuid) {
     int written;
     const unsigned char *p;
@@ -245,6 +280,81 @@ static int build_adisk_disk_txt(char *out, size_t out_len, const char *disk_key,
         return -1;
     }
 
+    return 0;
+}
+
+static int is_airport_enabled(const struct config *cfg) {
+    return cfg->airport_wama[0] != '\0' &&
+           cfg->airport_rama[0] != '\0' &&
+           cfg->airport_ram2[0] != '\0' &&
+           cfg->airport_rast[0] != '\0' &&
+           cfg->airport_rana[0] != '\0' &&
+           cfg->airport_syfl[0] != '\0' &&
+           cfg->airport_syap[0] != '\0' &&
+           cfg->airport_syvs[0] != '\0' &&
+           cfg->airport_srcv[0] != '\0' &&
+           cfg->airport_bjsd[0] != '\0';
+}
+
+static int validate_airport_ascii_field(const char *value, const char *field_name) {
+    const unsigned char *p;
+
+    if (value == NULL || value[0] == '\0') {
+        fprintf(stderr, "%s must not be empty\n", field_name);
+        return -1;
+    }
+
+    for (p = (const unsigned char *)value; *p != '\0'; p++) {
+        if (*p < 0x20 || *p == 0x7f || *p == ',') {
+            fprintf(stderr, "%s contains an invalid character\n", field_name);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int build_airport_txt(char *out, size_t out_len, const struct config *cfg) {
+    int written;
+
+    if (!is_airport_enabled(cfg)) {
+        return -1;
+    }
+    if (validate_mac_addr(cfg->airport_wama, "airport waMA") != 0 ||
+        validate_mac_addr(cfg->airport_rama, "airport raMA") != 0 ||
+        validate_mac_addr(cfg->airport_ram2, "airport raM2") != 0 ||
+        validate_airport_ascii_field(cfg->airport_rast, "airport raSt") != 0 ||
+        validate_airport_ascii_field(cfg->airport_rana, "airport raNA") != 0 ||
+        validate_airport_ascii_field(cfg->airport_syfl, "airport syFl") != 0 ||
+        validate_airport_ascii_field(cfg->airport_syap, "airport syAP") != 0 ||
+        validate_airport_ascii_field(cfg->airport_syvs, "airport syVs") != 0 ||
+        validate_airport_ascii_field(cfg->airport_srcv, "airport srcv") != 0 ||
+        validate_airport_ascii_field(cfg->airport_bjsd, "airport bjSd") != 0) {
+        return -1;
+    }
+
+    written = snprintf(
+        out,
+        out_len,
+        "waMA=%s,raMA=%s,raM2=%s,raSt=%s,raNA=%s,syFl=%s,syAP=%s,syVs=%s,srcv=%s,bjSd=%s",
+        cfg->airport_wama,
+        cfg->airport_rama,
+        cfg->airport_ram2,
+        cfg->airport_rast,
+        cfg->airport_rana,
+        cfg->airport_syfl,
+        cfg->airport_syap,
+        cfg->airport_syvs,
+        cfg->airport_srcv,
+        cfg->airport_bjsd
+    );
+    if (written < 0 || (size_t)written >= out_len) {
+        return -1;
+    }
+    if ((size_t)written > MAX_TXT_STRING) {
+        fprintf(stderr, "_airport._tcp TXT must be %d bytes or fewer\n", MAX_TXT_STRING);
+        return -1;
+    }
     return 0;
 }
 
@@ -584,6 +694,33 @@ static int add_device_info_records(uint8_t *buf, size_t *off, size_t cap, const 
     return 0;
 }
 
+static int add_airport_records(uint8_t *buf, size_t *off, size_t cap, const struct config *cfg, int *answers) {
+    char instance_fqdn[MAX_NAME];
+    char airport_txt[256];
+    const char *txts[1];
+
+    if (!is_airport_enabled(cfg)) {
+        return 0;
+    }
+
+    if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->airport_service_type) != 0) {
+        return -1;
+    }
+    if (build_airport_txt(airport_txt, sizeof(airport_txt), cfg) != 0) {
+        return -1;
+    }
+    txts[0] = airport_txt;
+
+    if (add_rr_ptr(buf, off, cap, cfg->airport_service_type, instance_fqdn, cfg->ttl) != 0 ||
+        add_rr_srv(buf, off, cap, instance_fqdn, cfg->host_fqdn, cfg->airport_port, cfg->ttl) != 0 ||
+        add_rr_txt_strings(buf, off, cap, instance_fqdn, cfg->ttl, txts, 1) != 0) {
+        return -1;
+    }
+
+    *answers += 3;
+    return 0;
+}
+
 static int send_announcement(int sockfd, const struct sockaddr_in *dest, const struct config *cfg) {
     uint8_t buf[BUF_SIZE];
     size_t off = sizeof(struct dns_header);
@@ -612,6 +749,9 @@ static int send_announcement(int sockfd, const struct sockaddr_in *dest, const s
     if (add_device_info_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {
         return -1;
     }
+    if (add_airport_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {
+        return -1;
+    }
 
     hdr.ancount = htons((uint16_t)answers);
     memcpy(buf, &hdr, sizeof(hdr));
@@ -628,6 +768,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
     char instance_fqdn[MAX_NAME];
     char adisk_instance_fqdn[MAX_NAME];
     char device_info_instance_fqdn[MAX_NAME];
+    char airport_instance_fqdn[MAX_NAME];
     int want_ptr = 0;
     int want_srv = 0;
     int want_txt = 0;
@@ -638,6 +779,9 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
     int want_device_info_ptr = 0;
     int want_device_info_srv = 0;
     int want_device_info_txt = 0;
+    int want_airport_ptr = 0;
+    int want_airport_srv = 0;
+    int want_airport_txt = 0;
     int answers = 0;
     uint16_t i;
 
@@ -659,6 +803,10 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
     }
     if (cfg->device_model[0] != '\0' &&
         build_instance_fqdn(device_info_instance_fqdn, sizeof(device_info_instance_fqdn), cfg->instance_name, cfg->device_info_service_type) != 0) {
+        return 0;
+    }
+    if (is_airport_enabled(cfg) &&
+        build_instance_fqdn(airport_instance_fqdn, sizeof(airport_instance_fqdn), cfg->instance_name, cfg->airport_service_type) != 0) {
         return 0;
     }
 
@@ -690,6 +838,10 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
                    name_equals(qname, cfg->device_info_service_type) &&
                    (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
             want_device_info_ptr = 1;
+        } else if (is_airport_enabled(cfg) &&
+                   name_equals(qname, cfg->airport_service_type) &&
+                   (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
+            want_airport_ptr = 1;
         } else if (name_equals(qname, instance_fqdn) && (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY)) {
             want_srv = 1;
         } else if (name_equals(qname, instance_fqdn) && (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY)) {
@@ -710,6 +862,14 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
             if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
                 want_device_info_txt = 1;
             }
+        } else if (is_airport_enabled(cfg) &&
+                   name_equals(qname, airport_instance_fqdn)) {
+            if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
+                want_airport_srv = 1;
+            }
+            if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
+                want_airport_txt = 1;
+            }
         } else if (name_equals(qname, cfg->host_fqdn) && (qtype == DNS_TYPE_A || qtype == DNS_TYPE_ANY)) {
             want_a = 1;
         }
@@ -717,7 +877,8 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
 
     if (!want_ptr && !want_srv && !want_txt && !want_a &&
         !want_adisk_ptr && !want_adisk_srv && !want_adisk_txt &&
-        !want_device_info_ptr && !want_device_info_srv && !want_device_info_txt) {
+        !want_device_info_ptr && !want_device_info_srv && !want_device_info_txt &&
+        !want_airport_ptr && !want_airport_srv && !want_airport_txt) {
         return 0;
     }
 
@@ -803,6 +964,34 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
             answers++;
         }
     }
+    if (want_airport_ptr || want_airport_srv || want_airport_txt) {
+        char airport_txt[256];
+        const char *txts[1];
+
+        if (build_airport_txt(airport_txt, sizeof(airport_txt), cfg) != 0) {
+            return -1;
+        }
+        txts[0] = airport_txt;
+
+        if (want_airport_ptr) {
+            if (add_rr_ptr(reply, &off, sizeof(reply), cfg->airport_service_type, airport_instance_fqdn, cfg->ttl) != 0) {
+                return -1;
+            }
+            answers++;
+        }
+        if (want_airport_srv) {
+            if (add_rr_srv(reply, &off, sizeof(reply), airport_instance_fqdn, cfg->host_fqdn, cfg->airport_port, cfg->ttl) != 0) {
+                return -1;
+            }
+            answers++;
+        }
+        if (want_airport_txt) {
+            if (add_rr_txt_strings(reply, &off, sizeof(reply), airport_instance_fqdn, cfg->ttl, txts, 1) != 0) {
+                return -1;
+            }
+            answers++;
+        }
+    }
     if (want_a) {
         if (add_rr_a(reply, &off, sizeof(reply), cfg->host_fqdn, cfg->ipv4_addr, cfg->ttl) != 0) {
             return -1;
@@ -877,8 +1066,10 @@ int main(int argc, char **argv) {
     strcpy(cfg.adisk_service_type, "_adisk._tcp.local.");
     strcpy(cfg.adisk_disk_key, ADISK_DEFAULT_DISK_KEY);
     strcpy(cfg.device_info_service_type, "_device-info._tcp.local.");
+    strcpy(cfg.airport_service_type, AIRPORT_SERVICE_TYPE);
     cfg.port = 445;
     cfg.adisk_port = 9;
+    cfg.airport_port = AIRPORT_DEFAULT_PORT;
     cfg.ttl = 120;
 
     for (i = 1; i < argc; i++) {
@@ -894,6 +1085,28 @@ int main(int argc, char **argv) {
             strncpy(cfg.adisk_sys_wama, argv[++i], sizeof(cfg.adisk_sys_wama) - 1);
         } else if (strcmp(argv[i], "--device-model") == 0 && i + 1 < argc) {
             strncpy(cfg.device_model, argv[++i], sizeof(cfg.device_model) - 1);
+        } else if (strcmp(argv[i], "--airport-wama") == 0 && i + 1 < argc) {
+            strncpy(cfg.airport_wama, argv[++i], sizeof(cfg.airport_wama) - 1);
+        } else if (strcmp(argv[i], "--airport-rama") == 0 && i + 1 < argc) {
+            strncpy(cfg.airport_rama, argv[++i], sizeof(cfg.airport_rama) - 1);
+        } else if (strcmp(argv[i], "--airport-ram2") == 0 && i + 1 < argc) {
+            strncpy(cfg.airport_ram2, argv[++i], sizeof(cfg.airport_ram2) - 1);
+        } else if (strcmp(argv[i], "--airport-rast") == 0 && i + 1 < argc) {
+            strncpy(cfg.airport_rast, argv[++i], sizeof(cfg.airport_rast) - 1);
+        } else if (strcmp(argv[i], "--airport-rana") == 0 && i + 1 < argc) {
+            strncpy(cfg.airport_rana, argv[++i], sizeof(cfg.airport_rana) - 1);
+        } else if (strcmp(argv[i], "--airport-syfl") == 0 && i + 1 < argc) {
+            strncpy(cfg.airport_syfl, argv[++i], sizeof(cfg.airport_syfl) - 1);
+        } else if (strcmp(argv[i], "--airport-syap") == 0 && i + 1 < argc) {
+            strncpy(cfg.airport_syap, argv[++i], sizeof(cfg.airport_syap) - 1);
+        } else if (strcmp(argv[i], "--airport-syvs") == 0 && i + 1 < argc) {
+            strncpy(cfg.airport_syvs, argv[++i], sizeof(cfg.airport_syvs) - 1);
+        } else if (strcmp(argv[i], "--airport-srcv") == 0 && i + 1 < argc) {
+            strncpy(cfg.airport_srcv, argv[++i], sizeof(cfg.airport_srcv) - 1);
+        } else if (strcmp(argv[i], "--airport-bjsd") == 0 && i + 1 < argc) {
+            strncpy(cfg.airport_bjsd, argv[++i], sizeof(cfg.airport_bjsd) - 1);
+        } else if (strcmp(argv[i], "--airport-port") == 0 && i + 1 < argc) {
+            cfg.airport_port = (uint16_t)atoi(argv[++i]);
         } else if (strcmp(argv[i], "--instance") == 0 && i + 1 < argc) {
             strncpy(cfg.instance_name, argv[++i], sizeof(cfg.instance_name) - 1);
         } else if (strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
@@ -938,6 +1151,15 @@ int main(int argc, char **argv) {
     if (cfg.device_model[0] != '\0') {
         char model_txt[MAX_NAME + 16];
         if (build_model_txt(model_txt, sizeof(model_txt), cfg.device_model) != 0) {
+            return 2;
+        }
+    }
+    if (cfg.airport_wama[0] != '\0' || cfg.airport_rama[0] != '\0' || cfg.airport_ram2[0] != '\0' ||
+        cfg.airport_rast[0] != '\0' || cfg.airport_rana[0] != '\0' || cfg.airport_syfl[0] != '\0' ||
+        cfg.airport_syap[0] != '\0' || cfg.airport_syvs[0] != '\0' || cfg.airport_srcv[0] != '\0' ||
+        cfg.airport_bjsd[0] != '\0') {
+        char airport_txt[256];
+        if (build_airport_txt(airport_txt, sizeof(airport_txt), &cfg) != 0) {
             return 2;
         }
     }

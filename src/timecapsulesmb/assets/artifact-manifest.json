@@ -14,11 +14,11 @@
     },
     "mdns-advertiser": {
       "path": "bin/mdns/mdns-advertiser",
-      "sha256": "a3abe0e1110198100a52334bfe9f5ba7b5e815cff691440228f74b4040d45284"
+      "sha256": "4e56046ed4dc68d80d6cadb83ce7fb9817c0d61970f13fdc320c7e6cb267e6b1"
     },
     "mdns-advertiser-netbsd4": {
       "path": "bin/mdns-netbsd4/mdns-advertiser",
-      "sha256": "29fae54e852f3fa92186929cb6e94bb2540568de00020848dca31d2bf4fcc81d"
+      "sha256": "a39b774751398c8ef31bfb9cce6f49a47f20e3e2ee65d4438265e8c549d97ffa"
     },
     "nbns-advertiser": {
       "path": "bin/nbns/nbns-advertiser",
