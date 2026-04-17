@@ -47,7 +47,7 @@ from timecapsulesmb.deploy.templates import (
     render_template_text,
 )
 from timecapsulesmb.deploy.verify import verify_netbsd4_activation, verify_post_deploy, wait_for_post_reboot_smbd
-from timecapsulesmb.device.probe import build_device_paths, discover_volume_root, wait_for_ssh_state
+from timecapsulesmb.device.probe import build_device_paths, discover_mounted_volume, discover_volume_root, wait_for_ssh_state
 
 
 class DeployModuleTests(unittest.TestCase):
@@ -922,6 +922,19 @@ int main(void) {{
         self.assertIn('created_mountpoint=0', cmd)
         self.assertIn('created_mountpoint=1', cmd)
         self.assertIn('/bin/rmdir "$volume" >/dev/null 2>&1 || true', cmd)
+
+    def test_discover_mounted_volume_returns_active_device_and_mountpoint(self) -> None:
+        proc = mock.Mock(stdout="/dev/dk2 /Volumes/dk2\n", returncode=0)
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            mounted = discover_mounted_volume("root@10.0.0.2", "pw", "-o foo")
+        self.assertEqual(mounted.device, "/dev/dk2")
+        self.assertEqual(mounted.mountpoint, "/Volumes/dk2")
+
+    def test_discover_mounted_volume_raises_when_no_candidate_is_mounted(self) -> None:
+        proc = mock.Mock(stdout="", returncode=1)
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            with self.assertRaises(SystemExit):
+                discover_mounted_volume("root@10.0.0.2", "pw", "-o foo")
 
     def test_remote_prepare_dirs_builds_expected_command(self) -> None:
         with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:

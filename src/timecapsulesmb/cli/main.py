@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from typing import Optional
 
-from . import activate, bootstrap, configure, deploy, discover, doctor, prep_device, repair_xattrs, uninstall
+from . import activate, bootstrap, configure, deploy, discover, doctor, fsck, prep_device, repair_xattrs, uninstall
 
 
 COMMANDS = {
@@ -13,6 +13,7 @@ COMMANDS = {
     "deploy": deploy.main,
     "discover": discover.main,
     "doctor": doctor.main,
+    "fsck": fsck.main,
     "prep-device": prep_device.main,
     "repair-xattrs": repair_xattrs.main,
     "uninstall": uninstall.main,

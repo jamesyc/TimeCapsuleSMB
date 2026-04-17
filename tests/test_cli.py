@@ -15,9 +15,10 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.cli import activate, bootstrap, configure, deploy, discover, doctor, prep_device, uninstall
+from timecapsulesmb.cli import activate, bootstrap, configure, deploy, discover, doctor, fsck, prep_device, uninstall
 from timecapsulesmb.cli.main import main
 from timecapsulesmb.device.compat import DeviceCompatibility
+from timecapsulesmb.device.probe import MountedVolume
 from timecapsulesmb.discovery.bonjour import Discovered
 
 
@@ -56,6 +57,12 @@ class CliTests(unittest.TestCase):
             rc = main(["activate", "--dry-run"])
         self.assertEqual(rc, 0)
         commands["activate"].assert_called_once_with(["--dry-run"])
+
+    def test_fsck_command_is_registered(self) -> None:
+        with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"fsck": mock.Mock(return_value=0)}) as commands:
+            rc = main(["fsck", "--yes", "--no-reboot"])
+        self.assertEqual(rc, 0)
+        commands["fsck"].assert_called_once_with(["--yes", "--no-reboot"])
 
     def test_bootstrap_prints_full_next_steps(self) -> None:
         output = io.StringIO()
@@ -1668,6 +1675,94 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         run_ssh_mock.assert_not_called()
         self.assertIn("Skipped reboot.", output.getvalue())
+
+    def test_fsck_yes_reboots_and_waits_by_default(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+        }
+        mounted = MountedVolume(device="/dev/dk2", mountpoint="/Volumes/dk2")
+        run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\n--- reboot ---\n", returncode=255)
+        with mock.patch("timecapsulesmb.cli.fsck.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume", return_value=mounted):
+                with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result) as run_ssh_mock:
+                    with mock.patch("timecapsulesmb.cli.fsck.wait_for_ssh_state", side_effect=[True, True]) as wait_mock:
+                        with redirect_stdout(output):
+                            rc = fsck.main(["--yes"])
+        self.assertEqual(rc, 0)
+        run_ssh_mock.assert_called_once()
+        remote_cmd = run_ssh_mock.call_args.args[3]
+        self.assertIn("pkill -f [w]atchdog.sh", remote_cmd)
+        self.assertIn("pkill smbd", remote_cmd)
+        self.assertIn("pkill afpserver", remote_cmd)
+        self.assertIn("pkill wcifsnd", remote_cmd)
+        self.assertIn("pkill wcifsfs", remote_cmd)
+        self.assertIn("umount -f /Volumes/dk2", remote_cmd)
+        self.assertIn("fsck_hfs -fy /dev/dk2", remote_cmd)
+        self.assertIn("/sbin/reboot", remote_cmd)
+        self.assertEqual(wait_mock.call_args_list[0].kwargs, {"expected_up": False, "timeout_seconds": 90})
+        self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 420})
+        text = output.getvalue()
+        self.assertIn("Mounted HFS volume: /dev/dk2 on /Volumes/dk2", text)
+        self.assertIn("--- fsck_hfs /dev/dk2 ---", text)
+        self.assertIn("Device is back online.", text)
+
+    def test_fsck_no_wait_skips_ssh_waits(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+        }
+        mounted = MountedVolume(device="/dev/dk2", mountpoint="/Volumes/dk2")
+        run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\n--- reboot ---\n", returncode=255)
+        with mock.patch("timecapsulesmb.cli.fsck.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume", return_value=mounted):
+                with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result):
+                    with mock.patch("timecapsulesmb.cli.fsck.wait_for_ssh_state") as wait_mock:
+                        with redirect_stdout(output):
+                            rc = fsck.main(["--yes", "--no-wait"])
+        self.assertEqual(rc, 0)
+        wait_mock.assert_not_called()
+
+    def test_fsck_no_reboot_omits_reboot_and_waits(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+        }
+        mounted = MountedVolume(device="/dev/dk2", mountpoint="/Volumes/dk2")
+        run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\n", returncode=0)
+        with mock.patch("timecapsulesmb.cli.fsck.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume", return_value=mounted):
+                with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result) as run_ssh_mock:
+                    with mock.patch("timecapsulesmb.cli.fsck.wait_for_ssh_state") as wait_mock:
+                        with redirect_stdout(output):
+                            rc = fsck.main(["--yes", "--no-reboot"])
+        self.assertEqual(rc, 0)
+        wait_mock.assert_not_called()
+        self.assertNotIn("/sbin/reboot", run_ssh_mock.call_args.args[3])
+
+    def test_fsck_prompt_decline_cancels_before_remote_actions(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+        }
+        mounted = MountedVolume(device="/dev/dk2", mountpoint="/Volumes/dk2")
+        with mock.patch("timecapsulesmb.cli.fsck.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume", return_value=mounted):
+                with mock.patch("builtins.input", return_value="n"):
+                    with mock.patch("timecapsulesmb.cli.fsck.run_ssh") as run_ssh_mock:
+                        with redirect_stdout(output):
+                            rc = fsck.main([])
+        self.assertEqual(rc, 0)
+        run_ssh_mock.assert_not_called()
+        self.assertIn("fsck cancelled.", output.getvalue())
 
     def test_discover_json_outputs_records(self) -> None:
         output = io.StringIO()

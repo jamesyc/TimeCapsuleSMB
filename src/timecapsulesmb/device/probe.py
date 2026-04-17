@@ -17,6 +17,40 @@ class DevicePaths:
     data_root_marker: str
 
 
+@dataclass(frozen=True)
+class MountedVolume:
+    device: str
+    mountpoint: str
+
+
+def discover_mounted_volume(host: str, password: str, ssh_opts: str) -> MountedVolume:
+    script = r'''
+for dev in dk2 dk3; do
+  volume="/Volumes/$dev"
+  if [ ! -d "$volume" ]; then
+    continue
+  fi
+
+  df_line=$(/bin/df -k "$volume" 2>/dev/null | /usr/bin/tail -n +2 || true)
+  case "$df_line" in
+    /dev/$dev*" $volume")
+      echo "/dev/$dev $volume"
+      exit 0
+      ;;
+  esac
+done
+
+exit 1
+    '''
+    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}", check=False)
+    lines = proc.stdout.strip().splitlines()
+    result = lines[-1].strip() if lines else ""
+    if proc.returncode != 0 or not result:
+        raise SystemExit("Failed to discover a mounted Time Capsule HFS data volume on the device.")
+    device, mountpoint = result.split(" ", 1)
+    return MountedVolume(device=device, mountpoint=mountpoint)
+
+
 def discover_volume_root(host: str, password: str, ssh_opts: str) -> str:
     script = r'''
 best_any=""
