@@ -61,6 +61,9 @@ def build_netbsd4_activation_actions() -> list[RemoteAction]:
         # NetBSD4 activation is re-runnable after deploy or reboot. Stop the
         # old watchdog first so it cannot race the fresh rc.local launch.
         stop_process_full_action("[w]atchdog.sh"),
+        stop_process_action("smbd"),
+        stop_process_action("mdns-advertiser"),
+        stop_process_action("nbns-advertiser"),
         stop_process_action("wcifsfs"),
         run_script_action("/mnt/Flash/rc.local"),
     ]

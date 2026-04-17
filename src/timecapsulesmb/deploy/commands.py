@@ -10,6 +10,34 @@ class RemoteAction:
     args: tuple[str, ...]
 
 
+def _render_process_present(pattern: str, *, full: bool) -> str:
+    if full:
+        ps_match = f"*{pattern}*"
+        return (
+            "found=1; "
+            "if ps ax -o command= >/tmp/tcapsule-ps.$$ 2>/dev/null; then "
+            "found=0; "
+            "while IFS= read line; do "
+            f'case "$line" in {ps_match}) found=1; break ;; esac; '
+            "done </tmp/tcapsule-ps.$$; "
+            "rm -f /tmp/tcapsule-ps.$$; "
+            "fi; "
+            '[ \"$found\" -eq 1 ]'
+        )
+
+    return (
+        "found=1; "
+        "if ps ax -o ucomm= >/tmp/tcapsule-ps.$$ 2>/dev/null; then "
+        "found=0; "
+        "while IFS= read line; do "
+        f'case \"$line\" in {shlex.quote(pattern)}) found=1; break ;; esac; '
+        "done </tmp/tcapsule-ps.$$; "
+        "rm -f /tmp/tcapsule-ps.$$; "
+        "fi; "
+        '[ \"$found\" -eq 1 ]'
+    )
+
+
 def prepare_dirs_action(payload_dir: str) -> RemoteAction:
     return RemoteAction("prepare_dirs", (payload_dir,))
 
@@ -48,7 +76,7 @@ def render_remote_action(action: RemoteAction) -> str:
         return (
             f"pkill {shlex.quote(name)} >/dev/null 2>&1 || true; "
             "attempt=0; "
-            f"while pkill -0 {shlex.quote(name)} >/dev/null 2>&1; do "
+            f"while /bin/sh -c {shlex.quote(_render_process_present(name, full=False))} >/dev/null 2>&1; do "
             'if [ "$attempt" -ge 10 ]; then break; fi; '
             "attempt=$((attempt + 1)); "
             "sleep 1; "
@@ -60,7 +88,7 @@ def render_remote_action(action: RemoteAction) -> str:
         return (
             f"pkill -f {shlex.quote(pattern)} >/dev/null 2>&1 || true; "
             "attempt=0; "
-            f"while pkill -0 -f {shlex.quote(pattern)} >/dev/null 2>&1; do "
+            f"while /bin/sh -c {shlex.quote(_render_process_present(pattern, full=True))} >/dev/null 2>&1; do "
             'if [ "$attempt" -ge 10 ]; then break; fi; '
             "attempt=$((attempt + 1)); "
             "sleep 1; "

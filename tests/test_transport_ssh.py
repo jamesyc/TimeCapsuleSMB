@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import unittest
+from tempfile import NamedTemporaryFile
 from pathlib import Path
 from unittest import mock
 
@@ -71,6 +72,31 @@ class SSHTransportTests(unittest.TestCase):
                 "/bin/echo ok",
             ],
         )
+
+    def test_run_ssh_retries_transient_permission_denied(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.transport.ssh._ssh_option_supported",
+            return_value=True,
+        ):
+            with mock.patch(
+                "timecapsulesmb.transport.ssh._spawn_with_password",
+                side_effect=[
+                    (255, "Permission denied, please try again.\n"),
+                    (0, "ok\n"),
+                ],
+            ) as spawn_mock:
+                with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep_mock:
+                    proc = ssh_transport.run_ssh(
+                        "root@192.168.1.118",
+                        "pw",
+                        "-o StrictHostKeyChecking=no",
+                        "/bin/echo ok",
+                        check=False,
+                        timeout=10,
+                    )
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(spawn_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(1)
 
     def test_normalize_ssh_tokens_expands_identity_and_preserves_proxyjump(self) -> None:
         with mock.patch(
@@ -160,6 +186,61 @@ class SSHTransportTests(unittest.TestCase):
             ),
         ):
             self.assertFalse(ssh_transport._ssh_option_supported("PubkeyAcceptedAlgorithms"))
+
+    def test_verify_remote_size_retries_transient_failure(self) -> None:
+        with NamedTemporaryFile() as tmp:
+            src = Path(tmp.name)
+            src.write_bytes(b"hello")
+            expected_size = src.stat().st_size
+            responses = [
+                subprocess.CompletedProcess(["ssh"], 1, stdout="Permission denied, please try again.\n", stderr=""),
+                subprocess.CompletedProcess(["ssh"], 0, stdout=f"{expected_size}\n", stderr=""),
+            ]
+            with mock.patch(
+                "timecapsulesmb.transport.ssh.run_ssh",
+                side_effect=responses,
+            ) as run_ssh_mock:
+                with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep_mock:
+                    ssh_transport._verify_remote_size(
+                        "root@192.168.1.118",
+                        "pw",
+                        "-o StrictHostKeyChecking=no",
+                        src,
+                        "/tmp/test-upload",
+                        timeout=30,
+                    )
+        self.assertEqual(run_ssh_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(1)
+
+    def test_run_scp_cat_fallback_retries_transient_permission_denied(self) -> None:
+        with NamedTemporaryFile() as tmp:
+            src = Path(tmp.name)
+            src.write_bytes(b"hello")
+            with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+                with mock.patch(
+                    "timecapsulesmb.transport.ssh.run_ssh",
+                    side_effect=[subprocess.CompletedProcess(["ssh"], 1, stdout="", stderr=""), subprocess.CompletedProcess(["ssh"], 0, stdout="5\n", stderr="")],
+                ) as run_ssh_mock:
+                    with mock.patch("timecapsulesmb.transport.ssh.shutil.which", return_value="/opt/homebrew/bin/sshpass"):
+                        with mock.patch(
+                            "timecapsulesmb.transport.ssh.subprocess.run",
+                            side_effect=[
+                                subprocess.CompletedProcess(["sshpass"], 255, stdout=b"Permission denied, please try again.\n", stderr=b""),
+                                subprocess.CompletedProcess(["sshpass"], 0, stdout=b"", stderr=b""),
+                            ],
+                        ) as subprocess_run_mock:
+                            with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep_mock:
+                                ssh_transport.run_scp(
+                                    "root@192.168.1.118",
+                                    "pw",
+                                    "-o StrictHostKeyChecking=no",
+                                    src,
+                                    "/tmp/test-upload",
+                                    timeout=10,
+                                )
+        self.assertEqual(subprocess_run_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(1)
+        self.assertEqual(run_ssh_mock.call_count, 2)
 
 
 if __name__ == "__main__":

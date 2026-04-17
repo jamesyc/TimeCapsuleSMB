@@ -30,6 +30,7 @@ ADISK_UUID=__ADISK_UUID__
 
 RECOVERY_POLL_SECONDS=5
 STEADY_POLL_SECONDS=300
+INITIAL_STARTUP_DELAY_SECONDS=30
 
 log() {
     log_dir=${WATCHDOG_LOG%/*}
@@ -160,6 +161,7 @@ all_managed_services_healthy() {
 
 elapsed=0
 log "watchdog start"
+sleep "$INITIAL_STARTUP_DELAY_SECONDS"
 
 while :; do
     start_smbd_if_needed

@@ -13,6 +13,11 @@ from pathlib import Path
 from .local import tcp_open
 
 
+def _looks_like_transient_ssh_auth_failure(output: str) -> bool:
+    lowered = output.lower()
+    return "permission denied" in lowered or "please try again" in lowered
+
+
 def _spawn_with_password(cmd: list[str], password: str, *, timeout: int, timeout_message: str) -> tuple[int, str]:
     try:
         import pexpect
@@ -102,12 +107,18 @@ def _normalize_ssh_tokens(ssh_opts: str) -> list[str]:
 
 def run_ssh(host: str, password: str, ssh_opts: str, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
     cmd = ["ssh", *_normalize_ssh_tokens(ssh_opts), host, remote_cmd]
-    rc, stdout = _spawn_with_password(
-        cmd,
-        password,
-        timeout=timeout,
-        timeout_message="Timed out waiting for ssh command to finish.",
-    )
+    rc = 1
+    stdout = ""
+    for attempt in range(3):
+        rc, stdout = _spawn_with_password(
+            cmd,
+            password,
+            timeout=timeout,
+            timeout_message="Timed out waiting for ssh command to finish.",
+        )
+        if rc == 0 or not _looks_like_transient_ssh_auth_failure(stdout) or attempt == 2:
+            break
+        time.sleep(1)
     if check and rc != 0:
         raise SystemExit(stdout.strip() or f"ssh command failed with rc={rc}")
     return subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr="")
@@ -179,14 +190,20 @@ def _verify_remote_size(host: str, password: str, ssh_opts: str, src: Path, dest
         f"else set -- $(ls -l {quoted_dest}); echo \"$5\"; fi"
     )
     remote_cmd = f"/bin/sh -c {shlex.quote(remote_script)}"
-    proc = run_ssh(host, password, ssh_opts, remote_cmd, check=False, timeout=timeout)
-    matches = re.findall(r"^\s*([0-9]+)\s*$", proc.stdout, flags=re.MULTILINE)
-    actual_size = int(matches[-1]) if matches else None
-    if proc.returncode != 0 or actual_size != expected_size:
-        raise SystemExit(
-            f"upload verification failed for {dest}: expected {expected_size} bytes, "
-            f"got {actual_size if actual_size is not None else 'unknown'} bytes"
-        )
+    proc = None
+    actual_size = None
+    for attempt in range(3):
+        proc = run_ssh(host, password, ssh_opts, remote_cmd, check=False, timeout=timeout)
+        matches = re.findall(r"^\s*([0-9]+)\s*$", proc.stdout, flags=re.MULTILINE)
+        actual_size = int(matches[-1]) if matches else None
+        if proc.returncode == 0 and actual_size == expected_size:
+            return
+        if attempt < 2:
+            time.sleep(1)
+    raise SystemExit(
+        f"upload verification failed for {dest}: expected {expected_size} bytes, "
+        f"got {actual_size if actual_size is not None else 'unknown'} bytes"
+    )
 
 
 def run_scp(host: str, password: str, ssh_opts: str, src: Path, dest: str, *, timeout: int = 120) -> None:
@@ -200,12 +217,18 @@ def run_scp(host: str, password: str, ssh_opts: str, src: Path, dest: str, *, ti
     )
     if probe.returncode == 0:
         cmd = ["scp", "-O", *_normalize_ssh_tokens(ssh_opts), str(src), f"{host}:{dest}"]
-        rc, stdout = _spawn_with_password(
-            cmd,
-            password,
-            timeout=timeout,
-            timeout_message=f"Timed out copying {src} to {dest}",
-        )
+        rc = 1
+        stdout = ""
+        for attempt in range(3):
+            rc, stdout = _spawn_with_password(
+                cmd,
+                password,
+                timeout=timeout,
+                timeout_message=f"Timed out copying {src} to {dest}",
+            )
+            if rc == 0 or not _looks_like_transient_ssh_auth_failure(stdout) or attempt == 2:
+                break
+            time.sleep(1)
         if rc != 0:
             raise SystemExit(stdout.strip() or f"scp failed with rc={rc}")
         _verify_remote_size(host, password, ssh_opts, src, dest, timeout=30)
@@ -218,18 +241,26 @@ def run_scp(host: str, password: str, ssh_opts: str, src: Path, dest: str, *, ti
     cmd = ["sshpass", "-e", "ssh", *_normalize_ssh_tokens(ssh_opts), host, remote_cmd]
     env = dict(os.environ)
     env["SSHPASS"] = password
-    try:
-        proc = subprocess.run(
-            cmd,
-            input=src.read_bytes(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            env=env,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as e:
-        raise SystemExit(f"Timed out copying {src} to {dest}") from e
+    proc = None
+    for attempt in range(3):
+        try:
+            proc = subprocess.run(
+                cmd,
+                input=src.read_bytes(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=env,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise SystemExit(f"Timed out copying {src} to {dest}") from e
+        stdout = proc.stdout.decode("utf-8", errors="replace").strip()
+        if proc.returncode == 0 or not _looks_like_transient_ssh_auth_failure(stdout) or attempt == 2:
+            break
+        time.sleep(1)
+    if proc is None:
+        raise SystemExit(f"ssh cat upload failed for {dest}")
     if proc.returncode != 0:
         stdout = proc.stdout.decode("utf-8", errors="replace").strip()
         raise SystemExit(stdout or f"ssh cat upload failed with rc={proc.returncode}")
