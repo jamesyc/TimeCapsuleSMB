@@ -25,7 +25,8 @@ MDNS_DEVICE_MODEL=__MDNS_DEVICE_MODEL__
 ADISK_DISK_KEY=__ADISK_DISK_KEY__
 ADISK_UUID=__ADISK_UUID__
 
-POLL_SECONDS=300
+RECOVERY_POLL_SECONDS=5
+STEADY_POLL_SECONDS=300
 
 log() {
     log_dir=${WATCHDOG_LOG%/*}
@@ -116,6 +117,8 @@ restart_nbns() {
         return 0
     fi
 
+    /usr/bin/pkill wcifsnd >/dev/null 2>&1 || true
+    /usr/bin/pkill wcifsfs >/dev/null 2>&1 || true
     /usr/bin/pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true
     sleep 1
 
@@ -124,6 +127,28 @@ restart_nbns() {
         --ipv4 "$iface_ip" \
         >/dev/null 2>&1 &
     log "nbns restart requested"
+}
+
+nbns_enabled() {
+    [ -f "$RAM_PRIVATE/nbns.enabled" ]
+}
+
+all_managed_services_healthy() {
+    if ! /usr/bin/pkill -0 smbd >/dev/null 2>&1; then
+        return 1
+    fi
+
+    if ! /usr/bin/pkill -0 "$MDNS_PROC_NAME" >/dev/null 2>&1; then
+        return 1
+    fi
+
+    if nbns_enabled; then
+        if ! /usr/bin/pkill -0 "$NBNS_PROC_NAME" >/dev/null 2>&1; then
+            return 1
+        fi
+    fi
+
+    return 0
 }
 
 elapsed=0
@@ -144,5 +169,9 @@ while :; do
         restart_nbns
     fi
 
-    sleep "$POLL_SECONDS"
+    if all_managed_services_healthy; then
+        sleep "$STEADY_POLL_SECONDS"
+    else
+        sleep "$RECOVERY_POLL_SECONDS"
+    fi
 done

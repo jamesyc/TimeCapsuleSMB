@@ -109,7 +109,7 @@ wait_for_bind_interfaces() {
     attempt=0
 
     sleep 5
-    while [ "$attempt" -lt 15 ]; do
+    while [ "$attempt" -lt 60 ]; do
         iface_ip=$(get_iface_ipv4 || true)
         if [ -n "$iface_ip" ] && [ "$iface_ip" != "0.0.0.0" ]; then
             echo "127.0.0.1/8 $iface_ip/24"
@@ -120,6 +120,61 @@ wait_for_bind_interfaces() {
         sleep 1
     done
 
+    return 1
+}
+
+wait_for_process() {
+    proc_name=$1
+    attempt=0
+    while [ "$attempt" -lt 10 ]; do
+        if /usr/bin/pkill -0 "$proc_name" >/dev/null 2>&1; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+    return 1
+}
+
+wait_for_smbd_ready() {
+    attempt=0
+    while [ "$attempt" -lt 15 ]; do
+        if [ -f "$SMBD_LOG" ]; then
+            smbd_log=$(/bin/cat "$SMBD_LOG" 2>/dev/null || true)
+            case "$smbd_log" in
+                *daemon_ready*)
+                    return 0
+                    ;;
+            esac
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+    return 1
+}
+
+find_existing_data_root() {
+    if data_root=$(find_data_root_under_volume /Volumes/dk2); then
+        echo "$data_root"
+        return 0
+    fi
+
+    if data_root=$(find_data_root_under_volume /Volumes/dk3); then
+        echo "$data_root"
+        return 0
+    fi
+
+    return 1
+}
+
+is_volume_root_mounted() {
+    volume_root=$1
+    df_line=$(/bin/df -k "$volume_root" 2>/dev/null | /usr/bin/tail -n +2 || true)
+    case "$df_line" in
+        *" $volume_root")
+            return 0
+            ;;
+    esac
     return 1
 }
 
@@ -169,39 +224,94 @@ mount_device_if_possible() {
 
     [ -d "$volume_root" ] || mkdir -p "$volume_root"
 
-    /sbin/mount_hfs "$dev_path" "$volume_root" >/dev/null 2>&1 || true
+    /sbin/mount_hfs "$dev_path" "$volume_root" >/dev/null 2>&1 &
+    mount_pid=$!
+    attempt=0
+    while kill -0 "$mount_pid" >/dev/null 2>&1; do
+        if [ "$attempt" -ge 5 ]; then
+            kill "$mount_pid" >/dev/null 2>&1 || true
+            sleep 1
+            kill -9 "$mount_pid" >/dev/null 2>&1 || true
+            wait "$mount_pid" >/dev/null 2>&1 || true
+            log "mount_hfs timed out for $dev_path at $volume_root"
+            return 1
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+    wait "$mount_pid" >/dev/null 2>&1 || true
 }
 
-ensure_data_root() {
+discover_preexisting_data_root() {
+    if data_root=$(wait_for_existing_data_root); then
+        log "found Apple-mounted data root: $data_root"
+        echo "$data_root"
+        return 0
+    fi
+
+    return 1
+}
+
+resolve_data_root_on_mounted_volume() {
+    volume_root=$1
+
+    if data_root=$(find_data_root_under_volume "$volume_root"); then
+        echo "$data_root"
+        return 0
+    fi
+
+    if is_volume_root_mounted "$volume_root"; then
+        data_root=$(initialize_data_root_under_volume "$volume_root")
+        log "initialized ShareRoot under $volume_root"
+        echo "$data_root"
+        return 0
+    fi
+
+    return 1
+}
+
+wait_for_existing_data_root() {
     attempt=0
-    while [ "$attempt" -lt 120 ]; do
-        if data_root=$(find_data_root_under_volume /Volumes/dk2); then
+    while [ "$attempt" -lt 30 ]; do
+        if data_root=$(find_existing_data_root); then
             echo "$data_root"
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+    return 1
+}
+
+try_mount_candidate() {
+    dev_path=$1
+    volume_root=$2
+
+    if is_volume_root_mounted "$volume_root"; then
+        echo "$volume_root"
+        return 0
+    fi
+
+    mount_device_if_possible "$dev_path" "$volume_root" || true
+    if is_volume_root_mounted "$volume_root"; then
+        echo "$volume_root"
+        return 0
+    fi
+
+    return 1
+}
+
+mount_fallback_volume() {
+    log "no Apple-mounted data root found; falling back to manual mount"
+    attempt=0
+    while [ "$attempt" -lt 90 ]; do
+        if volume_root=$(try_mount_candidate /dev/dk2 /Volumes/dk2); then
+            echo "$volume_root"
             return 0
         fi
 
-        if data_root=$(find_data_root_under_volume /Volumes/dk3); then
-            echo "$data_root"
-            return 0
-        fi
-
-        mount_device_if_possible /dev/dk2 /Volumes/dk2
-        if data_root=$(find_data_root_under_volume /Volumes/dk2); then
-            echo "$data_root"
-            return 0
-        fi
-        if [ -d /Volumes/dk2/"$PAYLOAD_DIR_NAME" ]; then
-            initialize_data_root_under_volume /Volumes/dk2
-            return 0
-        fi
-
-        mount_device_if_possible /dev/dk3 /Volumes/dk3
-        if data_root=$(find_data_root_under_volume /Volumes/dk3); then
-            echo "$data_root"
-            return 0
-        fi
-        if [ -d /Volumes/dk3/"$PAYLOAD_DIR_NAME" ]; then
-            initialize_data_root_under_volume /Volumes/dk3
+        if volume_root=$(try_mount_candidate /dev/dk3 /Volumes/dk3); then
+            echo "$volume_root"
             return 0
         fi
 
@@ -214,19 +324,7 @@ ensure_data_root() {
 
 find_payload_dir() {
     data_root=$1
-    case "$data_root" in
-        /Volumes/dk2/*)
-            volume_root=/Volumes/dk2
-            ;;
-        /Volumes/dk3/*)
-            volume_root=/Volumes/dk3
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-
-    payload_dir="$volume_root/$PAYLOAD_DIR_NAME"
+    payload_dir="$data_root/$PAYLOAD_DIR_NAME"
     if [ -d "$payload_dir" ]; then
         echo "$payload_dir"
         return 0
@@ -298,8 +396,8 @@ stage_runtime() {
     guest account = nobody
     null passwords = no
     ea support = yes
-    passdb backend = smbpasswd:$DATA_ROOT/../$PAYLOAD_DIR_NAME/private/smbpasswd
-    username map = $DATA_ROOT/../$PAYLOAD_DIR_NAME/private/username.map
+    passdb backend = smbpasswd:$DATA_ROOT/$PAYLOAD_DIR_NAME/private/smbpasswd
+    username map = $DATA_ROOT/$PAYLOAD_DIR_NAME/private/username.map
     dos charset = ASCII
     min protocol = SMB2
     max protocol = SMB3
@@ -338,7 +436,7 @@ stage_runtime() {
     fruit:time machine = yes
     fruit:posix_rename = yes
     fruit:locking = none
-    xattr_tdb:file = $DATA_ROOT/../$PAYLOAD_DIR_NAME/private/xattr.tdb
+    xattr_tdb:file = $DATA_ROOT/$PAYLOAD_DIR_NAME/private/xattr.tdb
     force user = root
     force group = wheel
     create mask = 0644
@@ -348,6 +446,7 @@ EOF
 
 start_smbd() {
     "$RAM_SBIN/smbd" -D -s "$RAM_ETC/smb.conf"
+    wait_for_smbd_ready
 }
 
 start_mdns() {
@@ -364,6 +463,7 @@ start_mdns() {
     /usr/bin/pkill "$MDNS_PROC_NAME" >/dev/null 2>&1 || true
     sleep 1
 
+    log "starting mdns advertiser for $BRIDGE0_IP on $NET_IFACE"
     "$MDNS_BIN" \
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
@@ -374,11 +474,16 @@ start_mdns() {
         --adisk-sys-wama "$iface_mac" \
         --ipv4 "$BRIDGE0_IP" \
         >/dev/null 2>&1 &
-    log "mdns advertiser launch requested"
+    if wait_for_process "$MDNS_PROC_NAME"; then
+        log "mdns advertiser launch requested"
+    else
+        log "mdns advertiser failed to stay running"
+    fi
 }
 
 start_nbns() {
     if [ ! -f "$PAYLOAD_DIR/private/nbns.enabled" ]; then
+        log "nbns responder skipped; marker missing"
         return 0
     fi
 
@@ -387,25 +492,42 @@ start_nbns() {
         return 0
     fi
 
+    /usr/bin/pkill wcifsnd >/dev/null 2>&1 || true
+    /usr/bin/pkill wcifsfs >/dev/null 2>&1 || true
     /usr/bin/pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true
     sleep 1
 
+    log "starting nbns responder for $SMB_NETBIOS_NAME at $BRIDGE0_IP"
     "$RAM_SBIN/nbns-advertiser" \
         --name "$SMB_NETBIOS_NAME" \
         --ipv4 "$BRIDGE0_IP" \
         >/dev/null 2>&1 &
-    log "nbns responder launch requested"
+    if wait_for_process "$NBNS_PROC_NAME"; then
+        log "nbns responder launch requested"
+    else
+        log "nbns responder failed to stay running"
+    fi
 }
 
 cleanup_old_runtime
 prepare_ram_root
 prepare_legacy_prefix
 log "boot start"
+log "waiting for Apple-mounted data volume before manual mount fallback"
 
-DATA_ROOT=$(ensure_data_root) || {
-    log "failed to discover data root"
-    exit 1
-}
+if DATA_ROOT=$(discover_preexisting_data_root); then
+    :
+else
+    VOLUME_ROOT=$(mount_fallback_volume) || {
+        log "failed to mount fallback data volume"
+        exit 1
+    }
+    DATA_ROOT=$(resolve_data_root_on_mounted_volume "$VOLUME_ROOT") || {
+        log "failed to discover or initialize data root on mounted volume"
+        exit 1
+    }
+    log "found data root after manual mount: $DATA_ROOT"
+fi
 CACHE_DIRECTORY=__CACHE_DIRECTORY__
 log "data root: $DATA_ROOT"
 
@@ -438,7 +560,10 @@ log "runtime staged under $RAM_ROOT"
 
 start_mdns
 start_nbns
-start_smbd
-log "smbd launch requested"
+start_smbd || {
+    log "smbd did not become ready"
+    exit 1
+}
+log "smbd ready"
 
 exit 0

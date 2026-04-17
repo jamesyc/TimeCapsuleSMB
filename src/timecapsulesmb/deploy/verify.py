@@ -72,9 +72,22 @@ fi
 attempt=0
 while [ "$attempt" -lt 30 ]; do
     out="$(fstat 2>&1)"
+    runtime_conf=0
+    if [ -f /mnt/Memory/samba4/etc/smb.conf ]; then
+        runtime_conf=1
+    fi
+    runtime_log=0
+    if [ -f /mnt/Memory/samba4/var/log.smbd ]; then
+        smbd_log="$(cat /mnt/Memory/samba4/var/log.smbd 2>/dev/null || true)"
+        case "$smbd_log" in
+            *daemon_ready*) runtime_log=1 ;;
+        esac
+    fi
     case "$out" in
         *smbd*":445"*mdns-advertiser*":5353"*|*mdns-advertiser*":5353"*smbd*":445"*)
-            break
+            if [ "$runtime_conf" -eq 1 ] && [ "$runtime_log" -eq 1 ]; then
+                break
+            fi
             ;;
     esac
     attempt=$((attempt + 1))
@@ -82,6 +95,21 @@ while [ "$attempt" -lt 30 ]; do
 done
 echo "$out" | sed -n '/\.445/p;/\.5353/p'
 status=0
+if [ -f /mnt/Memory/samba4/etc/smb.conf ]; then
+    echo "PASS:managed runtime smb.conf present"
+else
+    echo "FAIL:managed runtime smb.conf missing"
+    status=1
+fi
+if [ -f /mnt/Memory/samba4/var/log.smbd ]; then
+    smbd_log="$(cat /mnt/Memory/samba4/var/log.smbd 2>/dev/null || true)"
+else
+    smbd_log=""
+fi
+case "$smbd_log" in
+    *daemon_ready*) echo "PASS:managed smbd reported daemon_ready" ;;
+    *) echo "FAIL:managed smbd did not report daemon_ready"; status=1 ;;
+esac
 case "$out" in
     *smbd*":445"*) echo "PASS:smbd bound to TCP 445" ;;
     *) echo "FAIL:smbd is not bound to TCP 445"; status=1 ;;
@@ -109,6 +137,18 @@ if ! command -v fstat >/dev/null 2>&1; then
     exit 1
 fi
 out="$(fstat 2>&1)"
+if [ ! -f /mnt/Memory/samba4/etc/smb.conf ]; then
+    exit 1
+fi
+if [ -f /mnt/Memory/samba4/var/log.smbd ]; then
+    smbd_log="$(cat /mnt/Memory/samba4/var/log.smbd 2>/dev/null || true)"
+else
+    smbd_log=""
+fi
+case "$smbd_log" in
+    *daemon_ready*) : ;;
+    *) exit 1 ;;
+esac
 case "$out" in
     *smbd*":445"*mdns-advertiser*":5353"*|*mdns-advertiser*":5353"*smbd*":445"*)
         exit 0
