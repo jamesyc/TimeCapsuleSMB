@@ -46,7 +46,7 @@ from timecapsulesmb.deploy.templates import (
     render_template,
     render_template_text,
 )
-from timecapsulesmb.deploy.verify import verify_netbsd4_activation, verify_post_deploy
+from timecapsulesmb.deploy.verify import verify_netbsd4_activation, verify_post_deploy, wait_for_post_reboot_smbd
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root, wait_for_ssh_state
 
 
@@ -1047,6 +1047,26 @@ PASS:mdns-advertiser bound to UDP 5353
                         verify_post_deploy(values)
         listing_mock.assert_called_once_with("admin", "pw", ["10.0.1.99", "10.0.0.2"])
 
+    def test_wait_for_post_reboot_smbd_passes_when_managed_smbd_is_ready(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.deploy.verify.run_ssh",
+            return_value=mock.Mock(returncode=0),
+        ) as run_ssh_mock:
+            self.assertTrue(wait_for_post_reboot_smbd("host", "pw", "-o foo", timeout_seconds=45))
+        remote_command = run_ssh_mock.call_args.args[3]
+        self.assertIn('if /usr/bin/pkill -0 smbd >/dev/null 2>&1; then', remote_command)
+        self.assertIn("*daemon_ready*", remote_command)
+        self.assertIn('while [ "$attempt" -lt 45 ]; do', remote_command)
+        self.assertNotIn("mdns-advertiser", remote_command)
+        self.assertNotIn("nbns-advertiser", remote_command)
+
+    def test_wait_for_post_reboot_smbd_fails_when_remote_probe_times_out(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.deploy.verify.run_ssh",
+            return_value=mock.Mock(returncode=1),
+        ):
+            self.assertFalse(wait_for_post_reboot_smbd("host", "pw", "-o foo", timeout_seconds=12))
+
     def test_format_deployment_plan_contains_concrete_actions(self) -> None:
         payload_dir_name = "samba4"
         payload_dir = f"/Volumes/dk2/{payload_dir_name}"
@@ -1093,13 +1113,14 @@ PASS:mdns-advertiser bound to UDP 5353
     def test_build_uninstall_plan_stops_nbns_process(self) -> None:
         paths = build_device_paths("/Volumes/dk2", "samba4")
         plan = build_uninstall_plan("root@10.0.0.2", paths)
-        self.assertIn("pkill nbns-advertiser >/dev/null 2>&1 || true", [render_remote_action(action) for action in plan.remote_actions])
+        rendered = [render_remote_action(action) for action in plan.remote_actions]
+        self.assertTrue(any(command.startswith("pkill nbns-advertiser >/dev/null 2>&1 || true;") for command in rendered))
 
     def test_build_uninstall_plan_stops_watchdog_first(self) -> None:
         paths = build_device_paths("/Volumes/dk2", "samba4")
         plan = build_uninstall_plan("root@10.0.0.2", paths)
         rendered = [render_remote_action(action) for action in plan.remote_actions]
-        self.assertEqual(rendered[0], "pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true")
+        self.assertTrue(rendered[0].startswith("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true;"))
 
     def test_remote_action_rendering_quotes_payload_paths_with_spaces(self) -> None:
         payload_dir = "/Volumes/dk2/Time Capsule Samba 4"
@@ -1143,6 +1164,17 @@ PASS:mdns-advertiser bound to UDP 5353
         with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
             remote_uninstall_payload("host", "pw", "-o foo", plan)
         self.assertEqual([call.args[3] for call in run_ssh_mock.call_args_list], expected)
+
+    def test_render_stop_process_action_waits_for_exit(self) -> None:
+        command = render_remote_action(stop_process_action("mdns-advertiser"))
+        self.assertIn("pkill mdns-advertiser >/dev/null 2>&1 || true;", command)
+        self.assertIn("while pkill -0 mdns-advertiser >/dev/null 2>&1; do", command)
+        self.assertIn('if [ "$attempt" -ge 10 ]; then break; fi;', command)
+
+    def test_render_stop_process_full_action_waits_for_exit(self) -> None:
+        command = render_remote_action(stop_process_full_action("[w]atchdog.sh"))
+        self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true;", command)
+        self.assertIn("while pkill -0 -f '[w]atchdog.sh' >/dev/null 2>&1; do", command)
 
     def test_wait_for_ssh_state_uses_real_ssh_probe_for_expected_up(self) -> None:
         proc = mock.Mock(returncode=0, stdout="ok\n")

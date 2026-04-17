@@ -43,6 +43,30 @@ def run_script_action(path: str) -> RemoteAction:
 
 
 def render_remote_action(action: RemoteAction) -> str:
+    if action.kind == "stop_process":
+        name = action.args[0]
+        return (
+            f"pkill {shlex.quote(name)} >/dev/null 2>&1 || true; "
+            "attempt=0; "
+            f"while pkill -0 {shlex.quote(name)} >/dev/null 2>&1; do "
+            'if [ "$attempt" -ge 10 ]; then break; fi; '
+            "attempt=$((attempt + 1)); "
+            "sleep 1; "
+            "done"
+        )
+
+    if action.kind == "stop_process_full":
+        pattern = action.args[0]
+        return (
+            f"pkill -f {shlex.quote(pattern)} >/dev/null 2>&1 || true; "
+            "attempt=0; "
+            f"while pkill -0 -f {shlex.quote(pattern)} >/dev/null 2>&1; do "
+            'if [ "$attempt" -ge 10 ]; then break; fi; '
+            "attempt=$((attempt + 1)); "
+            "sleep 1; "
+            "done"
+        )
+
     if action.kind == "prepare_dirs":
         payload_dir = action.args[0]
         return (
@@ -98,12 +122,6 @@ def render_remote_action(action: RemoteAction) -> str:
         private_dir = action.args[0]
         marker_path = private_dir + "/nbns.enabled"
         return f"/bin/sh -c {shlex.quote(f': > {shlex.quote(marker_path)}')}"
-
-    if action.kind == "stop_process":
-        return f"pkill {shlex.quote(action.args[0])} >/dev/null 2>&1 || true"
-
-    if action.kind == "stop_process_full":
-        return f"pkill -f {shlex.quote(action.args[0])} >/dev/null 2>&1 || true"
 
     if action.kind == "remove_path":
         return f"rm -rf {shlex.quote(action.args[0])}"

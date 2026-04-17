@@ -19,14 +19,13 @@ from timecapsulesmb.deploy.executor import (
 )
 from timecapsulesmb.deploy.planner import build_deployment_plan
 from timecapsulesmb.deploy.templates import build_template_bundle, render_template, write_boot_asset
-from timecapsulesmb.deploy.verify import verify_netbsd4_activation, verify_post_deploy
+from timecapsulesmb.deploy.verify import verify_netbsd4_activation, verify_post_deploy, wait_for_post_reboot_smbd
 from timecapsulesmb.device.compat import probe_device_compatibility
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root, wait_for_ssh_state
 from timecapsulesmb.transport.ssh import run_ssh
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-
 
 def require(values: dict[str, str], key: str) -> str:
     value = values.get(key, "")
@@ -173,6 +172,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     print("Waiting for the device to come back up...")
     if wait_for_ssh_state(host, password, ssh_opts, expected_up=True, timeout_seconds=240):
         print("Device is back online.")
+        print("Waiting for managed smbd to finish starting...")
+        if not wait_for_post_reboot_smbd(host, password, ssh_opts):
+            print("Managed smbd did not become ready after reboot.")
+            return 1
         verify_post_deploy(values)
         return 0
 

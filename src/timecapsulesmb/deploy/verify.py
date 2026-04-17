@@ -24,6 +24,34 @@ def _configured_smb_server(host_label: str) -> str:
     return f"{value}.local"
 
 
+def wait_for_post_reboot_smbd(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 120) -> bool:
+    script = rf'''
+attempt=0
+while [ "$attempt" -lt {timeout_seconds} ]; do
+    smbd_ready=0
+
+    if /usr/bin/pkill -0 smbd >/dev/null 2>&1; then
+        if [ -f /mnt/Memory/samba4/etc/smb.conf ] && [ -f /mnt/Memory/samba4/var/log.smbd ]; then
+            smbd_log="$(cat /mnt/Memory/samba4/var/log.smbd 2>/dev/null || true)"
+            case "$smbd_log" in
+                *daemon_ready*) smbd_ready=1 ;;
+            esac
+        fi
+    fi
+
+    if [ "$smbd_ready" -eq 1 ]; then
+        exit 0
+    fi
+
+    attempt=$((attempt + 1))
+    sleep 1
+done
+exit 1
+'''
+    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}", check=False)
+    return proc.returncode == 0
+
+
 def verify_post_deploy(values: dict[str, str]) -> None:
     samba_user = values["TC_SAMBA_USER"]
     password = values["TC_PASSWORD"]

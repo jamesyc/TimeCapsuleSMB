@@ -836,6 +836,84 @@ class CliTests(unittest.TestCase):
         self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 240})
         self.assertIn("Timed out waiting for SSH after reboot.", output.getvalue())
 
+    def test_deploy_waits_for_managed_smbd_before_verifying(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
+                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+                        with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
+                            with mock.patch(
+                                "timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid",
+                                return_value="12345678-1234-1234-1234-123456789012",
+                            ):
+                                with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
+                                    with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
+                                        with mock.patch("timecapsulesmb.cli.deploy.run_ssh"):
+                                            with mock.patch("timecapsulesmb.cli.deploy.wait_for_ssh_state", side_effect=[True, True]):
+                                                with mock.patch("timecapsulesmb.cli.deploy.wait_for_post_reboot_smbd", return_value=True) as ready_mock:
+                                                    with mock.patch("timecapsulesmb.cli.deploy.verify_post_deploy") as verify_mock:
+                                                        with mock.patch("builtins.input", return_value="y"):
+                                                            with redirect_stdout(output):
+                                                                rc = deploy.main([])
+        self.assertEqual(rc, 0)
+        ready_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o foo")
+        verify_mock.assert_called_once_with(values)
+        text = output.getvalue()
+        self.assertIn("Device is back online.", text)
+        self.assertIn("Waiting for managed smbd to finish starting...", text)
+
+    def test_deploy_returns_failure_when_managed_smbd_never_becomes_ready(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
+                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+                        with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
+                            with mock.patch(
+                                "timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid",
+                                return_value="12345678-1234-1234-1234-123456789012",
+                            ):
+                                with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
+                                    with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
+                                        with mock.patch("timecapsulesmb.cli.deploy.run_ssh"):
+                                            with mock.patch("timecapsulesmb.cli.deploy.wait_for_ssh_state", side_effect=[True, True]):
+                                                with mock.patch("timecapsulesmb.cli.deploy.wait_for_post_reboot_smbd", return_value=False) as ready_mock:
+                                                    with mock.patch("timecapsulesmb.cli.deploy.verify_post_deploy") as verify_mock:
+                                                        with mock.patch("builtins.input", return_value="y"):
+                                                            with redirect_stdout(output):
+                                                                rc = deploy.main([])
+        self.assertEqual(rc, 1)
+        ready_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o foo")
+        verify_mock.assert_not_called()
+        self.assertIn("Managed smbd did not become ready after reboot.", output.getvalue())
+
     def test_deploy_install_nbns_touches_marker(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
