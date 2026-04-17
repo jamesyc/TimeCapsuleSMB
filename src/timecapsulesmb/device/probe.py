@@ -52,43 +52,12 @@ exit 1
 
 
 def discover_volume_root(host: str, password: str, ssh_opts: str) -> str:
+    try:
+        return discover_mounted_volume(host, password, ssh_opts).mountpoint
+    except SystemExit:
+        pass
+
     script = r'''
-best_any=""
-best_existing=""
-
-for dev in dk2 dk3; do
-  if [ ! -b "/dev/$dev" ]; then
-    continue
-  fi
-
-  volume="/Volumes/$dev"
-  if [ ! -d "$volume" ]; then
-    continue
-  fi
-
-  df_line=$(/bin/df -k "$volume" 2>/dev/null | /usr/bin/tail -n +2 || true)
-  case "$df_line" in
-    *" $volume")
-      :
-      ;;
-    *)
-      continue
-      ;;
-  esac
-
-  if [ ! -w "$volume" ]; then
-    continue
-  fi
-
-  if [ -d "$volume/ShareRoot" ] || [ -d "$volume/Shared" ]; then
-    best_existing="$volume"
-    break
-  fi
-  if [ -z "$best_any" ]; then
-    best_any="$volume"
-  fi
-done
-
 for dev in dk2 dk3; do
   if [ ! -b "/dev/$dev" ]; then
     continue
@@ -120,22 +89,7 @@ for dev in dk2 dk3; do
     continue
   fi
 
-  if [ -d "$volume/ShareRoot" ] || [ -d "$volume/Shared" ]; then
-    best_existing="$volume"
-    break
-  fi
-  if [ -z "$best_any" ]; then
-    best_any="$volume"
-  fi
-done
-
-if [ -n "$best_existing" ]; then
-  echo "$best_existing"
-  exit 0
-fi
-
-if [ -n "$best_any" ]; then
-  echo "$best_any"
+  echo "$volume"
   exit 0
 fi
 
