@@ -8,7 +8,7 @@ Macs running macOS 26.4 can still use the device as a standard Samba network sha
 This repo configures a modern SMB3 Samba setup that runs directly on the Time Capsule itself. The goal is that a Time Capsule can once again show up as a normal SMB server on your network, and modern macOS can connect to it as a network share. This project is currently confirmed to work for NetBSD 6 based Time Capsules! Your Time Capsule should work if it looks like this:  
 <img width="256" height="192" alt="image" src="https://github.com/user-attachments/assets/5d0b044f-2137-4bb7-8d65-3d1bb251754c" />
 
-If you have an older (NetBSD 4) Time Capsule, see [release v2.0.0-beta1](https://github.com/jamesyc/TimeCapsuleSMB/releases/tag/v2.0.0-beta1). 
+If you have an older (NetBSD 4) Time Capsule, see [the v2.0.0 beta release](https://github.com/jamesyc/TimeCapsuleSMB/releases). 
 
 ## Expectations
 
