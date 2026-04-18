@@ -217,15 +217,16 @@ def verify_post_deploy(values: dict[str, str]) -> None:
         print("  SMB listing verification skipped: smbclient not found")
 
 
-def verify_netbsd4_activation(host: str, password: str, ssh_opts: str) -> bool:
+def verify_netbsd4_activation(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 60) -> bool:
     print("NetBSD4 activation verification:")
-    script = r'''
+    script = rf'''
 if ! command -v fstat >/dev/null 2>&1; then
     echo "FAIL:fstat missing"
     exit 1
 fi
 attempt=0
-while [ "$attempt" -lt 30 ]; do
+max_attempts=$((({timeout_seconds} + 4) / 5))
+while [ "$attempt" -lt "$max_attempts" ]; do
     out="$(fstat 2>&1)"
     runtime_conf=0
     if [ -f /mnt/Memory/samba4/etc/smb.conf ]; then
@@ -246,7 +247,7 @@ while [ "$attempt" -lt 30 ]; do
             ;;
     esac
     attempt=$((attempt + 1))
-    sleep 1
+    sleep 5
 done
 echo "$out" | sed -n '/\.445/p;/\.5353/p'
 status=0
@@ -275,7 +276,14 @@ case "$out" in
 esac
 exit "$status"
 '''
-    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}", check=False)
+    proc = run_ssh(
+        host,
+        password,
+        ssh_opts,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=timeout_seconds + 30,
+    )
     for line in proc.stdout.strip().splitlines():
         if line.startswith("PASS:"):
             print(f"  ok: {line.removeprefix('PASS:')}")

@@ -235,7 +235,9 @@ static struct service_record *find_or_add_record(struct service_record_set *set,
 
 static int has_transport_suffix(const char *service_type) {
     return strstr(service_type, "._tcp.local.") != NULL ||
-           strstr(service_type, "._udp.local.") != NULL;
+           strstr(service_type, "._udp.local.") != NULL ||
+           strstr(service_type, "._tcp.local") != NULL ||
+           strstr(service_type, "._udp.local") != NULL;
 }
 
 static int find_service_type_for_instance_fqdn(char *out, size_t out_len, const char *instance_fqdn) {
