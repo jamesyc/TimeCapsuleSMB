@@ -1095,7 +1095,7 @@ static void parse_txt_rdata(struct service_record *record, const uint8_t *rdata,
     record->txt_count = 0;
     while (pos < rdlength && record->txt_count < SNAPSHOT_MAX_TXT_ITEMS) {
         uint8_t len = rdata[pos++];
-        if (pos + len > rdlength || len > MAX_TXT_STRING) {
+        if (pos + len > rdlength) {
             return;
         }
         memcpy(record->txt[record->txt_count], rdata + pos, len);
