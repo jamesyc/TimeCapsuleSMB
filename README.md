@@ -185,7 +185,6 @@ This is a non-destructive diagnostic command. `tcapsule doctor` checks:
   - Samba NetBIOS name
   - Samba share names
 - that SMB is reachable
-- that Bonjour `_smb._tcp` advertisement is visible
 - that Bonjour `_smb._tcp` advertisement is visible and resolves
 - that an authenticated SMB listing actually works and includes the configured share name
 - that authenticated SMB file operations also work on the share
