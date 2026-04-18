@@ -8,10 +8,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/wait.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #define MDNS_PORT 5353
@@ -32,6 +34,12 @@
 #define ADISK_SYS_TXT_SUFFIX ",adVF=" ADISK_SYS_ADVF
 #define ADISK_DISK_TXT_MID "=adVF=" ADISK_DISK_ADVF ",adVN="
 #define ADISK_DISK_TXT_SUFFIX ",adVU="
+#define SNAPSHOT_MAX_RECORDS 64
+#define SNAPSHOT_MAX_TXT_ITEMS 16
+#define SNAPSHOT_LINE_MAX 1024
+#define SNAPSHOT_MAX_SERVICE_TYPES 64
+#define SNAPSHOT_CAPTURE_TIMEOUT_SECONDS 60
+#define SNAPSHOT_CAPTURE_RETRY_INTERVAL_SECONDS 5
 
 #define DNS_TYPE_A 1
 #define DNS_TYPE_PTR 12
@@ -73,7 +81,40 @@ struct config {
     uint16_t adisk_port;
     uint16_t airport_port;
     uint32_t ttl;
+    char save_snapshot_path[MAX_NAME];
+    char load_snapshot_path[MAX_NAME];
 };
+
+struct service_record {
+    char service_type[MAX_NAME];
+    char instance_name[MAX_NAME];
+    char instance_fqdn[MAX_NAME];
+    char host_label[MAX_LABEL + 1];
+    char host_fqdn[MAX_NAME];
+    uint16_t port;
+    char txt[SNAPSHOT_MAX_TXT_ITEMS][MAX_TXT_STRING + 1];
+    size_t txt_count;
+};
+
+struct service_record_set {
+    struct service_record records[SNAPSHOT_MAX_RECORDS];
+    size_t count;
+};
+
+struct service_type_set {
+    char types[SNAPSHOT_MAX_SERVICE_TYPES][MAX_NAME];
+    size_t count;
+};
+
+static int name_equals(const char *a, const char *b);
+static int build_instance_fqdn(char *out, size_t out_len, const char *instance_name, const char *service_type);
+static int open_mdns_socket(void);
+static int add_rr_ptr(uint8_t *buf, size_t *off, size_t cap, const char *owner, const char *target, uint32_t ttl);
+static int add_rr_txt_empty(uint8_t *buf, size_t *off, size_t cap, const char *owner, uint32_t ttl);
+static int add_rr_txt_strings(uint8_t *buf, size_t *off, size_t cap, const char *owner, uint32_t ttl,
+                              const char **strings, size_t string_count);
+static int add_rr_srv(uint8_t *buf, size_t *off, size_t cap, const char *owner, const char *target, uint16_t port, uint32_t ttl);
+static int add_rr_a(uint8_t *buf, size_t *off, size_t cap, const char *owner, uint32_t ipv4_addr, uint32_t ttl);
 
 struct dns_header {
     uint16_t id;
@@ -89,10 +130,162 @@ static void on_signal(int signo) {
     g_stop = 1;
 }
 
+static int is_replaced_service_type(const char *service_type) {
+    return name_equals(service_type, "_smb._tcp.local.") ||
+           name_equals(service_type, "_adisk._tcp.local.");
+}
+
+static void trim_trailing_dot(char *value) {
+    size_t len = strlen(value);
+    while (len > 0 && value[len - 1] == '.') {
+        value[--len] = '\0';
+    }
+}
+
+static int extract_instance_name(char *out, size_t out_len, const char *instance_fqdn, const char *service_type) {
+    char fqdn_copy[MAX_NAME];
+    char service_copy[MAX_NAME];
+    size_t fqdn_len;
+    size_t service_len;
+
+    if (strlen(instance_fqdn) >= sizeof(fqdn_copy) || strlen(service_type) >= sizeof(service_copy)) {
+        return -1;
+    }
+    strcpy(fqdn_copy, instance_fqdn);
+    strcpy(service_copy, service_type);
+    trim_trailing_dot(fqdn_copy);
+    trim_trailing_dot(service_copy);
+
+    fqdn_len = strlen(fqdn_copy);
+    service_len = strlen(service_copy);
+    if (fqdn_len <= service_len + 1) {
+        return -1;
+    }
+    if (strncasecmp(fqdn_copy + fqdn_len - service_len, service_copy, service_len) != 0) {
+        return -1;
+    }
+    if (fqdn_copy[fqdn_len - service_len - 1] != '.') {
+        return -1;
+    }
+    if (fqdn_len - service_len - 1 >= out_len) {
+        return -1;
+    }
+    memcpy(out, fqdn_copy, fqdn_len - service_len - 1);
+    out[fqdn_len - service_len - 1] = '\0';
+    trim_trailing_dot(out);
+    return 0;
+}
+
+static int build_host_label_from_fqdn(char *out, size_t out_len, const char *host_fqdn) {
+    size_t i;
+
+    if (host_fqdn == NULL || host_fqdn[0] == '\0') {
+        return -1;
+    }
+    for (i = 0; host_fqdn[i] != '\0'; i++) {
+        if (host_fqdn[i] == '.') {
+            break;
+        }
+        if (i + 1 >= out_len) {
+            return -1;
+        }
+        out[i] = host_fqdn[i];
+    }
+    if (i == 0 || i >= out_len) {
+        return -1;
+    }
+    out[i] = '\0';
+    return 0;
+}
+
+static struct service_record *find_record(struct service_record_set *set, const char *service_type, const char *instance_name) {
+    size_t i;
+
+    for (i = 0; i < set->count; i++) {
+        if (name_equals(set->records[i].service_type, service_type) &&
+            strcmp(set->records[i].instance_name, instance_name) == 0) {
+            return &set->records[i];
+        }
+    }
+    return NULL;
+}
+
+static struct service_record *find_or_add_record(struct service_record_set *set, const char *service_type, const char *instance_name) {
+    struct service_record *record;
+
+    record = find_record(set, service_type, instance_name);
+    if (record != NULL) {
+        return record;
+    }
+    if (set->count >= SNAPSHOT_MAX_RECORDS) {
+        return NULL;
+    }
+    record = &set->records[set->count++];
+    memset(record, 0, sizeof(*record));
+    strncpy(record->service_type, service_type, sizeof(record->service_type) - 1);
+    strncpy(record->instance_name, instance_name, sizeof(record->instance_name) - 1);
+    if (build_instance_fqdn(record->instance_fqdn, sizeof(record->instance_fqdn), record->instance_name, record->service_type) != 0) {
+        set->count--;
+        return NULL;
+    }
+    return record;
+}
+
+static int has_transport_suffix(const char *service_type) {
+    return strstr(service_type, "._tcp.local.") != NULL ||
+           strstr(service_type, "._udp.local.") != NULL;
+}
+
+static int find_service_type_for_instance_fqdn(char *out, size_t out_len, const char *instance_fqdn) {
+    const char *service_start = strstr(instance_fqdn, "._");
+
+    if (service_start == NULL) {
+        return -1;
+    }
+    if (!has_transport_suffix(service_start + 1)) {
+        return -1;
+    }
+    if (strlen(service_start + 1) >= out_len) {
+        return -1;
+    }
+    strncpy(out, service_start + 1, out_len - 1);
+    out[out_len - 1] = '\0';
+    return 0;
+}
+
+static int service_type_set_contains(const struct service_type_set *set, const char *service_type) {
+    size_t i;
+
+    for (i = 0; i < set->count; i++) {
+        if (name_equals(set->types[i], service_type)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int service_type_set_add(struct service_type_set *set, const char *service_type) {
+    if (!has_transport_suffix(service_type)) {
+        return 0;
+    }
+    if (service_type_set_contains(set, service_type)) {
+        return 0;
+    }
+    if (set->count >= SNAPSHOT_MAX_SERVICE_TYPES) {
+        return -1;
+    }
+    strncpy(set->types[set->count], service_type, sizeof(set->types[set->count]) - 1);
+    set->types[set->count][sizeof(set->types[set->count]) - 1] = '\0';
+    set->count++;
+    return 0;
+}
+
 static void usage(const char *prog) {
     fprintf(stderr,
             "Usage: %s --instance <name> --host <label> --ipv4 <address> [options]\n"
             "Options:\n"
+            "  --save-snapshot <path> Capture Apple mDNS records into a snapshot file\n"
+            "  --load-snapshot <path> Kill Apple mDNSResponder and replay snapshot records\n"
             "  --service <type>   Service type (default: _smb._tcp.local.)\n"
             "  --adisk-share <n>  Also advertise _adisk._tcp for Time Machine\n"
             "  --adisk-disk-key <k> Disk key for _adisk TXT (default: dk0)\n"
@@ -542,6 +735,47 @@ static int name_equals(const char *a, const char *b) {
     return a_len == b_len && strncasecmp(a, b, a_len) == 0;
 }
 
+static int add_service_record_answers(uint8_t *buf, size_t *off, size_t cap, const struct service_record *record, uint32_t ttl, int *answers) {
+    const char *txts[SNAPSHOT_MAX_TXT_ITEMS];
+    size_t i;
+
+    for (i = 0; i < record->txt_count; i++) {
+        txts[i] = record->txt[i];
+    }
+
+    if (add_rr_ptr(buf, off, cap, record->service_type, record->instance_fqdn, ttl) != 0 ||
+        add_rr_srv(buf, off, cap, record->instance_fqdn, record->host_fqdn, record->port, ttl) != 0) {
+        return -1;
+    }
+    *answers += 2;
+
+    if (record->txt_count > 0) {
+        if (add_rr_txt_strings(buf, off, cap, record->instance_fqdn, ttl, txts, record->txt_count) != 0) {
+            return -1;
+        }
+        *answers += 1;
+    } else {
+        if (add_rr_txt_empty(buf, off, cap, record->instance_fqdn, ttl) != 0) {
+            return -1;
+        }
+        *answers += 1;
+    }
+
+    return 0;
+}
+
+static int add_snapshot_host_a_record(uint8_t *buf, size_t *off, size_t cap, const struct service_record *record,
+                                      const struct config *cfg, int *answers) {
+    if (record->host_fqdn[0] == '\0') {
+        return 0;
+    }
+    if (add_rr_a(buf, off, cap, record->host_fqdn, cfg->ipv4_addr, cfg->ttl) != 0) {
+        return -1;
+    }
+    *answers += 1;
+    return 0;
+}
+
 static int add_rr_ptr(uint8_t *buf, size_t *off, size_t cap, const char *owner, const char *target, uint32_t ttl) {
     size_t rdlength_pos;
     size_t rdata_start;
@@ -657,6 +891,478 @@ static int add_rr_a(uint8_t *buf, size_t *off, size_t cap, const char *owner, ui
     return 0;
 }
 
+static int hex_encode_bytes(char *out, size_t out_len, const char *bytes) {
+    static const char hex[] = "0123456789abcdef";
+    size_t i;
+    size_t src_len;
+
+    if (bytes == NULL) {
+        return -1;
+    }
+    src_len = strlen(bytes);
+    if ((src_len * 2) + 1 > out_len) {
+        return -1;
+    }
+    for (i = 0; i < src_len; i++) {
+        unsigned char ch = (unsigned char)bytes[i];
+        out[i * 2] = hex[ch >> 4];
+        out[i * 2 + 1] = hex[ch & 0x0f];
+    }
+    out[src_len * 2] = '\0';
+    return 0;
+}
+
+static int hex_decode_bytes(char *out, size_t out_len, const char *hex) {
+    size_t i;
+    size_t hex_len;
+
+    if (hex == NULL) {
+        return -1;
+    }
+    hex_len = strlen(hex);
+    if ((hex_len % 2) != 0 || (hex_len / 2) + 1 > out_len) {
+        return -1;
+    }
+    for (i = 0; i < hex_len; i += 2) {
+        char byte_str[3];
+        char *endptr = NULL;
+        long value;
+
+        byte_str[0] = hex[i];
+        byte_str[1] = hex[i + 1];
+        byte_str[2] = '\0';
+        value = strtol(byte_str, &endptr, 16);
+        if (endptr == NULL || *endptr != '\0' || value < 0 || value > 255) {
+            return -1;
+        }
+        out[i / 2] = (char)value;
+    }
+    out[hex_len / 2] = '\0';
+    return 0;
+}
+
+static int write_snapshot_file_atomic(const char *path, const struct service_record_set *set) {
+    char tmp_path[MAX_NAME * 2];
+    char host_hex[(MAX_NAME * 2) + 1];
+    FILE *fp;
+    size_t i;
+    size_t j;
+
+    if (snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path) >= (int)sizeof(tmp_path)) {
+        return -1;
+    }
+
+    fp = fopen(tmp_path, "w");
+    if (fp == NULL) {
+        return -1;
+    }
+
+    for (i = 0; i < set->count; i++) {
+        const struct service_record *record = &set->records[i];
+        if (hex_encode_bytes(host_hex, sizeof(host_hex), record->host_fqdn) != 0) {
+            fclose(fp);
+            unlink(tmp_path);
+            return -1;
+        }
+        if (fprintf(fp, "BEGIN\nTYPE=%s\nINSTANCE=%s\nHOST_HEX=%s\nPORT=%u\n",
+                    record->service_type,
+                    record->instance_name,
+                    host_hex,
+                    (unsigned)record->port) < 0) {
+            fclose(fp);
+            unlink(tmp_path);
+            return -1;
+        }
+        for (j = 0; j < record->txt_count; j++) {
+            if (fprintf(fp, "TXT=%s\n", record->txt[j]) < 0) {
+                fclose(fp);
+                unlink(tmp_path);
+                return -1;
+            }
+        }
+        if (fprintf(fp, "END\n") < 0) {
+            fclose(fp);
+            unlink(tmp_path);
+            return -1;
+        }
+    }
+
+    if (fclose(fp) != 0) {
+        unlink(tmp_path);
+        return -1;
+    }
+    if (rename(tmp_path, path) != 0) {
+        unlink(tmp_path);
+        return -1;
+    }
+    return 0;
+}
+
+static int load_snapshot_file(const char *path, struct service_record_set *out) {
+    FILE *fp;
+    char line[SNAPSHOT_LINE_MAX];
+    struct service_record current;
+    int in_record = 0;
+
+    memset(out, 0, sizeof(*out));
+    fp = fopen(path, "r");
+    if (fp == NULL) {
+        return -1;
+    }
+
+    memset(&current, 0, sizeof(current));
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n') {
+            line[len - 1] = '\0';
+        }
+
+        if (strcmp(line, "BEGIN") == 0) {
+            memset(&current, 0, sizeof(current));
+            in_record = 1;
+            continue;
+        }
+        if (strcmp(line, "END") == 0) {
+            if (!in_record || current.service_type[0] == '\0' || current.instance_name[0] == '\0' ||
+                current.host_fqdn[0] == '\0') {
+                fclose(fp);
+                return -1;
+            }
+            if (out->count >= SNAPSHOT_MAX_RECORDS ||
+                build_instance_fqdn(current.instance_fqdn, sizeof(current.instance_fqdn), current.instance_name, current.service_type) != 0 ||
+                build_host_label_from_fqdn(current.host_label, sizeof(current.host_label), current.host_fqdn) != 0) {
+                fclose(fp);
+                return -1;
+            }
+            out->records[out->count++] = current;
+            memset(&current, 0, sizeof(current));
+            in_record = 0;
+            continue;
+        }
+        if (!in_record) {
+            continue;
+        }
+        if (strncmp(line, "TYPE=", 5) == 0) {
+            strncpy(current.service_type, line + 5, sizeof(current.service_type) - 1);
+        } else if (strncmp(line, "INSTANCE=", 9) == 0) {
+            strncpy(current.instance_name, line + 9, sizeof(current.instance_name) - 1);
+        } else if (strncmp(line, "HOST_HEX=", 9) == 0) {
+            if (hex_decode_bytes(current.host_fqdn, sizeof(current.host_fqdn), line + 9) != 0) {
+                fclose(fp);
+                return -1;
+            }
+        } else if (strncmp(line, "HOST=", 5) == 0) {
+            strncpy(current.host_label, line + 5, sizeof(current.host_label) - 1);
+            if (snprintf(current.host_fqdn, sizeof(current.host_fqdn), "%s.local.", current.host_label) >= (int)sizeof(current.host_fqdn)) {
+                fclose(fp);
+                return -1;
+            }
+        } else if (strncmp(line, "PORT=", 5) == 0) {
+            current.port = (uint16_t)atoi(line + 5);
+        } else if (strncmp(line, "TXT=", 4) == 0) {
+            if (current.txt_count >= SNAPSHOT_MAX_TXT_ITEMS) {
+                fclose(fp);
+                return -1;
+            }
+            strncpy(current.txt[current.txt_count++], line + 4, MAX_TXT_STRING);
+        }
+    }
+
+    fclose(fp);
+    return out->count > 0 ? 0 : -1;
+}
+
+static int send_query_question(int sockfd, const struct sockaddr_in *dest, const char *qname, uint16_t qtype) {
+    uint8_t packet[BUF_SIZE];
+    struct dns_header hdr;
+    size_t off = sizeof(hdr);
+
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.qdcount = htons(1);
+    memcpy(packet, &hdr, sizeof(hdr));
+    if (encode_name(packet, &off, sizeof(packet), qname) != 0 ||
+        append_u16(packet, &off, sizeof(packet), qtype) != 0 ||
+        append_u16(packet, &off, sizeof(packet), DNS_CLASS_IN) != 0) {
+        return -1;
+    }
+    return sendto(sockfd, packet, off, 0, (const struct sockaddr *)dest, sizeof(*dest)) >= 0 ? 0 : -1;
+}
+
+static void parse_txt_rdata(struct service_record *record, const uint8_t *rdata, size_t rdlength) {
+    size_t pos = 0;
+    record->txt_count = 0;
+    while (pos < rdlength && record->txt_count < SNAPSHOT_MAX_TXT_ITEMS) {
+        uint8_t len = rdata[pos++];
+        if (pos + len > rdlength || len > MAX_TXT_STRING) {
+            return;
+        }
+        memcpy(record->txt[record->txt_count], rdata + pos, len);
+        record->txt[record->txt_count][len] = '\0';
+        record->txt_count++;
+        pos += len;
+    }
+}
+
+static int parse_snapshot_rrs(const uint8_t *packet, size_t packet_len, struct service_record_set *set,
+                              struct service_type_set *service_types) {
+    struct dns_header hdr;
+    size_t cursor = sizeof(hdr);
+    uint16_t sections[3];
+    size_t s;
+    uint16_t i;
+
+    if (packet_len < sizeof(hdr)) {
+        return -1;
+    }
+    memcpy(&hdr, packet, sizeof(hdr));
+    sections[0] = ntohs(hdr.qdcount);
+    sections[1] = ntohs(hdr.ancount);
+    sections[2] = (uint16_t)(ntohs(hdr.nscount) + ntohs(hdr.arcount));
+
+    for (i = 0; i < sections[0]; i++) {
+        char qname[MAX_NAME];
+        if (decode_name(packet, packet_len, &cursor, qname, sizeof(qname)) != 0 || cursor + 4 > packet_len) {
+            return -1;
+        }
+        cursor += 4;
+    }
+
+    for (s = 1; s < 3; s++) {
+        for (i = 0; i < sections[s]; i++) {
+            char owner[MAX_NAME];
+            uint16_t type;
+            uint16_t rdlength;
+            size_t rdata_cursor;
+
+            if (decode_name(packet, packet_len, &cursor, owner, sizeof(owner)) != 0 || cursor + 10 > packet_len) {
+                return -1;
+            }
+            memcpy(&type, packet + cursor, 2);
+            memcpy(&rdlength, packet + cursor + 8, 2);
+            cursor += 10;
+            rdlength = ntohs(rdlength);
+            if (cursor + rdlength > packet_len) {
+                return -1;
+            }
+            rdata_cursor = cursor;
+
+            type = ntohs(type);
+
+            if (type == DNS_TYPE_PTR && name_equals(owner, "_services._dns-sd._udp.local.")) {
+                char target[MAX_NAME];
+                if (decode_name(packet, packet_len, &rdata_cursor, target, sizeof(target)) == 0) {
+                    (void)service_type_set_add(service_types, target);
+                }
+            } else if (type == DNS_TYPE_PTR && has_transport_suffix(owner)) {
+                char target[MAX_NAME];
+                char service_type[MAX_NAME];
+                char instance_name[MAX_NAME];
+                struct service_record *record;
+
+                if (decode_name(packet, packet_len, &rdata_cursor, target, sizeof(target)) == 0 &&
+                    find_service_type_for_instance_fqdn(service_type, sizeof(service_type), target) == 0 &&
+                    extract_instance_name(instance_name, sizeof(instance_name), target, service_type) == 0) {
+                    (void)service_type_set_add(service_types, service_type);
+                    record = find_or_add_record(set, service_type, instance_name);
+                    if (record != NULL) {
+                        strncpy(record->instance_fqdn, target, sizeof(record->instance_fqdn) - 1);
+                    }
+                }
+            } else if (type == DNS_TYPE_SRV) {
+                char service_type[MAX_NAME];
+                if (find_service_type_for_instance_fqdn(service_type, sizeof(service_type), owner) == 0 && rdlength >= 6) {
+                    char instance_name[MAX_NAME];
+                    char host_fqdn[MAX_NAME];
+                    struct service_record *record;
+                    uint16_t port;
+                    size_t tmp_cursor = rdata_cursor + 6;
+                    memcpy(&port, packet + rdata_cursor + 4, 2);
+                    port = ntohs(port);
+                    if (extract_instance_name(instance_name, sizeof(instance_name), owner, service_type) == 0 &&
+                        decode_name(packet, packet_len, &tmp_cursor, host_fqdn, sizeof(host_fqdn)) == 0) {
+                        record = find_or_add_record(set, service_type, instance_name);
+                        if (record != NULL) {
+                            record->port = port;
+                            strncpy(record->host_fqdn, host_fqdn, sizeof(record->host_fqdn) - 1);
+                            trim_trailing_dot(record->host_fqdn);
+                            strncat(record->host_fqdn, ".", sizeof(record->host_fqdn) - strlen(record->host_fqdn) - 1);
+                            (void)build_host_label_from_fqdn(record->host_label, sizeof(record->host_label), host_fqdn);
+                        }
+                    }
+                }
+            } else if (type == DNS_TYPE_TXT) {
+                char service_type[MAX_NAME];
+                if (find_service_type_for_instance_fqdn(service_type, sizeof(service_type), owner) == 0) {
+                    char instance_name[MAX_NAME];
+                    struct service_record *record;
+                    if (extract_instance_name(instance_name, sizeof(instance_name), owner, service_type) == 0) {
+                        record = find_or_add_record(set, service_type, instance_name);
+                        if (record != NULL) {
+                            parse_txt_rdata(record, packet + rdata_cursor, rdlength);
+                        }
+                    }
+                }
+            }
+
+            cursor += rdlength;
+        }
+    }
+
+    return 0;
+}
+
+static int open_capture_socket(void) {
+    return open_mdns_socket();
+}
+
+static int collect_mdns_responses(int sockfd, int seconds, struct service_record_set *set,
+                                  struct service_type_set *service_types) {
+    time_t deadline = time(NULL) + seconds;
+
+    while (time(NULL) < deadline) {
+        fd_set rfds;
+        struct timeval tv;
+        uint8_t packet[BUF_SIZE];
+        ssize_t nread;
+
+        FD_ZERO(&rfds);
+        FD_SET(sockfd, &rfds);
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+        if (select(sockfd + 1, &rfds, NULL, NULL, &tv) <= 0) {
+            continue;
+        }
+        nread = recvfrom(sockfd, packet, sizeof(packet), 0, NULL, NULL);
+        if (nread > 0) {
+            (void)parse_snapshot_rrs(packet, (size_t)nread, set, service_types);
+        }
+    }
+
+    return 0;
+}
+
+static int capture_apple_snapshot(const struct config *cfg, struct service_record_set *out) {
+    int sockfd;
+    struct sockaddr_in mdns_dest;
+    size_t i;
+    struct service_record_set captured;
+    struct service_record_set filtered;
+    struct service_type_set service_types;
+    const char *preferred_host = NULL;
+
+    memset(&captured, 0, sizeof(captured));
+    memset(&filtered, 0, sizeof(filtered));
+    memset(&service_types, 0, sizeof(service_types));
+    sockfd = open_capture_socket();
+    if (sockfd < 0) {
+        return -1;
+    }
+
+    memset(&mdns_dest, 0, sizeof(mdns_dest));
+    mdns_dest.sin_family = AF_INET;
+    mdns_dest.sin_port = htons(MDNS_PORT);
+    mdns_dest.sin_addr.s_addr = inet_addr(MDNS_GROUP);
+
+    (void)send_query_question(sockfd, &mdns_dest, "_services._dns-sd._udp.local.", DNS_TYPE_PTR);
+    (void)collect_mdns_responses(sockfd, 5, &captured, &service_types);
+
+    for (i = 0; i < service_types.count; i++) {
+        (void)send_query_question(sockfd, &mdns_dest, service_types.types[i], DNS_TYPE_PTR);
+    }
+    (void)collect_mdns_responses(sockfd, 5, &captured, &service_types);
+
+    for (i = 0; i < captured.count; i++) {
+        (void)send_query_question(sockfd, &mdns_dest, captured.records[i].instance_fqdn, DNS_TYPE_SRV);
+        (void)send_query_question(sockfd, &mdns_dest, captured.records[i].instance_fqdn, DNS_TYPE_TXT);
+    }
+    (void)collect_mdns_responses(sockfd, 5, &captured, &service_types);
+    close(sockfd);
+
+    for (i = 0; i < captured.count; i++) {
+        const struct service_record *record = &captured.records[i];
+        size_t j;
+        if (name_equals(record->service_type, AIRPORT_SERVICE_TYPE)) {
+            if (cfg->airport_wama[0] != '\0') {
+                for (j = 0; j < record->txt_count; j++) {
+                    if (strncasecmp(record->txt[j], "waMA=", 5) == 0 &&
+                        strcasecmp(record->txt[j] + 5, cfg->airport_wama) == 0) {
+                        preferred_host = record->host_label;
+                        break;
+                    }
+                }
+            }
+            if (preferred_host == NULL) {
+                preferred_host = record->host_label;
+            }
+        }
+    }
+
+    if (preferred_host != NULL) {
+        for (i = 0; i < captured.count; i++) {
+            const struct service_record *record = &captured.records[i];
+            if (record->host_label[0] == '\0' || strcmp(record->host_label, preferred_host) != 0) {
+                continue;
+            }
+            if (filtered.count >= SNAPSHOT_MAX_RECORDS) {
+                break;
+            }
+            filtered.records[filtered.count++] = *record;
+        }
+        if (filtered.count > 0) {
+            *out = filtered;
+            return 0;
+        }
+    }
+
+    *out = captured;
+    return out->count > 0 ? 0 : -1;
+}
+
+static int capture_apple_snapshot_with_retry(const struct config *cfg, struct service_record_set *out) {
+    time_t deadline = time(NULL) + SNAPSHOT_CAPTURE_TIMEOUT_SECONDS;
+
+    do {
+        if (capture_apple_snapshot(cfg, out) == 0) {
+            return 0;
+        }
+        if (time(NULL) >= deadline) {
+            break;
+        }
+        sleep(SNAPSHOT_CAPTURE_RETRY_INTERVAL_SECONDS);
+    } while (time(NULL) < deadline);
+
+    return -1;
+}
+
+static void gracefully_kill_mdnsresponder(void) {
+    int attempt;
+    (void)system("/usr/bin/pkill mDNSResponder >/dev/null 2>&1 || true");
+    for (attempt = 0; attempt < 5; attempt++) {
+        FILE *ps = popen("/bin/ps ax -o stat= -o ucomm= 2>/dev/null", "r");
+        char line[256];
+        int alive = 0;
+
+        if (ps == NULL) {
+            break;
+        }
+        while (fgets(line, sizeof(line), ps) != NULL) {
+            char stat[32];
+            char ucomm[128];
+            if (sscanf(line, "%31s %127s", stat, ucomm) == 2 && strcmp(ucomm, "mDNSResponder") == 0) {
+                if (stat[0] != 'Z') {
+                    alive = 1;
+                    break;
+                }
+            }
+        }
+        pclose(ps);
+        if (!alive) {
+            break;
+        }
+        sleep(1);
+    }
+}
+
 static int add_adisk_records(uint8_t *buf, size_t *off, size_t cap, const struct config *cfg, int *answers) {
     char instance_fqdn[MAX_NAME];
     char txt1[128];
@@ -743,12 +1449,14 @@ static int add_airport_records(uint8_t *buf, size_t *off, size_t cap, const stru
     return 0;
 }
 
-static int send_announcement(int sockfd, const struct sockaddr_in *dest, const struct config *cfg) {
+static int send_announcement(int sockfd, const struct sockaddr_in *dest, const struct config *cfg,
+                             const struct service_record_set *snapshot_records, int use_snapshot_records) {
     uint8_t buf[BUF_SIZE];
     size_t off = sizeof(struct dns_header);
     struct dns_header hdr;
     char instance_fqdn[MAX_NAME];
     int answers = 0;
+    size_t i;
 
     if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->service_type) != 0) {
         return -1;
@@ -768,11 +1476,25 @@ static int send_announcement(int sockfd, const struct sockaddr_in *dest, const s
     if (add_adisk_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {
         return -1;
     }
-    if (add_device_info_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {
-        return -1;
-    }
-    if (add_airport_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {
-        return -1;
+    if (use_snapshot_records) {
+        for (i = 0; i < snapshot_records->count; i++) {
+            if (is_replaced_service_type(snapshot_records->records[i].service_type)) {
+                continue;
+            }
+            if (add_service_record_answers(buf, &off, sizeof(buf), &snapshot_records->records[i], cfg->ttl, &answers) != 0) {
+                return -1;
+            }
+            if (add_snapshot_host_a_record(buf, &off, sizeof(buf), &snapshot_records->records[i], cfg, &answers) != 0) {
+                return -1;
+            }
+        }
+    } else {
+        if (add_device_info_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {
+            return -1;
+        }
+        if (add_airport_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {
+            return -1;
+        }
     }
 
     hdr.ancount = htons((uint16_t)answers);
@@ -781,7 +1503,8 @@ static int send_announcement(int sockfd, const struct sockaddr_in *dest, const s
     return (sendto(sockfd, buf, off, 0, (const struct sockaddr *)dest, sizeof(*dest)) >= 0) ? 0 : -1;
 }
 
-static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, const struct sockaddr_in *dest, const struct config *cfg) {
+static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, const struct sockaddr_in *dest, const struct config *cfg,
+                        const struct service_record_set *snapshot_records, int use_snapshot_records) {
     struct dns_header hdr;
     size_t cursor = sizeof(struct dns_header);
     uint16_t qdcount;
@@ -806,6 +1529,15 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
     int want_airport_txt = 0;
     int answers = 0;
     uint16_t i;
+    int want_snapshot_ptr[SNAPSHOT_MAX_RECORDS];
+    int want_snapshot_srv[SNAPSHOT_MAX_RECORDS];
+    int want_snapshot_txt[SNAPSHOT_MAX_RECORDS];
+    int want_snapshot_a[SNAPSHOT_MAX_RECORDS];
+
+    memset(want_snapshot_ptr, 0, sizeof(want_snapshot_ptr));
+    memset(want_snapshot_srv, 0, sizeof(want_snapshot_srv));
+    memset(want_snapshot_txt, 0, sizeof(want_snapshot_txt));
+    memset(want_snapshot_a, 0, sizeof(want_snapshot_a));
 
     if (packet_len < sizeof(struct dns_header)) {
         return 0;
@@ -823,11 +1555,11 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
         build_instance_fqdn(adisk_instance_fqdn, sizeof(adisk_instance_fqdn), cfg->instance_name, cfg->adisk_service_type) != 0) {
         return 0;
     }
-    if (cfg->device_model[0] != '\0' &&
+    if (!use_snapshot_records && cfg->device_model[0] != '\0' &&
         build_instance_fqdn(device_info_instance_fqdn, sizeof(device_info_instance_fqdn), cfg->instance_name, cfg->device_info_service_type) != 0) {
         return 0;
     }
-    if (is_airport_enabled(cfg) &&
+    if (!use_snapshot_records && is_airport_enabled(cfg) &&
         build_instance_fqdn(airport_instance_fqdn, sizeof(airport_instance_fqdn), cfg->instance_name, cfg->airport_service_type) != 0) {
         return 0;
     }
@@ -856,11 +1588,11 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
                    name_equals(qname, cfg->adisk_service_type) &&
                    (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
             want_adisk_ptr = 1;
-        } else if (cfg->device_model[0] != '\0' &&
+        } else if (!use_snapshot_records && cfg->device_model[0] != '\0' &&
                    name_equals(qname, cfg->device_info_service_type) &&
                    (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
             want_device_info_ptr = 1;
-        } else if (is_airport_enabled(cfg) &&
+        } else if (!use_snapshot_records && is_airport_enabled(cfg) &&
                    name_equals(qname, cfg->airport_service_type) &&
                    (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
             want_airport_ptr = 1;
@@ -876,7 +1608,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
             if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
                 want_adisk_txt = 1;
             }
-        } else if (cfg->device_model[0] != '\0' &&
+        } else if (!use_snapshot_records && cfg->device_model[0] != '\0' &&
                    name_equals(qname, device_info_instance_fqdn)) {
             if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
                 want_device_info_srv = 1;
@@ -884,7 +1616,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
             if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
                 want_device_info_txt = 1;
             }
-        } else if (is_airport_enabled(cfg) &&
+        } else if (!use_snapshot_records && is_airport_enabled(cfg) &&
                    name_equals(qname, airport_instance_fqdn)) {
             if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
                 want_airport_srv = 1;
@@ -894,6 +1626,26 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
             }
         } else if (name_equals(qname, cfg->host_fqdn) && (qtype == DNS_TYPE_A || qtype == DNS_TYPE_ANY)) {
             want_a = 1;
+        } else if (use_snapshot_records) {
+            size_t j;
+            for (j = 0; j < snapshot_records->count; j++) {
+                const struct service_record *record = &snapshot_records->records[j];
+                if (is_replaced_service_type(record->service_type)) {
+                    continue;
+                }
+                if (name_equals(qname, record->service_type) && (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
+                    want_snapshot_ptr[j] = 1;
+                } else if (name_equals(qname, record->instance_fqdn)) {
+                    if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
+                        want_snapshot_srv[j] = 1;
+                    }
+                    if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
+                        want_snapshot_txt[j] = 1;
+                    }
+                } else if (name_equals(qname, record->host_fqdn) && (qtype == DNS_TYPE_A || qtype == DNS_TYPE_ANY)) {
+                    want_snapshot_a[j] = 1;
+                }
+            }
         }
     }
 
@@ -901,7 +1653,23 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
         !want_adisk_ptr && !want_adisk_srv && !want_adisk_txt &&
         !want_device_info_ptr && !want_device_info_srv && !want_device_info_txt &&
         !want_airport_ptr && !want_airport_srv && !want_airport_txt) {
-        return 0;
+        int any_snapshot = 0;
+        if (use_snapshot_records) {
+            size_t j;
+            for (j = 0; j < snapshot_records->count; j++) {
+                if (want_snapshot_ptr[j] || want_snapshot_srv[j] || want_snapshot_txt[j]) {
+                    any_snapshot = 1;
+                    break;
+                }
+                if (want_snapshot_a[j]) {
+                    any_snapshot = 1;
+                    break;
+                }
+            }
+        }
+        if (!any_snapshot) {
+            return 0;
+        }
     }
 
     memset(&hdr, 0, sizeof(hdr));
@@ -958,7 +1726,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
             answers++;
         }
     }
-    if (want_device_info_ptr || want_device_info_srv || want_device_info_txt) {
+    if (!use_snapshot_records && (want_device_info_ptr || want_device_info_srv || want_device_info_txt)) {
         char model_txt[MAX_NAME + 16];
         const char *txts[1];
 
@@ -986,7 +1754,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
             answers++;
         }
     }
-    if (want_airport_ptr || want_airport_srv || want_airport_txt) {
+    if (!use_snapshot_records && (want_airport_ptr || want_airport_srv || want_airport_txt)) {
         char airport_txt[256];
         const char *txts[1];
 
@@ -1019,6 +1787,52 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
             return -1;
         }
         answers++;
+    }
+
+    if (use_snapshot_records) {
+        size_t j;
+        for (j = 0; j < snapshot_records->count; j++) {
+            const struct service_record *record = &snapshot_records->records[j];
+            const char *txts[SNAPSHOT_MAX_TXT_ITEMS];
+            size_t k;
+
+            if (is_replaced_service_type(record->service_type)) {
+                continue;
+            }
+            for (k = 0; k < record->txt_count; k++) {
+                txts[k] = record->txt[k];
+            }
+            if (want_snapshot_ptr[j]) {
+                if (add_rr_ptr(reply, &off, sizeof(reply), record->service_type, record->instance_fqdn, cfg->ttl) != 0) {
+                    return -1;
+                }
+                answers++;
+            }
+            if (want_snapshot_srv[j]) {
+                if (add_rr_srv(reply, &off, sizeof(reply), record->instance_fqdn, record->host_fqdn, record->port, cfg->ttl) != 0) {
+                    return -1;
+                }
+                answers++;
+            }
+            if (want_snapshot_txt[j]) {
+                if (record->txt_count > 0) {
+                    if (add_rr_txt_strings(reply, &off, sizeof(reply), record->instance_fqdn, cfg->ttl, txts, record->txt_count) != 0) {
+                        return -1;
+                    }
+                } else {
+                    if (add_rr_txt_empty(reply, &off, sizeof(reply), record->instance_fqdn, cfg->ttl) != 0) {
+                        return -1;
+                    }
+                }
+                answers++;
+            }
+            if (want_snapshot_a[j]) {
+                if (add_rr_a(reply, &off, sizeof(reply), record->host_fqdn, cfg->ipv4_addr, cfg->ttl) != 0) {
+                    return -1;
+                }
+                answers++;
+            }
+        }
     }
 
     hdr.ancount = htons((uint16_t)answers);
@@ -1078,12 +1892,15 @@ static int open_mdns_socket(void) {
 
 int main(int argc, char **argv) {
     struct config cfg;
+    struct service_record_set snapshot_records;
     int sockfd;
     struct sockaddr_in mdns_dest;
     int i;
     time_t last_announce = 0;
+    int use_snapshot_records = 0;
 
     memset(&cfg, 0, sizeof(cfg));
+    memset(&snapshot_records, 0, sizeof(snapshot_records));
     strcpy(cfg.service_type, "_smb._tcp.local.");
     strcpy(cfg.adisk_service_type, "_adisk._tcp.local.");
     strcpy(cfg.adisk_disk_key, ADISK_DEFAULT_DISK_KEY);
@@ -1095,7 +1912,11 @@ int main(int argc, char **argv) {
     cfg.ttl = 120;
 
     for (i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--service") == 0 && i + 1 < argc) {
+        if (strcmp(argv[i], "--save-snapshot") == 0 && i + 1 < argc) {
+            strncpy(cfg.save_snapshot_path, argv[++i], sizeof(cfg.save_snapshot_path) - 1);
+        } else if (strcmp(argv[i], "--load-snapshot") == 0 && i + 1 < argc) {
+            strncpy(cfg.load_snapshot_path, argv[++i], sizeof(cfg.load_snapshot_path) - 1);
+        } else if (strcmp(argv[i], "--service") == 0 && i + 1 < argc) {
             strncpy(cfg.service_type, argv[++i], sizeof(cfg.service_type) - 1);
         } else if (strcmp(argv[i], "--adisk-share") == 0 && i + 1 < argc) {
             strncpy(cfg.adisk_share_name, argv[++i], sizeof(cfg.adisk_share_name) - 1);
@@ -1188,6 +2009,28 @@ int main(int argc, char **argv) {
 
     snprintf(cfg.host_fqdn, sizeof(cfg.host_fqdn), "%s.local.", cfg.host_label);
 
+    if (cfg.save_snapshot_path[0] != '\0') {
+        struct service_record_set captured_records;
+        memset(&captured_records, 0, sizeof(captured_records));
+        if (capture_apple_snapshot_with_retry(&cfg, &captured_records) == 0) {
+            if (write_snapshot_file_atomic(cfg.save_snapshot_path, &captured_records) != 0) {
+                fprintf(stderr, "failed to write snapshot file: %s\n", cfg.save_snapshot_path);
+            }
+        } else {
+            fprintf(stderr, "warning: could not capture Apple mDNS snapshot\n");
+        }
+    }
+
+    if (cfg.load_snapshot_path[0] != '\0') {
+        gracefully_kill_mdnsresponder();
+        if (load_snapshot_file(cfg.load_snapshot_path, &snapshot_records) == 0) {
+            use_snapshot_records = 1;
+        } else {
+            fprintf(stderr, "warning: could not load snapshot file: %s; falling back to generated records\n",
+                    cfg.load_snapshot_path);
+        }
+    }
+
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
 
@@ -1201,7 +2044,7 @@ int main(int argc, char **argv) {
     mdns_dest.sin_port = htons(MDNS_PORT);
     mdns_dest.sin_addr.s_addr = inet_addr(MDNS_GROUP);
 
-    if (send_announcement(sockfd, &mdns_dest, &cfg) != 0) {
+    if (send_announcement(sockfd, &mdns_dest, &cfg, &snapshot_records, use_snapshot_records) != 0) {
         perror("send_announcement");
     }
     last_announce = time(NULL);
@@ -1222,12 +2065,12 @@ int main(int argc, char **argv) {
             socklen_t src_len = sizeof(src);
             nread = recvfrom(sockfd, packet, sizeof(packet), 0, (struct sockaddr *)&src, &src_len);
             if (nread > 0) {
-                (void)handle_query(sockfd, packet, (size_t)nread, &mdns_dest, &cfg);
+                (void)handle_query(sockfd, packet, (size_t)nread, &mdns_dest, &cfg, &snapshot_records, use_snapshot_records);
             }
         }
 
         if (time(NULL) - last_announce >= ANNOUNCE_INTERVAL) {
-            (void)send_announcement(sockfd, &mdns_dest, &cfg);
+            (void)send_announcement(sockfd, &mdns_dest, &cfg, &snapshot_records, use_snapshot_records);
             last_announce = time(NULL);
         }
     }

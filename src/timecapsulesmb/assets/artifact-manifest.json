@@ -1,5 +1,21 @@
 {
   "artifacts": {
+    "mdns-advertiser": {
+      "path": "bin/mdns/mdns-advertiser",
+      "sha256": "854a88b911356eb431f9a819fd0d617fc5aa7f084e3c0dd29e8d6f14813f80a0"
+    },
+    "mdns-advertiser-netbsd4": {
+      "path": "bin/mdns-netbsd4/mdns-advertiser",
+      "sha256": "b450e33b3584c17c3bbe2d869aec2cce0b2e907a69e8feb144d9f58d70c43090"
+    },
+    "nbns-advertiser": {
+      "path": "bin/nbns/nbns-advertiser",
+      "sha256": "a1616bf32396cc4f003d89ce9f11e2a3bb7e402a6f9cfffed84a7a4fefdeb6b3"
+    },
+    "nbns-advertiser-netbsd4": {
+      "path": "bin/nbns-netbsd4/nbns-advertiser",
+      "sha256": "da83673e06c05997e9d30ff6f92423d3d7a76c61ef9a9169f6c52d2f7f1ea54d"
+    },
     "smbd": {
       "path": "bin/samba4/smbd",
       "sha256": "966d78c00fba09b28e79693393786591d303caff53401566e5632727f29a7ed3"
@@ -11,22 +27,6 @@
     "smbd-samba3-netbsd4": {
       "path": "bin/samba3-netbsd4/smbd",
       "sha256": "827648495f6df07b0359731497b3d2a5751f3ee94a15d4732299e078b3b1ab6e"
-    },
-    "mdns-advertiser": {
-      "path": "bin/mdns/mdns-advertiser",
-      "sha256": "e70a00ceb91328a9d6fa05ede27de5e84ee51cb31093a7c9fad4a6d17f4b4be1"
-    },
-    "mdns-advertiser-netbsd4": {
-      "path": "bin/mdns-netbsd4/mdns-advertiser",
-      "sha256": "111a10902bdee111c70802d0e98cdd9a0c4ac9bca3b5a4196ff2d5574223e512"
-    },
-    "nbns-advertiser": {
-      "path": "bin/nbns/nbns-advertiser",
-      "sha256": "a1616bf32396cc4f003d89ce9f11e2a3bb7e402a6f9cfffed84a7a4fefdeb6b3"
-    },
-    "nbns-advertiser-netbsd4": {
-      "path": "bin/nbns-netbsd4/nbns-advertiser",
-      "sha256": "da83673e06c05997e9d30ff6f92423d3d7a76c61ef9a9169f6c52d2f7f1ea54d"
     }
   }
 }

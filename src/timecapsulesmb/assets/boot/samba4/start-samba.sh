@@ -34,6 +34,7 @@ RAM_LOG="$RAM_VAR/rc.local.log"
 SMBD_LOG="$RAM_VAR/log.smbd"
 MDNS_BIN=/mnt/Flash/mdns-advertiser
 MDNS_PROC_NAME=mdns-advertiser
+APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt
 LEGACY_PREFIX_NETBSD7=/root/tc-netbsd7
 LEGACY_PREFIX_NETBSD4=/root/tc-netbsd4
 NBNS_PROC_NAME=nbns-advertiser
@@ -50,6 +51,8 @@ MDNS_DEVICE_MODEL=__MDNS_DEVICE_MODEL__
 AIRPORT_SYAP=__AIRPORT_SYAP__
 ADISK_DISK_KEY=__ADISK_DISK_KEY__
 ADISK_UUID=__ADISK_UUID__
+MDNS_STARTUP_DELAY_SECONDS=30
+SCRIPT_START_TS=$(/bin/date +%s)
 
 log() {
     log_dir=${RAM_LOG%/*}
@@ -437,18 +440,25 @@ start_mdns() {
         return 0
     fi
 
+    now_ts=$(/bin/date +%s)
+    elapsed=$((now_ts - SCRIPT_START_TS))
+    if [ "$elapsed" -lt "$MDNS_STARTUP_DELAY_SECONDS" ]; then
+        sleep $((MDNS_STARTUP_DELAY_SECONDS - elapsed))
+    fi
+
     iface_mac=$(get_iface_mac "$NET_IFACE" || true)
     if [ -z "$iface_mac" ]; then
         log "mdns advertiser launch skipped; missing $NET_IFACE MAC address"
         return 0
     fi
 
-    /usr/bin/pkill mDNSResponder >/dev/null 2>&1 || true
     /usr/bin/pkill "$MDNS_PROC_NAME" >/dev/null 2>&1 || true
     sleep 1
 
     log "starting mdns advertiser for $BRIDGE0_IP on $NET_IFACE"
     set -- "$MDNS_BIN" \
+        --save-snapshot "$APPLE_MDNS_SNAPSHOT" \
+        --load-snapshot "$APPLE_MDNS_SNAPSHOT" \
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
         --device-model "$MDNS_DEVICE_MODEL"
@@ -513,6 +523,16 @@ cleanup_old_runtime
 prepare_ram_root
 prepare_legacy_prefix
 log "boot start"
+
+BIND_INTERFACES=$(wait_for_bind_interfaces) || {
+    log "failed to determine $NET_IFACE IPv4 address"
+    exit 1
+}
+BRIDGE0_IP=${BIND_INTERFACES#127.0.0.1/8 }
+BRIDGE0_IP=${BRIDGE0_IP%%/*}
+
+start_mdns
+
 log "waiting for Apple-mounted data volume before manual mount fallback"
 
 if DATA_ROOT=$(discover_preexisting_data_root); then
@@ -528,13 +548,6 @@ else
     }
     log "found data root after manual mount: $DATA_ROOT"
 fi
-
-BIND_INTERFACES=$(wait_for_bind_interfaces) || {
-    log "failed to determine $NET_IFACE IPv4 address"
-    exit 1
-}
-BRIDGE0_IP=${BIND_INTERFACES#127.0.0.1/8 }
-BRIDGE0_IP=${BRIDGE0_IP%%/*}
 
 PAYLOAD_DIR=$(find_payload_dir "$DATA_ROOT") || {
     log "missing payload directory under mounted volume"
@@ -558,7 +571,6 @@ fi
 stage_runtime "$PAYLOAD_DIR" "$SMBD_SRC" "$NBNS_SRC"
 log "runtime staged under $RAM_ROOT"
 
-start_mdns
 start_nbns
 start_smbd || {
     log "smbd did not become ready"

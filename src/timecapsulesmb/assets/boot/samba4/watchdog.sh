@@ -15,6 +15,7 @@ SMBD_BIN="$RAM_SBIN/smbd"
 SMBD_CONF="$RAM_ETC/smb.conf"
 MDNS_BIN=/mnt/Flash/mdns-advertiser
 MDNS_PROC_NAME=mdns-advertiser
+APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt
 NBNS_BIN="$RAM_SBIN/nbns-advertiser"
 NBNS_PROC_NAME=nbns-advertiser
 
@@ -31,6 +32,7 @@ ADISK_UUID=__ADISK_UUID__
 RECOVERY_POLL_SECONDS=5
 STEADY_POLL_SECONDS=300
 INITIAL_STARTUP_DELAY_SECONDS=30
+SNAPSHOT_BOOTSTRAP_GRACE_SECONDS=120
 
 log() {
     log_dir=${WATCHDOG_LOG%/*}
@@ -66,6 +68,11 @@ restart_mdns() {
         return 0
     fi
 
+    if [ ! -f "$APPLE_MDNS_SNAPSHOT" ] && [ "$elapsed" -lt "$SNAPSHOT_BOOTSTRAP_GRACE_SECONDS" ]; then
+        log "mdns restart deferred; waiting for startup snapshot bootstrap"
+        return 0
+    fi
+
     iface_ip=$(get_iface_ipv4 "$NET_IFACE" || true)
     iface_mac=$(get_iface_mac "$NET_IFACE" || true)
     if [ -z "$iface_ip" ] || [ "$iface_ip" = "0.0.0.0" ]; then
@@ -84,6 +91,11 @@ restart_mdns() {
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
         --device-model "$MDNS_DEVICE_MODEL"
+    if [ -f "$APPLE_MDNS_SNAPSHOT" ]; then
+        set -- "$@" --load-snapshot "$APPLE_MDNS_SNAPSHOT"
+    else
+        set -- "$@" --save-snapshot "$APPLE_MDNS_SNAPSHOT" --load-snapshot "$APPLE_MDNS_SNAPSHOT"
+    fi
     if derive_airport_fields "$iface_mac"; then
         set -- "$@" \
             --airport-wama "$AIRPORT_WAMA" \
@@ -162,6 +174,7 @@ all_managed_services_healthy() {
 elapsed=0
 log "watchdog start"
 sleep "$INITIAL_STARTUP_DELAY_SECONDS"
+elapsed=$INITIAL_STARTUP_DELAY_SECONDS
 
 while :; do
     start_smbd_if_needed
@@ -180,7 +193,9 @@ while :; do
 
     if all_managed_services_healthy; then
         sleep "$STEADY_POLL_SECONDS"
+        elapsed=$(expr "$elapsed" + "$STEADY_POLL_SECONDS")
     else
         sleep "$RECOVERY_POLL_SECONDS"
+        elapsed=$(expr "$elapsed" + "$RECOVERY_POLL_SECONDS")
     fi
 done

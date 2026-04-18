@@ -238,6 +238,13 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('--adisk-uuid "$ADISK_UUID"', rendered)
         self.assertIn('--adisk-sys-wama "$iface_mac"', rendered)
         self.assertIn('MDNS_PROC_NAME=mdns-advertiser', rendered)
+        self.assertIn('APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt', rendered)
+        self.assertIn('MDNS_STARTUP_DELAY_SECONDS=30', rendered)
+        self.assertIn('SCRIPT_START_TS=$(/bin/date +%s)', rendered)
+        self.assertIn('if [ "$elapsed" -lt "$MDNS_STARTUP_DELAY_SECONDS" ]; then', rendered)
+        self.assertIn('sleep $((MDNS_STARTUP_DELAY_SECONDS - elapsed))', rendered)
+        self.assertIn('--save-snapshot "$APPLE_MDNS_SNAPSHOT"', rendered)
+        self.assertIn('--load-snapshot "$APPLE_MDNS_SNAPSHOT"', rendered)
         self.assertIn('/usr/bin/pkill "$MDNS_PROC_NAME" >/dev/null 2>&1 || true', rendered)
         self.assertIn('/usr/bin/pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true', rendered)
         self.assertIn('if [ -f "$payload_dir/private/nbns.enabled" ]', rendered)
@@ -270,7 +277,6 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('log "starting nbns responder for $SMB_NETBIOS_NAME at $BRIDGE0_IP"', rendered)
         self.assertNotIn("wait_for_process()", rendered)
         self.assertNotIn("wait_for_smbd_ready()", rendered)
-        self.assertIn('/usr/bin/pkill mDNSResponder >/dev/null 2>&1 || true', rendered)
 
     def test_render_start_script_waits_for_existing_mounts_before_manual_mount(self) -> None:
         values = {
@@ -838,6 +844,13 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('ADISK_DISK_KEY=dk0', rendered)
         self.assertIn("ADISK_UUID=''", rendered)
         self.assertIn('--adisk-disk-key "$ADISK_DISK_KEY"', rendered)
+        self.assertIn('APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt', rendered)
+        self.assertIn('--load-snapshot "$APPLE_MDNS_SNAPSHOT"', rendered)
+        self.assertIn('SNAPSHOT_BOOTSTRAP_GRACE_SECONDS=120', rendered)
+        self.assertIn('mdns restart deferred; waiting for startup snapshot bootstrap', rendered)
+        self.assertIn('[ ! -f "$APPLE_MDNS_SNAPSHOT" ] && [ "$elapsed" -lt "$SNAPSHOT_BOOTSTRAP_GRACE_SECONDS" ]', rendered)
+        self.assertIn('if [ -f "$APPLE_MDNS_SNAPSHOT" ]; then', rendered)
+        self.assertIn('--save-snapshot "$APPLE_MDNS_SNAPSHOT" --load-snapshot "$APPLE_MDNS_SNAPSHOT"', rendered)
         self.assertIn('--adisk-uuid "$ADISK_UUID"', rendered)
         self.assertIn('--adisk-sys-wama "$iface_mac"', rendered)
         self.assertIn('if [ ! -f "$RAM_PRIVATE/nbns.enabled" ]; then', rendered)
@@ -955,6 +968,150 @@ int main(void) {{
             run = subprocess.run([str(bin_path)], capture_output=True, text=True, check=False)
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertEqual(run.stdout.strip(), "sys=waMA=80:EA:96:E6:58:68,adVF=0x1010")
+
+    def test_mdns_advertiser_extracts_service_type_from_arbitrary_instance_fqdn(self) -> None:
+        if shutil.which("cc") is None:
+            self.skipTest("cc not available")
+
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <stdio.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+int main(void) {{
+    char out[256];
+    if (find_service_type_for_instance_fqdn(out, sizeof(out), "HP Printer._pdl-datastream._tcp.local.") != 0) {{
+        return 1;
+    }}
+    puts(out);
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            c_path = tmp / "mdns_service_type_test.c"
+            bin_path = tmp / "mdns_service_type_test"
+            c_path.write_text(source)
+            proc = subprocess.run(
+                ["cc", "-Wall", "-Wextra", "-Werror", str(c_path), "-o", str(bin_path)],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            run = subprocess.run([str(bin_path)], capture_output=True, text=True, check=False)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertEqual(run.stdout.strip(), "_pdl-datastream._tcp.local.")
+
+    def test_mdns_advertiser_extracts_non_hardcoded_udp_service_type(self) -> None:
+        if shutil.which("cc") is None:
+            self.skipTest("cc not available")
+
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <stdio.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+int main(void) {{
+    char out[256];
+    if (find_service_type_for_instance_fqdn(out, sizeof(out), "Custom Thing._example-service._udp.local.") != 0) {{
+        return 1;
+    }}
+    puts(out);
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            c_path = tmp / "mdns_udp_service_type_test.c"
+            bin_path = tmp / "mdns_udp_service_type_test"
+            c_path.write_text(source)
+            proc = subprocess.run(
+                ["cc", "-Wall", "-Wextra", "-Werror", str(c_path), "-o", str(bin_path)],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            run = subprocess.run([str(bin_path)], capture_output=True, text=True, check=False)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertEqual(run.stdout.strip(), "_example-service._udp.local.")
+
+    def test_mdns_advertiser_load_snapshot_accepts_host_hex_and_smb_adisk_records(self) -> None:
+        if shutil.which("cc") is None:
+            self.skipTest("cc not available")
+
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <stdio.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+int main(int argc, char **argv) {{
+    struct service_record_set set;
+    if (argc != 2) {{
+        return 2;
+    }}
+    if (load_snapshot_file(argv[1], &set) != 0) {{
+        return 1;
+    }}
+    printf("%zu\\n", set.count);
+    printf("%s\\n", set.records[0].service_type);
+    printf("%s\\n", set.records[0].host_fqdn);
+    printf("%s\\n", set.records[1].service_type);
+    printf("%s\\n", set.records[1].host_fqdn);
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            c_path = tmp / "mdns_snapshot_load_test.c"
+            bin_path = tmp / "mdns_snapshot_load_test"
+            snapshot_path = tmp / "applemdns.txt"
+            snapshot_path.write_text(
+                "BEGIN\n"
+                "TYPE=_smb._tcp.local.\n"
+                "INSTANCE=James's AirPort Time Capsule\n"
+                "HOST_HEX=4a616d6573732d416972506f72742d54696d652d43617073756c652e6c6f63616c2e\n"
+                "PORT=445\n"
+                "TXT=netbios=test\n"
+                "END\n"
+                "BEGIN\n"
+                "TYPE=_adisk._tcp.local.\n"
+                "INSTANCE=James's AirPort Time Capsule\n"
+                "HOST_HEX=4a616d6573732d416972506f72742d54696d652d43617073756c652e6c6f63616c2e\n"
+                "PORT=9\n"
+                "TXT=sys=waMA=80:EA:96:E6:58:68,adVF=0x1010\n"
+                "END\n"
+            )
+            c_path.write_text(source)
+            proc = subprocess.run(
+                ["cc", "-Wall", "-Wextra", "-Werror", str(c_path), "-o", str(bin_path)],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            run = subprocess.run([str(bin_path), str(snapshot_path)], capture_output=True, text=True, check=False)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertEqual(
+                run.stdout.splitlines(),
+                [
+                    "2",
+                    "_smb._tcp.local.",
+                    "Jamess-AirPort-Time-Capsule.local.",
+                    "_adisk._tcp.local.",
+                    "Jamess-AirPort-Time-Capsule.local.",
+                ],
+            )
 
     def test_nbns_advertiser_rejects_overlong_name_before_truncation(self) -> None:
         if shutil.which("cc") is None:
