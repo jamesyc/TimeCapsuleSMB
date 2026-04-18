@@ -4,6 +4,7 @@ import argparse
 import getpass
 import json
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -19,7 +20,12 @@ from timecapsulesmb.deploy.executor import (
 )
 from timecapsulesmb.deploy.planner import build_deployment_plan
 from timecapsulesmb.deploy.templates import build_template_bundle, render_template, write_boot_asset
-from timecapsulesmb.deploy.verify import verify_netbsd4_activation, verify_post_deploy, wait_for_post_reboot_smbd
+from timecapsulesmb.deploy.verify import (
+    verify_netbsd4_activation,
+    verify_post_deploy,
+    wait_for_post_reboot_mdns_takeover,
+    wait_for_post_reboot_smbd,
+)
 from timecapsulesmb.device.compat import probe_device_compatibility
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root, wait_for_ssh_state
 from timecapsulesmb.transport.ssh import run_ssh
@@ -179,6 +185,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not wait_for_post_reboot_smbd(host, password, ssh_opts):
             print("Managed smbd did not become ready after reboot.")
             return 1
+        print("Waiting for managed mDNS takeover to finish...")
+        if not wait_for_post_reboot_mdns_takeover(host, password, ssh_opts):
+            print("Managed mDNS did not become ready after reboot.")
+            return 1
+        print("Waiting 20 seconds for Bonjour visibility...")
+        time.sleep(20)
         verify_post_deploy(values)
         return 0
 

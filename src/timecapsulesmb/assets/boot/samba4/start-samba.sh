@@ -102,7 +102,7 @@ prepare_ram_root() {
 wait_for_bind_interfaces() {
     attempt=0
 
-    sleep 5
+    sleep 1
     while [ "$attempt" -lt 60 ]; do
         iface_ip=$(get_iface_ipv4 "$NET_IFACE" || true)
         if [ -n "$iface_ip" ] && [ "$iface_ip" != "0.0.0.0" ]; then
@@ -279,7 +279,7 @@ try_mount_candidate() {
 mount_fallback_volume() {
     log "no Apple-mounted data root found; falling back to manual mount"
     attempt=0
-    while [ "$attempt" -lt 90 ]; do
+    while [ "$attempt" -lt 30 ]; do
         if volume_root=$(try_mount_candidate /dev/dk2 /Volumes/dk2); then
             echo "$volume_root"
             return 0
@@ -484,7 +484,7 @@ start_mdns() {
         --adisk-sys-wama "$iface_mac" \
         --ipv4 "$BRIDGE0_IP"
     "$@" >/dev/null 2>&1 &
-    if wait_for_process "$MDNS_PROC_NAME"; then
+    if wait_for_process "$MDNS_PROC_NAME" 90; then
         log "mdns advertiser launch requested"
     else
         log "mdns advertiser failed to stay running"
@@ -531,8 +531,6 @@ BIND_INTERFACES=$(wait_for_bind_interfaces) || {
 BRIDGE0_IP=${BIND_INTERFACES#127.0.0.1/8 }
 BRIDGE0_IP=${BRIDGE0_IP%%/*}
 
-start_mdns
-
 log "waiting for Apple-mounted data volume before manual mount fallback"
 
 if DATA_ROOT=$(discover_preexisting_data_root); then
@@ -571,11 +569,12 @@ fi
 stage_runtime "$PAYLOAD_DIR" "$SMBD_SRC" "$NBNS_SRC"
 log "runtime staged under $RAM_ROOT"
 
-start_nbns
 start_smbd || {
     log "smbd did not become ready"
     exit 1
 }
 log "smbd ready"
+start_mdns
+start_nbns
 
 exit 0

@@ -28,7 +28,8 @@ def _configured_smb_server(host_label: str) -> str:
 def wait_for_post_reboot_smbd(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 120) -> bool:
     script = rf'''
 attempt=0
-while [ "$attempt" -lt {timeout_seconds} ]; do
+max_attempts=$((({timeout_seconds} + 4) / 5))
+while [ "$attempt" -lt "$max_attempts" ]; do
     smbd_ready=0
 
     if /usr/bin/pkill -0 smbd >/dev/null 2>&1; then
@@ -45,7 +46,7 @@ while [ "$attempt" -lt {timeout_seconds} ]; do
     fi
 
     attempt=$((attempt + 1))
-    sleep 1
+    sleep 5
 done
 exit 1
 '''
@@ -58,6 +59,93 @@ exit 1
         timeout=timeout_seconds + 30,
     )
     return proc.returncode == 0
+
+
+def _post_reboot_mdns_takeover_probe(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 20) -> bool:
+    script = r'''
+mdns_ready=0
+apple_alive=0
+
+if /usr/bin/pkill -0 mdns-advertiser >/dev/null 2>&1; then
+    mdns_ready=1
+fi
+
+ps_out="$(/bin/ps ax -o stat= -o ucomm= 2>/dev/null || true)"
+while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    stat_field="${line%% *}"
+    ucomm_field="${line#* }"
+    if [ "$ucomm_field" = "mDNSResponder" ] && [ "${stat_field#Z}" = "$stat_field" ]; then
+        apple_alive=1
+        break
+    fi
+done <<EOF
+$ps_out
+EOF
+
+if [ "$mdns_ready" -eq 1 ] && [ "$apple_alive" -eq 0 ]; then
+    exit 0
+fi
+exit 1
+'''
+    proc = run_ssh(
+        host,
+        password,
+        ssh_opts,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=timeout_seconds,
+    )
+    return proc.returncode == 0
+
+
+def wait_for_post_reboot_mdns_takeover(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 120) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        if _post_reboot_mdns_takeover_probe(host, password, ssh_opts, timeout_seconds=min(20, max(5, int(remaining) + 1))):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(5.0, remaining))
+
+
+def wait_for_post_reboot_mdns_ready(
+    host: str,
+    password: str,
+    ssh_opts: str,
+    expected_instance_name: str,
+    *,
+    timeout_seconds: float = 120.0,
+    poll_interval_seconds: float = 5.0,
+) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+
+        if _post_reboot_mdns_takeover_probe(
+            host,
+            password,
+            ssh_opts,
+            timeout_seconds=min(20, max(5, int(remaining) + 1)),
+        ):
+            browse_timeout = min(5.0, remaining)
+            _, discovered_instance, target = run_bonjour_checks(
+                expected_instance_name,
+                timeout=browse_timeout,
+            )
+            if discovered_instance and target:
+                return True
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(poll_interval_seconds, remaining))
 
 
 def wait_for_post_reboot_bonjour(

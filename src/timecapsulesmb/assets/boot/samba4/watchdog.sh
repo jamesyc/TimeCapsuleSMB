@@ -29,10 +29,11 @@ AIRPORT_SYAP=__AIRPORT_SYAP__
 ADISK_DISK_KEY=__ADISK_DISK_KEY__
 ADISK_UUID=__ADISK_UUID__
 
-RECOVERY_POLL_SECONDS=5
+RECOVERY_POLL_SECONDS=10
 STEADY_POLL_SECONDS=300
 INITIAL_STARTUP_DELAY_SECONDS=30
 SNAPSHOT_BOOTSTRAP_GRACE_SECONDS=120
+WATCHDOG_START_TS=$(/bin/date +%s)
 
 log() {
     log_dir=${WATCHDOG_LOG%/*}
@@ -174,9 +175,10 @@ all_managed_services_healthy() {
 elapsed=0
 log "watchdog start"
 sleep "$INITIAL_STARTUP_DELAY_SECONDS"
-elapsed=$INITIAL_STARTUP_DELAY_SECONDS
 
 while :; do
+    now_ts=$(/bin/date +%s)
+    elapsed=$((now_ts - WATCHDOG_START_TS))
     start_smbd_if_needed
 
     if /usr/bin/pkill -0 "$MDNS_PROC_NAME" >/dev/null 2>&1; then
@@ -193,9 +195,7 @@ while :; do
 
     if all_managed_services_healthy; then
         sleep "$STEADY_POLL_SECONDS"
-        elapsed=$(expr "$elapsed" + "$STEADY_POLL_SECONDS")
     else
         sleep "$RECOVERY_POLL_SECONDS"
-        elapsed=$(expr "$elapsed" + "$RECOVERY_POLL_SECONDS")
     fi
 done

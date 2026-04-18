@@ -49,6 +49,8 @@ from timecapsulesmb.deploy.templates import (
 from timecapsulesmb.deploy.verify import (
     verify_netbsd4_activation,
     verify_post_deploy,
+    wait_for_post_reboot_mdns_ready,
+    wait_for_post_reboot_mdns_takeover,
     wait_for_post_reboot_bonjour,
     wait_for_post_reboot_smbd,
 )
@@ -295,8 +297,11 @@ class DeployModuleTests(unittest.TestCase):
         main_section = rendered[main_start:]
         self.assertLess(main_section.index('log "waiting for Apple-mounted data volume before manual mount fallback"'), main_section.index('if DATA_ROOT=$(discover_preexisting_data_root); then'))
         self.assertLess(main_section.index('if DATA_ROOT=$(discover_preexisting_data_root); then'), main_section.index('VOLUME_ROOT=$(mount_fallback_volume) || {'))
+        self.assertLess(main_section.index('log "smbd ready"'), main_section.rindex('start_mdns'))
+        self.assertLess(main_section.rindex('start_mdns'), main_section.rindex('start_nbns'))
         discover_body = rendered[rendered.index("discover_preexisting_data_root()"):rendered.index("resolve_data_root_on_mounted_volume()")]
         self.assertIn("wait_for_existing_data_root", discover_body)
+        self.assertIn('while [ "$attempt" -lt 30 ]; do', rendered[rendered.index("wait_for_existing_data_root()"):rendered.index("try_mount_candidate()")])
 
     def test_render_start_script_separates_mount_fallback_from_data_root_recovery(self) -> None:
         values = {
@@ -722,6 +727,7 @@ class DeployModuleTests(unittest.TestCase):
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn('"$RAM_SBIN/smbd" -D -s "$RAM_ETC/smb.conf"', rendered)
         self.assertIn("wait_for_smbd_ready", rendered)
+        self.assertIn('if wait_for_process "$MDNS_PROC_NAME" 90; then', rendered)
         self.assertIn('log "smbd ready"', rendered)
 
     def test_render_smb_conf_uses_ram_cache_directory_by_default(self) -> None:
@@ -871,11 +877,13 @@ class DeployModuleTests(unittest.TestCase):
         }
         bundle = build_template_bundle(values)
         rendered = render_template("watchdog.sh", bundle.watchdog_replacements)
-        self.assertIn("RECOVERY_POLL_SECONDS=5", rendered)
+        self.assertIn("RECOVERY_POLL_SECONDS=10", rendered)
         self.assertIn("STEADY_POLL_SECONDS=300", rendered)
         self.assertIn("INITIAL_STARTUP_DELAY_SECONDS=30", rendered)
+        self.assertIn("WATCHDOG_START_TS=$(/bin/date +%s)", rendered)
         self.assertIn('sleep "$INITIAL_STARTUP_DELAY_SECONDS"', rendered)
         self.assertIn("all_managed_services_healthy()", rendered)
+        self.assertIn('elapsed=$((now_ts - WATCHDOG_START_TS))', rendered)
         self.assertIn('sleep "$RECOVERY_POLL_SECONDS"', rendered)
         self.assertIn('sleep "$STEADY_POLL_SECONDS"', rendered)
 
@@ -1432,7 +1440,9 @@ PASS:mdns-advertiser bound to UDP 5353
         remote_command = run_ssh_mock.call_args.args[3]
         self.assertIn('if /usr/bin/pkill -0 smbd >/dev/null 2>&1; then', remote_command)
         self.assertIn("*daemon_ready*", remote_command)
-        self.assertIn('while [ "$attempt" -lt 45 ]; do', remote_command)
+        self.assertIn('max_attempts=$(((45 + 4) / 5))', remote_command)
+        self.assertIn('while [ "$attempt" -lt "$max_attempts" ]; do', remote_command)
+        self.assertIn("sleep 5", remote_command)
         self.assertNotIn("mdns-advertiser", remote_command)
         self.assertNotIn("nbns-advertiser", remote_command)
 
@@ -1442,6 +1452,74 @@ PASS:mdns-advertiser bound to UDP 5353
             return_value=mock.Mock(returncode=1),
         ):
             self.assertFalse(wait_for_post_reboot_smbd("host", "pw", "-o foo", timeout_seconds=12))
+
+    def test_wait_for_post_reboot_mdns_takeover_passes_when_managed_mdns_is_ready(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.deploy.verify.run_ssh",
+            return_value=mock.Mock(returncode=0),
+        ) as run_ssh_mock:
+            self.assertTrue(wait_for_post_reboot_mdns_takeover("host", "pw", "-o foo", timeout_seconds=45))
+        remote_command = run_ssh_mock.call_args.args[3]
+        self.assertIn('/usr/bin/pkill -0 mdns-advertiser >/dev/null 2>&1', remote_command)
+        self.assertIn('ucomm_field" = "mDNSResponder"', remote_command)
+        self.assertNotIn("max_attempts", remote_command)
+
+    def test_wait_for_post_reboot_mdns_takeover_fails_when_remote_probe_times_out(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.deploy.verify.run_ssh",
+            return_value=mock.Mock(returncode=1),
+        ):
+            self.assertFalse(wait_for_post_reboot_mdns_takeover("host", "pw", "-o foo", timeout_seconds=12))
+
+    def test_wait_for_post_reboot_mdns_ready_requires_takeover_and_bonjour(self) -> None:
+        monotonic_values = iter([0.0, 1.0, 1.0, 6.0, 6.0, 7.0, 7.0, 8.0, 8.0])
+        with mock.patch(
+            "timecapsulesmb.deploy.verify._post_reboot_mdns_takeover_probe",
+            side_effect=[False, True, True],
+        ) as takeover_mock:
+            with mock.patch(
+                "timecapsulesmb.deploy.verify.run_bonjour_checks",
+                side_effect=[
+                    ([mock.Mock(status="WARN")], None, None),
+                    ([mock.Mock(status="PASS")], "Time Capsule Samba 4", "timecapsulesamba4.local:445"),
+                ],
+            ) as bonjour_mock:
+                with mock.patch("timecapsulesmb.deploy.verify.time.monotonic", side_effect=lambda: next(monotonic_values)):
+                    with mock.patch("timecapsulesmb.deploy.verify.time.sleep") as sleep_mock:
+                        ready = wait_for_post_reboot_mdns_ready(
+                            "host",
+                            "pw",
+                            "-o foo",
+                            "Time Capsule Samba 4",
+                            timeout_seconds=15.0,
+                            poll_interval_seconds=5.0,
+                        )
+        self.assertTrue(ready)
+        self.assertEqual(takeover_mock.call_count, 3)
+        self.assertEqual(bonjour_mock.call_count, 2)
+        sleep_mock.assert_called()
+
+    def test_wait_for_post_reboot_mdns_ready_times_out_when_bonjour_never_appears(self) -> None:
+        monotonic_values = iter([0.0, 1.0, 1.0, 6.0, 6.0, 11.0, 11.0, 12.1])
+        with mock.patch(
+            "timecapsulesmb.deploy.verify._post_reboot_mdns_takeover_probe",
+            return_value=True,
+        ):
+            with mock.patch(
+                "timecapsulesmb.deploy.verify.run_bonjour_checks",
+                return_value=([mock.Mock(status="WARN")], None, None),
+            ):
+                with mock.patch("timecapsulesmb.deploy.verify.time.monotonic", side_effect=lambda: next(monotonic_values)):
+                    with mock.patch("timecapsulesmb.deploy.verify.time.sleep"):
+                        ready = wait_for_post_reboot_mdns_ready(
+                            "host",
+                            "pw",
+                            "-o foo",
+                            "Time Capsule Samba 4",
+                            timeout_seconds=12.0,
+                            poll_interval_seconds=5.0,
+                        )
+        self.assertFalse(ready)
 
     def test_format_deployment_plan_contains_concrete_actions(self) -> None:
         payload_dir_name = "samba4"
