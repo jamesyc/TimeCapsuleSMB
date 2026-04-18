@@ -531,6 +531,8 @@ BIND_INTERFACES=$(wait_for_bind_interfaces) || {
 BRIDGE0_IP=${BIND_INTERFACES#127.0.0.1/8 }
 BRIDGE0_IP=${BRIDGE0_IP%%/*}
 
+start_mdns
+
 log "waiting for Apple-mounted data volume before manual mount fallback"
 
 if DATA_ROOT=$(discover_preexisting_data_root); then
@@ -569,7 +571,6 @@ fi
 stage_runtime "$PAYLOAD_DIR" "$SMBD_SRC" "$NBNS_SRC"
 log "runtime staged under $RAM_ROOT"
 
-start_mdns
 start_nbns
 
 start_smbd || {
