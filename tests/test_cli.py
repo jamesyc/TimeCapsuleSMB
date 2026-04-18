@@ -1173,21 +1173,19 @@ class CliTests(unittest.TestCase):
                                             with mock.patch("timecapsulesmb.cli.deploy.wait_for_ssh_state", side_effect=[True, True]):
                                                 with mock.patch("timecapsulesmb.cli.deploy.wait_for_post_reboot_smbd", return_value=True) as ready_mock:
                                                     with mock.patch("timecapsulesmb.cli.deploy.wait_for_post_reboot_mdns_takeover", return_value=True) as mdns_ready_mock:
-                                                        with mock.patch("timecapsulesmb.cli.deploy.time.sleep") as sleep_mock:
-                                                            with mock.patch("timecapsulesmb.cli.deploy.verify_post_deploy") as verify_mock:
-                                                                with mock.patch("builtins.input", return_value="y"):
-                                                                    with redirect_stdout(output):
-                                                                        rc = deploy.main([])
+                                                        with mock.patch("timecapsulesmb.cli.deploy.verify_post_deploy") as verify_mock:
+                                                            with mock.patch("builtins.input", return_value="y"):
+                                                                with redirect_stdout(output):
+                                                                    rc = deploy.main([])
         self.assertEqual(rc, 0)
         ready_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o foo")
         mdns_ready_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o foo")
-        sleep_mock.assert_called_once_with(10)
         verify_mock.assert_called_once_with(values)
         text = output.getvalue()
         self.assertIn("Device is back online.", text)
         self.assertIn("Waiting for managed smbd to finish starting...", text)
         self.assertIn("Waiting for managed mDNS takeover to finish...", text)
-        self.assertIn("Waiting 10 seconds for Bonjour visibility...", text)
+        self.assertNotIn("Bonjour visibility", text)
 
     def test_deploy_returns_failure_when_managed_smbd_never_becomes_ready(self) -> None:
         output = io.StringIO()

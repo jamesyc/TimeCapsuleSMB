@@ -17,15 +17,18 @@ What is working now:
 - boot-time watchdog for `smbd`, the mDNS helper, and the optional NBNS helper
 - direct SMB service on port `445`
 - Bonjour advertisement for:
-  - `_smb._tcp`
-  - optional `_adisk._tcp`
-  - `_device-info._tcp`
+  - managed `_smb._tcp`
+  - managed `_adisk._tcp`
+  - Apple-cloned `_airport._tcp`
+  - Apple-cloned `_afpovertcp._tcp`
+  - other Apple-cloned records
 - authenticated SMB access using:
   - Samba username: `admin`
   - password: the same password provided in `.env` as `TC_PASSWORD`
 - guest access disabled
 - deploy-time device compatibility detection
 - manual NetBSD 4 activation via `tcapsule activate`
+- manual disk repair via `tcapsule fsck`
 - clean uninstall via `tcapsule uninstall`
 
 Current validation status:
@@ -35,8 +38,8 @@ Current validation status:
 
 Current user experience:
 - the Time Capsule advertises `_smb._tcp`
-- the Time Capsule currently advertises `_adisk._tcp` for Time Machine
-- the Time Capsule advertises `_device-info._tcp` with a Finder model hint
+- the Time Capsule advertises `_adisk._tcp` for Time Machine
+- the Time Capsule replays Apple `_airport._tcp` for AirPort Utility compatibility
 - the Time Capsule can optionally answer NBNS name queries for the configured NetBIOS name
 - the default instance name is `Time Capsule Samba 4`
 - the default host label is `timecapsulesamba4`
@@ -118,10 +121,12 @@ The actual working split is:
   - `/Volumes/dkX/<TC_PAYLOAD_DIR_NAME>/cache`
 - tiny persistent boot hook on flash:
   - `/mnt/Flash/rc.local`
+  - `/mnt/Flash/common.sh`
   - `/mnt/Flash/start-samba.sh`
   - `/mnt/Flash/watchdog.sh`
   - `/mnt/Flash/dfree.sh`
   - `/mnt/Flash/mdns-advertiser`
+  - `/mnt/Flash/applemdns.txt`
 - transient runtime on RAM disk:
   - `/mnt/Memory/samba4`
 
@@ -220,7 +225,7 @@ Current maintainer build lanes:
 
 The direct scripts target the NetBSD 7 lane by default. The `*old.sh` wrappers select the NetBSD 4 lane.
 
-## Why We Do Not Use Apple’s Native SMB Bonjour Path
+## Why We Snapshot Apple’s mDNS And Override Only SMB / Time Machine
 
 This was investigated deeply.
 
@@ -232,21 +237,46 @@ Apple’s stack does have a native SMB/mDNS path involving:
 - `ACPd`
 
 Important findings:
-- Apple’s own `_smb._tcp` path is coupled to Apple’s file-sharing stack
-- when Apple’s stack owns that path, Finder tends to reconnect through Apple SMB/AFP rather than our Samba service
-- letting Apple reclaim that path conflicts with the goal of running our own `smbd`
+- Apple’s own `_smb._tcp` and `_adisk._tcp` paths are coupled to Apple’s file-sharing stack
+- when Apple’s stack owns those paths, Finder tends to reconnect through Apple SMB/AFP rather than our Samba service
+- Apple’s `_airport._tcp` is still valuable because AirPort Utility depends on it
+- some Apple-advertised services such as USB printer advertisements should be preserved if present
 
-So the current system deliberately does not use Apple’s SMB advertisement path or Apple’s ownership of those records.
-
-Instead it uses a separate tiny helper:
+So the current system does not fully replace Apple mDNS with a hardcoded record set. Instead it uses a separate tiny helper:
 - [bin/mdns/mdns-advertiser](bin/mdns/mdns-advertiser)
 
 This helper:
-- advertises `_smb._tcp.local.`
-- can also advertise `_adisk._tcp.local.` for Time Machine when started with `--adisk-share`
-- advertises `_device-info._tcp.local.` with a `model=...` TXT record for Finder device identification
-- resolves to the custom host label, by default `timecapsulesamba4.local`
-- points clients at our `smbd` on port `445`
+- can save an Apple mDNS snapshot to `/mnt/Flash/applemdns.txt`
+- gracefully kills Apple `mDNSResponder` during takeover
+- replays Apple snapshot records afterward
+- overrides only:
+  - `_smb._tcp.local.`
+  - `_adisk._tcp.local.`
+- continues to point clients at our `smbd` on port `445`
+
+Current practical result:
+- Our `_smb._tcp` and `_adisk._tcp` remain authoritative
+- Apple `_airport._tcp` and other records can be preserved
+- snapshot replay preserves non-ASCII or binary host targets via `HOST_HEX`
+
+## Apple mDNS Snapshot File
+
+The Apple snapshot file is:
+
+- `/mnt/Flash/applemdns.txt`
+
+Current behavior:
+- `start-samba.sh` gives Apple a short chance to start its own stack
+- `mdns-advertiser --save-snapshot` captures Apple records into `applemdns.txt`
+- `mdns-advertiser --load-snapshot` then kills `mDNSResponder` and replays the snapshot
+- if snapshot load fails, the helper falls back to the generated managed records
+
+The snapshot file intentionally stores all Apple service records that were captured, including `_smb._tcp` and `_adisk._tcp`.
+
+However, on replay:
+- `_smb._tcp` from the snapshot is ignored
+- `_adisk._tcp` from the snapshot is ignored
+- our managed `_smb._tcp` and `_adisk._tcp` are advertised instead
 
 ## Boot Flow In Detail
 
@@ -270,20 +300,21 @@ This matters because:
 
 1. kills any prior `smbd`, mDNS advertiser, and NBNS responder
 2. recreates the RAM runtime tree
-3. waits for `/dev/dk2` or `/dev/dk3`
-4. mounts the corresponding volume under `/Volumes/dk2` or `/Volumes/dk3`
-5. discovers the real data root by checking:
+3. waits for the device IP on the configured network interface
+   - default: `bridge0`
+4. waits briefly for an Apple-mounted data root under `/Volumes/dk2` or `/Volumes/dk3`, giving a chance for Apple to mount the disk so Airport Utility does not give a "disk corrupt" error
+5. if Apple did not mount it, falls back to bounded manual `mount_hfs` attempts
+6. discovers or initializes the real data root by checking:
    - `ShareRoot/.com.apple.timemachine.supported`
    - `Shared/.com.apple.timemachine.supported`
-6. waits for the device IP on the configured network interface
-   - default: `bridge0`
 7. finds the persistent payload directory
 8. copies `smbd` into `/mnt/Memory/samba4/sbin`
 9. if `private/nbns.enabled` exists in the persistent payload, also copies `nbns-advertiser` into `/mnt/Memory/samba4/sbin`
 10. renders `smb.conf` from the template
-11. starts the mDNS advertiser
+11. starts `mdns-advertiser`
+   - the helper itself handles Apple snapshot save, takeover, and replay
 12. starts the NBNS responder if enabled
-13. starts `smbd`
+13. starts `smbd` and waits until `daemon_ready`
 
 The boot log is written to:
 - `/mnt/Memory/samba4/var/rc.local.log`
@@ -301,7 +332,10 @@ Important bug lessons from getting this stable:
 `watchdog.sh` is a simple long-running supervisor launched at boot from flash.
 
 Current behavior:
-- polls every `300` seconds
+- sleeps `30` seconds before the first management pass
+- uses real elapsed wall-clock time since watchdog start
+- polls every `10` seconds while any managed service is unhealthy
+- polls every `300` seconds once all managed services are healthy
 - if `smbd` is missing, starts it again
 - if `mdns-advertiser` is missing, starts it again
 - if `nbns-advertiser` is enabled and missing, starts it again
@@ -408,24 +442,22 @@ Important properties:
 - installed on both the HDD payload and `/mnt/Flash`
 - run from `/mnt/Flash` to save RAM-disk space
 
-At runtime it advertises:
-- service type: `_smb._tcp.local.`
-- optional Time Machine service type: `_adisk._tcp.local.`
-- device metadata service type: `_device-info._tcp.local.`
-- instance name: by default `Time Capsule Samba 4`
-- host label: by default `timecapsulesamba4`
-- port: `445`
-- A record: current IPv4 from the configured network interface
-  - default: `bridge0`
-- `_device-info._tcp` TXT:
-  - `model=<configured-device-model>`
+At runtime it can:
+- advertise managed `_smb._tcp.local.`
+- advertise managed `_adisk._tcp.local.`
+- advertise loaded snapshot records
+- optionally advertise fallback generated `_airport._tcp.local.`
+- save an Apple snapshot with `--save-snapshot`
+- load and replay an Apple snapshot with `--load-snapshot`
+- answer A queries for loaded snapshot host targets using the current configured IPv4
 
 Current validation and behavior notes:
 - service instance names and host labels are validated as single DNS labels
 - service types are validated as dotted DNS names
 - `_adisk._tcp` TXT payload sizing is validated before advertisement
-- `_device-info._tcp` `model=...` TXT sizing is validated before advertisement
-- `_device-info._tcp` exists to influence Finder identification and icon behavior, not to expose a separate connectable service
+- `_airport._tcp` fields are all optional; missing fields are simply omitted from the TXT payload
+- snapshot replay preserves non-ASCII or binary hostnames using `HOST_HEX`
+- when snapshot mode is active, `_device-info._tcp` is not generated unless it comes from the snapshot
 
 ## NBNS Responder Details
 
@@ -476,7 +508,9 @@ The intended user flow is:
    - [src/timecapsulesmb/cli/activate.py](src/timecapsulesmb/cli/activate.py)
 6. run local diagnostics
    - [src/timecapsulesmb/cli/doctor.py](src/timecapsulesmb/cli/doctor.py)
-7. remove the payload later if needed
+7. optionally repair the HDD before redeploying
+   - [src/timecapsulesmb/cli/fsck.py](src/timecapsulesmb/cli/fsck.py)
+8. remove the payload later if needed
    - [src/timecapsulesmb/cli/uninstall.py](src/timecapsulesmb/cli/uninstall.py)
 
 `tcapsule configure` writes repo-root `.env`.
@@ -492,6 +526,7 @@ Current important `.env` values include:
 - `TC_MDNS_INSTANCE_NAME`
 - `TC_MDNS_HOST_LABEL`
 - `TC_MDNS_DEVICE_MODEL`
+- `TC_AIRPORT_SYAP`
 
 Optional deploy flag:
 - `--install-nbns`
@@ -509,7 +544,7 @@ Current defaults:
 
 Workflow details:
 - `configure` now starts by attempting mDNS discovery of the Time Capsule on the local network
-- if SSH is already reachable, `configure` validates the SSH target/password and can infer an `mDNS device model hint` from the detected device generation
+- if SSH is already reachable, `configure` validates the SSH target/password and can capture Apple `syAP` from live `_airport._tcp` discovery when available
 - `configure` validates user-facing mDNS/share inputs before writing `.env`
 - the command entrypoints live under [src/timecapsulesmb/cli/](src/timecapsulesmb/cli)
 - the deploy/runtime logic lives under [src/timecapsulesmb/deploy/](src/timecapsulesmb/deploy) and [src/timecapsulesmb/device/](src/timecapsulesmb/device)
@@ -661,6 +696,7 @@ Current deploy flow:
 - renders and uploads the packaged boot/runtime files:
   - `smb.conf.template`
   - `rc.local`
+  - `common.sh`
   - `start-samba.sh`
   - `watchdog.sh`
   - `dfree.sh`
@@ -671,7 +707,9 @@ Current deploy flow:
   - `private/nbns.enabled` when `--install-nbns` is used
 - applies the required permissions on files and directories
 - reboots by default
-- verifies Bonjour and authenticated SMB access after reboot in the normal path using the same shared checks used by `doctor`
+- waits for managed `smbd` readiness after reboot
+- waits for managed mDNS takeover after reboot
+- then verifies Bonjour and authenticated SMB access using the same shared checks used by `doctor`
 - on NetBSD 4, deploy uploads the NetBSD 4 artifact set and immediately runs the activation sequence instead of rebooting
 
 Current compatibility behavior:
@@ -683,7 +721,7 @@ Current compatibility behavior:
 NetBSD 4 activation behavior:
 - `tcapsule deploy` uploads the NetBSD 4 payload, stops the old watchdog plus `wcifsfs`, runs `/mnt/Flash/rc.local`, and verifies `smbd` on TCP `445` plus `mdns-advertiser` on UDP `5353`
 - `tcapsule activate` repeats that activation sequence without re-uploading files
-- current activation intentionally does not kill Apple `mDNSResponder`; Apple Bonjour stays up while the managed `mdns-advertiser` publishes the custom SMB / Time Machine records
+- Apple `mDNSResponder` takeover is now handled inside `mdns-advertiser` when `--load-snapshot` is used
 - tested 1st-generation NetBSD 4 hardware does not persist an `/etc` boot hook and therefore needs manual activation after reboot
 - other NetBSD 4 generations may auto-start if their firmware runs `/mnt/Flash/rc.local` early in boot, but that is not yet proven
 - `activate` is intentionally conservative: if `smbd` already owns TCP `445` and `mdns-advertiser` already owns UDP `5353`, it skips running `/mnt/Flash/rc.local`

@@ -297,8 +297,8 @@ class DeployModuleTests(unittest.TestCase):
         main_section = rendered[main_start:]
         self.assertLess(main_section.index('log "waiting for Apple-mounted data volume before manual mount fallback"'), main_section.index('if DATA_ROOT=$(discover_preexisting_data_root); then'))
         self.assertLess(main_section.index('if DATA_ROOT=$(discover_preexisting_data_root); then'), main_section.index('VOLUME_ROOT=$(mount_fallback_volume) || {'))
-        self.assertLess(main_section.index('log "smbd ready"'), main_section.rindex('start_mdns'))
         self.assertLess(main_section.rindex('start_mdns'), main_section.rindex('start_nbns'))
+        self.assertLess(main_section.rindex('start_nbns'), main_section.index('log "smbd ready"'))
         discover_body = rendered[rendered.index("discover_preexisting_data_root()"):rendered.index("resolve_data_root_on_mounted_volume()")]
         self.assertIn("wait_for_existing_data_root", discover_body)
         self.assertIn('while [ "$attempt" -lt 30 ]; do', rendered[rendered.index("wait_for_existing_data_root()"):rendered.index("try_mount_candidate()")])

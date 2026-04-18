@@ -4,7 +4,6 @@ import argparse
 import getpass
 import json
 import tempfile
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -189,8 +188,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not wait_for_post_reboot_mdns_takeover(host, password, ssh_opts):
             print("Managed mDNS did not become ready after reboot.")
             return 1
-        print("Waiting 20 seconds for Bonjour visibility...")
-        time.sleep(20)
         verify_post_deploy(values)
         return 0
 

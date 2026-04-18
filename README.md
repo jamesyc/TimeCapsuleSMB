@@ -41,7 +41,8 @@ Download (or run `git clone`) this repository to a folder on your Mac. From the 
 4. `.venv/bin/tcapsule deploy`
 5. `.venv/bin/tcapsule doctor`
 6. `.venv/bin/tcapsule activate` after reboot on NetBSD 4 devices if Samba did not auto-start
-7. `.venv/bin/tcapsule uninstall` if you want to remove TimeCapsuleSMB later
+7. `.venv/bin/tcapsule fsck` if the internal disk needs repair before deploy
+8. `.venv/bin/tcapsule uninstall` if you want to remove TimeCapsuleSMB later
 
 Just delete this `TimeCapsuleSMB` folder if you want to remove it from your Mac after you're done setting up the Time Capsule. All the scripts/binaries/etc are stored in the `TimeCapsuleSMB` folder, so if you want to clean up your Mac then just deleting the folder is fine.
 
@@ -54,6 +55,7 @@ tcapsule prep-device
 tcapsule deploy
 tcapsule doctor
 tcapsule activate
+tcapsule fsck
 tcapsule uninstall
 ```
 
@@ -184,6 +186,7 @@ This is a non-destructive diagnostic command. `tcapsule doctor` checks:
   - Samba share names
 - that SMB is reachable
 - that Bonjour `_smb._tcp` advertisement is visible
+- that Bonjour `_smb._tcp` advertisement is visible and resolves
 - that an authenticated SMB listing actually works and includes the configured share name
 - that authenticated SMB file operations also work on the share
 
@@ -192,6 +195,20 @@ If you want the results in JSON instead of human-readable text, use:
 ```bash
 .venv/bin/tcapsule doctor --json
 ```
+
+If the internal HDD becomes inconsistent and you want to repair it before another deploy, run:
+
+```bash
+.venv/bin/tcapsule fsck
+```
+
+This command:
+
+- discovers the currently mounted Time Capsule HDD volume
+- stops the managed watchdog and file-sharing daemons
+- unmounts the HDD
+- runs `fsck_hfs -fy`
+- reboots by default and waits for SSH to go down and come back
 
 ## Step 7: Remove It Later If Needed
 

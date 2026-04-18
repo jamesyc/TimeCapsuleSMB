@@ -569,12 +569,13 @@ fi
 stage_runtime "$PAYLOAD_DIR" "$SMBD_SRC" "$NBNS_SRC"
 log "runtime staged under $RAM_ROOT"
 
+start_mdns
+start_nbns
+
 start_smbd || {
     log "smbd did not become ready"
     exit 1
 }
 log "smbd ready"
-start_mdns
-start_nbns
 
 exit 0
