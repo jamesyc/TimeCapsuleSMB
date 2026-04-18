@@ -1122,6 +1122,21 @@ int main(int argc, char **argv) {{
                 ],
             )
 
+    def test_mdns_advertiser_suppresses_snapshot_device_info_and_afp(self) -> None:
+        content = (REPO_ROOT / "build" / "mdns-advertiser.c").read_text()
+        self.assertIn('name_equals(service_type, "_smb._tcp.local.")', content)
+        self.assertIn('name_equals(service_type, "_adisk._tcp.local.")', content)
+        self.assertIn('name_equals(service_type, "_device-info._tcp.local.")', content)
+        self.assertIn('name_equals(service_type, "_afpovertcp._tcp.local.")', content)
+
+    def test_mdns_advertiser_keeps_managed_device_info_when_snapshot_mode_is_enabled(self) -> None:
+        content = (REPO_ROOT / "build" / "mdns-advertiser.c").read_text()
+        self.assertIn("if (add_device_info_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {", content)
+        self.assertIn("if (cfg->device_model[0] != '\\0' &&\n        build_instance_fqdn(device_info_instance_fqdn", content)
+        self.assertIn("} else if (cfg->device_model[0] != '\\0' &&\n                   name_equals(qname, cfg->device_info_service_type)", content)
+        self.assertIn("} else if (cfg->device_model[0] != '\\0' &&\n                   name_equals(qname, device_info_instance_fqdn))", content)
+        self.assertIn("if (want_device_info_ptr || want_device_info_srv || want_device_info_txt) {", content)
+
     def test_nbns_advertiser_rejects_overlong_name_before_truncation(self) -> None:
         if shutil.which("cc") is None:
             self.skipTest("cc not available")

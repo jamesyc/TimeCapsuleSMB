@@ -130,9 +130,11 @@ static void on_signal(int signo) {
     g_stop = 1;
 }
 
-static int is_replaced_service_type(const char *service_type) {
+static int is_suppressed_snapshot_service_type(const char *service_type) {
     return name_equals(service_type, "_smb._tcp.local.") ||
-           name_equals(service_type, "_adisk._tcp.local.");
+           name_equals(service_type, "_adisk._tcp.local.") ||
+           name_equals(service_type, "_device-info._tcp.local.") ||
+           name_equals(service_type, "_afpovertcp._tcp.local.");
 }
 
 static void trim_trailing_dot(char *value) {
@@ -1476,9 +1478,12 @@ static int send_announcement(int sockfd, const struct sockaddr_in *dest, const s
     if (add_adisk_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {
         return -1;
     }
+    if (add_device_info_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {
+        return -1;
+    }
     if (use_snapshot_records) {
         for (i = 0; i < snapshot_records->count; i++) {
-            if (is_replaced_service_type(snapshot_records->records[i].service_type)) {
+            if (is_suppressed_snapshot_service_type(snapshot_records->records[i].service_type)) {
                 continue;
             }
             if (add_service_record_answers(buf, &off, sizeof(buf), &snapshot_records->records[i], cfg->ttl, &answers) != 0) {
@@ -1489,9 +1494,6 @@ static int send_announcement(int sockfd, const struct sockaddr_in *dest, const s
             }
         }
     } else {
-        if (add_device_info_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {
-            return -1;
-        }
         if (add_airport_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {
             return -1;
         }
@@ -1555,7 +1557,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
         build_instance_fqdn(adisk_instance_fqdn, sizeof(adisk_instance_fqdn), cfg->instance_name, cfg->adisk_service_type) != 0) {
         return 0;
     }
-    if (!use_snapshot_records && cfg->device_model[0] != '\0' &&
+    if (cfg->device_model[0] != '\0' &&
         build_instance_fqdn(device_info_instance_fqdn, sizeof(device_info_instance_fqdn), cfg->instance_name, cfg->device_info_service_type) != 0) {
         return 0;
     }
@@ -1588,7 +1590,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
                    name_equals(qname, cfg->adisk_service_type) &&
                    (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
             want_adisk_ptr = 1;
-        } else if (!use_snapshot_records && cfg->device_model[0] != '\0' &&
+        } else if (cfg->device_model[0] != '\0' &&
                    name_equals(qname, cfg->device_info_service_type) &&
                    (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
             want_device_info_ptr = 1;
@@ -1608,7 +1610,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
             if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
                 want_adisk_txt = 1;
             }
-        } else if (!use_snapshot_records && cfg->device_model[0] != '\0' &&
+        } else if (cfg->device_model[0] != '\0' &&
                    name_equals(qname, device_info_instance_fqdn)) {
             if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
                 want_device_info_srv = 1;
@@ -1630,7 +1632,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
             size_t j;
             for (j = 0; j < snapshot_records->count; j++) {
                 const struct service_record *record = &snapshot_records->records[j];
-                if (is_replaced_service_type(record->service_type)) {
+                if (is_suppressed_snapshot_service_type(record->service_type)) {
                     continue;
                 }
                 if (name_equals(qname, record->service_type) && (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
@@ -1726,7 +1728,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
             answers++;
         }
     }
-    if (!use_snapshot_records && (want_device_info_ptr || want_device_info_srv || want_device_info_txt)) {
+    if (want_device_info_ptr || want_device_info_srv || want_device_info_txt) {
         char model_txt[MAX_NAME + 16];
         const char *txts[1];
 
@@ -1796,7 +1798,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
             const char *txts[SNAPSHOT_MAX_TXT_ITEMS];
             size_t k;
 
-            if (is_replaced_service_type(record->service_type)) {
+            if (is_suppressed_snapshot_service_type(record->service_type)) {
                 continue;
             }
             for (k = 0; k < record->txt_count; k++) {
