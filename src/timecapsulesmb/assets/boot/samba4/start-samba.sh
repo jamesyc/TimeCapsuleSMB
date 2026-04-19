@@ -210,7 +210,7 @@ mount_device_if_possible() {
             if [ "$created_mountpoint" -eq 1 ]; then
                 /bin/rmdir "$volume_root" >/dev/null 2>&1 || true
             fi
-            log "mount_hfs timed out for $dev_path at $volume_root and volume is still not mounted"
+            log "mount_hfs timed out for $dev_path at $volume_root and volume was not mounted at the immediate re-check"
             return 1
         fi
         attempt=$((attempt + 1))

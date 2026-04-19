@@ -716,7 +716,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('/bin/rmdir "$volume_root" >/dev/null 2>&1 || true', mount_section)
         self.assertIn('log "mount_hfs command did not exit promptly for $dev_path at $volume_root; re-checking mount state"', mount_section)
         self.assertIn('log "mount_hfs command timed out, but volume is mounted"', mount_section)
-        self.assertIn('log "mount_hfs timed out for $dev_path at $volume_root and volume is still not mounted"', mount_section)
+        self.assertIn('log "mount_hfs timed out for $dev_path at $volume_root and volume was not mounted at the immediate re-check"', mount_section)
 
     def test_render_start_script_waits_for_smbd_ready_after_launch(self) -> None:
         values = {
