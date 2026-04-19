@@ -992,6 +992,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -1025,12 +1026,48 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", False, "checksum mismatch")]):
                 with self.assertRaises(SystemExit):
                     deploy.main([])
+
+    def test_deploy_requires_nonempty_airport_syap(self) -> None:
+        for values in (
+            {
+                "TC_HOST": "root@10.0.0.2",
+                "TC_PASSWORD": "pw",
+                "TC_SSH_OPTS": "-o foo",
+                "TC_PAYLOAD_DIR_NAME": "samba4",
+                "TC_SHARE_NAME": "Data",
+                "TC_NETBIOS_NAME": "TimeCapsule",
+                "TC_NET_IFACE": "bridge0",
+                "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+                "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+                "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+                "TC_SAMBA_USER": "admin",
+            },
+            {
+                "TC_HOST": "root@10.0.0.2",
+                "TC_PASSWORD": "pw",
+                "TC_SSH_OPTS": "-o foo",
+                "TC_PAYLOAD_DIR_NAME": "samba4",
+                "TC_SHARE_NAME": "Data",
+                "TC_NETBIOS_NAME": "TimeCapsule",
+                "TC_NET_IFACE": "bridge0",
+                "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+                "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+                "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+                "TC_AIRPORT_SYAP": "",
+                "TC_SAMBA_USER": "admin",
+            },
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+                    deploy.main(["--dry-run"])
+            self.assertIn("Missing required setting in .env: TC_AIRPORT_SYAP", str(ctx.exception))
 
     def test_deploy_no_reboot_stops_after_upload_phase(self) -> None:
         output = io.StringIO()
@@ -1045,6 +1082,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -1078,6 +1116,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -1112,6 +1151,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -1156,6 +1196,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -1200,6 +1241,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -1240,6 +1282,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -1279,6 +1322,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -1311,6 +1355,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -1338,6 +1383,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -1377,6 +1423,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -1404,6 +1451,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -1434,6 +1482,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         template_bundle = mock.Mock(
@@ -1473,6 +1522,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -1517,6 +1567,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -1550,6 +1601,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -1578,6 +1630,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -1601,6 +1654,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -1624,6 +1678,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         unsupported = DeviceCompatibility(
@@ -1657,6 +1712,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         unsupported = DeviceCompatibility(
@@ -1759,6 +1815,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
@@ -1788,6 +1845,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):

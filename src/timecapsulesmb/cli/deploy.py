@@ -57,6 +57,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     values = parse_env_values(ENV_PATH)
     host = require(values, "TC_HOST")
+    require(values, "TC_AIRPORT_SYAP")
     password = values.get("TC_PASSWORD", "")
     if not password:
         password = getpass.getpass("Time Capsule root password: ")
