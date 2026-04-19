@@ -1529,7 +1529,7 @@ FAIL:fstat missing
             with redirect_stdout(io.StringIO()):
                 verify_netbsd4_activation("host", "pw", "-o foo")
         remote_command = run_ssh_mock.call_args.args[3]
-        self.assertIn('max_attempts=$(((60 + 4) / 5))', remote_command)
+        self.assertIn('max_attempts=$(((180 + 4) / 5))', remote_command)
         self.assertIn('while [ "$attempt" -lt "$max_attempts" ]; do', remote_command)
         self.assertIn("sleep 5", remote_command)
         self.assertIn("/mnt/Memory/samba4/etc/smb.conf", remote_command)

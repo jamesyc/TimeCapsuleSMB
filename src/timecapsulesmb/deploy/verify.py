@@ -217,7 +217,7 @@ def verify_post_deploy(values: dict[str, str]) -> None:
         print("  SMB listing verification skipped: smbclient not found")
 
 
-def verify_netbsd4_activation(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 60) -> bool:
+def verify_netbsd4_activation(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 180) -> bool:
     print("NetBSD4 activation verification:")
     script = rf'''
 if ! command -v fstat >/dev/null 2>&1; then
