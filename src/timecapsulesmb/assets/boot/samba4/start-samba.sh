@@ -201,10 +201,15 @@ mount_device_if_possible() {
             sleep 1
             kill -9 "$mount_pid" >/dev/null 2>&1 || true
             wait "$mount_pid" >/dev/null 2>&1 || true
+            log "mount_hfs command did not exit promptly for $dev_path at $volume_root; re-checking mount state"
+            if is_volume_root_mounted "$volume_root"; then
+                log "mount_hfs command timed out, but volume is mounted"
+                return 0
+            fi
             if [ "$created_mountpoint" -eq 1 ]; then
                 /bin/rmdir "$volume_root" >/dev/null 2>&1 || true
             fi
-            log "mount_hfs timed out for $dev_path at $volume_root"
+            log "mount_hfs timed out for $dev_path at $volume_root and volume is still not mounted"
             return 1
         fi
         attempt=$((attempt + 1))
@@ -212,9 +217,15 @@ mount_device_if_possible() {
     done
     wait "$mount_pid" >/dev/null 2>&1 || true
 
-    if ! is_volume_root_mounted "$volume_root" && [ "$created_mountpoint" -eq 1 ]; then
+    if is_volume_root_mounted "$volume_root"; then
+        return 0
+    fi
+
+    if [ "$created_mountpoint" -eq 1 ]; then
         /bin/rmdir "$volume_root" >/dev/null 2>&1 || true
     fi
+
+    return 1
 }
 
 discover_preexisting_data_root() {
@@ -398,14 +409,13 @@ stage_runtime() {
     log file = $SMBD_LOG
     max log size = 256
     smb ports = 445
-    deadtime = 15
+    deadtime = 60
     reset on zero vc = yes
     fruit:aapl = yes
     fruit:model = MacSamba
     fruit:advertise_fullsync = true
     fruit:nfs_aces = no
-    fruit:encoding = native
-    fruit:veto_appledouble = no
+    fruit:veto_appledouble = yes
     fruit:wipe_intentionally_left_blank_rfork = yes
     fruit:delete_empty_adfiles = yes
 
@@ -418,10 +428,9 @@ stage_runtime() {
     vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb
     acl_xattr:ignore system acls = yes
     fruit:resource = file
-    fruit:metadata = netatalk
+    fruit:metadata = stream
     fruit:time machine = yes
     fruit:posix_rename = yes
-    fruit:locking = none
     xattr_tdb:file = $PAYLOAD_DIR/private/xattr.tdb
     force user = root
     force group = wheel
@@ -431,8 +440,15 @@ EOF
 }
 
 start_smbd() {
+    smbd_ready_log=$SMBD_LOG
+    if configured_smbd_log=$(get_smbd_log_path_from_config "$RAM_ETC/smb.conf" || true); then
+        if [ -n "$configured_smbd_log" ]; then
+            smbd_ready_log=$configured_smbd_log
+        fi
+    fi
+
     "$RAM_SBIN/smbd" -D -s "$RAM_ETC/smb.conf"
-    wait_for_smbd_ready "$SMBD_LOG"
+    wait_for_smbd_ready "$smbd_ready_log"
 }
 
 start_mdns() {

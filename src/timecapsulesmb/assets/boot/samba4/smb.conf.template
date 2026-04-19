@@ -26,14 +26,13 @@
     log file = /mnt/Memory/samba4/var/log.smbd
     max log size = 256
     smb ports = 445
-    deadtime = 15
+    deadtime = 60
     reset on zero vc = yes
     fruit:aapl = yes
     fruit:model = TimeCapsule8,119
     fruit:advertise_fullsync = true
     fruit:nfs_aces = no
-    fruit:encoding = native
-    fruit:veto_appledouble = no
+    fruit:veto_appledouble = yes
     fruit:wipe_intentionally_left_blank_rfork = yes
     fruit:delete_empty_adfiles = yes
 
@@ -46,10 +45,9 @@
     vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb
     acl_xattr:ignore system acls = yes
     fruit:resource = file
-    fruit:metadata = netatalk
+    fruit:metadata = stream
     fruit:time machine = yes
     fruit:posix_rename = yes
-    fruit:locking = none
     xattr_tdb:file = __PAYLOAD_DIR__/private/xattr.tdb
     force user = root
     force group = wheel

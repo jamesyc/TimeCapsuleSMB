@@ -711,7 +711,9 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('created_mountpoint=0', mount_section)
         self.assertIn('created_mountpoint=1', mount_section)
         self.assertIn('/bin/rmdir "$volume_root" >/dev/null 2>&1 || true', mount_section)
-        self.assertIn('log "mount_hfs timed out for $dev_path at $volume_root"', mount_section)
+        self.assertIn('log "mount_hfs command did not exit promptly for $dev_path at $volume_root; re-checking mount state"', mount_section)
+        self.assertIn('log "mount_hfs command timed out, but volume is mounted"', mount_section)
+        self.assertIn('log "mount_hfs timed out and volume is still not mounted"', mount_section)
 
     def test_render_start_script_waits_for_smbd_ready_after_launch(self) -> None:
         values = {
@@ -727,9 +729,15 @@ class DeployModuleTests(unittest.TestCase):
         bundle = build_template_bundle(values)
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn('"$RAM_SBIN/smbd" -D -s "$RAM_ETC/smb.conf"', rendered)
-        self.assertIn("wait_for_smbd_ready", rendered)
+        self.assertIn('if configured_smbd_log=$(get_smbd_log_path_from_config "$RAM_ETC/smb.conf" || true); then', rendered)
+        self.assertIn('wait_for_smbd_ready "$smbd_ready_log"', rendered)
         self.assertIn('if wait_for_process "$MDNS_PROC_NAME" 90; then', rendered)
         self.assertIn('log "smbd ready"', rendered)
+
+    def test_common_script_extracts_smbd_log_path_from_config(self) -> None:
+        common = (REPO_ROOT / "src/timecapsulesmb/assets/boot/samba4/common.sh").read_text()
+        self.assertIn("get_smbd_log_path_from_config()", common)
+        self.assertIn("log file", common)
 
     def test_render_smb_conf_uses_ram_cache_directory_by_default(self) -> None:
         values = {

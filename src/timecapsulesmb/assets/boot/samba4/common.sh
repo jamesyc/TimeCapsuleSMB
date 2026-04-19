@@ -72,6 +72,21 @@ wait_for_smbd_ready() {
     return 1
 }
 
+get_smbd_log_path_from_config() {
+    smbd_conf_path=$1
+    configured_log=$(
+        /usr/bin/sed -n 's/^[[:space:]]*log file[[:space:]]*=[[:space:]]*//p' "$smbd_conf_path" 2>/dev/null \
+            | /usr/bin/sed -n '1p'
+    )
+
+    if [ -n "$configured_log" ]; then
+        echo "$configured_log"
+        return 0
+    fi
+
+    return 1
+}
+
 derive_airport_fields() {
     iface_mac=$1
 
