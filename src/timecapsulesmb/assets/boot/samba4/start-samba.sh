@@ -196,7 +196,7 @@ mount_device_if_possible() {
     mount_pid=$!
     attempt=0
     while kill -0 "$mount_pid" >/dev/null 2>&1; do
-        if [ "$attempt" -ge 5 ]; then
+        if [ "$attempt" -ge 10 ]; then
             kill "$mount_pid" >/dev/null 2>&1 || true
             sleep 1
             kill -9 "$mount_pid" >/dev/null 2>&1 || true

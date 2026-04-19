@@ -706,6 +706,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('/sbin/mount_hfs "$dev_path" "$volume_root" >/dev/null 2>&1 &', mount_section)
         self.assertIn("mount_pid=$!", mount_section)
         self.assertIn('while kill -0 "$mount_pid" >/dev/null 2>&1; do', mount_section)
+        self.assertIn('if [ "$attempt" -ge 10 ]; then', mount_section)
         self.assertIn('kill "$mount_pid" >/dev/null 2>&1 || true', mount_section)
         self.assertIn('kill -9 "$mount_pid" >/dev/null 2>&1 || true', mount_section)
         self.assertIn('created_mountpoint=0', mount_section)
