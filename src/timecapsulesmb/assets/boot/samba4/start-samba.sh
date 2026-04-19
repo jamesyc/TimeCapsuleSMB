@@ -34,6 +34,7 @@ RAM_LOG="$RAM_VAR/rc.local.log"
 SMBD_LOG="$RAM_VAR/log.smbd"
 MDNS_BIN=/mnt/Flash/mdns-advertiser
 MDNS_PROC_NAME=mdns-advertiser
+ALL_MDNS_SNAPSHOT=/mnt/Flash/allmdns.txt
 APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt
 LEGACY_PREFIX_NETBSD7=/root/tc-netbsd7
 LEGACY_PREFIX_NETBSD4=/root/tc-netbsd4
@@ -473,6 +474,7 @@ start_mdns() {
 
     log "starting mdns advertiser for $BRIDGE0_IP on $NET_IFACE"
     set -- "$MDNS_BIN" \
+        --save-all-snapshot "$ALL_MDNS_SNAPSHOT" \
         --save-snapshot "$APPLE_MDNS_SNAPSHOT" \
         --load-snapshot "$APPLE_MDNS_SNAPSHOT" \
         --instance "$MDNS_INSTANCE_NAME" \

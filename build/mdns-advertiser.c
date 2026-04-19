@@ -54,6 +54,7 @@
 static volatile sig_atomic_t g_stop = 0;
 
 struct config {
+    char save_all_snapshot_path[MAX_NAME];
     char service_type[MAX_NAME];
     char instance_name[MAX_NAME];
     char host_label[MAX_LABEL + 1];
@@ -81,8 +82,8 @@ struct config {
     uint16_t adisk_port;
     uint16_t airport_port;
     uint32_t ttl;
-    char save_snapshot_path[MAX_NAME];
     char load_snapshot_path[MAX_NAME];
+    char save_snapshot_path[MAX_NAME];
 };
 
 struct service_record {
@@ -288,6 +289,7 @@ static void usage(const char *prog) {
     fprintf(stderr,
             "Usage: %s --instance <name> --host <label> --ipv4 <address> [options]\n"
             "Options:\n"
+            "  --save-all-snapshot <path> Capture raw LAN-wide mDNS records into a snapshot file\n"
             "  --save-snapshot <path> Capture Apple mDNS records into a snapshot file\n"
             "  --load-snapshot <path> Kill Apple mDNSResponder and replay snapshot records\n"
             "  --service <type>   Service type (default: _smb._tcp.local.)\n"
@@ -1245,17 +1247,146 @@ static int collect_mdns_responses(int sockfd, int seconds, struct service_record
     return 0;
 }
 
-static int capture_apple_snapshot(const struct config *cfg, struct service_record_set *out) {
+static int mac_equals(const char *a, const char *b) {
+    size_t ai = 0;
+    size_t bi = 0;
+
+    if (a == NULL || b == NULL || a[0] == '\0' || b[0] == '\0') {
+        return 0;
+    }
+
+    while (a[ai] != '\0' || b[bi] != '\0') {
+        while (a[ai] == ':' || a[ai] == '-' || a[ai] == '.') {
+            ai++;
+        }
+        while (b[bi] == ':' || b[bi] == '-' || b[bi] == '.') {
+            bi++;
+        }
+        if (a[ai] == '\0' || b[bi] == '\0') {
+            break;
+        }
+        if (tolower((unsigned char)a[ai]) != tolower((unsigned char)b[bi])) {
+            return 0;
+        }
+        ai++;
+        bi++;
+    }
+
+    while (a[ai] == ':' || a[ai] == '-' || a[ai] == '.') {
+        ai++;
+    }
+    while (b[bi] == ':' || b[bi] == '-' || b[bi] == '.') {
+        bi++;
+    }
+    return a[ai] == '\0' && b[bi] == '\0';
+}
+
+static int cfg_has_airport_identity_macs(const struct config *cfg) {
+    return cfg->airport_wama[0] != '\0' ||
+           cfg->airport_rama[0] != '\0' ||
+           cfg->airport_ram2[0] != '\0';
+}
+
+static int local_airport_mac_matches(const struct config *cfg, const char *value) {
+    return mac_equals(value, cfg->airport_wama) ||
+           mac_equals(value, cfg->airport_rama) ||
+           mac_equals(value, cfg->airport_ram2);
+}
+
+static int airport_txt_key_matches_local_mac(const char *txt, const struct config *cfg) {
+    const char *segment = txt;
+
+    while (segment != NULL && *segment != '\0') {
+        const char *next = strchr(segment, ',');
+        size_t len = next != NULL ? (size_t)(next - segment) : strlen(segment);
+
+        if (len > 5 &&
+            (strncasecmp(segment, "waMA=", 5) == 0 ||
+             strncasecmp(segment, "raMA=", 5) == 0 ||
+             strncasecmp(segment, "raM2=", 5) == 0)) {
+            char value[32];
+
+            if (len - 5 >= sizeof(value)) {
+                return 0;
+            }
+            memcpy(value, segment + 5, len - 5);
+            value[len - 5] = '\0';
+            if (local_airport_mac_matches(cfg, value)) {
+                return 1;
+            }
+        }
+        segment = next != NULL ? next + 1 : NULL;
+    }
+
+    return 0;
+}
+
+static int airport_record_matches_local_identity(const struct service_record *record, const struct config *cfg) {
+    size_t i;
+
+    if (!name_equals(record->service_type, AIRPORT_SERVICE_TYPE)) {
+        return 0;
+    }
+    for (i = 0; i < record->txt_count; i++) {
+        if (airport_txt_key_matches_local_mac(record->txt[i], cfg)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int find_matching_airport_host(char *out, size_t out_len, const struct service_record_set *set,
+                                      const struct config *cfg) {
+    size_t i;
+    int found = 0;
+
+    for (i = 0; i < set->count; i++) {
+        const struct service_record *record = &set->records[i];
+        if (!airport_record_matches_local_identity(record, cfg) || record->host_label[0] == '\0') {
+            continue;
+        }
+        if (!found) {
+            if (strlen(record->host_label) >= out_len) {
+                return -1;
+            }
+            strcpy(out, record->host_label);
+            found = 1;
+            continue;
+        }
+        if (strcmp(out, record->host_label) != 0) {
+            return -1;
+        }
+    }
+
+    return found ? 0 : -1;
+}
+
+static int filter_records_by_host(struct service_record_set *out, const struct service_record_set *in,
+                                  const char *host_label) {
+    size_t i;
+
+    memset(out, 0, sizeof(*out));
+    for (i = 0; i < in->count; i++) {
+        const struct service_record *record = &in->records[i];
+        if (record->host_label[0] == '\0' || strcmp(record->host_label, host_label) != 0) {
+            continue;
+        }
+        if (out->count >= SNAPSHOT_MAX_RECORDS) {
+            break;
+        }
+        out->records[out->count++] = *record;
+    }
+
+    return out->count > 0 ? 0 : -1;
+}
+
+static int capture_mdns_snapshot_raw(struct service_record_set *out) {
     int sockfd;
     struct sockaddr_in mdns_dest;
     size_t i;
-    struct service_record_set captured;
-    struct service_record_set filtered;
     struct service_type_set service_types;
-    const char *preferred_host = NULL;
 
-    memset(&captured, 0, sizeof(captured));
-    memset(&filtered, 0, sizeof(filtered));
+    memset(out, 0, sizeof(*out));
     memset(&service_types, 0, sizeof(service_types));
     sockfd = open_capture_socket();
     if (sockfd < 0) {
@@ -1268,65 +1399,42 @@ static int capture_apple_snapshot(const struct config *cfg, struct service_recor
     mdns_dest.sin_addr.s_addr = inet_addr(MDNS_GROUP);
 
     (void)send_query_question(sockfd, &mdns_dest, "_services._dns-sd._udp.local.", DNS_TYPE_PTR);
-    (void)collect_mdns_responses(sockfd, 5, &captured, &service_types);
+    (void)collect_mdns_responses(sockfd, 5, out, &service_types);
 
     for (i = 0; i < service_types.count; i++) {
         (void)send_query_question(sockfd, &mdns_dest, service_types.types[i], DNS_TYPE_PTR);
     }
-    (void)collect_mdns_responses(sockfd, 5, &captured, &service_types);
+    (void)collect_mdns_responses(sockfd, 5, out, &service_types);
 
-    for (i = 0; i < captured.count; i++) {
-        (void)send_query_question(sockfd, &mdns_dest, captured.records[i].instance_fqdn, DNS_TYPE_SRV);
-        (void)send_query_question(sockfd, &mdns_dest, captured.records[i].instance_fqdn, DNS_TYPE_TXT);
+    for (i = 0; i < out->count; i++) {
+        (void)send_query_question(sockfd, &mdns_dest, out->records[i].instance_fqdn, DNS_TYPE_SRV);
+        (void)send_query_question(sockfd, &mdns_dest, out->records[i].instance_fqdn, DNS_TYPE_TXT);
     }
-    (void)collect_mdns_responses(sockfd, 5, &captured, &service_types);
+    (void)collect_mdns_responses(sockfd, 5, out, &service_types);
     close(sockfd);
 
-    for (i = 0; i < captured.count; i++) {
-        const struct service_record *record = &captured.records[i];
-        size_t j;
-        if (name_equals(record->service_type, AIRPORT_SERVICE_TYPE)) {
-            if (cfg->airport_wama[0] != '\0') {
-                for (j = 0; j < record->txt_count; j++) {
-                    if (strncasecmp(record->txt[j], "waMA=", 5) == 0 &&
-                        strcasecmp(record->txt[j] + 5, cfg->airport_wama) == 0) {
-                        preferred_host = record->host_label;
-                        break;
-                    }
-                }
-            }
-            if (preferred_host == NULL) {
-                preferred_host = record->host_label;
-            }
-        }
-    }
-
-    if (preferred_host != NULL) {
-        for (i = 0; i < captured.count; i++) {
-            const struct service_record *record = &captured.records[i];
-            if (record->host_label[0] == '\0' || strcmp(record->host_label, preferred_host) != 0) {
-                continue;
-            }
-            if (filtered.count >= SNAPSHOT_MAX_RECORDS) {
-                break;
-            }
-            filtered.records[filtered.count++] = *record;
-        }
-        if (filtered.count > 0) {
-            *out = filtered;
-            return 0;
-        }
-    }
-
-    *out = captured;
     return out->count > 0 ? 0 : -1;
 }
 
-static int capture_apple_snapshot_with_retry(const struct config *cfg, struct service_record_set *out) {
+static int prepare_loaded_snapshot_for_advertising(const struct config *cfg, const struct service_record_set *loaded,
+                                                   struct service_record_set *out) {
+    char matched_host[MAX_LABEL + 1];
+
+    if (!cfg_has_airport_identity_macs(cfg)) {
+        return -1;
+    }
+    if (find_matching_airport_host(matched_host, sizeof(matched_host), loaded, cfg) != 0) {
+        return -1;
+    }
+
+    return filter_records_by_host(out, loaded, matched_host);
+}
+
+static int capture_mdns_snapshot_raw_with_retry(struct service_record_set *out) {
     time_t deadline = time(NULL) + SNAPSHOT_CAPTURE_TIMEOUT_SECONDS;
 
     do {
-        if (capture_apple_snapshot(cfg, out) == 0) {
+        if (capture_mdns_snapshot_raw(out) == 0) {
             return 0;
         }
         if (time(NULL) >= deadline) {
@@ -1916,7 +2024,9 @@ int main(int argc, char **argv) {
     cfg.ttl = 120;
 
     for (i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--save-snapshot") == 0 && i + 1 < argc) {
+        if (strcmp(argv[i], "--save-all-snapshot") == 0 && i + 1 < argc) {
+            strncpy(cfg.save_all_snapshot_path, argv[++i], sizeof(cfg.save_all_snapshot_path) - 1);
+        } else if (strcmp(argv[i], "--save-snapshot") == 0 && i + 1 < argc) {
             strncpy(cfg.save_snapshot_path, argv[++i], sizeof(cfg.save_snapshot_path) - 1);
         } else if (strcmp(argv[i], "--load-snapshot") == 0 && i + 1 < argc) {
             strncpy(cfg.load_snapshot_path, argv[++i], sizeof(cfg.load_snapshot_path) - 1);
@@ -2013,12 +2123,30 @@ int main(int argc, char **argv) {
 
     snprintf(cfg.host_fqdn, sizeof(cfg.host_fqdn), "%s.local.", cfg.host_label);
 
-    if (cfg.save_snapshot_path[0] != '\0') {
+    if (cfg.save_all_snapshot_path[0] != '\0' || cfg.save_snapshot_path[0] != '\0') {
         struct service_record_set captured_records;
+        struct service_record_set filtered_records;
         memset(&captured_records, 0, sizeof(captured_records));
-        if (capture_apple_snapshot_with_retry(&cfg, &captured_records) == 0) {
-            if (write_snapshot_file_atomic(cfg.save_snapshot_path, &captured_records) != 0) {
-                fprintf(stderr, "failed to write snapshot file: %s\n", cfg.save_snapshot_path);
+        memset(&filtered_records, 0, sizeof(filtered_records));
+        if (capture_mdns_snapshot_raw_with_retry(&captured_records) == 0) {
+            if (cfg.save_all_snapshot_path[0] != '\0' &&
+                write_snapshot_file_atomic(cfg.save_all_snapshot_path, &captured_records) != 0) {
+                fprintf(stderr, "failed to write all snapshot file: %s\n", cfg.save_all_snapshot_path);
+            }
+            /*
+             * Keep a raw LAN-wide dump in allmdns.txt for diagnostics, but
+             * only refresh applemdns.txt when the capture can be tied back to
+             * this unit's _airport identity.
+             */
+            if (cfg.save_snapshot_path[0] != '\0') {
+                if (prepare_loaded_snapshot_for_advertising(&cfg, &captured_records, &filtered_records) == 0) {
+                    if (write_snapshot_file_atomic(cfg.save_snapshot_path, &filtered_records) != 0) {
+                        fprintf(stderr, "failed to write snapshot file: %s\n", cfg.save_snapshot_path);
+                    }
+                } else {
+                    fprintf(stderr, "warning: could not identify local Apple mDNS records for snapshot file: %s\n",
+                            cfg.save_snapshot_path);
+                }
             }
         } else {
             fprintf(stderr, "warning: could not capture Apple mDNS snapshot\n");
@@ -2026,11 +2154,14 @@ int main(int argc, char **argv) {
     }
 
     if (cfg.load_snapshot_path[0] != '\0') {
+        struct service_record_set loaded_records;
         gracefully_kill_mdnsresponder();
-        if (load_snapshot_file(cfg.load_snapshot_path, &snapshot_records) == 0) {
+        memset(&loaded_records, 0, sizeof(loaded_records));
+        if (load_snapshot_file(cfg.load_snapshot_path, &loaded_records) == 0 &&
+            prepare_loaded_snapshot_for_advertising(&cfg, &loaded_records, &snapshot_records) == 0) {
             use_snapshot_records = 1;
         } else {
-            fprintf(stderr, "warning: could not load snapshot file: %s; falling back to generated records\n",
+            fprintf(stderr, "warning: could not load trusted snapshot file: %s; falling back to generated records\n",
                     cfg.load_snapshot_path);
         }
     }

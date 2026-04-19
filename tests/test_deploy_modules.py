@@ -240,11 +240,13 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('--adisk-uuid "$ADISK_UUID"', rendered)
         self.assertIn('--adisk-sys-wama "$iface_mac"', rendered)
         self.assertIn('MDNS_PROC_NAME=mdns-advertiser', rendered)
+        self.assertIn('ALL_MDNS_SNAPSHOT=/mnt/Flash/allmdns.txt', rendered)
         self.assertIn('APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt', rendered)
         self.assertIn('MDNS_STARTUP_DELAY_SECONDS=30', rendered)
         self.assertIn('SCRIPT_START_TS=$(/bin/date +%s)', rendered)
         self.assertIn('if [ "$elapsed" -lt "$MDNS_STARTUP_DELAY_SECONDS" ]; then', rendered)
         self.assertIn('sleep $((MDNS_STARTUP_DELAY_SECONDS - elapsed))', rendered)
+        self.assertIn('--save-all-snapshot "$ALL_MDNS_SNAPSHOT"', rendered)
         self.assertIn('--save-snapshot "$APPLE_MDNS_SNAPSHOT"', rendered)
         self.assertIn('--load-snapshot "$APPLE_MDNS_SNAPSHOT"', rendered)
         self.assertIn('/usr/bin/pkill "$MDNS_PROC_NAME" >/dev/null 2>&1 || true', rendered)
@@ -859,6 +861,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('airport clone fields incomplete; skipping _airport._tcp advertisement', rendered)
         self.assertIn('ADISK_DISK_KEY=dk0', rendered)
         self.assertIn("ADISK_UUID=''", rendered)
+        self.assertIn('ALL_MDNS_SNAPSHOT=/mnt/Flash/allmdns.txt', rendered)
         self.assertIn('--adisk-disk-key "$ADISK_DISK_KEY"', rendered)
         self.assertIn('APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt', rendered)
         self.assertIn('--load-snapshot "$APPLE_MDNS_SNAPSHOT"', rendered)
@@ -866,7 +869,9 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('mdns restart deferred; waiting for startup snapshot bootstrap', rendered)
         self.assertIn('[ ! -f "$APPLE_MDNS_SNAPSHOT" ] && [ "$elapsed" -lt "$SNAPSHOT_BOOTSTRAP_GRACE_SECONDS" ]', rendered)
         self.assertIn('if [ -f "$APPLE_MDNS_SNAPSHOT" ]; then', rendered)
-        self.assertIn('--save-snapshot "$APPLE_MDNS_SNAPSHOT" --load-snapshot "$APPLE_MDNS_SNAPSHOT"', rendered)
+        self.assertIn('--save-all-snapshot "$ALL_MDNS_SNAPSHOT"', rendered)
+        self.assertIn('--save-snapshot "$APPLE_MDNS_SNAPSHOT"', rendered)
+        self.assertIn('--load-snapshot "$APPLE_MDNS_SNAPSHOT"', rendered)
         self.assertIn('--adisk-uuid "$ADISK_UUID"', rendered)
         self.assertIn('--adisk-sys-wama "$iface_mac"', rendered)
         self.assertIn('if [ ! -f "$RAM_PRIVATE/nbns.enabled" ]; then', rendered)
@@ -1130,6 +1135,161 @@ int main(int argc, char **argv) {{
                     "Jamess-AirPort-Time-Capsule.local.",
                 ],
             )
+
+    def test_mdns_advertiser_filters_loaded_snapshot_by_local_airport_identity(self) -> None:
+        if shutil.which("cc") is None:
+            self.skipTest("cc not available")
+
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <stdio.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+static void add_record(struct service_record_set *set, const char *type, const char *instance,
+                       const char *host, const char *txt) {{
+    struct service_record *record = &set->records[set->count++];
+    memset(record, 0, sizeof(*record));
+    strncpy(record->service_type, type, sizeof(record->service_type) - 1);
+    strncpy(record->instance_name, instance, sizeof(record->instance_name) - 1);
+    strncpy(record->host_label, host, sizeof(record->host_label) - 1);
+    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s.local.", host);
+    build_instance_fqdn(record->instance_fqdn, sizeof(record->instance_fqdn), instance, type);
+    record->port = 5009;
+    if (txt != NULL) {{
+        strncpy(record->txt[record->txt_count++], txt, MAX_TXT_STRING);
+    }}
+}}
+
+int main(void) {{
+    struct config cfg;
+    struct service_record_set loaded;
+    struct service_record_set filtered;
+
+    memset(&cfg, 0, sizeof(cfg));
+    memset(&loaded, 0, sizeof(loaded));
+    strncpy(cfg.airport_wama, "80:EA:96:E6:58:68", sizeof(cfg.airport_wama) - 1);
+
+    add_record(&loaded, "_airport._tcp.local.", "Kitchen", "Kitchen", "waMA=AA:BB:CC:DD:EE:FF");
+    add_record(&loaded, "_riousbprint._tcp.local.", "Kitchen Printer", "Kitchen", "rp=usb");
+    add_record(&loaded, "_airport._tcp.local.", "Home", "Home", "raMA=80:ea:96:e6:58:68");
+    add_record(&loaded, "_riousbprint._tcp.local.", "Home Printer", "Home", "rp=usb");
+
+    if (prepare_loaded_snapshot_for_advertising(&cfg, &loaded, &filtered) != 0) {{
+        return 1;
+    }}
+    printf("%zu\\n", filtered.count);
+    printf("%s\\n", filtered.records[0].host_label);
+    printf("%s\\n", filtered.records[1].host_label);
+
+    memset(&cfg, 0, sizeof(cfg));
+    if (prepare_loaded_snapshot_for_advertising(&cfg, &loaded, &filtered) == 0) {{
+        return 2;
+    }}
+    strncpy(cfg.airport_wama, "00:11:22:33:44:55", sizeof(cfg.airport_wama) - 1);
+    if (prepare_loaded_snapshot_for_advertising(&cfg, &loaded, &filtered) == 0) {{
+        return 3;
+    }}
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            c_path = tmp / "mdns_snapshot_identity_test.c"
+            bin_path = tmp / "mdns_snapshot_identity_test"
+            c_path.write_text(source)
+            proc = subprocess.run(
+                ["cc", "-Wall", "-Wextra", "-Werror", str(c_path), "-o", str(bin_path)],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            run = subprocess.run([str(bin_path)], capture_output=True, text=True, check=False)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertEqual(run.stdout.splitlines(), ["2", "Home", "Home"])
+
+    def test_mdns_advertiser_matches_comma_delimited_airport_txt(self) -> None:
+        if shutil.which("cc") is None:
+            self.skipTest("cc not available")
+
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <stdio.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+static void add_record(struct service_record_set *set, const char *type, const char *instance,
+                       const char *host, const char *txt) {{
+    struct service_record *record = &set->records[set->count++];
+    memset(record, 0, sizeof(*record));
+    strncpy(record->service_type, type, sizeof(record->service_type) - 1);
+    strncpy(record->instance_name, instance, sizeof(record->instance_name) - 1);
+    strncpy(record->host_label, host, sizeof(record->host_label) - 1);
+    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s.local.", host);
+    build_instance_fqdn(record->instance_fqdn, sizeof(record->instance_fqdn), instance, type);
+    record->port = 5009;
+    if (txt != NULL) {{
+        strncpy(record->txt[record->txt_count++], txt, MAX_TXT_STRING);
+    }}
+}}
+
+int main(void) {{
+    struct config cfg;
+    struct service_record_set loaded;
+    struct service_record_set filtered;
+
+    memset(&cfg, 0, sizeof(cfg));
+    memset(&loaded, 0, sizeof(loaded));
+    strncpy(cfg.airport_wama, "80:EA:96:E6:58:68", sizeof(cfg.airport_wama) - 1);
+
+    add_record(&loaded, "_airport._tcp.local.", "Home", "Home",
+               "waMA=80-EA-96-E6-58-68,raMA=80-EA-96-EB-2E-7D,raM2=80-EA-96-EB-2E-7C");
+    add_record(&loaded, "_riousbprint._tcp.local.", "Home Printer", "Home", "rp=usb");
+
+    if (prepare_loaded_snapshot_for_advertising(&cfg, &loaded, &filtered) != 0) {{
+        return 1;
+    }}
+    printf("%zu\\n", filtered.count);
+    printf("%s\\n", filtered.records[0].host_label);
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            c_path = tmp / "mdns_snapshot_composite_txt_test.c"
+            bin_path = tmp / "mdns_snapshot_composite_txt_test"
+            c_path.write_text(source)
+            proc = subprocess.run(
+                ["cc", "-Wall", "-Wextra", "-Werror", str(c_path), "-o", str(bin_path)],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            run = subprocess.run([str(bin_path)], capture_output=True, text=True, check=False)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertEqual(run.stdout.splitlines(), ["2", "Home"])
+
+    def test_mdns_advertiser_save_snapshot_falls_back_to_raw_capture(self) -> None:
+        content = (REPO_ROOT / "build" / "mdns-advertiser.c").read_text()
+        self.assertIn(
+            "Keep a raw LAN-wide dump in allmdns.txt for diagnostics, but\n"
+            "             * only refresh applemdns.txt when the capture can be tied back to\n"
+            "             * this unit's _airport identity.",
+            content,
+        )
+        self.assertIn(
+            'if (cfg.save_all_snapshot_path[0] != \'\\0\' &&\n'
+            '                write_snapshot_file_atomic(cfg.save_all_snapshot_path, &captured_records) != 0) {',
+            content,
+        )
 
     def test_mdns_advertiser_suppresses_snapshot_device_info_and_afp(self) -> None:
         content = (REPO_ROOT / "build" / "mdns-advertiser.c").read_text()

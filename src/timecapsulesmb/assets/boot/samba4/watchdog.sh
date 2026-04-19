@@ -15,6 +15,7 @@ SMBD_BIN="$RAM_SBIN/smbd"
 SMBD_CONF="$RAM_ETC/smb.conf"
 MDNS_BIN=/mnt/Flash/mdns-advertiser
 MDNS_PROC_NAME=mdns-advertiser
+ALL_MDNS_SNAPSHOT=/mnt/Flash/allmdns.txt
 APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt
 NBNS_BIN="$RAM_SBIN/nbns-advertiser"
 NBNS_PROC_NAME=nbns-advertiser
@@ -95,7 +96,10 @@ restart_mdns() {
     if [ -f "$APPLE_MDNS_SNAPSHOT" ]; then
         set -- "$@" --load-snapshot "$APPLE_MDNS_SNAPSHOT"
     else
-        set -- "$@" --save-snapshot "$APPLE_MDNS_SNAPSHOT" --load-snapshot "$APPLE_MDNS_SNAPSHOT"
+        set -- "$@" \
+            --save-all-snapshot "$ALL_MDNS_SNAPSHOT" \
+            --save-snapshot "$APPLE_MDNS_SNAPSHOT" \
+            --load-snapshot "$APPLE_MDNS_SNAPSHOT"
     fi
     if derive_airport_fields "$iface_mac"; then
         set -- "$@" \
