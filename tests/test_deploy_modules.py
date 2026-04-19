@@ -1170,7 +1170,7 @@ int main(void) {{
 
     memset(&cfg, 0, sizeof(cfg));
     memset(&loaded, 0, sizeof(loaded));
-    strncpy(cfg.airport_wama, "80:EA:96:E6:58:68", sizeof(cfg.airport_wama) - 1);
+    snprintf(cfg.airport_wama, sizeof(cfg.airport_wama), "%s", "80:EA:96:E6:58:68");
 
     add_record(&loaded, "_airport._tcp.local.", "Kitchen", "Kitchen", "waMA=AA:BB:CC:DD:EE:FF");
     add_record(&loaded, "_riousbprint._tcp.local.", "Kitchen Printer", "Kitchen", "rp=usb");
@@ -1188,7 +1188,7 @@ int main(void) {{
     if (prepare_loaded_snapshot_for_advertising(&cfg, &loaded, &filtered) == 0) {{
         return 2;
     }}
-    strncpy(cfg.airport_wama, "00:11:22:33:44:55", sizeof(cfg.airport_wama) - 1);
+    snprintf(cfg.airport_wama, sizeof(cfg.airport_wama), "%s", "00:11:22:33:44:55");
     if (prepare_loaded_snapshot_for_advertising(&cfg, &loaded, &filtered) == 0) {{
         return 3;
     }}
@@ -1246,7 +1246,7 @@ int main(void) {{
 
     memset(&cfg, 0, sizeof(cfg));
     memset(&loaded, 0, sizeof(loaded));
-    strncpy(cfg.airport_wama, "80:EA:96:E6:58:68", sizeof(cfg.airport_wama) - 1);
+    snprintf(cfg.airport_wama, sizeof(cfg.airport_wama), "%s", "80:EA:96:E6:58:68");
 
     add_record(&loaded, "_airport._tcp.local.", "Home", "Home",
                "waMA=80-EA-96-E6-58-68,raMA=80-EA-96-EB-2E-7D,raM2=80-EA-96-EB-2E-7C");
