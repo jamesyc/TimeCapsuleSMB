@@ -19,7 +19,7 @@
     disable spoolss = yes
     dfree command = /bin/sh /mnt/Flash/dfree.sh
     pid directory = /mnt/Memory/samba4/var
-    lock directory = /mnt/Memory/samba4/locks
+    lock directory = /mnt/Locks
     state directory = /mnt/Memory/samba4/var
     cache directory = __CACHE_DIRECTORY__
     private dir = /mnt/Memory/samba4/private

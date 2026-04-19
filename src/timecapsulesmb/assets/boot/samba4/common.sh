@@ -2,6 +2,17 @@
 
 PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
+RAM_ROOT=/mnt/Memory/samba4
+RAM_SBIN="$RAM_ROOT/sbin"
+RAM_ETC="$RAM_ROOT/etc"
+RAM_VAR="$RAM_ROOT/var"
+RAM_PRIVATE="$RAM_ROOT/private"
+LOCKS_ROOT=/mnt/Locks
+MDNS_PROC_NAME=mdns-advertiser
+NBNS_PROC_NAME=nbns-advertiser
+ALL_MDNS_SNAPSHOT=/mnt/Flash/allmdns.txt
+APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt
+
 get_iface_ipv4() {
     iface=$1
     /sbin/ifconfig "$iface" 2>/dev/null | sed -n 's/^[[:space:]]*inet[[:space:]]\([0-9.]*\).*/\1/p' | sed -n '1p'

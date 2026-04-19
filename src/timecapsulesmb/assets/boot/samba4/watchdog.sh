@@ -5,20 +5,11 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
 . /mnt/Flash/common.sh
 
-RAM_ROOT=/mnt/Memory/samba4
-RAM_SBIN="$RAM_ROOT/sbin"
-RAM_ETC="$RAM_ROOT/etc"
-RAM_VAR="$RAM_ROOT/var"
-RAM_PRIVATE="$RAM_ROOT/private"
 WATCHDOG_LOG="$RAM_VAR/watchdog.log"
 SMBD_BIN="$RAM_SBIN/smbd"
 SMBD_CONF="$RAM_ETC/smb.conf"
 MDNS_BIN=/mnt/Flash/mdns-advertiser
-MDNS_PROC_NAME=mdns-advertiser
-ALL_MDNS_SNAPSHOT=/mnt/Flash/allmdns.txt
-APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt
 NBNS_BIN="$RAM_SBIN/nbns-advertiser"
-NBNS_PROC_NAME=nbns-advertiser
 
 NET_IFACE=__NET_IFACE__
 SMB_SHARE_NAME=__SMB_SHARE_NAME__
@@ -61,6 +52,7 @@ start_smbd_if_needed() {
         return 0
     fi
 
+    rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true
     "$SMBD_BIN" -D -s "$SMBD_CONF" >/dev/null 2>&1 || true
     log "smbd restart requested"
 }

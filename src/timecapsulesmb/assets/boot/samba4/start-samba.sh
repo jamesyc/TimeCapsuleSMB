@@ -24,21 +24,12 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
 . /mnt/Flash/common.sh
 
-RAM_ROOT=/mnt/Memory/samba4
-RAM_SBIN="$RAM_ROOT/sbin"
-RAM_ETC="$RAM_ROOT/etc"
-RAM_VAR="$RAM_ROOT/var"
 RAM_LOCKS="$RAM_ROOT/locks"
-RAM_PRIVATE="$RAM_ROOT/private"
 RAM_LOG="$RAM_VAR/rc.local.log"
 SMBD_LOG="$RAM_VAR/log.smbd"
 MDNS_BIN=/mnt/Flash/mdns-advertiser
-MDNS_PROC_NAME=mdns-advertiser
-ALL_MDNS_SNAPSHOT=/mnt/Flash/allmdns.txt
-APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt
 LEGACY_PREFIX_NETBSD7=/root/tc-netbsd7
 LEGACY_PREFIX_NETBSD4=/root/tc-netbsd4
-NBNS_PROC_NAME=nbns-advertiser
 
 PAYLOAD_DIR_NAME=__PAYLOAD_DIR_NAME__
 PAYLOAD_TEMPLATE_NAME=smb.conf.template
@@ -76,6 +67,49 @@ cleanup_old_runtime() {
     /usr/bin/pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true
     sleep 1
     rm -rf /mnt/Memory/samba4
+}
+
+locks_root_is_mounted() {
+    df_line=$(/bin/df -k "$LOCKS_ROOT" 2>/dev/null | /usr/bin/tail -n +2 || true)
+    case "$df_line" in
+        *" $LOCKS_ROOT")
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+prepare_locks_ramdisk() {
+    mkdir -p "$LOCKS_ROOT"
+
+    if locks_root_is_mounted; then
+        rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true
+        log "cleared existing $LOCKS_ROOT mount contents"
+        return 0
+    fi
+
+    kernel_release=$(/usr/bin/uname -r 2>/dev/null || true)
+    case "$kernel_release" in
+        6.*)
+            if /sbin/mount_tmpfs -s 6m tmpfs "$LOCKS_ROOT" >/dev/null 2>&1; then
+                rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true
+                log "mounted $LOCKS_ROOT tmpfs for Samba lock directory"
+                return 0
+            fi
+            log "failed to mount $LOCKS_ROOT tmpfs; using plain directory fallback"
+            rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true
+            return 0
+            ;;
+        *)
+            if /sbin/mount_mfs -s 12288 swap "$LOCKS_ROOT" >/dev/null 2>&1; then
+                rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true
+                log "mounted $LOCKS_ROOT mfs for Samba lock directory"
+                return 0
+            fi
+            log "failed to mount $LOCKS_ROOT mfs; refusing rootfs fallback"
+            return 1
+            ;;
+    esac
 }
 
 prepare_legacy_prefix() {
@@ -403,7 +437,7 @@ stage_runtime() {
     disable spoolss = yes
     dfree command = /bin/sh /mnt/Flash/dfree.sh
     pid directory = $RAM_VAR
-    lock directory = $RAM_LOCKS
+    lock directory = $LOCKS_ROOT
     state directory = $RAM_VAR
     cache directory = $CACHE_DIRECTORY
     private dir = $RAM_PRIVATE
@@ -538,6 +572,10 @@ start_nbns() {
 }
 
 cleanup_old_runtime
+if ! prepare_locks_ramdisk; then
+    log "aborting startup because $LOCKS_ROOT is unavailable"
+    exit 1
+fi
 prepare_ram_root
 prepare_legacy_prefix
 log "boot start"
