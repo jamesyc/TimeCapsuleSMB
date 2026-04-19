@@ -654,6 +654,48 @@ EOF
     perl -0pi -e 's/\tstatus = dbwrap_fetch\(db, frame, key, &data\);\n\tif \(!NT_STATUS_IS_OK\(status\)\) \{\n\t\treturn NT_STATUS_INTERNAL_DB_CORRUPTION;\n\t\}/\tstatus = dbwrap_fetch(db, frame, key, \&data);\n\tif (NT_STATUS_EQUAL(status, NT_STATUS_NOT_FOUND)) {\n\t\t*presult = talloc_zero(mem_ctx, struct tdb_xattrs);\n\t\tif (*presult == NULL) {\n\t\t\treturn NT_STATUS_NO_MEMORY;\n\t\t}\n\t\treturn NT_STATUS_OK;\n\t}\n\tif (!NT_STATUS_IS_OK(status)) {\n\t\treturn NT_STATUS_INTERNAL_DB_CORRUPTION;\n\t}/' \
         "$SAMBA4_SRC_DIR/source3/lib/xattr_tdb.c"
 
+    # Time Machine requires Samba fruit's durable handles, but the AirPort
+    # Time Capsule target is an ancient NetBSD kernel on HFS. During a network
+    # reconnect, Samba compares stat data from the old durable-handle cookie to
+    # a freshly reopened sparsebundle band file. On this platform st_blocks
+    # (Samba's st_ex_blocks) is allocation accounting, not logical file size,
+    # and HFS/NetBSD can report it differently for the same actively written
+    # sparse file after reconnect. Samba 4.8.12 treats any st_ex_blocks drift as
+    # file identity loss and denies the durable reconnect, which makes macOS
+    # invalidate the Time Machine disk image with a network disconnect error.
+    #
+    # Keep all meaningful identity checks intact: file-id, type, mode, owner,
+    # logical size, timestamps, block size, flags, etc. Only downgrade
+    # st_ex_blocks mismatch from a hard reconnect failure to a warning, because
+    # allocation-block count is too unstable on this filesystem stack to be a
+    # safe identity predicate. Samba defaults to log level 0, so log this rare
+    # allowed reconnect warning at DEBUG(0) with a unique marker that is easy
+    # to grep in normal production logs.
+    perl -0pi -e 's/\tif \(cookie_st->st_ex_blocks != fsp_st->st_ex_blocks\) \{\n\t\tDEBUG\(1, \("vfs_default_durable_reconnect \(%s\): "\n\t\t\t  "stat_ex\.%s differs: "\n\t\t\t  "cookie:%llu != stat:%llu, "\n\t\t\t  "denying durable reconnect\\n",\n\t\t\t  name,\n\t\t\t  "st_ex_blocks",\n\t\t\t  \(unsigned long long\)cookie_st->st_ex_blocks,\n\t\t\t  \(unsigned long long\)fsp_st->st_ex_blocks\)\);\n\t\treturn false;\n\t\}/\tif (cookie_st->st_ex_blocks != fsp_st->st_ex_blocks) {\n\t\tDEBUG(0, ("TIMECAPSULE_DURABLE_ST_BLOCKS_MISMATCH: "\n\t\t\t  "vfs_default_durable_reconnect (%s): "\n\t\t\t  "stat_ex.%s differs: "\n\t\t\t  "cookie:%llu != stat:%llu, "\n\t\t\t  "allowing durable reconnect on Time Capsule build\\n",\n\t\t\t  name,\n\t\t\t  "st_ex_blocks",\n\t\t\t  (unsigned long long)cookie_st->st_ex_blocks,\n\t\t\t  (unsigned long long)fsp_st->st_ex_blocks));\n\t}/s' \
+        "$SAMBA4_SRC_DIR/source3/smbd/durable.c"
+    if awk '
+        /\tif \(cookie_st->st_ex_blocks != fsp_st->st_ex_blocks\) \{/ {
+            in_blocks_check = 1
+        }
+        in_blocks_check && (/denying durable reconnect/ || /return false/) {
+            bad = 1
+        }
+        in_blocks_check && /^\t\}/ {
+            in_blocks_check = 0
+        }
+        END {
+            exit bad ? 0 : 1
+        }
+    ' "$SAMBA4_SRC_DIR/source3/smbd/durable.c"
+    then
+        echo "durable.c still denies reconnect on st_ex_blocks mismatch after patch"
+        exit 1
+    fi
+    if ! grep -q "allowing durable reconnect on Time Capsule build" "$SAMBA4_SRC_DIR/source3/smbd/durable.c"; then
+        echo "durable.c st_ex_blocks reconnect patch did not apply"
+        exit 1
+    fi
+
     git -C "$SAMBA4_SRC_DIR" rev-parse --short HEAD
     git -C "$SAMBA4_SRC_DIR" log -1 --format='%H%n%cd%n%s' --date=iso
     echo "Finished Samba 4 download workflow at $(date -u)"
