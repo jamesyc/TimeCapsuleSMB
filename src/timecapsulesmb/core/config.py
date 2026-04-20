@@ -72,6 +72,7 @@ ENV_FILE_KEYS = [
     "TC_MDNS_HOST_LABEL",
     "TC_MDNS_DEVICE_MODEL",
     "TC_AIRPORT_SYAP",
+    "TC_CONFIGURE_ID",
 ]
 
 CONFIG_HEADER = """# Local user/device configuration for TimeCapsuleSMB.

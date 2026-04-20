@@ -51,12 +51,14 @@ class ConfigTests(unittest.TestCase):
     def test_render_env_text_contains_config_keys(self) -> None:
         values = dict(DEFAULTS)
         values["TC_PASSWORD"] = "secret"
+        values["TC_CONFIGURE_ID"] = "12345678-1234-1234-1234-123456789012"
         rendered = render_env_text(values)
         self.assertIn("TC_PASSWORD=secret", rendered)
         self.assertIn("TC_SSH_OPTS='-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'", rendered)
         self.assertIn("TC_MDNS_INSTANCE_NAME='Time Capsule Samba 4'", rendered)
         self.assertIn("TC_MDNS_DEVICE_MODEL=TimeCapsule", rendered)
         self.assertIn("TC_AIRPORT_SYAP=''", rendered)
+        self.assertIn("TC_CONFIGURE_ID=12345678-1234-1234-1234-123456789012", rendered)
 
     def test_write_env_file_round_trips_mdns_device_model(self) -> None:
         values = dict(DEFAULTS)
@@ -77,6 +79,16 @@ class ConfigTests(unittest.TestCase):
             write_env_file(path, values)
             reparsed = parse_env_values(path)
         self.assertEqual(reparsed["TC_AIRPORT_SYAP"], "119")
+
+    def test_write_env_file_round_trips_configure_id(self) -> None:
+        values = dict(DEFAULTS)
+        values["TC_PASSWORD"] = "secret"
+        values["TC_CONFIGURE_ID"] = "12345678-1234-1234-1234-123456789012"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            write_env_file(path, values)
+            reparsed = parse_env_values(path)
+        self.assertEqual(reparsed["TC_CONFIGURE_ID"], "12345678-1234-1234-1234-123456789012")
 
     def test_parse_env_value_falls_back_for_unbalanced_quotes(self) -> None:
         self.assertEqual(parse_env_value("'unterminated"), "unterminated")

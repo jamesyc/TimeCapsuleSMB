@@ -5,6 +5,8 @@ import json
 import subprocess
 import sys
 import unittest
+import uuid
+from contextlib import ExitStack
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -24,6 +26,22 @@ from timecapsulesmb.discovery.bonjour import Discovered
 
 
 class CliTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._exit_stack = ExitStack()
+        self._telemetry_client = mock.Mock()
+        self._command_telemetry = mock.Mock()
+        self._telemetry_client.begin_command.return_value = self._command_telemetry
+        for target in (
+            "timecapsulesmb.cli.configure.TelemetryClient.from_values",
+            "timecapsulesmb.cli.deploy.TelemetryClient.from_values",
+            "timecapsulesmb.cli.activate.TelemetryClient.from_values",
+            "timecapsulesmb.cli.doctor.TelemetryClient.from_values",
+        ):
+            self._exit_stack.enter_context(mock.patch(target, return_value=self._telemetry_client))
+
+    def tearDown(self) -> None:
+        self._exit_stack.close()
+
     def make_supported_compatibility(self) -> DeviceCompatibility:
         return DeviceCompatibility(
             os_name="NetBSD",
@@ -72,9 +90,10 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
                     with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_smbclient"):
                         with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_airpyrt", return_value=True):
-                            with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
-                                with redirect_stdout(output):
-                                    rc = bootstrap.main(["--skip-airpyrt"])
+                            with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
+                                with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
+                                    with redirect_stdout(output):
+                                        rc = bootstrap.main(["--skip-airpyrt"])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("Detected host platform", text)
@@ -91,8 +110,9 @@ class CliTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
                         with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_smbclient"):
                             with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_airpyrt", return_value=False):
-                                with redirect_stdout(output):
-                                    rc = bootstrap.main(["--skip-airpyrt"])
+                                with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
+                                    with redirect_stdout(output):
+                                        rc = bootstrap.main(["--skip-airpyrt"])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("Detected host platform: Linux", text)
@@ -111,9 +131,10 @@ class CliTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.cli.bootstrap.run") as run_mock:
                             with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", return_value="/usr/bin/make"):
                                 with mock.patch("timecapsulesmb.cli.bootstrap.confirm", return_value=True):
-                                    with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
-                                        with redirect_stdout(output):
-                                            rc = bootstrap.main([])
+                                    with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
+                                        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
+                                            with redirect_stdout(output):
+                                                rc = bootstrap.main([])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("Provisioning AirPyrt via 'make airpyrt'", text)
@@ -130,9 +151,10 @@ class CliTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.cli.bootstrap.run") as run_mock:
                             with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", return_value="/usr/bin/make"):
                                 with mock.patch("timecapsulesmb.cli.bootstrap.confirm", return_value=False):
-                                    with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
-                                        with redirect_stdout(output):
-                                            rc = bootstrap.main([])
+                                    with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
+                                        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
+                                            with redirect_stdout(output):
+                                                rc = bootstrap.main([])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("AirPyrt support is optional", text)
@@ -159,9 +181,10 @@ class CliTests(unittest.TestCase):
                         ):
                             with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", return_value="/usr/bin/make"):
                                 with mock.patch("timecapsulesmb.cli.bootstrap.confirm", return_value=True):
-                                    with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
-                                        with redirect_stdout(output):
-                                            rc = bootstrap.main([])
+                                    with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
+                                        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
+                                            with redirect_stdout(output):
+                                                rc = bootstrap.main([])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("Warning: AirPyrt setup failed", text)
@@ -239,12 +262,46 @@ class CliTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=False):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
                             with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
-                                with redirect_stdout(output):
-                                    rc = configure.main([])
+                                with mock.patch("timecapsulesmb.cli.configure.TelemetryClient.from_values") as telemetry_factory:
+                                    telemetry_factory.return_value.begin_command.return_value = mock.Mock()
+                                    with redirect_stdout(output):
+                                        rc = configure.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_SAMBA_USER"], "admin")
+        uuid.UUID(fake_values["TC_CONFIGURE_ID"])
         self.assertIn("Wrote", output.getvalue())
         self.assertIn("This writes a local .env configuration file", output.getvalue())
+
+    def test_configure_ensures_install_id_before_telemetry(self) -> None:
+        output = io.StringIO()
+        prompt_values = iter([
+            "root@10.0.0.2",
+            "pw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+            "119",
+        ])
+        with mock.patch("timecapsulesmb.cli.configure.ensure_install_id") as ensure_mock:
+            with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+                with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                    with mock.patch(
+                        "timecapsulesmb.cli.configure.prompt",
+                        side_effect=lambda label, default, _secret: default if label == "mDNS device model hint" else next(prompt_values),
+                    ):
+                        with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=False):
+                            with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                                with mock.patch("timecapsulesmb.cli.configure.write_env_file"):
+                                    with mock.patch("timecapsulesmb.cli.configure.TelemetryClient.from_values") as telemetry_factory:
+                                        telemetry_factory.return_value.begin_command.return_value = mock.Mock()
+                                        with redirect_stdout(output):
+                                            rc = configure.main([])
+        self.assertEqual(rc, 0)
+        ensure_mock.assert_called_once_with()
 
     def test_configure_uses_discovered_host_when_available(self) -> None:
         output = io.StringIO()
@@ -1014,6 +1071,34 @@ class CliTests(unittest.TestCase):
         upload_mock.assert_not_called()
         auth_mock.assert_not_called()
 
+    def test_deploy_ensures_install_id_before_telemetry(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
+            "TC_SAMBA_USER": "admin",
+        }
+        with mock.patch("timecapsulesmb.cli.deploy.ensure_install_id") as ensure_mock:
+            with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+                with mock.patch("timecapsulesmb.cli.deploy.TelemetryClient.from_values") as telemetry_factory:
+                    telemetry_factory.return_value.begin_command.return_value = mock.Mock()
+                    with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
+                        with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
+                            with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+                                with redirect_stdout(output):
+                                    rc = deploy.main(["--dry-run"])
+        self.assertEqual(rc, 0)
+        ensure_mock.assert_called_once_with()
+
     def test_deploy_exits_on_artifact_validation_failure(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
@@ -1414,6 +1499,7 @@ class CliTests(unittest.TestCase):
 
     def test_deploy_netbsd4_prompt_decline_cancels_before_remote_actions(self) -> None:
         output = io.StringIO()
+        command_telemetry = mock.Mock()
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
@@ -1434,11 +1520,15 @@ class CliTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with mock.patch("builtins.input", return_value="n"):
                             with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
-                                with redirect_stdout(output):
-                                    rc = deploy.main([])
+                                with mock.patch("timecapsulesmb.cli.deploy.TelemetryClient.from_values") as telemetry_factory:
+                                    telemetry_factory.return_value.begin_command.return_value = command_telemetry
+                                    with redirect_stdout(output):
+                                        rc = deploy.main([])
         self.assertEqual(rc, 0)
         actions_mock.assert_not_called()
         self.assertIn("Deployment cancelled.", output.getvalue())
+        command_telemetry.finish.assert_called_once()
+        self.assertEqual(command_telemetry.finish.call_args.kwargs["result"], "cancelled")
 
     def test_deploy_netbsd4_prompt_accepts_uppercase_yes(self) -> None:
         output = io.StringIO()
@@ -1808,6 +1898,19 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["fatal"], False)
         self.assertEqual(payload["results"][0]["status"], "PASS")
 
+    def test_doctor_ensures_install_id_before_telemetry(self) -> None:
+        output = io.StringIO()
+        fake_result = doctor.CheckResult("PASS", "ok")
+        with mock.patch("timecapsulesmb.cli.doctor.ensure_install_id") as ensure_mock:
+            with mock.patch("timecapsulesmb.cli.doctor.parse_env_values", return_value={}):
+                with mock.patch("timecapsulesmb.cli.doctor.TelemetryClient.from_values") as telemetry_factory:
+                    telemetry_factory.return_value.begin_command.return_value = mock.Mock()
+                    with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", return_value=([fake_result], False)):
+                        with redirect_stdout(output):
+                            rc = doctor.main(["--json"])
+        self.assertEqual(rc, 0)
+        ensure_mock.assert_called_once_with()
+
     def test_deploy_dry_run_json_outputs_plan(self) -> None:
         output = io.StringIO()
         values = {
@@ -1902,6 +2005,23 @@ class CliTests(unittest.TestCase):
         self.assertIn("Tested NetBSD4 devices cannot auto-run Samba after a reboot;", text)
         self.assertIn("other NetBSD4 generations may auto-start Samba if their firmware runs /mnt/Flash/rc.local after a reboot.", text)
 
+    def test_activate_ensures_install_id_before_telemetry(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+        }
+        with mock.patch("timecapsulesmb.cli.activate.ensure_install_id") as ensure_mock:
+            with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
+                with mock.patch("timecapsulesmb.cli.activate.TelemetryClient.from_values") as telemetry_factory:
+                    telemetry_factory.return_value.begin_command.return_value = mock.Mock()
+                    with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                        with redirect_stdout(output):
+                            rc = activate.main(["--dry-run"])
+        self.assertEqual(rc, 0)
+        ensure_mock.assert_called_once_with()
+
     def test_activate_rejects_non_netbsd4_device(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
@@ -1916,6 +2036,7 @@ class CliTests(unittest.TestCase):
 
     def test_activate_prompt_decline_cancels_before_remote_actions(self) -> None:
         output = io.StringIO()
+        command_telemetry = mock.Mock()
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
@@ -1925,11 +2046,15 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("builtins.input", return_value="n"):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
-                        with redirect_stdout(output):
-                            rc = activate.main([])
+                        with mock.patch("timecapsulesmb.cli.activate.TelemetryClient.from_values") as telemetry_factory:
+                            telemetry_factory.return_value.begin_command.return_value = command_telemetry
+                            with redirect_stdout(output):
+                                rc = activate.main([])
         self.assertEqual(rc, 0)
         actions_mock.assert_not_called()
         self.assertIn("Activation cancelled.", output.getvalue())
+        command_telemetry.finish.assert_called_once()
+        self.assertEqual(command_telemetry.finish.call_args.kwargs["result"], "cancelled")
 
     def test_activate_yes_runs_idempotent_actions_and_verifies(self) -> None:
         output = io.StringIO()

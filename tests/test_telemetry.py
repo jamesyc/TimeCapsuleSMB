@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+import sys
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from timecapsulesmb.telemetry import MAX_SEND_ATTEMPTS, TelemetryClient
+
+
+class TelemetryTests(unittest.TestCase):
+    def test_emit_builds_schema_v1_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values(
+                    {
+                        "TC_CONFIGURE_ID": "config-id",
+                        "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+                        "TC_AIRPORT_SYAP": "119",
+                    },
+                    nbns_enabled=True,
+                    bootstrap_path=bootstrap_path,
+                )
+                with mock.patch.object(client, "_dispatch_payload_async") as dispatch_mock:
+                    client.emit("deploy_started")
+        payload = dispatch_mock.call_args.args[0]
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["event"], "deploy_started")
+        self.assertEqual(payload["install_id"], "test-install")
+        self.assertEqual(payload["configure_id"], "config-id")
+        self.assertEqual(payload["device_model"], "TimeCapsule8,119")
+        self.assertEqual(payload["device_syap"], "119")
+        self.assertTrue(payload["nbns_enabled"])
+        self.assertEqual(payload["host_os"], "macOS" if sys.platform == "darwin" else payload["host_os"])
+
+    def test_emit_is_disabled_when_bootstrap_has_telemetry_false(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\nTELEMETRY=false\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                with mock.patch.object(client, "_dispatch_payload_async") as dispatch_mock:
+                    client.emit("doctor_started")
+        dispatch_mock.assert_not_called()
+
+    def test_send_payload_retries_once_on_transport_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                success_response = mock.MagicMock()
+                success_response.__enter__.return_value = success_response
+                success_response.__exit__.return_value = None
+                with mock.patch("urllib.request.urlopen", side_effect=[OSError("boom"), success_response]) as urlopen_mock:
+                    client._send_payload({"event": "doctor_started"})
+        self.assertEqual(urlopen_mock.call_count, MAX_SEND_ATTEMPTS)
+
+
+if __name__ == "__main__":
+    unittest.main()

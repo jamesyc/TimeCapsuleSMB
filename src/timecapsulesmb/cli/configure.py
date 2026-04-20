@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import getpass
+import uuid
 from typing import Optional
 
 from timecapsulesmb.core.config import (
@@ -12,8 +13,10 @@ from timecapsulesmb.core.config import (
     parse_env_values,
     write_env_file,
 )
+from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.device.compat import infer_mdns_device_model_hint
 from timecapsulesmb.discovery.bonjour import Discovered, discover, prefer_routable_ipv4, preferred_host
+from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import run_ssh
 
@@ -122,106 +125,116 @@ def infer_mdns_device_model_from_syap(syap: str) -> Optional[str]:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    ensure_install_id()
     existing = parse_env_values(ENV_PATH, defaults={})
+    telemetry = TelemetryClient.from_values(existing)
+    command_telemetry = telemetry.begin_command("configure_started", "configure_finished")
     values: dict[str, str] = {}
     inferred_mdns_device_model: Optional[str] = None
     discovered_airport_syap: Optional[str] = None
+    result = "failure"
+    finished_configure_id: str | None = None
+    try:
+        print("This writes a local .env configuration file in this folder. The other tcapsule commands use that file.")
+        print(f"Writing {ENV_PATH}")
+        print("\033[31mPress Enter\033[0m to accept the current/default value.\n")
 
-    print("This writes a local .env configuration file in this folder. The other tcapsule commands use that file.")
-    print(f"Writing {ENV_PATH}")
-    print("\033[31mPress Enter\033[0m to accept the current/default value.\n")
-
-    ssh_opts = existing.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"])
-    values["TC_SSH_OPTS"] = ssh_opts
-    discovered_record = discover_default_record(existing)
-    discovered_host = _discovered_root_host(discovered_record) if discovered_record else None
-    if discovered_record is not None:
-        discovered_airport_syap = discovered_record.properties.get("syAP") or None
-    prompt_host_and_password(existing, values, discovered_host)
-    while True:
-        validation_result = validate_ssh_target_if_reachable(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
-        if validation_result is None:
-            print("\nSSH is not reachable yet, so configure cannot validate this password.")
-            print("That is okay if you have not run 'tcapsule prep-device' yet.")
+        ssh_opts = existing.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"])
+        values["TC_SSH_OPTS"] = ssh_opts
+        discovered_record = discover_default_record(existing)
+        discovered_host = _discovered_root_host(discovered_record) if discovered_record else None
+        if discovered_record is not None:
+            discovered_airport_syap = discovered_record.properties.get("syAP") or None
+        prompt_host_and_password(existing, values, discovered_host)
+        while True:
+            validation_result = validate_ssh_target_if_reachable(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
+            if validation_result is None:
+                print("\nSSH is not reachable yet, so configure cannot validate this password.")
+                print("That is okay if you have not run 'tcapsule prep-device' yet.")
+                if confirm("Save this information still?"):
+                    break
+                print("Please enter the SSH target and password again.\n")
+                prompt_host_and_password(existing, values, discovered_host)
+                continue
+            if validation_result:
+                break
+            print("\nThe provided Time Capsule SSH target and password did not work.")
             if confirm("Save this information still?"):
                 break
             print("Please enter the SSH target and password again.\n")
             prompt_host_and_password(existing, values, discovered_host)
-            continue
+
         if validation_result:
-            break
-        print("\nThe provided Time Capsule SSH target and password did not work.")
-        if confirm("Save this information still?"):
-            break
-        print("Please enter the SSH target and password again.\n")
-        prompt_host_and_password(existing, values, discovered_host)
+            try:
+                inferred_mdns_device_model = infer_mdns_device_model_hint(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
+            except SystemExit:
+                inferred_mdns_device_model = None
 
-    if validation_result:
-        try:
-            inferred_mdns_device_model = infer_mdns_device_model_hint(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
-        except SystemExit:
-            inferred_mdns_device_model = None
+        values["TC_AIRPORT_SYAP"] = existing.get("TC_AIRPORT_SYAP", discovered_airport_syap or DEFAULTS["TC_AIRPORT_SYAP"])
+        if discovered_airport_syap and not existing.get("TC_AIRPORT_SYAP"):
+            values["TC_AIRPORT_SYAP"] = discovered_airport_syap
 
-    values["TC_AIRPORT_SYAP"] = existing.get("TC_AIRPORT_SYAP", discovered_airport_syap or DEFAULTS["TC_AIRPORT_SYAP"])
-    if discovered_airport_syap and not existing.get("TC_AIRPORT_SYAP"):
-        values["TC_AIRPORT_SYAP"] = discovered_airport_syap
+        discovered_airport_identity = discovered_record is not None
+        hidden_mdns_device_model = existing.get("TC_MDNS_DEVICE_MODEL", "")
+        validator = CONFIG_VALIDATORS.get("TC_MDNS_DEVICE_MODEL")
+        if validator is not None and hidden_mdns_device_model:
+            if validator(hidden_mdns_device_model, "mDNS device model hint"):
+                hidden_mdns_device_model = ""
+        current_airport_syap = values.get("TC_AIRPORT_SYAP", "")
+        if not hidden_mdns_device_model and current_airport_syap:
+            hidden_mdns_device_model = infer_mdns_device_model_from_syap(current_airport_syap) or ""
+        if not hidden_mdns_device_model and inferred_mdns_device_model:
+            hidden_mdns_device_model = inferred_mdns_device_model
+        if not hidden_mdns_device_model:
+            hidden_mdns_device_model = DEFAULTS["TC_MDNS_DEVICE_MODEL"]
 
-    discovered_airport_identity = discovered_record is not None
-    hidden_mdns_device_model = existing.get("TC_MDNS_DEVICE_MODEL", "")
-    validator = CONFIG_VALIDATORS.get("TC_MDNS_DEVICE_MODEL")
-    if validator is not None and hidden_mdns_device_model:
-        if validator(hidden_mdns_device_model, "mDNS device model hint"):
-            hidden_mdns_device_model = ""
-    current_airport_syap = values.get("TC_AIRPORT_SYAP", "")
-    if not hidden_mdns_device_model and current_airport_syap:
-        hidden_mdns_device_model = infer_mdns_device_model_from_syap(current_airport_syap) or ""
-    if not hidden_mdns_device_model and inferred_mdns_device_model:
-        hidden_mdns_device_model = inferred_mdns_device_model
-    if not hidden_mdns_device_model:
-        hidden_mdns_device_model = DEFAULTS["TC_MDNS_DEVICE_MODEL"]
-
-    for key, label, default, secret in CONFIG_FIELDS[2:]:
-        current = existing.get(key, default)
-        if key == "TC_AIRPORT_SYAP":
-            current = values.get("TC_AIRPORT_SYAP", current)
-            if discovered_airport_identity or current:
-                values[key] = current
-                if not existing.get("TC_MDNS_DEVICE_MODEL"):
-                    hidden_mdns_device_model = infer_mdns_device_model_from_syap(current) or hidden_mdns_device_model
-                continue
-            print("\nWarning: configure could not discover Airport Utility syAP from _airport._tcp.")
-            print("Enter the device's syAP code so _airport._tcp can be cloned accurately.")
-            print("")
-            print("Generation                Model identifier    syAP")
-            print("------------------------  ------------------  ----")
-            print("1st gen (early 2008)      TimeCapsule6,106    106")
-            print("2nd gen (early 2009)      TimeCapsule6,109    109")
-            print("3rd gen (late 2009)       TimeCapsule6,113    113")
-            print("4th gen (mid 2011)        TimeCapsule6,116    116")
-            print("5th gen (mid 2013)        TimeCapsule8,119    119")
-        if key == "TC_MDNS_DEVICE_MODEL":
-            if discovered_airport_identity:
-                values[key] = hidden_mdns_device_model
-                continue
-            current = hidden_mdns_device_model
-        while True:
-            candidate = prompt(label, current, secret)
-            validator = CONFIG_VALIDATORS.get(key)
-            if validator is not None:
-                error = validator(candidate, label)
-                if error:
-                    print(error)
-                    current = candidate
+        for key, label, default, secret in CONFIG_FIELDS[2:]:
+            current = existing.get(key, default)
+            if key == "TC_AIRPORT_SYAP":
+                current = values.get("TC_AIRPORT_SYAP", current)
+                if discovered_airport_identity or current:
+                    values[key] = current
+                    if not existing.get("TC_MDNS_DEVICE_MODEL"):
+                        hidden_mdns_device_model = infer_mdns_device_model_from_syap(current) or hidden_mdns_device_model
                     continue
-            values[key] = candidate
-            if key == "TC_AIRPORT_SYAP" and not existing.get("TC_MDNS_DEVICE_MODEL"):
-                hidden_mdns_device_model = infer_mdns_device_model_from_syap(candidate) or hidden_mdns_device_model
-            break
+                print("\nWarning: configure could not discover Airport Utility syAP from _airport._tcp.")
+                print("Enter the device's syAP code so _airport._tcp can be cloned accurately.")
+                print("")
+                print("Generation                Model identifier    syAP")
+                print("------------------------  ------------------  ----")
+                print("1st gen (early 2008)      TimeCapsule6,106    106")
+                print("2nd gen (early 2009)      TimeCapsule6,109    109")
+                print("3rd gen (late 2009)       TimeCapsule6,113    113")
+                print("4th gen (mid 2011)        TimeCapsule6,116    116")
+                print("5th gen (mid 2013)        TimeCapsule8,119    119")
+            if key == "TC_MDNS_DEVICE_MODEL":
+                if discovered_airport_identity:
+                    values[key] = hidden_mdns_device_model
+                    continue
+                current = hidden_mdns_device_model
+            while True:
+                candidate = prompt(label, current, secret)
+                validator = CONFIG_VALIDATORS.get(key)
+                if validator is not None:
+                    error = validator(candidate, label)
+                    if error:
+                        print(error)
+                        current = candidate
+                        continue
+                values[key] = candidate
+                if key == "TC_AIRPORT_SYAP" and not existing.get("TC_MDNS_DEVICE_MODEL"):
+                    hidden_mdns_device_model = infer_mdns_device_model_from_syap(candidate) or hidden_mdns_device_model
+                break
 
-    write_env_file(ENV_PATH, values)
-    print(f"\nWrote {ENV_PATH}")
-    print("Next steps:")
-    print("  1. Review .env")
-    print("  2. Run .venv/bin/tcapsule prep-device")
-    print("  3. If you are doing build work, configure build/.env separately from build/.env.example")
-    return 0
+        finished_configure_id = str(uuid.uuid4())
+        values["TC_CONFIGURE_ID"] = finished_configure_id
+        write_env_file(ENV_PATH, values)
+        print(f"\nWrote {ENV_PATH}")
+        print("Next steps:")
+        print("  1. Review .env")
+        print("  2. Run .venv/bin/tcapsule prep-device")
+        print("  3. If you are doing build work, configure build/.env separately from build/.env.example")
+        result = "success"
+        return 0
+    finally:
+        command_telemetry.finish(result=result, configure_id=finished_configure_id)

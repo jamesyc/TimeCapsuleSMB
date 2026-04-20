@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from timecapsulesmb.identity import ensure_install_id
+
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 VENVDIR = REPO_ROOT / ".venv"
@@ -153,6 +155,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         install_python_requirements(venv_python)
         maybe_install_smbclient()
         airpyrt_ready = maybe_install_airpyrt(args.skip_airpyrt)
+        ensure_install_id()
     except subprocess.CalledProcessError as e:
         print(f"Command failed with exit code {e.returncode}: {e.cmd}", file=sys.stderr)
         return e.returncode or 1
