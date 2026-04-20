@@ -1152,7 +1152,11 @@ class CliTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as ctx:
                 with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
                     deploy.main(["--dry-run"])
-            self.assertIn("Missing required setting in .env: TC_AIRPORT_SYAP", str(ctx.exception))
+            self.assertEqual(
+                str(ctx.exception),
+                "Missing required setting in .env: TC_AIRPORT_SYAP\n"
+                "Please run the `configure` command before running `deploy`.",
+            )
 
     def test_deploy_no_reboot_stops_after_upload_phase(self) -> None:
         output = io.StringIO()

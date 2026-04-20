@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from timecapsulesmb.core.config import ENV_PATH, parse_env_values
+from timecapsulesmb.core.config import AppConfig, ENV_PATH, parse_env_values
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
@@ -62,7 +62,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         "device_came_back_after_reboot": False,
     }
     try:
-        host, password, ssh_opts = resolve_env_connection(values, required_keys=("TC_AIRPORT_SYAP",))
+        AppConfig(values).require(
+            "TC_AIRPORT_SYAP",
+            messageafter="\nPlease run the `configure` command before running `deploy`.",
+        )
+        host, password, ssh_opts = resolve_env_connection(values)
 
         artifact_results = validate_artifacts(REPO_ROOT)
         failures = [message for _, ok, message in artifact_results if not ok]

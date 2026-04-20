@@ -87,10 +87,10 @@ class AppConfig:
     def get(self, key: str, default: str = "") -> str:
         return self.values.get(key, default)
 
-    def require(self, key: str) -> str:
+    def require(self, key: str, *, messagebefore: str = "", messageafter: str = "") -> str:
         value = self.get(key)
         if not value:
-            raise SystemExit(f"Missing required setting in .env: {key}")
+            raise SystemExit(f"{messagebefore}Missing required setting in .env: {key}{messageafter}")
         return value
 
 
