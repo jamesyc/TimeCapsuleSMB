@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import getpass
 import json
 from pathlib import Path
 from typing import Optional
@@ -13,13 +12,7 @@ from timecapsulesmb.deploy.planner import build_uninstall_plan
 from timecapsulesmb.deploy.verify import verify_post_uninstall
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root, wait_for_ssh_state
 from timecapsulesmb.transport.ssh import run_ssh
-
-
-def require(values: dict[str, str], key: str) -> str:
-    value = values.get(key, "")
-    if not value:
-        raise SystemExit(f"Missing required setting in .env: {key}")
-    return value
+from timecapsulesmb.cli.util import resolve_env_connection
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -37,11 +30,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("Uninstalling...")
 
     values = parse_env_values(ENV_PATH)
-    host = require(values, "TC_HOST")
-    password = values.get("TC_PASSWORD", "")
-    if not password:
-        password = getpass.getpass("Time Capsule root password: ")
-    ssh_opts = values["TC_SSH_OPTS"]
+    host, password, ssh_opts = resolve_env_connection(values)
 
     volume_root = discover_volume_root(host, password, ssh_opts)
     device_paths = build_device_paths(volume_root, values["TC_PAYLOAD_DIR_NAME"])

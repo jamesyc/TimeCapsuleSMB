@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import getpass
 from typing import Optional
 
 from timecapsulesmb.core.config import ENV_PATH, parse_env_values
@@ -10,13 +9,7 @@ from timecapsulesmb.deploy.executor import run_remote_actions
 from timecapsulesmb.deploy.planner import build_netbsd4_activation_actions
 from timecapsulesmb.deploy.verify import netbsd4_activation_is_already_healthy, verify_netbsd4_activation
 from timecapsulesmb.device.compat import probe_device_compatibility
-
-
-def require(values: dict[str, str], key: str) -> str:
-    value = values.get(key, "")
-    if not value:
-        raise SystemExit(f"Missing required setting in .env: {key}")
-    return value
+from timecapsulesmb.cli.util import NETBSD4_REBOOT_GUIDANCE, resolve_env_connection
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -26,11 +19,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     values = parse_env_values(ENV_PATH)
-    host = require(values, "TC_HOST")
-    password = values.get("TC_PASSWORD", "")
-    if not password:
-        password = getpass.getpass("Time Capsule root password: ")
-    ssh_opts = values["TC_SSH_OPTS"]
+    host, password, ssh_opts = resolve_env_connection(values)
 
     compatibility = probe_device_compatibility(host, password, ssh_opts)
     if not compatibility.supported:
@@ -58,7 +47,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if not args.yes:
         print("This will restart the deployed Samba payload on the Time Capsule.")
-        print("Tested NetBSD4 devices need to run `activate` after reboot; other NetBSD4 generations may auto-start if their firmware runs /mnt/Flash/rc.local after a reboot.")
+        print(NETBSD4_REBOOT_GUIDANCE)
         answer = input("Continue with NetBSD4 activation? [y/N]: ").strip().lower()
         if answer not in {"y", "yes"}:
             print("Activation cancelled.")
@@ -73,5 +62,5 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not verify_netbsd4_activation(host, password, ssh_opts):
         print("NetBSD4 activation failed.")
         return 1
-    print("NetBSD4 activation complete. Run activate again after reboot if the device did not auto-start Samba.")
+    print(f"NetBSD4 activation complete. {NETBSD4_REBOOT_GUIDANCE}")
     return 0
