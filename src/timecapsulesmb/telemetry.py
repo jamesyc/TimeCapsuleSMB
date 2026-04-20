@@ -142,14 +142,22 @@ class CommandTelemetry:
         self.finished_event = finished_event
         self.start_time = time.monotonic()
         self.finished = False
-        self.client.emit(started_event, **fields)
+        self.command_id = str(uuid.uuid4())
+        self.client.emit(started_event, command_id=self.command_id, **fields)
 
     def finish(self, *, result: str, **fields: object) -> None:
         if self.finished:
             return
         self.finished = True
         duration_sec = round(time.monotonic() - self.start_time, 3)
-        self.client.emit(self.finished_event, synchronous=True, result=result, duration_sec=duration_sec, **fields)
+        self.client.emit(
+            self.finished_event,
+            synchronous=True,
+            command_id=self.command_id,
+            result=result,
+            duration_sec=duration_sec,
+            **fields,
+        )
 
 
 def build_device_os_version(os_name: str | None, os_release: str | None, arch: str | None) -> str | None:

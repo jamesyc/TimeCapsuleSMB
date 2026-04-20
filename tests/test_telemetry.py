@@ -43,6 +43,7 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(payload["device_syap"], "119")
         self.assertTrue(payload["nbns_enabled"])
         self.assertEqual(payload["host_os"], "macOS" if sys.platform == "darwin" else payload["host_os"])
+        self.assertNotIn("command_id", payload)
 
     def test_emit_is_disabled_when_bootstrap_has_telemetry_false(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -66,6 +67,23 @@ class TelemetryTests(unittest.TestCase):
                 with mock.patch("urllib.request.urlopen", side_effect=[OSError("boom"), success_response]) as urlopen_mock:
                     client._send_payload({"event": "doctor_started"})
         self.assertEqual(urlopen_mock.call_count, MAX_SEND_ATTEMPTS)
+
+    def test_command_telemetry_reuses_command_id_for_started_and_finished_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                with mock.patch.object(client, "_dispatch_payload_async") as dispatch_mock:
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        command = client.begin_command("deploy_started", "deploy_finished")
+                        command.finish(result="success")
+        started_payload = dispatch_mock.call_args.args[0]
+        finished_payload = send_mock.call_args.args[0]
+        self.assertIn("command_id", started_payload)
+        self.assertEqual(started_payload["command_id"], finished_payload["command_id"])
+        self.assertEqual(finished_payload["event"], "deploy_finished")
+        self.assertEqual(finished_payload["result"], "success")
 
 
 if __name__ == "__main__":
