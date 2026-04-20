@@ -27,7 +27,7 @@ from timecapsulesmb.deploy.verify import (
 from timecapsulesmb.device.compat import probe_device_compatibility
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root, wait_for_ssh_state
 from timecapsulesmb.transport.ssh import run_ssh
-from timecapsulesmb.cli.util import NETBSD4_REBOOT_GUIDANCE, resolve_env_connection
+from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_red, resolve_env_connection
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -94,8 +94,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if is_netbsd4 and not args.yes:
         print("Detected NetBSD 4 Time Capsule.")
-        print("Tested NetBSD4 devices cannot auto-run Samba after a reboot, so deploy will activate Samba immediately without rebooting.")
-        print(NETBSD4_REBOOT_GUIDANCE)
+        print("Deploy will activate Samba immediately without rebooting.")
+        print(color_red(NETBSD4_REBOOT_GUIDANCE))
+        print(NETBSD4_REBOOT_FOLLOWUP)
         answer = input("Continue with NetBSD4 deploy + activation? [y/N]: ").strip().lower()
         if answer not in {"y", "yes"}:
             print("Deployment cancelled.")
@@ -150,7 +151,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not verify_netbsd4_activation(host, password, ssh_opts):
             print("NetBSD4 activation failed.")
             return 1
-        print(f"NetBSD4 activation complete. {NETBSD4_REBOOT_GUIDANCE}")
+        print(f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}")
         return 0
 
     if args.no_reboot:

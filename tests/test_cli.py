@@ -1407,8 +1407,10 @@ class CliTests(unittest.TestCase):
         self.assertIn("pkill nbns-advertiser >/dev/null 2>&1 || true", text)
         self.assertIn("pkill wcifsfs >/dev/null 2>&1 || true", text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
-        self.assertIn("NetBSD4 activation is immediate.", text)
-        self.assertIn("other generations may auto-start rc.local", text)
+        self.assertIn("Deploy will activate Samba immediately without rebooting.", text)
+        self.assertIn("Tested NetBSD4 devices cannot auto-run Samba after a reboot;", text)
+        self.assertIn("other NetBSD4 generations may auto-start Samba if their firmware runs /mnt/Flash/rc.local after a reboot.", text)
+        self.assertIn("Run `activate` after a reboot if the device did not auto-start Samba.", text)
 
     def test_deploy_netbsd4_prompt_decline_cancels_before_remote_actions(self) -> None:
         output = io.StringIO()
@@ -1468,7 +1470,7 @@ class CliTests(unittest.TestCase):
                                                     rc = deploy.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(actions_mock.call_count, 3)
-        self.assertIn("Run activate after reboot if the device did not auto-start Samba.", output.getvalue())
+        self.assertIn("Run `activate` after a reboot if the device did not auto-start Samba.", output.getvalue())
 
     def test_deploy_renders_templates_with_netbsd4_payload_family(self) -> None:
         values = {
@@ -1892,8 +1894,9 @@ class CliTests(unittest.TestCase):
         self.assertIn("pkill nbns-advertiser >/dev/null 2>&1 || true", text)
         self.assertIn("pkill wcifsfs >/dev/null 2>&1 || true", text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
-        self.assertIn("Tested NetBSD4 devices need this after reboot", text)
-        self.assertIn("other NetBSD4 generations may auto-start", text)
+        self.assertIn("This will start the deployed Samba payload on the Time Capsule.", text)
+        self.assertIn("Tested NetBSD4 devices cannot auto-run Samba after a reboot;", text)
+        self.assertIn("other NetBSD4 generations may auto-start Samba if their firmware runs /mnt/Flash/rc.local after a reboot.", text)
 
     def test_activate_rejects_non_netbsd4_device(self) -> None:
         values = {

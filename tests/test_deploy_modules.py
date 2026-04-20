@@ -1773,8 +1773,10 @@ PASS:mdns-advertiser bound to UDP 5353
         self.assertIn("pkill nbns-advertiser >/dev/null 2>&1 || true", text)
         self.assertIn("pkill wcifsfs >/dev/null 2>&1 || true", text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
-        self.assertIn("NetBSD4 activation is immediate.", text)
-        self.assertIn("other generations may auto-start rc.local", text)
+        self.assertIn("Deploy will activate Samba immediately without rebooting.", text)
+        self.assertIn("Tested NetBSD4 devices cannot auto-run Samba after a reboot;", text)
+        self.assertIn("other NetBSD4 generations may auto-start Samba if their firmware runs /mnt/Flash/rc.local after a reboot.", text)
+        self.assertIn("Run `activate` after a reboot if the device did not auto-start Samba.", text)
         self.assertIn("fstat shows smbd bound to TCP 445", text)
 
     def test_build_uninstall_plan_stops_nbns_process(self) -> None:

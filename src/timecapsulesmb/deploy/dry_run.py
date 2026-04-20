@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
+from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE
 from timecapsulesmb.deploy.commands import render_remote_actions
 from timecapsulesmb.deploy.planner import DeploymentPlan, UninstallPlan
 
@@ -39,8 +40,9 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     lines.append("Reboot:")
     lines.append(f"  {'yes' if plan.reboot_required else 'no'}")
     if plan.activation_actions:
-        lines.append("  NetBSD4 activation is immediate.")
-        lines.append("  Tested gen1 devices need activate after reboot; other generations may auto-start rc.local.")
+        lines.append("  Deploy will activate Samba immediately without rebooting.")
+        lines.append(f"  {NETBSD4_REBOOT_GUIDANCE}")
+        lines.append(f"  {NETBSD4_REBOOT_FOLLOWUP}")
     lines.append("")
     lines.append("Post-deploy checks:")
     if plan.activation_actions:

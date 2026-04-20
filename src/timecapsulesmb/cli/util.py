@@ -6,10 +6,18 @@ from timecapsulesmb.core.config import AppConfig
 
 
 NETBSD4_REBOOT_GUIDANCE = (
-    "Tested NetBSD4 devices need to run `activate` after reboot; "
-    "other NetBSD4 generations may auto-start if their firmware runs /mnt/Flash/rc.local after a reboot. "
-    "Run `activate` after reboot if the device did not auto-start Samba."
+    "Tested NetBSD4 devices cannot auto-run Samba after a reboot; "
+    "other NetBSD4 generations may auto-start Samba if their firmware runs /mnt/Flash/rc.local after a reboot."
 )
+
+NETBSD4_REBOOT_FOLLOWUP = "Run `activate` after a reboot if the device did not auto-start Samba."
+
+ANSI_RED = "\033[31m"
+ANSI_RESET = "\033[0m"
+
+
+def color_red(text: str) -> str:
+    return f"{ANSI_RED}{text}{ANSI_RESET}"
 
 def resolve_ssh_credentials(values: dict[str, str], *, password_prompt: str = "Time Capsule root password: ") -> tuple[str, str]:
     config = AppConfig(values)

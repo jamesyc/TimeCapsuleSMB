@@ -9,7 +9,7 @@ from timecapsulesmb.deploy.executor import run_remote_actions
 from timecapsulesmb.deploy.planner import build_netbsd4_activation_actions
 from timecapsulesmb.deploy.verify import netbsd4_activation_is_already_healthy, verify_netbsd4_activation
 from timecapsulesmb.device.compat import probe_device_compatibility
-from timecapsulesmb.cli.util import NETBSD4_REBOOT_GUIDANCE, resolve_env_connection
+from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_red, resolve_env_connection
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -41,13 +41,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("  fstat shows smbd bound to TCP 445")
         print("  fstat shows mdns-advertiser bound to UDP 5353")
         print("")
-        print("Note: activation is immediate. Tested NetBSD4 devices need this after reboot;")
-        print("      other NetBSD4 generations may auto-start if their firmware runs rc.local.")
+        print("This will start the deployed Samba payload on the Time Capsule.")
+        print(color_red(NETBSD4_REBOOT_GUIDANCE))
         return 0
 
     if not args.yes:
-        print("This will restart the deployed Samba payload on the Time Capsule.")
-        print(NETBSD4_REBOOT_GUIDANCE)
+        print("This will start the deployed Samba payload on the Time Capsule.")
+        print(color_red(NETBSD4_REBOOT_GUIDANCE))
         answer = input("Continue with NetBSD4 activation? [y/N]: ").strip().lower()
         if answer not in {"y", "yes"}:
             print("Activation cancelled.")
@@ -62,5 +62,5 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not verify_netbsd4_activation(host, password, ssh_opts):
         print("NetBSD4 activation failed.")
         return 1
-    print(f"NetBSD4 activation complete. {NETBSD4_REBOOT_GUIDANCE}")
+    print(f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}")
     return 0
