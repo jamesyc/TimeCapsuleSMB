@@ -62,6 +62,7 @@ log() {
 }
 
 cleanup_old_runtime() {
+    /usr/bin/pkill -f /mnt/Flash/watchdog.sh >/dev/null 2>&1 || true
     /usr/bin/pkill smbd >/dev/null 2>&1 || true
     /usr/bin/pkill "$MDNS_PROC_NAME" >/dev/null 2>&1 || true
     /usr/bin/pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true

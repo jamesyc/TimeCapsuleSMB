@@ -256,6 +256,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('--save-all-snapshot "$ALL_MDNS_SNAPSHOT"', rendered)
         self.assertIn('--save-snapshot "$APPLE_MDNS_SNAPSHOT"', rendered)
         self.assertIn('--load-snapshot "$APPLE_MDNS_SNAPSHOT"', rendered)
+        self.assertIn('/usr/bin/pkill -f /mnt/Flash/watchdog.sh >/dev/null 2>&1 || true', rendered)
         self.assertIn('/usr/bin/pkill "$MDNS_PROC_NAME" >/dev/null 2>&1 || true', rendered)
         self.assertIn('/usr/bin/pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true', rendered)
         self.assertIn('if [ -f "$payload_dir/private/nbns.enabled" ]', rendered)
