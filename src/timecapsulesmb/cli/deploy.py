@@ -95,8 +95,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     if is_netbsd4 and not args.yes:
         print("Detected NetBSD 4 Time Capsule.")
         print("Tested NetBSD4 devices cannot auto-run Samba after a reboot, so deploy will activate Samba immediately without rebooting.")
-        print("Other NetBSD4 generations may auto-start after reboot if their firmware runs /mnt/Flash/rc.local.")
-        print("Run activate after reboot if the device did not auto-start Samba.")
         print(NETBSD4_REBOOT_GUIDANCE)
         answer = input("Continue with NetBSD4 deploy + activation? [y/N]: ").strip().lower()
         if answer not in {"y", "yes"}:
