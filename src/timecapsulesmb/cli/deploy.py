@@ -150,8 +150,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not verify_netbsd4_activation(host, password, ssh_opts):
             print("NetBSD4 activation failed.")
             return 1
-        print("NetBSD4 activation complete. Run activate after reboot if the device did not auto-start Samba.")
-        print(NETBSD4_REBOOT_GUIDANCE)
+        print(f"NetBSD4 activation complete. {NETBSD4_REBOOT_GUIDANCE}")
         return 0
 
     if args.no_reboot:
