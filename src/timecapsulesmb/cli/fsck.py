@@ -7,7 +7,7 @@ from typing import Optional
 from timecapsulesmb.core.config import ENV_PATH, parse_env_values
 from timecapsulesmb.device.probe import discover_mounted_volume, wait_for_ssh_state
 from timecapsulesmb.transport.ssh import run_ssh
-from timecapsulesmb.cli.util import resolve_ssh_credentials
+from timecapsulesmb.cli.util import resolve_env_connection
 
 
 def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> str:
@@ -42,8 +42,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     print("Running fsck...")
 
     values = parse_env_values(ENV_PATH)
-    host, password = resolve_ssh_credentials(values)
-    ssh_opts = values["TC_SSH_OPTS"]
+    host, password, ssh_opts = resolve_env_connection(values)
 
     mounted = discover_mounted_volume(host, password, ssh_opts)
     print(f"Target host: {host}")

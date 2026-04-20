@@ -27,7 +27,7 @@ from timecapsulesmb.deploy.verify import (
 from timecapsulesmb.device.compat import probe_device_compatibility
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root, wait_for_ssh_state
 from timecapsulesmb.transport.ssh import run_ssh
-from timecapsulesmb.cli.util import require_env_setting, resolve_ssh_credentials
+from timecapsulesmb.cli.util import NETBSD4_REBOOT_GUIDANCE, resolve_env_connection
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -50,9 +50,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("Deploying...")
 
     values = parse_env_values(ENV_PATH)
-    host, password = resolve_ssh_credentials(values)
-    require_env_setting(values, "TC_AIRPORT_SYAP")
-    ssh_opts = values["TC_SSH_OPTS"]
+    host, password, ssh_opts = resolve_env_connection(values, required_keys=("TC_AIRPORT_SYAP",))
 
     artifact_results = validate_artifacts(REPO_ROOT)
     failures = [message for _, ok, message in artifact_results if not ok]
@@ -97,8 +95,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     if is_netbsd4 and not args.yes:
         print("Detected NetBSD 4 Time Capsule.")
         print("Tested NetBSD4 devices cannot auto-run Samba after a reboot, so deploy will activate Samba immediately without rebooting.")
-        print("Other NetBSD4 generations may auto-start after reboot, if their firmware automatically runs the /mnt/Flash/rc.local script.")
-        print("Run `activate` after a reboot if the device did not auto-start Samba.")
+        print("Other NetBSD4 generations may auto-start after reboot if their firmware runs /mnt/Flash/rc.local.")
+        print("Run activate after reboot if the device did not auto-start Samba.")
+        print(NETBSD4_REBOOT_GUIDANCE)
         answer = input("Continue with NetBSD4 deploy + activation? [y/N]: ").strip().lower()
         if answer not in {"y", "yes"}:
             print("Deployment cancelled.")
@@ -154,6 +153,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("NetBSD4 activation failed.")
             return 1
         print("NetBSD4 activation complete. Run activate after reboot if the device did not auto-start Samba.")
+        print(NETBSD4_REBOOT_GUIDANCE)
         return 0
 
     if args.no_reboot:
