@@ -24,5 +24,5 @@ def resolve_env_connection(values: dict[str, str], *, required_keys: tuple[str, 
     for key in required_keys:
         config.require(key)
     host, password = resolve_ssh_credentials(values)
-    ssh_opts = values["TC_SSH_OPTS"]
+    ssh_opts = config.get("TC_SSH_OPTS")
     return host, password, ssh_opts
