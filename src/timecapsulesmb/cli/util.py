@@ -13,7 +13,7 @@ NETBSD4_REBOOT_GUIDANCE = (
 def resolve_ssh_credentials(values: dict[str, str], *, password_prompt: str = "Time Capsule root password: ") -> tuple[str, str]:
     config = AppConfig(values)
     host = config.require("TC_HOST")
-    password = values.get("TC_PASSWORD", "")
+    password = config.get("TC_PASSWORD")
     if not password:
         password = getpass.getpass(password_prompt)
     return host, password
