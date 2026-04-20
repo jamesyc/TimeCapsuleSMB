@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import getpass
 from typing import Optional
 
 from timecapsulesmb.core.config import ENV_PATH, parse_env_values
@@ -10,13 +9,7 @@ from timecapsulesmb.deploy.executor import run_remote_actions
 from timecapsulesmb.deploy.planner import build_netbsd4_activation_actions
 from timecapsulesmb.deploy.verify import netbsd4_activation_is_already_healthy, verify_netbsd4_activation
 from timecapsulesmb.device.compat import probe_device_compatibility
-
-
-def require(values: dict[str, str], key: str) -> str:
-    value = values.get(key, "")
-    if not value:
-        raise SystemExit(f"Missing required setting in .env: {key}")
-    return value
+from timecapsulesmb.cli.util import resolve_ssh_credentials
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -26,10 +19,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     values = parse_env_values(ENV_PATH)
-    host = require(values, "TC_HOST")
-    password = values.get("TC_PASSWORD", "")
-    if not password:
-        password = getpass.getpass("Time Capsule root password: ")
+    host, password = resolve_ssh_credentials(values)
     ssh_opts = values["TC_SSH_OPTS"]
 
     compatibility = probe_device_compatibility(host, password, ssh_opts)

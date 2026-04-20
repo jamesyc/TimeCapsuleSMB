@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import getpass
 import json
 import tempfile
 from pathlib import Path
@@ -28,15 +27,10 @@ from timecapsulesmb.deploy.verify import (
 from timecapsulesmb.device.compat import probe_device_compatibility
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root, wait_for_ssh_state
 from timecapsulesmb.transport.ssh import run_ssh
+from timecapsulesmb.cli.util import require_env_setting, resolve_ssh_credentials
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-
-def require(values: dict[str, str], key: str) -> str:
-    value = values.get(key, "")
-    if not value:
-        raise SystemExit(f"Missing required setting in .env: {key}")
-    return value
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -56,11 +50,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("Deploying...")
 
     values = parse_env_values(ENV_PATH)
-    host = require(values, "TC_HOST")
-    require(values, "TC_AIRPORT_SYAP")
-    password = values.get("TC_PASSWORD", "")
-    if not password:
-        password = getpass.getpass("Time Capsule root password: ")
+    host, password = resolve_ssh_credentials(values)
+    require_env_setting(values, "TC_AIRPORT_SYAP")
     ssh_opts = values["TC_SSH_OPTS"]
 
     artifact_results = validate_artifacts(REPO_ROOT)

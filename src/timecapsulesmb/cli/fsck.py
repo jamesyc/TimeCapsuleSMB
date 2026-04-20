@@ -1,20 +1,13 @@
 from __future__ import annotations
 
 import argparse
-import getpass
 import shlex
 from typing import Optional
 
 from timecapsulesmb.core.config import ENV_PATH, parse_env_values
 from timecapsulesmb.device.probe import discover_mounted_volume, wait_for_ssh_state
 from timecapsulesmb.transport.ssh import run_ssh
-
-
-def require(values: dict[str, str], key: str) -> str:
-    value = values.get(key, "")
-    if not value:
-        raise SystemExit(f"Missing required setting in .env: {key}")
-    return value
+from timecapsulesmb.cli.util import resolve_ssh_credentials
 
 
 def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> str:
@@ -49,10 +42,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     print("Running fsck...")
 
     values = parse_env_values(ENV_PATH)
-    host = require(values, "TC_HOST")
-    password = values.get("TC_PASSWORD", "")
-    if not password:
-        password = getpass.getpass("Time Capsule root password: ")
+    host, password = resolve_ssh_credentials(values)
     ssh_opts = values["TC_SSH_OPTS"]
 
     mounted = discover_mounted_volume(host, password, ssh_opts)
