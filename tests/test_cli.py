@@ -1620,7 +1620,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("NetBSD4 activation failed.", output.getvalue())
 
-    def test_deploy_install_nbns_rejects_netbsd4_device(self) -> None:
+    def test_deploy_install_nbns_dry_run_mentions_marker_for_netbsd4(self) -> None:
+        output = io.StringIO()
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
@@ -1636,12 +1637,15 @@ class CliTests(unittest.TestCase):
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok"), ("mdns-netbsd4", True, "ok"), ("nbns-netbsd4", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
-                        with self.assertRaises(SystemExit) as cm:
-                            deploy.main(["--install-nbns", "--no-reboot"])
-        self.assertIn("NBNS responder cannot be enabled on NetBSD4", str(cm.exception))
+                        with redirect_stdout(output):
+                            rc = deploy.main(["--dry-run", "--install-nbns"])
+        self.assertEqual(rc, 0)
+        text = output.getvalue()
+        self.assertIn("bin/nbns-netbsd4/nbns-advertiser -> /Volumes/dk2/samba4/nbns-advertiser", text)
+        self.assertIn("generated nbns marker -> /Volumes/dk2/samba4/private/nbns.enabled", text)
 
     def test_deploy_install_nbns_dry_run_mentions_marker(self) -> None:
         output = io.StringIO()
