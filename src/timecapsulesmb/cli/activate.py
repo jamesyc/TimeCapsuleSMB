@@ -11,7 +11,7 @@ from timecapsulesmb.deploy.planner import build_netbsd4_activation_actions
 from timecapsulesmb.deploy.verify import netbsd4_activation_is_already_healthy, verify_netbsd4_activation
 from timecapsulesmb.device.compat import probe_device_compatibility
 from timecapsulesmb.telemetry import TelemetryClient, build_device_os_version, detect_device_family
-from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_red, resolve_env_connection
+from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_red, resolve_validated_managed_connection
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -27,7 +27,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     result = "failure"
     finish_fields: dict[str, object] = {}
     try:
-        host, password, ssh_opts = resolve_env_connection(values)
+        host, password, ssh_opts = resolve_validated_managed_connection(
+            values,
+            command_name="activate",
+            profile="activate",
+        )
 
         compatibility = probe_device_compatibility(host, password, ssh_opts)
         finish_fields["device_os_version"] = build_device_os_version(

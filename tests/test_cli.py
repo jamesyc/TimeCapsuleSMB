@@ -38,6 +38,7 @@ class CliTests(unittest.TestCase):
             "timecapsulesmb.cli.doctor.TelemetryClient.from_values",
         ):
             self._exit_stack.enter_context(mock.patch(target, return_value=self._telemetry_client))
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.cli.util.remote_interface_exists", return_value=True))
 
     def tearDown(self) -> None:
         self._exit_stack.close()
@@ -65,6 +66,18 @@ class CliTests(unittest.TestCase):
             supported=True,
             message="Detected supported older device: NetBSD 4.0 (earmv4).",
         )
+
+    def make_valid_env(self, **overrides: str) -> dict[str, str]:
+        values = dict(DEFAULTS)
+        values.update({
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_AIRPORT_SYAP": "119",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+        })
+        values.update(overrides)
+        return values
 
     def test_dispatches_to_command_handler(self) -> None:
         with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"doctor": mock.Mock(return_value=7)}):
@@ -484,7 +497,7 @@ class CliTests(unittest.TestCase):
         fake_values = {}
         existing = {
             "TC_AIRPORT_SYAP": "119",
-            "TC_MDNS_DEVICE_MODEL": "CustomCapsuleModel",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule6,113",
             "TC_SSH_OPTS": "-o foo",
         }
         prompt_values = iter([
@@ -520,8 +533,8 @@ class CliTests(unittest.TestCase):
                                     with redirect_stdout(output):
                                         rc = configure.main([])
         self.assertEqual(rc, 0)
-        self.assertEqual(seen_defaults["mDNS device model hint"], "CustomCapsuleModel")
-        self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "CustomCapsuleModel")
+        self.assertEqual(seen_defaults["mDNS device model hint"], "TimeCapsule6,113")
+        self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,113")
 
     def test_configure_existing_syap_prefills_visible_mdns_device_model_when_undetected(self) -> None:
         output = io.StringIO()
@@ -568,7 +581,7 @@ class CliTests(unittest.TestCase):
         output = io.StringIO()
         fake_values = {}
         existing = {
-            "TC_MDNS_DEVICE_MODEL": "CustomCapsuleModel",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule6,113",
         }
         prompt_values = iter([
             "root@10.0.0.2",
@@ -603,8 +616,8 @@ class CliTests(unittest.TestCase):
                                     rc = configure.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_AIRPORT_SYAP"], "116")
-        self.assertEqual(seen_defaults["mDNS device model hint"], "CustomCapsuleModel")
-        self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "CustomCapsuleModel")
+        self.assertEqual(seen_defaults["mDNS device model hint"], "TimeCapsule6,113")
+        self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,113")
 
     def test_configure_rejects_blank_password_when_no_existing_password(self) -> None:
         output = io.StringIO()
@@ -926,6 +939,7 @@ class CliTests(unittest.TestCase):
     def test_configure_reprompts_invalid_share_name(self) -> None:
         output = io.StringIO()
         fake_values = {}
+        share_defaults: list[str] = []
         prompt_values = iter([
             "root@10.0.0.2",
             "goodpw",
@@ -943,6 +957,8 @@ class CliTests(unittest.TestCase):
         def fake_prompt(_label, _default, _secret):
             label = _label
             default = _default
+            if label == "SMB share name":
+                share_defaults.append(default)
             if label == "mDNS device model hint":
                 return default
             return next(prompt_values)
@@ -961,6 +977,7 @@ class CliTests(unittest.TestCase):
                                         rc = configure.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_SHARE_NAME"], "Data")
+        self.assertEqual(share_defaults, ["Data", "Data"])
         self.assertIn("SMB share name must be 192 bytes or fewer.", output.getvalue())
 
     def test_configure_reprompts_invalid_netbios_name(self) -> None:
@@ -1181,7 +1198,20 @@ class CliTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as ctx:
             with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
                 deploy.main(["--dry-run"])
-        self.assertEqual(str(ctx.exception), "The configured syAP is invalid.")
+        self.assertEqual(
+            str(ctx.exception),
+            "TC_AIRPORT_SYAP is invalid. Run the `configure` command again.\n"
+            "The configured syAP is invalid.",
+        )
+
+    def test_deploy_rejects_missing_remote_interface(self) -> None:
+        values = self.make_valid_env()
+        with self.assertRaises(SystemExit) as ctx:
+            with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+                with mock.patch("timecapsulesmb.cli.util.remote_interface_exists", return_value=False):
+                    deploy.main(["--dry-run"])
+        self.assertIn("TC_NET_IFACE is invalid", str(ctx.exception))
+        self.assertIn("network interface was not found", str(ctx.exception))
 
     def test_deploy_no_reboot_stops_after_upload_phase(self) -> None:
         output = io.StringIO()
@@ -2054,11 +2084,7 @@ class CliTests(unittest.TestCase):
 
     def test_activate_dry_run_prints_netbsd4_activation_plan(self) -> None:
         output = io.StringIO()
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-        }
+        values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
@@ -2080,11 +2106,7 @@ class CliTests(unittest.TestCase):
 
     def test_activate_ensures_install_id_before_telemetry(self) -> None:
         output = io.StringIO()
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-        }
+        values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.ensure_install_id") as ensure_mock:
             with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
                 with mock.patch("timecapsulesmb.cli.activate.TelemetryClient.from_values") as telemetry_factory:
@@ -2096,25 +2118,26 @@ class CliTests(unittest.TestCase):
         ensure_mock.assert_called_once_with()
 
     def test_activate_rejects_non_netbsd4_device(self) -> None:
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-        }
+        values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_compatibility()):
                 with self.assertRaises(SystemExit) as cm:
                     activate.main(["--dry-run"])
         self.assertIn("only supported for NetBSD4", str(cm.exception))
 
+    def test_activate_rejects_missing_remote_interface(self) -> None:
+        values = self.make_valid_env()
+        with self.assertRaises(SystemExit) as ctx:
+            with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
+                with mock.patch("timecapsulesmb.cli.util.remote_interface_exists", return_value=False):
+                    activate.main(["--dry-run"])
+        self.assertIn("TC_NET_IFACE is invalid", str(ctx.exception))
+        self.assertIn("network interface was not found", str(ctx.exception))
+
     def test_activate_prompt_decline_cancels_before_remote_actions(self) -> None:
         output = io.StringIO()
         command_telemetry = mock.Mock()
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-        }
+        values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("builtins.input", return_value="n"):
@@ -2131,11 +2154,7 @@ class CliTests(unittest.TestCase):
 
     def test_activate_yes_runs_idempotent_actions_and_verifies(self) -> None:
         output = io.StringIO()
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-        }
+        values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("timecapsulesmb.cli.activate.netbsd4_activation_is_already_healthy", return_value=False):
@@ -2161,11 +2180,7 @@ class CliTests(unittest.TestCase):
 
     def test_activate_skips_rc_local_when_payload_is_already_healthy(self) -> None:
         output = io.StringIO()
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-        }
+        values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("timecapsulesmb.cli.activate.netbsd4_activation_is_already_healthy", return_value=True):
@@ -2180,11 +2195,7 @@ class CliTests(unittest.TestCase):
 
     def test_activate_returns_nonzero_when_verification_fails(self) -> None:
         output = io.StringIO()
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-        }
+        values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("timecapsulesmb.cli.activate.netbsd4_activation_is_already_healthy", return_value=False):
@@ -2212,6 +2223,32 @@ class CliTests(unittest.TestCase):
         self.assertIn("Dry run: uninstall plan", text)
         self.assertIn("host: root@10.0.0.2", text)
         self.assertIn(f"payload dir: /Volumes/dk2/{values['TC_PAYLOAD_DIR_NAME']}", text)
+
+    def test_uninstall_validates_only_host_and_payload_dir(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_HOST_LABEL": "bad host label",
+        }
+        with mock.patch("timecapsulesmb.cli.uninstall.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root", return_value="/Volumes/dk2"):
+                with redirect_stdout(io.StringIO()):
+                    rc = uninstall.main(["--dry-run"])
+        self.assertEqual(rc, 0)
+
+    def test_uninstall_rejects_unsafe_payload_dir(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "../samba4",
+        }
+        with self.assertRaises(SystemExit) as ctx:
+            with mock.patch("timecapsulesmb.cli.uninstall.parse_env_values", return_value=values):
+                uninstall.main(["--dry-run"])
+        self.assertIn("TC_PAYLOAD_DIR_NAME is invalid", str(ctx.exception))
 
     def test_uninstall_json_outputs_plan(self) -> None:
         output = io.StringIO()
@@ -2305,11 +2342,7 @@ class CliTests(unittest.TestCase):
 
     def test_fsck_yes_reboots_and_waits_by_default(self) -> None:
         output = io.StringIO()
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-        }
+        values = self.make_valid_env()
         mounted = MountedVolume(device="/dev/dk2", mountpoint="/Volumes/dk2")
         run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\n--- reboot ---\n", returncode=255)
         with mock.patch("timecapsulesmb.cli.fsck.parse_env_values", return_value=values):
@@ -2335,6 +2368,23 @@ class CliTests(unittest.TestCase):
         self.assertIn("Mounted HFS volume: /dev/dk2 on /Volumes/dk2", text)
         self.assertIn("--- fsck_hfs /dev/dk2 ---", text)
         self.assertIn("Device is back online.", text)
+
+    def test_fsck_validates_only_host(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "../bad",
+        }
+        mounted = MountedVolume(device="/dev/dk2", mountpoint="/Volumes/dk2")
+        run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\n", returncode=0)
+        with mock.patch("timecapsulesmb.cli.fsck.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume", return_value=mounted):
+                with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result):
+                    with redirect_stdout(output):
+                        rc = fsck.main(["--yes", "--no-reboot"])
+        self.assertEqual(rc, 0)
 
     def test_fsck_no_wait_skips_ssh_waits(self) -> None:
         output = io.StringIO()

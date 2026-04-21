@@ -51,6 +51,15 @@ exit 1
     return MountedVolume(device=device, mountpoint=mountpoint)
 
 
+def remote_interface_exists(host: str, password: str, ssh_opts: str, iface: str) -> bool:
+    script = f"/sbin/ifconfig {shlex.quote(iface)} >/dev/null 2>&1"
+    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}", check=False)
+    return_code = getattr(proc, "returncode", 0)
+    if not isinstance(return_code, int):
+        return True
+    return return_code == 0
+
+
 def discover_volume_root(host: str, password: str, ssh_opts: str) -> str:
     try:
         return discover_mounted_volume(host, password, ssh_opts).mountpoint

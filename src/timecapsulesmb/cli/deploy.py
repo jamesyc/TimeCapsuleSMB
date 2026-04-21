@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from timecapsulesmb.core.config import AppConfig, ENV_PATH, parse_env_values, validate_airport_syap
+from timecapsulesmb.core.config import ENV_PATH, parse_env_values
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
@@ -29,7 +29,7 @@ from timecapsulesmb.device.compat import probe_device_compatibility
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root, wait_for_ssh_state
 from timecapsulesmb.telemetry import TelemetryClient, build_device_os_version, detect_device_family
 from timecapsulesmb.transport.ssh import run_ssh
-from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_red, resolve_env_connection
+from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_red, resolve_validated_managed_connection
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -63,14 +63,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         "device_came_back_after_reboot": False,
     }
     try:
-        AppConfig(values).require(
-            "TC_AIRPORT_SYAP",
-            messageafter="\nPlease run the `configure` command before running `deploy`.",
+        host, password, ssh_opts = resolve_validated_managed_connection(
+            values,
+            command_name="deploy",
+            profile="deploy",
         )
-        syap_error = validate_airport_syap(values["TC_AIRPORT_SYAP"], "TC_AIRPORT_SYAP")
-        if syap_error:
-            raise SystemExit(syap_error)
-        host, password, ssh_opts = resolve_env_connection(values)
 
         artifact_results = validate_artifacts(REPO_ROOT)
         failures = [message for _, ok, message in artifact_results if not ok]

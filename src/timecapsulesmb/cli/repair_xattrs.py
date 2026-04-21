@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from timecapsulesmb.core.config import ENV_PATH, parse_env_values
+from timecapsulesmb.core.config import ENV_PATH, parse_env_values, require_valid_config
 
 
 DEFAULT_EXCLUDED_DIR_NAMES = {
@@ -50,6 +50,7 @@ def run_capture(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 def default_share_path() -> Optional[Path]:
     values = parse_env_values(ENV_PATH)
+    require_valid_config(values, profile="repair_xattrs")
     share_name = values.get("TC_SHARE_NAME")
     if not share_name:
         return None

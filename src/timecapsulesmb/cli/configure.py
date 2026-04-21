@@ -221,7 +221,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                     error = validator(candidate, label)
                     if error:
                         print(error)
-                        current = candidate
                         continue
                 values[key] = candidate
                 if key == "TC_AIRPORT_SYAP" and not existing.get("TC_MDNS_DEVICE_MODEL"):

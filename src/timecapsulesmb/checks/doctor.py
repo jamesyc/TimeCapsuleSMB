@@ -15,7 +15,7 @@ from timecapsulesmb.checks.smb import (
     check_authenticated_smb_file_ops_detailed,
     check_authenticated_smb_listing,
 )
-from timecapsulesmb.core.config import extract_host, missing_required_keys
+from timecapsulesmb.core.config import extract_host, missing_required_keys, validate_config_values
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root
 from timecapsulesmb.transport.local import find_free_local_port
 from timecapsulesmb.transport.ssh import run_ssh, ssh_local_forward
@@ -38,6 +38,15 @@ def _read_interface_ipv4(host: str, password: str, ssh_opts: str, iface: str) ->
     if not iface_ip:
         raise SystemExit(f"could not determine IPv4 for interface {iface}")
     return iface_ip
+
+
+def _remote_interface_exists(host: str, password: str, ssh_opts: str, iface: str) -> bool:
+    script = f"/sbin/ifconfig {shlex.quote(iface)} >/dev/null 2>&1"
+    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}", check=False)
+    return_code = getattr(proc, "returncode", 0)
+    if not isinstance(return_code, int):
+        return True
+    return return_code == 0
 
 
 def _parse_xattr_tdb_paths(smb_conf: str) -> list[str]:
@@ -139,28 +148,32 @@ def run_doctor_checks(
     on_result: Optional[Callable[[CheckResult], None]] = None,
 ) -> tuple[list[CheckResult], bool]:
     results: list[CheckResult] = []
+    env_valid = False
 
     def add_result(result: CheckResult) -> None:
         results.append(result)
         if on_result is not None:
             on_result(result)
 
-    if not env_exists:
-        add_result(CheckResult("FAIL", f"missing {repo_root / '.env'}"))
-        env_valid = False
-    else:
-        missing = missing_required_keys(values)
-        if missing:
-            add_result(CheckResult("FAIL", f".env is missing required keys: {', '.join(missing)}"))
-            env_valid = False
-        else:
-            add_result(CheckResult("PASS", ".env contains all required keys"))
-            env_valid = True
-
     for result in check_required_local_tools():
         add_result(result)
     for result in check_required_artifacts(repo_root):
         add_result(result)
+
+    if not env_exists:
+        add_result(CheckResult("FAIL", f"missing {repo_root / '.env'}"))
+    else:
+        missing = missing_required_keys(values)
+        if missing:
+            add_result(CheckResult("FAIL", f".env is missing required keys: {', '.join(missing)}"))
+        else:
+            validation_errors = validate_config_values(values, profile="doctor")
+            if validation_errors:
+                for error in validation_errors:
+                    add_result(CheckResult("FAIL", error.format_for_cli().replace("\n", " ")))
+            else:
+                add_result(CheckResult("PASS", ".env contains all required keys"))
+                env_valid = True
 
     if not env_valid:
         return results, any(is_fatal(result) for result in results)
@@ -184,6 +197,8 @@ def run_doctor_checks(
         active_smb_conf_reason = "SSH check skipped"
 
     if not skip_ssh and ssh_ok:
+        if not _remote_interface_exists(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts, values["TC_NET_IFACE"]):
+            add_result(CheckResult("FAIL", f"TC_NET_IFACE is invalid. Run the `configure` command again. The configured network interface was not found on the device."))
         try:
             active_smb_conf = _read_active_smb_conf(
                 values["TC_HOST"],
