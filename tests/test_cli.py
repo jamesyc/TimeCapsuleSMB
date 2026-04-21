@@ -1163,6 +1163,26 @@ class CliTests(unittest.TestCase):
                 "Please run the `configure` command before running `deploy`.",
             )
 
+    def test_deploy_rejects_invalid_airport_syap(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "999",
+            "TC_SAMBA_USER": "admin",
+        }
+        with self.assertRaises(SystemExit) as ctx:
+            with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+                deploy.main(["--dry-run"])
+        self.assertEqual(str(ctx.exception), "The configured syAP is invalid.")
+
     def test_deploy_no_reboot_stops_after_upload_phase(self) -> None:
         output = io.StringIO()
         values = {

@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from timecapsulesmb.core.config import AppConfig, ENV_PATH, parse_env_values
+from timecapsulesmb.core.config import AppConfig, ENV_PATH, parse_env_values, validate_airport_syap
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
@@ -66,6 +66,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             "TC_AIRPORT_SYAP",
             messageafter="\nPlease run the `configure` command before running `deploy`.",
         )
+        syap_error = validate_airport_syap(values["TC_AIRPORT_SYAP"], "TC_AIRPORT_SYAP")
+        if syap_error:
+            raise SystemExit(syap_error)
         host, password, ssh_opts = resolve_env_connection(values)
 
         artifact_results = validate_artifacts(REPO_ROOT)

@@ -17,6 +17,7 @@ ADISK_DEFAULT_DISK_KEY = "dk2"
 ADISK_DISK_UUID_EXAMPLE = "12345678-1234-1234-1234-123456789012"
 ADISK_DISK_TXT_MID = "=adVF=0x1093,adVN="
 ADISK_DISK_TXT_SUFFIX = ",adVU="
+VALID_AIRPORT_SYAP_CODES = {"106", "109", "113", "116", "119"}
 
 DEFAULTS = {
     "TC_HOST": "root@192.168.1.101",
@@ -242,6 +243,8 @@ def validate_airport_syap(value: str, field_name: str) -> Optional[str]:
         return f"{field_name} cannot be blank."
     if not value.isdigit():
         return f"{field_name} must contain only digits."
+    if value not in VALID_AIRPORT_SYAP_CODES:
+        return "The configured syAP is invalid."
     return None
 
 

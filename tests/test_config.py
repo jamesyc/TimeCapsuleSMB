@@ -24,6 +24,7 @@ from timecapsulesmb.core.config import (
     parse_env_values,
     render_env_text,
     validate_adisk_share_name,
+    validate_airport_syap,
     validate_dns_name,
     validate_mdns_device_model,
     validate_netbios_name,
@@ -79,6 +80,10 @@ class ConfigTests(unittest.TestCase):
             write_env_file(path, values)
             reparsed = parse_env_values(path)
         self.assertEqual(reparsed["TC_AIRPORT_SYAP"], "119")
+
+    def test_validate_airport_syap_rejects_unknown_codes(self) -> None:
+        self.assertIsNone(validate_airport_syap("119", "Airport Utility syAP code"))
+        self.assertEqual(validate_airport_syap("999", "Airport Utility syAP code"), "The configured syAP is invalid.")
 
     def test_write_env_file_round_trips_configure_id(self) -> None:
         values = dict(DEFAULTS)
