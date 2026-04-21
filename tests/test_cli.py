@@ -524,6 +524,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_AIRPORT_SYAP"], "119")
         self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
+        self.assertIn("Using discovered TC_AIRPORT_SYAP: 119", output.getvalue())
 
     def test_configure_discovered_syap_beats_invalid_existing_syap(self) -> None:
         output = io.StringIO()
@@ -618,6 +619,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(fake_values["TC_AIRPORT_SYAP"], "116")
         self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,116")
         self.assertNotIn("mDNS device model hint", seen_defaults)
+        self.assertIn("Found saved value: 116", output.getvalue())
 
     def test_configure_discovered_invalid_syap_prompts_with_valid_existing_syap_default(self) -> None:
         output = io.StringIO()
@@ -666,6 +668,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(fake_values["TC_AIRPORT_SYAP"], "109")
         self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,109")
         self.assertNotIn("mDNS device model hint", seen_defaults)
+        self.assertIn("Found saved value: 109", output.getvalue())
         self.assertIn("could not discover Airport Utility syAP", output.getvalue())
 
     def test_configure_discovered_invalid_syap_reprompts_until_valid_when_existing_syap_invalid(self) -> None:
@@ -844,6 +847,47 @@ class CliTests(unittest.TestCase):
         self.assertEqual(fake_values["TC_AIRPORT_SYAP"], "116")
         self.assertIn("Using TC_AIRPORT_SYAP from .env: 116", output.getvalue())
 
+    def test_configure_prints_found_saved_value_for_valid_existing_share_name(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        share_defaults: list[str] = []
+        existing = {
+            "TC_SHARE_NAME": "Archive Data",
+        }
+        prompt_values = iter([
+            "root@10.0.0.2",
+            "goodpw",
+            "bridge0",
+            "Archive Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+            "119",
+        ])
+
+        def fake_prompt(_label, default, _secret):
+            if _label == "SMB share name":
+                share_defaults.append(default)
+            return next(prompt_values)
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
+            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=False):
+                        with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(share_defaults, ["Archive Data"])
+        self.assertEqual(fake_values["TC_SHARE_NAME"], "Archive Data")
+        self.assertIn("Found saved value: Archive Data", output.getvalue())
+
     def test_configure_invalid_ssh_inferred_model_falls_back_to_existing_syap_model(self) -> None:
         output = io.StringIO()
         fake_values = {}
@@ -934,6 +978,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("mDNS device model hint", seen_defaults)
         self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
         self.assertIn("Using TC_AIRPORT_SYAP from .env: 119", output.getvalue())
+        self.assertIn("Using inferred TC_MDNS_DEVICE_MODEL: TimeCapsule8,119", output.getvalue())
 
     def test_configure_skipped_discovery_uses_generic_model_default_when_syap_has_no_model_mapping(self) -> None:
         output = io.StringIO()
@@ -1019,6 +1064,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("mDNS device model hint", seen_defaults)
         self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,116")
         self.assertIn("Using TC_AIRPORT_SYAP from .env: 116", output.getvalue())
+        self.assertIn("Using TC_MDNS_DEVICE_MODEL derived from TC_AIRPORT_SYAP: TimeCapsule6,116", output.getvalue())
 
     def test_configure_prompted_syap_overrides_existing_mdns_device_model(self) -> None:
         output = io.StringIO()
@@ -1037,6 +1083,7 @@ class CliTests(unittest.TestCase):
             "Time Capsule Samba 4",
             "timecapsulesamba4",
             "116",
+            "TimeCapsule",
         ])
         seen_defaults = {}
 
@@ -1061,6 +1108,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(fake_values["TC_AIRPORT_SYAP"], "116")
         self.assertNotIn("mDNS device model hint", seen_defaults)
         self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,116")
+        self.assertIn("Using TC_MDNS_DEVICE_MODEL derived from TC_AIRPORT_SYAP: TimeCapsule6,116", output.getvalue())
 
     def test_configure_skipped_discovery_prints_when_reusing_existing_mdns_device_model(self) -> None:
         output = io.StringIO()
@@ -1079,6 +1127,7 @@ class CliTests(unittest.TestCase):
             "Time Capsule Samba 4",
             "timecapsulesamba4",
             "116",
+            "TimeCapsule",
         ])
 
         def fake_prompt(_label, _default, _secret):
@@ -1099,6 +1148,49 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule")
         self.assertIn("Using TC_MDNS_DEVICE_MODEL from .env: TimeCapsule", output.getvalue())
+
+    def test_configure_invalid_saved_mdns_device_model_stays_silent_when_prompted(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        existing = {
+            "TC_MDNS_DEVICE_MODEL": "NotATimeCapsule",
+        }
+        prompt_values = iter([
+            "root@10.0.0.2",
+            "goodpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+            "116",
+            "TimeCapsule",
+        ])
+        seen_defaults = {}
+
+        def fake_prompt(label, default, _secret):
+            seen_defaults[label] = default
+            return next(prompt_values)
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
+            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=False):
+                        with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                            with mock.patch("timecapsulesmb.cli.configure.infer_mdns_device_model_from_syap", return_value=None):
+                                with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                    with redirect_stdout(output):
+                                        rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen_defaults["mDNS device model hint"], "TimeCapsule")
+        self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule")
+        self.assertNotIn("Found saved value: NotATimeCapsule", output.getvalue())
+        self.assertNotIn("Using TC_MDNS_DEVICE_MODEL from .env: NotATimeCapsule", output.getvalue())
 
     def test_configure_rejects_blank_password_when_no_existing_password(self) -> None:
         output = io.StringIO()
@@ -1132,6 +1224,38 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_PASSWORD"], "goodpw")
         self.assertIn("Time Capsule root password cannot be blank", output.getvalue())
+
+    def test_configure_does_not_print_found_saved_value_for_password(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        input_values = iter([
+            "root@10.0.0.2",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+            "119",
+        ])
+        password_values = iter(["savedpw"])
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={"TC_PASSWORD": "savedpw"}):
+            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                with mock.patch("builtins.input", side_effect=lambda _prompt: next(input_values)):
+                    with mock.patch("timecapsulesmb.cli.configure.getpass.getpass", side_effect=lambda _prompt: next(password_values)):
+                        with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=False):
+                            with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                                with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                    with redirect_stdout(output):
+                                        rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(fake_values["TC_PASSWORD"], "savedpw")
+        self.assertNotIn("Found saved value: savedpw", output.getvalue())
 
     def test_configure_reprompts_host_and_password_when_validation_fails(self) -> None:
         output = io.StringIO()
@@ -1500,6 +1624,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(fake_values["TC_SHARE_NAME"], "Data")
         self.assertEqual(share_defaults, ["Data", "Data"])
         self.assertIn("SMB share name must be 192 bytes or fewer.", output.getvalue())
+        self.assertNotIn("Found saved value:", output.getvalue())
 
     def test_configure_invalid_existing_share_name_falls_back_to_default_prompt(self) -> None:
         output = io.StringIO()
@@ -1540,6 +1665,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(share_defaults, ["Data"])
         self.assertEqual(fake_values["TC_SHARE_NAME"], "Data")
+        self.assertNotIn("Found saved value: daara/..", output.getvalue())
 
     def test_configure_reprompts_invalid_netbios_name(self) -> None:
         output = io.StringIO()
@@ -1618,6 +1744,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(netbios_defaults, ["TimeCapsule"])
         self.assertEqual(fake_values["TC_NETBIOS_NAME"], "TimeCapsule")
+        self.assertNotIn("Found saved value: ABCDEFGHIJKLMNOP", output.getvalue())
 
     def test_doctor_returns_failure_when_checks_fatal(self) -> None:
         output = io.StringIO()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import getpass
 import uuid
+from dataclasses import dataclass
 from typing import Optional
 
 from timecapsulesmb.core.config import (
@@ -28,6 +29,15 @@ AIRPORT_SYAP_TO_MODEL = {
     "116": "TimeCapsule6,116",
     "119": "TimeCapsule8,119",
 }
+
+HIDDEN_CONFIG_KEYS = {"TC_SSH_OPTS", "TC_CONFIGURE_ID"}
+NO_SAVED_VALUE_HINT_KEYS = {"TC_PASSWORD", *HIDDEN_CONFIG_KEYS}
+
+
+@dataclass(frozen=True)
+class ConfigureValueChoice:
+    value: str
+    source: str
 
 
 def prompt(label: str, default: str, secret: bool) -> str:
@@ -138,6 +148,13 @@ def valid_existing_config_value(existing: dict[str, str], key: str, label: str) 
     return validated_value_or_empty(key, existing.get(key, ""), label)
 
 
+def saved_value_choice(existing: dict[str, str], key: str, label: str) -> Optional[ConfigureValueChoice]:
+    value = valid_existing_config_value(existing, key, label)
+    if not value:
+        return None
+    return ConfigureValueChoice(value=value, source="saved")
+
+
 def print_syap_prompt_help() -> None:
     print("\nWarning: configure could not discover Airport Utility syAP from _airport._tcp.")
     print("Enter the device's syAP code so _airport._tcp can be cloned accurately.")
@@ -163,8 +180,40 @@ def prompt_valid_config_value(key: str, label: str, current: str, secret: bool =
         return candidate
 
 
+def print_saved_value_hint(value: str) -> None:
+    print(f"Found saved value: {value}")
+
+
 def print_reused_env_value(key: str, value: str) -> None:
     print(f"Using {key} from .env: {value}")
+
+
+def print_automatic_value_choice(key: str, choice: ConfigureValueChoice) -> None:
+    if choice.source == "saved":
+        print_reused_env_value(key, choice.value)
+    elif choice.source == "discovered":
+        print(f"Using discovered {key}: {choice.value}")
+    elif choice.source == "inferred":
+        print(f"Using inferred {key}: {choice.value}")
+    elif choice.source == "derived":
+        print(f"Using {key} derived from TC_AIRPORT_SYAP: {choice.value}")
+
+
+def prompt_config_value(
+    existing: dict[str, str],
+    key: str,
+    label: str,
+    default: str,
+    *,
+    secret: bool = False,
+) -> str:
+    saved_choice = saved_value_choice(existing, key, label)
+    current = default
+    if saved_choice is not None:
+        current = saved_choice.value
+        if key not in NO_SAVED_VALUE_HINT_KEYS and not secret:
+            print_saved_value_hint(saved_choice.value)
+    return prompt_valid_config_value(key, label, current, secret)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -210,10 +259,10 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if validation_result:
             try:
-                inferred_mdns_device_model = infer_mdns_device_model_hint(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
+                inferred_model = infer_mdns_device_model_hint(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
                 inferred_mdns_device_model = validated_value_or_empty(
                     "TC_MDNS_DEVICE_MODEL",
-                    inferred_mdns_device_model or "",
+                    inferred_model or "",
                     "mDNS device model hint",
                 ) or None
             except SystemExit:
@@ -225,45 +274,64 @@ def main(argv: Optional[list[str]] = None) -> int:
             discovered_airport_syap or "",
             "Airport Utility syAP code",
         )
-        valid_existing_syap = valid_existing_config_value(existing, "TC_AIRPORT_SYAP", "Airport Utility syAP code")
-        valid_existing_mdns_device_model = valid_existing_config_value(existing, "TC_MDNS_DEVICE_MODEL", "mDNS device model hint")
+        discovered_syap_choice = (
+            ConfigureValueChoice(value=valid_discovered_syap, source="discovered")
+            if valid_discovered_syap
+            else None
+        )
+        inferred_model_choice = (
+            ConfigureValueChoice(value=inferred_mdns_device_model, source="inferred")
+            if inferred_mdns_device_model
+            else None
+        )
+        saved_syap_choice = saved_value_choice(existing, "TC_AIRPORT_SYAP", "Airport Utility syAP code")
+        saved_model_choice = saved_value_choice(existing, "TC_MDNS_DEVICE_MODEL", "mDNS device model hint")
 
         for key, label, default, secret in CONFIG_FIELDS[2:]:
-            current = valid_existing_config_value(existing, key, label) or default
             if key == "TC_AIRPORT_SYAP":
-                if valid_discovered_syap:
-                    values[key] = valid_discovered_syap
+                if discovered_syap_choice is not None:
+                    print_automatic_value_choice(key, discovered_syap_choice)
+                    values[key] = discovered_syap_choice.value
                     continue
                 if discovered_airport_identity:
                     print_syap_prompt_help()
-                    values[key] = prompt_valid_config_value(key, label, valid_existing_syap)
+                    if saved_syap_choice is not None:
+                        print_saved_value_hint(saved_syap_choice.value)
+                    values[key] = prompt_valid_config_value(key, label, saved_syap_choice.value if saved_syap_choice is not None else "")
                     continue
-                if valid_existing_syap:
-                    print_reused_env_value(key, valid_existing_syap)
-                    values[key] = valid_existing_syap
+                if saved_syap_choice is not None:
+                    print_automatic_value_choice(key, saved_syap_choice)
+                    values[key] = saved_syap_choice.value
                     continue
                 print_syap_prompt_help()
                 values[key] = prompt_valid_config_value(key, label, DEFAULTS["TC_AIRPORT_SYAP"])
                 continue
             if key == "TC_MDNS_DEVICE_MODEL":
                 syap_derived_model = infer_mdns_device_model_from_syap(values.get("TC_AIRPORT_SYAP", ""))
-                automatic_model = inferred_mdns_device_model or syap_derived_model
-                if automatic_model:
-                    values[key] = automatic_model
+                derived_model_choice = (
+                    ConfigureValueChoice(value=syap_derived_model, source="derived")
+                    if syap_derived_model
+                    else None
+                )
+                automatic_model_choice = inferred_model_choice or derived_model_choice
+                if automatic_model_choice is not None:
+                    print_automatic_value_choice(key, automatic_model_choice)
+                    values[key] = automatic_model_choice.value
                     continue
                 if discovered_airport_identity:
-                    if valid_existing_mdns_device_model:
-                        values[key] = prompt_valid_config_value(key, label, valid_existing_mdns_device_model)
+                    if saved_model_choice is not None:
+                        print_saved_value_hint(saved_model_choice.value)
+                        values[key] = prompt_valid_config_value(key, label, saved_model_choice.value)
                     else:
                         values[key] = DEFAULTS["TC_MDNS_DEVICE_MODEL"]
                     continue
-                if valid_existing_mdns_device_model:
-                    print_reused_env_value(key, valid_existing_mdns_device_model)
-                    values[key] = valid_existing_mdns_device_model
+                if saved_model_choice is not None:
+                    print_automatic_value_choice(key, saved_model_choice)
+                    values[key] = saved_model_choice.value
                     continue
                 values[key] = prompt_valid_config_value(key, label, DEFAULTS["TC_MDNS_DEVICE_MODEL"])
                 continue
-            values[key] = prompt_valid_config_value(key, label, current, secret)
+            values[key] = prompt_config_value(existing, key, label, default, secret=secret)
 
         values["TC_CONFIGURE_ID"] = configure_id
         write_env_file(ENV_PATH, values)
