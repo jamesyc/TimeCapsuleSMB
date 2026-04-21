@@ -1339,6 +1339,14 @@ int main(void) {{
             content,
         )
 
+    def test_mdns_advertiser_escalates_mdnsresponder_kill_after_sigterm(self) -> None:
+        content = (REPO_ROOT / "build" / "mdns-advertiser.c").read_text()
+        self.assertIn("static int mdnsresponder_is_alive(void)", content)
+        self.assertIn("stat[0] != 'Z'", content)
+        self.assertIn('/usr/bin/pkill mDNSResponder >/dev/null 2>&1 || true', content)
+        self.assertIn('/usr/bin/pkill -9 mDNSResponder >/dev/null 2>&1 || true', content)
+        self.assertIn("mDNSResponder ignored SIGTERM; sending SIGKILL", content)
+
     def test_mdns_advertiser_suppresses_snapshot_device_info_and_afp(self) -> None:
         content = (REPO_ROOT / "build" / "mdns-advertiser.c").read_text()
         self.assertIn('name_equals(service_type, "_smb._tcp.local.")', content)

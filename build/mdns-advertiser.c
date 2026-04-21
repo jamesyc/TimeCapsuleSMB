@@ -1446,32 +1446,44 @@ static int capture_mdns_snapshot_raw_with_retry(struct service_record_set *out) 
     return -1;
 }
 
+static int mdnsresponder_is_alive(void) {
+    FILE *ps = popen("/bin/ps ax -o stat= -o ucomm= 2>/dev/null", "r");
+    char line[256];
+    int alive = 0;
+
+    if (ps == NULL) {
+        return 0;
+    }
+    while (fgets(line, sizeof(line), ps) != NULL) {
+        char stat[32];
+        char ucomm[128];
+        if (sscanf(line, "%31s %127s", stat, ucomm) == 2 && strcmp(ucomm, "mDNSResponder") == 0) {
+            if (stat[0] != 'Z') {
+                alive = 1;
+                break;
+            }
+        }
+    }
+    pclose(ps);
+    return alive;
+}
+
 static void gracefully_kill_mdnsresponder(void) {
     int attempt;
     (void)system("/usr/bin/pkill mDNSResponder >/dev/null 2>&1 || true");
     for (attempt = 0; attempt < 5; attempt++) {
-        FILE *ps = popen("/bin/ps ax -o stat= -o ucomm= 2>/dev/null", "r");
-        char line[256];
-        int alive = 0;
-
-        if (ps == NULL) {
-            break;
-        }
-        while (fgets(line, sizeof(line), ps) != NULL) {
-            char stat[32];
-            char ucomm[128];
-            if (sscanf(line, "%31s %127s", stat, ucomm) == 2 && strcmp(ucomm, "mDNSResponder") == 0) {
-                if (stat[0] != 'Z') {
-                    alive = 1;
-                    break;
-                }
-            }
-        }
-        pclose(ps);
-        if (!alive) {
+        if (!mdnsresponder_is_alive()) {
             break;
         }
         sleep(1);
+    }
+    if (mdnsresponder_is_alive()) {
+        fprintf(stderr, "warning: mDNSResponder ignored SIGTERM; sending SIGKILL\n");
+        (void)system("/usr/bin/pkill -9 mDNSResponder >/dev/null 2>&1 || true");
+        sleep(1);
+        if (mdnsresponder_is_alive()) {
+            fprintf(stderr, "warning: mDNSResponder still appears to be running after SIGKILL\n");
+        }
     }
 }
 
