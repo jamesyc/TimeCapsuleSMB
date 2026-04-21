@@ -19,18 +19,49 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.cli import activate, bootstrap, configure, deploy, discover, doctor, fsck, prep_device, uninstall
 from timecapsulesmb.cli.main import main
+from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.core.config import DEFAULTS
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.probe import MountedVolume
 from timecapsulesmb.discovery.bonjour import Discovered
 
 
+class FakeCommandContext:
+    def __init__(self) -> None:
+        self.result = "failure"
+        self.finish_fields: dict[str, object] = {}
+        self.finish = mock.Mock()
+
+    def __enter__(self) -> "FakeCommandContext":
+        return self
+
+    def __exit__(self, exc_type, _exc, _tb) -> bool:
+        if exc_type is KeyboardInterrupt and self.result != "cancelled":
+            self.result = "cancelled"
+        self.finish(result=self.result, **self.finish_fields)
+        return False
+
+    def set_result(self, result: str) -> None:
+        self.result = result
+
+    def update_fields(self, **fields: object) -> None:
+        for key, value in fields.items():
+            if value is not None:
+                self.finish_fields[key] = value
+
+
 class CliTests(unittest.TestCase):
     def setUp(self) -> None:
         self._exit_stack = ExitStack()
         self._telemetry_client = mock.Mock()
-        self._command_telemetry = mock.Mock()
-        self._telemetry_client.begin_command.return_value = self._command_telemetry
+        self._command_context = FakeCommandContext()
+        for target in (
+            "timecapsulesmb.cli.configure.CommandContext",
+            "timecapsulesmb.cli.deploy.CommandContext",
+            "timecapsulesmb.cli.activate.CommandContext",
+            "timecapsulesmb.cli.doctor.CommandContext",
+        ):
+            self._exit_stack.enter_context(mock.patch(target, return_value=self._command_context))
         for target in (
             "timecapsulesmb.cli.configure.TelemetryClient.from_values",
             "timecapsulesmb.cli.deploy.TelemetryClient.from_values",
@@ -83,6 +114,29 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"doctor": mock.Mock(return_value=7)}):
             rc = main(["doctor", "--skip-smb"])
         self.assertEqual(rc, 7)
+
+    def test_main_handles_keyboard_interrupt_cleanly(self) -> None:
+        stderr = io.StringIO()
+        with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"doctor": mock.Mock(side_effect=KeyboardInterrupt)}):
+            with redirect_stderr(stderr):
+                rc = main(["doctor", "--skip-smb"])
+        self.assertEqual(rc, 130)
+        self.assertEqual(stderr.getvalue(), "\nCancelled.\n")
+
+    def test_main_preserves_cancelled_telemetry_on_keyboard_interrupt(self) -> None:
+        stderr = io.StringIO()
+        command_context = FakeCommandContext()
+
+        def fake_command(_argv):
+            with command_context:
+                raise KeyboardInterrupt
+
+        with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"doctor": fake_command}):
+            with redirect_stderr(stderr):
+                rc = main(["doctor", "--skip-smb"])
+        self.assertEqual(rc, 130)
+        self.assertEqual(stderr.getvalue(), "\nCancelled.\n")
+        command_context.finish.assert_called_once_with(result="cancelled")
 
     def test_activate_command_is_registered(self) -> None:
         with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"activate": mock.Mock(return_value=0)}) as commands:
@@ -266,7 +320,7 @@ class CliTests(unittest.TestCase):
         def fake_write_env_file(path, values):
             fake_values.update(values)
 
-        command_telemetry = mock.Mock()
+        command_context = FakeCommandContext()
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
             with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
                 with mock.patch(
@@ -277,16 +331,16 @@ class CliTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
                             with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
                                 with mock.patch("timecapsulesmb.cli.configure.TelemetryClient.from_values") as telemetry_factory:
-                                    telemetry_factory.return_value.begin_command.return_value = command_telemetry
-                                    with redirect_stdout(output):
-                                        rc = configure.main([])
+                                    with mock.patch("timecapsulesmb.cli.configure.CommandContext", return_value=command_context):
+                                        with redirect_stdout(output):
+                                            rc = configure.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_SAMBA_USER"], "admin")
         uuid.UUID(fake_values["TC_CONFIGURE_ID"])
         telemetry_values = telemetry_factory.call_args.args[0]
         self.assertEqual(telemetry_values["TC_CONFIGURE_ID"], fake_values["TC_CONFIGURE_ID"])
-        command_telemetry.finish.assert_called_once()
-        self.assertEqual(command_telemetry.finish.call_args.kwargs["configure_id"], fake_values["TC_CONFIGURE_ID"])
+        command_context.finish.assert_called_once()
+        self.assertEqual(command_context.finish.call_args.kwargs["configure_id"], fake_values["TC_CONFIGURE_ID"])
         self.assertIn("Wrote", output.getvalue())
         self.assertIn("This writes a local .env configuration file", output.getvalue())
 
@@ -314,8 +368,7 @@ class CliTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=False):
                             with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
                                 with mock.patch("timecapsulesmb.cli.configure.write_env_file"):
-                                    with mock.patch("timecapsulesmb.cli.configure.TelemetryClient.from_values") as telemetry_factory:
-                                        telemetry_factory.return_value.begin_command.return_value = mock.Mock()
+                                    with mock.patch("timecapsulesmb.cli.configure.CommandContext", return_value=FakeCommandContext()):
                                         with redirect_stdout(output):
                                             rc = configure.main([])
         self.assertEqual(rc, 0)
@@ -1111,8 +1164,7 @@ class CliTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.cli.deploy.ensure_install_id") as ensure_mock:
             with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
-                with mock.patch("timecapsulesmb.cli.deploy.TelemetryClient.from_values") as telemetry_factory:
-                    telemetry_factory.return_value.begin_command.return_value = mock.Mock()
+                with mock.patch("timecapsulesmb.cli.deploy.CommandContext", return_value=FakeCommandContext()):
                     with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
                         with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
                             with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
@@ -1558,7 +1610,7 @@ class CliTests(unittest.TestCase):
 
     def test_deploy_netbsd4_prompt_decline_cancels_before_remote_actions(self) -> None:
         output = io.StringIO()
-        command_telemetry = mock.Mock()
+        command_context = FakeCommandContext()
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
@@ -1579,15 +1631,14 @@ class CliTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with mock.patch("builtins.input", return_value="n"):
                             with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
-                                with mock.patch("timecapsulesmb.cli.deploy.TelemetryClient.from_values") as telemetry_factory:
-                                    telemetry_factory.return_value.begin_command.return_value = command_telemetry
+                                with mock.patch("timecapsulesmb.cli.deploy.CommandContext", return_value=command_context):
                                     with redirect_stdout(output):
                                         rc = deploy.main([])
         self.assertEqual(rc, 0)
         actions_mock.assert_not_called()
         self.assertIn("Deployment cancelled.", output.getvalue())
-        command_telemetry.finish.assert_called_once()
-        self.assertEqual(command_telemetry.finish.call_args.kwargs["result"], "cancelled")
+        command_context.finish.assert_called_once()
+        self.assertEqual(command_context.finish.call_args.kwargs["result"], "cancelled")
 
     def test_deploy_netbsd4_prompt_accepts_uppercase_yes(self) -> None:
         output = io.StringIO()
@@ -2006,8 +2057,7 @@ class CliTests(unittest.TestCase):
         fake_result = doctor.CheckResult("PASS", "ok")
         with mock.patch("timecapsulesmb.cli.doctor.ensure_install_id") as ensure_mock:
             with mock.patch("timecapsulesmb.cli.doctor.parse_env_values", return_value={}):
-                with mock.patch("timecapsulesmb.cli.doctor.TelemetryClient.from_values") as telemetry_factory:
-                    telemetry_factory.return_value.begin_command.return_value = mock.Mock()
+                with mock.patch("timecapsulesmb.cli.doctor.CommandContext", return_value=FakeCommandContext()):
                     with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", return_value=([fake_result], False)):
                         with redirect_stdout(output):
                             rc = doctor.main(["--json"])
@@ -2109,8 +2159,7 @@ class CliTests(unittest.TestCase):
         values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.ensure_install_id") as ensure_mock:
             with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
-                with mock.patch("timecapsulesmb.cli.activate.TelemetryClient.from_values") as telemetry_factory:
-                    telemetry_factory.return_value.begin_command.return_value = mock.Mock()
+                with mock.patch("timecapsulesmb.cli.activate.CommandContext", return_value=FakeCommandContext()):
                     with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with redirect_stdout(output):
                             rc = activate.main(["--dry-run"])
@@ -2136,21 +2185,20 @@ class CliTests(unittest.TestCase):
 
     def test_activate_prompt_decline_cancels_before_remote_actions(self) -> None:
         output = io.StringIO()
-        command_telemetry = mock.Mock()
+        command_context = FakeCommandContext()
         values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("builtins.input", return_value="n"):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
-                        with mock.patch("timecapsulesmb.cli.activate.TelemetryClient.from_values") as telemetry_factory:
-                            telemetry_factory.return_value.begin_command.return_value = command_telemetry
+                        with mock.patch("timecapsulesmb.cli.activate.CommandContext", return_value=command_context):
                             with redirect_stdout(output):
                                 rc = activate.main([])
         self.assertEqual(rc, 0)
         actions_mock.assert_not_called()
         self.assertIn("Activation cancelled.", output.getvalue())
-        command_telemetry.finish.assert_called_once()
-        self.assertEqual(command_telemetry.finish.call_args.kwargs["result"], "cancelled")
+        command_context.finish.assert_called_once()
+        self.assertEqual(command_context.finish.call_args.kwargs["result"], "cancelled")
 
     def test_activate_yes_runs_idempotent_actions_and_verifies(self) -> None:
         output = io.StringIO()

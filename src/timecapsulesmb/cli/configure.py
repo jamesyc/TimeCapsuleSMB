@@ -13,6 +13,7 @@ from timecapsulesmb.core.config import (
     parse_env_values,
     write_env_file,
 )
+from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.device.compat import infer_mdns_device_model_hint
 from timecapsulesmb.discovery.bonjour import Discovered, discover, prefer_routable_ipv4, preferred_host
@@ -131,12 +132,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     telemetry_values = dict(existing)
     telemetry_values["TC_CONFIGURE_ID"] = configure_id
     telemetry = TelemetryClient.from_values(telemetry_values)
-    command_telemetry = telemetry.begin_command("configure_started", "configure_finished")
     values: dict[str, str] = {}
     inferred_mdns_device_model: Optional[str] = None
     discovered_airport_syap: Optional[str] = None
-    result = "failure"
-    try:
+    with CommandContext(telemetry, "configure", "configure_started", "configure_finished") as command_context:
+        command_context.update_fields(configure_id=configure_id)
         print("This writes a local .env configuration file in this folder. The other tcapsule commands use that file.")
         print(f"Writing {ENV_PATH}")
         print("\033[31mPress Enter\033[0m to accept the current/default value.\n")
@@ -234,7 +234,5 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("  1. Review .env")
         print("  2. Run .venv/bin/tcapsule prep-device")
         print("  3. If you are doing build work, configure build/.env separately from build/.env.example")
-        result = "success"
+        command_context.set_result("success")
         return 0
-    finally:
-        command_telemetry.finish(result=result, configure_id=configure_id)

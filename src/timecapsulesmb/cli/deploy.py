@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.core.config import ENV_PATH, parse_env_values
+from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
@@ -55,14 +56,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     ensure_install_id()
     values = parse_env_values(ENV_PATH)
     telemetry = TelemetryClient.from_values(values, nbns_enabled=args.install_nbns)
-    command_telemetry = telemetry.begin_command("deploy_started", "deploy_finished")
-    result = "failure"
-    finish_fields: dict[str, object] = {
-        "nbns_enabled": args.install_nbns,
-        "reboot_was_attempted": False,
-        "device_came_back_after_reboot": False,
-    }
-    try:
+    with CommandContext(telemetry, "deploy", "deploy_started", "deploy_finished") as command_context:
+        command_context.update_fields(
+            nbns_enabled=args.install_nbns,
+            reboot_was_attempted=False,
+            device_came_back_after_reboot=False,
+        )
         host, password, ssh_opts = resolve_validated_managed_connection(
             values,
             command_name="deploy",
@@ -75,12 +74,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             raise SystemExit("; ".join(failures))
         volume_root = discover_volume_root(host, password, ssh_opts)
         compatibility = probe_device_compatibility(host, password, ssh_opts)
-        finish_fields["device_os_version"] = build_device_os_version(
+        command_context.update_fields(device_os_version=build_device_os_version(
             compatibility.os_name,
             compatibility.os_release,
             compatibility.arch,
-        )
-        finish_fields["device_family"] = detect_device_family(compatibility.payload_family)
+        ))
+        command_context.update_fields(device_family=detect_device_family(compatibility.payload_family))
         if not compatibility.supported:
             if not args.allow_unsupported:
                 raise SystemExit(compatibility.message)
@@ -111,7 +110,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 print(json.dumps(deployment_plan_to_jsonable(plan), indent=2, sort_keys=True))
             else:
                 print(format_deployment_plan(plan))
-            result = "success"
+            command_context.set_result("success")
             return 0
 
         if is_netbsd4 and not args.yes:
@@ -122,7 +121,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             answer = input("Continue with NetBSD4 deploy + activation? [y/N]: ").strip().lower()
             if answer not in {"y", "yes"}:
                 print("Deployment cancelled.")
-                result = "cancelled"
+                command_context.set_result("cancelled")
                 return 0
 
         run_remote_actions(host, password, ssh_opts, plan.pre_upload_actions)
@@ -177,28 +176,28 @@ def main(argv: Optional[list[str]] = None) -> int:
                 print("NetBSD4 activation failed.")
                 return 1
             print(f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}")
-            result = "success"
+            command_context.set_result("success")
             return 0
 
         if args.no_reboot:
             print("Skipping reboot.")
-            result = "success"
+            command_context.set_result("success")
             return 0
 
         if not args.yes:
             answer = input("This will reboot the Time Capsule now. Continue? [Y/n]: ").strip().lower()
             if answer not in {"", "y", "yes"}:
                 print("Deployment complete without reboot.")
-                result = "cancelled"
+                command_context.set_result("cancelled")
                 return 0
 
         run_ssh(host, password, ssh_opts, "/sbin/reboot", check=False)
-        finish_fields["reboot_was_attempted"] = True
+        command_context.update_fields(reboot_was_attempted=True)
         print("Reboot requested. Waiting for the device to go down...")
         wait_for_ssh_state(host, password, ssh_opts, expected_up=False, timeout_seconds=60)
         print("Waiting for the device to come back up...")
         if wait_for_ssh_state(host, password, ssh_opts, expected_up=True, timeout_seconds=240):
-            finish_fields["device_came_back_after_reboot"] = True
+            command_context.update_fields(device_came_back_after_reboot=True)
             print("Device is back online.")
             print("Waiting for managed smbd to finish starting...")
             if not wait_for_post_reboot_smbd(host, password, ssh_opts):
@@ -209,10 +208,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 print("Managed mDNS did not become ready after reboot.")
                 return 1
             verify_post_deploy(values)
-            result = "success"
+            command_context.set_result("success")
             return 0
 
         print("Timed out waiting for SSH after reboot.")
         return 1
-    finally:
-        command_telemetry.finish(result=result, **finish_fields)

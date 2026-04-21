@@ -7,6 +7,7 @@ from typing import Optional
 
 from timecapsulesmb.checks.doctor import run_doctor_checks
 from timecapsulesmb.checks.models import CheckResult
+from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.core.config import ENV_PATH, parse_env_values
 from timecapsulesmb.device.compat import probe_device_compatibility
 from timecapsulesmb.identity import ensure_install_id
@@ -32,20 +33,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     ensure_install_id()
     values = parse_env_values(ENV_PATH)
     telemetry = TelemetryClient.from_values(values)
-    command_telemetry = telemetry.begin_command("doctor_started", "doctor_finished")
-    result = "failure"
-    finish_fields: dict[str, object] = {}
-    try:
+    with CommandContext(telemetry, "doctor", "doctor_started", "doctor_finished") as command_context:
         if ENV_PATH.exists() and not args.skip_ssh:
             try:
                 host, password, ssh_opts = resolve_env_connection(values)
                 compatibility = probe_device_compatibility(host, password, ssh_opts)
-                finish_fields["device_os_version"] = build_device_os_version(
+                command_context.update_fields(device_os_version=build_device_os_version(
                     compatibility.os_name,
                     compatibility.os_release,
                     compatibility.arch,
-                )
-                finish_fields["device_family"] = detect_device_family(compatibility.payload_family)
+                ))
+                command_context.update_fields(device_family=detect_device_family(compatibility.payload_family))
             except SystemExit:
                 pass
 
@@ -65,16 +63,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "results": [{"status": result.status, "message": result.message} for result in results],
                 "summary": "doctor found one or more fatal problems." if fatal else "doctor checks passed.",
             }, indent=2, sort_keys=True))
-            result = "failure" if fatal else "success"
+            command_context.set_result("failure" if fatal else "success")
             return 1 if fatal else 0
 
         if fatal:
             print("\nSummary: doctor found one or more fatal problems.")
-            result = "failure"
+            command_context.set_result("failure")
             return 1
 
         print("\nSummary: doctor checks passed.")
-        result = "success"
+        command_context.set_result("success")
         return 0
-    finally:
-        command_telemetry.finish(result=result, **finish_fields)

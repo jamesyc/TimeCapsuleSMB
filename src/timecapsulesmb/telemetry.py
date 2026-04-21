@@ -5,7 +5,6 @@ import os
 import platform
 import subprocess
 import threading
-import time
 import urllib.error
 import urllib.request
 import uuid
@@ -106,9 +105,6 @@ class TelemetryClient:
             return
         self._dispatch_payload_async(payload)
 
-    def begin_command(self, started_event: str, finished_event: str, **fields: object) -> "CommandTelemetry":
-        return CommandTelemetry(self, started_event, finished_event, fields)
-
     def _dispatch_payload_async(self, payload: dict[str, object]) -> None:
         thread = threading.Thread(target=self._send_payload, args=(payload,), daemon=True)
         thread.start()
@@ -134,30 +130,6 @@ class TelemetryClient:
             except (OSError, urllib.error.URLError, ValueError):
                 if attempt + 1 >= MAX_SEND_ATTEMPTS:
                     return
-
-
-class CommandTelemetry:
-    def __init__(self, client: TelemetryClient, started_event: str, finished_event: str, fields: dict[str, object]) -> None:
-        self.client = client
-        self.finished_event = finished_event
-        self.start_time = time.monotonic()
-        self.finished = False
-        self.command_id = str(uuid.uuid4())
-        self.client.emit(started_event, command_id=self.command_id, **fields)
-
-    def finish(self, *, result: str, **fields: object) -> None:
-        if self.finished:
-            return
-        self.finished = True
-        duration_sec = round(time.monotonic() - self.start_time, 3)
-        self.client.emit(
-            self.finished_event,
-            synchronous=True,
-            command_id=self.command_id,
-            result=result,
-            duration_sec=duration_sec,
-            **fields,
-        )
 
 
 def build_device_os_version(os_name: str | None, os_release: str | None, arch: str | None) -> str | None:

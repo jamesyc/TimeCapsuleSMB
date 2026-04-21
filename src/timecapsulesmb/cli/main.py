@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from typing import Optional
 
 from . import activate, bootstrap, configure, deploy, discover, doctor, fsck, prep_device, repair_xattrs, uninstall
@@ -30,7 +31,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return COMMANDS[args.command](args.args)
+    try:
+        return COMMANDS[args.command](args.args)
+    except KeyboardInterrupt:
+        print("\nCancelled.", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":

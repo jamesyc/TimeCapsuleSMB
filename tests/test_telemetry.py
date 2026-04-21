@@ -14,6 +14,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.telemetry import MAX_SEND_ATTEMPTS, TelemetryClient
 
 
@@ -68,7 +69,7 @@ class TelemetryTests(unittest.TestCase):
                     client._send_payload({"event": "doctor_started"})
         self.assertEqual(urlopen_mock.call_count, MAX_SEND_ATTEMPTS)
 
-    def test_command_telemetry_reuses_command_id_for_started_and_finished_events(self) -> None:
+    def test_command_context_reuses_command_id_for_started_and_finished_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bootstrap_path = Path(tmp) / ".bootstrap"
             bootstrap_path.write_text("INSTALL_ID=test-install\n")
@@ -76,7 +77,7 @@ class TelemetryTests(unittest.TestCase):
                 client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
                 with mock.patch.object(client, "_dispatch_payload_async") as dispatch_mock:
                     with mock.patch.object(client, "_send_payload") as send_mock:
-                        command = client.begin_command("deploy_started", "deploy_finished")
+                        command = CommandContext(client, "deploy", "deploy_started", "deploy_finished")
                         command.finish(result="success")
         started_payload = dispatch_mock.call_args.args[0]
         finished_payload = send_mock.call_args.args[0]
@@ -84,6 +85,21 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(started_payload["command_id"], finished_payload["command_id"])
         self.assertEqual(finished_payload["event"], "deploy_finished")
         self.assertEqual(finished_payload["result"], "success")
+
+    def test_command_context_marks_keyboard_interrupt_as_cancelled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                with mock.patch.object(client, "_dispatch_payload_async"):
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        with self.assertRaises(KeyboardInterrupt):
+                            with CommandContext(client, "doctor", "doctor_started", "doctor_finished"):
+                                raise KeyboardInterrupt
+        finished_payload = send_mock.call_args.args[0]
+        self.assertEqual(finished_payload["event"], "doctor_finished")
+        self.assertEqual(finished_payload["result"], "cancelled")
 
 
 if __name__ == "__main__":
