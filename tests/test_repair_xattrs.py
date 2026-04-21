@@ -579,17 +579,17 @@ class RepairXattrsTests(unittest.TestCase):
         self.assertEqual([candidate.path for candidate in candidates], [target.resolve()])
 
     def test_default_share_path_uses_env_share_name_when_mounted(self) -> None:
-        with mock.patch("timecapsulesmb.cli.repair_xattrs.parse_env_values", return_value={"TC_SHARE_NAME": "Data"}):
+        with mock.patch("timecapsulesmb.cli.repair_xattrs.load_env_values", return_value={"TC_SHARE_NAME": "Data"}):
             with mock.patch("pathlib.Path.exists", return_value=True):
                 self.assertEqual(repair_xattrs.default_share_path(), Path("/Volumes/Data"))
 
     def test_default_share_path_returns_none_when_share_missing(self) -> None:
-        with mock.patch("timecapsulesmb.cli.repair_xattrs.parse_env_values", return_value={"TC_SHARE_NAME": "Data"}):
+        with mock.patch("timecapsulesmb.cli.repair_xattrs.load_env_values", return_value={"TC_SHARE_NAME": "Data"}):
             with mock.patch("pathlib.Path.exists", return_value=False):
                 self.assertIsNone(repair_xattrs.default_share_path())
 
     def test_default_share_path_rejects_invalid_env_share_name(self) -> None:
-        with mock.patch("timecapsulesmb.cli.repair_xattrs.parse_env_values", return_value={"TC_SHARE_NAME": "Bad/Share"}):
+        with mock.patch("timecapsulesmb.cli.repair_xattrs.load_env_values", return_value={"TC_SHARE_NAME": "Bad/Share"}):
             with self.assertRaises(SystemExit) as cm:
                 repair_xattrs.default_share_path()
         self.assertIn("TC_SHARE_NAME is invalid", str(cm.exception))

@@ -5,14 +5,14 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from timecapsulesmb.core.config import ENV_PATH, parse_env_values, require_valid_config
+from timecapsulesmb.cli.runtime import load_env_values, resolve_env_connection
+from timecapsulesmb.core.config import require_valid_config
 from timecapsulesmb.deploy.dry_run import format_uninstall_plan, uninstall_plan_to_jsonable
 from timecapsulesmb.deploy.executor import remote_uninstall_payload
 from timecapsulesmb.deploy.planner import build_uninstall_plan
 from timecapsulesmb.deploy.verify import verify_post_uninstall
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root, wait_for_ssh_state
 from timecapsulesmb.transport.ssh import run_ssh
-from timecapsulesmb.cli.util import resolve_env_connection
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -29,9 +29,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not args.json:
         print("Uninstalling...")
 
-    values = parse_env_values(ENV_PATH)
+    values = load_env_values()
     require_valid_config(values, profile="uninstall")
-    host, password, ssh_opts = resolve_env_connection(values, allow_empty_password=True)
+    connection = resolve_env_connection(values, allow_empty_password=True)
+    host, password, ssh_opts = connection.host, connection.password, connection.ssh_opts
 
     volume_root = discover_volume_root(host, password, ssh_opts)
     device_paths = build_device_paths(volume_root, values["TC_PAYLOAD_DIR_NAME"])

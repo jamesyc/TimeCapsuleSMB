@@ -4,10 +4,10 @@ import argparse
 import shlex
 from typing import Optional
 
-from timecapsulesmb.core.config import ENV_PATH, parse_env_values, require_valid_config
+from timecapsulesmb.cli.runtime import load_env_values, resolve_env_connection
+from timecapsulesmb.core.config import require_valid_config
 from timecapsulesmb.device.probe import discover_mounted_volume, wait_for_ssh_state
 from timecapsulesmb.transport.ssh import run_ssh
-from timecapsulesmb.cli.util import resolve_env_connection
 
 
 def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> str:
@@ -41,9 +41,10 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     print("Running fsck...")
 
-    values = parse_env_values(ENV_PATH)
+    values = load_env_values()
     require_valid_config(values, profile="fsck")
-    host, password, ssh_opts = resolve_env_connection(values, allow_empty_password=True)
+    connection = resolve_env_connection(values, allow_empty_password=True)
+    host, password, ssh_opts = connection.host, connection.password, connection.ssh_opts
 
     mounted = discover_mounted_volume(host, password, ssh_opts)
     print(f"Target host: {host}")

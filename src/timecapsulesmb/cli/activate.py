@@ -3,16 +3,15 @@ from __future__ import annotations
 import argparse
 from typing import Optional
 
-from timecapsulesmb.core.config import ENV_PATH, parse_env_values
 from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.cli.runtime import load_env_values, probe_compatibility
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.commands import render_remote_actions
 from timecapsulesmb.deploy.executor import run_remote_actions
 from timecapsulesmb.deploy.planner import build_netbsd4_activation_actions
 from timecapsulesmb.deploy.verify import netbsd4_activation_is_already_healthy, verify_netbsd4_activation
-from timecapsulesmb.device.compat import probe_device_compatibility
-from timecapsulesmb.telemetry import TelemetryClient, build_device_os_version, detect_device_family
-from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_red, resolve_validated_managed_connection
+from timecapsulesmb.telemetry import TelemetryClient
+from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_red
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -22,22 +21,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     ensure_install_id()
-    values = parse_env_values(ENV_PATH)
+    values = load_env_values()
     telemetry = TelemetryClient.from_values(values)
-    with CommandContext(telemetry, "activate", "activate_started", "activate_finished") as command_context:
-        host, password, ssh_opts = resolve_validated_managed_connection(
-            values,
-            command_name="activate",
-            profile="activate",
-        )
-
-        compatibility = probe_device_compatibility(host, password, ssh_opts)
-        command_context.update_fields(device_os_version=build_device_os_version(
-            compatibility.os_name,
-            compatibility.os_release,
-            compatibility.arch,
-        ))
-        command_context.update_fields(device_family=detect_device_family(compatibility.payload_family))
+    with CommandContext(telemetry, "activate", "activate_started", "activate_finished", values=values, args=args) as command_context:
+        connection = command_context.resolve_validated_managed_connection(profile="activate")
+        compatibility = command_context.probe_compatibility(probe_compatibility)
+        host, password, ssh_opts = connection.host, connection.password, connection.ssh_opts
         if not compatibility.supported:
             raise SystemExit(compatibility.message)
         print(compatibility.message)
@@ -59,7 +48,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("")
             print("This will start the deployed Samba payload on the Time Capsule.")
             print(color_red(NETBSD4_REBOOT_GUIDANCE))
-            command_context.set_result("success")
+            command_context.succeed()
             return 0
 
         if not args.yes:
@@ -68,12 +57,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             answer = input("Continue with NetBSD4 activation? [y/N]: ").strip().lower()
             if answer not in {"y", "yes"}:
                 print("Activation cancelled.")
-                command_context.set_result("cancelled")
+                command_context.cancel()
                 return 0
 
         if netbsd4_activation_is_already_healthy(host, password, ssh_opts):
             print("NetBSD4 payload already active; skipping rc.local.")
-            command_context.set_result("success")
+            command_context.succeed()
             return 0
 
         print("Activating NetBSD4 payload without file transfer.")
@@ -82,5 +71,5 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("NetBSD4 activation failed.")
             return 1
         print(f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}")
-        command_context.set_result("success")
+        command_context.succeed()
         return 0

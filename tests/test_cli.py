@@ -20,6 +20,7 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.cli import activate, bootstrap, configure, deploy, discover, doctor, fsck, prep_device, uninstall
 from timecapsulesmb.cli.main import main
 from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.cli.runtime import ResolvedConnection
 from timecapsulesmb.core.config import DEFAULTS
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.probe import MountedVolume
@@ -27,10 +28,26 @@ from timecapsulesmb.discovery.bonjour import Discovered
 
 
 class FakeCommandContext:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        connection: ResolvedConnection | None = None,
+        compatibility: DeviceCompatibility | None = None,
+    ) -> None:
         self.result = "failure"
         self.finish_fields: dict[str, object] = {}
         self.finish = mock.Mock()
+        self.connection = connection or ResolvedConnection("root@10.0.0.2", "pw", "-o foo")
+        self.compatibility = compatibility or DeviceCompatibility(
+            os_name="NetBSD",
+            os_release="6.0",
+            arch="earmv4",
+            payload_family="netbsd6_samba4",
+            device_generation="gen5",
+            mdns_device_model_hint="TimeCapsule8,119",
+            supported=True,
+            message="Detected supported device: NetBSD 6.0 (earmv4).",
+        )
 
     def __enter__(self) -> "FakeCommandContext":
         return self
@@ -44,24 +61,34 @@ class FakeCommandContext:
     def set_result(self, result: str) -> None:
         self.result = result
 
+    def succeed(self) -> None:
+        self.result = "success"
+
+    def cancel(self) -> None:
+        self.result = "cancelled"
+
+    def fail(self) -> None:
+        self.result = "failure"
+
     def update_fields(self, **fields: object) -> None:
         for key, value in fields.items():
             if value is not None:
                 self.finish_fields[key] = value
+
+    def resolve_env_connection(self, **_kwargs):
+        return self.connection
+
+    def resolve_validated_managed_connection(self, **_kwargs):
+        return self.connection
+
+    def probe_compatibility(self, _probe=None):
+        return self.compatibility
 
 
 class CliTests(unittest.TestCase):
     def setUp(self) -> None:
         self._exit_stack = ExitStack()
         self._telemetry_client = mock.Mock()
-        self._command_context = FakeCommandContext()
-        for target in (
-            "timecapsulesmb.cli.configure.CommandContext",
-            "timecapsulesmb.cli.deploy.CommandContext",
-            "timecapsulesmb.cli.activate.CommandContext",
-            "timecapsulesmb.cli.doctor.CommandContext",
-        ):
-            self._exit_stack.enter_context(mock.patch(target, return_value=self._command_context))
         for target in (
             "timecapsulesmb.cli.configure.TelemetryClient.from_values",
             "timecapsulesmb.cli.deploy.TelemetryClient.from_values",
@@ -69,7 +96,7 @@ class CliTests(unittest.TestCase):
             "timecapsulesmb.cli.doctor.TelemetryClient.from_values",
         ):
             self._exit_stack.enter_context(mock.patch(target, return_value=self._telemetry_client))
-        self._exit_stack.enter_context(mock.patch("timecapsulesmb.cli.util.remote_interface_exists", return_value=True))
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.cli.runtime.remote_interface_exists", return_value=True))
 
     def tearDown(self) -> None:
         self._exit_stack.close()
@@ -125,7 +152,7 @@ class CliTests(unittest.TestCase):
 
     def test_main_preserves_cancelled_telemetry_on_keyboard_interrupt(self) -> None:
         stderr = io.StringIO()
-        command_context = FakeCommandContext()
+        command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_compatibility())
 
         def fake_command(_argv):
             with command_context:
@@ -1074,7 +1101,7 @@ class CliTests(unittest.TestCase):
     def test_doctor_returns_failure_when_checks_fatal(self) -> None:
         output = io.StringIO()
         fake_result = doctor.CheckResult("FAIL", "broken")
-        with mock.patch("timecapsulesmb.cli.doctor.parse_env_values", return_value={}):
+        with mock.patch("timecapsulesmb.cli.doctor.load_env_values", return_value={}):
             with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", return_value=([fake_result], True)):
                 with redirect_stdout(output):
                     rc = doctor.main([])
@@ -1089,7 +1116,7 @@ class CliTests(unittest.TestCase):
             kwargs["on_result"](streamed_result)
             return ([streamed_result], False)
 
-        with mock.patch("timecapsulesmb.cli.doctor.parse_env_values", return_value={}):
+        with mock.patch("timecapsulesmb.cli.doctor.load_env_values", return_value={}):
             with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
                 with redirect_stdout(output):
                     rc = doctor.main([])
@@ -1104,7 +1131,7 @@ class CliTests(unittest.TestCase):
             kwargs["on_result"](streamed_result)
             return ([streamed_result], False)
 
-        with mock.patch("timecapsulesmb.cli.doctor.parse_env_values", return_value={}):
+        with mock.patch("timecapsulesmb.cli.doctor.load_env_values", return_value={}):
             with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
                 with redirect_stdout(output):
                     rc = doctor.main([])
@@ -1127,10 +1154,10 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
                             with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload") as upload_mock:
                                 with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files") as auth_mock:
@@ -1163,11 +1190,11 @@ class CliTests(unittest.TestCase):
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.ensure_install_id") as ensure_mock:
-            with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
                 with mock.patch("timecapsulesmb.cli.deploy.CommandContext", return_value=FakeCommandContext()):
                     with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
                         with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                            with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+                            with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_compatibility()):
                                 with redirect_stdout(output):
                                     rc = deploy.main(["--dry-run"])
         self.assertEqual(rc, 0)
@@ -1188,7 +1215,7 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", False, "checksum mismatch")]):
                 with self.assertRaises(SystemExit):
                     deploy.main([])
@@ -1224,7 +1251,7 @@ class CliTests(unittest.TestCase):
             },
         ):
             with self.assertRaises(SystemExit) as ctx:
-                with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+                with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
                     deploy.main(["--dry-run"])
             self.assertEqual(
                 str(ctx.exception),
@@ -1248,7 +1275,7 @@ class CliTests(unittest.TestCase):
             "TC_SAMBA_USER": "admin",
         }
         with self.assertRaises(SystemExit) as ctx:
-            with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
                 deploy.main(["--dry-run"])
         self.assertEqual(
             str(ctx.exception),
@@ -1259,8 +1286,8 @@ class CliTests(unittest.TestCase):
     def test_deploy_rejects_missing_remote_interface(self) -> None:
         values = self.make_valid_env()
         with self.assertRaises(SystemExit) as ctx:
-            with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
-                with mock.patch("timecapsulesmb.cli.util.remote_interface_exists", return_value=False):
+            with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
+                with mock.patch("timecapsulesmb.cli.runtime.remote_interface_exists", return_value=False):
                     deploy.main(["--dry-run"])
         self.assertIn("TC_NET_IFACE is invalid", str(ctx.exception))
         self.assertIn("network interface was not found", str(ctx.exception))
@@ -1281,10 +1308,10 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
                             with mock.patch(
                                 "timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid",
@@ -1315,10 +1342,10 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
                             with mock.patch(
                                 "timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid",
@@ -1350,10 +1377,10 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
                             with mock.patch(
                                 "timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid",
@@ -1395,10 +1422,10 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
                             with mock.patch(
                                 "timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid",
@@ -1440,10 +1467,10 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
                             with mock.patch(
                                 "timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid",
@@ -1481,10 +1508,10 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
                             with mock.patch(
                                 "timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid",
@@ -1521,10 +1548,10 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
                             with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value="12345678-1234-1234-1234-123456789012"):
                                 with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
@@ -1554,10 +1581,10 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_compatibility()):
                         with redirect_stdout(output):
                             rc = deploy.main(["--dry-run"])
         self.assertEqual(rc, 0)
@@ -1582,10 +1609,10 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with redirect_stdout(output):
                             rc = deploy.main(["--dry-run"])
         self.assertEqual(rc, 0)
@@ -1610,7 +1637,7 @@ class CliTests(unittest.TestCase):
 
     def test_deploy_netbsd4_prompt_decline_cancels_before_remote_actions(self) -> None:
         output = io.StringIO()
-        command_context = FakeCommandContext()
+        command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_compatibility())
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
@@ -1625,10 +1652,10 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with mock.patch("builtins.input", return_value="n"):
                             with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
                                 with mock.patch("timecapsulesmb.cli.deploy.CommandContext", return_value=command_context):
@@ -1656,10 +1683,10 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with mock.patch("builtins.input", return_value="YES"):
                             with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
                                 with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
@@ -1692,10 +1719,10 @@ class CliTests(unittest.TestCase):
             watchdog_replacements={},
             smbconf_replacements={},
         )
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
                             with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
                                 with mock.patch("timecapsulesmb.cli.deploy.build_template_bundle", return_value=template_bundle) as template_mock:
@@ -1733,10 +1760,10 @@ class CliTests(unittest.TestCase):
             watchdog_replacements={},
             smbconf_replacements={},
         )
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
                             with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
                                 with mock.patch("timecapsulesmb.cli.deploy.build_template_bundle", return_value=template_bundle) as template_mock:
@@ -1771,10 +1798,10 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
                             with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
                                 with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
@@ -1816,10 +1843,10 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
                             with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
                                 with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
@@ -1850,10 +1877,10 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
                             with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
                                 with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
@@ -1880,10 +1907,10 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok"), ("mdns-netbsd4", True, "ok"), ("nbns-netbsd4", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with redirect_stdout(output):
                             rc = deploy.main(["--dry-run", "--install-nbns"])
         self.assertEqual(rc, 0)
@@ -1907,10 +1934,10 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_compatibility()):
                         with redirect_stdout(output):
                             rc = deploy.main(["--dry-run", "--install-nbns"])
         self.assertEqual(rc, 0)
@@ -1941,10 +1968,10 @@ class CliTests(unittest.TestCase):
             supported=False,
             message="Unsupported device OS: Linux 6.8.",
         )
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=unsupported):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=unsupported):
                         with self.assertRaises(SystemExit) as ctx:
                             deploy.main(["--dry-run"])
         self.assertIn("Linux", str(ctx.exception))
@@ -1975,10 +2002,10 @@ class CliTests(unittest.TestCase):
             supported=False,
             message="Unsupported device OS: Linux 6.8.",
         )
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=unsupported):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=unsupported):
                         with mock.patch("timecapsulesmb.cli.deploy.build_device_paths", return_value=mock.Mock()):
                             with mock.patch("timecapsulesmb.cli.deploy.build_deployment_plan", return_value={"plan": "ok"}):
                                 with mock.patch("timecapsulesmb.cli.deploy.format_deployment_plan", return_value="plan text"):
@@ -2043,7 +2070,7 @@ class CliTests(unittest.TestCase):
     def test_doctor_json_outputs_structured_results(self) -> None:
         output = io.StringIO()
         fake_result = doctor.CheckResult("PASS", "ok")
-        with mock.patch("timecapsulesmb.cli.doctor.parse_env_values", return_value={}):
+        with mock.patch("timecapsulesmb.cli.doctor.load_env_values", return_value={}):
             with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", return_value=([fake_result], False)):
                 with redirect_stdout(output):
                     rc = doctor.main(["--json"])
@@ -2056,7 +2083,7 @@ class CliTests(unittest.TestCase):
         output = io.StringIO()
         fake_result = doctor.CheckResult("PASS", "ok")
         with mock.patch("timecapsulesmb.cli.doctor.ensure_install_id") as ensure_mock:
-            with mock.patch("timecapsulesmb.cli.doctor.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.doctor.load_env_values", return_value={}):
                 with mock.patch("timecapsulesmb.cli.doctor.CommandContext", return_value=FakeCommandContext()):
                     with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", return_value=([fake_result], False)):
                         with redirect_stdout(output):
@@ -2080,10 +2107,10 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_compatibility()):
                         with redirect_stdout(output):
                             rc = deploy.main(["--dry-run", "--json"])
         self.assertEqual(rc, 0)
@@ -2110,10 +2137,10 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with redirect_stdout(output):
                             rc = deploy.main(["--dry-run", "--json"])
         self.assertEqual(rc, 0)
@@ -2135,8 +2162,8 @@ class CliTests(unittest.TestCase):
     def test_activate_dry_run_prints_netbsd4_activation_plan(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
-        with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
-            with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+        with mock.patch("timecapsulesmb.cli.activate.load_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.activate.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
                     with redirect_stdout(output):
                         rc = activate.main(["--dry-run"])
@@ -2158,9 +2185,12 @@ class CliTests(unittest.TestCase):
         output = io.StringIO()
         values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.ensure_install_id") as ensure_mock:
-            with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
-                with mock.patch("timecapsulesmb.cli.activate.CommandContext", return_value=FakeCommandContext()):
-                    with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+            with mock.patch("timecapsulesmb.cli.activate.load_env_values", return_value=values):
+                with mock.patch(
+                    "timecapsulesmb.cli.activate.CommandContext",
+                    return_value=FakeCommandContext(compatibility=self.make_supported_netbsd4_compatibility()),
+                ):
+                    with mock.patch("timecapsulesmb.cli.activate.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with redirect_stdout(output):
                             rc = activate.main(["--dry-run"])
         self.assertEqual(rc, 0)
@@ -2168,8 +2198,8 @@ class CliTests(unittest.TestCase):
 
     def test_activate_rejects_non_netbsd4_device(self) -> None:
         values = self.make_valid_env()
-        with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
-            with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+        with mock.patch("timecapsulesmb.cli.activate.load_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.activate.probe_compatibility", return_value=self.make_supported_compatibility()):
                 with self.assertRaises(SystemExit) as cm:
                     activate.main(["--dry-run"])
         self.assertIn("only supported for NetBSD4", str(cm.exception))
@@ -2177,18 +2207,18 @@ class CliTests(unittest.TestCase):
     def test_activate_rejects_missing_remote_interface(self) -> None:
         values = self.make_valid_env()
         with self.assertRaises(SystemExit) as ctx:
-            with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
-                with mock.patch("timecapsulesmb.cli.util.remote_interface_exists", return_value=False):
+            with mock.patch("timecapsulesmb.cli.activate.load_env_values", return_value=values):
+                with mock.patch("timecapsulesmb.cli.runtime.remote_interface_exists", return_value=False):
                     activate.main(["--dry-run"])
         self.assertIn("TC_NET_IFACE is invalid", str(ctx.exception))
         self.assertIn("network interface was not found", str(ctx.exception))
 
     def test_activate_prompt_decline_cancels_before_remote_actions(self) -> None:
         output = io.StringIO()
-        command_context = FakeCommandContext()
+        command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_compatibility())
         values = self.make_valid_env()
-        with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
-            with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+        with mock.patch("timecapsulesmb.cli.activate.load_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.activate.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("builtins.input", return_value="n"):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
                         with mock.patch("timecapsulesmb.cli.activate.CommandContext", return_value=command_context):
@@ -2203,8 +2233,8 @@ class CliTests(unittest.TestCase):
     def test_activate_yes_runs_idempotent_actions_and_verifies(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
-        with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
-            with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+        with mock.patch("timecapsulesmb.cli.activate.load_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.activate.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("timecapsulesmb.cli.activate.netbsd4_activation_is_already_healthy", return_value=False):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
                         with mock.patch("timecapsulesmb.cli.activate.verify_netbsd4_activation", return_value=True) as verify_mock:
@@ -2229,8 +2259,8 @@ class CliTests(unittest.TestCase):
     def test_activate_skips_rc_local_when_payload_is_already_healthy(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
-        with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
-            with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+        with mock.patch("timecapsulesmb.cli.activate.load_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.activate.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("timecapsulesmb.cli.activate.netbsd4_activation_is_already_healthy", return_value=True):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
                         with mock.patch("timecapsulesmb.cli.activate.verify_netbsd4_activation") as verify_mock:
@@ -2244,8 +2274,8 @@ class CliTests(unittest.TestCase):
     def test_activate_returns_nonzero_when_verification_fails(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
-        with mock.patch("timecapsulesmb.cli.activate.parse_env_values", return_value=values):
-            with mock.patch("timecapsulesmb.cli.activate.probe_device_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+        with mock.patch("timecapsulesmb.cli.activate.load_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.activate.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("timecapsulesmb.cli.activate.netbsd4_activation_is_already_healthy", return_value=False):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions"):
                         with mock.patch("timecapsulesmb.cli.activate.verify_netbsd4_activation", return_value=False):
@@ -2262,7 +2292,7 @@ class CliTests(unittest.TestCase):
             "TC_SSH_OPTS": "-o foo",
             "TC_PAYLOAD_DIR_NAME": "samba4",
         }
-        with mock.patch("timecapsulesmb.cli.uninstall.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.uninstall.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root", return_value="/Volumes/dk2"):
                 with redirect_stdout(output):
                     rc = uninstall.main(["--dry-run"])
@@ -2280,7 +2310,7 @@ class CliTests(unittest.TestCase):
             "TC_PAYLOAD_DIR_NAME": "samba4",
             "TC_MDNS_HOST_LABEL": "bad host label",
         }
-        with mock.patch("timecapsulesmb.cli.uninstall.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.uninstall.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root", return_value="/Volumes/dk2"):
                 with redirect_stdout(io.StringIO()):
                     rc = uninstall.main(["--dry-run"])
@@ -2294,7 +2324,7 @@ class CliTests(unittest.TestCase):
             "TC_PAYLOAD_DIR_NAME": "../samba4",
         }
         with self.assertRaises(SystemExit) as ctx:
-            with mock.patch("timecapsulesmb.cli.uninstall.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.uninstall.load_env_values", return_value=values):
                 uninstall.main(["--dry-run"])
         self.assertIn("TC_PAYLOAD_DIR_NAME is invalid", str(ctx.exception))
 
@@ -2306,7 +2336,7 @@ class CliTests(unittest.TestCase):
             "TC_SSH_OPTS": "-o foo",
             "TC_PAYLOAD_DIR_NAME": "samba4",
         }
-        with mock.patch("timecapsulesmb.cli.uninstall.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.uninstall.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root", return_value="/Volumes/dk2"):
                 with redirect_stdout(output):
                     rc = uninstall.main(["--dry-run", "--json"])
@@ -2324,7 +2354,7 @@ class CliTests(unittest.TestCase):
             "TC_SSH_OPTS": "-o foo",
             "TC_PAYLOAD_DIR_NAME": "samba4",
         }
-        with mock.patch("timecapsulesmb.cli.uninstall.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.uninstall.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root", return_value="/Volumes/dk2"):
                 with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload") as uninstall_mock:
                     with mock.patch("timecapsulesmb.cli.uninstall.run_ssh") as run_ssh_mock:
@@ -2356,7 +2386,7 @@ class CliTests(unittest.TestCase):
             "TC_SSH_OPTS": "-o foo",
             "TC_PAYLOAD_DIR_NAME": "samba4",
         }
-        with mock.patch("timecapsulesmb.cli.uninstall.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.uninstall.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root", return_value="/Volumes/dk2"):
                 with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload") as uninstall_mock:
                     with mock.patch("timecapsulesmb.cli.uninstall.run_ssh") as run_ssh_mock:
@@ -2377,7 +2407,7 @@ class CliTests(unittest.TestCase):
             "TC_SSH_OPTS": "-o foo",
             "TC_PAYLOAD_DIR_NAME": "samba4",
         }
-        with mock.patch("timecapsulesmb.cli.uninstall.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.uninstall.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root", return_value="/Volumes/dk2"):
                 with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"):
                     with mock.patch("builtins.input", return_value="n"):
@@ -2393,7 +2423,7 @@ class CliTests(unittest.TestCase):
         values = self.make_valid_env()
         mounted = MountedVolume(device="/dev/dk2", mountpoint="/Volumes/dk2")
         run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\n--- reboot ---\n", returncode=255)
-        with mock.patch("timecapsulesmb.cli.fsck.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.fsck.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume", return_value=mounted):
                 with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result) as run_ssh_mock:
                     with mock.patch("timecapsulesmb.cli.fsck.wait_for_ssh_state", side_effect=[True, True]) as wait_mock:
@@ -2427,7 +2457,7 @@ class CliTests(unittest.TestCase):
         }
         mounted = MountedVolume(device="/dev/dk2", mountpoint="/Volumes/dk2")
         run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\n", returncode=0)
-        with mock.patch("timecapsulesmb.cli.fsck.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.fsck.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume", return_value=mounted):
                 with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result):
                     with redirect_stdout(output):
@@ -2443,7 +2473,7 @@ class CliTests(unittest.TestCase):
         }
         mounted = MountedVolume(device="/dev/dk2", mountpoint="/Volumes/dk2")
         run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\n--- reboot ---\n", returncode=255)
-        with mock.patch("timecapsulesmb.cli.fsck.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.fsck.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume", return_value=mounted):
                 with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result):
                     with mock.patch("timecapsulesmb.cli.fsck.wait_for_ssh_state") as wait_mock:
@@ -2461,7 +2491,7 @@ class CliTests(unittest.TestCase):
         }
         mounted = MountedVolume(device="/dev/dk2", mountpoint="/Volumes/dk2")
         run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\n", returncode=0)
-        with mock.patch("timecapsulesmb.cli.fsck.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.fsck.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume", return_value=mounted):
                 with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result) as run_ssh_mock:
                     with mock.patch("timecapsulesmb.cli.fsck.wait_for_ssh_state") as wait_mock:
@@ -2479,7 +2509,7 @@ class CliTests(unittest.TestCase):
             "TC_SSH_OPTS": "-o foo",
         }
         mounted = MountedVolume(device="/dev/dk2", mountpoint="/Volumes/dk2")
-        with mock.patch("timecapsulesmb.cli.fsck.parse_env_values", return_value=values):
+        with mock.patch("timecapsulesmb.cli.fsck.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume", return_value=mounted):
                 with mock.patch("builtins.input", return_value="n"):
                     with mock.patch("timecapsulesmb.cli.fsck.run_ssh") as run_ssh_mock:

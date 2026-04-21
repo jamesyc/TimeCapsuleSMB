@@ -8,11 +8,10 @@ from typing import Optional
 from timecapsulesmb.checks.doctor import run_doctor_checks
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.core.config import ENV_PATH, parse_env_values
-from timecapsulesmb.device.compat import probe_device_compatibility
+from timecapsulesmb.cli.runtime import load_env_values
+from timecapsulesmb.core.config import ENV_PATH
 from timecapsulesmb.identity import ensure_install_id
-from timecapsulesmb.telemetry import TelemetryClient, build_device_os_version, detect_device_family
-from timecapsulesmb.cli.util import resolve_env_connection
+from timecapsulesmb.telemetry import TelemetryClient
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -31,19 +30,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     ensure_install_id()
-    values = parse_env_values(ENV_PATH)
+    values = load_env_values()
     telemetry = TelemetryClient.from_values(values)
-    with CommandContext(telemetry, "doctor", "doctor_started", "doctor_finished") as command_context:
+    with CommandContext(telemetry, "doctor", "doctor_started", "doctor_finished", values=values, args=args) as command_context:
         if ENV_PATH.exists() and not args.skip_ssh:
             try:
-                host, password, ssh_opts = resolve_env_connection(values)
-                compatibility = probe_device_compatibility(host, password, ssh_opts)
-                command_context.update_fields(device_os_version=build_device_os_version(
-                    compatibility.os_name,
-                    compatibility.os_release,
-                    compatibility.arch,
-                ))
-                command_context.update_fields(device_family=detect_device_family(compatibility.payload_family))
+                command_context.resolve_env_connection()
+                command_context.probe_compatibility()
             except SystemExit:
                 pass
 
@@ -63,14 +56,17 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "results": [{"status": result.status, "message": result.message} for result in results],
                 "summary": "doctor found one or more fatal problems." if fatal else "doctor checks passed.",
             }, indent=2, sort_keys=True))
-            command_context.set_result("failure" if fatal else "success")
+            if fatal:
+                command_context.fail()
+            else:
+                command_context.succeed()
             return 1 if fatal else 0
 
         if fatal:
             print("\nSummary: doctor found one or more fatal problems.")
-            command_context.set_result("failure")
+            command_context.fail()
             return 1
 
         print("\nSummary: doctor checks passed.")
-        command_context.set_result("success")
+        command_context.succeed()
         return 0

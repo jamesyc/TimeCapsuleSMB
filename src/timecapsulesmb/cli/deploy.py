@@ -6,8 +6,8 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from timecapsulesmb.core.config import ENV_PATH, parse_env_values
 from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.cli.runtime import load_env_values, probe_compatibility
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
@@ -26,11 +26,10 @@ from timecapsulesmb.deploy.verify import (
     wait_for_post_reboot_mdns_takeover,
     wait_for_post_reboot_smbd,
 )
-from timecapsulesmb.device.compat import probe_device_compatibility
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root, wait_for_ssh_state
-from timecapsulesmb.telemetry import TelemetryClient, build_device_os_version, detect_device_family
+from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import run_ssh
-from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_red, resolve_validated_managed_connection
+from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_red
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -54,32 +53,23 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("Deploying...")
 
     ensure_install_id()
-    values = parse_env_values(ENV_PATH)
+    values = load_env_values()
     telemetry = TelemetryClient.from_values(values, nbns_enabled=args.install_nbns)
-    with CommandContext(telemetry, "deploy", "deploy_started", "deploy_finished") as command_context:
+    with CommandContext(telemetry, "deploy", "deploy_started", "deploy_finished", values=values, args=args) as command_context:
         command_context.update_fields(
             nbns_enabled=args.install_nbns,
             reboot_was_attempted=False,
             device_came_back_after_reboot=False,
         )
-        host, password, ssh_opts = resolve_validated_managed_connection(
-            values,
-            command_name="deploy",
-            profile="deploy",
-        )
+        connection = command_context.resolve_validated_managed_connection(profile="deploy")
+        host, password, ssh_opts = connection.host, connection.password, connection.ssh_opts
 
         artifact_results = validate_artifacts(REPO_ROOT)
         failures = [message for _, ok, message in artifact_results if not ok]
         if failures:
             raise SystemExit("; ".join(failures))
         volume_root = discover_volume_root(host, password, ssh_opts)
-        compatibility = probe_device_compatibility(host, password, ssh_opts)
-        command_context.update_fields(device_os_version=build_device_os_version(
-            compatibility.os_name,
-            compatibility.os_release,
-            compatibility.arch,
-        ))
-        command_context.update_fields(device_family=detect_device_family(compatibility.payload_family))
+        compatibility = command_context.probe_compatibility(probe_compatibility)
         if not compatibility.supported:
             if not args.allow_unsupported:
                 raise SystemExit(compatibility.message)
@@ -110,7 +100,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 print(json.dumps(deployment_plan_to_jsonable(plan), indent=2, sort_keys=True))
             else:
                 print(format_deployment_plan(plan))
-            command_context.set_result("success")
+            command_context.succeed()
             return 0
 
         if is_netbsd4 and not args.yes:
@@ -121,7 +111,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             answer = input("Continue with NetBSD4 deploy + activation? [y/N]: ").strip().lower()
             if answer not in {"y", "yes"}:
                 print("Deployment cancelled.")
-                command_context.set_result("cancelled")
+                command_context.cancel()
                 return 0
 
         run_remote_actions(host, password, ssh_opts, plan.pre_upload_actions)
@@ -176,19 +166,19 @@ def main(argv: Optional[list[str]] = None) -> int:
                 print("NetBSD4 activation failed.")
                 return 1
             print(f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}")
-            command_context.set_result("success")
+            command_context.succeed()
             return 0
 
         if args.no_reboot:
             print("Skipping reboot.")
-            command_context.set_result("success")
+            command_context.succeed()
             return 0
 
         if not args.yes:
             answer = input("This will reboot the Time Capsule now. Continue? [Y/n]: ").strip().lower()
             if answer not in {"", "y", "yes"}:
                 print("Deployment complete without reboot.")
-                command_context.set_result("cancelled")
+                command_context.cancel()
                 return 0
 
         run_ssh(host, password, ssh_opts, "/sbin/reboot", check=False)
@@ -208,7 +198,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 print("Managed mDNS did not become ready after reboot.")
                 return 1
             verify_post_deploy(values)
-            command_context.set_result("success")
+            command_context.succeed()
             return 0
 
         print("Timed out waiting for SSH after reboot.")

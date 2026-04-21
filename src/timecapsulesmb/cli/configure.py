@@ -234,5 +234,5 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("  1. Review .env")
         print("  2. Run .venv/bin/tcapsule prep-device")
         print("  3. If you are doing build work, configure build/.env separately from build/.env.example")
-        command_context.set_result("success")
+        command_context.succeed()
         return 0
