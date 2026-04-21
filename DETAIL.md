@@ -468,7 +468,7 @@ It is built from:
 Important properties:
 - static NetBSD 7 `earmv4` binary for the NetBSD 6 payload
 - static NetBSD 4 `earmv4` binary for the NetBSD 4 payload
-- about `198 KiB` stripped in the current checked-in artifact
+- see the artifact section below for current checked-in binary sizes
 - installed on both the HDD payload and `/mnt/Flash`
 - run from `/mnt/Flash` to save RAM-disk space
 
@@ -482,7 +482,8 @@ At runtime it can:
 - answer A queries for loaded snapshot host targets using the current configured IPv4
 
 Current validation and behavior notes:
-- service instance names and host labels are validated as single DNS labels
+- mDNS host labels are validated as DNS-label-safe host labels
+- mDNS instance names may contain spaces and are validated separately from host labels
 - service types are validated as dotted DNS names
 - `_adisk._tcp` TXT payload sizing is validated before advertisement
 - `_airport._tcp` fields are all optional; missing fields are simply omitted from the TXT payload
@@ -576,10 +577,24 @@ Current defaults:
 - `TC_MDNS_HOST_LABEL=timecapsulesamba4`
 - `TC_MDNS_DEVICE_MODEL=TimeCapsule`
 
+Current validation behavior:
+- `TC_HOST`: must be non-empty.
+- `TC_NET_IFACE`: must be a safe interface name.
+- `TC_SHARE_NAME`: must be Samba/adisk-safe; spaces are allowed, but path separators, control characters, and shell-hostile characters are rejected.
+- `TC_SAMBA_USER`: must be non-empty, fit Samba's username length limit, and avoid whitespace or control characters.
+- `TC_NETBIOS_NAME`: must fit the 15-byte NetBIOS limit and use NetBIOS-safe characters.
+- `TC_PAYLOAD_DIR_NAME`: must be one safe path component; slashes, `.`/`..`, control characters, traversal, and shell-hostile characters are rejected.
+- `TC_MDNS_INSTANCE_NAME`: may contain spaces, but must be valid printable mDNS instance text within DNS name limits.
+- `TC_MDNS_HOST_LABEL`: must be a single DNS-safe label using letters, numbers, and hyphens; spaces are rejected.
+- `TC_MDNS_DEVICE_MODEL`: must be `TimeCapsule` or one of the supported Time Capsule model identifiers.
+- `TC_AIRPORT_SYAP`: must be one of the known Apple syAP codes.
+- `TC_CONFIGURE_ID`: is a local configuration revision ID and is not user-validated.
+
 Workflow details:
 - `configure` now starts by attempting mDNS discovery of the Time Capsule on the local network
 - if SSH is already reachable, `configure` validates the SSH target/password and can capture Apple `syAP` from live `_airport._tcp` discovery when available
 - `configure` validates user-facing mDNS/share inputs before writing `.env`
+- `deploy`, `activate`, and `doctor` fail early when managed `.env` config values are invalid
 - the command entrypoints live under [src/timecapsulesmb/cli/](src/timecapsulesmb/cli)
 - the deploy/runtime logic lives under [src/timecapsulesmb/deploy/](src/timecapsulesmb/deploy) and [src/timecapsulesmb/device/](src/timecapsulesmb/device)
 - the checked-in binaries and build tooling are visible in the repo, so advanced users can swap binaries, rebuild artifacts, or trace the exact boot/runtime layout
@@ -600,6 +615,11 @@ Current important package areas:
 - [src/timecapsulesmb/telemetry.py](src/timecapsulesmb/telemetry.py): best-effort client telemetry for `configure`, `deploy`, `activate`, and `doctor`
 - [build/](build): maintainer build tooling, including Samba cross-exec record/replay helpers
 
+Developer note:
+- [src/timecapsulesmb/cli/context.py](src/timecapsulesmb/cli/context.py) owns shared per-command lifecycle state such as timing, command IDs, result state, and finish handling.
+- [src/timecapsulesmb/cli/runtime.py](src/timecapsulesmb/cli/runtime.py) owns shared runtime helpers for `.env` loading, SSH connection resolution, validation entrypoints, and compatibility probing.
+- Normal users should not need these details; they mostly keep command entrypoints smaller and more consistent.
+
 Practical consequence:
 - if you want to modify how the box is discovered, start in `discovery/`
 - if you want to change what gets uploaded, start in `deploy/planner.py` and `deploy/executor.py`
@@ -611,10 +631,11 @@ Practical consequence:
 [src/timecapsulesmb/cli/doctor.py](src/timecapsulesmb/cli/doctor.py) is a non-destructive local diagnostic helper.
 
 It checks:
-- `.env` completeness
+- `.env` completeness and invalid `.env` values
 - required local tools
 - whether the required checked-in binaries exist and match the expected checksums
 - SSH reachability
+- remote network/interface problems
 - advertised Bonjour instance name
 - advertised Bonjour host label
 - active Samba NetBIOS name
@@ -719,6 +740,7 @@ This command should be treated as a targeted cleanup tool for user files, not as
 Current deploy flow:
 
 - loads `.env`
+- validates the managed config before touching the device
 - validates the required binary artifacts against the artifact manifest
 - discovers the correct volume root on the Time Capsule
 - probes device compatibility and rejects unsupported targets before upload
@@ -780,6 +802,11 @@ Useful operator modes:
 
 The dry-run modes are intended for users who want to inspect the exact remote actions before touching the box.
 
+Hidden operator mode:
+- `tcapsule deploy --debug-logging` renders the Samba config with extended hard-drive logging for debugging.
+- it writes `log.smbd` under `<data_root>/samba4-logs/`, sets `max log size = 1048576`, and enables `log level = 5 vfs:8 fruit:8`.
+- this flag is intentionally not documented in the normal command help because it is for active debugging, not normal installs.
+
 ## Client Telemetry
 
 Client telemetry is now emitted by:
@@ -801,13 +828,14 @@ Current event model:
 Current identity model:
 - `.bootstrap` stores a stable local `INSTALL_ID`
 - `.env` stores a rotating `TC_CONFIGURE_ID`
-- `adisk.uuid` remains separate and is not reused for client telemetry
 
 Current transport behavior:
 - events are sent to the configured HTTPS telemetry endpoint
 - started events are sent asynchronously
 - finished events are sent synchronously so they are not lost at process exit
 - if `.bootstrap` contains `TELEMETRY=false`, telemetry is disabled
+
+## Uninstall
 
 Current uninstall behavior:
 - stops the watchdog first so it cannot restart `smbd` during teardown
@@ -842,6 +870,14 @@ Current important outputs:
 - [bin/mdns-netbsd4/mdns-advertiser](bin/mdns-netbsd4/mdns-advertiser)
 - [bin/nbns/nbns-advertiser](bin/nbns/nbns-advertiser)
 - [bin/nbns-netbsd4/nbns-advertiser](bin/nbns-netbsd4/nbns-advertiser)
+
+Current active deploy artifact sizes:
+- NetBSD 6 `smbd`: about `11M`
+- NetBSD 6 `mdns-advertiser`: about `249K`
+- NetBSD 6 `nbns-advertiser`: about `184K`
+- NetBSD 4 `smbd`: about `11M`
+- NetBSD 4 `mdns-advertiser`: about `172K`
+- NetBSD 4 `nbns-advertiser`: about `113K`
 
 It assumes:
 - a NetBSD VM
