@@ -125,6 +125,44 @@ def infer_mdns_device_model_from_syap(syap: str) -> Optional[str]:
     return AIRPORT_SYAP_TO_MODEL.get(syap)
 
 
+def valid_config_value(key: str, value: str, label: str) -> str:
+    validator = CONFIG_VALIDATORS.get(key)
+    if not value or validator is None:
+        return value
+    if validator(value, label):
+        return ""
+    return value
+
+
+def print_syap_prompt_help() -> None:
+    print("\nWarning: configure could not discover Airport Utility syAP from _airport._tcp.")
+    print("Enter the device's syAP code so _airport._tcp can be cloned accurately.")
+    print("")
+    print("Generation                Model identifier    syAP")
+    print("------------------------  ------------------  ----")
+    print("1st gen (early 2008)      TimeCapsule6,106    106")
+    print("2nd gen (early 2009)      TimeCapsule6,109    109")
+    print("3rd gen (late 2009)       TimeCapsule6,113    113")
+    print("4th gen (mid 2011)        TimeCapsule6,116    116")
+    print("5th gen (mid 2013)        TimeCapsule8,119    119")
+
+
+def prompt_valid_config_value(key: str, label: str, current: str, secret: bool = False) -> str:
+    validator = CONFIG_VALIDATORS.get(key)
+    while True:
+        candidate = prompt(label, current, secret)
+        if validator is not None:
+            error = validator(candidate, label)
+            if error:
+                print(error)
+                continue
+        return candidate
+
+
+def print_reused_env_value(key: str, value: str) -> None:
+    print(f"Using {key} from .env: {value}")
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     ensure_install_id()
     existing = parse_env_values(ENV_PATH, defaults={})
@@ -169,63 +207,67 @@ def main(argv: Optional[list[str]] = None) -> int:
         if validation_result:
             try:
                 inferred_mdns_device_model = infer_mdns_device_model_hint(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
+                inferred_mdns_device_model = valid_config_value(
+                    "TC_MDNS_DEVICE_MODEL",
+                    inferred_mdns_device_model or "",
+                    "mDNS device model hint",
+                ) or None
             except SystemExit:
                 inferred_mdns_device_model = None
 
-        values["TC_AIRPORT_SYAP"] = existing.get("TC_AIRPORT_SYAP", discovered_airport_syap or DEFAULTS["TC_AIRPORT_SYAP"])
-        if discovered_airport_syap and not existing.get("TC_AIRPORT_SYAP"):
-            values["TC_AIRPORT_SYAP"] = discovered_airport_syap
-
         discovered_airport_identity = discovered_record is not None
-        hidden_mdns_device_model = existing.get("TC_MDNS_DEVICE_MODEL", "")
-        validator = CONFIG_VALIDATORS.get("TC_MDNS_DEVICE_MODEL")
-        if validator is not None and hidden_mdns_device_model:
-            if validator(hidden_mdns_device_model, "mDNS device model hint"):
-                hidden_mdns_device_model = ""
-        current_airport_syap = values.get("TC_AIRPORT_SYAP", "")
-        if not hidden_mdns_device_model and current_airport_syap:
-            hidden_mdns_device_model = infer_mdns_device_model_from_syap(current_airport_syap) or ""
-        if not hidden_mdns_device_model and inferred_mdns_device_model:
-            hidden_mdns_device_model = inferred_mdns_device_model
-        if not hidden_mdns_device_model:
-            hidden_mdns_device_model = DEFAULTS["TC_MDNS_DEVICE_MODEL"]
+        valid_discovered_syap = valid_config_value(
+            "TC_AIRPORT_SYAP",
+            discovered_airport_syap or "",
+            "Airport Utility syAP code",
+        )
+        valid_existing_syap = valid_config_value(
+            "TC_AIRPORT_SYAP",
+            existing.get("TC_AIRPORT_SYAP", ""),
+            "Airport Utility syAP code",
+        )
+        valid_existing_mdns_device_model = valid_config_value(
+            "TC_MDNS_DEVICE_MODEL",
+            existing.get("TC_MDNS_DEVICE_MODEL", ""),
+            "mDNS device model hint",
+        )
 
         for key, label, default, secret in CONFIG_FIELDS[2:]:
             current = existing.get(key, default)
             if key == "TC_AIRPORT_SYAP":
-                current = values.get("TC_AIRPORT_SYAP", current)
-                if discovered_airport_identity or current:
-                    values[key] = current
-                    if not existing.get("TC_MDNS_DEVICE_MODEL"):
-                        hidden_mdns_device_model = infer_mdns_device_model_from_syap(current) or hidden_mdns_device_model
+                if valid_discovered_syap:
+                    values[key] = valid_discovered_syap
                     continue
-                print("\nWarning: configure could not discover Airport Utility syAP from _airport._tcp.")
-                print("Enter the device's syAP code so _airport._tcp can be cloned accurately.")
-                print("")
-                print("Generation                Model identifier    syAP")
-                print("------------------------  ------------------  ----")
-                print("1st gen (early 2008)      TimeCapsule6,106    106")
-                print("2nd gen (early 2009)      TimeCapsule6,109    109")
-                print("3rd gen (late 2009)       TimeCapsule6,113    113")
-                print("4th gen (mid 2011)        TimeCapsule6,116    116")
-                print("5th gen (mid 2013)        TimeCapsule8,119    119")
-            if key == "TC_MDNS_DEVICE_MODEL":
                 if discovered_airport_identity:
-                    values[key] = hidden_mdns_device_model
+                    print_syap_prompt_help()
+                    values[key] = prompt_valid_config_value(key, label, valid_existing_syap)
                     continue
-                current = hidden_mdns_device_model
-            while True:
-                candidate = prompt(label, current, secret)
-                validator = CONFIG_VALIDATORS.get(key)
-                if validator is not None:
-                    error = validator(candidate, label)
-                    if error:
-                        print(error)
-                        continue
-                values[key] = candidate
-                if key == "TC_AIRPORT_SYAP" and not existing.get("TC_MDNS_DEVICE_MODEL"):
-                    hidden_mdns_device_model = infer_mdns_device_model_from_syap(candidate) or hidden_mdns_device_model
-                break
+                if valid_existing_syap:
+                    print_reused_env_value(key, valid_existing_syap)
+                    values[key] = valid_existing_syap
+                    continue
+                print_syap_prompt_help()
+                values[key] = prompt_valid_config_value(key, label, DEFAULTS["TC_AIRPORT_SYAP"])
+                continue
+            if key == "TC_MDNS_DEVICE_MODEL":
+                syap_derived_model = infer_mdns_device_model_from_syap(values.get("TC_AIRPORT_SYAP", ""))
+                automatic_model = inferred_mdns_device_model or syap_derived_model
+                if automatic_model:
+                    values[key] = automatic_model
+                    continue
+                if discovered_airport_identity:
+                    if valid_existing_mdns_device_model:
+                        values[key] = prompt_valid_config_value(key, label, valid_existing_mdns_device_model)
+                    else:
+                        values[key] = DEFAULTS["TC_MDNS_DEVICE_MODEL"]
+                    continue
+                if valid_existing_mdns_device_model:
+                    print_reused_env_value(key, valid_existing_mdns_device_model)
+                    values[key] = valid_existing_mdns_device_model
+                    continue
+                values[key] = prompt_valid_config_value(key, label, DEFAULTS["TC_MDNS_DEVICE_MODEL"])
+                continue
+            values[key] = prompt_valid_config_value(key, label, current, secret)
 
         values["TC_CONFIGURE_ID"] = configure_id
         write_env_file(ENV_PATH, values)
