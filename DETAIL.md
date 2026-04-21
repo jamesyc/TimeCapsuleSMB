@@ -126,9 +126,11 @@ The actual working split is:
   - `/mnt/Flash/watchdog.sh`
   - `/mnt/Flash/dfree.sh`
   - `/mnt/Flash/mdns-advertiser`
+  - `/mnt/Flash/allmdns.txt`
   - `/mnt/Flash/applemdns.txt`
 - transient runtime on RAM disk:
   - `/mnt/Memory/samba4`
+  - `/mnt/Locks`
 
 This gives:
 - persistence on disk
@@ -246,7 +248,8 @@ So the current system does not fully replace Apple mDNS with a hardcoded record 
 - [bin/mdns/mdns-advertiser](bin/mdns/mdns-advertiser)
 
 This helper:
-- can save an Apple mDNS snapshot to `/mnt/Flash/applemdns.txt`
+- can save a raw LAN-wide mDNS snapshot to `/mnt/Flash/allmdns.txt`
+- can save a filtered Apple identity snapshot to `/mnt/Flash/applemdns.txt`
 - gracefully kills Apple `mDNSResponder` during takeover
 - replays Apple snapshot records afterward
 - overrides only:
@@ -261,17 +264,24 @@ Current practical result:
 
 ## Apple mDNS Snapshot File
 
-The Apple snapshot file is:
+The mDNS snapshot files are:
 
+- `/mnt/Flash/allmdns.txt`
 - `/mnt/Flash/applemdns.txt`
 
 Current behavior:
 - `start-samba.sh` gives Apple a short chance to start its own stack
-- `mdns-advertiser --save-snapshot` captures Apple records into `applemdns.txt`
+- `mdns-advertiser --save-all-snapshot` captures a raw LAN-wide snapshot into `allmdns.txt`
+- `mdns-advertiser --save-snapshot` captures only the local Apple identity into `applemdns.txt`
 - `mdns-advertiser --load-snapshot` then kills `mDNSResponder` and replays the snapshot
 - if snapshot load fails, the helper falls back to the generated managed records
 
-The snapshot file intentionally stores all Apple service records that were captured, including `_smb._tcp` and `_adisk._tcp`.
+The raw `allmdns.txt` file is intentionally diagnostic and may contain all Apple records that were captured on the LAN.
+
+The filtered `applemdns.txt` file is the one used for replay:
+- when local AirPort identity MACs are available, snapshot save keeps only records tied to the matching local `_airport._tcp` identity
+- if a new capture cannot be tied back to the local unit, `applemdns.txt` is not refreshed
+- if no local identity MACs are available, the helper saves the raw capture for diagnostics but still refuses to trust it for replay
 
 However, on replay:
 - `_smb._tcp` from the snapshot is ignored
@@ -299,22 +309,23 @@ This matters because:
 `start-samba.sh` does the real work:
 
 1. kills any prior `smbd`, mDNS advertiser, and NBNS responder
-2. recreates the RAM runtime tree
-3. waits for the device IP on the configured network interface
+2. prepares the dedicated Samba lock ramdisk at `/mnt/Locks`
+3. recreates the RAM runtime tree
+4. waits for the device IP on the configured network interface
    - default: `bridge0`
-4. waits briefly for an Apple-mounted data root under `/Volumes/dk2` or `/Volumes/dk3`, giving a chance for Apple to mount the disk so Airport Utility does not give a "disk corrupt" error
-5. if Apple did not mount it, falls back to bounded manual `mount_hfs` attempts
-6. discovers or initializes the real data root by checking:
+5. waits briefly for an Apple-mounted data root under `/Volumes/dk2` or `/Volumes/dk3`, giving a chance for Apple to mount the disk so Airport Utility does not give a "disk corrupt" error
+6. if Apple did not mount it, falls back to bounded manual `mount_hfs` attempts
+7. discovers or initializes the real data root by checking:
    - `ShareRoot/.com.apple.timemachine.supported`
    - `Shared/.com.apple.timemachine.supported`
-7. finds the persistent payload directory
-8. copies `smbd` into `/mnt/Memory/samba4/sbin`
-9. if `private/nbns.enabled` exists in the persistent payload, also copies `nbns-advertiser` into `/mnt/Memory/samba4/sbin`
-10. renders `smb.conf` from the template
-11. starts `mdns-advertiser`
+8. finds the persistent payload directory
+9. copies `smbd` into `/mnt/Memory/samba4/sbin`
+10. if `private/nbns.enabled` exists in the persistent payload, also copies `nbns-advertiser` into `/mnt/Memory/samba4/sbin`
+11. renders `smb.conf` from the template
+12. starts `mdns-advertiser`
    - the helper itself handles Apple snapshot save, takeover, and replay
-12. starts the NBNS responder if enabled
-13. starts `smbd` and waits until `daemon_ready`
+13. starts the NBNS responder if enabled
+14. starts `smbd` and waits until `daemon_ready`
 
 The boot log is written to:
 - `/mnt/Memory/samba4/var/rc.local.log`
@@ -324,8 +335,24 @@ Important bug lessons from getting this stable:
 - the script must use `-b` for block devices, not `-c`
 - it cannot call non-existent utilities like `dirname`
 - it must tolerate a long delay before the disk appears
+- the Samba lock TDBs need their own ramdisk because `/mnt/Memory` is too small for the runtime plus growing lock databases
 - on NetBSD 4, cache state is kept on the HDD instead of `/mnt/Memory` to preserve RAM-disk headroom
 - the persistent `xattr.tdb` must stay on the HDD because it records extended attribute state for files on the share
+
+### `/mnt/Locks`
+
+Samba lock state now lives on a dedicated second ramdisk:
+- `lock directory = /mnt/Locks`
+
+Current mount behavior:
+- NetBSD 6 mounts `tmpfs` at `/mnt/Locks`
+- NetBSD 4 mounts `mfs` at `/mnt/Locks`
+- if the NetBSD 6 tmpfs mount fails, startup falls back to a plain `/mnt/Locks` directory on the root filesystem
+- if the NetBSD 4 mfs mount fails, startup aborts instead of falling back to the tiny root filesystem
+
+Operational behavior:
+- `start-samba.sh` clears `/mnt/Locks/*` before starting `smbd`
+- `watchdog.sh` also clears `/mnt/Locks/*` before restarting `smbd`
 
 ### `watchdog.sh`
 
@@ -367,18 +394,18 @@ When boot succeeds, the runtime tree under `/mnt/Memory/samba4` contains:
 - `private/`
 
 Current persistent auth files live on the HDD:
-- `/Volumes/dk2/samba4/private/smbpasswd`
-- `/Volumes/dk2/samba4/private/username.map`
+- `/Volumes/dk2/.samba4/private/smbpasswd`
+- `/Volumes/dk2/.samba4/private/username.map`
 
 Current optional NBNS state lives on the HDD:
-- `/Volumes/dk2/samba4/nbns-advertiser`
-- `/Volumes/dk2/samba4/private/nbns.enabled`
+- `/Volumes/dk2/.samba4/nbns-advertiser`
+- `/Volumes/dk2/.samba4/private/nbns.enabled`
 
 Current persistent Time Machine metadata state also lives on the HDD:
-- `/Volumes/dk2/samba4/private/xattr.tdb`
+- `/Volumes/dk2/.samba4/private/xattr.tdb`
 
 Current NetBSD 4 Samba cache state lives on the HDD to preserve RAM headroom:
-- `/Volumes/dk2/samba4/cache`
+- `/Volumes/dk2/.samba4/cache`
 
 NetBSD 6 note:
 - the normal NetBSD 6 runtime keeps Samba cache state in `/mnt/Memory/samba4/var`
@@ -395,19 +422,22 @@ Current rendered Samba config characteristics:
 - `reset on zero vc = yes`
 - `path = /Volumes/dk2/ShareRoot` on the tested box
 - `pid directory = /mnt/Memory/samba4/var`
-- `lock directory = /mnt/Memory/samba4/locks`
+- `lock directory = /mnt/Locks`
 - `state directory = /mnt/Memory/samba4/var`
 - `cache directory = /mnt/Memory/samba4/var` on NetBSD 6
-- `cache directory = /Volumes/dk2/samba4/cache` on NetBSD 4
+- `cache directory = /Volumes/dk2/.samba4/cache` on NetBSD 4
 - `private dir = /mnt/Memory/samba4/private`
+- `max log size = 256` in the normal shipped template
+- `deadtime = 60`
 - `vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb`
 - `fruit:resource = file`
+- `fruit:veto_appledouble = yes`
 - `fruit:metadata = stream`
 - `fruit:time machine = yes`
 - `fruit:posix_rename = yes`
 - `streams_xattr:store_stream_type = no`
 - `acl_xattr:ignore system acls = yes`
-- `xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb` on the tested box
+- `xattr_tdb:file = /Volumes/dk2/.samba4/private/xattr.tdb` on the tested box
 
 Current auth mapping:
 - `admin` maps to Unix `root`
@@ -484,11 +514,11 @@ Current behavior:
 - returns the current IPv4 for the configured interface
 
 Enablement model:
-- the binary is uploaded to `/Volumes/dkX/samba4/nbns-advertiser` on every deploy
+- the binary is uploaded to `/Volumes/dkX/.samba4/nbns-advertiser` on every deploy
 - runtime enablement is controlled by the marker file:
-  - `/Volumes/dkX/samba4/private/nbns.enabled`
+  - `/Volumes/dkX/.samba4/private/nbns.enabled`
 - `tcapsule deploy --install-nbns` creates that marker
-- `--install-nbns` is rejected on NetBSD 4 because the RAM disk is too constrained
+- `--install-nbns` is supported on both NetBSD 6 and NetBSD 4
 - plain `deploy` leaves the marker unchanged
 - `uninstall` removes both the binary and the marker because it removes the entire payload tree
 
@@ -527,11 +557,15 @@ Current important `.env` values include:
 - `TC_MDNS_HOST_LABEL`
 - `TC_MDNS_DEVICE_MODEL`
 - `TC_AIRPORT_SYAP`
+- `TC_CONFIGURE_ID`
+
+Current `.bootstrap` values include:
+- `INSTALL_ID`
+- optional `TELEMETRY=false`
 
 Optional deploy flag:
 - `--install-nbns`
   - enables the bundled NBNS responder on the next boot by creating `private/nbns.enabled`
-  - rejected on NetBSD 4 because the RAM disk does not have enough headroom for NBNS in the normal payload
 
 Current defaults:
 - `TC_SHARE_NAME=Data`
@@ -562,6 +596,8 @@ Current important package areas:
 - [src/timecapsulesmb/device/](src/timecapsulesmb/device): remote probing for device-specific layout such as the active `dk2` or `dk3` volume root, plus generation / compatibility classification
 - [src/timecapsulesmb/deploy/](src/timecapsulesmb/deploy): auth generation, template rendering, deployment planning, execution, dry-run formatting, artifact resolution, and post-deploy verification
 - [src/timecapsulesmb/assets/](src/timecapsulesmb/assets): packaged boot templates and artifact metadata
+- [src/timecapsulesmb/identity.py](src/timecapsulesmb/identity.py): local install identity loaded from `.bootstrap`
+- [src/timecapsulesmb/telemetry.py](src/timecapsulesmb/telemetry.py): best-effort client telemetry for `configure`, `deploy`, `activate`, and `doctor`
 - [build/](build): maintainer build tooling, including Samba cross-exec record/replay helpers
 
 Practical consequence:
@@ -715,7 +751,6 @@ Current deploy flow:
 Current compatibility behavior:
 - NetBSD 6 `evbarm` devices are accepted for the current `samba4` payload family
 - NetBSD 4 `evbarm` devices are accepted as older hardware and use the `netbsd4_samba4` payload family
-- `deploy --install-nbns` is rejected on NetBSD 4 because there is not enough RAM-disk space for the NBNS helper
 - `configure` reuses the same classification logic to choose a better default Finder model hint
 
 NetBSD 4 activation behavior:
@@ -744,6 +779,35 @@ Useful operator modes:
 ```
 
 The dry-run modes are intended for users who want to inspect the exact remote actions before touching the box.
+
+## Client Telemetry
+
+Client telemetry is now emitted by:
+- `tcapsule configure`
+- `tcapsule deploy`
+- `tcapsule activate`
+- `tcapsule doctor`
+
+Current event model:
+- `configure_started`
+- `configure_finished`
+- `deploy_started`
+- `deploy_finished`
+- `activate_started`
+- `activate_finished`
+- `doctor_started`
+- `doctor_finished`
+
+Current identity model:
+- `.bootstrap` stores a stable local `INSTALL_ID`
+- `.env` stores a rotating `TC_CONFIGURE_ID`
+- `adisk.uuid` remains separate and is not reused for client telemetry
+
+Current transport behavior:
+- events are sent to the configured HTTPS telemetry endpoint
+- started events are sent asynchronously
+- finished events are sent synchronously so they are not lost at process exit
+- if `.bootstrap` contains `TELEMETRY=false`, telemetry is disabled
 
 Current uninstall behavior:
 - stops the watchdog first so it cannot restart `smbd` during teardown
