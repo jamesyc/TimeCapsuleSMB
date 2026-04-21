@@ -253,6 +253,7 @@ class CliTests(unittest.TestCase):
         def fake_write_env_file(path, values):
             fake_values.update(values)
 
+        command_telemetry = mock.Mock()
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
             with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
                 with mock.patch(
@@ -263,12 +264,16 @@ class CliTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
                             with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
                                 with mock.patch("timecapsulesmb.cli.configure.TelemetryClient.from_values") as telemetry_factory:
-                                    telemetry_factory.return_value.begin_command.return_value = mock.Mock()
+                                    telemetry_factory.return_value.begin_command.return_value = command_telemetry
                                     with redirect_stdout(output):
                                         rc = configure.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_SAMBA_USER"], "admin")
         uuid.UUID(fake_values["TC_CONFIGURE_ID"])
+        telemetry_values = telemetry_factory.call_args.args[0]
+        self.assertEqual(telemetry_values["TC_CONFIGURE_ID"], fake_values["TC_CONFIGURE_ID"])
+        command_telemetry.finish.assert_called_once()
+        self.assertEqual(command_telemetry.finish.call_args.kwargs["configure_id"], fake_values["TC_CONFIGURE_ID"])
         self.assertIn("Wrote", output.getvalue())
         self.assertIn("This writes a local .env configuration file", output.getvalue())
 

@@ -127,13 +127,15 @@ def infer_mdns_device_model_from_syap(syap: str) -> Optional[str]:
 def main(argv: Optional[list[str]] = None) -> int:
     ensure_install_id()
     existing = parse_env_values(ENV_PATH, defaults={})
-    telemetry = TelemetryClient.from_values(existing)
+    configure_id = str(uuid.uuid4())
+    telemetry_values = dict(existing)
+    telemetry_values["TC_CONFIGURE_ID"] = configure_id
+    telemetry = TelemetryClient.from_values(telemetry_values)
     command_telemetry = telemetry.begin_command("configure_started", "configure_finished")
     values: dict[str, str] = {}
     inferred_mdns_device_model: Optional[str] = None
     discovered_airport_syap: Optional[str] = None
     result = "failure"
-    finished_configure_id: str | None = None
     try:
         print("This writes a local .env configuration file in this folder. The other tcapsule commands use that file.")
         print(f"Writing {ENV_PATH}")
@@ -226,8 +228,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     hidden_mdns_device_model = infer_mdns_device_model_from_syap(candidate) or hidden_mdns_device_model
                 break
 
-        finished_configure_id = str(uuid.uuid4())
-        values["TC_CONFIGURE_ID"] = finished_configure_id
+        values["TC_CONFIGURE_ID"] = configure_id
         write_env_file(ENV_PATH, values)
         print(f"\nWrote {ENV_PATH}")
         print("Next steps:")
@@ -237,4 +238,4 @@ def main(argv: Optional[list[str]] = None) -> int:
         result = "success"
         return 0
     finally:
-        command_telemetry.finish(result=result, configure_id=finished_configure_id)
+        command_telemetry.finish(result=result, configure_id=configure_id)
