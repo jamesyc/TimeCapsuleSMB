@@ -1628,7 +1628,51 @@ class CliTests(unittest.TestCase):
             adisk_disk_key="dk2",
             adisk_uuid="",
             payload_family="netbsd4_samba4",
+            debug_logging=False,
+            data_root="/Volumes/dk2/ShareRoot",
         )
+
+    def test_deploy_debug_logging_renders_disk_logging_template(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
+            "TC_SAMBA_USER": "admin",
+        }
+        template_bundle = mock.Mock(
+            start_script_replacements={},
+            watchdog_replacements={},
+            smbconf_replacements={},
+        )
+        with mock.patch("timecapsulesmb.cli.deploy.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
+                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
+                    with mock.patch("timecapsulesmb.cli.deploy.probe_device_compatibility", return_value=self.make_supported_compatibility()):
+                        with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
+                            with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
+                                with mock.patch("timecapsulesmb.cli.deploy.build_template_bundle", return_value=template_bundle) as template_mock:
+                                    with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
+                                        with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
+                                            rc = deploy.main(["--yes", "--no-reboot", "--debug-logging"])
+        self.assertEqual(rc, 0)
+        template_mock.assert_called_once_with(
+            values,
+            adisk_disk_key="dk2",
+            adisk_uuid="",
+            payload_family="netbsd6_samba4",
+            debug_logging=True,
+            data_root="/Volumes/dk2/ShareRoot",
+        )
+        rendered_actions = [action.kind for action in actions_mock.call_args_list[0].args[3]]
+        self.assertNotIn("prepare_log_dir", rendered_actions)
 
     def test_deploy_netbsd4_yes_runs_activation_and_skips_reboot(self) -> None:
         output = io.StringIO()

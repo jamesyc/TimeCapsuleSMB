@@ -27,6 +27,7 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin
 RAM_LOCKS="$RAM_ROOT/locks"
 RAM_LOG="$RAM_VAR/rc.local.log"
 SMBD_LOG="$RAM_VAR/log.smbd"
+SMBD_READY_MARKER="$RAM_VAR/smbd.ready"
 MDNS_BIN=/mnt/Flash/mdns-advertiser
 LEGACY_PREFIX_NETBSD7=/root/tc-netbsd7
 LEGACY_PREFIX_NETBSD4=/root/tc-netbsd4
@@ -483,6 +484,7 @@ start_smbd() {
         fi
     fi
 
+    ensure_parent_dir "$smbd_ready_log" || log "could not create smbd log directory for $smbd_ready_log"
     "$RAM_SBIN/smbd" -D -s "$RAM_ETC/smb.conf"
     wait_for_smbd_ready "$smbd_ready_log"
 }
@@ -634,6 +636,7 @@ start_smbd || {
     log "smbd did not become ready"
     exit 1
 }
+: > "$SMBD_READY_MARKER"
 log "smbd ready"
 
 exit 0

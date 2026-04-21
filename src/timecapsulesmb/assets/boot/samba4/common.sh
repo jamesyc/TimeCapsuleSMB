@@ -64,13 +64,47 @@ wait_for_process() {
     return 1
 }
 
+file_tail() {
+    file_tail_path=$1
+    file_tail_bytes=${2:-65536}
+    if [ -f "$file_tail_path" ]; then
+        set -- $(/bin/ls -l "$file_tail_path" 2>/dev/null)
+        file_tail_size=$5
+        case "$file_tail_size" in
+            ''|*[!0-9]*) file_tail_size=0 ;;
+        esac
+        case "$file_tail_bytes" in
+            ''|*[!0-9]*) file_tail_bytes=65536 ;;
+        esac
+        file_tail_block_size=4096
+        file_tail_blocks=$(((file_tail_bytes + file_tail_block_size - 1) / file_tail_block_size))
+        if [ "$file_tail_size" -gt "$file_tail_bytes" ]; then
+            file_tail_skip=$((file_tail_size / file_tail_block_size - file_tail_blocks))
+            [ "$file_tail_skip" -lt 0 ] && file_tail_skip=0
+        else
+            file_tail_skip=0
+        fi
+        /bin/dd if="$file_tail_path" bs=$file_tail_block_size skip=$file_tail_skip 2>/dev/null \
+            || /bin/cat "$file_tail_path" 2>/dev/null \
+            || true
+    fi
+}
+
+ensure_parent_dir() {
+    target_path=$1
+    parent_dir=${target_path%/*}
+    if [ -n "$parent_dir" ] && [ "$parent_dir" != "$target_path" ]; then
+        mkdir -p "$parent_dir"
+    fi
+}
+
 wait_for_smbd_ready() {
     smbd_log_path=$1
     max_attempts=${2:-15}
     attempt=0
     while [ "$attempt" -lt "$max_attempts" ]; do
         if [ -f "$smbd_log_path" ]; then
-            smbd_log=$(/bin/cat "$smbd_log_path" 2>/dev/null || true)
+            smbd_log=$(file_tail "$smbd_log_path" 65536)
             case "$smbd_log" in
                 *daemon_ready*)
                     return 0

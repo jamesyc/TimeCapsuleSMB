@@ -43,6 +43,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--json", action="store_true", help="Output the dry-run deployment plan as JSON")
     parser.add_argument("--allow-unsupported", action="store_true", help="Proceed even if the detected device is not currently supported")
     parser.add_argument("--install-nbns", action="store_true", help="Enable the bundled NBNS responder on the next boot")
+    parser.add_argument("--debug-logging", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     if args.json and not args.dry_run:
@@ -134,6 +135,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             adisk_disk_key=plan.disk_key,
             adisk_uuid=adisk_uuid,
             payload_family=payload_family,
+            debug_logging=args.debug_logging,
+            data_root=device_paths.data_root,
         )
 
         with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp:

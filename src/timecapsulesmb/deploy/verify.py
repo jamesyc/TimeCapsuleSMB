@@ -11,6 +11,13 @@ from timecapsulesmb.transport.local import command_exists
 from timecapsulesmb.transport.ssh import run_ssh
 
 
+SMBD_LOG_READY_HELPERS = r'''
+smbd_ready_marker_present() {
+    [ -f /mnt/Memory/samba4/var/smbd.ready ]
+}
+'''
+
+
 def _configured_smb_server(host_label: str) -> str:
     value = host_label.strip()
     if not value:
@@ -27,17 +34,15 @@ def _configured_smb_server(host_label: str) -> str:
 
 def wait_for_post_reboot_smbd(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 120) -> bool:
     script = rf'''
+{SMBD_LOG_READY_HELPERS}
 attempt=0
 max_attempts=$((({timeout_seconds} + 4) / 5))
 while [ "$attempt" -lt "$max_attempts" ]; do
     smbd_ready=0
 
     if /usr/bin/pkill -0 smbd >/dev/null 2>&1; then
-        if [ -f /mnt/Memory/samba4/etc/smb.conf ] && [ -f /mnt/Memory/samba4/var/log.smbd ]; then
-            smbd_log="$(cat /mnt/Memory/samba4/var/log.smbd 2>/dev/null || true)"
-            case "$smbd_log" in
-                *daemon_ready*) smbd_ready=1 ;;
-            esac
+        if [ -f /mnt/Memory/samba4/etc/smb.conf ] && smbd_ready_marker_present; then
+            smbd_ready=1
         fi
     fi
 
@@ -220,6 +225,7 @@ def verify_post_deploy(values: dict[str, str]) -> None:
 def verify_netbsd4_activation(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 180) -> bool:
     print("NetBSD4 activation verification:")
     script = rf'''
+{SMBD_LOG_READY_HELPERS}
 if ! command -v fstat >/dev/null 2>&1; then
     echo "FAIL:fstat missing"
     exit 1
@@ -233,11 +239,8 @@ while [ "$attempt" -lt "$max_attempts" ]; do
         runtime_conf=1
     fi
     runtime_log=0
-    if [ -f /mnt/Memory/samba4/var/log.smbd ]; then
-        smbd_log="$(cat /mnt/Memory/samba4/var/log.smbd 2>/dev/null || true)"
-        case "$smbd_log" in
-            *daemon_ready*) runtime_log=1 ;;
-        esac
+    if smbd_ready_marker_present; then
+        runtime_log=1
     fi
     case "$out" in
         *smbd*":445"*mdns-advertiser*":5353"*|*mdns-advertiser*":5353"*smbd*":445"*)
@@ -257,15 +260,12 @@ else
     echo "FAIL:managed runtime smb.conf missing"
     status=1
 fi
-if [ -f /mnt/Memory/samba4/var/log.smbd ]; then
-    smbd_log="$(cat /mnt/Memory/samba4/var/log.smbd 2>/dev/null || true)"
+if smbd_ready_marker_present; then
+    echo "PASS:managed smbd ready marker present"
 else
-    smbd_log=""
+    echo "FAIL:managed smbd ready marker missing"
+    status=1
 fi
-case "$smbd_log" in
-    *daemon_ready*) echo "PASS:managed smbd reported daemon_ready" ;;
-    *) echo "FAIL:managed smbd did not report daemon_ready"; status=1 ;;
-esac
 case "$out" in
     *smbd*":445"*) echo "PASS:smbd bound to TCP 445" ;;
     *) echo "FAIL:smbd is not bound to TCP 445"; status=1 ;;
@@ -296,6 +296,7 @@ exit "$status"
 
 def netbsd4_activation_is_already_healthy(host: str, password: str, ssh_opts: str) -> bool:
     script = r'''
+''' + SMBD_LOG_READY_HELPERS + r'''
 if ! command -v fstat >/dev/null 2>&1; then
     exit 1
 fi
@@ -303,15 +304,9 @@ out="$(fstat 2>&1)"
 if [ ! -f /mnt/Memory/samba4/etc/smb.conf ]; then
     exit 1
 fi
-if [ -f /mnt/Memory/samba4/var/log.smbd ]; then
-    smbd_log="$(cat /mnt/Memory/samba4/var/log.smbd 2>/dev/null || true)"
-else
-    smbd_log=""
+if ! smbd_ready_marker_present; then
+    exit 1
 fi
-case "$smbd_log" in
-    *daemon_ready*) : ;;
-    *) exit 1 ;;
-esac
 case "$out" in
     *smbd*":445"*mdns-advertiser*":5353"*|*mdns-advertiser*":5353"*smbd*":445"*)
         exit 0

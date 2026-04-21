@@ -83,6 +83,9 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("__SMB_SAMBA_USER__", bundle.smbconf_replacements)
         self.assertIn("__CACHE_DIRECTORY__", bundle.start_script_replacements)
         self.assertIn("__CACHE_DIRECTORY__", bundle.smbconf_replacements)
+        self.assertIn("__SMBD_LOG_FILE__", bundle.smbconf_replacements)
+        self.assertIn("__SMBD_MAX_LOG_SIZE__", bundle.smbconf_replacements)
+        self.assertIn("__SMBD_LOG_LEVEL_LINE__", bundle.smbconf_replacements)
         self.assertEqual(bundle.start_script_replacements["__MDNS_DEVICE_MODEL__"], "TimeCapsule")
         self.assertEqual(bundle.start_script_replacements["__AIRPORT_SYAP__"], "119")
         self.assertEqual(bundle.start_script_replacements["__ADISK_DISK_KEY__"], "dk0")
@@ -177,7 +180,10 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("get_airport_srcv()", content)
         self.assertIn("get_airport_syvs()", content)
         self.assertIn("wait_for_process()", content)
+        self.assertIn("file_tail()", content)
+        self.assertIn("ensure_parent_dir()", content)
         self.assertIn("wait_for_smbd_ready()", content)
+        self.assertIn('smbd_log=$(file_tail "$smbd_log_path" 65536)', content)
         self.assertIn("derive_airport_fields()", content)
         self.assertIn("get_airport_syvs()", content)
         self.assertIn("sed -n 's/^\\([0-9]\\)\\([0-9]\\)\\([0-9]\\).*/\\1.\\2.\\3/p'", content)
@@ -752,7 +758,9 @@ class DeployModuleTests(unittest.TestCase):
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn('"$RAM_SBIN/smbd" -D -s "$RAM_ETC/smb.conf"', rendered)
         self.assertIn('if configured_smbd_log=$(get_smbd_log_path_from_config "$RAM_ETC/smb.conf" || true); then', rendered)
+        self.assertIn('ensure_parent_dir "$smbd_ready_log"', rendered)
         self.assertIn('wait_for_smbd_ready "$smbd_ready_log"', rendered)
+        self.assertIn(': > "$SMBD_READY_MARKER"', rendered)
         self.assertIn('if wait_for_process "$MDNS_PROC_NAME" 90; then', rendered)
         self.assertIn('log "smbd ready"', rendered)
 
@@ -778,7 +786,29 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("lock directory = /mnt/Locks", rendered)
         self.assertIn("state directory = /mnt/Memory/samba4/var", rendered)
         self.assertIn("private dir = /mnt/Memory/samba4/private", rendered)
+        self.assertIn("log file = /mnt/Memory/samba4/var/log.smbd", rendered)
+        self.assertIn("max log size = 256", rendered)
+        self.assertIn("max log size = 256\n    smb ports = 445", rendered)
+        self.assertNotIn("log level =", rendered)
         self.assertIn("reset on zero vc = yes", rendered)
+
+    def test_render_smb_conf_uses_disk_logging_when_debug_logging_enabled(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(values, debug_logging=True, data_root="/Volumes/dk2/ShareRoot")
+        rendered = render_template("smb.conf.template", bundle.smbconf_replacements)
+        self.assertIn("log file = /Volumes/dk2/ShareRoot/samba4-logs/log.smbd", rendered)
+        self.assertIn("max log size = 1048576", rendered)
+        self.assertIn("log level = 5 vfs:8 fruit:8", rendered)
+        self.assertIn("max log size = 1048576\n    log level = 5 vfs:8 fruit:8\n    smb ports = 445", rendered)
 
     def test_render_smb_conf_uses_persistent_cache_directory_for_netbsd4(self) -> None:
         values = {
@@ -1551,7 +1581,7 @@ FAIL:fstat missing
         self.assertIn('while [ "$attempt" -lt "$max_attempts" ]; do', remote_command)
         self.assertIn("sleep 5", remote_command)
         self.assertIn("/mnt/Memory/samba4/etc/smb.conf", remote_command)
-        self.assertIn("daemon_ready", remote_command)
+        self.assertIn("/mnt/Memory/samba4/var/smbd.ready", remote_command)
 
     def test_verify_netbsd4_activation_requires_smbd_process_name_for_445(self) -> None:
         fstat_output = """
@@ -1643,7 +1673,10 @@ PASS:mdns-advertiser bound to UDP 5353
             self.assertTrue(wait_for_post_reboot_smbd("host", "pw", "-o foo", timeout_seconds=45))
         remote_command = run_ssh_mock.call_args.args[3]
         self.assertIn('if /usr/bin/pkill -0 smbd >/dev/null 2>&1; then', remote_command)
-        self.assertIn("*daemon_ready*", remote_command)
+        self.assertIn("smbd_ready_marker_present()", remote_command)
+        self.assertIn("/mnt/Memory/samba4/var/smbd.ready", remote_command)
+        self.assertNotIn("/usr/bin/tail", remote_command)
+        self.assertNotIn("*daemon_ready*", remote_command)
         self.assertIn('max_attempts=$(((45 + 4) / 5))', remote_command)
         self.assertIn('while [ "$attempt" -lt "$max_attempts" ]; do', remote_command)
         self.assertIn("sleep 5", remote_command)

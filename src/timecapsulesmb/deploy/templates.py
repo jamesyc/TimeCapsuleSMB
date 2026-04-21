@@ -47,12 +47,23 @@ def build_template_bundle(
     adisk_disk_key: str = "dk0",
     adisk_uuid: str = "",
     payload_family: str = "netbsd6_samba4",
+    debug_logging: bool = False,
+    data_root: str | None = None,
 ) -> TemplateBundle:
     device_model = values.get("TC_MDNS_DEVICE_MODEL", DEFAULTS["TC_MDNS_DEVICE_MODEL"])
     start_cache_directory, smbconf_cache_directory = cache_directory_replacements(
         payload_family,
         values["TC_PAYLOAD_DIR_NAME"],
     )
+    smbd_log_file = "/mnt/Memory/samba4/var/log.smbd"
+    smbd_max_log_size = "256"
+    smbd_log_level_line = ""
+    if debug_logging:
+        if not data_root:
+            raise ValueError("data_root is required when debug_logging is enabled")
+        smbd_log_file = f"{data_root}/samba4-logs/log.smbd"
+        smbd_max_log_size = "1048576"
+        smbd_log_level_line = "\n    log level = 5 vfs:8 fruit:8"
     return TemplateBundle(
         start_script_replacements={
             "__PAYLOAD_DIR_NAME__": shell_quote(values["TC_PAYLOAD_DIR_NAME"]),
@@ -85,5 +96,8 @@ def build_template_bundle(
             "__SMB_NETBIOS_NAME__": values["TC_NETBIOS_NAME"],
             "__NET_IFACE__": values["TC_NET_IFACE"],
             "__CACHE_DIRECTORY__": smbconf_cache_directory,
+            "__SMBD_LOG_FILE__": smbd_log_file,
+            "__SMBD_MAX_LOG_SIZE__": smbd_max_log_size,
+            "__SMBD_LOG_LEVEL_LINE__": smbd_log_level_line,
         },
     )
