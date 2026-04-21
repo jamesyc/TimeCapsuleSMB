@@ -125,13 +125,17 @@ def infer_mdns_device_model_from_syap(syap: str) -> Optional[str]:
     return AIRPORT_SYAP_TO_MODEL.get(syap)
 
 
-def valid_config_value(key: str, value: str, label: str) -> str:
+def validated_value_or_empty(key: str, value: str, label: str) -> str:
     validator = CONFIG_VALIDATORS.get(key)
     if not value or validator is None:
         return value
     if validator(value, label):
         return ""
     return value
+
+
+def valid_existing_config_value(existing: dict[str, str], key: str, label: str) -> str:
+    return validated_value_or_empty(key, existing.get(key, ""), label)
 
 
 def print_syap_prompt_help() -> None:
@@ -207,7 +211,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if validation_result:
             try:
                 inferred_mdns_device_model = infer_mdns_device_model_hint(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
-                inferred_mdns_device_model = valid_config_value(
+                inferred_mdns_device_model = validated_value_or_empty(
                     "TC_MDNS_DEVICE_MODEL",
                     inferred_mdns_device_model or "",
                     "mDNS device model hint",
@@ -216,24 +220,16 @@ def main(argv: Optional[list[str]] = None) -> int:
                 inferred_mdns_device_model = None
 
         discovered_airport_identity = discovered_record is not None
-        valid_discovered_syap = valid_config_value(
+        valid_discovered_syap = validated_value_or_empty(
             "TC_AIRPORT_SYAP",
             discovered_airport_syap or "",
             "Airport Utility syAP code",
         )
-        valid_existing_syap = valid_config_value(
-            "TC_AIRPORT_SYAP",
-            existing.get("TC_AIRPORT_SYAP", ""),
-            "Airport Utility syAP code",
-        )
-        valid_existing_mdns_device_model = valid_config_value(
-            "TC_MDNS_DEVICE_MODEL",
-            existing.get("TC_MDNS_DEVICE_MODEL", ""),
-            "mDNS device model hint",
-        )
+        valid_existing_syap = valid_existing_config_value(existing, "TC_AIRPORT_SYAP", "Airport Utility syAP code")
+        valid_existing_mdns_device_model = valid_existing_config_value(existing, "TC_MDNS_DEVICE_MODEL", "mDNS device model hint")
 
         for key, label, default, secret in CONFIG_FIELDS[2:]:
-            current = existing.get(key, default)
+            current = valid_existing_config_value(existing, key, label) or default
             if key == "TC_AIRPORT_SYAP":
                 if valid_discovered_syap:
                     values[key] = valid_discovered_syap

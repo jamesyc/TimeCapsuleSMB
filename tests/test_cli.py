@@ -1299,6 +1299,46 @@ class CliTests(unittest.TestCase):
         self.assertIn("mDNS SMB instance name must not contain dots.", output.getvalue())
         self.assertIn("mDNS host label must not contain dots.", output.getvalue())
 
+    def test_configure_invalid_existing_mdns_host_label_falls_back_to_default_prompt(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        host_label_defaults: list[str] = []
+        existing = {
+            "TC_MDNS_HOST_LABEL": "time capsule",
+        }
+        prompt_values = iter([
+            "root@10.0.0.2",
+            "goodpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+            "119",
+        ])
+
+        def fake_prompt(_label, default, _secret):
+            if _label == "mDNS host label":
+                host_label_defaults.append(default)
+            return next(prompt_values)
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
+            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=False):
+                        with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(host_label_defaults, ["timecapsulesamba4"])
+        self.assertEqual(fake_values["TC_MDNS_HOST_LABEL"], "timecapsulesamba4")
+
     def test_configure_invalid_hidden_mdns_device_model_falls_back_to_inferred_value(self) -> None:
         output = io.StringIO()
         fake_values = {}
@@ -1461,6 +1501,46 @@ class CliTests(unittest.TestCase):
         self.assertEqual(share_defaults, ["Data", "Data"])
         self.assertIn("SMB share name must be 192 bytes or fewer.", output.getvalue())
 
+    def test_configure_invalid_existing_share_name_falls_back_to_default_prompt(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        share_defaults: list[str] = []
+        existing = {
+            "TC_SHARE_NAME": "daara/..",
+        }
+        prompt_values = iter([
+            "root@10.0.0.2",
+            "goodpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+            "119",
+        ])
+
+        def fake_prompt(_label, default, _secret):
+            if _label == "SMB share name":
+                share_defaults.append(default)
+            return next(prompt_values)
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
+            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=False):
+                        with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(share_defaults, ["Data"])
+        self.assertEqual(fake_values["TC_SHARE_NAME"], "Data")
+
     def test_configure_reprompts_invalid_netbios_name(self) -> None:
         output = io.StringIO()
         fake_values = {}
@@ -1498,6 +1578,46 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_NETBIOS_NAME"], "TimeCapsule")
         self.assertIn("Samba NetBIOS name must be 15 bytes or fewer.", output.getvalue())
+
+    def test_configure_invalid_existing_netbios_name_falls_back_to_default_prompt(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        netbios_defaults: list[str] = []
+        existing = {
+            "TC_NETBIOS_NAME": "ABCDEFGHIJKLMNOP",
+        }
+        prompt_values = iter([
+            "root@10.0.0.2",
+            "goodpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+            "119",
+        ])
+
+        def fake_prompt(_label, default, _secret):
+            if _label == "Samba NetBIOS name":
+                netbios_defaults.append(default)
+            return next(prompt_values)
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
+            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=False):
+                        with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(netbios_defaults, ["TimeCapsule"])
+        self.assertEqual(fake_values["TC_NETBIOS_NAME"], "TimeCapsule")
 
     def test_doctor_returns_failure_when_checks_fatal(self) -> None:
         output = io.StringIO()
