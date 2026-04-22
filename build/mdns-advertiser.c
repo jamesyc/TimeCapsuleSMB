@@ -1585,6 +1585,28 @@ static void kill_mdnsresponder(int sig) {
     }
 }
 
+static int configure_outbound_multicast_socket(int sockfd, uint32_t ipv4_addr, const char *socket_role) {
+    int yes;
+    struct in_addr multicast_if;
+    char ipv4_buf[INET_ADDRSTRLEN];
+
+    multicast_if.s_addr = ipv4_addr;
+    if (setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_IF, &multicast_if, sizeof(multicast_if)) < 0) {
+        perror("setsockopt(IP_MULTICAST_IF)");
+        return -1;
+    }
+
+    fprintf(stderr, "mdns %s socket: outbound multicast interface %s\n",
+            socket_role,
+            ipv4_to_string(ipv4_addr, ipv4_buf, sizeof(ipv4_buf)));
+
+    yes = 255;
+    (void)setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_TTL, &yes, sizeof(yes));
+    yes = 1;
+    (void)setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_LOOP, &yes, sizeof(yes));
+    return 0;
+}
+
 static int acquire_mdns_socket(int shared_bind, uint32_t ipv4_addr) {
     static const unsigned int retry_delays_ms[TAKEOVER_RETRY_COUNT] = {0, 100, 200, 300, 400, 500};
     size_t i;
@@ -1620,6 +1642,80 @@ static int acquire_mdns_socket(int shared_bind, uint32_t ipv4_addr) {
     }
     errno = EADDRINUSE;
     return -1;
+}
+
+static void format_dest_addr(const struct sockaddr_in *dest, char *buf, size_t buf_size) {
+    char ipbuf[INET_ADDRSTRLEN];
+
+    snprintf(buf, buf_size, "%s:%u",
+             ipv4_to_string(dest->sin_addr.s_addr, ipbuf, sizeof(ipbuf)),
+             (unsigned int)ntohs(dest->sin_port));
+}
+
+static void log_packet_build_failure(const char *stage, const char *step, size_t packet_len, int answers,
+                                     int use_snapshot_records) {
+    fprintf(stderr,
+            "mdns packet build failure: stage=%s step=%s packet_len=%lu answers=%d records=%s\n",
+            stage,
+            step,
+            (unsigned long)packet_len,
+            answers,
+            use_snapshot_records ? "snapshot" : "generated");
+}
+
+static void log_packet_send_failure_detail(const char *stage, const struct sockaddr_in *dest, size_t packet_len,
+                                           int answers, int use_snapshot_records, int saved_errno) {
+    char destbuf[64];
+
+    format_dest_addr(dest, destbuf, sizeof(destbuf));
+    fprintf(stderr,
+            "mdns packet send failure: stage=%s dest=%s packet_len=%lu answers=%d records=%s errno=%d (%s)\n",
+            stage,
+            destbuf,
+            (unsigned long)packet_len,
+            answers,
+            use_snapshot_records ? "snapshot" : "generated",
+            saved_errno,
+            strerror(saved_errno));
+}
+
+static int send_dns_packet(const char *stage, int sockfd, const uint8_t *buf, size_t packet_len,
+                           const struct sockaddr_in *dest, int answers, int use_snapshot_records) {
+    static int logged_success_announcement = 0;
+    static int logged_success_reply = 0;
+
+    ssize_t sent;
+    int saved_errno;
+
+    errno = 0;
+    sent = sendto(sockfd, buf, packet_len, 0, (const struct sockaddr *)dest, sizeof(*dest));
+    saved_errno = errno;
+    if (sent < 0) {
+        errno = saved_errno;
+        log_packet_send_failure_detail(stage, dest, packet_len, answers, use_snapshot_records, saved_errno);
+        return -1;
+    }
+
+    if (strcmp(stage, "query_response") == 0) {
+        if (!logged_success_reply) {
+            char destbuf[64];
+            format_dest_addr(dest, destbuf, sizeof(destbuf));
+            fprintf(stderr,
+                    "mdns packet send success: stage=%s dest=%s packet_len=%lu answers=%d\n",
+                    stage, destbuf, (unsigned long)packet_len, answers);
+            logged_success_reply = 1;
+        }
+    } else if (!logged_success_announcement) {
+        char destbuf[64];
+        format_dest_addr(dest, destbuf, sizeof(destbuf));
+        fprintf(stderr,
+                "mdns packet send success: stage=%s dest=%s packet_len=%lu answers=%d records=%s\n",
+                stage, destbuf, (unsigned long)packet_len, answers,
+                use_snapshot_records ? "snapshot" : "generated");
+        logged_success_announcement = 1;
+    }
+
+    return 0;
 }
 
 static int add_adisk_records(uint8_t *buf, size_t *off, size_t cap, const struct config *cfg, int *answers) {
@@ -1718,6 +1814,7 @@ static int send_announcement(int sockfd, const struct sockaddr_in *dest, const s
     size_t i;
 
     if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->service_type) != 0) {
+        log_packet_build_failure("announcement", "build_instance_fqdn", off, answers, use_snapshot_records);
         return -1;
     }
 
@@ -1728,14 +1825,17 @@ static int send_announcement(int sockfd, const struct sockaddr_in *dest, const s
         add_rr_srv(buf, &off, sizeof(buf), instance_fqdn, cfg->host_fqdn, cfg->port, cfg->ttl) != 0 ||
         add_rr_txt_empty(buf, &off, sizeof(buf), instance_fqdn, cfg->ttl) != 0 ||
         add_rr_a(buf, &off, sizeof(buf), cfg->host_fqdn, cfg->ipv4_addr, cfg->ttl) != 0) {
+        log_packet_build_failure("announcement", "add_core_records", off, answers, use_snapshot_records);
         return -1;
     }
     answers = 4;
 
     if (add_adisk_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {
+        log_packet_build_failure("announcement", "add_adisk_records", off, answers, use_snapshot_records);
         return -1;
     }
     if (add_device_info_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {
+        log_packet_build_failure("announcement", "add_device_info_records", off, answers, use_snapshot_records);
         return -1;
     }
     if (use_snapshot_records) {
@@ -1744,14 +1844,17 @@ static int send_announcement(int sockfd, const struct sockaddr_in *dest, const s
                 continue;
             }
             if (add_service_record_answers(buf, &off, sizeof(buf), &snapshot_records->records[i], cfg->ttl, &answers) != 0) {
+                log_packet_build_failure("announcement", "add_service_record_answers", off, answers, use_snapshot_records);
                 return -1;
             }
             if (add_snapshot_host_a_record(buf, &off, sizeof(buf), &snapshot_records->records[i], cfg, &answers) != 0) {
+                log_packet_build_failure("announcement", "add_snapshot_host_a_record", off, answers, use_snapshot_records);
                 return -1;
             }
         }
     } else {
         if (add_airport_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {
+            log_packet_build_failure("announcement", "add_airport_records", off, answers, use_snapshot_records);
             return -1;
         }
     }
@@ -1759,7 +1862,7 @@ static int send_announcement(int sockfd, const struct sockaddr_in *dest, const s
     hdr.ancount = htons((uint16_t)answers);
     memcpy(buf, &hdr, sizeof(hdr));
 
-    return (sendto(sockfd, buf, off, 0, (const struct sockaddr *)dest, sizeof(*dest)) >= 0) ? 0 : -1;
+    return send_dns_packet("announcement", sockfd, buf, off, dest, answers, use_snapshot_records);
 }
 
 static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, const struct sockaddr_in *dest, const struct config *cfg,
@@ -1808,18 +1911,22 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
 
     qdcount = ntohs(hdr.qdcount);
     if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->service_type) != 0) {
+        log_packet_build_failure("query_response", "build_instance_fqdn", off, answers, use_snapshot_records);
         return 0;
     }
     if (cfg->adisk_share_name[0] != '\0' && cfg->adisk_uuid[0] != '\0' &&
         build_instance_fqdn(adisk_instance_fqdn, sizeof(adisk_instance_fqdn), cfg->instance_name, cfg->adisk_service_type) != 0) {
+        log_packet_build_failure("query_response", "build_adisk_instance_fqdn", off, answers, use_snapshot_records);
         return 0;
     }
     if (cfg->device_model[0] != '\0' &&
         build_instance_fqdn(device_info_instance_fqdn, sizeof(device_info_instance_fqdn), cfg->instance_name, cfg->device_info_service_type) != 0) {
+        log_packet_build_failure("query_response", "build_device_info_instance_fqdn", off, answers, use_snapshot_records);
         return 0;
     }
     if (!use_snapshot_records && is_airport_enabled(cfg) &&
         build_instance_fqdn(airport_instance_fqdn, sizeof(airport_instance_fqdn), cfg->instance_name, cfg->airport_service_type) != 0) {
+        log_packet_build_failure("query_response", "build_airport_instance_fqdn", off, answers, use_snapshot_records);
         return 0;
     }
 
@@ -1936,18 +2043,21 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
 
     if (want_ptr) {
         if (add_rr_ptr(reply, &off, sizeof(reply), cfg->service_type, instance_fqdn, cfg->ttl) != 0) {
+            log_packet_build_failure("query_response", "add_ptr", off, answers, use_snapshot_records);
             return -1;
         }
         answers++;
     }
     if (want_srv) {
         if (add_rr_srv(reply, &off, sizeof(reply), instance_fqdn, cfg->host_fqdn, cfg->port, cfg->ttl) != 0) {
+            log_packet_build_failure("query_response", "add_srv", off, answers, use_snapshot_records);
             return -1;
         }
         answers++;
     }
     if (want_txt) {
         if (add_rr_txt_empty(reply, &off, sizeof(reply), instance_fqdn, cfg->ttl) != 0) {
+            log_packet_build_failure("query_response", "add_txt", off, answers, use_snapshot_records);
             return -1;
         }
         answers++;
@@ -1958,9 +2068,11 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
         const char *txts[2];
 
         if (build_adisk_system_txt(txt1, sizeof(txt1), cfg->adisk_sys_wama) != 0) {
+            log_packet_build_failure("query_response", "build_adisk_system_txt", off, answers, use_snapshot_records);
             return -1;
         }
         if (build_adisk_disk_txt(txt2, sizeof(txt2), cfg->adisk_disk_key, cfg->adisk_share_name, cfg->adisk_uuid) != 0) {
+            log_packet_build_failure("query_response", "build_adisk_disk_txt", off, answers, use_snapshot_records);
             return -1;
         }
         txts[0] = txt1;
@@ -1968,18 +2080,21 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
 
         if (want_adisk_ptr) {
             if (add_rr_ptr(reply, &off, sizeof(reply), cfg->adisk_service_type, adisk_instance_fqdn, cfg->ttl) != 0) {
+                log_packet_build_failure("query_response", "add_adisk_ptr", off, answers, use_snapshot_records);
                 return -1;
             }
             answers++;
         }
         if (want_adisk_srv) {
             if (add_rr_srv(reply, &off, sizeof(reply), adisk_instance_fqdn, cfg->host_fqdn, cfg->adisk_port, cfg->ttl) != 0) {
+                log_packet_build_failure("query_response", "add_adisk_srv", off, answers, use_snapshot_records);
                 return -1;
             }
             answers++;
         }
         if (want_adisk_txt) {
             if (add_rr_txt_strings(reply, &off, sizeof(reply), adisk_instance_fqdn, cfg->ttl, txts, 2) != 0) {
+                log_packet_build_failure("query_response", "add_adisk_txt", off, answers, use_snapshot_records);
                 return -1;
             }
             answers++;
@@ -1990,24 +2105,28 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
         const char *txts[1];
 
         if (build_model_txt(model_txt, sizeof(model_txt), cfg->device_model) != 0) {
+            log_packet_build_failure("query_response", "build_model_txt", off, answers, use_snapshot_records);
             return -1;
         }
         txts[0] = model_txt;
 
         if (want_device_info_ptr) {
             if (add_rr_ptr(reply, &off, sizeof(reply), cfg->device_info_service_type, device_info_instance_fqdn, cfg->ttl) != 0) {
+                log_packet_build_failure("query_response", "add_device_info_ptr", off, answers, use_snapshot_records);
                 return -1;
             }
             answers++;
         }
         if (want_device_info_srv) {
             if (add_rr_srv(reply, &off, sizeof(reply), device_info_instance_fqdn, cfg->host_fqdn, 0, cfg->ttl) != 0) {
+                log_packet_build_failure("query_response", "add_device_info_srv", off, answers, use_snapshot_records);
                 return -1;
             }
             answers++;
         }
         if (want_device_info_txt) {
             if (add_rr_txt_strings(reply, &off, sizeof(reply), device_info_instance_fqdn, cfg->ttl, txts, 1) != 0) {
+                log_packet_build_failure("query_response", "add_device_info_txt", off, answers, use_snapshot_records);
                 return -1;
             }
             answers++;
@@ -2018,24 +2137,28 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
         const char *txts[1];
 
         if (build_airport_txt(airport_txt, sizeof(airport_txt), cfg) != 0) {
+            log_packet_build_failure("query_response", "build_airport_txt", off, answers, use_snapshot_records);
             return -1;
         }
         txts[0] = airport_txt;
 
         if (want_airport_ptr) {
             if (add_rr_ptr(reply, &off, sizeof(reply), cfg->airport_service_type, airport_instance_fqdn, cfg->ttl) != 0) {
+                log_packet_build_failure("query_response", "add_airport_ptr", off, answers, use_snapshot_records);
                 return -1;
             }
             answers++;
         }
         if (want_airport_srv) {
             if (add_rr_srv(reply, &off, sizeof(reply), airport_instance_fqdn, cfg->host_fqdn, cfg->airport_port, cfg->ttl) != 0) {
+                log_packet_build_failure("query_response", "add_airport_srv", off, answers, use_snapshot_records);
                 return -1;
             }
             answers++;
         }
         if (want_airport_txt) {
             if (add_rr_txt_strings(reply, &off, sizeof(reply), airport_instance_fqdn, cfg->ttl, txts, 1) != 0) {
+                log_packet_build_failure("query_response", "add_airport_txt", off, answers, use_snapshot_records);
                 return -1;
             }
             answers++;
@@ -2043,6 +2166,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
     }
     if (want_a) {
         if (add_rr_a(reply, &off, sizeof(reply), cfg->host_fqdn, cfg->ipv4_addr, cfg->ttl) != 0) {
+            log_packet_build_failure("query_response", "add_a", off, answers, use_snapshot_records);
             return -1;
         }
         answers++;
@@ -2063,12 +2187,14 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
             }
             if (want_snapshot_ptr[j]) {
                 if (add_rr_ptr(reply, &off, sizeof(reply), record->service_type, record->instance_fqdn, cfg->ttl) != 0) {
+                    log_packet_build_failure("query_response", "add_snapshot_ptr", off, answers, use_snapshot_records);
                     return -1;
                 }
                 answers++;
             }
             if (want_snapshot_srv[j]) {
                 if (add_rr_srv(reply, &off, sizeof(reply), record->instance_fqdn, record->host_fqdn, record->port, cfg->ttl) != 0) {
+                    log_packet_build_failure("query_response", "add_snapshot_srv", off, answers, use_snapshot_records);
                     return -1;
                 }
                 answers++;
@@ -2076,10 +2202,12 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
             if (want_snapshot_txt[j]) {
                 if (record->txt_count > 0) {
                     if (add_rr_txt_strings(reply, &off, sizeof(reply), record->instance_fqdn, cfg->ttl, txts, record->txt_count) != 0) {
+                        log_packet_build_failure("query_response", "add_snapshot_txt", off, answers, use_snapshot_records);
                         return -1;
                     }
                 } else {
                     if (add_rr_txt_empty(reply, &off, sizeof(reply), record->instance_fqdn, cfg->ttl) != 0) {
+                        log_packet_build_failure("query_response", "add_snapshot_txt_empty", off, answers, use_snapshot_records);
                         return -1;
                     }
                 }
@@ -2087,6 +2215,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
             }
             if (want_snapshot_a[j]) {
                 if (add_rr_a(reply, &off, sizeof(reply), record->host_fqdn, cfg->ipv4_addr, cfg->ttl) != 0) {
+                    log_packet_build_failure("query_response", "add_snapshot_a", off, answers, use_snapshot_records);
                     return -1;
                 }
                 answers++;
@@ -2097,7 +2226,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
     hdr.ancount = htons((uint16_t)answers);
     memcpy(reply, &hdr, sizeof(hdr));
 
-    return (sendto(sockfd, reply, off, 0, (const struct sockaddr *)dest, sizeof(*dest)) >= 0) ? 0 : -1;
+    return send_dns_packet("query_response", sockfd, reply, off, dest, answers, use_snapshot_records);
 }
 
 static int open_mdns_socket(int shared_bind, int log_bind_errors, uint32_t ipv4_addr, const char *socket_role) {
@@ -2105,7 +2234,6 @@ static int open_mdns_socket(int shared_bind, int log_bind_errors, uint32_t ipv4_
     int yes = 1;
     struct sockaddr_in addr;
     struct ip_mreq mreq;
-    struct in_addr multicast_if;
 
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) {
@@ -2146,22 +2274,10 @@ static int open_mdns_socket(int shared_bind, int log_bind_errors, uint32_t ipv4_
         return -1;
     }
 
-    yes = 255;
-    multicast_if.s_addr = ipv4_addr;
-    if (setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_IF, &multicast_if, sizeof(multicast_if)) < 0) {
-        perror("setsockopt(IP_MULTICAST_IF)");
+    if (configure_outbound_multicast_socket(sockfd, ipv4_addr, socket_role) != 0) {
         close(sockfd);
         return -1;
     }
-    {
-        char ipv4_buf[INET_ADDRSTRLEN];
-        fprintf(stderr, "mdns %s socket: outbound multicast interface %s\n",
-                socket_role,
-                ipv4_to_string(ipv4_addr, ipv4_buf, sizeof(ipv4_buf)));
-    }
-    (void)setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_TTL, &yes, sizeof(yes));
-    yes = 1;
-    (void)setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_LOOP, &yes, sizeof(yes));
 
     return sockfd;
 }
@@ -2376,7 +2492,6 @@ int main(int argc, char **argv) {
                 snprintf(detail, sizeof(detail), "burst_index=%lu offset_ms=%u",
                          (unsigned long)startup_burst_index, startup_burst_offsets_ms[startup_burst_index]);
                 log_send_failure("startup_announce", &mdns_dest, use_snapshot_records, detail);
-                perror("send_startup_announcement");
             }
             startup_burst_index++;
             now_ms = monotonic_millis();
@@ -2406,7 +2521,6 @@ int main(int argc, char **argv) {
                     snprintf(detail, sizeof(detail), "packet_len=%ld from=%s:%u",
                              (long)nread, inet_ntoa(src.sin_addr), (unsigned int)ntohs(src.sin_port));
                     log_send_failure("query_response", &mdns_dest, use_snapshot_records, detail);
-                    perror("send_query_response");
                 }
             }
         }
@@ -2417,7 +2531,6 @@ int main(int argc, char **argv) {
                 snprintf(detail, sizeof(detail), "interval=%d last_announce_age=%ld",
                          ANNOUNCE_INTERVAL, (long)(time(NULL) - last_announce));
                 log_send_failure("periodic_announce", &mdns_dest, use_snapshot_records, detail);
-                perror("send_periodic_announcement");
             }
             last_announce = time(NULL);
         }
