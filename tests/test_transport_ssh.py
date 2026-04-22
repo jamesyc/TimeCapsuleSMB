@@ -98,6 +98,45 @@ class SSHTransportTests(unittest.TestCase):
         self.assertEqual(spawn_mock.call_count, 2)
         sleep_mock.assert_called_once_with(1)
 
+    def test_extract_ssh_transport_error_detects_forward_bind_failure(self) -> None:
+        output = (
+            "bind [127.0.0.1]:108: Permission denied\n"
+            "channel_setup_fwd_listener_tcpip: cannot listen to port: 108\n"
+            "NetBSD\n"
+        )
+        self.assertEqual(
+            ssh_transport._extract_ssh_transport_error(output),
+            "bind [127.0.0.1]:108: Permission denied",
+        )
+
+    def test_run_ssh_raises_on_ssh_transport_warning_even_with_zero_exit(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.transport.ssh._ssh_option_supported",
+            return_value=True,
+        ):
+            with mock.patch(
+                "timecapsulesmb.transport.ssh._spawn_with_password",
+                return_value=(
+                    0,
+                    "bind [127.0.0.1]:108: Permission denied\n"
+                    "channel_setup_fwd_listener_tcpip: cannot listen to port: 108\n"
+                    "NetBSD\n6.0\nevbarm\n",
+                ),
+            ):
+                with self.assertRaises(SystemExit) as exc:
+                    ssh_transport.run_ssh(
+                        "root@192.168.1.67",
+                        "pw",
+                        "-o LocalForward=127.0.0.1:108:127.0.0.1:108",
+                        "/bin/echo ok",
+                        check=False,
+                        timeout=10,
+                    )
+        self.assertEqual(
+            str(exc.exception),
+            "Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied",
+        )
+
     def test_normalize_ssh_tokens_expands_identity_and_preserves_proxyjump(self) -> None:
         with mock.patch(
             "timecapsulesmb.transport.ssh._ssh_option_supported",

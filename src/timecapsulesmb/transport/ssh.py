@@ -13,9 +13,34 @@ from pathlib import Path
 from .local import tcp_open
 
 
+SSH_TRANSPORT_ERROR_PATTERNS = (
+    "bind [",
+    "channel_setup_fwd_listener_tcpip:",
+    "bad configuration option",
+    "could not resolve hostname",
+    "connection refused",
+    "connection timed out",
+    "no route to host",
+    "connection closed by remote host",
+    "kex_exchange_identification:",
+    "ssh: ",
+)
+
+
 def _looks_like_transient_ssh_auth_failure(output: str) -> bool:
     lowered = output.lower()
     return "permission denied" in lowered or "please try again" in lowered
+
+
+def _extract_ssh_transport_error(output: str) -> str | None:
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if any(pattern in lowered for pattern in SSH_TRANSPORT_ERROR_PATTERNS):
+            return line
+    return None
 
 
 def _spawn_with_password(cmd: list[str], password: str, *, timeout: int, timeout_message: str) -> tuple[int, str]:
@@ -119,6 +144,9 @@ def run_ssh(host: str, password: str, ssh_opts: str, remote_cmd: str, *, check: 
         if rc == 0 or not _looks_like_transient_ssh_auth_failure(stdout) or attempt == 2:
             break
         time.sleep(1)
+    transport_error = _extract_ssh_transport_error(stdout)
+    if transport_error:
+        raise SystemExit(f"Connecting to the device failed, SSH error: {transport_error}")
     if check and rc != 0:
         raise SystemExit(stdout.strip() or f"ssh command failed with rc={rc}")
     return subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr="")

@@ -38,7 +38,7 @@ def check_ssh_login(target: str, password: str, ssh_opts: str) -> CheckResult:
     try:
         proc = run_ssh(target, password, ssh_opts, "/bin/echo ok", check=False, timeout=30)
     except SystemExit as e:
-        return CheckResult("FAIL", f"SSH command failed for {target}: {e}")
+        return CheckResult("FAIL", str(e))
     if proc.returncode == 0 and proc.stdout.strip().endswith("ok"):
         return CheckResult("PASS", f"SSH command works for {target}")
     detail = proc.stdout.strip() or f"rc={proc.returncode}"

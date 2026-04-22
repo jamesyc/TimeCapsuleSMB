@@ -214,6 +214,18 @@ class CheckTests(unittest.TestCase):
             timeout=30,
         )
 
+    def test_check_ssh_login_reports_friendlier_ssh_transport_error(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.checks.network.run_ssh",
+            side_effect=SystemExit("Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied"),
+        ):
+            result = check_ssh_login("root@192.168.1.118", "pw", "-o LocalForward=127.0.0.1:108:127.0.0.1:108")
+        self.assertEqual(result.status, "FAIL")
+        self.assertEqual(
+            result.message,
+            "Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied",
+        )
+
     def test_run_doctor_checks_proxy_target_skips_local_network_checks(self) -> None:
         values = {
             "TC_HOST": "root@192.168.1.118",
