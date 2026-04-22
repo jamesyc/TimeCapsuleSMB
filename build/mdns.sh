@@ -5,7 +5,7 @@ set -eu
 
 TOOLDIR="$TOOLS"
 DESTDIR="$OBJ/destdir.evbarm"
-TRIPLE="$(basename "$(ls "$TOOLDIR"/bin/*-netbsdelf-*gcc | head -n1)" | sed 's/-gcc$//')"
+TRIPLE="$(select_tool_triple)"
 MDNS_SRC="$SCRIPT_DIR/mdns-advertiser.c"
 MDNS_CFLAGS="${MDNS_CFLAGS:--Os -fomit-frame-pointer -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident}"
 MDNS_LDFLAGS="${MDNS_LDFLAGS:--static -Wl,--gc-sections}"

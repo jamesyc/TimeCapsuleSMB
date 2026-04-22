@@ -23,7 +23,7 @@ has_netbsd_notes() {
 
 TOOLDIR="$TOOLS"
 DESTDIR="$OBJ/destdir.evbarm"
-TRIPLE="$(basename "$(ls "$TOOLDIR"/bin/*-netbsdelf-*gcc | head -n1)" | sed 's/-gcc$//')"
+TRIPLE="$(select_tool_triple)"
 SYSROOT="$DESTDIR"
 
 if [ ! -x "$TOOLDIR/bin/nbmake" ] || [ ! -d "$DESTDIR" ]; then
