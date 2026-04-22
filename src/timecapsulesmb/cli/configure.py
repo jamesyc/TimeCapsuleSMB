@@ -12,6 +12,7 @@ from timecapsulesmb.core.config import (
     ENV_PATH,
     extract_host,
     parse_env_values,
+    upsert_env_key,
     write_env_file,
 )
 from timecapsulesmb.cli.context import CommandContext
@@ -220,13 +221,20 @@ def main(argv: Optional[list[str]] = None) -> int:
     ensure_install_id()
     existing = parse_env_values(ENV_PATH, defaults={})
     configure_id = str(uuid.uuid4())
+    upsert_env_key(ENV_PATH, "TC_CONFIGURE_ID", configure_id)
     telemetry_values = dict(existing)
     telemetry_values["TC_CONFIGURE_ID"] = configure_id
     telemetry = TelemetryClient.from_values(telemetry_values)
     values: dict[str, str] = {}
     inferred_mdns_device_model: Optional[str] = None
     discovered_airport_syap: Optional[str] = None
-    with CommandContext(telemetry, "configure", "configure_started", "configure_finished") as command_context:
+    with CommandContext(
+        telemetry,
+        "configure",
+        "configure_started",
+        "configure_finished",
+        configure_id=configure_id,
+    ) as command_context:
         command_context.update_fields(configure_id=configure_id)
         print("This writes a local .env configuration file in this folder. The other tcapsule commands use that file.")
         print(f"Writing {ENV_PATH}")
@@ -335,10 +343,16 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         values["TC_CONFIGURE_ID"] = configure_id
         write_env_file(ENV_PATH, values)
-        print(f"\nWrote {ENV_PATH}")
+        command_context.update_fields(
+            configure_id=configure_id,
+            device_syap=values.get("TC_AIRPORT_SYAP"),
+            device_model=values.get("TC_MDNS_DEVICE_MODEL"),
+        )
+        print(f"\nReview the .env file configuration: wrote {ENV_PATH}")
         print("Next steps:")
-        print("  1. Review .env")
-        print("  2. Run .venv/bin/tcapsule prep-device")
-        print("  3. If you are doing build work, configure build/.env separately from build/.env.example")
+        print("  - Prep your device to enable SSH on it:")
+        print("      Run .venv/bin/tcapsule prep-device")
+        print("  - Deploy this configuration to your Time Capsule:")
+        print("      Run .venv/bin/tcapsule deploy")
         command_context.succeed()
         return 0

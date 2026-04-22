@@ -4,6 +4,7 @@ import io
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 import uuid
 from contextlib import ExitStack
@@ -354,22 +355,30 @@ class CliTests(unittest.TestCase):
                     "timecapsulesmb.cli.configure.prompt",
                     side_effect=lambda _l, _d, _s: _d if _l == "mDNS device model hint" else next(prompt_values),
                 ):
-                    with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=False):
-                        with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
-                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
-                                with mock.patch("timecapsulesmb.cli.configure.TelemetryClient.from_values") as telemetry_factory:
-                                    with mock.patch("timecapsulesmb.cli.configure.CommandContext", return_value=command_context):
-                                        with redirect_stdout(output):
-                                            rc = configure.main([])
+                        with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=False):
+                            with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                                with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                    with mock.patch("timecapsulesmb.cli.configure.TelemetryClient.from_values") as telemetry_factory:
+                                        with mock.patch("timecapsulesmb.cli.configure.CommandContext", return_value=command_context) as command_context_factory:
+                                            with redirect_stdout(output):
+                                                rc = configure.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_SAMBA_USER"], "admin")
         uuid.UUID(fake_values["TC_CONFIGURE_ID"])
         telemetry_values = telemetry_factory.call_args.args[0]
         self.assertEqual(telemetry_values["TC_CONFIGURE_ID"], fake_values["TC_CONFIGURE_ID"])
+        self.assertEqual(command_context_factory.call_args.kwargs["configure_id"], fake_values["TC_CONFIGURE_ID"])
         command_context.finish.assert_called_once()
         self.assertEqual(command_context.finish.call_args.kwargs["configure_id"], fake_values["TC_CONFIGURE_ID"])
-        self.assertIn("Wrote", output.getvalue())
-        self.assertIn("This writes a local .env configuration file", output.getvalue())
+        self.assertEqual(command_context.finish.call_args.kwargs["device_syap"], fake_values["TC_AIRPORT_SYAP"])
+        self.assertEqual(command_context.finish.call_args.kwargs["device_model"], fake_values["TC_MDNS_DEVICE_MODEL"])
+        text = output.getvalue()
+        self.assertIn("This writes a local .env configuration file", text)
+        self.assertIn(f"Review the .env file configuration: wrote {configure.ENV_PATH}", text)
+        self.assertIn("  - Prep your device to enable SSH on it:", text)
+        self.assertIn("      Run .venv/bin/tcapsule prep-device", text)
+        self.assertIn("  - Deploy this configuration to your Time Capsule:", text)
+        self.assertIn("      Run .venv/bin/tcapsule deploy", text)
 
     def test_configure_ensures_install_id_before_telemetry(self) -> None:
         output = io.StringIO()
@@ -400,6 +409,28 @@ class CliTests(unittest.TestCase):
                                             rc = configure.main([])
         self.assertEqual(rc, 0)
         ensure_mock.assert_called_once_with()
+
+    def test_configure_persists_configure_id_before_prompting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("TC_HOST=root@10.0.0.2\n")
+            with mock.patch("timecapsulesmb.cli.configure.ENV_PATH", env_path):
+                with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={"TC_HOST": "root@10.0.0.2"}):
+                    with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                        with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=KeyboardInterrupt):
+                            with mock.patch("timecapsulesmb.cli.configure.TelemetryClient.from_values"):
+                                with self.assertRaises(KeyboardInterrupt):
+                                    configure.main([])
+            text = env_path.read_text()
+            values = {}
+            for line in text.splitlines():
+                if "=" not in line or line.startswith("#"):
+                    continue
+                key, value = line.split("=", 1)
+                values[key] = value
+        self.assertIn("TC_HOST=root@10.0.0.2", text)
+        self.assertIn("TC_CONFIGURE_ID=", text)
+        self.assertEqual(text.count("TC_CONFIGURE_ID="), 1)
 
     def test_configure_uses_discovered_host_when_available(self) -> None:
         output = io.StringIO()

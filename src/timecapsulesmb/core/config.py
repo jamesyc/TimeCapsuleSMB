@@ -457,3 +457,28 @@ def render_env_text(values: dict[str, str]) -> str:
 
 def write_env_file(path: Path, values: dict[str, str]) -> None:
     path.write_text(render_env_text(values))
+
+
+def upsert_env_key(path: Path, key: str, value: str) -> None:
+    rendered = f"{key}={shell_quote(value)}"
+    try:
+        lines = path.read_text().splitlines()
+    except FileNotFoundError:
+        path.write_text(f"{CONFIG_HEADER.rstrip()}\n\n{rendered}\n")
+        return
+
+    updated = False
+    new_lines: list[str] = []
+    for line in lines:
+        if line.strip().startswith(f"{key}="):
+            if not updated:
+                new_lines.append(rendered)
+                updated = True
+            continue
+        new_lines.append(line)
+    if not updated:
+        if new_lines and new_lines[-1] != "":
+            new_lines.append("")
+        new_lines.append(rendered)
+    new_lines.append("")
+    path.write_text("\n".join(new_lines))
