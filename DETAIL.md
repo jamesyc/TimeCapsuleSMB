@@ -871,12 +871,15 @@ The build pipeline under [build/](build) is for maintainers, not normal users.
 
 Current important outputs:
 - [bin/samba4/smbd](bin/samba4/smbd)
-- [bin/samba4-netbsd4/smbd](bin/samba4-netbsd4/smbd)
-- [bin/samba3-netbsd4/smbd](bin/samba3-netbsd4/smbd)
+- [bin/samba4-netbsd4le/smbd](bin/samba4-netbsd4le/smbd)
+- [bin/samba4-netbsd4be/smbd](bin/samba4-netbsd4be/smbd)
+- [bin/samba3-netbsd4le/smbd](bin/samba3-netbsd4le/smbd)
 - [bin/mdns/mdns-advertiser](bin/mdns/mdns-advertiser)
-- [bin/mdns-netbsd4/mdns-advertiser](bin/mdns-netbsd4/mdns-advertiser)
+- [bin/mdns-netbsd4le/mdns-advertiser](bin/mdns-netbsd4le/mdns-advertiser)
+- [bin/mdns-netbsd4be/mdns-advertiser](bin/mdns-netbsd4be/mdns-advertiser)
 - [bin/nbns/nbns-advertiser](bin/nbns/nbns-advertiser)
-- [bin/nbns-netbsd4/nbns-advertiser](bin/nbns-netbsd4/nbns-advertiser)
+- [bin/nbns-netbsd4le/nbns-advertiser](bin/nbns-netbsd4le/nbns-advertiser)
+- [bin/nbns-netbsd4be/nbns-advertiser](bin/nbns-netbsd4be/nbns-advertiser)
 
 Current active deploy artifact sizes:
 - NetBSD 6 `smbd`: about `11M`

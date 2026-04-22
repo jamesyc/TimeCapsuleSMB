@@ -2,30 +2,42 @@
   "artifacts": {
     "mdns-advertiser": {
       "path": "bin/mdns/mdns-advertiser",
-      "sha256": "cdfce9c391f0055218c569dbbd6e907720458f3c67665a6da9557475d829be1f"
+      "sha256": "2730f6a426f9ae9a7d4954ac9fc714a59bbcb1a2c82d05f9007bbfc301cdfad6"
     },
-    "mdns-advertiser-netbsd4": {
-      "path": "bin/mdns-netbsd4/mdns-advertiser",
-      "sha256": "b437d1cdb5e9b0934076b2aafa99c630d4e0dbb542ddbd0ff6167074efa4af89"
+    "mdns-advertiser-netbsd4le": {
+      "path": "bin/mdns-netbsd4le/mdns-advertiser",
+      "sha256": "d67eb297d2f573ea197d72720a768aa756b6f5dac694c54a18a3f1fc84d951c3"
+    },
+    "mdns-advertiser-netbsd4be": {
+      "path": "bin/mdns-netbsd4be/mdns-advertiser",
+      "sha256": "829023998f989f294474527e55ff77c5919a4ea6720bc32bf0c94573c9179ffc"
     },
     "nbns-advertiser": {
       "path": "bin/nbns/nbns-advertiser",
       "sha256": "a1616bf32396cc4f003d89ce9f11e2a3bb7e402a6f9cfffed84a7a4fefdeb6b3"
     },
-    "nbns-advertiser-netbsd4": {
-      "path": "bin/nbns-netbsd4/nbns-advertiser",
+    "nbns-advertiser-netbsd4le": {
+      "path": "bin/nbns-netbsd4le/nbns-advertiser",
       "sha256": "da83673e06c05997e9d30ff6f92423d3d7a76c61ef9a9169f6c52d2f7f1ea54d"
+    },
+    "nbns-advertiser-netbsd4be": {
+      "path": "bin/nbns-netbsd4be/nbns-advertiser",
+      "sha256": "5bcb18b0041ea7235322413901b27c69eb69497f9d1378b2fa5f74e6bc42a5dd"
     },
     "smbd": {
       "path": "bin/samba4/smbd",
       "sha256": "f39c7352090a432ca449abc1181e26f2db3e647d3431ace12e1f137fbc6daae8"
     },
-    "smbd-netbsd4": {
-      "path": "bin/samba4-netbsd4/smbd",
+    "smbd-netbsd4le": {
+      "path": "bin/samba4-netbsd4le/smbd",
       "sha256": "716ac1019436099a64465f00f68b9f93f020f60b6ba498c270905bc5a29a3ecb"
     },
-    "smbd-samba3-netbsd4": {
-      "path": "bin/samba3-netbsd4/smbd",
+    "smbd-netbsd4be": {
+      "path": "bin/samba4-netbsd4be/smbd",
+      "sha256": "1daf2efd2916491df333dd518a742b0855f4c9b553ff9fc21ab69ee9702012cf"
+    },
+    "smbd-samba3-netbsd4le": {
+      "path": "bin/samba3-netbsd4le/smbd",
       "sha256": "827648495f6df07b0359731497b3d2a5751f3ee94a15d4732299e078b3b1ab6e"
     }
   }

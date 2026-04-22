@@ -29,9 +29,9 @@ def resolve_required_artifacts(repo_root: Path, names: list[str]) -> dict[str, R
 def resolve_payload_artifacts(repo_root: Path, payload_family: str) -> dict[str, ResolvedArtifact]:
     if payload_family == "netbsd4_samba4":
         names = {
-            "smbd": "smbd-netbsd4",
-            "mdns-advertiser": "mdns-advertiser-netbsd4",
-            "nbns-advertiser": "nbns-advertiser-netbsd4",
+            "smbd": "smbd-netbsd4le",
+            "mdns-advertiser": "mdns-advertiser-netbsd4le",
+            "nbns-advertiser": "nbns-advertiser-netbsd4le",
         }
     elif payload_family == "netbsd6_samba4":
         names = {

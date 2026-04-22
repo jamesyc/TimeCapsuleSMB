@@ -2347,7 +2347,7 @@ class CliTests(unittest.TestCase):
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with redirect_stdout(output):
@@ -2356,10 +2356,10 @@ class CliTests(unittest.TestCase):
         text = output.getvalue()
         payload_dir = f"/Volumes/dk2/{values['TC_PAYLOAD_DIR_NAME']}"
         self.assertIn("Detected supported older device: NetBSD 4.0", text)
-        self.assertIn(f"bin/samba4-netbsd4/smbd -> {payload_dir}/smbd", text)
-        self.assertIn(f"bin/mdns-netbsd4/mdns-advertiser -> {payload_dir}/mdns-advertiser", text)
-        self.assertIn("bin/mdns-netbsd4/mdns-advertiser -> /mnt/Flash/mdns-advertiser", text)
-        self.assertIn(f"bin/nbns-netbsd4/nbns-advertiser -> {payload_dir}/nbns-advertiser", text)
+        self.assertIn(f"bin/samba4-netbsd4le/smbd -> {payload_dir}/smbd", text)
+        self.assertIn(f"bin/mdns-netbsd4le/mdns-advertiser -> {payload_dir}/mdns-advertiser", text)
+        self.assertIn("bin/mdns-netbsd4le/mdns-advertiser -> /mnt/Flash/mdns-advertiser", text)
+        self.assertIn(f"bin/nbns-netbsd4le/nbns-advertiser -> {payload_dir}/nbns-advertiser", text)
         self.assertIn("Remote actions (NetBSD4 activation):", text)
         self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
         self.assertIn("pkill smbd >/dev/null 2>&1 || true", text)
@@ -2390,7 +2390,7 @@ class CliTests(unittest.TestCase):
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with mock.patch("builtins.input", return_value="n"):
@@ -2422,7 +2422,7 @@ class CliTests(unittest.TestCase):
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with mock.patch("builtins.input", return_value="YES"):
@@ -2458,7 +2458,7 @@ class CliTests(unittest.TestCase):
             smbconf_replacements={},
         )
         with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
@@ -2537,7 +2537,7 @@ class CliTests(unittest.TestCase):
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
@@ -2582,7 +2582,7 @@ class CliTests(unittest.TestCase):
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
@@ -2616,7 +2616,7 @@ class CliTests(unittest.TestCase):
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
@@ -2646,14 +2646,14 @@ class CliTests(unittest.TestCase):
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok"), ("mdns-netbsd4", True, "ok"), ("nbns-netbsd4", True, "ok")]):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok"), ("mdns-advertiser-netbsd4le", True, "ok"), ("nbns-advertiser-netbsd4le", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with redirect_stdout(output):
                             rc = deploy.main(["--dry-run", "--install-nbns"])
         self.assertEqual(rc, 0)
         text = output.getvalue()
-        self.assertIn("bin/nbns-netbsd4/nbns-advertiser -> /Volumes/dk2/samba4/nbns-advertiser", text)
+        self.assertIn("bin/nbns-netbsd4le/nbns-advertiser -> /Volumes/dk2/samba4/nbns-advertiser", text)
         self.assertIn("generated nbns marker -> /Volumes/dk2/samba4/private/nbns.enabled", text)
 
     def test_deploy_install_nbns_dry_run_mentions_marker(self) -> None:
@@ -2876,7 +2876,7 @@ class CliTests(unittest.TestCase):
             "TC_SAMBA_USER": "admin",
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4", True, "ok")]):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.deploy.probe_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with redirect_stdout(output):
