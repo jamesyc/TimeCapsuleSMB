@@ -1064,6 +1064,65 @@ int main(void) {{
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertEqual(run.stdout.strip(), "sys=waMA=80:EA:96:E6:58:68,adVF=0x1010")
 
+    def test_mdns_advertiser_normalizes_airport_mac_fields_to_apple_style(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <stdio.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+int main(void) {{
+    struct config cfg;
+    char out[256];
+
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.airport_wama, sizeof(cfg.airport_wama), "%s", "80:ea:96:e6:58:68");
+    snprintf(cfg.airport_rama, sizeof(cfg.airport_rama), "%s", "80-ea-96-eb-2e-7d");
+    snprintf(cfg.airport_ram2, sizeof(cfg.airport_ram2), "%s", "80:EA:96:EB:2E:7C");
+    snprintf(cfg.airport_syap, sizeof(cfg.airport_syap), "%s", "119");
+
+    if (build_airport_txt(out, sizeof(out), &cfg) != 0) {{
+        return 1;
+    }}
+    puts(out);
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_airport_txt_normalization")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(
+            run.stdout.strip(),
+            "waMA=80-EA-96-E6-58-68,raMA=80-EA-96-EB-2E-7D,raM2=80-EA-96-EB-2E-7C,syAP=119",
+        )
+
+    def test_mdns_advertiser_rejects_invalid_airport_mac_field(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <stdio.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+int main(void) {{
+    struct config cfg;
+    char out[256];
+
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.airport_wama, sizeof(cfg.airport_wama), "%s", "80:ea:96:e6:58");
+    snprintf(cfg.airport_syap, sizeof(cfg.airport_syap), "%s", "119");
+
+    if (build_airport_txt(out, sizeof(out), &cfg) == 0) {{
+        return 1;
+    }}
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_airport_txt_invalid_mac")
+        self.assertEqual(run.returncode, 0, run.stderr)
+
     def test_mdns_advertiser_extracts_service_type_from_arbitrary_instance_fqdn(self) -> None:
         if shutil.which("cc") is None:
             self.skipTest("cc not available")

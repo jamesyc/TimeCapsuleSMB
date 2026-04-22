@@ -531,13 +531,47 @@ static int build_adisk_system_txt(char *out, size_t out_len, const char *wama) {
     return 0;
 }
 
-static int validate_mac_addr(const char *value, const char *field_name) {
-    char scratch[128];
+static int normalize_mac_for_airport_txt(char *out, size_t out_len, const char *value, const char *field_name) {
+    size_t in_i = 0;
+    size_t hex_count = 0;
+    char hex_digits[13];
 
-    if (build_adisk_system_txt(scratch, sizeof(scratch), value) != 0) {
+    if (out_len < 18) {
+        return -1;
+    }
+    if (value == NULL || value[0] == '\0') {
         fprintf(stderr, "%s must be a MAC address\n", field_name);
         return -1;
     }
+
+    while (value[in_i] != '\0') {
+        unsigned char ch = (unsigned char)value[in_i];
+        if (ch == ':' || ch == '-') {
+            in_i++;
+            continue;
+        }
+        if (!isxdigit(ch)) {
+            fprintf(stderr, "%s must be a MAC address\n", field_name);
+            return -1;
+        }
+        if (hex_count >= 12) {
+            fprintf(stderr, "%s must be a MAC address\n", field_name);
+            return -1;
+        }
+        hex_digits[hex_count++] = (char)toupper(ch);
+        in_i++;
+    }
+
+    if (hex_count != 12) {
+        fprintf(stderr, "%s must be a MAC address\n", field_name);
+        return -1;
+    }
+    hex_digits[12] = '\0';
+
+    snprintf(out, out_len, "%c%c-%c%c-%c%c-%c%c-%c%c-%c%c",
+             hex_digits[0], hex_digits[1], hex_digits[2], hex_digits[3],
+             hex_digits[4], hex_digits[5], hex_digits[6], hex_digits[7],
+             hex_digits[8], hex_digits[9], hex_digits[10], hex_digits[11]);
     return 0;
 }
 
@@ -615,6 +649,13 @@ static int build_airport_txt(char *out, size_t out_len, const struct config *cfg
     int written;
     size_t off = 0;
     int appended = 0;
+    char normalized_wama[18];
+    char normalized_rama[18];
+    char normalized_ram2[18];
+
+    normalized_wama[0] = '\0';
+    normalized_rama[0] = '\0';
+    normalized_ram2[0] = '\0';
 
     #define APPEND_AIRPORT_CHUNK(...) \
         do { \
@@ -636,9 +677,12 @@ static int build_airport_txt(char *out, size_t out_len, const struct config *cfg
     if (!is_airport_enabled(cfg)) {
         return -1;
     }
-    if ((cfg->airport_wama[0] != '\0' && validate_mac_addr(cfg->airport_wama, "airport waMA") != 0) ||
-        (cfg->airport_rama[0] != '\0' && validate_mac_addr(cfg->airport_rama, "airport raMA") != 0) ||
-        (cfg->airport_ram2[0] != '\0' && validate_mac_addr(cfg->airport_ram2, "airport raM2") != 0) ||
+    if ((cfg->airport_wama[0] != '\0' &&
+         normalize_mac_for_airport_txt(normalized_wama, sizeof(normalized_wama), cfg->airport_wama, "airport waMA") != 0) ||
+        (cfg->airport_rama[0] != '\0' &&
+         normalize_mac_for_airport_txt(normalized_rama, sizeof(normalized_rama), cfg->airport_rama, "airport raMA") != 0) ||
+        (cfg->airport_ram2[0] != '\0' &&
+         normalize_mac_for_airport_txt(normalized_ram2, sizeof(normalized_ram2), cfg->airport_ram2, "airport raM2") != 0) ||
         (cfg->airport_rast[0] != '\0' && validate_airport_ascii_field(cfg->airport_rast, "airport raSt") != 0) ||
         (cfg->airport_rana[0] != '\0' && validate_airport_ascii_field(cfg->airport_rana, "airport raNA") != 0) ||
         (cfg->airport_syfl[0] != '\0' && validate_airport_ascii_field(cfg->airport_syfl, "airport syFl") != 0) ||
@@ -652,9 +696,9 @@ static int build_airport_txt(char *out, size_t out_len, const struct config *cfg
         return -1;
     }
 
-    APPEND_AIRPORT_FIELD("waMA=%s", cfg->airport_wama);
-    APPEND_AIRPORT_FIELD("raMA=%s", cfg->airport_rama);
-    APPEND_AIRPORT_FIELD("raM2=%s", cfg->airport_ram2);
+    APPEND_AIRPORT_FIELD("waMA=%s", normalized_wama);
+    APPEND_AIRPORT_FIELD("raMA=%s", normalized_rama);
+    APPEND_AIRPORT_FIELD("raM2=%s", normalized_ram2);
     APPEND_AIRPORT_FIELD("raSt=%s", cfg->airport_rast);
     APPEND_AIRPORT_FIELD("raNA=%s", cfg->airport_rana);
     APPEND_AIRPORT_FIELD("syFl=%s", cfg->airport_syfl);
