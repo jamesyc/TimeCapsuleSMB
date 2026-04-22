@@ -1077,7 +1077,7 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=False):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
-                            with mock.patch("timecapsulesmb.cli.configure.infer_mdns_device_model_from_syap", return_value=None):
+                            with mock.patch("timecapsulesmb.cli.configure.infer_mdns_device_model_from_airport_syap", return_value=None):
                                 with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
                                     with redirect_stdout(output):
                                         rc = configure.main([])
@@ -1205,7 +1205,7 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=False):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
-                            with mock.patch("timecapsulesmb.cli.configure.infer_mdns_device_model_from_syap", return_value=None):
+                            with mock.patch("timecapsulesmb.cli.configure.infer_mdns_device_model_from_airport_syap", return_value=None):
                                 with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
                                     with redirect_stdout(output):
                                         rc = configure.main([])
@@ -1246,7 +1246,7 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.tcp_open", return_value=False):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
-                            with mock.patch("timecapsulesmb.cli.configure.infer_mdns_device_model_from_syap", return_value=None):
+                            with mock.patch("timecapsulesmb.cli.configure.infer_mdns_device_model_from_airport_syap", return_value=None):
                                 with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
                                     with redirect_stdout(output):
                                         rc = configure.main([])
@@ -1863,7 +1863,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -1898,7 +1898,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -1924,7 +1924,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -1996,6 +1996,30 @@ class CliTests(unittest.TestCase):
             "The configured syAP is invalid.",
         )
 
+    def test_deploy_rejects_device_model_that_does_not_match_airport_syap(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_AIRPORT_SYAP": "119",
+            "TC_SAMBA_USER": "admin",
+        }
+        with self.assertRaises(SystemExit) as ctx:
+            with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
+                deploy.main(["--dry-run"])
+        self.assertEqual(
+            str(ctx.exception),
+            "TC_MDNS_DEVICE_MODEL is invalid. Run the `configure` command again.\n"
+            "TC_MDNS_DEVICE_MODEL must match the configured syAP.",
+        )
+
     def test_deploy_rejects_missing_remote_interface(self) -> None:
         values = self.make_valid_env()
         with self.assertRaises(SystemExit) as ctx:
@@ -2017,7 +2041,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -2051,7 +2075,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -2086,7 +2110,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -2131,7 +2155,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -2176,7 +2200,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -2217,7 +2241,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -2257,7 +2281,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -2290,7 +2314,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -2318,7 +2342,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -2361,7 +2385,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -2393,7 +2417,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -2424,7 +2448,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -2465,7 +2489,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -2508,7 +2532,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -2553,7 +2577,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -2587,7 +2611,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -2617,7 +2641,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -2644,7 +2668,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -2668,7 +2692,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -2702,7 +2726,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -2817,7 +2841,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
@@ -2847,7 +2871,7 @@ class CliTests(unittest.TestCase):
             "TC_NET_IFACE": "bridge0",
             "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }

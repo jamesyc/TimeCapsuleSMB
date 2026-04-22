@@ -13,6 +13,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.core.config import (
+    AIRPORT_SYAP_TO_MODEL,
     AppConfig,
     build_adisk_share_txt,
     build_instance_fqdn,
@@ -28,6 +29,7 @@ from timecapsulesmb.core.config import (
     validate_airport_syap,
     validate_dns_name,
     validate_config_values,
+    validate_mdns_device_model_matches_syap,
     validate_mdns_device_model,
     validate_mdns_host_label,
     validate_mdns_instance_name,
@@ -97,6 +99,25 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(validate_airport_syap("999", "Airport Utility syAP code"), "The configured syAP is invalid.")
         self.assertEqual(validate_airport_syap("abc", "Airport Utility syAP code"), "Airport Utility syAP code must contain only digits.")
         self.assertEqual(validate_airport_syap("", "Airport Utility syAP code"), "Airport Utility syAP code cannot be blank.")
+
+    def test_airport_syap_to_model_mapping_matches_supported_models(self) -> None:
+        self.assertEqual(AIRPORT_SYAP_TO_MODEL["106"], "TimeCapsule6,106")
+        self.assertEqual(AIRPORT_SYAP_TO_MODEL["109"], "TimeCapsule6,109")
+        self.assertEqual(AIRPORT_SYAP_TO_MODEL["113"], "TimeCapsule6,113")
+        self.assertEqual(AIRPORT_SYAP_TO_MODEL["116"], "TimeCapsule6,116")
+        self.assertEqual(AIRPORT_SYAP_TO_MODEL["119"], "TimeCapsule8,119")
+
+    def test_validate_mdns_device_model_matches_syap_requires_exact_match(self) -> None:
+        self.assertIsNone(validate_mdns_device_model_matches_syap("119", "TimeCapsule8,119"))
+        self.assertEqual(
+            validate_mdns_device_model_matches_syap("119", "TimeCapsule"),
+            "TC_MDNS_DEVICE_MODEL must match the configured syAP.",
+        )
+        self.assertEqual(
+            validate_mdns_device_model_matches_syap("119", "TimeCapsule6,113"),
+            "TC_MDNS_DEVICE_MODEL must match the configured syAP.",
+        )
+        self.assertIsNone(validate_mdns_device_model_matches_syap("", "TimeCapsule"))
 
     def test_write_env_file_round_trips_configure_id(self) -> None:
         values = dict(DEFAULTS)
@@ -342,10 +363,21 @@ class ConfigTests(unittest.TestCase):
         values["TC_HOST"] = "root@10.0.0.2"
         values["TC_PASSWORD"] = "pw"
         values["TC_AIRPORT_SYAP"] = "119"
+        values["TC_MDNS_DEVICE_MODEL"] = "TimeCapsule8,119"
         self.assertEqual(validate_config_values(values, profile="deploy"), [])
         values["TC_MDNS_HOST_LABEL"] = "Time Capsule"
         errors = validate_config_values(values, profile="deploy")
         self.assertEqual(errors[0].key, "TC_MDNS_HOST_LABEL")
+
+    def test_validate_config_values_rejects_generic_device_model_when_syap_is_specific(self) -> None:
+        values = dict(DEFAULTS)
+        values["TC_HOST"] = "root@10.0.0.2"
+        values["TC_PASSWORD"] = "pw"
+        values["TC_AIRPORT_SYAP"] = "119"
+        values["TC_MDNS_DEVICE_MODEL"] = "TimeCapsule"
+        errors = validate_config_values(values, profile="deploy")
+        self.assertEqual(errors[0].key, "TC_MDNS_DEVICE_MODEL")
+        self.assertEqual(errors[0].message, "TC_MDNS_DEVICE_MODEL must match the configured syAP.")
 
     def test_app_config_require_raises_for_missing_value(self) -> None:
         config = AppConfig({"TC_HOST": ""})

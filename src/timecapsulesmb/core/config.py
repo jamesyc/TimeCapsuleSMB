@@ -28,6 +28,13 @@ VALID_MDNS_DEVICE_MODELS = {
     "TimeCapsule6,116",
     "TimeCapsule8,119",
 }
+AIRPORT_SYAP_TO_MODEL = {
+    "106": "TimeCapsule6,106",
+    "109": "TimeCapsule6,109",
+    "113": "TimeCapsule6,113",
+    "116": "TimeCapsule6,116",
+    "119": "TimeCapsule8,119",
+}
 MAX_SAMBA_USER_BYTES = 32
 
 DEFAULTS = {
@@ -361,6 +368,19 @@ def validate_airport_syap(value: str, field_name: str) -> Optional[str]:
     return None
 
 
+def infer_mdns_device_model_from_airport_syap(syap: str) -> Optional[str]:
+    return AIRPORT_SYAP_TO_MODEL.get(syap)
+
+
+def validate_mdns_device_model_matches_syap(syap: str, device_model: str) -> Optional[str]:
+    expected_model = infer_mdns_device_model_from_airport_syap(syap)
+    if expected_model is None:
+        return None
+    if device_model != expected_model:
+        return "TC_MDNS_DEVICE_MODEL must match the configured syAP."
+    return None
+
+
 CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
     "TC_HOST": validate_nonempty,
     "TC_NET_IFACE": validate_net_iface,
@@ -437,6 +457,13 @@ def validate_config_values(values: dict[str, str], *, profile: str) -> list[Conf
         error = validator(values.get(key, ""), key)
         if error:
             errors.append(ConfigValidationError(key, error))
+    if profile in {"deploy", "activate", "doctor"}:
+        syap_model_error = validate_mdns_device_model_matches_syap(
+            values.get("TC_AIRPORT_SYAP", ""),
+            values.get("TC_MDNS_DEVICE_MODEL", ""),
+        )
+        if syap_model_error:
+            errors.append(ConfigValidationError("TC_MDNS_DEVICE_MODEL", syap_model_error))
     return errors
 
 

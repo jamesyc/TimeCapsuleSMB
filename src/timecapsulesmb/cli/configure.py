@@ -11,6 +11,7 @@ from timecapsulesmb.core.config import (
     DEFAULTS,
     ENV_PATH,
     extract_host,
+    infer_mdns_device_model_from_airport_syap,
     parse_env_values,
     upsert_env_key,
     write_env_file,
@@ -22,14 +23,6 @@ from timecapsulesmb.discovery.bonjour import Discovered, discover, prefer_routab
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import run_ssh
-
-AIRPORT_SYAP_TO_MODEL = {
-    "106": "TimeCapsule6,106",
-    "109": "TimeCapsule6,109",
-    "113": "TimeCapsule6,113",
-    "116": "TimeCapsule6,116",
-    "119": "TimeCapsule8,119",
-}
 
 HIDDEN_CONFIG_KEYS = {"TC_SSH_OPTS", "TC_CONFIGURE_ID"}
 NO_SAVED_VALUE_HINT_KEYS = {"TC_PASSWORD", *HIDDEN_CONFIG_KEYS}
@@ -130,10 +123,6 @@ def validate_ssh_target_if_reachable(host: str, password: str, ssh_opts: str) ->
     if not tcp_open(extract_host(host), 22):
         return None
     return validate_ssh_target(host, password, ssh_opts)
-
-
-def infer_mdns_device_model_from_syap(syap: str) -> Optional[str]:
-    return AIRPORT_SYAP_TO_MODEL.get(syap)
 
 
 def validated_value_or_empty(key: str, value: str, label: str) -> str:
@@ -315,7 +304,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 values[key] = prompt_valid_config_value(key, label, DEFAULTS["TC_AIRPORT_SYAP"])
                 continue
             if key == "TC_MDNS_DEVICE_MODEL":
-                syap_derived_model = infer_mdns_device_model_from_syap(values.get("TC_AIRPORT_SYAP", ""))
+                syap_derived_model = infer_mdns_device_model_from_airport_syap(values.get("TC_AIRPORT_SYAP", ""))
                 derived_model_choice = (
                     ConfigureValueChoice(value=syap_derived_model, source="derived")
                     if syap_derived_model
