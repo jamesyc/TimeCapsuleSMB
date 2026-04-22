@@ -58,6 +58,30 @@ from timecapsulesmb.device.probe import build_device_paths, discover_mounted_vol
 
 
 class DeployModuleTests(unittest.TestCase):
+    def _compile_and_run_c_helper(self, source: str, bin_name: str, args: list[str] | None = None) -> subprocess.CompletedProcess[str]:
+        if shutil.which("cc") is None:
+            self.skipTest("cc not available")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            c_path = tmp / f"{bin_name}.c"
+            bin_path = tmp / bin_name
+            c_path.write_text(source)
+            proc = subprocess.run(
+                ["cc", "-Wall", "-Wextra", "-Werror", str(c_path), "-o", str(bin_path)],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            return subprocess.run(
+                [str(bin_path), *(args or [])],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
     def test_nt_hash_hex_is_stable(self) -> None:
         self.assertEqual(nt_hash_hex("password"), "8846F7EAEE8FB117AD06BDD830B7586C")
 
@@ -1325,50 +1349,285 @@ int main(void) {{
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertEqual(run.stdout.splitlines(), ["2", "Home"])
 
-    def test_mdns_advertiser_save_snapshot_falls_back_to_raw_capture(self) -> None:
-        content = (REPO_ROOT / "build" / "mdns-advertiser.c").read_text()
-        self.assertIn(
-            "Keep a raw LAN-wide dump in allmdns.txt for diagnostics, but\n"
-            "             * only refresh applemdns.txt when the capture can be tied back to\n"
-            "             * this unit's _airport identity.",
-            content,
-        )
-        self.assertIn(
-            'if (cfg.save_all_snapshot_path[0] != \'\\0\' &&\n'
-            '                write_snapshot_file_atomic(cfg.save_all_snapshot_path, &captured_records) != 0) {',
-            content,
-        )
+    def test_mdns_advertiser_snapshot_txt_round_trips_text_and_binary(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <stdio.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
 
-    def test_mdns_advertiser_uses_takeover_retry_ladder_and_shared_bind_flag(self) -> None:
-        content = (REPO_ROOT / "build" / "mdns-advertiser.c").read_text()
-        self.assertIn("static int mdnsresponder_is_alive(void)", content)
-        self.assertIn("stat[0] != 'Z'", content)
-        self.assertIn('/usr/bin/pkill mDNSResponder >/dev/null 2>&1 || true', content)
-        self.assertIn('/usr/bin/pkill -9 mDNSResponder >/dev/null 2>&1 || true', content)
-        self.assertIn("retry_delays_ms[TAKEOVER_RETRY_COUNT] = {0, 100, 200, 300, 400, 500}", content)
-        self.assertIn('strcmp(argv[i], "--shared-bind") == 0', content)
-        self.assertIn("using %s bind", content)
+int main(int argc, char **argv) {{
+    struct service_record_set set;
+    struct service_record_set loaded;
+    struct service_record *record;
+    unsigned char binary_txt[] = {{'n','e','t','b','i','o','s','=','\\xff','\\x80','r'}};
 
-    def test_mdns_advertiser_schedules_startup_burst_before_steady_interval(self) -> None:
-        content = (REPO_ROOT / "build" / "mdns-advertiser.c").read_text()
-        self.assertIn("startup_burst_offsets_ms[STARTUP_BURST_COUNT] = {0, 250, 1000, 2000, 3000, 4000, 5000}", content)
-        self.assertIn("startup_burst_start_ms = monotonic_millis();", content)
-        self.assertIn("while (startup_burst_index < STARTUP_BURST_COUNT &&", content)
+    if (argc != 2) {{
+        return 2;
+    }}
+    memset(&set, 0, sizeof(set));
+    record = &set.records[set.count++];
+    snprintf(record->service_type, sizeof(record->service_type), "%s", "_smb._tcp.local.");
+    snprintf(record->instance_name, sizeof(record->instance_name), "%s", "Disk");
+    snprintf(record->instance_fqdn, sizeof(record->instance_fqdn), "%s", "Disk._smb._tcp.local.");
+    snprintf(record->host_label, sizeof(record->host_label), "%s", "DiskHost");
+    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s", "DiskHost.local.");
+    record->port = 445;
+    snprintf(record->txt[0], sizeof(record->txt[0]), "%s", "sys=waMA=80:EA:96:E6:58:68,adVF=0x1010");
+    record->txt_len[0] = (uint8_t)strlen(record->txt[0]);
+    record->txt_count = 1;
 
-    def test_mdns_advertiser_suppresses_snapshot_device_info_and_afp(self) -> None:
-        content = (REPO_ROOT / "build" / "mdns-advertiser.c").read_text()
-        self.assertIn('name_equals(service_type, "_smb._tcp.local.")', content)
-        self.assertIn('name_equals(service_type, "_adisk._tcp.local.")', content)
-        self.assertIn('name_equals(service_type, "_device-info._tcp.local.")', content)
-        self.assertIn('name_equals(service_type, "_afpovertcp._tcp.local.")', content)
+    memcpy(record->txt[1], binary_txt, sizeof(binary_txt));
+    record->txt[1][sizeof(binary_txt)] = '\\0';
+    record->txt_len[1] = (uint8_t)sizeof(binary_txt);
+    record->txt_count = 2;
 
-    def test_mdns_advertiser_keeps_managed_device_info_when_snapshot_mode_is_enabled(self) -> None:
-        content = (REPO_ROOT / "build" / "mdns-advertiser.c").read_text()
-        self.assertIn("if (add_device_info_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {", content)
-        self.assertIn("if (cfg->device_model[0] != '\\0' &&\n        build_instance_fqdn(device_info_instance_fqdn", content)
-        self.assertIn("} else if (cfg->device_model[0] != '\\0' &&\n                   name_equals(qname, cfg->device_info_service_type)", content)
-        self.assertIn("} else if (cfg->device_model[0] != '\\0' &&\n                   name_equals(qname, device_info_instance_fqdn))", content)
-        self.assertIn("if (want_device_info_ptr || want_device_info_srv || want_device_info_txt) {", content)
+    if (write_snapshot_file_atomic(argv[1], &set) != 0) {{
+        return 3;
+    }}
+    memset(&loaded, 0, sizeof(loaded));
+    if (load_snapshot_file(argv[1], &loaded) != 0) {{
+        return 4;
+    }}
+    if (loaded.count != 1 || loaded.records[0].txt_count != 2) {{
+        return 5;
+    }}
+    if (loaded.records[0].txt_len[0] != strlen("sys=waMA=80:EA:96:E6:58:68,adVF=0x1010")) {{
+        return 6;
+    }}
+    if (memcmp(loaded.records[0].txt[1], binary_txt, sizeof(binary_txt)) != 0) {{
+        return 7;
+    }}
+    printf("%u\\n%u\\n", (unsigned)loaded.records[0].txt_len[0], (unsigned)loaded.records[0].txt_len[1]);
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snapshot_path = Path(tmpdir) / "applemdns.txt"
+            run = self._compile_and_run_c_helper(source, "mdns_snapshot_txt_roundtrip", [str(snapshot_path)])
+            self.assertEqual(run.returncode, 0, run.stderr)
+            content = snapshot_path.read_text()
+            self.assertIn("TXT=sys=waMA=80:EA:96:E6:58:68,adVF=0x1010", content)
+            self.assertIn("TXT_HEX=", content)
+            self.assertNotIn("TXT_HEX=7379733d77614d41", content)
+
+    def test_mdns_advertiser_snapshot_suppression_rules_behave(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <stdio.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+int main(void) {{
+    printf("%d\\n", is_suppressed_snapshot_service_type("_smb._tcp.local."));
+    printf("%d\\n", is_suppressed_snapshot_service_type("_adisk._tcp.local."));
+    printf("%d\\n", is_suppressed_snapshot_service_type("_device-info._tcp.local."));
+    printf("%d\\n", is_suppressed_snapshot_service_type("_afpovertcp._tcp.local."));
+    printf("%d\\n", is_suppressed_snapshot_service_type("_airport._tcp.local."));
+    printf("%d\\n", is_suppressed_snapshot_service_type("_sleep-proxy._udp.local."));
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_snapshot_suppression")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.splitlines(), ["1", "1", "1", "1", "0", "0"])
+
+    def test_mdns_advertiser_splits_snapshot_announcements_and_keeps_managed_device_info(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <stdio.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+
+ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
+                    const struct sockaddr *dest, socklen_t dest_len);
+
+#define sendto fake_sendto
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+#undef sendto
+
+static unsigned char captured_packets[16][BUF_SIZE];
+static size_t captured_lengths[16];
+static size_t captured_count = 0;
+
+ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
+                    const struct sockaddr *dest, socklen_t dest_len) {{
+    (void)sockfd;
+    (void)flags;
+    (void)dest;
+    (void)dest_len;
+    if (captured_count < 16) {{
+        memcpy(captured_packets[captured_count], buf, len);
+        captured_lengths[captured_count] = len;
+        captured_count++;
+    }}
+    return (ssize_t)len;
+}}
+
+static int count_rr_type(const unsigned char *packet, size_t packet_len, unsigned short want_type) {{
+    struct dns_header hdr;
+    size_t cursor = sizeof(hdr);
+    unsigned short total_answers;
+    int matches = 0;
+    unsigned short i;
+
+    memcpy(&hdr, packet, sizeof(hdr));
+    total_answers = ntohs(hdr.ancount);
+    for (i = 0; i < total_answers; i++) {{
+        char name[MAX_NAME];
+        unsigned short rrtype;
+        unsigned short rrclass;
+        unsigned int ttl;
+        unsigned short rdlength;
+
+        if (decode_name(packet, packet_len, &cursor, name, sizeof(name)) != 0 || cursor + 10 > packet_len) {{
+            return -1;
+        }}
+        memcpy(&rrtype, packet + cursor, 2);
+        memcpy(&rrclass, packet + cursor + 2, 2);
+        memcpy(&ttl, packet + cursor + 4, 4);
+        memcpy(&rdlength, packet + cursor + 8, 2);
+        (void)rrclass;
+        (void)ttl;
+        cursor += 10;
+        rrtype = ntohs(rrtype);
+        rdlength = ntohs(rdlength);
+        if (cursor + rdlength > packet_len) {{
+            return -1;
+        }}
+        if (rrtype == want_type) {{
+            matches++;
+        }}
+        cursor += rdlength;
+    }}
+    return matches;
+}}
+
+int main(void) {{
+    struct config cfg;
+    struct service_record_set snapshot;
+    struct sockaddr_in dest;
+    struct service_record *record;
+    struct service_record_set parsed;
+    struct service_type_set types;
+    int total_a = 0;
+    int saw_device_info = 0;
+    int saw_afp = 0;
+    size_t i;
+
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.instance_name, sizeof(cfg.instance_name), "%s", "Time Capsule Samba 4");
+    snprintf(cfg.host_label, sizeof(cfg.host_label), "%s", "timecapsulesamba4");
+    snprintf(cfg.host_fqdn, sizeof(cfg.host_fqdn), "%s", "timecapsulesamba4.local.");
+    snprintf(cfg.service_type, sizeof(cfg.service_type), "%s", "_smb._tcp.local.");
+    snprintf(cfg.device_info_service_type, sizeof(cfg.device_info_service_type), "%s", "_device-info._tcp.local.");
+    snprintf(cfg.adisk_service_type, sizeof(cfg.adisk_service_type), "%s", "_adisk._tcp.local.");
+    snprintf(cfg.airport_service_type, sizeof(cfg.airport_service_type), "%s", "_airport._tcp.local.");
+    snprintf(cfg.device_model, sizeof(cfg.device_model), "%s", "TimeCapsule8,119");
+    snprintf(cfg.adisk_share_name, sizeof(cfg.adisk_share_name), "%s", "Data");
+    snprintf(cfg.adisk_disk_key, sizeof(cfg.adisk_disk_key), "%s", "dk2");
+    snprintf(cfg.adisk_uuid, sizeof(cfg.adisk_uuid), "%s", "c4f673b8-c422-4da7-92a1-54bffe406af2");
+    snprintf(cfg.adisk_sys_wama, sizeof(cfg.adisk_sys_wama), "%s", "80:EA:96:E6:58:68");
+    cfg.port = 445;
+    cfg.adisk_port = 9;
+    cfg.ttl = 120;
+    cfg.ipv4_addr = inet_addr("192.168.1.217");
+
+    memset(&snapshot, 0, sizeof(snapshot));
+
+    record = &snapshot.records[snapshot.count++];
+    snprintf(record->service_type, sizeof(record->service_type), "%s", "_sleep-proxy._udp.local.");
+    snprintf(record->instance_name, sizeof(record->instance_name), "%s", "Sleep");
+    snprintf(record->instance_fqdn, sizeof(record->instance_fqdn), "%s", "Sleep._sleep-proxy._udp.local.");
+    snprintf(record->host_label, sizeof(record->host_label), "%s", "Jamess-AirPort-Time-Capsule");
+    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s", "Jamess-AirPort-Time-Capsule.local.");
+    record->port = 60459;
+
+    record = &snapshot.records[snapshot.count++];
+    snprintf(record->service_type, sizeof(record->service_type), "%s", "_airport._tcp.local.");
+    snprintf(record->instance_name, sizeof(record->instance_name), "%s", "James's AirPort Time Capsule");
+    snprintf(record->instance_fqdn, sizeof(record->instance_fqdn), "%s", "James's AirPort Time Capsule._airport._tcp.local.");
+    snprintf(record->host_label, sizeof(record->host_label), "%s", "Jamess-AirPort-Time-Capsule");
+    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s", "Jamess-AirPort-Time-Capsule.local.");
+    record->port = 5009;
+    snprintf(record->txt[0], sizeof(record->txt[0]), "%s",
+             "waMA=80-EA-96-E6-58-68,raMA=80-EA-96-EB-2E-7D,raM2=80-EA-96-EB-2E-7C,raSt=3,raNA=0,syFl=0xA0C,syAP=119,syVs=7.9.1,srcv=79100.2,bjSd=99");
+    record->txt_len[0] = (uint8_t)strlen(record->txt[0]);
+    record->txt_count = 1;
+
+    record = &snapshot.records[snapshot.count++];
+    snprintf(record->service_type, sizeof(record->service_type), "%s", "_afpovertcp._tcp.local.");
+    snprintf(record->instance_name, sizeof(record->instance_name), "%s", "AFP");
+    snprintf(record->instance_fqdn, sizeof(record->instance_fqdn), "%s", "AFP._afpovertcp._tcp.local.");
+    snprintf(record->host_label, sizeof(record->host_label), "%s", "Jamess-AirPort-Time-Capsule");
+    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s", "Jamess-AirPort-Time-Capsule.local.");
+    record->port = 548;
+
+    record = &snapshot.records[snapshot.count++];
+    snprintf(record->service_type, sizeof(record->service_type), "%s", "_device-info._tcp.local.");
+    snprintf(record->instance_name, sizeof(record->instance_name), "%s", "Snapshot Device");
+    snprintf(record->instance_fqdn, sizeof(record->instance_fqdn), "%s", "Snapshot Device._device-info._tcp.local.");
+    snprintf(record->host_label, sizeof(record->host_label), "%s", "Jamess-AirPort-Time-Capsule");
+    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s", "Jamess-AirPort-Time-Capsule.local.");
+    record->port = 0;
+    snprintf(record->txt[0], sizeof(record->txt[0]), "%s", "model=Wrong");
+    record->txt_len[0] = (uint8_t)strlen(record->txt[0]);
+    record->txt_count = 1;
+
+    memset(&dest, 0, sizeof(dest));
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(5353);
+    dest.sin_addr.s_addr = inet_addr("224.0.0.251");
+
+    if (send_announcement(1, &dest, &cfg, &snapshot, 1) != 0) {{
+        return 10;
+    }}
+    if (captured_count < 3) {{
+        return 11;
+    }}
+    for (i = 0; i < captured_count; i++) {{
+        int count_a;
+        memset(&parsed, 0, sizeof(parsed));
+        memset(&types, 0, sizeof(types));
+        if (parse_snapshot_rrs(captured_packets[i], captured_lengths[i], &parsed, &types) != 0) {{
+            return 12;
+        }}
+        if (service_type_set_contains(&types, "_device-info._tcp.local.")) {{
+            saw_device_info = 1;
+        }}
+        if (service_type_set_contains(&types, "_afpovertcp._tcp.local.")) {{
+            saw_afp = 1;
+        }}
+        count_a = count_rr_type(captured_packets[i], captured_lengths[i], DNS_TYPE_A);
+        if (count_a < 0) {{
+            return 13;
+        }}
+        total_a += count_a;
+    }}
+    if (!saw_device_info) {{
+        return 14;
+    }}
+    if (saw_afp) {{
+        return 15;
+    }}
+    if (total_a != 2) {{
+        return 16;
+    }}
+    printf("%lu\\n%d\\n%d\\n", (unsigned long)captured_count, saw_device_info, total_a);
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_announcement_split_test")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        lines = run.stdout.splitlines()
+        self.assertGreaterEqual(int(lines[0]), 3)
+        self.assertEqual(lines[1:], ["1", "2"])
 
     def test_nbns_advertiser_rejects_overlong_name_before_truncation(self) -> None:
         if shutil.which("cc") is None:
