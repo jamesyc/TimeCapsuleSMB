@@ -493,21 +493,26 @@ start_smbd() {
 
 start_mdns() {
     if [ ! -x "$MDNS_BIN" ]; then
+        log "mdns advertiser launch skipped; missing $MDNS_BIN"
         return 0
     fi
 
     now_ts=$(/bin/date +%s)
     elapsed=$((now_ts - SCRIPT_START_TS))
+    log "mdns startup: elapsed=${elapsed}s delay=${MDNS_STARTUP_DELAY_SECONDS}s"
     if [ "$elapsed" -lt "$MDNS_STARTUP_DELAY_SECONDS" ]; then
+        log "mdns startup: sleeping $((MDNS_STARTUP_DELAY_SECONDS - elapsed))s before launch"
         sleep $((MDNS_STARTUP_DELAY_SECONDS - elapsed))
     fi
 
     iface_mac=$(get_iface_mac "$NET_IFACE" || true)
+    log "mdns startup: interface $NET_IFACE mac=${iface_mac:-missing}"
     if [ -z "$iface_mac" ]; then
         log "mdns advertiser launch skipped; missing $NET_IFACE MAC address"
         return 0
     fi
 
+    log "mdns startup: killing prior $MDNS_PROC_NAME processes"
     /usr/bin/pkill "$MDNS_PROC_NAME" >/dev/null 2>&1 || true
     sleep 1
 
@@ -520,6 +525,7 @@ start_mdns() {
         --host "$MDNS_HOST_LABEL" \
         --device-model "$MDNS_DEVICE_MODEL"
     if derive_airport_fields "$iface_mac"; then
+        log "mdns startup: derived airport fields wama=${AIRPORT_WAMA:-missing} rama=${AIRPORT_RAMA:-missing} ram2=${AIRPORT_RAM2:-missing} syvs=${AIRPORT_SYVS:-missing} srcv=${AIRPORT_SRCV:-missing}"
         set -- "$@" \
             --airport-wama "$AIRPORT_WAMA" \
             --airport-rama "$AIRPORT_RAMA" \
@@ -540,16 +546,24 @@ start_mdns() {
         --adisk-uuid "$ADISK_UUID" \
         --adisk-sys-wama "$iface_mac" \
         --ipv4 "$BRIDGE0_IP"
+    log "mdns startup: final argv prepared"
     if [ "$MDNS_LOG_ENABLED" = "1" ]; then
+        log "mdns startup: debug logging enabled at $MDNS_LOG_FILE"
         trim_log_file "$MDNS_LOG_FILE" 131072
         printf '%s rc.local: launching mdns-advertiser\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>"$MDNS_LOG_FILE"
         "$@" >>"$MDNS_LOG_FILE" 2>&1 &
     else
+        log "mdns startup: debug logging disabled"
         "$@" >/dev/null 2>&1 &
     fi
-    if wait_for_process "$MDNS_PROC_NAME" 90; then
+    mdns_launch_pid=$!
+    log "mdns startup: launched background pid $mdns_launch_pid"
+    log "mdns startup: waiting for process match on $MDNS_PROC_NAME"
+    if wait_for_process "$MDNS_PROC_NAME" 100; then
+        log "mdns startup: wait_for_process succeeded"
         log "mdns advertiser launch requested"
     else
+        log "mdns startup: wait_for_process failed"
         log "mdns advertiser failed to stay running"
     fi
 }

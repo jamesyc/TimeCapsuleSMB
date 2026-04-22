@@ -761,7 +761,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('ensure_parent_dir "$smbd_ready_log"', rendered)
         self.assertIn('wait_for_smbd_ready "$smbd_ready_log"', rendered)
         self.assertIn(': > "$SMBD_READY_MARKER"', rendered)
-        self.assertIn('if wait_for_process "$MDNS_PROC_NAME" 90; then', rendered)
+        self.assertIn('if wait_for_process "$MDNS_PROC_NAME" 100; then', rendered)
         self.assertIn('log "smbd ready"', rendered)
 
     def test_common_script_extracts_smbd_log_path_from_config(self) -> None:
