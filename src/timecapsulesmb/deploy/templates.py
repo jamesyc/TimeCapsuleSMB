@@ -58,12 +58,15 @@ def build_template_bundle(
     smbd_log_file = "/mnt/Memory/samba4/var/log.smbd"
     smbd_max_log_size = "256"
     smbd_log_level_line = ""
+    mdns_log_enabled = "0"
+    mdns_log_file = "/mnt/Memory/samba4/var/mdns.log"
     if debug_logging:
         if not data_root:
             raise ValueError("data_root is required when debug_logging is enabled")
         smbd_log_file = f"{data_root}/samba4-logs/log.smbd"
         smbd_max_log_size = "1048576"
         smbd_log_level_line = "\n    log level = 5 vfs:8 fruit:8"
+        mdns_log_enabled = "1"
     return TemplateBundle(
         start_script_replacements={
             "__PAYLOAD_DIR_NAME__": shell_quote(values["TC_PAYLOAD_DIR_NAME"]),
@@ -77,6 +80,8 @@ def build_template_bundle(
             "__AIRPORT_SYAP__": shell_quote(values.get("TC_AIRPORT_SYAP", DEFAULTS["TC_AIRPORT_SYAP"])),
             "__ADISK_DISK_KEY__": shell_quote(adisk_disk_key),
             "__ADISK_UUID__": shell_quote(adisk_uuid),
+            "__MDNS_LOG_ENABLED__": mdns_log_enabled,
+            "__MDNS_LOG_FILE__": shell_quote(mdns_log_file),
         },
         watchdog_replacements={
             "__SMB_SHARE_NAME__": shell_quote(values["TC_SHARE_NAME"]),
@@ -88,6 +93,8 @@ def build_template_bundle(
             "__AIRPORT_SYAP__": shell_quote(values.get("TC_AIRPORT_SYAP", DEFAULTS["TC_AIRPORT_SYAP"])),
             "__ADISK_DISK_KEY__": shell_quote(adisk_disk_key),
             "__ADISK_UUID__": shell_quote(adisk_uuid),
+            "__MDNS_LOG_ENABLED__": mdns_log_enabled,
+            "__MDNS_LOG_FILE__": shell_quote(mdns_log_file),
         },
         smbconf_replacements={
             "__PAYLOAD_DIR_NAME__": values["TC_PAYLOAD_DIR_NAME"],

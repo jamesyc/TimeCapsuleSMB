@@ -125,7 +125,8 @@ struct service_type_set {
 
 static int name_equals(const char *a, const char *b);
 static int build_instance_fqdn(char *out, size_t out_len, const char *instance_name, const char *service_type);
-static int open_mdns_socket(int shared_bind, int log_bind_errors);
+static int open_mdns_socket(int shared_bind, int log_bind_errors, uint32_t ipv4_addr, const char *socket_role);
+static int is_airport_enabled(const struct config *cfg);
 static int add_rr_ptr(uint8_t *buf, size_t *off, size_t cap, const char *owner, const char *target, uint32_t ttl);
 static int add_rr_txt_empty(uint8_t *buf, size_t *off, size_t cap, const char *owner, uint32_t ttl);
 static int add_rr_txt_strings(uint8_t *buf, size_t *off, size_t cap, const char *owner, uint32_t ttl,
@@ -145,6 +146,83 @@ struct dns_header {
 static void on_signal(int signo) {
     (void)signo;
     g_stop = 1;
+}
+
+static const char *ipv4_to_string(uint32_t ipv4_addr, char *out, size_t out_len) {
+    struct in_addr addr;
+
+    addr.s_addr = ipv4_addr;
+    if (inet_ntop(AF_INET, &addr, out, out_len) == NULL) {
+        strncpy(out, "invalid", out_len - 1);
+        out[out_len - 1] = '\0';
+    }
+    return out;
+}
+
+static void log_startup_config(const struct config *cfg, int shared_bind) {
+    char ipv4_buf[INET_ADDRSTRLEN];
+
+    fprintf(stderr,
+            "mdns startup: mode=%s instance=%s host=%s ipv4=%s service=%s adisk=%s device_model=%s airport=%s\n",
+            shared_bind ? "shared" : "exclusive",
+            cfg->instance_name[0] != '\0' ? cfg->instance_name : "(empty)",
+            cfg->host_label[0] != '\0' ? cfg->host_label : "(empty)",
+            ipv4_to_string(cfg->ipv4_addr, ipv4_buf, sizeof(ipv4_buf)),
+            cfg->service_type[0] != '\0' ? cfg->service_type : "(empty)",
+            cfg->adisk_share_name[0] != '\0' ? "enabled" : "disabled",
+            cfg->device_model[0] != '\0' ? cfg->device_model : "(empty)",
+            is_airport_enabled(cfg) ? "enabled" : "disabled");
+}
+
+static void log_send_failure(const char *stage, const struct sockaddr_in *dest, int use_snapshot_records,
+                             const char *detail) {
+    char dest_ip[INET_ADDRSTRLEN];
+
+    fprintf(stderr,
+            "mdns send failure: stage=%s dest=%s:%u records=%s detail=%s\n",
+            stage,
+            ipv4_to_string(dest->sin_addr.s_addr, dest_ip, sizeof(dest_ip)),
+            (unsigned int)ntohs(dest->sin_port),
+            use_snapshot_records ? "snapshot" : "generated",
+            detail);
+    fprintf(stderr,
+            "mdns send failure: listener remains active; discovery may still work via received queries even though unsolicited announcements failed\n");
+}
+
+static void log_served_records(const struct config *cfg, const struct service_record_set *snapshot_records,
+                               int use_snapshot_records) {
+    fprintf(stderr, "serving summary: source=%s\n", use_snapshot_records ? "snapshot" : "generated");
+    fprintf(stderr, "serving service: type=%s instance=%s port=%u host=%s\n",
+            cfg->service_type, cfg->instance_name, (unsigned int)cfg->port, cfg->host_fqdn);
+    if (cfg->device_model[0] != '\0') {
+        fprintf(stderr, "serving service: type=%s instance=%s model=%s\n",
+                cfg->device_info_service_type, cfg->instance_name, cfg->device_model);
+    }
+    if (cfg->adisk_share_name[0] != '\0') {
+        fprintf(stderr, "serving service: type=%s instance=%s share=%s disk_key=%s uuid=%s\n",
+                cfg->adisk_service_type, cfg->instance_name, cfg->adisk_share_name,
+                cfg->adisk_disk_key, cfg->adisk_uuid);
+    }
+    if (is_airport_enabled(cfg)) {
+        fprintf(stderr, "serving service: type=%s instance=%s syAP=%s syVs=%s srcv=%s\n",
+                cfg->airport_service_type, cfg->instance_name,
+                cfg->airport_syap[0] != '\0' ? cfg->airport_syap : "(none)",
+                cfg->airport_syvs[0] != '\0' ? cfg->airport_syvs : "(none)",
+                cfg->airport_srcv[0] != '\0' ? cfg->airport_srcv : "(none)");
+    }
+    if (use_snapshot_records) {
+        size_t i;
+        for (i = 0; i < snapshot_records->count; i++) {
+            const struct service_record *record = &snapshot_records->records[i];
+            fprintf(stderr, "serving snapshot record[%lu]: type=%s instance=%s host=%s port=%u txt=%lu\n",
+                    (unsigned long)i,
+                    record->service_type,
+                    record->instance_fqdn,
+                    record->host_fqdn,
+                    (unsigned int)record->port,
+                    (unsigned long)record->txt_count);
+        }
+    }
 }
 
 static int is_suppressed_snapshot_service_type(const char *service_type) {
@@ -1235,7 +1313,7 @@ static int parse_snapshot_rrs(const uint8_t *packet, size_t packet_len, struct s
 }
 
 static int open_capture_socket(void) {
-    return open_mdns_socket(1, 1);
+    return open_mdns_socket(1, 1, 0, "capture");
 }
 
 static int collect_mdns_responses(int sockfd, int seconds, struct service_record_set *set,
@@ -1507,7 +1585,7 @@ static void kill_mdnsresponder(int sig) {
     }
 }
 
-static int acquire_mdns_socket(int shared_bind) {
+static int acquire_mdns_socket(int shared_bind, uint32_t ipv4_addr) {
     static const unsigned int retry_delays_ms[TAKEOVER_RETRY_COUNT] = {0, 100, 200, 300, 400, 500};
     size_t i;
     int sockfd;
@@ -1515,7 +1593,7 @@ static int acquire_mdns_socket(int shared_bind) {
     for (i = 0; i < TAKEOVER_RETRY_COUNT; i++) {
         kill_mdnsresponder(SIGTERM);
         sleep_millis(retry_delays_ms[i]);
-        sockfd = open_mdns_socket(shared_bind, 0);
+        sockfd = open_mdns_socket(shared_bind, 0, ipv4_addr, "runtime");
         if (sockfd >= 0) {
             fprintf(stderr, "mDNS takeover established after SIGTERM + %ums using %s bind\n",
                     retry_delays_ms[i], shared_bind ? "shared" : "exclusive");
@@ -1526,7 +1604,7 @@ static int acquire_mdns_socket(int shared_bind) {
     for (i = 0; i < TAKEOVER_RETRY_COUNT; i++) {
         kill_mdnsresponder(SIGKILL);
         sleep_millis(retry_delays_ms[i]);
-        sockfd = open_mdns_socket(shared_bind, 0);
+        sockfd = open_mdns_socket(shared_bind, 0, ipv4_addr, "runtime");
         if (sockfd >= 0) {
             fprintf(stderr, "mDNS takeover established after SIGKILL + %ums using %s bind\n",
                     retry_delays_ms[i], shared_bind ? "shared" : "exclusive");
@@ -2022,11 +2100,12 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
     return (sendto(sockfd, reply, off, 0, (const struct sockaddr *)dest, sizeof(*dest)) >= 0) ? 0 : -1;
 }
 
-static int open_mdns_socket(int shared_bind, int log_bind_errors) {
+static int open_mdns_socket(int shared_bind, int log_bind_errors, uint32_t ipv4_addr, const char *socket_role) {
     int sockfd;
     int yes = 1;
     struct sockaddr_in addr;
     struct ip_mreq mreq;
+    struct in_addr multicast_if;
 
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) {
@@ -2068,6 +2147,18 @@ static int open_mdns_socket(int shared_bind, int log_bind_errors) {
     }
 
     yes = 255;
+    multicast_if.s_addr = ipv4_addr;
+    if (setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_IF, &multicast_if, sizeof(multicast_if)) < 0) {
+        perror("setsockopt(IP_MULTICAST_IF)");
+        close(sockfd);
+        return -1;
+    }
+    {
+        char ipv4_buf[INET_ADDRSTRLEN];
+        fprintf(stderr, "mdns %s socket: outbound multicast interface %s\n",
+                socket_role,
+                ipv4_to_string(ipv4_addr, ipv4_buf, sizeof(ipv4_buf)));
+    }
     (void)setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_TTL, &yes, sizeof(yes));
     yes = 1;
     (void)setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_LOOP, &yes, sizeof(yes));
@@ -2201,6 +2292,7 @@ int main(int argc, char **argv) {
     }
 
     snprintf(cfg.host_fqdn, sizeof(cfg.host_fqdn), "%s.local.", cfg.host_label);
+    log_startup_config(&cfg, shared_bind);
 
     if (cfg.save_all_snapshot_path[0] != '\0' || cfg.save_snapshot_path[0] != '\0') {
         struct service_record_set captured_records;
@@ -2208,6 +2300,7 @@ int main(int argc, char **argv) {
         memset(&captured_records, 0, sizeof(captured_records));
         memset(&filtered_records, 0, sizeof(filtered_records));
         if (capture_mdns_snapshot_raw_with_retry(&captured_records) == 0) {
+            fprintf(stderr, "snapshot capture: captured %lu records\n", (unsigned long)captured_records.count);
             if (cfg.save_all_snapshot_path[0] != '\0' &&
                 write_snapshot_file_atomic(cfg.save_all_snapshot_path, &captured_records) != 0) {
                 fprintf(stderr, "failed to write all snapshot file: %s\n", cfg.save_all_snapshot_path);
@@ -2219,6 +2312,8 @@ int main(int argc, char **argv) {
              */
             if (cfg.save_snapshot_path[0] != '\0') {
                 if (prepare_loaded_snapshot_for_advertising(&cfg, &captured_records, &filtered_records) == 0) {
+                    fprintf(stderr, "snapshot capture: filtered %lu records for trusted snapshot\n",
+                            (unsigned long)filtered_records.count);
                     if (write_snapshot_file_atomic(cfg.save_snapshot_path, &filtered_records) != 0) {
                         fprintf(stderr, "failed to write snapshot file: %s\n", cfg.save_snapshot_path);
                     }
@@ -2237,6 +2332,8 @@ int main(int argc, char **argv) {
         memset(&loaded_records, 0, sizeof(loaded_records));
         if (load_snapshot_file(cfg.load_snapshot_path, &loaded_records) == 0 &&
             prepare_loaded_snapshot_for_advertising(&cfg, &loaded_records, &snapshot_records) == 0) {
+            fprintf(stderr, "snapshot load: loaded %lu records, advertising %lu snapshot records\n",
+                    (unsigned long)loaded_records.count, (unsigned long)snapshot_records.count);
             use_snapshot_records = 1;
         } else {
             fprintf(stderr, "warning: could not load trusted snapshot file: %s; falling back to generated records\n",
@@ -2244,10 +2341,12 @@ int main(int argc, char **argv) {
         }
     }
 
+    log_served_records(&cfg, &snapshot_records, use_snapshot_records);
+
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
 
-    sockfd = acquire_mdns_socket(shared_bind);
+    sockfd = acquire_mdns_socket(shared_bind, cfg.ipv4_addr);
     if (sockfd < 0) {
         return EXIT_SOCKET_ACQUIRE_FAILED;
     }
@@ -2273,7 +2372,11 @@ int main(int argc, char **argv) {
         while (startup_burst_index < STARTUP_BURST_COUNT &&
                now_ms - startup_burst_start_ms >= (long long)startup_burst_offsets_ms[startup_burst_index]) {
             if (send_announcement(sockfd, &mdns_dest, &cfg, &snapshot_records, use_snapshot_records) != 0) {
-                perror("send_announcement");
+                char detail[96];
+                snprintf(detail, sizeof(detail), "burst_index=%lu offset_ms=%u",
+                         (unsigned long)startup_burst_index, startup_burst_offsets_ms[startup_burst_index]);
+                log_send_failure("startup_announce", &mdns_dest, use_snapshot_records, detail);
+                perror("send_startup_announcement");
             }
             startup_burst_index++;
             now_ms = monotonic_millis();
@@ -2298,12 +2401,24 @@ int main(int argc, char **argv) {
             socklen_t src_len = sizeof(src);
             nread = recvfrom(sockfd, packet, sizeof(packet), 0, (struct sockaddr *)&src, &src_len);
             if (nread > 0) {
-                (void)handle_query(sockfd, packet, (size_t)nread, &mdns_dest, &cfg, &snapshot_records, use_snapshot_records);
+                if (handle_query(sockfd, packet, (size_t)nread, &mdns_dest, &cfg, &snapshot_records, use_snapshot_records) != 0) {
+                    char detail[128];
+                    snprintf(detail, sizeof(detail), "packet_len=%ld from=%s:%u",
+                             (long)nread, inet_ntoa(src.sin_addr), (unsigned int)ntohs(src.sin_port));
+                    log_send_failure("query_response", &mdns_dest, use_snapshot_records, detail);
+                    perror("send_query_response");
+                }
             }
         }
 
         if (time(NULL) - last_announce >= ANNOUNCE_INTERVAL) {
-            (void)send_announcement(sockfd, &mdns_dest, &cfg, &snapshot_records, use_snapshot_records);
+            if (send_announcement(sockfd, &mdns_dest, &cfg, &snapshot_records, use_snapshot_records) != 0) {
+                char detail[96];
+                snprintf(detail, sizeof(detail), "interval=%d last_announce_age=%ld",
+                         ANNOUNCE_INTERVAL, (long)(time(NULL) - last_announce));
+                log_send_failure("periodic_announce", &mdns_dest, use_snapshot_records, detail);
+                perror("send_periodic_announcement");
+            }
             last_announce = time(NULL);
         }
     }

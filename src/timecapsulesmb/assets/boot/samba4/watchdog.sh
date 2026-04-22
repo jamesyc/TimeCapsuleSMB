@@ -6,6 +6,8 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin
 . /mnt/Flash/common.sh
 
 WATCHDOG_LOG="$RAM_VAR/watchdog.log"
+MDNS_LOG_ENABLED=__MDNS_LOG_ENABLED__
+MDNS_LOG_FILE=__MDNS_LOG_FILE__
 SMBD_BIN="$RAM_SBIN/smbd"
 SMBD_CONF="$RAM_ETC/smb.conf"
 MDNS_BIN=/mnt/Flash/mdns-advertiser
@@ -114,7 +116,13 @@ restart_mdns() {
         --adisk-uuid "$ADISK_UUID" \
         --adisk-sys-wama "$iface_mac" \
         --ipv4 "$iface_ip"
-    "$@" >/dev/null 2>&1 &
+    if [ "$MDNS_LOG_ENABLED" = "1" ]; then
+        trim_log_file "$MDNS_LOG_FILE" 131072
+        printf '%s watchdog: launching mdns-advertiser\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>"$MDNS_LOG_FILE"
+        "$@" >>"$MDNS_LOG_FILE" 2>&1 &
+    else
+        "$@" >/dev/null 2>&1 &
+    fi
     log "mdns restart requested"
 }
 

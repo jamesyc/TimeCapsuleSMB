@@ -98,6 +98,20 @@ ensure_parent_dir() {
     fi
 }
 
+trim_log_file() {
+    trim_log_path=$1
+    trim_log_bytes=${2:-65536}
+    trim_log_tmp="${trim_log_path}.tmp.$$"
+
+    ensure_parent_dir "$trim_log_path"
+    if [ -f "$trim_log_path" ]; then
+        file_tail "$trim_log_path" "$trim_log_bytes" >"$trim_log_tmp" 2>/dev/null || true
+        mv "$trim_log_tmp" "$trim_log_path"
+    else
+        : >"$trim_log_path"
+    fi
+}
+
 wait_for_smbd_ready() {
     smbd_log_path=$1
     max_attempts=${2:-15}

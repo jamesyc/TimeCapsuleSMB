@@ -27,6 +27,8 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin
 RAM_LOCKS="$RAM_ROOT/locks"
 RAM_LOG="$RAM_VAR/rc.local.log"
 SMBD_LOG="$RAM_VAR/log.smbd"
+MDNS_LOG_ENABLED=__MDNS_LOG_ENABLED__
+MDNS_LOG_FILE=__MDNS_LOG_FILE__
 SMBD_READY_MARKER="$RAM_VAR/smbd.ready"
 MDNS_BIN=/mnt/Flash/mdns-advertiser
 LEGACY_PREFIX_NETBSD7=/root/tc-netbsd7
@@ -538,7 +540,13 @@ start_mdns() {
         --adisk-uuid "$ADISK_UUID" \
         --adisk-sys-wama "$iface_mac" \
         --ipv4 "$BRIDGE0_IP"
-    "$@" >/dev/null 2>&1 &
+    if [ "$MDNS_LOG_ENABLED" = "1" ]; then
+        trim_log_file "$MDNS_LOG_FILE" 131072
+        printf '%s rc.local: launching mdns-advertiser\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>"$MDNS_LOG_FILE"
+        "$@" >>"$MDNS_LOG_FILE" 2>&1 &
+    else
+        "$@" >/dev/null 2>&1 &
+    fi
     if wait_for_process "$MDNS_PROC_NAME" 90; then
         log "mdns advertiser launch requested"
     else
