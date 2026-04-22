@@ -19,7 +19,7 @@ from timecapsulesmb.telemetry import MAX_SEND_ATTEMPTS, TelemetryClient
 
 
 class TelemetryTests(unittest.TestCase):
-    def test_emit_builds_schema_v1_payload(self) -> None:
+    def test_emit_builds_schema_v2_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bootstrap_path = Path(tmp) / ".bootstrap"
             bootstrap_path.write_text("INSTALL_ID=test-install\n")
@@ -36,7 +36,7 @@ class TelemetryTests(unittest.TestCase):
                 with mock.patch.object(client, "_dispatch_payload_async") as dispatch_mock:
                     client.emit("deploy_started")
         payload = dispatch_mock.call_args.args[0]
-        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["schema_version"], 2)
         self.assertEqual(payload["event"], "deploy_started")
         self.assertEqual(payload["install_id"], "test-install")
         self.assertEqual(payload["configure_id"], "config-id")
@@ -100,6 +100,37 @@ class TelemetryTests(unittest.TestCase):
         finished_payload = send_mock.call_args.args[0]
         self.assertEqual(finished_payload["event"], "doctor_finished")
         self.assertEqual(finished_payload["result"], "cancelled")
+        self.assertEqual(finished_payload["error"], "Cancelled by user")
+
+    def test_command_context_captures_system_exit_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values(
+                    {
+                        "TC_HOST": "root@192.168.1.118",
+                        "TC_SSH_OPTS": "-L 108:127.0.0.1:108",
+                        "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+                        "TC_AIRPORT_SYAP": "119",
+                    },
+                    bootstrap_path=bootstrap_path,
+                )
+                with mock.patch.object(client, "_dispatch_payload_async"):
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        with self.assertRaises(SystemExit):
+                            with CommandContext(client, "deploy", "deploy_started", "deploy_finished", values={
+                                "TC_HOST": "root@192.168.1.118",
+                                "TC_SSH_OPTS": "-L 108:127.0.0.1:108",
+                                "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+                                "TC_AIRPORT_SYAP": "119",
+                            }):
+                                raise SystemExit("Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied")
+        finished_payload = send_mock.call_args.args[0]
+        self.assertEqual(finished_payload["result"], "failure")
+        self.assertIn("Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied", finished_payload["error"])
+        self.assertIn("Debug context:", finished_payload["error"])
+        self.assertIn("ssh_opts=-L 108:127.0.0.1:108", finished_payload["error"])
 
 
 if __name__ == "__main__":

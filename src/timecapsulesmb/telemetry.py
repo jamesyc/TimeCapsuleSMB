@@ -17,7 +17,7 @@ from timecapsulesmb.cli.util import CLI_VERSION, RELEASE_TAG, SAMBA_VERSION
 from timecapsulesmb.identity import BOOTSTRAP_PATH, load_install_identity
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_TELEMETRY_URL = "https://timecapsulesmb.jamesyc.com/v1/events"
 TELEMETRY_URL_ENV = "TCAPSULE_TELEMETRY_URL"
 TELEMETRY_TOKEN_ENV = "TCAPSULE_TELEMETRY_TOKEN"

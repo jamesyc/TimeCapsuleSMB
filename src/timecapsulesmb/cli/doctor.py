@@ -21,6 +21,21 @@ def print_result(result: CheckResult) -> None:
     print(f"{result.status} {result.message}")
 
 
+def build_doctor_error(results: list[CheckResult]) -> str | None:
+    fail_lines = [f"{result.status} {result.message}" for result in results if result.status == "FAIL"]
+    warn_lines = [f"{result.status} {result.message}" for result in results if result.status == "WARN"]
+    lines: list[str] = []
+    if fail_lines:
+        lines.append("Doctor failures:")
+        lines.extend(fail_lines)
+    if warn_lines:
+        if lines:
+            lines.append("")
+        lines.append("Doctor warnings:")
+        lines.extend(warn_lines)
+    return "\n".join(lines) if lines else None
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run local diagnostics for the current TimeCapsuleSMB setup.")
     parser.add_argument("--skip-ssh", action="store_true", help="Skip SSH reachability checks")
@@ -57,6 +72,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "summary": "doctor found one or more fatal problems." if fatal else "doctor checks passed.",
             }, indent=2, sort_keys=True))
             if fatal:
+                error = build_doctor_error(results)
+                if error:
+                    command_context.set_error(error)
+                    command_context.add_debug_context()
                 command_context.fail()
             else:
                 command_context.succeed()
@@ -64,6 +83,10 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if fatal:
             print("\nSummary: doctor found one or more fatal problems.")
+            error = build_doctor_error(results)
+            if error:
+                command_context.set_error(error)
+                command_context.add_debug_context()
             command_context.fail()
             return 1
 

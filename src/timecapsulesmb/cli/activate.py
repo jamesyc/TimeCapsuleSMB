@@ -57,7 +57,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             answer = input("Continue with NetBSD4 activation? [y/N]: ").strip().lower()
             if answer not in {"y", "yes"}:
                 print("Activation cancelled.")
-                command_context.cancel()
+                command_context.cancel_with_error("Cancelled by user at NetBSD4 activation confirmation prompt.")
+                command_context.add_debug_context()
                 return 0
 
         if netbsd4_activation_is_already_healthy(host, password, ssh_opts):
@@ -69,6 +70,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         run_remote_actions(host, password, ssh_opts, actions)
         if not verify_netbsd4_activation(host, password, ssh_opts):
             print("NetBSD4 activation failed.")
+            command_context.fail_with_error("NetBSD4 activation failed.")
+            command_context.add_debug_context()
             return 1
         print(f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}")
         command_context.succeed()

@@ -111,7 +111,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             answer = input("Continue with NetBSD4 deploy + activation? [y/N]: ").strip().lower()
             if answer not in {"y", "yes"}:
                 print("Deployment cancelled.")
-                command_context.cancel()
+                command_context.cancel_with_error("Cancelled by user at NetBSD4 deploy confirmation prompt.")
+                command_context.add_debug_context()
                 return 0
 
         run_remote_actions(host, password, ssh_opts, plan.pre_upload_actions)
@@ -164,6 +165,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             run_remote_actions(host, password, ssh_opts, plan.activation_actions)
             if not verify_netbsd4_activation(host, password, ssh_opts):
                 print("NetBSD4 activation failed.")
+                command_context.fail_with_error("NetBSD4 activation failed.")
+                command_context.add_debug_context()
                 return 1
             print(f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}")
             command_context.succeed()
@@ -178,7 +181,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             answer = input("This will reboot the Time Capsule now. Continue? [Y/n]: ").strip().lower()
             if answer not in {"", "y", "yes"}:
                 print("Deployment complete without reboot.")
-                command_context.cancel()
+                command_context.cancel_with_error("Cancelled by user at reboot confirmation prompt.")
+                command_context.add_debug_context()
                 return 0
 
         run_ssh(host, password, ssh_opts, "/sbin/reboot", check=False)
@@ -192,14 +196,20 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("Waiting for managed smbd to finish starting...")
             if not wait_for_post_reboot_smbd(host, password, ssh_opts):
                 print("Managed smbd did not become ready after reboot.")
+                command_context.fail_with_error("Managed smbd did not become ready after reboot.")
+                command_context.add_debug_context()
                 return 1
             print("Waiting for managed mDNS takeover to finish...")
             if not wait_for_post_reboot_mdns_takeover(host, password, ssh_opts):
                 print("Managed mDNS did not become ready after reboot.")
+                command_context.fail_with_error("Managed mDNS did not become ready after reboot.")
+                command_context.add_debug_context()
                 return 1
             verify_post_deploy(values)
             command_context.succeed()
             return 0
 
         print("Timed out waiting for SSH after reboot.")
+        command_context.fail_with_error("Timed out waiting for SSH after reboot.")
+        command_context.add_debug_context()
         return 1

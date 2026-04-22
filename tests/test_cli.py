@@ -37,6 +37,8 @@ class FakeCommandContext:
     ) -> None:
         self.result = "failure"
         self.finish_fields: dict[str, object] = {}
+        self.error_lines: list[str] = []
+        self.debug_context_added = False
         self.finish = mock.Mock()
         self.connection = connection or ResolvedConnection("root@10.0.0.2", "pw", "-o foo")
         self.compatibility = compatibility or DeviceCompatibility(
@@ -56,7 +58,9 @@ class FakeCommandContext:
     def __exit__(self, exc_type, _exc, _tb) -> bool:
         if exc_type is KeyboardInterrupt and self.result != "cancelled":
             self.result = "cancelled"
-        self.finish(result=self.result, **self.finish_fields)
+            if not self.error_lines:
+                self.set_error("Cancelled by user")
+        self.finish(result=self.result, error=None if self.result == "success" else "\n".join(self.error_lines) if self.error_lines else None, **self.finish_fields)
         return False
 
     def set_result(self, result: str) -> None:
@@ -68,13 +72,42 @@ class FakeCommandContext:
     def cancel(self) -> None:
         self.result = "cancelled"
 
+    def cancel_with_error(self, message: str = "Cancelled by user") -> None:
+        self.result = "cancelled"
+        self.set_error(message)
+
     def fail(self) -> None:
         self.result = "failure"
+
+    def fail_with_error(self, message: str) -> None:
+        self.result = "failure"
+        self.set_error(message)
 
     def update_fields(self, **fields: object) -> None:
         for key, value in fields.items():
             if value is not None:
                 self.finish_fields[key] = value
+
+    def set_error(self, message: str) -> None:
+        self.error_lines = [line.rstrip() for line in message.splitlines() if line.strip()]
+
+    def add_error_line(self, message: str) -> None:
+        line = message.strip()
+        if line:
+            self.error_lines.append(line)
+
+    def add_debug_context(self, *, extra_fields: dict[str, object] | None = None) -> None:
+        self.debug_context_added = True
+        if self.error_lines:
+            self.error_lines.append("")
+        self.error_lines.append("Debug context:")
+        self.error_lines.append("command=fake")
+        self.error_lines.append(f"host={self.connection.host}")
+        self.error_lines.append(f"ssh_opts={self.connection.ssh_opts}")
+        if extra_fields:
+            for key, value in extra_fields.items():
+                if value is not None:
+                    self.error_lines.append(f"{key}={value}")
 
     def resolve_env_connection(self, **_kwargs):
         return self.connection
@@ -164,7 +197,7 @@ class CliTests(unittest.TestCase):
                 rc = main(["doctor", "--skip-smb"])
         self.assertEqual(rc, 130)
         self.assertEqual(stderr.getvalue(), "\nCancelled.\n")
-        command_context.finish.assert_called_once_with(result="cancelled")
+        command_context.finish.assert_called_once_with(result="cancelled", error="Cancelled by user")
 
     def test_activate_command_is_registered(self) -> None:
         with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"activate": mock.Mock(return_value=0)}) as commands:
@@ -1786,6 +1819,7 @@ class CliTests(unittest.TestCase):
                     rc = doctor.main([])
         self.assertEqual(rc, 1)
         self.assertIn("doctor found one or more fatal problems", output.getvalue())
+        self.assertIn("Doctor failures:", self._telemetry_client.emit.call_args_list[-1].kwargs["error"] if self._telemetry_client.emit.call_args_list else "")
 
     def test_doctor_streams_results_in_human_mode(self) -> None:
         output = io.StringIO()
@@ -2345,6 +2379,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Deployment cancelled.", output.getvalue())
         command_context.finish.assert_called_once()
         self.assertEqual(command_context.finish.call_args.kwargs["result"], "cancelled")
+        self.assertIn("Cancelled by user at NetBSD4 deploy confirmation prompt.", command_context.finish.call_args.kwargs["error"])
 
     def test_deploy_netbsd4_prompt_accepts_uppercase_yes(self) -> None:
         output = io.StringIO()
@@ -2908,6 +2943,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Activation cancelled.", output.getvalue())
         command_context.finish.assert_called_once()
         self.assertEqual(command_context.finish.call_args.kwargs["result"], "cancelled")
+        self.assertIn("Cancelled by user at NetBSD4 activation confirmation prompt.", command_context.finish.call_args.kwargs["error"])
 
     def test_activate_yes_runs_idempotent_actions_and_verifies(self) -> None:
         output = io.StringIO()
