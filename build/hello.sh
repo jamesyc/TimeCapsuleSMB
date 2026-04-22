@@ -29,7 +29,7 @@ expect_probe_format() {
     printf '%s\n' "$probe_flags_output" | sed -n '1,120p'
 
     if [ -n "$probe_file_output" ]; then
-        if ! printf '%s\n' "$probe_file_output" | grep -F 'ELF 32-bit LSB executable' >/dev/null ||
+        if ! printf '%s\n' "$probe_file_output" | grep -F "ELF 32-bit $BUILD_EXPECT_ENDIAN executable" >/dev/null ||
            ! printf '%s\n' "$probe_file_output" | grep -F 'ARM' >/dev/null ||
            ! printf '%s\n' "$probe_file_output" | grep -F 'statically linked' >/dev/null; then
             echo "Probe format is fundamentally wrong."
@@ -53,7 +53,7 @@ fi
 
 TOOLDIR="$TOOLS"
 DESTDIR="$OBJ/destdir.evbarm"
-TRIPLE="$(basename "$(ls "$TOOLDIR"/bin/*-netbsdelf-*gcc | head -n1)" | sed 's/-gcc$//')"
+TRIPLE="$(select_tool_triple)"
 SYSROOT="$DESTDIR"
 
 export TOOLDIR DESTDIR TRIPLE SYSROOT

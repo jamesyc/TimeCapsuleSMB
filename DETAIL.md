@@ -205,27 +205,34 @@ Current maintainer build lanes:
   - [build/download.sh](build/download.sh)
   - [build/bootstrap.sh](build/bootstrap.sh)
 - NetBSD 4 SDK lane:
-  - [build/downloadold.sh](build/downloadold.sh)
-  - [build/bootstrapold.sh](build/bootstrapold.sh)
+  - [build/downloadoldle.sh](build/downloadoldle.sh)
+  - [build/bootstrapoldle.sh](build/bootstrapoldle.sh)
 - NetBSD 7 Samba 4 lane:
   - [build/downloadsamba4.sh](build/downloadsamba4.sh)
   - [build/samba4.sh](build/samba4.sh)
 - NetBSD 4 Samba 4 lane:
-  - [build/downloadsamba4old.sh](build/downloadsamba4old.sh)
-  - [build/samba4old.sh](build/samba4old.sh)
+  - [build/downloadsamba4oldle.sh](build/downloadsamba4oldle.sh)
+  - [build/downloadsamba4oldbe.sh](build/downloadsamba4oldbe.sh)
+  - [build/samba4oldle.sh](build/samba4oldle.sh)
+  - [build/samba4oldbe.sh](build/samba4oldbe.sh)
 - NetBSD 7 utility lanes:
   - [build/hello.sh](build/hello.sh)
   - [build/mdns.sh](build/mdns.sh)
   - [build/nbns.sh](build/nbns.sh)
 - NetBSD 4 utility lanes:
-  - [build/helloold.sh](build/helloold.sh)
-  - [build/mdnsold.sh](build/mdnsold.sh)
-  - [build/nbnsold.sh](build/nbnsold.sh)
+  - [build/hellooldle.sh](build/hellooldle.sh)
+  - [build/hellooldbe.sh](build/hellooldbe.sh)
+  - [build/mdnsoldle.sh](build/mdnsoldle.sh)
+  - [build/mdnsoldbe.sh](build/mdnsoldbe.sh)
+  - [build/nbnsoldle.sh](build/nbnsoldle.sh)
+  - [build/nbnsoldbe.sh](build/nbnsoldbe.sh)
 - NetBSD 4 Samba 3 exploratory lane:
-  - [build/downloadsamba3old.sh](build/downloadsamba3old.sh)
-  - [build/samba3old.sh](build/samba3old.sh)
+  - [build/downloadsamba3oldle.sh](build/downloadsamba3oldle.sh)
+  - [build/downloadsamba3oldbe.sh](build/downloadsamba3oldbe.sh)
+  - [build/samba3oldle.sh](build/samba3oldle.sh)
+  - [build/samba3oldbe.sh](build/samba3oldbe.sh)
 
-The direct scripts target the NetBSD 7 lane by default. The `*old.sh` wrappers select the NetBSD 4 lane.
+The direct scripts target the NetBSD 7 lane by default. The `*oldle.sh` and `*oldbe.sh` wrappers select the NetBSD 4 little-endian and big-endian lanes.
 
 ## Why We Snapshot Apple’s mDNS And Override Only SMB / Time Machine
 
@@ -897,15 +904,22 @@ Current validated maintainer flows:
   - [build/mdns.sh](build/mdns.sh)
   - [build/nbns.sh](build/nbns.sh)
 - NetBSD 4 path:
-  - [build/downloadold.sh](build/downloadold.sh)
-  - [build/bootstrapold.sh](build/bootstrapold.sh)
-  - [build/helloold.sh](build/helloold.sh)
-  - [build/downloadsamba3old.sh](build/downloadsamba3old.sh)
-  - [build/samba3old.sh](build/samba3old.sh)
-  - [build/downloadsamba4old.sh](build/downloadsamba4old.sh)
-  - [build/samba4old.sh](build/samba4old.sh)
-  - [build/mdnsold.sh](build/mdnsold.sh)
-  - [build/nbnsold.sh](build/nbnsold.sh)
+  - [build/downloadoldle.sh](build/downloadoldle.sh)
+  - [build/bootstrapoldle.sh](build/bootstrapoldle.sh)
+  - [build/hellooldle.sh](build/hellooldle.sh)
+  - [build/hellooldbe.sh](build/hellooldbe.sh)
+  - [build/downloadsamba3oldle.sh](build/downloadsamba3oldle.sh)
+  - [build/downloadsamba3oldbe.sh](build/downloadsamba3oldbe.sh)
+  - [build/samba3oldle.sh](build/samba3oldle.sh)
+  - [build/samba3oldbe.sh](build/samba3oldbe.sh)
+  - [build/downloadsamba4oldle.sh](build/downloadsamba4oldle.sh)
+  - [build/downloadsamba4oldbe.sh](build/downloadsamba4oldbe.sh)
+  - [build/samba4oldle.sh](build/samba4oldle.sh)
+  - [build/samba4oldbe.sh](build/samba4oldbe.sh)
+  - [build/mdnsoldle.sh](build/mdnsoldle.sh)
+  - [build/mdnsoldbe.sh](build/mdnsoldbe.sh)
+  - [build/nbnsoldle.sh](build/nbnsoldle.sh)
+  - [build/nbnsoldbe.sh](build/nbnsoldbe.sh)
 
 Current path split:
 - NetBSD 7 SDK output defaults under `/root/tc-earmv4-netbsd7`
