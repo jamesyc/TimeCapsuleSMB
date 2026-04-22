@@ -95,6 +95,47 @@ def _read_active_smb_conf(host: str, password: str, ssh_opts: str) -> str:
     return proc.stdout
 
 
+def _managed_mdns_takeover_ready(host: str, password: str, ssh_opts: str) -> bool:
+    script = r'''
+mdns_ready=0
+apple_alive=0
+
+if /usr/bin/pkill -0 mdns-advertiser >/dev/null 2>&1; then
+    mdns_ready=1
+fi
+
+ps_out="$(/bin/ps ax -o stat= -o ucomm= 2>/dev/null || true)"
+while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    stat_field="${line%% *}"
+    ucomm_field="${line#* }"
+    if [ "$ucomm_field" = "mDNSResponder" ] && [ "${stat_field#Z}" = "$stat_field" ]; then
+        apple_alive=1
+        break
+    fi
+done <<EOF
+$ps_out
+EOF
+
+if [ "$mdns_ready" -eq 1 ] && [ "$apple_alive" -eq 0 ]; then
+    exit 0
+fi
+exit 1
+'''
+    proc = run_ssh(
+        host,
+        password,
+        ssh_opts,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=20,
+    )
+    return_code = getattr(proc, "returncode", 0)
+    if not isinstance(return_code, int):
+        return True
+    return return_code == 0
+
+
 def _parse_bonjour_host_label(target: Optional[str]) -> Optional[str]:
     if not target:
         return None
@@ -199,6 +240,10 @@ def run_doctor_checks(
     if not skip_ssh and ssh_ok:
         if not _remote_interface_exists(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts, values["TC_NET_IFACE"]):
             add_result(CheckResult("FAIL", f"TC_NET_IFACE is invalid. Run the `configure` command again. The configured network interface was not found on the device."))
+        if _managed_mdns_takeover_ready(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts):
+            add_result(CheckResult("PASS", "managed mDNS takeover is active"))
+        else:
+            add_result(CheckResult("FAIL", "managed mDNS takeover is not active"))
         try:
             active_smb_conf = _read_active_smb_conf(
                 values["TC_HOST"],

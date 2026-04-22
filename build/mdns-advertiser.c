@@ -40,6 +40,8 @@
 #define SNAPSHOT_MAX_SERVICE_TYPES 64
 #define SNAPSHOT_CAPTURE_TIMEOUT_SECONDS 60
 #define SNAPSHOT_CAPTURE_RETRY_INTERVAL_SECONDS 5
+#define TAKEOVER_RETRY_COUNT 6
+#define STARTUP_BURST_COUNT 7
 
 #define DNS_TYPE_A 1
 #define DNS_TYPE_PTR 12
@@ -109,7 +111,7 @@ struct service_type_set {
 
 static int name_equals(const char *a, const char *b);
 static int build_instance_fqdn(char *out, size_t out_len, const char *instance_name, const char *service_type);
-static int open_mdns_socket(void);
+static int open_mdns_socket(int shared_bind, int log_bind_errors);
 static int add_rr_ptr(uint8_t *buf, size_t *off, size_t cap, const char *owner, const char *target, uint32_t ttl);
 static int add_rr_txt_empty(uint8_t *buf, size_t *off, size_t cap, const char *owner, uint32_t ttl);
 static int add_rr_txt_strings(uint8_t *buf, size_t *off, size_t cap, const char *owner, uint32_t ttl,
@@ -292,6 +294,7 @@ static void usage(const char *prog) {
             "  --save-all-snapshot <path> Capture raw LAN-wide mDNS records into a snapshot file\n"
             "  --save-snapshot <path> Capture Apple mDNS records into a snapshot file\n"
             "  --load-snapshot <path> Kill Apple mDNSResponder and replay snapshot records\n"
+            "  --shared-bind     Allow shared UDP 5353 binding instead of exclusive takeover\n"
             "  --service <type>   Service type (default: _smb._tcp.local.)\n"
             "  --adisk-share <n>  Also advertise _adisk._tcp for Time Machine\n"
             "  --adisk-disk-key <k> Disk key for _adisk TXT (default: dk0)\n"
@@ -1218,7 +1221,7 @@ static int parse_snapshot_rrs(const uint8_t *packet, size_t packet_len, struct s
 }
 
 static int open_capture_socket(void) {
-    return open_mdns_socket();
+    return open_mdns_socket(1, 1);
 }
 
 static int collect_mdns_responses(int sockfd, int seconds, struct service_record_set *set,
@@ -1468,23 +1471,63 @@ static int mdnsresponder_is_alive(void) {
     return alive;
 }
 
-static void gracefully_kill_mdnsresponder(void) {
-    int attempt;
-    (void)system("/usr/bin/pkill mDNSResponder >/dev/null 2>&1 || true");
-    for (attempt = 0; attempt < 5; attempt++) {
-        if (!mdnsresponder_is_alive()) {
-            break;
-        }
-        sleep(1);
+static void sleep_millis(unsigned int delay_ms) {
+    if (delay_ms == 0) {
+        return;
     }
-    if (mdnsresponder_is_alive()) {
-        fprintf(stderr, "warning: mDNSResponder ignored SIGTERM; sending SIGKILL\n");
+    (void)usleep((useconds_t)delay_ms * 1000U);
+}
+
+static long long monotonic_millis(void) {
+    struct timeval tv;
+
+    gettimeofday(&tv, NULL);
+    return ((long long)tv.tv_sec * 1000LL) + ((long long)tv.tv_usec / 1000LL);
+}
+
+static void kill_mdnsresponder(int sig) {
+    if (sig == SIGKILL) {
         (void)system("/usr/bin/pkill -9 mDNSResponder >/dev/null 2>&1 || true");
-        sleep(1);
-        if (mdnsresponder_is_alive()) {
-            fprintf(stderr, "warning: mDNSResponder still appears to be running after SIGKILL\n");
+    } else {
+        (void)system("/usr/bin/pkill mDNSResponder >/dev/null 2>&1 || true");
+    }
+}
+
+static int acquire_mdns_socket(int shared_bind) {
+    static const unsigned int retry_delays_ms[TAKEOVER_RETRY_COUNT] = {0, 100, 200, 300, 400, 500};
+    size_t i;
+    int sockfd;
+
+    for (i = 0; i < TAKEOVER_RETRY_COUNT; i++) {
+        kill_mdnsresponder(SIGTERM);
+        sleep_millis(retry_delays_ms[i]);
+        sockfd = open_mdns_socket(shared_bind, 0);
+        if (sockfd >= 0) {
+            fprintf(stderr, "mDNS takeover established after SIGTERM + %ums using %s bind\n",
+                    retry_delays_ms[i], shared_bind ? "shared" : "exclusive");
+            return sockfd;
         }
     }
+
+    for (i = 0; i < TAKEOVER_RETRY_COUNT; i++) {
+        kill_mdnsresponder(SIGKILL);
+        sleep_millis(retry_delays_ms[i]);
+        sockfd = open_mdns_socket(shared_bind, 0);
+        if (sockfd >= 0) {
+            fprintf(stderr, "mDNS takeover established after SIGKILL + %ums using %s bind\n",
+                    retry_delays_ms[i], shared_bind ? "shared" : "exclusive");
+            return sockfd;
+        }
+    }
+
+    if (!shared_bind && mdnsresponder_is_alive()) {
+        fprintf(stderr, "mDNS takeover failed: Apple mDNSResponder is still alive after retry ladder\n");
+    } else {
+        fprintf(stderr, "mDNS takeover failed: could not bind UDP 5353 using %s mode\n",
+                shared_bind ? "shared" : "exclusive");
+    }
+    errno = EADDRINUSE;
+    return -1;
 }
 
 static int add_adisk_records(uint8_t *buf, size_t *off, size_t cap, const struct config *cfg, int *answers) {
@@ -1965,7 +2008,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
     return (sendto(sockfd, reply, off, 0, (const struct sockaddr *)dest, sizeof(*dest)) >= 0) ? 0 : -1;
 }
 
-static int open_mdns_socket(void) {
+static int open_mdns_socket(int shared_bind, int log_bind_errors) {
     int sockfd;
     int yes = 1;
     struct sockaddr_in addr;
@@ -1983,16 +2026,20 @@ static int open_mdns_socket(void) {
         return -1;
     }
 
+    if (shared_bind) {
 #ifdef SO_REUSEPORT
-    (void)setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
+        (void)setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
 #endif
+    }
 
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons(MDNS_PORT);
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
     if (bind(sockfd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("bind");
+        if (log_bind_errors) {
+            perror("bind");
+        }
         close(sockfd);
         return -1;
     }
@@ -2022,6 +2069,10 @@ int main(int argc, char **argv) {
     int i;
     time_t last_announce = 0;
     int use_snapshot_records = 0;
+    int shared_bind = 0;
+    static const unsigned int startup_burst_offsets_ms[STARTUP_BURST_COUNT] = {0, 250, 1000, 2000, 3000, 4000, 5000};
+    size_t startup_burst_index = 0;
+    long long startup_burst_start_ms = 0;
 
     memset(&cfg, 0, sizeof(cfg));
     memset(&snapshot_records, 0, sizeof(snapshot_records));
@@ -2042,6 +2093,8 @@ int main(int argc, char **argv) {
             strncpy(cfg.save_snapshot_path, argv[++i], sizeof(cfg.save_snapshot_path) - 1);
         } else if (strcmp(argv[i], "--load-snapshot") == 0 && i + 1 < argc) {
             strncpy(cfg.load_snapshot_path, argv[++i], sizeof(cfg.load_snapshot_path) - 1);
+        } else if (strcmp(argv[i], "--shared-bind") == 0) {
+            shared_bind = 1;
         } else if (strcmp(argv[i], "--service") == 0 && i + 1 < argc) {
             strncpy(cfg.service_type, argv[++i], sizeof(cfg.service_type) - 1);
         } else if (strcmp(argv[i], "--adisk-share") == 0 && i + 1 < argc) {
@@ -2167,7 +2220,6 @@ int main(int argc, char **argv) {
 
     if (cfg.load_snapshot_path[0] != '\0') {
         struct service_record_set loaded_records;
-        gracefully_kill_mdnsresponder();
         memset(&loaded_records, 0, sizeof(loaded_records));
         if (load_snapshot_file(cfg.load_snapshot_path, &loaded_records) == 0 &&
             prepare_loaded_snapshot_for_advertising(&cfg, &loaded_records, &snapshot_records) == 0) {
@@ -2181,7 +2233,7 @@ int main(int argc, char **argv) {
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
 
-    sockfd = open_mdns_socket();
+    sockfd = acquire_mdns_socket(shared_bind);
     if (sockfd < 0) {
         return 1;
     }
@@ -2191,9 +2243,7 @@ int main(int argc, char **argv) {
     mdns_dest.sin_port = htons(MDNS_PORT);
     mdns_dest.sin_addr.s_addr = inet_addr(MDNS_GROUP);
 
-    if (send_announcement(sockfd, &mdns_dest, &cfg, &snapshot_records, use_snapshot_records) != 0) {
-        perror("send_announcement");
-    }
+    startup_burst_start_ms = monotonic_millis();
     last_announce = time(NULL);
 
     while (!g_stop) {
@@ -2201,11 +2251,33 @@ int main(int argc, char **argv) {
         struct timeval tv;
         uint8_t packet[BUF_SIZE];
         ssize_t nread;
+        long long now_ms;
+        long long next_burst_ms = -1;
+        long long wait_ms = 1000;
+
+        now_ms = monotonic_millis();
+        while (startup_burst_index < STARTUP_BURST_COUNT &&
+               now_ms - startup_burst_start_ms >= (long long)startup_burst_offsets_ms[startup_burst_index]) {
+            if (send_announcement(sockfd, &mdns_dest, &cfg, &snapshot_records, use_snapshot_records) != 0) {
+                perror("send_announcement");
+            }
+            startup_burst_index++;
+            now_ms = monotonic_millis();
+        }
 
         FD_ZERO(&rfds);
         FD_SET(sockfd, &rfds);
-        tv.tv_sec = 1;
-        tv.tv_usec = 0;
+        if (startup_burst_index < STARTUP_BURST_COUNT) {
+            next_burst_ms = startup_burst_start_ms + (long long)startup_burst_offsets_ms[startup_burst_index];
+            wait_ms = next_burst_ms - now_ms;
+            if (wait_ms < 0) {
+                wait_ms = 0;
+            } else if (wait_ms > 1000) {
+                wait_ms = 1000;
+            }
+        }
+        tv.tv_sec = (time_t)(wait_ms / 1000);
+        tv.tv_usec = (suseconds_t)((wait_ms % 1000) * 1000);
 
         if (select(sockfd + 1, &rfds, NULL, NULL, &tv) > 0 && FD_ISSET(sockfd, &rfds)) {
             struct sockaddr_in src;

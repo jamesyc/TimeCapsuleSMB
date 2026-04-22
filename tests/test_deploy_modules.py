@@ -1339,13 +1339,21 @@ int main(void) {{
             content,
         )
 
-    def test_mdns_advertiser_escalates_mdnsresponder_kill_after_sigterm(self) -> None:
+    def test_mdns_advertiser_uses_takeover_retry_ladder_and_shared_bind_flag(self) -> None:
         content = (REPO_ROOT / "build" / "mdns-advertiser.c").read_text()
         self.assertIn("static int mdnsresponder_is_alive(void)", content)
         self.assertIn("stat[0] != 'Z'", content)
         self.assertIn('/usr/bin/pkill mDNSResponder >/dev/null 2>&1 || true', content)
         self.assertIn('/usr/bin/pkill -9 mDNSResponder >/dev/null 2>&1 || true', content)
-        self.assertIn("mDNSResponder ignored SIGTERM; sending SIGKILL", content)
+        self.assertIn("retry_delays_ms[TAKEOVER_RETRY_COUNT] = {0, 100, 200, 300, 400, 500}", content)
+        self.assertIn('strcmp(argv[i], "--shared-bind") == 0', content)
+        self.assertIn("using %s bind", content)
+
+    def test_mdns_advertiser_schedules_startup_burst_before_steady_interval(self) -> None:
+        content = (REPO_ROOT / "build" / "mdns-advertiser.c").read_text()
+        self.assertIn("startup_burst_offsets_ms[STARTUP_BURST_COUNT] = {0, 250, 1000, 2000, 3000, 4000, 5000}", content)
+        self.assertIn("startup_burst_start_ms = monotonic_millis();", content)
+        self.assertIn("while (startup_burst_index < STARTUP_BURST_COUNT &&", content)
 
     def test_mdns_advertiser_suppresses_snapshot_device_info_and_afp(self) -> None:
         content = (REPO_ROOT / "build" / "mdns-advertiser.c").read_text()
