@@ -55,6 +55,20 @@
 
 static volatile sig_atomic_t g_stop = 0;
 
+enum exit_code {
+    EXIT_OK = 0,
+    EXIT_SOCKET_ACQUIRE_FAILED = 1,
+    EXIT_INVALID_IPV4 = 2,
+    EXIT_USAGE = 3,
+    EXIT_MISSING_REQUIRED_ARGS = 4,
+    EXIT_INVALID_DNS_LABEL = 5,
+    EXIT_INVALID_SERVICE_TYPE = 6,
+    EXIT_INVALID_ADISK_SYSTEM = 7,
+    EXIT_INVALID_ADISK_DISK = 8,
+    EXIT_INVALID_DEVICE_MODEL = 9,
+    EXIT_INVALID_AIRPORT_TXT = 10
+};
+
 struct config {
     char save_all_snapshot_path[MAX_NAME];
     char service_type[MAX_NAME];
@@ -2136,7 +2150,7 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--ipv4") == 0 && i + 1 < argc) {
             if (inet_pton(AF_INET, argv[++i], &cfg.ipv4_addr) != 1) {
                 fprintf(stderr, "Invalid IPv4 address\n");
-                return 2;
+                return EXIT_INVALID_IPV4;
             }
         } else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
             cfg.port = (uint16_t)atoi(argv[++i]);
@@ -2144,36 +2158,36 @@ int main(int argc, char **argv) {
             cfg.ttl = (uint32_t)atoi(argv[++i]);
         } else {
             usage(argv[0]);
-            return 2;
+            return EXIT_USAGE;
         }
     }
 
     if (cfg.instance_name[0] == '\0' || cfg.host_label[0] == '\0' || cfg.ipv4_addr == 0) {
         usage(argv[0]);
-        return 2;
+        return EXIT_MISSING_REQUIRED_ARGS;
     }
 
     if (validate_single_dns_label(cfg.instance_name, "instance name") != 0 ||
         validate_single_dns_label(cfg.host_label, "host label") != 0) {
-        return 2;
+        return EXIT_INVALID_DNS_LABEL;
     }
     if (validate_dns_name(cfg.service_type, "service type") != 0) {
-        return 2;
+        return EXIT_INVALID_SERVICE_TYPE;
     }
     if (cfg.adisk_share_name[0] != '\0') {
         char adisk_sys_txt[128];
         char adisk_disk_txt[256];
         if (build_adisk_system_txt(adisk_sys_txt, sizeof(adisk_sys_txt), cfg.adisk_sys_wama) != 0) {
-            return 2;
+            return EXIT_INVALID_ADISK_SYSTEM;
         }
         if (build_adisk_disk_txt(adisk_disk_txt, sizeof(adisk_disk_txt), cfg.adisk_disk_key, cfg.adisk_share_name, cfg.adisk_uuid) != 0) {
-            return 2;
+            return EXIT_INVALID_ADISK_DISK;
         }
     }
     if (cfg.device_model[0] != '\0') {
         char model_txt[MAX_NAME + 16];
         if (build_model_txt(model_txt, sizeof(model_txt), cfg.device_model) != 0) {
-            return 2;
+            return EXIT_INVALID_DEVICE_MODEL;
         }
     }
     if (cfg.airport_wama[0] != '\0' || cfg.airport_rama[0] != '\0' || cfg.airport_ram2[0] != '\0' ||
@@ -2182,7 +2196,7 @@ int main(int argc, char **argv) {
         cfg.airport_bjsd[0] != '\0') {
         char airport_txt[256];
         if (build_airport_txt(airport_txt, sizeof(airport_txt), &cfg) != 0) {
-            return 2;
+            return EXIT_INVALID_AIRPORT_TXT;
         }
     }
 
@@ -2235,7 +2249,7 @@ int main(int argc, char **argv) {
 
     sockfd = acquire_mdns_socket(shared_bind);
     if (sockfd < 0) {
-        return 1;
+        return EXIT_SOCKET_ACQUIRE_FAILED;
     }
 
     memset(&mdns_dest, 0, sizeof(mdns_dest));
