@@ -72,8 +72,8 @@ class UninstallPlan:
 
 NETBSD4_ACTIVATION_CHECKS = [
     PlannedCheck("netbsd4_runtime_smb_conf_present", "managed runtime smb.conf is present"),
-    PlannedCheck("netbsd4_smbd_ready_marker_present", "managed smbd ready marker is present"),
     PlannedCheck("netbsd4_smbd_bound_445", "smbd is bound to TCP 445"),
+    PlannedCheck("netbsd4_smbd_daemon_ready", "managed smbd reported daemon_ready"),
     PlannedCheck("netbsd4_mdns_bound_5353", "mdns-advertiser is bound to UDP 5353"),
 ]
 

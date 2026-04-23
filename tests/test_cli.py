@@ -3347,8 +3347,8 @@ class CliTests(unittest.TestCase):
             [check["id"] for check in payload["post_deploy_checks"]],
             [
                 "netbsd4_runtime_smb_conf_present",
-                "netbsd4_smbd_ready_marker_present",
                 "netbsd4_smbd_bound_445",
+                "netbsd4_smbd_daemon_ready",
                 "netbsd4_mdns_bound_5353",
             ],
         )
@@ -3373,8 +3373,8 @@ class CliTests(unittest.TestCase):
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
         self.assertIn("skip rc.local if NetBSD4 payload is already healthy", text)
         self.assertIn("managed runtime smb.conf is present", text)
-        self.assertIn("managed smbd ready marker is present", text)
         self.assertIn("smbd is bound to TCP 445", text)
+        self.assertIn("managed smbd reported daemon_ready", text)
         self.assertIn("mdns-advertiser is bound to UDP 5353", text)
         self.assertIn("This will start the deployed Samba payload on the Time Capsule.", text)
         self.assertIn("NetBSD 4 devices cannot auto-run Samba after a reboot.", text)

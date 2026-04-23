@@ -29,7 +29,6 @@ RAM_LOG="$RAM_VAR/rc.local.log"
 SMBD_LOG="$RAM_VAR/log.smbd"
 MDNS_LOG_ENABLED=__MDNS_LOG_ENABLED__
 MDNS_LOG_FILE=__MDNS_LOG_FILE__
-SMBD_READY_MARKER="$RAM_VAR/smbd.ready"
 MDNS_BIN=/mnt/Flash/mdns-advertiser
 LEGACY_PREFIX_NETBSD7=/root/tc-netbsd7
 LEGACY_PREFIX_NETBSD4=/root/tc-netbsd4
@@ -662,7 +661,6 @@ start_smbd || {
     log "smbd did not become ready"
     exit 1
 }
-: > "$SMBD_READY_MARKER"
 log "smbd ready"
 
 exit 0

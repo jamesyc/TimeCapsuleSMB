@@ -215,10 +215,9 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("get_airport_srcv()", content)
         self.assertIn("get_airport_syvs()", content)
         self.assertIn("wait_for_process()", content)
-        self.assertIn("file_tail()", content)
         self.assertIn("ensure_parent_dir()", content)
         self.assertIn("wait_for_smbd_ready()", content)
-        self.assertIn('smbd_log=$(file_tail "$smbd_log_path" 65536)', content)
+        self.assertIn('/usr/bin/tail -c 65536 "$smbd_log_path"', content)
         self.assertIn("derive_airport_fields()", content)
         self.assertIn("get_airport_syvs()", content)
         self.assertIn("sed -n 's/^\\([0-9]\\)\\([0-9]\\)\\([0-9]\\).*/\\1.\\2.\\3/p'", content)
@@ -795,7 +794,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('if configured_smbd_log=$(get_smbd_log_path_from_config "$RAM_ETC/smb.conf" || true); then', rendered)
         self.assertIn('ensure_parent_dir "$smbd_ready_log"', rendered)
         self.assertIn('wait_for_smbd_ready "$smbd_ready_log"', rendered)
-        self.assertIn(': > "$SMBD_READY_MARKER"', rendered)
+        self.assertNotIn("SMBD_READY_MARKER", rendered)
         self.assertIn('if wait_for_process "$MDNS_PROC_NAME" 100; then', rendered)
         self.assertIn('log "smbd ready"', rendered)
 
@@ -1952,7 +1951,8 @@ FAIL:fstat missing
         self.assertIn('while [ "$attempt" -lt "$max_attempts" ]; do', remote_command)
         self.assertIn("sleep 5", remote_command)
         self.assertIn("/mnt/Memory/samba4/etc/smb.conf", remote_command)
-        self.assertIn("/mnt/Memory/samba4/var/smbd.ready", remote_command)
+        self.assertIn("smbd_log_has_daemon_ready()", remote_command)
+        self.assertIn("managed_smbd_ready 1", remote_command)
 
     def test_verify_netbsd4_activation_requires_smbd_process_name_for_445(self) -> None:
         fstat_output = """
@@ -2043,15 +2043,15 @@ PASS:mdns-advertiser bound to UDP 5353
         ) as run_ssh_mock:
             self.assertTrue(wait_for_post_reboot_smbd("host", "pw", "-o foo", timeout_seconds=45))
         remote_command = run_ssh_mock.call_args.args[3]
-        self.assertIn('if /usr/bin/pkill -0 smbd >/dev/null 2>&1; then', remote_command)
-        self.assertIn("smbd_ready_marker_present()", remote_command)
-        self.assertIn("/mnt/Memory/samba4/var/smbd.ready", remote_command)
+        self.assertIn("managed_smbd_ready 1", remote_command)
+        self.assertIn("smbd_log_path_from_config()", remote_command)
+        self.assertIn("file_tail_bytes()", remote_command)
+        self.assertIn("smbd_log_has_daemon_ready()", remote_command)
+        self.assertIn("/daemon_ready/p", remote_command)
         self.assertNotIn("/usr/bin/tail", remote_command)
-        self.assertNotIn("*daemon_ready*", remote_command)
         self.assertIn('max_attempts=$(((45 + 4) / 5))', remote_command)
         self.assertIn('while [ "$attempt" -lt "$max_attempts" ]; do', remote_command)
         self.assertIn("sleep 5", remote_command)
-        self.assertNotIn("mdns-advertiser", remote_command)
         self.assertNotIn("nbns-advertiser", remote_command)
 
     def test_wait_for_post_reboot_smbd_fails_when_remote_probe_times_out(self) -> None:
@@ -2219,8 +2219,8 @@ PASS:mdns-advertiser bound to UDP 5353
         self.assertIn("NetBSD 4 devices cannot auto-run Samba after a reboot.", text)
         self.assertIn("Run `activate` after a reboot if the device did not auto-start Samba.", text)
         self.assertIn("managed runtime smb.conf is present", text)
-        self.assertIn("managed smbd ready marker is present", text)
         self.assertIn("smbd is bound to TCP 445", text)
+        self.assertIn("managed smbd reported daemon_ready", text)
         self.assertIn("mdns-advertiser is bound to UDP 5353", text)
 
     def test_netbsd6_no_reboot_plan_has_no_reboot_checks(self) -> None:

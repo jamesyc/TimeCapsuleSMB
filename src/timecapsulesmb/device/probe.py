@@ -16,10 +16,100 @@ if TYPE_CHECKING:
 
 
 RUNTIME_SMB_CONF = "/mnt/Memory/samba4/etc/smb.conf"
-SMBD_READY_MARKER = "/mnt/Memory/samba4/var/smbd.ready"
-SMBD_READY_HELPERS = rf'''
-smbd_ready_marker_present() {{
-    [ -f {SMBD_READY_MARKER} ]
+SMBD_STATUS_HELPERS = rf'''
+runtime_smb_conf_present() {{
+    [ -f {RUNTIME_SMB_CONF} ]
+}}
+
+smbd_log_path_from_config() {{
+    /usr/bin/sed -n 's/^[[:space:]]*log file[[:space:]]*=[[:space:]]*//p' {RUNTIME_SMB_CONF} 2>/dev/null \
+        | /usr/bin/sed -n '1p'
+}}
+
+file_tail_bytes() {{
+    file_tail_path=$1
+    file_tail_bytes=${{2:-262144}}
+    if [ -f "$file_tail_path" ]; then
+        set -- $(/bin/ls -l "$file_tail_path" 2>/dev/null)
+        file_tail_size=$5
+        case "$file_tail_size" in
+            ''|*[!0-9]*) file_tail_size=0 ;;
+        esac
+        case "$file_tail_bytes" in
+            ''|*[!0-9]*) file_tail_bytes=262144 ;;
+        esac
+        file_tail_block_size=4096
+        file_tail_blocks=$(((file_tail_bytes + file_tail_block_size - 1) / file_tail_block_size))
+        if [ "$file_tail_size" -gt "$file_tail_bytes" ]; then
+            file_tail_skip=$((file_tail_size / file_tail_block_size - file_tail_blocks))
+            [ "$file_tail_skip" -lt 0 ] && file_tail_skip=0
+        else
+            file_tail_skip=0
+        fi
+        /bin/dd if="$file_tail_path" bs=$file_tail_block_size skip=$file_tail_skip 2>/dev/null \
+            || /bin/cat "$file_tail_path" 2>/dev/null \
+            || true
+    fi
+}}
+
+smbd_log_has_daemon_ready() {{
+    smbd_log_path=$(smbd_log_path_from_config)
+    [ -n "$smbd_log_path" ] || return 1
+    [ -f "$smbd_log_path" ] || return 1
+    ready_line=$(file_tail_bytes "$smbd_log_path" 262144 | /usr/bin/sed -n '/daemon_ready/p' | /usr/bin/sed -n '1p')
+    [ -n "$ready_line" ]
+}}
+
+smbd_bound_445() {{
+    case "$1" in
+        *smbd*":445"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}}
+
+mdns_bound_5353() {{
+    case "$1" in
+        *mdns-advertiser*":5353"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}}
+
+managed_smbd_ready() {{
+    require_daemon_ready=$1
+    fstat_out=$2
+    runtime_smb_conf_present || return 1
+    smbd_bound_445 "$fstat_out" || return 1
+    if [ "$require_daemon_ready" = "1" ]; then
+        smbd_log_has_daemon_ready || return 1
+    fi
+    return 0
+}}
+
+describe_managed_smbd_status() {{
+    require_daemon_ready=$1
+    fstat_out=$2
+    status=0
+    if runtime_smb_conf_present; then
+        echo "PASS:managed runtime smb.conf present"
+    else
+        echo "FAIL:managed runtime smb.conf missing"
+        status=1
+    fi
+    if smbd_bound_445 "$fstat_out"; then
+        echo "PASS:smbd bound to TCP 445"
+    else
+        echo "FAIL:smbd is not bound to TCP 445"
+        status=1
+    fi
+    if [ "$require_daemon_ready" = "1" ]; then
+        if smbd_log_has_daemon_ready; then
+            echo "PASS:managed smbd reported daemon_ready"
+        else
+            echo "FAIL:managed smbd did not report daemon_ready"
+            status=1
+        fi
+    fi
+    return "$status"
 }}
 '''
 
@@ -290,25 +380,22 @@ def probe_managed_smbd(host: str, password: str, ssh_opts: str, *, timeout_secon
 
 def probe_managed_smbd_conn(connection: SshConnection, *, timeout_seconds: int = 120) -> ManagedSmbdProbeResult:
     script = rf'''
-{SMBD_READY_HELPERS}
+{SMBD_STATUS_HELPERS}
+if ! command -v fstat >/dev/null 2>&1; then
+    echo "FAIL:fstat missing"
+    exit 1
+fi
 attempt=0
 max_attempts=$((({timeout_seconds} + 4) / 5))
 while [ "$attempt" -lt "$max_attempts" ]; do
-    smbd_ready=0
-
-    if /usr/bin/pkill -0 smbd >/dev/null 2>&1; then
-        if [ -f {RUNTIME_SMB_CONF} ] && smbd_ready_marker_present; then
-            smbd_ready=1
-        fi
-    fi
-
-    if [ "$smbd_ready" -eq 1 ]; then
+    out="$(fstat 2>&1)"
+    if managed_smbd_ready 1 "$out"; then
         exit 0
     fi
-
     attempt=$((attempt + 1))
     sleep 5
 done
+describe_managed_smbd_status 1 "$out"
 exit 1
 '''
     proc = run_ssh_conn(
@@ -396,26 +483,16 @@ def netbsd4_runtime_services_healthy(host: str, password: str, ssh_opts: str) ->
 
 
 def netbsd4_runtime_services_healthy_conn(connection: SshConnection) -> bool:
-    script = r'''
-''' + SMBD_READY_HELPERS + rf'''
+    script = rf'''
+{SMBD_STATUS_HELPERS}
 if ! command -v fstat >/dev/null 2>&1; then
     exit 1
 fi
 out="$(fstat 2>&1)"
-if [ ! -f {RUNTIME_SMB_CONF} ]; then
+if ! managed_smbd_ready 0 "$out"; then
     exit 1
 fi
-if ! smbd_ready_marker_present; then
-    exit 1
-fi
-case "$out" in
-    *smbd*":445"*mdns-advertiser*":5353"*|*mdns-advertiser*":5353"*smbd*":445"*)
-        exit 0
-        ;;
-    *)
-        exit 1
-        ;;
-esac
+mdns_bound_5353 "$out"
 '''
     proc = run_ssh_conn(connection, f"/bin/sh -c {shlex.quote(script)}", check=False)
     return proc.returncode == 0
@@ -437,7 +514,7 @@ def probe_netbsd4_activation_status_conn(
     timeout_seconds: int = 180,
 ) -> subprocess.CompletedProcess[str]:
     script = rf'''
-{SMBD_READY_HELPERS}
+{SMBD_STATUS_HELPERS}
 if ! command -v fstat >/dev/null 2>&1; then
     echo "FAIL:fstat missing"
     exit 1
@@ -446,46 +523,23 @@ attempt=0
 max_attempts=$((({timeout_seconds} + 4) / 5))
 while [ "$attempt" -lt "$max_attempts" ]; do
     out="$(fstat 2>&1)"
-    runtime_conf=0
-    if [ -f {RUNTIME_SMB_CONF} ]; then
-        runtime_conf=1
+    if managed_smbd_ready 1 "$out" && mdns_bound_5353 "$out"; then
+        break
     fi
-    runtime_log=0
-    if smbd_ready_marker_present; then
-        runtime_log=1
-    fi
-    case "$out" in
-        *smbd*":445"*mdns-advertiser*":5353"*|*mdns-advertiser*":5353"*smbd*":445"*)
-            if [ "$runtime_conf" -eq 1 ] && [ "$runtime_log" -eq 1 ]; then
-                break
-            fi
-            ;;
-    esac
     attempt=$((attempt + 1))
     sleep 5
 done
 echo "$out" | sed -n '/\.445/p;/\.5353/p'
 status=0
-if [ -f {RUNTIME_SMB_CONF} ]; then
-    echo "PASS:managed runtime smb.conf present"
-else
-    echo "FAIL:managed runtime smb.conf missing"
+if ! describe_managed_smbd_status 1 "$out"; then
     status=1
 fi
-if smbd_ready_marker_present; then
-    echo "PASS:managed smbd ready marker present"
+if mdns_bound_5353 "$out"; then
+    echo "PASS:mdns-advertiser bound to UDP 5353"
 else
-    echo "FAIL:managed smbd ready marker missing"
+    echo "FAIL:mdns-advertiser is not bound to UDP 5353"
     status=1
 fi
-case "$out" in
-    *smbd*":445"*) echo "PASS:smbd bound to TCP 445" ;;
-    *) echo "FAIL:smbd is not bound to TCP 445"; status=1 ;;
-esac
-case "$out" in
-    *mdns-advertiser*":5353"*) echo "PASS:mdns-advertiser bound to UDP 5353" ;;
-    *) echo "FAIL:mdns-advertiser is not bound to UDP 5353"; status=1 ;;
-esac
 exit "$status"
 '''
     return run_ssh_conn(
