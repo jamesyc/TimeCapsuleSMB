@@ -15,7 +15,7 @@ class TemplateBundle:
 
 
 def cache_directory_replacements(payload_family: str, payload_dir_name: str) -> tuple[str, str]:
-    if payload_family == "netbsd4_samba4":
+    if payload_family in {"netbsd4le_samba4", "netbsd4be_samba4"}:
         return (
             "$PAYLOAD_DIR/cache",
             "__PAYLOAD_DIR__/cache",

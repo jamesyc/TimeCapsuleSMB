@@ -33,6 +33,8 @@ SMBD_READY_MARKER="$RAM_VAR/smbd.ready"
 MDNS_BIN=/mnt/Flash/mdns-advertiser
 LEGACY_PREFIX_NETBSD7=/root/tc-netbsd7
 LEGACY_PREFIX_NETBSD4=/root/tc-netbsd4
+LEGACY_PREFIX_NETBSD4LE=/root/tc-netbsd4le
+LEGACY_PREFIX_NETBSD4BE=/root/tc-netbsd4be
 
 PAYLOAD_DIR_NAME=__PAYLOAD_DIR_NAME__
 PAYLOAD_TEMPLATE_NAME=smb.conf.template
@@ -123,7 +125,9 @@ prepare_legacy_prefix() {
     # runtime path exists regardless of which build lane produced the binary.
     for legacy_prefix in \
         "$LEGACY_PREFIX_NETBSD7" \
-        "$LEGACY_PREFIX_NETBSD4"
+        "$LEGACY_PREFIX_NETBSD4" \
+        "$LEGACY_PREFIX_NETBSD4LE" \
+        "$LEGACY_PREFIX_NETBSD4BE"
     do
         rm -rf "$legacy_prefix"
         ln -s "$RAM_ROOT" "$legacy_prefix"

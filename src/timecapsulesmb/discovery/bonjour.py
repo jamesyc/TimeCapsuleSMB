@@ -51,6 +51,16 @@ def prefer_routable_ipv4(rec: Discovered) -> str:
     return rec.ipv4[0] if rec.ipv4 else ""
 
 
+def discovered_record_root_host(rec: Discovered) -> str | None:
+    chosen_host = prefer_routable_ipv4(rec) or preferred_host(rec)
+    return f"root@{chosen_host}" if chosen_host else None
+
+
+def discovered_record_airport_syap(rec: Discovered) -> str | None:
+    value = rec.properties.get("syAP")
+    return value or None
+
+
 def _bytes_to_ip(addr_bytes: bytes) -> str:
     try:
         return str(ipaddress.ip_address(addr_bytes))
@@ -213,6 +223,10 @@ def discover(timeout: float = 5.0) -> list[Discovered]:
         filtered = [record for record in all_results if "_airport._tcp.local." in record.services]
     filtered.sort(key=lambda record: (record.hostname or "", record.name or ""))
     return filtered
+
+
+def discover_time_capsule_candidates(timeout: float = 5.0) -> list[Discovered]:
+    return discover(timeout=timeout)
 
 
 def print_table(records: list[Discovered]) -> None:

@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
+from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import run_ssh
 
 
@@ -21,6 +22,91 @@ class DevicePaths:
 class MountedVolume:
     device: str
     mountpoint: str
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    ssh_port_reachable: bool
+    ssh_authenticated: bool
+    error: str | None
+    os_name: str
+    os_release: str
+    arch: str
+    elf_endianness: str
+
+
+def probe_device(host: str, password: str, ssh_opts: str) -> ProbeResult:
+    probe_host = host.split("@", 1)[1] if "@" in host else host
+    if not tcp_open(probe_host, 22):
+        return ProbeResult(
+            ssh_port_reachable=False,
+            ssh_authenticated=False,
+            error="SSH is not reachable yet.",
+            os_name="",
+            os_release="",
+            arch="",
+            elf_endianness="unknown",
+        )
+
+    try:
+        os_name, os_release, arch = _probe_remote_os_info(host, password, ssh_opts)
+        elf_endianness = _probe_remote_elf_endianness(host, password, ssh_opts)
+    except SystemExit as exc:
+        return ProbeResult(
+            ssh_port_reachable=True,
+            ssh_authenticated=False,
+            error=str(exc) or "SSH authentication failed.",
+            os_name="",
+            os_release="",
+            arch="",
+            elf_endianness="unknown",
+        )
+
+    return ProbeResult(
+        ssh_port_reachable=True,
+        ssh_authenticated=True,
+        error=None,
+        os_name=os_name,
+        os_release=os_release,
+        arch=arch,
+        elf_endianness=elf_endianness,
+    )
+
+
+def _probe_remote_os_info(host: str, password: str, ssh_opts: str) -> tuple[str, str, str]:
+    script = "printf '%s\\n%s\\n%s\\n' \"$(uname -s)\" \"$(uname -r)\" \"$(uname -m)\""
+    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}")
+    lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    if len(lines) < 3:
+        raise SystemExit("Failed to determine remote device OS compatibility.")
+    return lines[0], lines[1], lines[2]
+
+
+def _probe_remote_elf_endianness(host: str, password: str, ssh_opts: str, path: str = "/bin/sh") -> str:
+    script = rf"""
+path={shlex.quote(path)}
+if [ ! -f "$path" ]; then
+  exit 1
+fi
+if [ -x /usr/bin/od ] && [ -x /usr/bin/tr ]; then
+  b5=$(/bin/dd if="$path" bs=1 skip=5 count=1 2>/dev/null | /usr/bin/od -An -t u1 | /usr/bin/tr -d '[:space:]')
+else
+  b5=$(/bin/dd if="$path" bs=1 skip=5 count=1 2>/dev/null | /usr/bin/sed -n l 2>/dev/null)
+fi
+case "$b5" in
+  1) echo little ;;
+  2) echo big ;;
+  "\\001$") echo little ;;
+  "\\002$") echo big ;;
+  *) echo unknown ;;
+esac
+"""
+    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}", check=False)
+    endianness = (proc.stdout or "").strip().splitlines()
+    value = endianness[-1].strip() if endianness else ""
+    if value in {"little", "big", "unknown"}:
+        return value
+    return "unknown"
 
 
 def discover_mounted_volume(host: str, password: str, ssh_opts: str) -> MountedVolume:

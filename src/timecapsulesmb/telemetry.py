@@ -139,7 +139,7 @@ def build_device_os_version(os_name: str | None, os_release: str | None, arch: s
 
 
 def detect_device_family(payload_family: str | None) -> str | None:
-    if payload_family == "netbsd4_samba4":
+    if payload_family in {"netbsd4le_samba4", "netbsd4be_samba4"}:
         return "netbsd4"
     if payload_family == "netbsd6_samba4":
         return "netbsd6"

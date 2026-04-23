@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from timecapsulesmb.core.config import AppConfig, ENV_PATH, parse_env_values, require_valid_config
-from timecapsulesmb.device.compat import DeviceCompatibility, probe_device_compatibility
-from timecapsulesmb.device.probe import remote_interface_exists
+from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
+from timecapsulesmb.device.probe import probe_device, remote_interface_exists
 
 
 @dataclass(frozen=True)
@@ -79,4 +79,8 @@ def resolve_validated_managed_connection(
 
 
 def probe_compatibility(connection: ResolvedConnection) -> DeviceCompatibility:
-    return probe_device_compatibility(connection.host, connection.password, connection.ssh_opts)
+    result = probe_device(connection.host, connection.password, connection.ssh_opts)
+    compatibility = compatibility_from_probe_result(result)
+    if compatibility is None:
+        raise SystemExit(result.error or "Failed to determine remote device OS compatibility.")
+    return compatibility

@@ -99,7 +99,9 @@ def render_remote_action(action: RemoteAction) -> str:
         payload_dir = action.args[0]
         return (
             "mkdir -p {} {} {} {} {} {} && "
-            "rm -rf {} {} && "
+            "rm -rf {} {} {} {} && "
+            "ln -s {} {} && "
+            "ln -s {} {} && "
             "ln -s {} {} && "
             "ln -s {} {}"
         ).format(
@@ -110,9 +112,15 @@ def render_remote_action(action: RemoteAction) -> str:
             shlex.quote("/root"),
             shlex.quote("/mnt/Memory/samba4"),
             shlex.quote("/root/tc-netbsd4"),
+            shlex.quote("/root/tc-netbsd4le"),
+            shlex.quote("/root/tc-netbsd4be"),
             shlex.quote("/root/tc-netbsd7"),
             shlex.quote("/mnt/Memory/samba4"),
             shlex.quote("/root/tc-netbsd4"),
+            shlex.quote("/mnt/Memory/samba4"),
+            shlex.quote("/root/tc-netbsd4le"),
+            shlex.quote("/mnt/Memory/samba4"),
+            shlex.quote("/root/tc-netbsd4be"),
             shlex.quote("/mnt/Memory/samba4"),
             shlex.quote("/root/tc-netbsd7"),
         )

@@ -136,14 +136,14 @@ class DeployModuleTests(unittest.TestCase):
         )
 
     def test_cache_directory_replacements_keep_netbsd4_start_expression_unquoted(self) -> None:
-        start_cache, smbconf_cache = cache_directory_replacements("netbsd4_samba4", "samba4")
+        start_cache, smbconf_cache = cache_directory_replacements("netbsd4le_samba4", "samba4")
         self.assertEqual(start_cache, "$PAYLOAD_DIR/cache")
         self.assertEqual(smbconf_cache, "__PAYLOAD_DIR__/cache")
         self.assertFalse(start_cache.startswith("'"))
         self.assertFalse(start_cache.endswith("'"))
 
     def test_cache_directory_replacements_use_custom_payload_dir_for_netbsd4_smbconf(self) -> None:
-        start_cache, smbconf_cache = cache_directory_replacements("netbsd4_samba4", "samba4-test")
+        start_cache, smbconf_cache = cache_directory_replacements("netbsd4le_samba4", "samba4-test")
         self.assertEqual(start_cache, "$PAYLOAD_DIR/cache")
         self.assertEqual(smbconf_cache, "__PAYLOAD_DIR__/cache")
 
@@ -845,7 +845,7 @@ class DeployModuleTests(unittest.TestCase):
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values, payload_family="netbsd4_samba4")
+        bundle = build_template_bundle(values, payload_family="netbsd4le_samba4")
         rendered = render_template("smb.conf.template", bundle.smbconf_replacements)
         self.assertIn("cache directory = __PAYLOAD_DIR__/cache", rendered)
         self.assertIn("lock directory = /mnt/Locks", rendered)
@@ -864,7 +864,7 @@ class DeployModuleTests(unittest.TestCase):
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values, payload_family="netbsd4_samba4")
+        bundle = build_template_bundle(values, payload_family="netbsd4le_samba4")
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn("CACHE_DIRECTORY=$PAYLOAD_DIR/cache", rendered)
         self.assertIn("cache directory = $CACHE_DIRECTORY", rendered)
@@ -881,7 +881,7 @@ class DeployModuleTests(unittest.TestCase):
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values, payload_family="netbsd4_samba4")
+        bundle = build_template_bundle(values, payload_family="netbsd4le_samba4")
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         data_root_index = rendered.index('if DATA_ROOT=$(discover_preexisting_data_root); then')
         payload_index = rendered.index('PAYLOAD_DIR=$(find_payload_dir "$DATA_ROOT") || {')
@@ -900,7 +900,7 @@ class DeployModuleTests(unittest.TestCase):
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values, payload_family="netbsd4_samba4")
+        bundle = build_template_bundle(values, payload_family="netbsd4le_samba4")
         rendered = render_template("smb.conf.template", bundle.smbconf_replacements)
         self.assertIn("cache directory = __PAYLOAD_DIR__/cache", rendered)
         self.assertNotIn("__CACHE_DIRECTORY__", rendered)
@@ -2109,6 +2109,8 @@ PASS:mdns-advertiser bound to UDP 5353
         self.assertIn(f"generated adisk UUID -> {payload_dir}/private/adisk.uuid", text)
         self.assertIn(f"generated nbns marker -> {payload_dir}/private/nbns.enabled", text)
         self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4", text)
+        self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4le", text)
+        self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4be", text)
         self.assertIn(f"chmod 755 {payload_dir}/cache", text)
         self.assertIn(f"chmod 700 {payload_dir}/private", text)
 

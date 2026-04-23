@@ -352,6 +352,27 @@ def validate_net_iface(value: str, field_name: str) -> Optional[str]:
     return None
 
 
+def validate_ssh_target(value: str, field_name: str) -> Optional[str]:
+    if not value:
+        return f"{field_name} cannot be blank."
+    if _contains_invalid_control_character(value):
+        return f"{field_name} contains an invalid control character."
+    if _contains_whitespace(value):
+        return f"{field_name} must not contain whitespace."
+    if "@" not in value:
+        return f"{field_name} must include a username, like root@192.168.1.101."
+    user, host = value.split("@", 1)
+    if not user:
+        return f"{field_name} must include a username before @."
+    if not host:
+        return f"{field_name} must include a host after @."
+    if not _has_only_safe_chars(user, r"[A-Za-z0-9._-]+"):
+        return f"{field_name} username may contain only letters, numbers, dots, underscores, and hyphens."
+    if host.startswith("-"):
+        return f"{field_name} host must not start with a hyphen."
+    return None
+
+
 def validate_nonempty(value: str, field_name: str) -> Optional[str]:
     if not value:
         return f"{field_name} cannot be blank."
@@ -382,7 +403,7 @@ def validate_mdns_device_model_matches_syap(syap: str, device_model: str) -> Opt
 
 
 CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
-    "TC_HOST": validate_nonempty,
+    "TC_HOST": validate_ssh_target,
     "TC_NET_IFACE": validate_net_iface,
     "TC_SHARE_NAME": validate_adisk_share_name,
     "TC_SAMBA_USER": validate_samba_user,

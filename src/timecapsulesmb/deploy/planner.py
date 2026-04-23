@@ -167,6 +167,8 @@ def build_uninstall_plan(host: str, device_paths: DevicePaths) -> UninstallPlan:
         "/mnt/Memory/samba4",
         "/root/tc-netbsd7",
         "/root/tc-netbsd4",
+        "/root/tc-netbsd4le",
+        "/root/tc-netbsd4be",
     ]
     return UninstallPlan(
         host=host,
@@ -189,6 +191,8 @@ def build_uninstall_plan(host: str, device_paths: DevicePaths) -> UninstallPlan:
             remove_path_action("/mnt/Memory/samba4"),
             remove_path_action("/root/tc-netbsd7"),
             remove_path_action("/root/tc-netbsd4"),
+            remove_path_action("/root/tc-netbsd4le"),
+            remove_path_action("/root/tc-netbsd4be"),
         ],
         reboot_required=True,
     )

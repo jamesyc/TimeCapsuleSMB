@@ -55,7 +55,7 @@ class ArtifactResolverTests(unittest.TestCase):
         self.assertIn("nbns-advertiser", artifacts)
 
     def test_resolve_netbsd4_payload_returns_logical_deploy_names(self) -> None:
-        artifacts = resolve_payload_artifacts(REPO_ROOT, "netbsd4_samba4")
+        artifacts = resolve_payload_artifacts(REPO_ROOT, "netbsd4le_samba4")
         self.assertEqual(artifacts["smbd"].repo_relative_path, "bin/samba4-netbsd4le/smbd")
         self.assertEqual(artifacts["mdns-advertiser"].repo_relative_path, "bin/mdns-netbsd4le/mdns-advertiser")
         self.assertEqual(artifacts["nbns-advertiser"].repo_relative_path, "bin/nbns-netbsd4le/nbns-advertiser")

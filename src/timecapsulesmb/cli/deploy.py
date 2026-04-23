@@ -78,8 +78,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                 print("Continuing because --allow-unsupported was provided.")
         elif not args.json:
             print(compatibility.message)
-        payload_family = compatibility.payload_family or "netbsd6_samba4"
-        is_netbsd4 = payload_family == "netbsd4_samba4"
+        if not compatibility.payload_family:
+            raise SystemExit(f"{compatibility.message}\nNo deployable payload is available for this detected device.")
+        payload_family = compatibility.payload_family
+        is_netbsd4 = payload_family in {"netbsd4le_samba4", "netbsd4be_samba4"}
         resolved_artifacts = resolve_payload_artifacts(REPO_ROOT, payload_family)
         smbd_path = resolved_artifacts["smbd"].absolute_path
         mdns_path = resolved_artifacts["mdns-advertiser"].absolute_path

@@ -38,6 +38,7 @@ from timecapsulesmb.core.config import (
     validate_payload_dir_name,
     validate_samba_user,
     validate_single_dns_label,
+    validate_ssh_target,
     write_env_file,
 )
 
@@ -358,6 +359,24 @@ class ConfigTests(unittest.TestCase):
             "Network interface on the Time Capsule may contain only letters, numbers, dots, underscores, colons, and hyphens.",
         )
 
+    def test_validate_ssh_target_accepts_user_at_host_targets(self) -> None:
+        self.assertIsNone(validate_ssh_target("root@10.0.0.2", "Time Capsule SSH target"))
+        self.assertIsNone(validate_ssh_target("root@timecapsule.local", "Time Capsule SSH target"))
+        self.assertIsNone(validate_ssh_target("admin_user@wan.example.com", "Time Capsule SSH target"))
+
+    def test_validate_ssh_target_rejects_bare_or_unsafe_targets(self) -> None:
+        self.assertEqual(
+            validate_ssh_target("10.0.0.2", "Time Capsule SSH target"),
+            "Time Capsule SSH target must include a username, like root@192.168.1.101.",
+        )
+        self.assertEqual(validate_ssh_target("@10.0.0.2", "Time Capsule SSH target"), "Time Capsule SSH target must include a username before @.")
+        self.assertEqual(validate_ssh_target("root@", "Time Capsule SSH target"), "Time Capsule SSH target must include a host after @.")
+        self.assertEqual(validate_ssh_target("root user@10.0.0.2", "Time Capsule SSH target"), "Time Capsule SSH target must not contain whitespace.")
+        self.assertEqual(
+            validate_ssh_target("root;reboot@10.0.0.2", "Time Capsule SSH target"),
+            "Time Capsule SSH target username may contain only letters, numbers, dots, underscores, and hyphens.",
+        )
+
     def test_validate_config_values_uses_profiles(self) -> None:
         values = dict(DEFAULTS)
         values["TC_HOST"] = "root@10.0.0.2"
@@ -378,6 +397,16 @@ class ConfigTests(unittest.TestCase):
         errors = validate_config_values(values, profile="deploy")
         self.assertEqual(errors[0].key, "TC_MDNS_DEVICE_MODEL")
         self.assertEqual(errors[0].message, "TC_MDNS_DEVICE_MODEL must match the configured syAP.")
+
+    def test_validate_config_values_rejects_bare_deploy_host(self) -> None:
+        values = dict(DEFAULTS)
+        values["TC_HOST"] = "10.0.0.2"
+        values["TC_PASSWORD"] = "pw"
+        values["TC_AIRPORT_SYAP"] = "119"
+        values["TC_MDNS_DEVICE_MODEL"] = "TimeCapsule8,119"
+        errors = validate_config_values(values, profile="deploy")
+        self.assertEqual(errors[0].key, "TC_HOST")
+        self.assertIn("must include a username", errors[0].message)
 
     def test_app_config_require_raises_for_missing_value(self) -> None:
         config = AppConfig({"TC_HOST": ""})

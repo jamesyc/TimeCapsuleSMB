@@ -10,7 +10,6 @@ from timecapsulesmb.core.config import (
     CONFIG_FIELDS,
     DEFAULTS,
     ENV_PATH,
-    extract_host,
     infer_mdns_device_model_from_airport_syap,
     parse_env_values,
     upsert_env_key,
@@ -18,11 +17,17 @@ from timecapsulesmb.core.config import (
 )
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.identity import ensure_install_id
-from timecapsulesmb.device.compat import infer_mdns_device_model_hint
-from timecapsulesmb.discovery.bonjour import Discovered, discover, prefer_routable_ipv4, preferred_host
+from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
+from timecapsulesmb.device.probe import ProbeResult, probe_device
+from timecapsulesmb.discovery.bonjour import (
+    Discovered,
+    discover_time_capsule_candidates,
+    discovered_record_airport_syap,
+    discovered_record_root_host,
+    preferred_host,
+)
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.local import tcp_open
-from timecapsulesmb.transport.ssh import run_ssh
 
 HIDDEN_CONFIG_KEYS = {"TC_SSH_OPTS", "TC_CONFIGURE_ID"}
 NO_SAVED_VALUE_HINT_KEYS = {"TC_PASSWORD", *HIDDEN_CONFIG_KEYS}
@@ -49,17 +54,12 @@ def prompt(label: str, default: str, secret: bool) -> str:
         return default
 
 
-def confirm(prompt_text: str) -> bool:
+def confirm(prompt_text: str, default_no: bool = False) -> bool:
+    if default_no:
+        answer = input(f"{prompt_text} [y/N]: ").strip().lower()
+        return answer in {"Y", "y", "yes"}
     answer = input(f"{prompt_text} [Y/n]: ").strip().lower()
-    return answer in {"", "y", "yes"}
-
-
-def validate_ssh_target(host: str, password: str, ssh_opts: str) -> bool:
-    try:
-        proc = run_ssh(host, password, ssh_opts, "/bin/echo ok", check=False, timeout=15)
-    except SystemExit:
-        return False
-    return proc.returncode == 0
+    return answer in {"", "Y", "y", "yes"}
 
 
 def list_devices(records) -> None:
@@ -89,40 +89,49 @@ def choose_device(records):
         return records[idx - 1]
 
 
-def _discovered_root_host(record: Discovered) -> Optional[str]:
-    chosen_host = prefer_routable_ipv4(record) or preferred_host(record)
-    return f"root@{chosen_host}" if chosen_host else None
-
-
 def discover_default_record(existing: dict[str, str]) -> Optional[Discovered]:
     print("Attempting to discover Time Capsules on the local network via mDNS...", flush=True)
-    records = discover(timeout=5.0)
+    records = discover_time_capsule_candidates(timeout=5.0)
     if not records:
         print("No Time Capsules discovered. Falling back to manual SSH target entry.\n", flush=True)
         return None
     list_devices(records)
     selected = choose_device(records)
     if selected is None:
-        existing_target = existing.get("TC_HOST", DEFAULTS["TC_HOST"])
+        existing_target = valid_existing_config_value(existing, "TC_HOST", "Time Capsule SSH target") or DEFAULTS["TC_HOST"]
         print(f"Discovery skipped. Falling back to {existing_target}.\n", flush=True)
         return None
 
-    chosen_host = prefer_routable_ipv4(selected) or preferred_host(selected)
-    print(f"Selected: {selected.name} ({chosen_host})\n", flush=True)
+    chosen_host = discovered_record_root_host(selected)
+    selected_host = chosen_host.removeprefix("root@") if chosen_host else preferred_host(selected)
+    print(f"Selected: {selected.name} ({selected_host})\n", flush=True)
     return selected
 
 
 def prompt_host_and_password(existing: dict[str, str], values: dict[str, str], discovered_host: Optional[str]) -> None:
-    host_default = values.get("TC_HOST", discovered_host or existing.get("TC_HOST", DEFAULTS["TC_HOST"]))
+    host_default = values.get("TC_HOST") or discovered_host or valid_existing_config_value(
+        existing,
+        "TC_HOST",
+        "Time Capsule SSH target",
+    ) or DEFAULTS["TC_HOST"]
     password_default = values.get("TC_PASSWORD", existing.get("TC_PASSWORD", ""))
-    values["TC_HOST"] = prompt("Time Capsule SSH target", host_default, False)
+    values["TC_HOST"] = prompt_valid_config_value("TC_HOST", "Time Capsule SSH target", host_default)
     values["TC_PASSWORD"] = prompt("Time Capsule root password", password_default, True)
 
 
-def validate_ssh_target_if_reachable(host: str, password: str, ssh_opts: str) -> Optional[bool]:
-    if not tcp_open(extract_host(host), 22):
-        return None
-    return validate_ssh_target(host, password, ssh_opts)
+def probe_device_if_reachable(host: str, password: str, ssh_opts: str):
+    probe_host = host.split("@", 1)[1] if "@" in host else host
+    if not tcp_open(probe_host, 22):
+        return ProbeResult(
+            ssh_port_reachable=False,
+            ssh_authenticated=False,
+            error="SSH is not reachable yet.",
+            os_name="",
+            os_release="",
+            arch="",
+            elf_endianness="unknown",
+        )
+    return probe_device(host, password, ssh_opts)
 
 
 def validated_value_or_empty(key: str, value: str, label: str) -> str:
@@ -170,6 +179,23 @@ def prompt_valid_config_value(key: str, label: str, current: str, secret: bool =
         return candidate
 
 
+def prompt_config_value_from_candidates(
+    key: str,
+    label: str,
+    current: str,
+    allowed_values: tuple[str, ...],
+    *,
+    secret: bool = False,
+    invalid_message: str | None = None,
+) -> str:
+    allowed = set(allowed_values)
+    while True:
+        candidate = prompt_valid_config_value(key, label, current, secret=secret)
+        if candidate in allowed:
+            return candidate
+        print(invalid_message or f"{label} must be one of: {', '.join(allowed_values)}")
+
+
 def print_saved_value_hint(value: str) -> None:
     print(f"Found saved value: {value}")
 
@@ -183,8 +209,8 @@ def print_automatic_value_choice(key: str, choice: ConfigureValueChoice) -> None
         print_reused_env_value(key, choice.value)
     elif choice.source == "discovered":
         print(f"Using discovered {key}: {choice.value}")
-    elif choice.source == "inferred":
-        print(f"Using inferred {key}: {choice.value}")
+    elif choice.source == "probed":
+        print(f"Using probed {key}: {choice.value}")
     elif choice.source == "derived":
         print(f"Using {key} derived from TC_AIRPORT_SYAP: {choice.value}")
 
@@ -215,8 +241,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     telemetry_values["TC_CONFIGURE_ID"] = configure_id
     telemetry = TelemetryClient.from_values(telemetry_values)
     values: dict[str, str] = {}
-    inferred_mdns_device_model: Optional[str] = None
     discovered_airport_syap: Optional[str] = None
+    probed_device: DeviceCompatibility | None = None
     with CommandContext(
         telemetry,
         "configure",
@@ -232,38 +258,30 @@ def main(argv: Optional[list[str]] = None) -> int:
         ssh_opts = existing.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"])
         values["TC_SSH_OPTS"] = ssh_opts
         discovered_record = discover_default_record(existing)
-        discovered_host = _discovered_root_host(discovered_record) if discovered_record else None
+        discovered_host = discovered_record_root_host(discovered_record) if discovered_record else None
         if discovered_record is not None:
-            discovered_airport_syap = discovered_record.properties.get("syAP") or None
+            discovered_airport_syap = discovered_record_airport_syap(discovered_record)
         prompt_host_and_password(existing, values, discovered_host)
         while True:
-            validation_result = validate_ssh_target_if_reachable(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
-            if validation_result is None:
+            probe_result = probe_device_if_reachable(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
+            if not probe_result.ssh_port_reachable:
                 print("\nSSH is not reachable yet, so configure cannot validate this password.")
                 print("That is okay if you have not run 'tcapsule prep-device' yet.")
-                if confirm("Save this information still?"):
+                if confirm("Save this information still?", True):
                     break
                 print("Please enter the SSH target and password again.\n")
                 prompt_host_and_password(existing, values, discovered_host)
                 continue
-            if validation_result:
+            if probe_result.ssh_authenticated:
+                probed_device = compatibility_from_probe_result(probe_result)
+                if probed_device is not None and not probed_device.supported:
+                    raise SystemExit(probed_device.message)
                 break
             print("\nThe provided Time Capsule SSH target and password did not work.")
-            if confirm("Save this information still?"):
+            if confirm("Save this information still?", True):
                 break
             print("Please enter the SSH target and password again.\n")
             prompt_host_and_password(existing, values, discovered_host)
-
-        if validation_result:
-            try:
-                inferred_model = infer_mdns_device_model_hint(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
-                inferred_mdns_device_model = validated_value_or_empty(
-                    "TC_MDNS_DEVICE_MODEL",
-                    inferred_model or "",
-                    "mDNS device model hint",
-                ) or None
-            except SystemExit:
-                inferred_mdns_device_model = None
 
         discovered_airport_identity = discovered_record is not None
         valid_discovered_syap = validated_value_or_empty(
@@ -276,11 +294,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             if valid_discovered_syap
             else None
         )
-        inferred_model_choice = (
-            ConfigureValueChoice(value=inferred_mdns_device_model, source="inferred")
-            if inferred_mdns_device_model
-            else None
-        )
+        inferred_syap_choice = None
+        if probed_device and probed_device.exact_syap:
+            inferred_syap_choice = ConfigureValueChoice(value=probed_device.exact_syap, source="probed")
+        inferred_model_choice = None
+        if probed_device and probed_device.exact_model:
+            inferred_model_choice = ConfigureValueChoice(value=probed_device.exact_model, source="probed")
         saved_syap_choice = saved_value_choice(existing, "TC_AIRPORT_SYAP", "Airport Utility syAP code")
         saved_model_choice = saved_value_choice(existing, "TC_MDNS_DEVICE_MODEL", "mDNS device model hint")
 
@@ -296,9 +315,23 @@ def main(argv: Optional[list[str]] = None) -> int:
                         print_saved_value_hint(saved_syap_choice.value)
                     values[key] = prompt_valid_config_value(key, label, saved_syap_choice.value if saved_syap_choice is not None else "")
                     continue
+                if inferred_syap_choice is not None:
+                    print_automatic_value_choice(key, inferred_syap_choice)
+                    values[key] = inferred_syap_choice.value
+                    continue
                 if saved_syap_choice is not None:
                     print_automatic_value_choice(key, saved_syap_choice)
                     values[key] = saved_syap_choice.value
+                    continue
+                if probed_device and probed_device.syap_candidates:
+                    print_syap_prompt_help()
+                    values[key] = prompt_config_value_from_candidates(
+                        key,
+                        label,
+                        "",
+                        probed_device.syap_candidates,
+                        invalid_message=f"From detected connection, syAP code should be one of: {', '.join(probed_device.syap_candidates)}",
+                    )
                     continue
                 print_syap_prompt_help()
                 values[key] = prompt_valid_config_value(key, label, DEFAULTS["TC_AIRPORT_SYAP"])
@@ -325,6 +358,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                 if saved_model_choice is not None:
                     print_automatic_value_choice(key, saved_model_choice)
                     values[key] = saved_model_choice.value
+                    continue
+                if probed_device and probed_device.model_candidates:
+                    values[key] = prompt_config_value_from_candidates(
+                        key,
+                        label,
+                        DEFAULTS["TC_MDNS_DEVICE_MODEL"] if DEFAULTS["TC_MDNS_DEVICE_MODEL"] in probed_device.model_candidates else "",
+                        probed_device.model_candidates,
+                    )
                     continue
                 values[key] = prompt_valid_config_value(key, label, DEFAULTS["TC_MDNS_DEVICE_MODEL"])
                 continue

@@ -30,7 +30,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not compatibility.supported:
             raise SystemExit(compatibility.message)
         print(compatibility.message)
-        if compatibility.payload_family != "netbsd4_samba4":
+        if compatibility.payload_family not in {"netbsd4le_samba4", "netbsd4be_samba4"}:
             raise SystemExit("activate is only supported for NetBSD4 Time Capsules; use deploy for persistent NetBSD6 installs.")
 
         actions = build_netbsd4_activation_actions()
