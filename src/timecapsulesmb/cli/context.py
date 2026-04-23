@@ -8,10 +8,11 @@ from timecapsulesmb.cli import runtime
 from timecapsulesmb.telemetry import build_device_os_version, detect_device_family
 
 if TYPE_CHECKING:
-    from timecapsulesmb.cli.runtime import ManagedTargetState, ResolvedConnection
+    from timecapsulesmb.cli.runtime import ManagedTargetState
     from timecapsulesmb.device.compat import DeviceCompatibility
     from timecapsulesmb.device.probe import ProbedDeviceState
     from timecapsulesmb.telemetry import TelemetryClient
+    from timecapsulesmb.transport.ssh import SshConnection
 
 
 class CommandContext:
@@ -37,8 +38,9 @@ class CommandContext:
         self.result = "failure"
         self.finish_fields: dict[str, object] = {}
         self.error_lines: list[str] = []
+        self.preflight_error: str | None = None
         self._debug_context_added = False
-        self.connection: ResolvedConnection | None = None
+        self.connection: SshConnection | None = None
         self.probe_state: ProbedDeviceState | None = None
         self.compatibility: DeviceCompatibility | None = None
         self.telemetry.emit(started_event, command_id=self.command_id, **fields)
@@ -122,6 +124,8 @@ class CommandContext:
                 context_lines.append(f"device_model={device_model}")
             if device_syap:
                 context_lines.append(f"device_syap={device_syap}")
+        if self.preflight_error:
+            context_lines.append(f"preflight_error={self.preflight_error}")
         for key in ("device_os_version", "device_family", "nbns_enabled", "reboot_was_attempted", "device_came_back_after_reboot"):
             value = self.finish_fields.get(key)
             if value is None:
@@ -168,7 +172,7 @@ class CommandContext:
         *,
         required_keys: tuple[str, ...] = (),
         allow_empty_password: bool = False,
-    ) -> ResolvedConnection:
+    ) -> SshConnection:
         if self.values is None:
             raise RuntimeError("CommandContext values are not set.")
         self.connection = runtime.resolve_env_connection(
@@ -178,7 +182,7 @@ class CommandContext:
         )
         return self.connection
 
-    def resolve_validated_managed_connection(self, *, profile: str) -> ResolvedConnection:
+    def resolve_validated_managed_connection(self, *, profile: str) -> SshConnection:
         return self.resolve_validated_managed_target(profile=profile, include_probe=False).connection
 
     def resolve_validated_managed_target(self, *, profile: str, include_probe: bool = False) -> ManagedTargetState:
@@ -198,7 +202,7 @@ class CommandContext:
 
     def probe_device_state(
         self,
-        probe: Callable[[ResolvedConnection], ProbedDeviceState] | None = None,
+        probe: Callable[[SshConnection], ProbedDeviceState] | None = None,
     ) -> ProbedDeviceState:
         if self.connection is None:
             raise RuntimeError("CommandContext connection is not set.")

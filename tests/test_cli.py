@@ -21,10 +21,10 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.cli import activate, bootstrap, configure, deploy, discover, doctor, fsck, prep_device, uninstall
 from timecapsulesmb.cli.main import main
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import ResolvedConnection
 from timecapsulesmb.core.config import DEFAULTS
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
 from timecapsulesmb.device.probe import MountedVolume, ProbeResult, ProbedDeviceState, RemoteInterfaceProbeResult
+from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.discovery.bonjour import Discovered
 
 
@@ -32,7 +32,7 @@ class FakeCommandContext:
     def __init__(
         self,
         *,
-        connection: ResolvedConnection | None = None,
+        connection: SshConnection | None = None,
         compatibility: DeviceCompatibility | None = None,
     ) -> None:
         self.result = "failure"
@@ -40,7 +40,7 @@ class FakeCommandContext:
         self.error_lines: list[str] = []
         self.debug_context_added = False
         self.finish = mock.Mock()
-        self.connection = connection or ResolvedConnection("root@10.0.0.2", "pw", "-o foo")
+        self.connection = connection or SshConnection("root@10.0.0.2", "pw", "-o foo")
         self.probe_state = None
         self.compatibility = compatibility or DeviceCompatibility(
             os_name="NetBSD",
@@ -2228,6 +2228,23 @@ class CliTests(unittest.TestCase):
         self.assertIn("doctor found one or more fatal problems", output.getvalue())
         self.assertIn("Doctor failures:", self._telemetry_client.emit.call_args_list[-1].kwargs["error"] if self._telemetry_client.emit.call_args_list else "")
 
+    def test_doctor_includes_soft_preinspection_error_in_failure_telemetry(self) -> None:
+        output = io.StringIO()
+        values = self.make_valid_env()
+        fake_result = doctor.CheckResult("FAIL", "SSH command works failed")
+        with tempfile.NamedTemporaryFile() as env_file:
+            env_path = Path(env_file.name)
+            with mock.patch("timecapsulesmb.cli.doctor.ENV_PATH", env_path):
+                with mock.patch("timecapsulesmb.cli.doctor.load_env_values", return_value=values):
+                    with mock.patch("timecapsulesmb.cli.doctor.inspect_managed_connection", side_effect=SystemExit("Connecting to the device failed, SSH error: bind failed")):
+                        with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", return_value=([fake_result], True)):
+                            with redirect_stdout(output):
+                                rc = doctor.main([])
+        self.assertEqual(rc, 1)
+        telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
+        self.assertIn("Doctor failures:", telemetry_error)
+        self.assertIn("preflight_error=doctor pre-inspection failed: Connecting to the device failed, SSH error: bind failed", telemetry_error)
+
     def test_doctor_streams_results_in_human_mode(self) -> None:
         output = io.StringIO()
         streamed_result = doctor.CheckResult("PASS", "streamed")
@@ -2492,7 +2509,7 @@ class CliTests(unittest.TestCase):
                             ):
                                 with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
-                                        with mock.patch("timecapsulesmb.cli.deploy.run_ssh") as run_ssh_mock:
+                                        with mock.patch("timecapsulesmb.cli.deploy.run_ssh_conn") as run_ssh_mock:
                                             with redirect_stdout(output):
                                                 rc = deploy.main(["--no-reboot"])
         self.assertEqual(rc, 0)
@@ -2527,7 +2544,7 @@ class CliTests(unittest.TestCase):
                                 with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
                                         with mock.patch("builtins.input", return_value="n"):
-                                            with mock.patch("timecapsulesmb.cli.deploy.run_ssh") as run_ssh_mock:
+                                            with mock.patch("timecapsulesmb.cli.deploy.run_ssh_conn") as run_ssh_mock:
                                                 with redirect_stdout(output):
                                                     rc = deploy.main([])
         self.assertEqual(rc, 0)
@@ -2562,20 +2579,14 @@ class CliTests(unittest.TestCase):
                                 with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
                                         with mock.patch("builtins.input", return_value="y"):
-                                            with mock.patch("timecapsulesmb.cli.deploy.run_ssh"):
-                                                with mock.patch("timecapsulesmb.cli.deploy.wait_for_ssh_state", side_effect=[True, False]) as wait_mock:
+                                            with mock.patch("timecapsulesmb.cli.deploy.run_ssh_conn"):
+                                                with mock.patch("timecapsulesmb.cli.deploy.wait_for_ssh_state_conn", side_effect=[True, False]) as wait_mock:
                                                     with redirect_stdout(output):
                                                         rc = deploy.main([])
         self.assertEqual(rc, 1)
-        self.assertEqual(
-            wait_mock.call_args_list[0].args,
-            ("root@10.0.0.2", "pw", "-o foo"),
-        )
+        self.assertEqual(wait_mock.call_args_list[0].args[0].host, "root@10.0.0.2")
         self.assertEqual(wait_mock.call_args_list[0].kwargs, {"expected_up": False, "timeout_seconds": 60})
-        self.assertEqual(
-            wait_mock.call_args_list[1].args,
-            ("root@10.0.0.2", "pw", "-o foo"),
-        )
+        self.assertEqual(wait_mock.call_args_list[1].args[0].host, "root@10.0.0.2")
         self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 240})
         self.assertIn("Timed out waiting for SSH after reboot.", output.getvalue())
 
@@ -2606,8 +2617,8 @@ class CliTests(unittest.TestCase):
                             ):
                                 with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
-                                        with mock.patch("timecapsulesmb.cli.deploy.run_ssh"):
-                                            with mock.patch("timecapsulesmb.cli.deploy.wait_for_ssh_state", side_effect=[True, True]):
+                                        with mock.patch("timecapsulesmb.cli.deploy.run_ssh_conn"):
+                                            with mock.patch("timecapsulesmb.cli.deploy.wait_for_ssh_state_conn", side_effect=[True, True]):
                                                 with mock.patch("timecapsulesmb.cli.deploy.wait_for_post_reboot_smbd", return_value=True) as ready_mock:
                                                     with mock.patch("timecapsulesmb.cli.deploy.wait_for_post_reboot_mdns_takeover", return_value=True) as mdns_ready_mock:
                                                         with mock.patch("timecapsulesmb.cli.deploy.verify_post_deploy") as verify_mock:
@@ -2615,8 +2626,8 @@ class CliTests(unittest.TestCase):
                                                                 with redirect_stdout(output):
                                                                     rc = deploy.main([])
         self.assertEqual(rc, 0)
-        ready_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o foo")
-        mdns_ready_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o foo")
+        self.assertEqual(ready_mock.call_args.args[0].host, "root@10.0.0.2")
+        self.assertEqual(mdns_ready_mock.call_args.args[0].host, "root@10.0.0.2")
         verify_mock.assert_called_once_with(values)
         text = output.getvalue()
         self.assertIn("Device is back online.", text)
@@ -2651,8 +2662,8 @@ class CliTests(unittest.TestCase):
                             ):
                                 with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
-                                        with mock.patch("timecapsulesmb.cli.deploy.run_ssh"):
-                                            with mock.patch("timecapsulesmb.cli.deploy.wait_for_ssh_state", side_effect=[True, True]):
+                                        with mock.patch("timecapsulesmb.cli.deploy.run_ssh_conn"):
+                                            with mock.patch("timecapsulesmb.cli.deploy.wait_for_ssh_state_conn", side_effect=[True, True]):
                                                 with mock.patch("timecapsulesmb.cli.deploy.wait_for_post_reboot_smbd", return_value=False) as ready_mock:
                                                     with mock.patch("timecapsulesmb.cli.deploy.wait_for_post_reboot_mdns_takeover") as mdns_ready_mock:
                                                         with mock.patch("timecapsulesmb.cli.deploy.verify_post_deploy") as verify_mock:
@@ -2660,7 +2671,7 @@ class CliTests(unittest.TestCase):
                                                                 with redirect_stdout(output):
                                                                     rc = deploy.main([])
         self.assertEqual(rc, 1)
-        ready_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o foo")
+        self.assertEqual(ready_mock.call_args.args[0].host, "root@10.0.0.2")
         mdns_ready_mock.assert_not_called()
         verify_mock.assert_not_called()
         self.assertIn("Managed smbd did not become ready after reboot.", output.getvalue())
@@ -2692,8 +2703,8 @@ class CliTests(unittest.TestCase):
                             ):
                                 with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
-                                        with mock.patch("timecapsulesmb.cli.deploy.run_ssh"):
-                                            with mock.patch("timecapsulesmb.cli.deploy.wait_for_ssh_state", side_effect=[True, True]):
+                                        with mock.patch("timecapsulesmb.cli.deploy.run_ssh_conn"):
+                                            with mock.patch("timecapsulesmb.cli.deploy.wait_for_ssh_state_conn", side_effect=[True, True]):
                                                 with mock.patch("timecapsulesmb.cli.deploy.wait_for_post_reboot_smbd", return_value=True) as ready_mock:
                                                     with mock.patch("timecapsulesmb.cli.deploy.wait_for_post_reboot_mdns_takeover", return_value=False) as mdns_ready_mock:
                                                         with mock.patch("timecapsulesmb.cli.deploy.verify_post_deploy") as verify_mock:
@@ -2701,8 +2712,8 @@ class CliTests(unittest.TestCase):
                                                                 with redirect_stdout(output):
                                                                     rc = deploy.main([])
         self.assertEqual(rc, 1)
-        ready_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o foo")
-        mdns_ready_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o foo")
+        self.assertEqual(ready_mock.call_args.args[0].host, "root@10.0.0.2")
+        self.assertEqual(mdns_ready_mock.call_args.args[0].host, "root@10.0.0.2")
         verify_mock.assert_not_called()
         self.assertIn("Managed mDNS did not become ready after reboot.", output.getvalue())
 
@@ -2732,7 +2743,7 @@ class CliTests(unittest.TestCase):
                                         rc = deploy.main(["--install-nbns", "--no-reboot"])
         self.assertEqual(rc, 0)
         self.assertEqual(actions_mock.call_count, 2)
-        pre_upload_action_kinds = [action.kind for action in actions_mock.call_args_list[0].args[3]]
+        pre_upload_action_kinds = [action.kind for action in actions_mock.call_args_list[0].args[1]]
         self.assertEqual(
             pre_upload_action_kinds,
             ["stop_process_full", "stop_process", "stop_process", "stop_process", "initialize_data_root", "prepare_dirs", "enable_nbns"],
@@ -2953,7 +2964,7 @@ class CliTests(unittest.TestCase):
             debug_logging=True,
             data_root="/Volumes/dk2/ShareRoot",
         )
-        rendered_actions = [action.kind for action in actions_mock.call_args_list[0].args[3]]
+        rendered_actions = [action.kind for action in actions_mock.call_args_list[0].args[1]]
         self.assertNotIn("prepare_log_dir", rendered_actions)
 
     def test_deploy_netbsd4_yes_runs_activation_and_skips_reboot(self) -> None:
@@ -2981,13 +2992,13 @@ class CliTests(unittest.TestCase):
                                 with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
                                         with mock.patch("timecapsulesmb.cli.deploy.verify_netbsd4_activation", return_value=True) as verify_mock:
-                                            with mock.patch("timecapsulesmb.cli.deploy.run_ssh") as run_ssh_mock:
+                                            with mock.patch("timecapsulesmb.cli.deploy.run_ssh_conn") as run_ssh_mock:
                                                 with redirect_stdout(output):
                                                     rc = deploy.main(["--yes"])
         self.assertEqual(rc, 0)
         self.assertEqual(actions_mock.call_count, 3)
-        activation_action_kinds = [action.kind for action in actions_mock.call_args_list[2].args[3]]
-        activation_action_args = [action.args[0] for action in actions_mock.call_args_list[2].args[3]]
+        activation_action_kinds = [action.kind for action in actions_mock.call_args_list[2].args[1]]
+        activation_action_args = [action.args[0] for action in actions_mock.call_args_list[2].args[1]]
         self.assertEqual(
             activation_action_kinds,
             ["stop_process_full", "stop_process", "stop_process", "stop_process", "stop_process", "run_script"],
@@ -2997,7 +3008,7 @@ class CliTests(unittest.TestCase):
             ["[w]atchdog.sh", "smbd", "mdns-advertiser", "nbns-advertiser", "wcifsfs", "/mnt/Flash/rc.local"],
         )
         self.assertEqual(actions_mock.call_args_list[2].kwargs, {})
-        verify_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o foo")
+        self.assertEqual(verify_mock.call_args.args[0].host, "root@10.0.0.2")
         run_ssh_mock.assert_not_called()
         self.assertIn("Activating NetBSD4 payload without reboot.", output.getvalue())
 
@@ -3026,7 +3037,7 @@ class CliTests(unittest.TestCase):
                                 with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
                                         with mock.patch("timecapsulesmb.cli.deploy.verify_netbsd4_activation", return_value=True):
-                                            with mock.patch("timecapsulesmb.cli.deploy.run_ssh") as run_ssh_mock:
+                                            with mock.patch("timecapsulesmb.cli.deploy.run_ssh_conn") as run_ssh_mock:
                                                 with redirect_stdout(output):
                                                     rc = deploy.main(["--yes", "--no-reboot"])
         self.assertEqual(rc, 0)
@@ -3438,8 +3449,8 @@ class CliTests(unittest.TestCase):
                                 rc = activate.main(["--yes"])
         self.assertEqual(rc, 0)
         actions_mock.assert_called_once()
-        action_kinds = [action.kind for action in actions_mock.call_args.args[3]]
-        action_args = [action.args[0] for action in actions_mock.call_args.args[3]]
+        action_kinds = [action.kind for action in actions_mock.call_args.args[1]]
+        action_args = [action.args[0] for action in actions_mock.call_args.args[1]]
         self.assertEqual(
             action_kinds,
             ["stop_process_full", "stop_process", "stop_process", "stop_process", "stop_process", "run_script"],
@@ -3449,7 +3460,7 @@ class CliTests(unittest.TestCase):
             ["[w]atchdog.sh", "smbd", "mdns-advertiser", "nbns-advertiser", "wcifsfs", "/mnt/Flash/rc.local"],
         )
         self.assertEqual(actions_mock.call_args.kwargs, {})
-        verify_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o foo")
+        self.assertEqual(verify_mock.call_args.args[0].host, "root@10.0.0.2")
         self.assertIn("without file transfer", output.getvalue())
 
     def test_activate_skips_rc_local_when_payload_is_already_healthy(self) -> None:
@@ -3578,23 +3589,17 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.uninstall.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root", return_value="/Volumes/dk2"):
                 with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload") as uninstall_mock:
-                    with mock.patch("timecapsulesmb.cli.uninstall.run_ssh") as run_ssh_mock:
-                        with mock.patch("timecapsulesmb.cli.uninstall.wait_for_ssh_state", side_effect=[True, True]) as wait_mock:
+                    with mock.patch("timecapsulesmb.cli.uninstall.run_ssh_conn") as run_ssh_mock:
+                        with mock.patch("timecapsulesmb.cli.uninstall.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
                             with mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall", return_value=True) as verify_mock:
                                 with redirect_stdout(output):
                                     rc = uninstall.main(["--yes"])
         self.assertEqual(rc, 0)
         uninstall_mock.assert_called_once()
         run_ssh_mock.assert_called_once()
-        self.assertEqual(
-            wait_mock.call_args_list[0].args,
-            ("root@10.0.0.2", "pw", "-o foo"),
-        )
+        self.assertEqual(wait_mock.call_args_list[0].args[0].host, "root@10.0.0.2")
         self.assertEqual(wait_mock.call_args_list[0].kwargs, {"expected_up": False, "timeout_seconds": 60})
-        self.assertEqual(
-            wait_mock.call_args_list[1].args,
-            ("root@10.0.0.2", "pw", "-o foo"),
-        )
+        self.assertEqual(wait_mock.call_args_list[1].args[0].host, "root@10.0.0.2")
         self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 240})
         verify_mock.assert_called_once()
         self.assertIn("Device is back online.", output.getvalue())
@@ -3610,7 +3615,7 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.uninstall.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root", return_value="/Volumes/dk2"):
                 with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload") as uninstall_mock:
-                    with mock.patch("timecapsulesmb.cli.uninstall.run_ssh") as run_ssh_mock:
+                    with mock.patch("timecapsulesmb.cli.uninstall.run_ssh_conn") as run_ssh_mock:
                         with mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall") as verify_mock:
                             with redirect_stdout(output):
                                 rc = uninstall.main(["--no-reboot"])
@@ -3632,7 +3637,7 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root", return_value="/Volumes/dk2"):
                 with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"):
                     with mock.patch("builtins.input", return_value="n"):
-                        with mock.patch("timecapsulesmb.cli.uninstall.run_ssh") as run_ssh_mock:
+                        with mock.patch("timecapsulesmb.cli.uninstall.run_ssh_conn") as run_ssh_mock:
                             with redirect_stdout(output):
                                 rc = uninstall.main([])
         self.assertEqual(rc, 0)
@@ -3646,13 +3651,13 @@ class CliTests(unittest.TestCase):
         run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\n--- reboot ---\n", returncode=255)
         with mock.patch("timecapsulesmb.cli.fsck.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume", return_value=mounted):
-                with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result) as run_ssh_mock:
-                    with mock.patch("timecapsulesmb.cli.fsck.wait_for_ssh_state", side_effect=[True, True]) as wait_mock:
+                with mock.patch("timecapsulesmb.cli.fsck.run_ssh_conn", return_value=run_result) as run_ssh_mock:
+                    with mock.patch("timecapsulesmb.cli.fsck.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
                         with redirect_stdout(output):
                             rc = fsck.main(["--yes"])
         self.assertEqual(rc, 0)
         run_ssh_mock.assert_called_once()
-        remote_cmd = run_ssh_mock.call_args.args[3]
+        remote_cmd = run_ssh_mock.call_args.args[1]
         self.assertIn("pkill -f [w]atchdog.sh", remote_cmd)
         self.assertIn("pkill smbd", remote_cmd)
         self.assertIn("pkill afpserver", remote_cmd)
@@ -3680,7 +3685,7 @@ class CliTests(unittest.TestCase):
         run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\n", returncode=0)
         with mock.patch("timecapsulesmb.cli.fsck.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume", return_value=mounted):
-                with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result):
+                with mock.patch("timecapsulesmb.cli.fsck.run_ssh_conn", return_value=run_result):
                     with redirect_stdout(output):
                         rc = fsck.main(["--yes", "--no-reboot"])
         self.assertEqual(rc, 0)
@@ -3696,8 +3701,8 @@ class CliTests(unittest.TestCase):
         run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\n--- reboot ---\n", returncode=255)
         with mock.patch("timecapsulesmb.cli.fsck.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume", return_value=mounted):
-                with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result):
-                    with mock.patch("timecapsulesmb.cli.fsck.wait_for_ssh_state") as wait_mock:
+                with mock.patch("timecapsulesmb.cli.fsck.run_ssh_conn", return_value=run_result):
+                    with mock.patch("timecapsulesmb.cli.fsck.wait_for_ssh_state_conn") as wait_mock:
                         with redirect_stdout(output):
                             rc = fsck.main(["--yes", "--no-wait"])
         self.assertEqual(rc, 0)
@@ -3714,13 +3719,13 @@ class CliTests(unittest.TestCase):
         run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\n", returncode=0)
         with mock.patch("timecapsulesmb.cli.fsck.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume", return_value=mounted):
-                with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result) as run_ssh_mock:
-                    with mock.patch("timecapsulesmb.cli.fsck.wait_for_ssh_state") as wait_mock:
+                with mock.patch("timecapsulesmb.cli.fsck.run_ssh_conn", return_value=run_result) as run_ssh_mock:
+                    with mock.patch("timecapsulesmb.cli.fsck.wait_for_ssh_state_conn") as wait_mock:
                         with redirect_stdout(output):
                             rc = fsck.main(["--yes", "--no-reboot"])
         self.assertEqual(rc, 0)
         wait_mock.assert_not_called()
-        self.assertNotIn("/sbin/reboot", run_ssh_mock.call_args.args[3])
+        self.assertNotIn("/sbin/reboot", run_ssh_mock.call_args.args[1])
 
     def test_fsck_prompt_decline_cancels_before_remote_actions(self) -> None:
         output = io.StringIO()
@@ -3733,7 +3738,7 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.fsck.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume", return_value=mounted):
                 with mock.patch("builtins.input", return_value="n"):
-                    with mock.patch("timecapsulesmb.cli.fsck.run_ssh") as run_ssh_mock:
+                    with mock.patch("timecapsulesmb.cli.fsck.run_ssh_conn") as run_ssh_mock:
                         with redirect_stdout(output):
                             rc = fsck.main([])
         self.assertEqual(rc, 0)

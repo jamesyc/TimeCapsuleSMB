@@ -6,8 +6,8 @@ from typing import Optional
 
 from timecapsulesmb.cli.runtime import load_env_values, resolve_env_connection
 from timecapsulesmb.core.config import require_valid_config
-from timecapsulesmb.device.probe import discover_mounted_volume, wait_for_ssh_state
-from timecapsulesmb.transport.ssh import run_ssh
+from timecapsulesmb.device.probe import discover_mounted_volume_conn as discover_mounted_volume, wait_for_ssh_state_conn
+from timecapsulesmb.transport.ssh import run_ssh_conn
 
 
 def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> str:
@@ -44,10 +44,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     values = load_env_values()
     require_valid_config(values, profile="fsck")
     connection = resolve_env_connection(values, allow_empty_password=True)
-    host, password, ssh_opts = connection.host, connection.password, connection.ssh_opts
 
-    mounted = discover_mounted_volume(host, password, ssh_opts)
-    print(f"Target host: {host}")
+    mounted = discover_mounted_volume(connection)
+    print(f"Target host: {connection.host}")
     print(f"Mounted HFS volume: {mounted.device} on {mounted.mountpoint}")
 
     if not args.yes:
@@ -57,7 +56,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 0
 
     script = build_remote_fsck_script(mounted.device, mounted.mountpoint, reboot=not args.no_reboot)
-    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=240)
+    proc = run_ssh_conn(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=240)
     if proc.stdout:
         print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
 
@@ -68,9 +67,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     print("Waiting for the device to go down...")
-    wait_for_ssh_state(host, password, ssh_opts, expected_up=False, timeout_seconds=90)
+    wait_for_ssh_state_conn(connection, expected_up=False, timeout_seconds=90)
     print("Waiting for the device to come back up...")
-    if not wait_for_ssh_state(host, password, ssh_opts, expected_up=True, timeout_seconds=420):
+    if not wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=420):
         print("Timed out waiting for SSH after reboot.")
         return 1
 

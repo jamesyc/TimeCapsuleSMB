@@ -72,8 +72,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                         ),
                         device_family=detect_device_family(command_context.compatibility.payload_family),
                     )
-            except SystemExit:
-                pass
+            except SystemExit as exc:
+                command_context.preflight_error = f"doctor pre-inspection failed: {exc}"
 
         results, fatal = run_doctor_checks(
             values,

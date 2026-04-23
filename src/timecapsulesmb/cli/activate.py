@@ -28,7 +28,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         target = command_context.resolve_validated_managed_target(profile="activate", include_probe=True)
         connection = target.connection
         compatibility = command_context.require_compatibility()
-        host, password, ssh_opts = connection.host, connection.password, connection.ssh_opts
         compatibility_message = render_compatibility_message(compatibility)
         if not compatibility.supported:
             raise SystemExit(compatibility_message)
@@ -53,14 +52,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.add_debug_context()
                 return 0
 
-        if netbsd4_activation_is_already_healthy(host, password, ssh_opts):
+        if netbsd4_activation_is_already_healthy(connection):
             print("NetBSD4 payload already active; skipping rc.local.")
             command_context.succeed()
             return 0
 
         print("Activating NetBSD4 payload without file transfer.")
-        run_remote_actions(host, password, ssh_opts, plan.actions)
-        if not verify_netbsd4_activation(host, password, ssh_opts):
+        run_remote_actions(connection, plan.actions)
+        if not verify_netbsd4_activation(connection):
             print("NetBSD4 activation failed.")
             command_context.fail_with_error("NetBSD4 activation failed.")
             command_context.add_debug_context()

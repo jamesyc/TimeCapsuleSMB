@@ -29,7 +29,7 @@ from timecapsulesmb.device.probe import (
     read_interface_ipv4,
 )
 from timecapsulesmb.transport.local import find_free_local_port
-from timecapsulesmb.transport.ssh import ssh_local_forward
+from timecapsulesmb.transport.ssh import SshConnection, ssh_local_forward_conn
 
 
 def _parse_xattr_tdb_paths(smb_conf: str) -> list[str]:
@@ -289,10 +289,8 @@ def run_doctor_checks(
     if proxied_ssh and not skip_smb:
         local_port = find_free_local_port()
         try:
-            with ssh_local_forward(
-                values["TC_HOST"],
-                values["TC_PASSWORD"],
-                values["TC_SSH_OPTS"],
+            with ssh_local_forward_conn(
+                SshConnection(values["TC_HOST"], values["TC_PASSWORD"], values["TC_SSH_OPTS"]),
                 local_port=local_port,
                 remote_host=host,
                 remote_port=445,

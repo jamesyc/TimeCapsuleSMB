@@ -60,10 +60,12 @@ from timecapsulesmb.device.probe import (
     discover_volume_root,
     managed_mdns_takeover_ready,
     managed_smbd_ready,
+    probe_device,
     probe_managed_mdns_takeover,
     probe_managed_smbd,
     wait_for_ssh_state,
 )
+from timecapsulesmb.transport.ssh import SshConnection
 
 
 class DeployModuleTests(unittest.TestCase):
@@ -1735,16 +1737,16 @@ int main(void) {{
 
     def test_discover_volume_root_uses_discover_mounted_volume_first(self) -> None:
         mounted = mock.Mock(mountpoint="/Volumes/dk2")
-        with mock.patch("timecapsulesmb.device.probe.discover_mounted_volume", return_value=mounted) as mounted_mock:
+        with mock.patch("timecapsulesmb.device.probe.discover_mounted_volume_conn", return_value=mounted) as mounted_mock:
             with mock.patch("timecapsulesmb.device.probe.run_ssh") as run_ssh_mock:
                 volume = discover_volume_root("root@10.0.0.2", "pw", "-o foo")
         self.assertEqual(volume, "/Volumes/dk2")
-        mounted_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o foo")
+        self.assertEqual(mounted_mock.call_args.args[0], SshConnection("root@10.0.0.2", "pw", "-o foo"))
         run_ssh_mock.assert_not_called()
 
     def test_discover_volume_root_falls_back_when_no_volume_is_mounted(self) -> None:
         proc = mock.Mock(stdout="/Volumes/dk3\n")
-        with mock.patch("timecapsulesmb.device.probe.discover_mounted_volume", side_effect=SystemExit("no mounted volume")):
+        with mock.patch("timecapsulesmb.device.probe.discover_mounted_volume_conn", side_effect=SystemExit("no mounted volume")):
             with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
                 volume = discover_volume_root("root@10.0.0.2", "pw", "-o foo")
         self.assertEqual(volume, "/Volumes/dk3")
@@ -1752,7 +1754,7 @@ int main(void) {{
 
     def test_discover_volume_root_checks_existing_mounts_before_mounting_candidates(self) -> None:
         proc = mock.Mock(stdout="/Volumes/dk2\n")
-        with mock.patch("timecapsulesmb.device.probe.discover_mounted_volume", side_effect=SystemExit("no mounted volume")):
+        with mock.patch("timecapsulesmb.device.probe.discover_mounted_volume_conn", side_effect=SystemExit("no mounted volume")):
             with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
                 discover_volume_root("root@10.0.0.2", "pw", "-o foo")
         cmd = run_ssh_mock.call_args.args[3]
@@ -1763,7 +1765,7 @@ int main(void) {{
 
     def test_discover_volume_root_cleans_up_unused_mountpoint_after_failed_fallback_mount(self) -> None:
         proc = mock.Mock(stdout="/Volumes/dk2\n")
-        with mock.patch("timecapsulesmb.device.probe.discover_mounted_volume", side_effect=SystemExit("no mounted volume")):
+        with mock.patch("timecapsulesmb.device.probe.discover_mounted_volume_conn", side_effect=SystemExit("no mounted volume")):
             with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
                 discover_volume_root("root@10.0.0.2", "pw", "-o foo")
         cmd = run_ssh_mock.call_args.args[3]
@@ -1784,22 +1786,45 @@ int main(void) {{
             with self.assertRaises(SystemExit):
                 discover_mounted_volume("root@10.0.0.2", "pw", "-o foo")
 
+    def test_probe_device_skips_direct_tcp_check_for_proxy_ssh_options(self) -> None:
+        with mock.patch("timecapsulesmb.device.probe.tcp_open", side_effect=AssertionError("direct TCP probe should be skipped")):
+            with mock.patch("timecapsulesmb.device.probe._probe_remote_os_info_conn", return_value=("NetBSD", "4.0", "earmv4")):
+                with mock.patch("timecapsulesmb.device.probe._probe_remote_elf_endianness_conn", return_value="big"):
+                    result = probe_device(
+                        "root@192.168.1.118",
+                        "pw",
+                        "-o ProxyCommand=ssh\\ -W\\ %h:%p\\ bastion",
+                    )
+        self.assertTrue(result.ssh_port_reachable)
+        self.assertTrue(result.ssh_authenticated)
+        self.assertEqual(result.os_release, "4.0")
+        self.assertEqual(result.elf_endianness, "big")
+
+    def test_probe_device_direct_target_fails_before_ssh_when_port_closed(self) -> None:
+        with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=False) as tcp_open_mock:
+            with mock.patch("timecapsulesmb.device.probe._probe_remote_os_info_conn", side_effect=AssertionError("should not ssh")):
+                result = probe_device("root@10.0.0.2", "pw", "-o HostKeyAlgorithms=+ssh-rsa")
+        tcp_open_mock.assert_called_once_with("10.0.0.2", 22)
+        self.assertFalse(result.ssh_port_reachable)
+        self.assertFalse(result.ssh_authenticated)
+        self.assertEqual(result.error, "SSH is not reachable yet.")
+
     def test_remote_prepare_dirs_builds_expected_command(self) -> None:
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
-            remote_prepare_dirs("host", "pw", "-o foo", "/Volumes/dk2/samba4")
-        command = run_ssh_mock.call_args.args[3]
+        connection = SshConnection("host", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh_conn") as run_ssh_mock:
+            remote_prepare_dirs(connection, "/Volumes/dk2/samba4")
+        command = run_ssh_mock.call_args.args[1]
         self.assertEqual(command, render_remote_action(prepare_dirs_action("/Volumes/dk2/samba4")))
 
     def test_remote_initialize_data_root_builds_expected_command(self) -> None:
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
+        connection = SshConnection("host", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh_conn") as run_ssh_mock:
             remote_initialize_data_root(
-                "host",
-                "pw",
-                "-o foo",
+                connection,
                 "/Volumes/dk2/ShareRoot",
                 "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported",
             )
-        command = run_ssh_mock.call_args.args[3]
+        command = run_ssh_mock.call_args.args[1]
         self.assertEqual(
             command,
             render_remote_action(
@@ -1811,41 +1836,44 @@ int main(void) {{
         )
 
     def test_remote_install_permissions_builds_expected_command(self) -> None:
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
-            remote_install_permissions("host", "pw", "-o foo", "/Volumes/dk2/samba4")
-        command = run_ssh_mock.call_args.args[3]
+        connection = SshConnection("host", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh_conn") as run_ssh_mock:
+            remote_install_permissions(connection, "/Volumes/dk2/samba4")
+        command = run_ssh_mock.call_args.args[1]
         self.assertEqual(command, render_remote_action(install_permissions_action("/Volumes/dk2/samba4")))
 
     def test_remote_ensure_adisk_uuid_reuses_existing_file(self) -> None:
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh", return_value=mock.Mock(stdout="12345678-1234-1234-1234-123456789012\n")):
-            with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
-                result = remote_ensure_adisk_uuid("host", "pw", "-o foo", "/Volumes/dk2/samba4/private")
+        connection = SshConnection("host", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh_conn", return_value=mock.Mock(stdout="12345678-1234-1234-1234-123456789012\n")):
+            with mock.patch("timecapsulesmb.deploy.executor.run_scp_conn") as scp_mock:
+                result = remote_ensure_adisk_uuid(connection, "/Volumes/dk2/samba4/private")
         self.assertEqual(result, "12345678-1234-1234-1234-123456789012")
         scp_mock.assert_not_called()
 
     def test_remote_ensure_adisk_uuid_creates_new_file_when_missing(self) -> None:
         fixed_uuid = uuid.UUID("12345678-1234-1234-1234-123456789012")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh", return_value=mock.Mock(stdout="\n")):
+        connection = SshConnection("host", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh_conn", return_value=mock.Mock(stdout="\n")):
             with mock.patch("timecapsulesmb.deploy.executor.uuid.uuid4", return_value=fixed_uuid):
-                with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
-                    result = remote_ensure_adisk_uuid("host", "pw", "-o foo", "/Volumes/dk2/samba4/private")
+                with mock.patch("timecapsulesmb.deploy.executor.run_scp_conn") as scp_mock:
+                    result = remote_ensure_adisk_uuid(connection, "/Volumes/dk2/samba4/private")
         self.assertEqual(result, str(fixed_uuid))
         self.assertEqual(scp_mock.call_count, 1)
 
     def test_remote_enable_nbns_creates_marker_without_touch(self) -> None:
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
-            remote_enable_nbns("host", "pw", "-o foo", "/Volumes/dk2/samba4/private")
-        self.assertEqual(run_ssh_mock.call_args.args[3], render_remote_action(enable_nbns_action("/Volumes/dk2/samba4/private")))
+        connection = SshConnection("host", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh_conn") as run_ssh_mock:
+            remote_enable_nbns(connection, "/Volumes/dk2/samba4/private")
+        self.assertEqual(run_ssh_mock.call_args.args[1], render_remote_action(enable_nbns_action("/Volumes/dk2/samba4/private")))
 
     def test_upload_deployment_payload_uploads_all_expected_files(self) -> None:
         paths = build_device_paths("/Volumes/dk2", "samba4")
         plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
-        with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
+        connection = SshConnection("host", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.deploy.executor.run_scp_conn") as scp_mock:
             upload_deployment_payload(
                 plan,
-                host="host",
-                password="pw",
-                ssh_opts="-o foo",
+                connection=connection,
                 rc_local=Path("/tmp/rc.local"),
                 common_sh=Path("/tmp/common.sh"),
                 rendered_start=Path("/tmp/start-samba.sh"),
@@ -1854,7 +1882,7 @@ int main(void) {{
                 rendered_smbconf=Path("/tmp/smb.conf.template"),
             )
         self.assertEqual(scp_mock.call_count, 10)
-        destinations = [call.args[4] for call in scp_mock.call_args_list]
+        destinations = [call.args[2] for call in scp_mock.call_args_list]
         self.assertEqual(
             destinations,
             [
@@ -2090,7 +2118,7 @@ PASS:mdns-advertiser bound to UDP 5353
     def test_wait_for_post_reboot_mdns_ready_requires_takeover_and_bonjour(self) -> None:
         monotonic_values = iter([0.0, 1.0, 1.0, 6.0, 6.0, 7.0, 7.0, 8.0, 8.0])
         with mock.patch(
-            "timecapsulesmb.deploy.verify.probe_managed_mdns_takeover",
+            "timecapsulesmb.deploy.verify.probe_managed_mdns_takeover_conn",
             side_effect=[mock.Mock(ready=False), mock.Mock(ready=True), mock.Mock(ready=True)],
         ) as takeover_mock:
             with mock.patch(
@@ -2118,7 +2146,7 @@ PASS:mdns-advertiser bound to UDP 5353
     def test_wait_for_post_reboot_mdns_ready_times_out_when_bonjour_never_appears(self) -> None:
         monotonic_values = iter([0.0, 1.0, 1.0, 6.0, 6.0, 11.0, 11.0, 12.1])
         with mock.patch(
-            "timecapsulesmb.deploy.verify.probe_managed_mdns_takeover",
+            "timecapsulesmb.deploy.verify.probe_managed_mdns_takeover_conn",
             return_value=mock.Mock(ready=True),
         ):
             with mock.patch(
@@ -2255,17 +2283,19 @@ PASS:mdns-advertiser bound to UDP 5353
 
     def test_deployment_plan_and_executor_share_permission_command_generation(self) -> None:
         payload_dir = "/Volumes/dk2/Time Capsule Samba 4"
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
-            remote_install_permissions("host", "pw", "-o foo", payload_dir)
-        self.assertEqual(run_ssh_mock.call_args.args[3], render_remote_action(install_permissions_action(payload_dir)))
+        connection = SshConnection("host", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh_conn") as run_ssh_mock:
+            remote_install_permissions(connection, payload_dir)
+        self.assertEqual(run_ssh_mock.call_args.args[1], render_remote_action(install_permissions_action(payload_dir)))
 
     def test_remote_uninstall_payload_runs_actions_sequentially(self) -> None:
         paths = build_device_paths("/Volumes/dk2", "samba4")
         plan = build_uninstall_plan("root@10.0.0.2", paths)
         expected = [render_remote_action(action) for action in plan.remote_actions]
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
-            remote_uninstall_payload("host", "pw", "-o foo", plan)
-        self.assertEqual([call.args[3] for call in run_ssh_mock.call_args_list], expected)
+        connection = SshConnection("host", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh_conn") as run_ssh_mock:
+            remote_uninstall_payload(connection, plan)
+        self.assertEqual([call.args[1] for call in run_ssh_mock.call_args_list], expected)
 
     def test_render_stop_process_action_waits_for_exit(self) -> None:
         command = render_remote_action(stop_process_action("mdns-advertiser"))

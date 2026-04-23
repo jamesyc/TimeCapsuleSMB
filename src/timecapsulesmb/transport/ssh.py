@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass
 from functools import lru_cache
 import shlex
 import shutil
@@ -11,6 +12,22 @@ import time
 from pathlib import Path
 
 from .local import tcp_open
+
+
+class SshTransportError(SystemExit):
+    """Raised for SSH transport failures with a CLI-ready message.
+
+    This intentionally remains a SystemExit subclass during the migration so
+    existing command boundaries keep their current user-facing behavior.
+    """
+
+
+@dataclass
+class SshConnection:
+    host: str
+    password: str
+    ssh_opts: str
+    remote_has_scp: bool | None = None
 
 
 SSH_TRANSPORT_ERROR_PATTERNS = (
@@ -25,6 +42,27 @@ SSH_TRANSPORT_ERROR_PATTERNS = (
     "kex_exchange_identification:",
     "ssh: ",
 )
+
+
+def ssh_opts_use_proxy(ssh_opts: str) -> bool:
+    try:
+        tokens = shlex.split(ssh_opts)
+    except ValueError:
+        tokens = ssh_opts.split()
+
+    for token in tokens:
+        if token == "-J":
+            return True
+        if token.startswith("-J"):
+            return True
+        if token in {"ProxyCommand", "ProxyJump"}:
+            return True
+        if token.startswith("ProxyCommand=") or token.startswith("ProxyJump="):
+            return True
+        if token.startswith("-oProxyCommand=") or token.startswith("-oProxyJump="):
+            return True
+
+    return False
 
 
 def _looks_like_transient_ssh_auth_failure(output: str) -> bool:
@@ -146,10 +184,14 @@ def run_ssh(host: str, password: str, ssh_opts: str, remote_cmd: str, *, check: 
         time.sleep(1)
     transport_error = _extract_ssh_transport_error(stdout)
     if transport_error:
-        raise SystemExit(f"Connecting to the device failed, SSH error: {transport_error}")
+        raise SshTransportError(f"Connecting to the device failed, SSH error: {transport_error}")
     if check and rc != 0:
         raise SystemExit(stdout.strip() or f"ssh command failed with rc={rc}")
     return subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr="")
+
+
+def run_ssh_conn(connection: SshConnection, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
+    return run_ssh(connection.host, connection.password, connection.ssh_opts, remote_cmd, check=check, timeout=timeout)
 
 
 @contextmanager
@@ -190,7 +232,11 @@ def ssh_local_forward(
                 password_sent = True
             elif idx == 1:
                 output.append(child.before or "")
-                raise SystemExit(output[-1].strip() or "ssh tunnel exited before becoming ready")
+                text = "".join(output)
+                transport_error = _extract_ssh_transport_error(text)
+                if transport_error:
+                    raise SshTransportError(f"Connecting to the device failed, SSH error: {transport_error}")
+                raise SystemExit(text.strip() or "ssh tunnel exited before becoming ready")
             else:
                 output.append(child.before or "")
                 if tcp_open("127.0.0.1", local_port, timeout=0.2):
@@ -199,6 +245,9 @@ def ssh_local_forward(
                     continue
                 if time.time() - start_time < ready_timeout:
                     continue
+                transport_error = _extract_ssh_transport_error("".join(output))
+                if transport_error:
+                    raise SshTransportError(f"Connecting to the device failed, SSH error: {transport_error}")
                 raise SystemExit("Timed out waiting for ssh tunnel to become ready.")
         yield
     finally:
@@ -208,7 +257,42 @@ def ssh_local_forward(
             pass
 
 
-def _verify_remote_size(host: str, password: str, ssh_opts: str, src: Path, dest: str, *, timeout: int) -> None:
+def ssh_local_forward_conn(
+    connection: SshConnection,
+    *,
+    local_port: int,
+    remote_host: str,
+    remote_port: int,
+    ready_timeout: int = 20,
+):
+    return ssh_local_forward(
+        connection.host,
+        connection.password,
+        connection.ssh_opts,
+        local_port=local_port,
+        remote_host=remote_host,
+        remote_port=remote_port,
+        ready_timeout=ready_timeout,
+    )
+
+
+def probe_remote_scp_available(connection: SshConnection) -> bool:
+    probe = run_ssh_conn(
+        connection,
+        "/bin/sh -c 'command -v scp >/dev/null 2>&1'",
+        check=False,
+        timeout=30,
+    )
+    return probe.returncode == 0
+
+
+def ensure_remote_scp_capability(connection: SshConnection) -> bool:
+    if connection.remote_has_scp is None:
+        connection.remote_has_scp = probe_remote_scp_available(connection)
+    return connection.remote_has_scp
+
+
+def _verify_remote_size_conn(connection: SshConnection, src: Path, dest: str, *, timeout: int) -> None:
     expected_size = src.stat().st_size
     quoted_dest = shlex.quote(dest)
     remote_script = (
@@ -221,7 +305,7 @@ def _verify_remote_size(host: str, password: str, ssh_opts: str, src: Path, dest
     proc = None
     actual_size = None
     for attempt in range(3):
-        proc = run_ssh(host, password, ssh_opts, remote_cmd, check=False, timeout=timeout)
+        proc = run_ssh_conn(connection, remote_cmd, check=False, timeout=timeout)
         matches = re.findall(r"^\s*([0-9]+)\s*$", proc.stdout, flags=re.MULTILINE)
         actual_size = int(matches[-1]) if matches else None
         if proc.returncode == 0 and actual_size == expected_size:
@@ -234,23 +318,25 @@ def _verify_remote_size(host: str, password: str, ssh_opts: str, src: Path, dest
     )
 
 
+def _verify_remote_size(host: str, password: str, ssh_opts: str, src: Path, dest: str, *, timeout: int) -> None:
+    _verify_remote_size_conn(SshConnection(host=host, password=password, ssh_opts=ssh_opts), src, dest, timeout=timeout)
+
+
 def run_scp(host: str, password: str, ssh_opts: str, src: Path, dest: str, *, timeout: int = 120) -> None:
-    probe = run_ssh(
-        host,
-        password,
-        ssh_opts,
-        "/bin/sh -c 'command -v scp >/dev/null 2>&1'",
-        check=False,
-        timeout=30,
-    )
-    if probe.returncode == 0:
-        cmd = ["scp", "-O", *_normalize_ssh_tokens(ssh_opts), str(src), f"{host}:{dest}"]
+    connection = SshConnection(host=host, password=password, ssh_opts=ssh_opts)
+    connection.remote_has_scp = probe_remote_scp_available(connection)
+    run_scp_conn(connection, src, dest, timeout=timeout)
+
+
+def run_scp_conn(connection: SshConnection, src: Path, dest: str, *, timeout: int = 120) -> None:
+    if ensure_remote_scp_capability(connection):
+        cmd = ["scp", "-O", *_normalize_ssh_tokens(connection.ssh_opts), str(src), f"{connection.host}:{dest}"]
         rc = 1
         stdout = ""
         for attempt in range(3):
             rc, stdout = _spawn_with_password(
                 cmd,
-                password,
+                connection.password,
                 timeout=timeout,
                 timeout_message=f"Timed out copying {src} to {dest}",
             )
@@ -258,17 +344,20 @@ def run_scp(host: str, password: str, ssh_opts: str, src: Path, dest: str, *, ti
                 break
             time.sleep(1)
         if rc != 0:
+            transport_error = _extract_ssh_transport_error(stdout)
+            if transport_error:
+                raise SshTransportError(f"Connecting to the device failed, SSH error: {transport_error}")
             raise SystemExit(stdout.strip() or f"scp failed with rc={rc}")
-        _verify_remote_size(host, password, ssh_opts, src, dest, timeout=30)
+        _verify_remote_size_conn(connection, src, dest, timeout=30)
         return
 
     if shutil.which("sshpass") is None:
         raise SystemExit("Remote scp is unavailable and local sshpass is required for streaming upload fallback.")
 
     remote_cmd = f"/bin/sh -c {shlex.quote('cat > ' + shlex.quote(dest))}"
-    cmd = ["sshpass", "-e", "ssh", *_normalize_ssh_tokens(ssh_opts), host, remote_cmd]
+    cmd = ["sshpass", "-e", "ssh", *_normalize_ssh_tokens(connection.ssh_opts), connection.host, remote_cmd]
     env = dict(os.environ)
-    env["SSHPASS"] = password
+    env["SSHPASS"] = connection.password
     proc = None
     for attempt in range(3):
         try:
@@ -291,5 +380,8 @@ def run_scp(host: str, password: str, ssh_opts: str, src: Path, dest: str, *, ti
         raise SystemExit(f"ssh cat upload failed for {dest}")
     if proc.returncode != 0:
         stdout = proc.stdout.decode("utf-8", errors="replace").strip()
+        transport_error = _extract_ssh_transport_error(stdout)
+        if transport_error:
+            raise SshTransportError(f"Connecting to the device failed, SSH error: {transport_error}")
         raise SystemExit(stdout or f"ssh cat upload failed with rc={proc.returncode}")
-    _verify_remote_size(host, password, ssh_opts, src, dest, timeout=30)
+    _verify_remote_size_conn(connection, src, dest, timeout=30)

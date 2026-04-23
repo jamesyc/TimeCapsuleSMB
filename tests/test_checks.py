@@ -486,7 +486,7 @@ class CheckTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.checks.doctor.check_smb_port") as smb_port_mock:
                         with mock.patch("timecapsulesmb.checks.doctor.run_bonjour_checks") as bonjour_mock:
                             with mock.patch("timecapsulesmb.checks.doctor.find_free_local_port", return_value=1445):
-                                with mock.patch("timecapsulesmb.checks.doctor.ssh_local_forward") as tunnel_mock:
+                                with mock.patch("timecapsulesmb.checks.doctor.ssh_local_forward_conn") as tunnel_mock:
                                     tunnel_mock.return_value.__enter__.return_value = None
                                     tunnel_mock.return_value.__exit__.return_value = None
                                     with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=mock.Mock(status="PASS", message="listing ok")) as smb_listing_mock:
@@ -501,13 +501,13 @@ class CheckTests(unittest.TestCase):
         bonjour_mock.assert_not_called()
         nbns_mock.assert_not_called()
         tunnel_mock.assert_called_once_with(
-            "root@192.168.1.118",
-            "pw",
-            values["TC_SSH_OPTS"],
+            mock.ANY,
             local_port=1445,
             remote_host="192.168.1.118",
             remote_port=445,
         )
+        self.assertEqual(tunnel_mock.call_args.args[0].host, "root@192.168.1.118")
+        self.assertEqual(tunnel_mock.call_args.args[0].ssh_opts, values["TC_SSH_OPTS"])
         smb_listing_mock.assert_called_once_with(
             "admin",
             "pw",
@@ -549,7 +549,7 @@ class CheckTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.checks.doctor.check_smb_port") as smb_port_mock:
                         with mock.patch("timecapsulesmb.checks.doctor.run_bonjour_checks") as bonjour_mock:
                             with mock.patch("timecapsulesmb.checks.doctor.find_free_local_port", return_value=1446):
-                                with mock.patch("timecapsulesmb.checks.doctor.ssh_local_forward") as tunnel_mock:
+                                with mock.patch("timecapsulesmb.checks.doctor.ssh_local_forward_conn") as tunnel_mock:
                                     tunnel_mock.return_value.__enter__.return_value = None
                                     tunnel_mock.return_value.__exit__.return_value = None
                                     with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=mock.Mock(status="PASS", message="listing ok")) as smb_listing_mock:
@@ -1311,7 +1311,7 @@ class CheckTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
                 with mock.patch("timecapsulesmb.checks.doctor.check_ssh_login", return_value=mock.Mock(status="PASS", message="ssh ok")):
                     with mock.patch("timecapsulesmb.checks.doctor.find_free_local_port", return_value=1445):
-                        with mock.patch("timecapsulesmb.checks.doctor.ssh_local_forward", side_effect=SystemExit("tunnel failed")):
+                        with mock.patch("timecapsulesmb.checks.doctor.ssh_local_forward_conn", side_effect=SystemExit("tunnel failed")):
                             with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root", return_value="/Volumes/dk2"):
                                 with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout="")):
                                     results, fatal = run_doctor_checks(values, env_exists=True, repo_root=REPO_ROOT, skip_bonjour=True)

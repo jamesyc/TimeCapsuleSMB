@@ -7,13 +7,22 @@ from timecapsulesmb.checks.bonjour import run_bonjour_checks
 from timecapsulesmb.checks.smb import try_authenticated_smb_listing
 from timecapsulesmb.deploy.planner import UninstallPlan
 from timecapsulesmb.device.probe import (
-    netbsd4_runtime_services_healthy,
-    probe_managed_mdns_takeover,
-    probe_managed_smbd,
-    probe_paths_absent,
-    probe_netbsd4_activation_status,
+    netbsd4_runtime_services_healthy_conn,
+    probe_managed_mdns_takeover_conn,
+    probe_managed_smbd_conn,
+    probe_paths_absent_conn,
+    probe_netbsd4_activation_status_conn,
 )
 from timecapsulesmb.transport.local import command_exists
+from timecapsulesmb.transport.ssh import SshConnection
+
+
+def _connection_from_args(connection_or_host: SshConnection | str, password: str | None, ssh_opts: str | None) -> SshConnection:
+    if isinstance(connection_or_host, SshConnection):
+        return connection_or_host
+    if password is None or ssh_opts is None:
+        raise TypeError("password and ssh_opts are required when passing host string")
+    return SshConnection(connection_or_host, password, ssh_opts)
 
 
 def _configured_smb_server(host_label: str) -> str:
@@ -30,17 +39,19 @@ def _configured_smb_server(host_label: str) -> str:
     return f"{value}.local"
 
 
-def wait_for_post_reboot_smbd(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 120) -> bool:
-    return probe_managed_smbd(host, password, ssh_opts, timeout_seconds=timeout_seconds).ready
+def wait_for_post_reboot_smbd(connection: SshConnection | str, password: str | None = None, ssh_opts: str | None = None, *, timeout_seconds: int = 120) -> bool:
+    connection = _connection_from_args(connection, password, ssh_opts)
+    return probe_managed_smbd_conn(connection, timeout_seconds=timeout_seconds).ready
 
 
-def wait_for_post_reboot_mdns_takeover(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 120) -> bool:
+def wait_for_post_reboot_mdns_takeover(connection: SshConnection | str, password: str | None = None, ssh_opts: str | None = None, *, timeout_seconds: int = 120) -> bool:
+    connection = _connection_from_args(connection, password, ssh_opts)
     deadline = time.monotonic() + timeout_seconds
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return False
-        if probe_managed_mdns_takeover(host, password, ssh_opts, timeout_seconds=min(20, max(5, int(remaining) + 1))).ready:
+        if probe_managed_mdns_takeover_conn(connection, timeout_seconds=min(20, max(5, int(remaining) + 1))).ready:
             return True
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -49,24 +60,25 @@ def wait_for_post_reboot_mdns_takeover(host: str, password: str, ssh_opts: str, 
 
 
 def wait_for_post_reboot_mdns_ready(
-    host: str,
-    password: str,
-    ssh_opts: str,
-    expected_instance_name: str,
+    connection: SshConnection | str,
+    password: str | None = None,
+    ssh_opts: str | None = None,
+    expected_instance_name: str | None = None,
     *,
     timeout_seconds: float = 120.0,
     poll_interval_seconds: float = 5.0,
 ) -> bool:
+    connection = _connection_from_args(connection, password, ssh_opts)
+    if expected_instance_name is None:
+        raise TypeError("expected_instance_name is required")
     deadline = time.monotonic() + timeout_seconds
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return False
 
-        if probe_managed_mdns_takeover(
-            host,
-            password,
-            ssh_opts,
+        if probe_managed_mdns_takeover_conn(
+            connection,
             timeout_seconds=min(20, max(5, int(remaining) + 1)),
         ).ready:
             browse_timeout = min(5.0, remaining)
@@ -152,9 +164,10 @@ def verify_post_deploy(values: dict[str, str]) -> None:
         print("  SMB listing verification skipped: smbclient not found")
 
 
-def verify_netbsd4_activation(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 180) -> bool:
+def verify_netbsd4_activation(connection: SshConnection | str, password: str | None = None, ssh_opts: str | None = None, *, timeout_seconds: int = 180) -> bool:
+    connection = _connection_from_args(connection, password, ssh_opts)
     print("NetBSD4 activation verification:")
-    proc = probe_netbsd4_activation_status(host, password, ssh_opts, timeout_seconds=timeout_seconds)
+    proc = probe_netbsd4_activation_status_conn(connection, timeout_seconds=timeout_seconds)
     for line in proc.stdout.strip().splitlines():
         if line.startswith("PASS:"):
             print(f"  ok: {line.removeprefix('PASS:')}")
@@ -165,13 +178,22 @@ def verify_netbsd4_activation(host: str, password: str, ssh_opts: str, *, timeou
     return proc.returncode == 0
 
 
-def netbsd4_activation_is_already_healthy(host: str, password: str, ssh_opts: str) -> bool:
-    return netbsd4_runtime_services_healthy(host, password, ssh_opts)
+def netbsd4_activation_is_already_healthy(connection: SshConnection | str, password: str | None = None, ssh_opts: str | None = None) -> bool:
+    connection = _connection_from_args(connection, password, ssh_opts)
+    return netbsd4_runtime_services_healthy_conn(connection)
 
 
-def verify_post_uninstall(host: str, password: str, ssh_opts: str, plan: UninstallPlan) -> bool:
+def verify_post_uninstall(connection: SshConnection | str, password_or_plan, ssh_opts: str | None = None, plan: UninstallPlan | None = None) -> bool:
+    if isinstance(connection, SshConnection):
+        resolved_connection = connection
+        resolved_plan = password_or_plan
+    else:
+        resolved_connection = _connection_from_args(connection, password_or_plan, ssh_opts)
+        if plan is None:
+            raise TypeError("plan is required when passing host string")
+        resolved_plan = plan
     print("Post-uninstall verification:")
-    proc = probe_paths_absent(host, password, ssh_opts, plan.verify_absent_targets)
+    proc = probe_paths_absent_conn(resolved_connection, resolved_plan.verify_absent_targets)
 
     ok = proc.returncode == 0
     for line in proc.stdout.strip().splitlines():

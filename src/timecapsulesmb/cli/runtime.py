@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import getpass
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,21 +8,15 @@ from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
     RemoteInterfaceProbeResult,
-    probe_device,
-    probe_remote_interface,
+    probe_device_conn,
+    probe_remote_interface_conn as probe_remote_interface,
 )
-
-
-@dataclass(frozen=True)
-class ResolvedConnection:
-    host: str
-    password: str
-    ssh_opts: str
+from timecapsulesmb.transport.ssh import SshConnection
 
 
 @dataclass(frozen=True)
 class ManagedTargetState:
-    connection: ResolvedConnection
+    connection: SshConnection
     interface_probe: RemoteInterfaceProbeResult
     probe_state: ProbedDeviceState | None
 
@@ -49,14 +42,14 @@ def require_airport_syap(values: dict[str, str], *, command_name: str) -> None:
 def resolve_ssh_credentials(
     values: dict[str, str],
     *,
-    password_prompt: str = "Time Capsule root password: ",
     allow_empty_password: bool = False,
 ) -> tuple[str, str]:
     config = AppConfig(values)
     host = config.require("TC_HOST")
     password = config.get("TC_PASSWORD")
     if not password and not allow_empty_password:
-        password = getpass.getpass(password_prompt)
+        import getpass
+        password = getpass.getpass("Time Capsule root password: ")
     return host, password
 
 
@@ -65,12 +58,12 @@ def resolve_env_connection(
     *,
     required_keys: tuple[str, ...] = (),
     allow_empty_password: bool = False,
-) -> ResolvedConnection:
+) -> SshConnection:
     config = AppConfig(values)
     for key in required_keys:
         config.require(key)
     host, password = resolve_ssh_credentials(values, allow_empty_password=allow_empty_password)
-    return ResolvedConnection(host=host, password=password, ssh_opts=config.get("TC_SSH_OPTS"))
+    return SshConnection(host=host, password=password, ssh_opts=config.get("TC_SSH_OPTS"))
 
 
 def resolve_validated_managed_connection(
@@ -78,7 +71,7 @@ def resolve_validated_managed_connection(
     *,
     command_name: str,
     profile: str,
-) -> ResolvedConnection:
+) -> SshConnection:
     return resolve_validated_managed_target(
         values,
         command_name=command_name,
@@ -88,12 +81,12 @@ def resolve_validated_managed_connection(
 
 
 def inspect_managed_connection(
-    connection: ResolvedConnection,
+    connection: SshConnection,
     iface: str,
     *,
     include_probe: bool = False,
 ) -> ManagedTargetState:
-    interface_probe = probe_remote_interface(connection.host, connection.password, connection.ssh_opts, iface)
+    interface_probe = probe_remote_interface(connection, iface)
     probe_state = probe_connection_state(connection) if include_probe else None
     return ManagedTargetState(connection=connection, interface_probe=interface_probe, probe_state=probe_state)
 
@@ -118,16 +111,18 @@ def resolve_validated_managed_target(
 
 
 def probe_device_state(host: str, password: str, ssh_opts: str) -> ProbedDeviceState:
-    probe_result = probe_device(host, password, ssh_opts)
+    probe_result = probe_device_conn(SshConnection(host=host, password=password, ssh_opts=ssh_opts))
     compatibility = compatibility_from_probe_result(probe_result)
     return ProbedDeviceState(probe_result=probe_result, compatibility=compatibility)
 
 
-def probe_connection_state(connection: ResolvedConnection) -> ProbedDeviceState:
-    return probe_device_state(connection.host, connection.password, connection.ssh_opts)
+def probe_connection_state(connection: SshConnection) -> ProbedDeviceState:
+    probe_result = probe_device_conn(connection)
+    compatibility = compatibility_from_probe_result(probe_result)
+    return ProbedDeviceState(probe_result=probe_result, compatibility=compatibility)
 
 
-def require_connection_compatibility(connection: ResolvedConnection) -> DeviceCompatibility:
+def require_connection_compatibility(connection: SshConnection) -> DeviceCompatibility:
     state = probe_connection_state(connection)
     return require_compatibility(
         state.compatibility,

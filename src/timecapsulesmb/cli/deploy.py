@@ -27,9 +27,9 @@ from timecapsulesmb.deploy.verify import (
     wait_for_post_reboot_smbd,
 )
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, render_compatibility_message
-from timecapsulesmb.device.probe import build_device_paths, discover_volume_root, wait_for_ssh_state
+from timecapsulesmb.device.probe import build_device_paths, discover_volume_root_conn as discover_volume_root, wait_for_ssh_state_conn
 from timecapsulesmb.telemetry import TelemetryClient
-from timecapsulesmb.transport.ssh import run_ssh
+from timecapsulesmb.transport.ssh import run_ssh_conn
 from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_red
 
 
@@ -84,7 +84,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             raise SystemExit(f"{compatibility_message}\nNo deployable payload is available for this detected device.")
         payload_family = compatibility.payload_family
         is_netbsd4 = is_netbsd4_payload_family(payload_family)
-        volume_root = discover_volume_root(host, password, ssh_opts)
+        volume_root = discover_volume_root(connection)
         resolved_artifacts = resolve_payload_artifacts(REPO_ROOT, payload_family)
         smbd_path = resolved_artifacts["smbd"].absolute_path
         mdns_path = resolved_artifacts["mdns-advertiser"].absolute_path
@@ -121,8 +121,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.add_debug_context()
                 return 0
 
-        run_remote_actions(host, password, ssh_opts, plan.pre_upload_actions)
-        adisk_uuid = remote_ensure_adisk_uuid(host, password, ssh_opts, plan.private_dir)
+        run_remote_actions(connection, plan.pre_upload_actions)
+        adisk_uuid = remote_ensure_adisk_uuid(connection, plan.private_dir)
         template_bundle = build_template_bundle(
             values,
             adisk_disk_key=plan.disk_key,
@@ -149,9 +149,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
             upload_deployment_payload(
                 plan,
-                host=host,
-                password=password,
-                ssh_opts=ssh_opts,
+                connection=connection,
                 rc_local=rendered_rc_local,
                 common_sh=rendered_common,
                 rendered_start=rendered_start,
@@ -160,16 +158,16 @@ def main(argv: Optional[list[str]] = None) -> int:
                 rendered_smbconf=rendered_smbconf,
             )
 
-        remote_install_auth_files(host, password, ssh_opts, plan.private_dir, values["TC_SAMBA_USER"], password)
-        run_remote_actions(host, password, ssh_opts, plan.post_auth_actions)
+        remote_install_auth_files(connection, plan.private_dir, values["TC_SAMBA_USER"], password)
+        run_remote_actions(connection, plan.post_auth_actions)
 
         print(f"Deployed Samba payload to {plan.payload_dir}")
         print("Updated /mnt/Flash boot files.")
 
         if is_netbsd4:
             print("Activating NetBSD4 payload without reboot.")
-            run_remote_actions(host, password, ssh_opts, plan.activation_actions)
-            if not verify_netbsd4_activation(host, password, ssh_opts):
+            run_remote_actions(connection, plan.activation_actions)
+            if not verify_netbsd4_activation(connection):
                 print("NetBSD4 activation failed.")
                 command_context.fail_with_error("NetBSD4 activation failed.")
                 command_context.add_debug_context()
@@ -191,22 +189,22 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.add_debug_context()
                 return 0
 
-        run_ssh(host, password, ssh_opts, "/sbin/reboot", check=False)
+        run_ssh_conn(connection, "/sbin/reboot", check=False)
         command_context.update_fields(reboot_was_attempted=True)
         print("Reboot requested. Waiting for the device to go down...")
-        wait_for_ssh_state(host, password, ssh_opts, expected_up=False, timeout_seconds=60)
+        wait_for_ssh_state_conn(connection, expected_up=False, timeout_seconds=60)
         print("Waiting for the device to come back up...")
-        if wait_for_ssh_state(host, password, ssh_opts, expected_up=True, timeout_seconds=240):
+        if wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=240):
             command_context.update_fields(device_came_back_after_reboot=True)
             print("Device is back online.")
             print("Waiting for managed smbd to finish starting...")
-            if not wait_for_post_reboot_smbd(host, password, ssh_opts):
+            if not wait_for_post_reboot_smbd(connection):
                 print("Managed smbd did not become ready after reboot.")
                 command_context.fail_with_error("Managed smbd did not become ready after reboot.")
                 command_context.add_debug_context()
                 return 1
             print("Waiting for managed mDNS takeover to finish...")
-            if not wait_for_post_reboot_mdns_takeover(host, password, ssh_opts):
+            if not wait_for_post_reboot_mdns_takeover(connection):
                 print("Managed mDNS did not become ready after reboot.")
                 command_context.fail_with_error("Managed mDNS did not become ready after reboot.")
                 command_context.add_debug_context()

@@ -9,7 +9,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.transport.local import tcp_open
-from timecapsulesmb.transport.ssh import run_ssh
+from timecapsulesmb.transport.ssh import SshConnection, run_ssh, ssh_opts_use_proxy
 
 if TYPE_CHECKING:
     from timecapsulesmb.device.compat import DeviceCompatibility
@@ -81,9 +81,22 @@ class ManagedMdnsTakeoverProbeResult:
     detail: str
 
 
+def _conn(host: str, password: str, ssh_opts: str) -> SshConnection:
+    return SshConnection(host=host, password=password, ssh_opts=ssh_opts)
+
+
+def run_ssh_conn(connection: SshConnection, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
+    return run_ssh(connection.host, connection.password, connection.ssh_opts, remote_cmd, check=check, timeout=timeout)
+
+
 def probe_device(host: str, password: str, ssh_opts: str) -> ProbeResult:
-    probe_host = host.split("@", 1)[1] if "@" in host else host
-    if not tcp_open(probe_host, 22):
+    connection = _conn(host, password, ssh_opts)
+    return probe_device_conn(connection)
+
+
+def probe_device_conn(connection: SshConnection) -> ProbeResult:
+    probe_host = connection.host.split("@", 1)[1] if "@" in connection.host else connection.host
+    if not ssh_opts_use_proxy(connection.ssh_opts) and not tcp_open(probe_host, 22):
         return ProbeResult(
             ssh_port_reachable=False,
             ssh_authenticated=False,
@@ -95,8 +108,8 @@ def probe_device(host: str, password: str, ssh_opts: str) -> ProbeResult:
         )
 
     try:
-        os_name, os_release, arch = _probe_remote_os_info(host, password, ssh_opts)
-        elf_endianness = _probe_remote_elf_endianness(host, password, ssh_opts)
+        os_name, os_release, arch = _probe_remote_os_info_conn(connection)
+        elf_endianness = _probe_remote_elf_endianness_conn(connection)
     except SystemExit as exc:
         return ProbeResult(
             ssh_port_reachable=True,
@@ -129,7 +142,7 @@ def probe_ssh_command(
     expected_stdout_suffix: str | None = None,
 ) -> SshCommandProbeResult:
     try:
-        proc = run_ssh(host, password, ssh_opts, command, check=False, timeout=timeout)
+        proc = run_ssh_conn(_conn(host, password, ssh_opts), command, check=False, timeout=timeout)
     except SystemExit as exc:
         return SshCommandProbeResult(ok=False, detail=str(exc))
     if proc.returncode == 0:
@@ -141,8 +154,12 @@ def probe_ssh_command(
 
 
 def _probe_remote_os_info(host: str, password: str, ssh_opts: str) -> tuple[str, str, str]:
+    return _probe_remote_os_info_conn(_conn(host, password, ssh_opts))
+
+
+def _probe_remote_os_info_conn(connection: SshConnection) -> tuple[str, str, str]:
     script = "printf '%s\\n%s\\n%s\\n' \"$(uname -s)\" \"$(uname -r)\" \"$(uname -m)\""
-    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}")
+    proc = run_ssh_conn(connection, f"/bin/sh -c {shlex.quote(script)}")
     lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
     if len(lines) < 3:
         raise SystemExit("Failed to determine remote device OS compatibility.")
@@ -150,6 +167,10 @@ def _probe_remote_os_info(host: str, password: str, ssh_opts: str) -> tuple[str,
 
 
 def _probe_remote_elf_endianness(host: str, password: str, ssh_opts: str, path: str = "/bin/sh") -> str:
+    return _probe_remote_elf_endianness_conn(_conn(host, password, ssh_opts), path=path)
+
+
+def _probe_remote_elf_endianness_conn(connection: SshConnection, path: str = "/bin/sh") -> str:
     script = rf"""
 path={shlex.quote(path)}
 if [ ! -f "$path" ]; then
@@ -168,7 +189,7 @@ case "$b5" in
   *) echo unknown ;;
 esac
 """
-    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}", check=False)
+    proc = run_ssh_conn(connection, f"/bin/sh -c {shlex.quote(script)}", check=False)
     endianness = (proc.stdout or "").strip().splitlines()
     value = endianness[-1].strip() if endianness else ""
     if value in {"little", "big", "unknown"}:
@@ -177,6 +198,10 @@ esac
 
 
 def discover_mounted_volume(host: str, password: str, ssh_opts: str) -> MountedVolume:
+    return discover_mounted_volume_conn(_conn(host, password, ssh_opts))
+
+
+def discover_mounted_volume_conn(connection: SshConnection) -> MountedVolume:
     script = r'''
 for dev in dk2 dk3; do
   volume="/Volumes/$dev"
@@ -195,7 +220,7 @@ done
 
 exit 1
     '''
-    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}", check=False)
+    proc = run_ssh_conn(connection, f"/bin/sh -c {shlex.quote(script)}", check=False)
     lines = proc.stdout.strip().splitlines()
     result = lines[-1].strip() if lines else ""
     if proc.returncode != 0 or not result:
@@ -205,8 +230,12 @@ exit 1
 
 
 def probe_remote_interface(host: str, password: str, ssh_opts: str, iface: str) -> RemoteInterfaceProbeResult:
+    return probe_remote_interface_conn(_conn(host, password, ssh_opts), iface)
+
+
+def probe_remote_interface_conn(connection: SshConnection, iface: str) -> RemoteInterfaceProbeResult:
     script = f"/sbin/ifconfig {shlex.quote(iface)} >/dev/null 2>&1"
-    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}", check=False)
+    proc = run_ssh_conn(connection, f"/bin/sh -c {shlex.quote(script)}", check=False)
     return_code = getattr(proc, "returncode", 0)
     if not isinstance(return_code, int):
         return RemoteInterfaceProbeResult(iface=iface, exists=True, detail=f"ifconfig {iface} returned non-integer status")
@@ -220,15 +249,17 @@ def remote_interface_exists(host: str, password: str, ssh_opts: str, iface: str)
 
 
 def read_interface_ipv4(host: str, password: str, ssh_opts: str, iface: str) -> str:
+    return read_interface_ipv4_conn(_conn(host, password, ssh_opts), iface)
+
+
+def read_interface_ipv4_conn(connection: SshConnection, iface: str) -> str:
     probe_cmd = (
         f"/sbin/ifconfig {shlex.quote(iface)} 2>/dev/null | "
         "sed -n 's/^[[:space:]]*inet[[:space:]]\\([0-9.]*\\).*/\\1/p' | "
         "sed -n '1p'"
     )
-    proc = run_ssh(
-        host,
-        password,
-        ssh_opts,
+    proc = run_ssh_conn(
+        connection,
         f"/bin/sh -c {shlex.quote(probe_cmd)}",
         check=False,
     )
@@ -239,12 +270,14 @@ def read_interface_ipv4(host: str, password: str, ssh_opts: str, iface: str) -> 
 
 
 def read_active_smb_conf(host: str, password: str, ssh_opts: str) -> str:
+    return read_active_smb_conf_conn(_conn(host, password, ssh_opts))
+
+
+def read_active_smb_conf_conn(connection: SshConnection) -> str:
     quoted_conf = shlex.quote(RUNTIME_SMB_CONF)
     script = f"if [ -f {quoted_conf} ]; then cat {quoted_conf}; fi"
-    proc = run_ssh(
-        host,
-        password,
-        ssh_opts,
+    proc = run_ssh_conn(
+        connection,
         f"/bin/sh -c {shlex.quote(script)}",
         check=False,
     )
@@ -252,6 +285,10 @@ def read_active_smb_conf(host: str, password: str, ssh_opts: str) -> str:
 
 
 def probe_managed_smbd(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 120) -> ManagedSmbdProbeResult:
+    return probe_managed_smbd_conn(_conn(host, password, ssh_opts), timeout_seconds=timeout_seconds)
+
+
+def probe_managed_smbd_conn(connection: SshConnection, *, timeout_seconds: int = 120) -> ManagedSmbdProbeResult:
     script = rf'''
 {SMBD_READY_HELPERS}
 attempt=0
@@ -274,10 +311,8 @@ while [ "$attempt" -lt "$max_attempts" ]; do
 done
 exit 1
 '''
-    proc = run_ssh(
-        host,
-        password,
-        ssh_opts,
+    proc = run_ssh_conn(
+        connection,
         f"/bin/sh -c {shlex.quote(script)}",
         check=False,
         timeout=timeout_seconds + 30,
@@ -292,6 +327,10 @@ def managed_smbd_ready(host: str, password: str, ssh_opts: str, *, timeout_secon
 
 
 def probe_managed_mdns_takeover(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 20) -> ManagedMdnsTakeoverProbeResult:
+    return probe_managed_mdns_takeover_conn(_conn(host, password, ssh_opts), timeout_seconds=timeout_seconds)
+
+
+def probe_managed_mdns_takeover_conn(connection: SshConnection, *, timeout_seconds: int = 20) -> ManagedMdnsTakeoverProbeResult:
     script = r'''
 mdns_ready=0
 apple_alive=0
@@ -318,10 +357,8 @@ if [ "$mdns_ready" -eq 1 ] && [ "$apple_alive" -eq 0 ]; then
 fi
 exit 1
 '''
-    proc = run_ssh(
-        host,
-        password,
-        ssh_opts,
+    proc = run_ssh_conn(
+        connection,
         f"/bin/sh -c {shlex.quote(script)}",
         check=False,
         timeout=timeout_seconds,
@@ -339,13 +376,15 @@ def managed_mdns_takeover_ready(host: str, password: str, ssh_opts: str, *, time
 
 
 def nbns_marker_enabled(host: str, password: str, ssh_opts: str, payload_dir: str) -> bool:
+    return nbns_marker_enabled_conn(_conn(host, password, ssh_opts), payload_dir)
+
+
+def nbns_marker_enabled_conn(connection: SshConnection, payload_dir: str) -> bool:
     marker_path = f"{payload_dir}/private/nbns.enabled"
     quoted_marker = shlex.quote(marker_path)
     script = f"if [ -f {quoted_marker} ]; then echo enabled; fi"
-    proc = run_ssh(
-        host,
-        password,
-        ssh_opts,
+    proc = run_ssh_conn(
+        connection,
         f"/bin/sh -c {shlex.quote(script)}",
         check=False,
     )
@@ -353,6 +392,10 @@ def nbns_marker_enabled(host: str, password: str, ssh_opts: str, payload_dir: st
 
 
 def netbsd4_runtime_services_healthy(host: str, password: str, ssh_opts: str) -> bool:
+    return netbsd4_runtime_services_healthy_conn(_conn(host, password, ssh_opts))
+
+
+def netbsd4_runtime_services_healthy_conn(connection: SshConnection) -> bool:
     script = r'''
 ''' + SMBD_READY_HELPERS + rf'''
 if ! command -v fstat >/dev/null 2>&1; then
@@ -374,7 +417,7 @@ case "$out" in
         ;;
 esac
 '''
-    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}", check=False)
+    proc = run_ssh_conn(connection, f"/bin/sh -c {shlex.quote(script)}", check=False)
     return proc.returncode == 0
 
 
@@ -382,6 +425,14 @@ def probe_netbsd4_activation_status(
     host: str,
     password: str,
     ssh_opts: str,
+    *,
+    timeout_seconds: int = 180,
+) -> subprocess.CompletedProcess[str]:
+    return probe_netbsd4_activation_status_conn(_conn(host, password, ssh_opts), timeout_seconds=timeout_seconds)
+
+
+def probe_netbsd4_activation_status_conn(
+    connection: SshConnection,
     *,
     timeout_seconds: int = 180,
 ) -> subprocess.CompletedProcess[str]:
@@ -437,10 +488,8 @@ case "$out" in
 esac
 exit "$status"
 '''
-    return run_ssh(
-        host,
-        password,
-        ssh_opts,
+    return run_ssh_conn(
+        connection,
         f"/bin/sh -c {shlex.quote(script)}",
         check=False,
         timeout=timeout_seconds + 30,
@@ -453,6 +502,13 @@ def probe_paths_absent(
     ssh_opts: str,
     paths: Iterable[str],
 ) -> subprocess.CompletedProcess[str]:
+    return probe_paths_absent_conn(_conn(host, password, ssh_opts), paths)
+
+
+def probe_paths_absent_conn(
+    connection: SshConnection,
+    paths: Iterable[str],
+) -> subprocess.CompletedProcess[str]:
     script_lines = [
         "missing=0",
     ]
@@ -460,12 +516,16 @@ def probe_paths_absent(
         quoted = shlex.quote(target)
         script_lines.append(f"if [ -e {quoted} ]; then echo PRESENT:{target}; missing=1; else echo ABSENT:{target}; fi")
     script_lines.append("exit \"$missing\"")
-    return run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote('; '.join(script_lines))}", check=False)
+    return run_ssh_conn(connection, f"/bin/sh -c {shlex.quote('; '.join(script_lines))}", check=False)
 
 
 def discover_volume_root(host: str, password: str, ssh_opts: str) -> str:
+    return discover_volume_root_conn(_conn(host, password, ssh_opts))
+
+
+def discover_volume_root_conn(connection: SshConnection) -> str:
     try:
-        return discover_mounted_volume(host, password, ssh_opts).mountpoint
+        return discover_mounted_volume_conn(connection).mountpoint
     except SystemExit:
         pass
 
@@ -507,7 +567,7 @@ done
 
 exit 1
     '''
-    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}")
+    proc = run_ssh_conn(connection, f"/bin/sh -c {shlex.quote(script)}")
     lines = proc.stdout.strip().splitlines()
     volume = lines[-1].strip() if lines else ""
     if not volume:
@@ -535,10 +595,19 @@ def wait_for_ssh_state(
     expected_up: bool,
     timeout_seconds: int = 180,
 ) -> bool:
+    return wait_for_ssh_state_conn(_conn(host, password, ssh_opts), expected_up=expected_up, timeout_seconds=timeout_seconds)
+
+
+def wait_for_ssh_state_conn(
+    connection: SshConnection,
+    *,
+    expected_up: bool,
+    timeout_seconds: int = 180,
+) -> bool:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         try:
-            proc = run_ssh(host, password, ssh_opts, "/bin/echo ok", check=False, timeout=10)
+            proc = run_ssh_conn(connection, "/bin/echo ok", check=False, timeout=10)
             is_up = proc.returncode == 0 and proc.stdout.strip().endswith("ok")
         except SystemExit:
             is_up = False

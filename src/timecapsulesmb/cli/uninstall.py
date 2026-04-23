@@ -11,8 +11,8 @@ from timecapsulesmb.deploy.dry_run import format_uninstall_plan, uninstall_plan_
 from timecapsulesmb.deploy.executor import remote_uninstall_payload
 from timecapsulesmb.deploy.planner import build_uninstall_plan
 from timecapsulesmb.deploy.verify import verify_post_uninstall
-from timecapsulesmb.device.probe import build_device_paths, discover_volume_root, wait_for_ssh_state
-from timecapsulesmb.transport.ssh import run_ssh
+from timecapsulesmb.device.probe import build_device_paths, discover_volume_root_conn as discover_volume_root, wait_for_ssh_state_conn
+from timecapsulesmb.transport.ssh import run_ssh_conn
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -32,11 +32,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     values = load_env_values()
     require_valid_config(values, profile="uninstall")
     connection = resolve_env_connection(values, allow_empty_password=True)
-    host, password, ssh_opts = connection.host, connection.password, connection.ssh_opts
 
-    volume_root = discover_volume_root(host, password, ssh_opts)
+    volume_root = discover_volume_root(connection)
     device_paths = build_device_paths(volume_root, values["TC_PAYLOAD_DIR_NAME"])
-    plan = build_uninstall_plan(host, device_paths, reboot_after_uninstall=not args.no_reboot)
+    plan = build_uninstall_plan(connection.host, device_paths, reboot_after_uninstall=not args.no_reboot)
 
     if args.dry_run:
         if args.json:
@@ -46,7 +45,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     print(f"Removing managed TimeCapsuleSMB payload from {plan.payload_dir}")
-    remote_uninstall_payload(host, password, ssh_opts, plan)
+    remote_uninstall_payload(connection, plan)
     print("Removed managed payload, flash hooks, and runtime state.")
 
     if args.no_reboot:
@@ -59,16 +58,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("Skipped reboot. The Time Capsule may need a manual reboot to fully clear running processes.")
             return 0
 
-    run_ssh(host, password, ssh_opts, "/sbin/reboot", check=False)
+    run_ssh_conn(connection, "/sbin/reboot", check=False)
     print("Reboot requested. Waiting for the device to go down...")
-    wait_for_ssh_state(host, password, ssh_opts, expected_up=False, timeout_seconds=60)
+    wait_for_ssh_state_conn(connection, expected_up=False, timeout_seconds=60)
     print("Waiting for the device to come back up...")
-    if not wait_for_ssh_state(host, password, ssh_opts, expected_up=True, timeout_seconds=240):
+    if not wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=240):
         print("Timed out waiting for SSH after reboot.")
         return 1
 
     print("Device is back online.")
-    if verify_post_uninstall(host, password, ssh_opts, plan):
+    if verify_post_uninstall(connection, plan):
         return 0
 
     print("Managed TimeCapsuleSMB files are still present after reboot.")

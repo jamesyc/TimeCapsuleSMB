@@ -281,6 +281,39 @@ class SSHTransportTests(unittest.TestCase):
         sleep_mock.assert_called_once_with(1)
         self.assertEqual(run_ssh_mock.call_count, 2)
 
+    def test_run_scp_conn_caches_remote_scp_capability(self) -> None:
+        with NamedTemporaryFile() as tmp:
+            src = Path(tmp.name)
+            src.write_bytes(b"hello")
+            connection = ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no")
+            with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+                with mock.patch("timecapsulesmb.transport.ssh.probe_remote_scp_available", return_value=False) as probe_mock:
+                    with mock.patch("timecapsulesmb.transport.ssh.shutil.which", return_value="/opt/homebrew/bin/sshpass"):
+                        with mock.patch(
+                            "timecapsulesmb.transport.ssh.subprocess.run",
+                            return_value=subprocess.CompletedProcess(["sshpass"], 0, stdout=b"", stderr=b""),
+                        ) as subprocess_run_mock:
+                            with mock.patch("timecapsulesmb.transport.ssh._verify_remote_size_conn"):
+                                ssh_transport.run_scp_conn(connection, src, "/tmp/one", timeout=10)
+                                ssh_transport.run_scp_conn(connection, src, "/tmp/two", timeout=10)
+        probe_mock.assert_called_once_with(connection)
+        self.assertEqual(subprocess_run_mock.call_count, 2)
+        self.assertFalse(connection.remote_has_scp)
+
+    def test_run_scp_conn_raises_transport_error_from_scp_output(self) -> None:
+        with NamedTemporaryFile() as tmp:
+            src = Path(tmp.name)
+            src.write_bytes(b"hello")
+            connection = ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o LocalForward=127.0.0.1:108:127.0.0.1:108", remote_has_scp=True)
+            with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+                with mock.patch(
+                    "timecapsulesmb.transport.ssh._spawn_with_password",
+                    return_value=(255, "bind [127.0.0.1]:108: Permission denied\n"),
+                ):
+                    with self.assertRaises(ssh_transport.SshTransportError) as exc:
+                        ssh_transport.run_scp_conn(connection, src, "/tmp/test-upload", timeout=10)
+        self.assertIn("Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied", str(exc.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
