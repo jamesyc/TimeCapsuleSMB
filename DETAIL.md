@@ -81,8 +81,9 @@ These constraints drive almost every design decision in this repo.
 
 Current compatibility classification in the repo is:
 - NetBSD 6.x `evbarm`: current supported deploy target, corresponding to 5th generation Time Capsules
-- NetBSD 4.x `evbarm`: supported as older 1st-4th generation hardware, with a separate NetBSD 4 artifact set and activation path
-  - tested gen1 hardware needs manual `activate` after reboot
+- NetBSD 4.x `evbarm`: supported as older 3rd-4th generation hardware, with a separate artifact set and activation path
+- NetBSD 4.x `armeb`: supported as older 1st-2nd generation hardware, with a separate artifact set and activation path
+  - tested gen1-4 hardware needs manual `activate` after reboot
   - other generations may auto-start if their firmware runs `/mnt/Flash/rc.local`, but that is not yet confirmed
 
 ## Why The Current Architecture Exists
@@ -474,7 +475,8 @@ It is built from:
 
 Important properties:
 - static NetBSD 7 `earmv4` binary for the NetBSD 6 payload
-- static NetBSD 4 `earmv4` binary for the NetBSD 4 payload
+- static NetBSD 4 little-endian `earmv4` binary for the NetBSD 4 little-endian payload
+- static NetBSD 4 big-endian `armeb` binary for the NetBSD 4 big-endian payload
 - see the artifact section below for current checked-in binary sizes
 - installed on both the HDD payload and `/mnt/Flash`
 - run from `/mnt/Flash` to save RAM-disk space
@@ -508,8 +510,8 @@ It is built from:
 
 Important properties:
 - static NetBSD 7 `earmv4` binary for the NetBSD 6 payload
-- static NetBSD 4 `earmv4` binary for the NetBSD 4 payload
-- about `188 KiB` stripped in the current checked-in artifact
+- static NetBSD 4 little-endian `earmv4` binary for the NetBSD 4 little-endian payload
+- static NetBSD 4 big-endian `armeb` binary for the NetBSD 4 big-endian payload
 - not enabled by default at runtime
 - always deployed to the HDD payload, but only staged into RAM when explicitly enabled
 
@@ -595,11 +597,19 @@ Current validation behavior:
 - `TC_MDNS_HOST_LABEL`: must be a single DNS-safe label using letters, numbers, and hyphens; spaces are rejected.
 - `TC_MDNS_DEVICE_MODEL`: must be `TimeCapsule` or one of the supported Time Capsule model identifiers.
 - `TC_AIRPORT_SYAP`: must be one of the known Apple syAP codes.
+- when `TC_AIRPORT_SYAP` is one of the known exact generation values, `TC_MDNS_DEVICE_MODEL` must match it rather than remaining a mismatched generic or wrong generation.
 - `TC_CONFIGURE_ID`: is a local configuration revision ID and is not user-validated.
 
 Workflow details:
 - `configure` now starts by attempting mDNS discovery of the Time Capsule on the local network
-- if SSH is already reachable, `configure` validates the SSH target/password and can capture Apple `syAP` from live `_airport._tcp` discovery when available
+- if SSH is already reachable, `configure` validates the SSH target/password and then probes the device directly
+- `configure` can now choose `TC_AIRPORT_SYAP` and `TC_MDNS_DEVICE_MODEL` from several sources, in priority order:
+  - discovered `_airport._tcp` `syAP`
+  - exact probed compatibility match
+  - probed Apple identity from `ACPData.bin`
+  - model derived from the chosen `syAP`
+  - saved valid values from `.env`
+- for NetBSD 4 devices, the probe/compatibility layer narrows the allowed `syAP` and model candidates by endianness and then narrows further when `ACPData.bin` identifies the exact generation
 - `configure` validates user-facing mDNS/share inputs before writing `.env`
 - `deploy`, `activate`, and `doctor` fail early when managed `.env` config values are invalid
 - the command entrypoints live under [src/timecapsulesmb/cli/](src/timecapsulesmb/cli)
@@ -715,7 +725,7 @@ Typical scan-and-prompt usage:
 .venv/bin/tcapsule repair-xattrs --path /Volumes/Data
 ```
 
-If `TC_SHARE_NAME` is set in `.env` and the share is mounted under `/Volumes/<TC_SHARE_NAME>`, `--path` can be omitted:
+If `TC_SHARE_NAME` is set in `.env`, `--path` can usually be omitted. The command reads the local `mount` table, finds mounted `smbfs` shares, and prefers the mount whose server and share name match the configured `TC_HOST` and `TC_SHARE_NAME`:
 
 ```bash
 .venv/bin/tcapsule repair-xattrs
@@ -779,7 +789,7 @@ Current deploy flow:
 
 Current compatibility behavior:
 - NetBSD 6 `evbarm` devices are accepted for the current `samba4` payload family
-- NetBSD 4 `evbarm` devices are accepted as older hardware and use the `netbsd4_samba4` payload family
+- NetBSD 4 `evbarm` devices are accepted as older hardware and use either the `netbsd4le_samba4` or `netbsd4be_samba4` payload family
 - `configure` reuses the same classification logic to choose a better default Finder model hint
 
 NetBSD 4 activation behavior:
@@ -885,9 +895,13 @@ Current active deploy artifact sizes:
 - NetBSD 6 `smbd`: about `11M`
 - NetBSD 6 `mdns-advertiser`: about `249K`
 - NetBSD 6 `nbns-advertiser`: about `184K`
-- NetBSD 4 `smbd`: about `11M`
-- NetBSD 4 `mdns-advertiser`: about `172K`
-- NetBSD 4 `nbns-advertiser`: about `113K`
+- NetBSD 4 little-endian `smbd`: about `11M`
+- NetBSD 4 big-endian `smbd`: about `11M`
+- NetBSD 4 little-endian `samba3 smbd`: about `8.0M`
+- NetBSD 4 little-endian `mdns-advertiser`: about `186K`
+- NetBSD 4 big-endian `mdns-advertiser`: about `185K`
+- NetBSD 4 little-endian `nbns-advertiser`: about `113K`
+- NetBSD 4 big-endian `nbns-advertiser`: about `112K`
 
 It assumes:
 - a NetBSD VM
@@ -926,9 +940,11 @@ Current validated maintainer flows:
 
 Current path split:
 - NetBSD 7 SDK output defaults under `/root/tc-earmv4-netbsd7`
-- NetBSD 4 SDK output defaults under `/root/tc-earmv4-netbsd4`
+- NetBSD 4 little-endian SDK output defaults under `/root/tc-earmv4-netbsd4`
+- NetBSD 4 big-endian SDK output defaults under `/root/tc-armeb-netbsd4`
 - NetBSD 7 staged runtime outputs default under `/root/tc-netbsd7`
-- NetBSD 4 staged runtime outputs default under `/root/tc-netbsd4`
+- NetBSD 4 little-endian staged runtime outputs default under `/root/tc-netbsd4le`
+- NetBSD 4 big-endian staged runtime outputs default under `/root/tc-netbsd4be`
 
 ## Important Historical Findings
 
@@ -998,13 +1014,13 @@ dns-sd -L "Time Capsule Samba 4" _smb._tcp local.
 List shares as authenticated user:
 
 ```bash
-smbutil view //admin:<password>@timecapsulesamba4.local
+smbutil view //admin:<password>@<configured-or-advertised-host>
 ```
 
 Mount the share:
 
 ```bash
-mount_smbfs //admin:<password>@timecapsulesamba4.local/Data /tmp/tc-auth-mount
+mount_smbfs //admin:<password>@<configured-or-advertised-host>/Data /tmp/tc-auth-mount
 ```
 
 Current expected result:
@@ -1014,7 +1030,7 @@ Current expected result:
 Expected negative test:
 
 ```bash
-smbutil view //guest:@timecapsulesamba4.local
+smbutil view //guest:@<configured-or-advertised-host>
 ```
 
 That should fail with an authentication error.
