@@ -490,8 +490,10 @@ stage_runtime() {
     xattr_tdb:file = $PAYLOAD_DIR/private/xattr.tdb
     force user = root
     force group = wheel
-    create mask = 0644
-    directory mask = 0755
+    create mask = 0666
+    directory mask = 0777
+    force create mode = 0666
+    force directory mode = 0777
 EOF
 }
 

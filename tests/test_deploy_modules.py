@@ -740,6 +740,10 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("passdb backend = smbpasswd:$PAYLOAD_DIR/private/smbpasswd", rendered)
         self.assertIn("username map = $PAYLOAD_DIR/private/username.map", rendered)
         self.assertIn("xattr_tdb:file = $PAYLOAD_DIR/private/xattr.tdb", rendered)
+        self.assertIn("create mask = 0666", rendered)
+        self.assertIn("directory mask = 0777", rendered)
+        self.assertIn("force create mode = 0666", rendered)
+        self.assertIn("force directory mode = 0777", rendered)
 
     def test_render_start_script_logs_mount_and_recovery_failures(self) -> None:
         values = {
@@ -890,6 +894,10 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("max log size = 256\n    smb ports = 445", rendered)
         self.assertNotIn("log level =", rendered)
         self.assertIn("reset on zero vc = yes", rendered)
+        self.assertIn("create mask = 0666", rendered)
+        self.assertIn("directory mask = 0777", rendered)
+        self.assertIn("force create mode = 0666", rendered)
+        self.assertIn("force directory mode = 0777", rendered)
 
     def test_render_smb_conf_uses_disk_logging_when_debug_logging_enabled(self) -> None:
         values = {
