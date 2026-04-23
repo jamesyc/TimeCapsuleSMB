@@ -15,6 +15,8 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.device.compat import DeviceCompatibility
+from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState
 from timecapsulesmb.telemetry import MAX_SEND_ATTEMPTS, TelemetryClient
 
 
@@ -131,6 +133,59 @@ class TelemetryTests(unittest.TestCase):
         self.assertIn("Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied", finished_payload["error"])
         self.assertIn("Debug context:", finished_payload["error"])
         self.assertIn("ssh_opts=-L 108:127.0.0.1:108", finished_payload["error"])
+
+    def test_command_context_debug_context_includes_cached_probe_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                with mock.patch.object(client, "_dispatch_payload_async"):
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        with self.assertRaises(SystemExit):
+                            with CommandContext(
+                                client,
+                                "deploy",
+                                "deploy_started",
+                                "deploy_finished",
+                                values={
+                                    "TC_HOST": "root@192.168.1.217",
+                                    "TC_SSH_OPTS": "-o ProxyJump=bastion",
+                                    "TC_NET_IFACE": "bridge0",
+                                    "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+                                    "TC_AIRPORT_SYAP": "119",
+                                },
+                            ) as command:
+                                command.probe_state = ProbedDeviceState(
+                                    probe_result=ProbeResult(
+                                        ssh_port_reachable=True,
+                                        ssh_authenticated=True,
+                                        error=None,
+                                        os_name="NetBSD",
+                                        os_release="6.0",
+                                        arch="earmv4",
+                                        elf_endianness="little",
+                                    ),
+                                    compatibility=DeviceCompatibility(
+                                        os_name="NetBSD",
+                                        os_release="6.0",
+                                        arch="earmv4",
+                                        elf_endianness="little",
+                                        payload_family="netbsd6_samba4",
+                                        device_generation="gen5",
+                                        supported=True,
+                                        reason_code="supported_netbsd6",
+                                    ),
+                                )
+                                command.update_fields(device_family="netbsd6", device_os_version="NetBSD 6.0 (earmv4)")
+                                raise SystemExit("Connecting to the device failed, SSH error: timeout")
+        finished_payload = send_mock.call_args.args[0]
+        self.assertIn("probe_ssh_port_reachable=true", finished_payload["error"])
+        self.assertIn("probe_ssh_authenticated=true", finished_payload["error"])
+        self.assertIn("probe_os_release=6.0", finished_payload["error"])
+        self.assertIn("probe_elf_endianness=little", finished_payload["error"])
+        self.assertIn("probe_payload_family=netbsd6_samba4", finished_payload["error"])
+        self.assertIn("probe_supported=true", finished_payload["error"])
 
 
 if __name__ == "__main__":

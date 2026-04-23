@@ -1,21 +1,19 @@
 from __future__ import annotations
 
 import ipaddress
-import shlex
 import time
 
 from timecapsulesmb.checks.bonjour import run_bonjour_checks
 from timecapsulesmb.checks.smb import try_authenticated_smb_listing
 from timecapsulesmb.deploy.planner import UninstallPlan
+from timecapsulesmb.device.probe import (
+    netbsd4_runtime_services_healthy,
+    probe_managed_mdns_takeover,
+    probe_managed_smbd,
+    probe_paths_absent,
+    probe_netbsd4_activation_status,
+)
 from timecapsulesmb.transport.local import command_exists
-from timecapsulesmb.transport.ssh import run_ssh
-
-
-SMBD_LOG_READY_HELPERS = r'''
-smbd_ready_marker_present() {
-    [ -f /mnt/Memory/samba4/var/smbd.ready ]
-}
-'''
 
 
 def _configured_smb_server(host_label: str) -> str:
@@ -33,75 +31,7 @@ def _configured_smb_server(host_label: str) -> str:
 
 
 def wait_for_post_reboot_smbd(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 120) -> bool:
-    script = rf'''
-{SMBD_LOG_READY_HELPERS}
-attempt=0
-max_attempts=$((({timeout_seconds} + 4) / 5))
-while [ "$attempt" -lt "$max_attempts" ]; do
-    smbd_ready=0
-
-    if /usr/bin/pkill -0 smbd >/dev/null 2>&1; then
-        if [ -f /mnt/Memory/samba4/etc/smb.conf ] && smbd_ready_marker_present; then
-            smbd_ready=1
-        fi
-    fi
-
-    if [ "$smbd_ready" -eq 1 ]; then
-        exit 0
-    fi
-
-    attempt=$((attempt + 1))
-    sleep 5
-done
-exit 1
-'''
-    proc = run_ssh(
-        host,
-        password,
-        ssh_opts,
-        f"/bin/sh -c {shlex.quote(script)}",
-        check=False,
-        timeout=timeout_seconds + 30,
-    )
-    return proc.returncode == 0
-
-
-def _post_reboot_mdns_takeover_probe(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 20) -> bool:
-    script = r'''
-mdns_ready=0
-apple_alive=0
-
-if /usr/bin/pkill -0 mdns-advertiser >/dev/null 2>&1; then
-    mdns_ready=1
-fi
-
-ps_out="$(/bin/ps ax -o stat= -o ucomm= 2>/dev/null || true)"
-while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    stat_field="${line%% *}"
-    ucomm_field="${line#* }"
-    if [ "$ucomm_field" = "mDNSResponder" ] && [ "${stat_field#Z}" = "$stat_field" ]; then
-        apple_alive=1
-        break
-    fi
-done <<EOF
-$ps_out
-EOF
-
-if [ "$mdns_ready" -eq 1 ] && [ "$apple_alive" -eq 0 ]; then
-    exit 0
-fi
-exit 1
-'''
-    proc = run_ssh(
-        host,
-        password,
-        ssh_opts,
-        f"/bin/sh -c {shlex.quote(script)}",
-        check=False,
-        timeout=timeout_seconds,
-    )
-    return proc.returncode == 0
+    return probe_managed_smbd(host, password, ssh_opts, timeout_seconds=timeout_seconds).ready
 
 
 def wait_for_post_reboot_mdns_takeover(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 120) -> bool:
@@ -110,7 +40,7 @@ def wait_for_post_reboot_mdns_takeover(host: str, password: str, ssh_opts: str, 
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return False
-        if _post_reboot_mdns_takeover_probe(host, password, ssh_opts, timeout_seconds=min(20, max(5, int(remaining) + 1))):
+        if probe_managed_mdns_takeover(host, password, ssh_opts, timeout_seconds=min(20, max(5, int(remaining) + 1))).ready:
             return True
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -133,12 +63,12 @@ def wait_for_post_reboot_mdns_ready(
         if remaining <= 0:
             return False
 
-        if _post_reboot_mdns_takeover_probe(
+        if probe_managed_mdns_takeover(
             host,
             password,
             ssh_opts,
             timeout_seconds=min(20, max(5, int(remaining) + 1)),
-        ):
+        ).ready:
             browse_timeout = min(5.0, remaining)
             _, discovered_instance, target = run_bonjour_checks(
                 expected_instance_name,
@@ -224,66 +154,7 @@ def verify_post_deploy(values: dict[str, str]) -> None:
 
 def verify_netbsd4_activation(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 180) -> bool:
     print("NetBSD4 activation verification:")
-    script = rf'''
-{SMBD_LOG_READY_HELPERS}
-if ! command -v fstat >/dev/null 2>&1; then
-    echo "FAIL:fstat missing"
-    exit 1
-fi
-attempt=0
-max_attempts=$((({timeout_seconds} + 4) / 5))
-while [ "$attempt" -lt "$max_attempts" ]; do
-    out="$(fstat 2>&1)"
-    runtime_conf=0
-    if [ -f /mnt/Memory/samba4/etc/smb.conf ]; then
-        runtime_conf=1
-    fi
-    runtime_log=0
-    if smbd_ready_marker_present; then
-        runtime_log=1
-    fi
-    case "$out" in
-        *smbd*":445"*mdns-advertiser*":5353"*|*mdns-advertiser*":5353"*smbd*":445"*)
-            if [ "$runtime_conf" -eq 1 ] && [ "$runtime_log" -eq 1 ]; then
-                break
-            fi
-            ;;
-    esac
-    attempt=$((attempt + 1))
-    sleep 5
-done
-echo "$out" | sed -n '/\.445/p;/\.5353/p'
-status=0
-if [ -f /mnt/Memory/samba4/etc/smb.conf ]; then
-    echo "PASS:managed runtime smb.conf present"
-else
-    echo "FAIL:managed runtime smb.conf missing"
-    status=1
-fi
-if smbd_ready_marker_present; then
-    echo "PASS:managed smbd ready marker present"
-else
-    echo "FAIL:managed smbd ready marker missing"
-    status=1
-fi
-case "$out" in
-    *smbd*":445"*) echo "PASS:smbd bound to TCP 445" ;;
-    *) echo "FAIL:smbd is not bound to TCP 445"; status=1 ;;
-esac
-case "$out" in
-    *mdns-advertiser*":5353"*) echo "PASS:mdns-advertiser bound to UDP 5353" ;;
-    *) echo "FAIL:mdns-advertiser is not bound to UDP 5353"; status=1 ;;
-esac
-exit "$status"
-'''
-    proc = run_ssh(
-        host,
-        password,
-        ssh_opts,
-        f"/bin/sh -c {shlex.quote(script)}",
-        check=False,
-        timeout=timeout_seconds + 30,
-    )
+    proc = probe_netbsd4_activation_status(host, password, ssh_opts, timeout_seconds=timeout_seconds)
     for line in proc.stdout.strip().splitlines():
         if line.startswith("PASS:"):
             print(f"  ok: {line.removeprefix('PASS:')}")
@@ -295,41 +166,12 @@ exit "$status"
 
 
 def netbsd4_activation_is_already_healthy(host: str, password: str, ssh_opts: str) -> bool:
-    script = r'''
-''' + SMBD_LOG_READY_HELPERS + r'''
-if ! command -v fstat >/dev/null 2>&1; then
-    exit 1
-fi
-out="$(fstat 2>&1)"
-if [ ! -f /mnt/Memory/samba4/etc/smb.conf ]; then
-    exit 1
-fi
-if ! smbd_ready_marker_present; then
-    exit 1
-fi
-case "$out" in
-    *smbd*":445"*mdns-advertiser*":5353"*|*mdns-advertiser*":5353"*smbd*":445"*)
-        exit 0
-        ;;
-    *)
-        exit 1
-        ;;
-esac
-'''
-    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}", check=False)
-    return proc.returncode == 0
+    return netbsd4_runtime_services_healthy(host, password, ssh_opts)
 
 
 def verify_post_uninstall(host: str, password: str, ssh_opts: str, plan: UninstallPlan) -> bool:
     print("Post-uninstall verification:")
-    script_lines = [
-        "missing=0",
-    ]
-    for target in plan.verify_absent_targets:
-        quoted = shlex.quote(target)
-        script_lines.append(f"if [ -e {quoted} ]; then echo PRESENT:{target}; missing=1; else echo ABSENT:{target}; fi")
-    script_lines.append("exit \"$missing\"")
-    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote('; '.join(script_lines))}", check=False)
+    proc = probe_paths_absent(host, password, ssh_opts, plan.verify_absent_targets)
 
     ok = proc.returncode == 0
     for line in proc.stdout.strip().splitlines():

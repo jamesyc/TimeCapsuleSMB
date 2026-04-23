@@ -5,8 +5,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from timecapsulesmb.core.config import AppConfig, ENV_PATH, parse_env_values, require_valid_config
-from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
-from timecapsulesmb.device.probe import probe_device, remote_interface_exists
+from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result, require_compatibility
+from timecapsulesmb.device.probe import (
+    ProbedDeviceState,
+    RemoteInterfaceProbeResult,
+    probe_device,
+    probe_remote_interface,
+)
 
 
 @dataclass(frozen=True)
@@ -14,6 +19,13 @@ class ResolvedConnection:
     host: str
     password: str
     ssh_opts: str
+
+
+@dataclass(frozen=True)
+class ManagedTargetState:
+    connection: ResolvedConnection
+    interface_probe: RemoteInterfaceProbeResult
+    probe_state: ProbedDeviceState | None
 
 
 def load_env_values(*, env_path: Path = ENV_PATH, defaults: dict[str, str] | None = None) -> dict[str, str]:
@@ -67,20 +79,57 @@ def resolve_validated_managed_connection(
     command_name: str,
     profile: str,
 ) -> ResolvedConnection:
+    return resolve_validated_managed_target(
+        values,
+        command_name=command_name,
+        profile=profile,
+        include_probe=False,
+    ).connection
+
+
+def inspect_managed_connection(
+    connection: ResolvedConnection,
+    iface: str,
+    *,
+    include_probe: bool = False,
+) -> ManagedTargetState:
+    interface_probe = probe_remote_interface(connection.host, connection.password, connection.ssh_opts, iface)
+    probe_state = probe_connection_state(connection) if include_probe else None
+    return ManagedTargetState(connection=connection, interface_probe=interface_probe, probe_state=probe_state)
+
+
+def resolve_validated_managed_target(
+    values: dict[str, str],
+    *,
+    command_name: str,
+    profile: str,
+    include_probe: bool = False,
+) -> ManagedTargetState:
     require_airport_syap(values, command_name=command_name)
     require_valid_config(values, profile=profile)
     connection = resolve_env_connection(values)
-    if not remote_interface_exists(connection.host, connection.password, connection.ssh_opts, values["TC_NET_IFACE"]):
+    target = inspect_managed_connection(connection, values["TC_NET_IFACE"], include_probe=include_probe)
+    if not target.interface_probe.exists:
         raise SystemExit(
             "TC_NET_IFACE is invalid. Run the `configure` command again.\n"
-            "The configured network interface was not found on the device."
+            f"{target.interface_probe.detail}."
         )
-    return connection
+    return target
 
 
-def probe_compatibility(connection: ResolvedConnection) -> DeviceCompatibility:
-    result = probe_device(connection.host, connection.password, connection.ssh_opts)
-    compatibility = compatibility_from_probe_result(result)
-    if compatibility is None:
-        raise SystemExit(result.error or "Failed to determine remote device OS compatibility.")
-    return compatibility
+def probe_device_state(host: str, password: str, ssh_opts: str) -> ProbedDeviceState:
+    probe_result = probe_device(host, password, ssh_opts)
+    compatibility = compatibility_from_probe_result(probe_result)
+    return ProbedDeviceState(probe_result=probe_result, compatibility=compatibility)
+
+
+def probe_connection_state(connection: ResolvedConnection) -> ProbedDeviceState:
+    return probe_device_state(connection.host, connection.password, connection.ssh_opts)
+
+
+def require_connection_compatibility(connection: ResolvedConnection) -> DeviceCompatibility:
+    state = probe_connection_state(connection)
+    return require_compatibility(
+        state.compatibility,
+        fallback_error=state.probe_result.error or "Failed to determine remote device OS compatibility.",
+    )

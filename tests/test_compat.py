@@ -10,7 +10,18 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.device.compat import classify_device_compatibility
+from timecapsulesmb.device.compat import (
+    DeviceCompatibility,
+    PAYLOAD_FAMILY_NETBSD4BE,
+    PAYLOAD_FAMILY_NETBSD4LE,
+    PAYLOAD_FAMILY_NETBSD6,
+    classify_device_compatibility,
+    device_family_from_payload_family,
+    is_netbsd4_payload_family,
+    is_netbsd6_payload_family,
+    require_compatibility,
+    render_compatibility_message,
+)
 
 
 class CompatibilityTests(unittest.TestCase):
@@ -27,7 +38,8 @@ class CompatibilityTests(unittest.TestCase):
         self.assertIsNone(compat.payload_family)
         self.assertEqual(compat.syap_candidates, ())
         self.assertEqual(compat.model_candidates, ())
-        self.assertIn("unknown-endian", compat.message)
+        self.assertEqual(compat.reason_code, "unsupported_netbsd6_endianness")
+        self.assertIn("unknown-endian", render_compatibility_message(compat))
 
     def test_classify_netbsd6_big_endian_as_unsupported(self) -> None:
         compat = classify_device_compatibility("NetBSD", "6.0", "earmv4", "big")
@@ -35,7 +47,8 @@ class CompatibilityTests(unittest.TestCase):
         self.assertIsNone(compat.payload_family)
         self.assertEqual(compat.syap_candidates, ())
         self.assertEqual(compat.model_candidates, ())
-        self.assertIn("big-endian", compat.message)
+        self.assertEqual(compat.reason_code, "unsupported_netbsd6_endianness")
+        self.assertIn("big-endian", render_compatibility_message(compat))
 
     def test_classify_netbsd4_as_supported(self) -> None:
         compat = classify_device_compatibility("NetBSD", "4.0", "earmv4", "little")
@@ -44,13 +57,16 @@ class CompatibilityTests(unittest.TestCase):
         self.assertEqual(compat.device_generation, "gen1-4")
         self.assertEqual(compat.model_candidates, ("TimeCapsule6,113", "TimeCapsule6,116"))
         self.assertEqual(compat.elf_endianness, "little")
-        self.assertIn("NetBSD 4", compat.message)
+        self.assertEqual(compat.reason_code, "supported_netbsd4")
+        self.assertIn("NetBSD 4", render_compatibility_message(compat))
 
     def test_classify_netbsd4_big_endian_as_supported(self) -> None:
         compat = classify_device_compatibility("NetBSD", "4.0_STABLE", "earmv4", "big")
         self.assertTrue(compat.supported)
         self.assertEqual(compat.payload_family, "netbsd4be_samba4")
         self.assertEqual(compat.elf_endianness, "big")
+        self.assertEqual(compat.exact_syap, None)
+        self.assertEqual(compat.exact_model, None)
 
     def test_classify_netbsd4_unknown_endianness_as_unsupported(self) -> None:
         compat = classify_device_compatibility("NetBSD", "4.0_STABLE", "earmv4", "unknown")
@@ -58,7 +74,8 @@ class CompatibilityTests(unittest.TestCase):
         self.assertIsNone(compat.payload_family)
         self.assertEqual(compat.syap_candidates, ())
         self.assertEqual(compat.model_candidates, ())
-        self.assertIn("unknown-endian", compat.message)
+        self.assertEqual(compat.reason_code, "unsupported_netbsd4_endianness")
+        self.assertIn("unknown-endian", render_compatibility_message(compat))
 
     def test_classify_netbsd5_as_unsupported_without_candidates(self) -> None:
         compat = classify_device_compatibility("NetBSD", "5.0", "earmv4", "little")
@@ -66,7 +83,8 @@ class CompatibilityTests(unittest.TestCase):
         self.assertIsNone(compat.payload_family)
         self.assertEqual(compat.syap_candidates, ())
         self.assertEqual(compat.model_candidates, ())
-        self.assertIn("NetBSD 5.0", compat.message)
+        self.assertEqual(compat.reason_code, "unsupported_netbsd_release")
+        self.assertIn("NetBSD 5.0", render_compatibility_message(compat))
 
     def test_classify_other_os_as_unsupported(self) -> None:
         compat = classify_device_compatibility("Linux", "6.8", "armv7")
@@ -74,4 +92,45 @@ class CompatibilityTests(unittest.TestCase):
         self.assertIsNone(compat.payload_family)
         self.assertEqual(compat.syap_candidates, ())
         self.assertEqual(compat.model_candidates, ())
-        self.assertIn("Unsupported device OS", compat.message)
+        self.assertEqual(compat.reason_code, "unsupported_os")
+        self.assertIn("Unsupported device OS", render_compatibility_message(compat))
+
+    def test_render_supported_netbsd6_message_is_human_readable(self) -> None:
+        compat = classify_device_compatibility("NetBSD", "6.0", "earmv4", "little")
+        self.assertEqual(
+            render_compatibility_message(compat),
+            "Detected supported device: NetBSD 6.0 (earmv4)...",
+        )
+
+    def test_require_compatibility_raises_with_fallback_for_missing_probe(self) -> None:
+        with self.assertRaises(SystemExit) as ctx:
+            require_compatibility(None, fallback_error="probe failed")
+        self.assertEqual(str(ctx.exception), "probe failed")
+
+    def test_render_compatibility_message_falls_back_to_reason_detail(self) -> None:
+        compat = DeviceCompatibility(
+            os_name="NetBSD",
+            os_release="9.9",
+            arch="earmv4",
+            elf_endianness="little",
+            payload_family=None,
+            device_generation="unknown",
+            supported=False,
+            reason_code="custom_reason",
+            reason_detail="custom detail",
+        )
+        self.assertEqual(render_compatibility_message(compat), "custom detail")
+
+    def test_payload_family_helpers_classify_supported_lanes(self) -> None:
+        self.assertTrue(is_netbsd4_payload_family(PAYLOAD_FAMILY_NETBSD4LE))
+        self.assertTrue(is_netbsd4_payload_family(PAYLOAD_FAMILY_NETBSD4BE))
+        self.assertFalse(is_netbsd4_payload_family(PAYLOAD_FAMILY_NETBSD6))
+        self.assertTrue(is_netbsd6_payload_family(PAYLOAD_FAMILY_NETBSD6))
+        self.assertFalse(is_netbsd6_payload_family(PAYLOAD_FAMILY_NETBSD4LE))
+
+    def test_device_family_from_payload_family_handles_unknown(self) -> None:
+        self.assertEqual(device_family_from_payload_family(PAYLOAD_FAMILY_NETBSD4LE), "netbsd4")
+        self.assertEqual(device_family_from_payload_family(PAYLOAD_FAMILY_NETBSD4BE), "netbsd4")
+        self.assertEqual(device_family_from_payload_family(PAYLOAD_FAMILY_NETBSD6), "netbsd6")
+        self.assertIsNone(device_family_from_payload_family("other"))
+        self.assertIsNone(device_family_from_payload_family(None))

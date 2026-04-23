@@ -23,11 +23,56 @@ def parse_lookup_target(output: str) -> Optional[str]:
     return None
 
 
+def _normalize_host_name(value: str) -> str:
+    normalized = value.strip().rstrip(".").lower()
+    if normalized.endswith(".local"):
+        normalized = normalized[: -len(".local")]
+    return normalized
+
+
+def _record_matches_preferred_host(record, preferred_hosts: set[str]) -> bool:
+    if not preferred_hosts:
+        return False
+    if _normalize_host_name(record.hostname or "") in preferred_hosts:
+        return True
+    return any(_normalize_host_name(ip) in preferred_hosts for ip in record.ipv4 + record.ipv6)
+
+
+def _record_matches_preferred_ip(record, preferred_ips: set[str]) -> bool:
+    if not preferred_ips:
+        return False
+    return any(ip in preferred_ips for ip in record.ipv4 + record.ipv6)
+
+
+def _select_record(
+    records,
+    expected_instance_name: str,
+    *,
+    preferred_hosts: set[str],
+    preferred_ips: set[str],
+):
+    if not records:
+        return None
+    ranked = sorted(
+        records,
+        key=lambda record: (
+            not _record_matches_preferred_host(record, preferred_hosts),
+            not _record_matches_preferred_ip(record, preferred_ips),
+            record.name != expected_instance_name,
+            record.hostname or "",
+            record.name or "",
+        ),
+    )
+    return ranked[0]
+
+
 def run_bonjour_checks(
     expected_instance_name: str,
     *,
     service_type: str = "_smb._tcp.local.",
     timeout: float = 5.0,
+    preferred_host: str | None = None,
+    preferred_ip: str | None = None,
 ) -> Tuple[list[CheckResult], Optional[str], Optional[str]]:
     try:
         records = discover(timeout=timeout)
@@ -38,7 +83,15 @@ def run_bonjour_checks(
 
     results: list[CheckResult] = []
     matching = [record for record in records if service_type in record.services]
-    discovered_instance = matching[0].name if matching else None
+    preferred_hosts = {_normalize_host_name(preferred_host)} if preferred_host else set()
+    preferred_ips = {preferred_ip.strip()} if preferred_ip else set()
+    selected = _select_record(
+        matching,
+        expected_instance_name,
+        preferred_hosts=preferred_hosts,
+        preferred_ips=preferred_ips,
+    )
+    discovered_instance = selected.name if selected else None
     target = None
 
     if discovered_instance:
@@ -49,8 +102,8 @@ def run_bonjour_checks(
     else:
         results.append(CheckResult("FAIL", "could not discover any _smb._tcp instance"))
 
-    if matching:
-        record = matching[0]
+    if selected:
+        record = selected
         host = record.hostname or (record.ipv4[0] if record.ipv4 else (record.ipv6[0] if record.ipv6 else ""))
         if host:
             target = f"{host}:445"

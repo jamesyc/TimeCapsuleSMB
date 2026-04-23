@@ -54,7 +54,16 @@ from timecapsulesmb.deploy.verify import (
     wait_for_post_reboot_bonjour,
     wait_for_post_reboot_smbd,
 )
-from timecapsulesmb.device.probe import build_device_paths, discover_mounted_volume, discover_volume_root, wait_for_ssh_state
+from timecapsulesmb.device.probe import (
+    build_device_paths,
+    discover_mounted_volume,
+    discover_volume_root,
+    managed_mdns_takeover_ready,
+    managed_smbd_ready,
+    probe_managed_mdns_takeover,
+    probe_managed_smbd,
+    wait_for_ssh_state,
+)
 
 
 class DeployModuleTests(unittest.TestCase):
@@ -1872,7 +1881,7 @@ PASS:smbd bound to TCP 445
 PASS:mdns-advertiser bound to UDP 5353
 """
         with mock.patch(
-            "timecapsulesmb.deploy.verify.run_ssh",
+            "timecapsulesmb.device.probe.run_ssh",
             return_value=mock.Mock(returncode=0, stdout=fstat_output),
         ):
             with redirect_stdout(io.StringIO()):
@@ -1886,7 +1895,7 @@ FAIL:smbd is not bound to TCP 445
 PASS:mdns-advertiser bound to UDP 5353
 """
         with mock.patch(
-            "timecapsulesmb.deploy.verify.run_ssh",
+            "timecapsulesmb.device.probe.run_ssh",
             return_value=mock.Mock(returncode=1, stdout=fstat_output),
         ):
             with redirect_stdout(io.StringIO()):
@@ -1897,7 +1906,7 @@ PASS:mdns-advertiser bound to UDP 5353
 FAIL:fstat missing
 """
         with mock.patch(
-            "timecapsulesmb.deploy.verify.run_ssh",
+            "timecapsulesmb.device.probe.run_ssh",
             return_value=mock.Mock(returncode=1, stdout=fstat_output),
         ):
             with redirect_stdout(io.StringIO()):
@@ -1905,7 +1914,7 @@ FAIL:fstat missing
 
     def test_verify_netbsd4_activation_polls_for_background_launcher(self) -> None:
         with mock.patch(
-            "timecapsulesmb.deploy.verify.run_ssh",
+            "timecapsulesmb.device.probe.run_ssh",
             return_value=mock.Mock(returncode=1, stdout="FAIL:smbd is not bound to TCP 445\n"),
         ) as run_ssh_mock:
             with redirect_stdout(io.StringIO()):
@@ -1927,7 +1936,7 @@ FAIL:smbd is not bound to TCP 445
 PASS:mdns-advertiser bound to UDP 5353
 """
         with mock.patch(
-            "timecapsulesmb.deploy.verify.run_ssh",
+            "timecapsulesmb.device.probe.run_ssh",
             return_value=mock.Mock(returncode=1, stdout=fstat_output),
         ):
             with redirect_stdout(io.StringIO()):
@@ -1943,7 +1952,7 @@ PASS:smbd bound to TCP 445
 PASS:mdns-advertiser bound to UDP 5353
 """
         with mock.patch(
-            "timecapsulesmb.deploy.verify.run_ssh",
+            "timecapsulesmb.device.probe.run_ssh",
             return_value=mock.Mock(returncode=1, stdout=fstat_output),
         ):
             with redirect_stdout(io.StringIO()):
@@ -2001,7 +2010,7 @@ PASS:mdns-advertiser bound to UDP 5353
 
     def test_wait_for_post_reboot_smbd_passes_when_managed_smbd_is_ready(self) -> None:
         with mock.patch(
-            "timecapsulesmb.deploy.verify.run_ssh",
+            "timecapsulesmb.device.probe.run_ssh",
             return_value=mock.Mock(returncode=0),
         ) as run_ssh_mock:
             self.assertTrue(wait_for_post_reboot_smbd("host", "pw", "-o foo", timeout_seconds=45))
@@ -2019,14 +2028,32 @@ PASS:mdns-advertiser bound to UDP 5353
 
     def test_wait_for_post_reboot_smbd_fails_when_remote_probe_times_out(self) -> None:
         with mock.patch(
-            "timecapsulesmb.deploy.verify.run_ssh",
+            "timecapsulesmb.device.probe.run_ssh",
             return_value=mock.Mock(returncode=1),
         ):
             self.assertFalse(wait_for_post_reboot_smbd("host", "pw", "-o foo", timeout_seconds=12))
 
+    def test_probe_managed_smbd_returns_detail_when_not_ready(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.device.probe.run_ssh",
+            return_value=mock.Mock(returncode=1, stdout="still starting\n"),
+        ):
+            result = probe_managed_smbd("host", "pw", "-o foo", timeout_seconds=12)
+        self.assertFalse(result.ready)
+        self.assertEqual(result.detail, "still starting")
+
+    def test_managed_smbd_ready_uses_structured_probe_result(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.device.probe.probe_managed_smbd",
+            return_value=mock.Mock(ready=True),
+        ) as probe_mock:
+            ready = managed_smbd_ready("host", "pw", "-o foo", timeout_seconds=12)
+        self.assertTrue(ready)
+        probe_mock.assert_called_once_with("host", "pw", "-o foo", timeout_seconds=12)
+
     def test_wait_for_post_reboot_mdns_takeover_passes_when_managed_mdns_is_ready(self) -> None:
         with mock.patch(
-            "timecapsulesmb.deploy.verify.run_ssh",
+            "timecapsulesmb.device.probe.run_ssh",
             return_value=mock.Mock(returncode=0),
         ) as run_ssh_mock:
             self.assertTrue(wait_for_post_reboot_mdns_takeover("host", "pw", "-o foo", timeout_seconds=45))
@@ -2037,16 +2064,34 @@ PASS:mdns-advertiser bound to UDP 5353
 
     def test_wait_for_post_reboot_mdns_takeover_fails_when_remote_probe_times_out(self) -> None:
         with mock.patch(
-            "timecapsulesmb.deploy.verify.run_ssh",
+            "timecapsulesmb.device.probe.run_ssh",
             return_value=mock.Mock(returncode=1),
         ):
             self.assertFalse(wait_for_post_reboot_mdns_takeover("host", "pw", "-o foo", timeout_seconds=12))
 
+    def test_probe_managed_mdns_takeover_returns_detail_when_not_ready(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.device.probe.run_ssh",
+            return_value=mock.Mock(returncode=1, stdout="apple responder still alive\n"),
+        ):
+            result = probe_managed_mdns_takeover("host", "pw", "-o foo", timeout_seconds=12)
+        self.assertFalse(result.ready)
+        self.assertEqual(result.detail, "apple responder still alive")
+
+    def test_managed_mdns_takeover_ready_uses_structured_probe_result(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.device.probe.probe_managed_mdns_takeover",
+            return_value=mock.Mock(ready=False),
+        ) as probe_mock:
+            ready = managed_mdns_takeover_ready("host", "pw", "-o foo", timeout_seconds=12)
+        self.assertFalse(ready)
+        probe_mock.assert_called_once_with("host", "pw", "-o foo", timeout_seconds=12)
+
     def test_wait_for_post_reboot_mdns_ready_requires_takeover_and_bonjour(self) -> None:
         monotonic_values = iter([0.0, 1.0, 1.0, 6.0, 6.0, 7.0, 7.0, 8.0, 8.0])
         with mock.patch(
-            "timecapsulesmb.deploy.verify._post_reboot_mdns_takeover_probe",
-            side_effect=[False, True, True],
+            "timecapsulesmb.deploy.verify.probe_managed_mdns_takeover",
+            side_effect=[mock.Mock(ready=False), mock.Mock(ready=True), mock.Mock(ready=True)],
         ) as takeover_mock:
             with mock.patch(
                 "timecapsulesmb.deploy.verify.run_bonjour_checks",
@@ -2073,8 +2118,8 @@ PASS:mdns-advertiser bound to UDP 5353
     def test_wait_for_post_reboot_mdns_ready_times_out_when_bonjour_never_appears(self) -> None:
         monotonic_values = iter([0.0, 1.0, 1.0, 6.0, 6.0, 11.0, 11.0, 12.1])
         with mock.patch(
-            "timecapsulesmb.deploy.verify._post_reboot_mdns_takeover_probe",
-            return_value=True,
+            "timecapsulesmb.deploy.verify.probe_managed_mdns_takeover",
+            return_value=mock.Mock(ready=True),
         ):
             with mock.patch(
                 "timecapsulesmb.deploy.verify.run_bonjour_checks",
@@ -2146,7 +2191,26 @@ PASS:mdns-advertiser bound to UDP 5353
         self.assertIn("Tested NetBSD4 devices cannot auto-run Samba after a reboot;", text)
         self.assertIn("other NetBSD4 generations may auto-start Samba if their firmware runs /mnt/Flash/rc.local after a reboot.", text)
         self.assertIn("Run `activate` after a reboot if the device did not auto-start Samba.", text)
-        self.assertIn("fstat shows smbd bound to TCP 445", text)
+        self.assertIn("managed runtime smb.conf is present", text)
+        self.assertIn("managed smbd ready marker is present", text)
+        self.assertIn("smbd is bound to TCP 445", text)
+        self.assertIn("mdns-advertiser is bound to UDP 5353", text)
+
+    def test_netbsd6_no_reboot_plan_has_no_reboot_checks(self) -> None:
+        paths = build_device_paths("/Volumes/dk2", "samba4")
+        plan = build_deployment_plan(
+            "root@10.0.0.2",
+            paths,
+            Path("bin/smbd"),
+            Path("bin/mdns"),
+            Path("bin/nbns"),
+            reboot_after_deploy=False,
+        )
+        self.assertFalse(plan.reboot_required)
+        self.assertEqual(plan.post_deploy_checks, [])
+        text = format_deployment_plan(plan)
+        self.assertIn("Reboot:\n  no", text)
+        self.assertIn("Post-deploy checks:\n  none", text)
 
     def test_build_uninstall_plan_stops_nbns_process(self) -> None:
         paths = build_device_paths("/Volumes/dk2", "samba4")

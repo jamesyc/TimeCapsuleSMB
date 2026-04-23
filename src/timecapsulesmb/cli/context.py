@@ -8,8 +8,9 @@ from timecapsulesmb.cli import runtime
 from timecapsulesmb.telemetry import build_device_os_version, detect_device_family
 
 if TYPE_CHECKING:
-    from timecapsulesmb.cli.runtime import ResolvedConnection
+    from timecapsulesmb.cli.runtime import ManagedTargetState, ResolvedConnection
     from timecapsulesmb.device.compat import DeviceCompatibility
+    from timecapsulesmb.device.probe import ProbedDeviceState
     from timecapsulesmb.telemetry import TelemetryClient
 
 
@@ -38,6 +39,7 @@ class CommandContext:
         self.error_lines: list[str] = []
         self._debug_context_added = False
         self.connection: ResolvedConnection | None = None
+        self.probe_state: ProbedDeviceState | None = None
         self.compatibility: DeviceCompatibility | None = None
         self.telemetry.emit(started_event, command_id=self.command_id, **fields)
 
@@ -129,6 +131,21 @@ class CommandContext:
             else:
                 rendered = str(value)
             context_lines.append(f"{key}={rendered}")
+        if self.probe_state is not None:
+            probe_result = self.probe_state.probe_result
+            context_lines.append(f"probe_ssh_port_reachable={str(probe_result.ssh_port_reachable).lower()}")
+            context_lines.append(f"probe_ssh_authenticated={str(probe_result.ssh_authenticated).lower()}")
+            context_lines.append(f"probe_os_name={probe_result.os_name or 'unknown'}")
+            context_lines.append(f"probe_os_release={probe_result.os_release or 'unknown'}")
+            context_lines.append(f"probe_arch={probe_result.arch or 'unknown'}")
+            context_lines.append(f"probe_elf_endianness={probe_result.elf_endianness or 'unknown'}")
+            if probe_result.error:
+                context_lines.append(f"probe_error={probe_result.error}")
+            compatibility = self.probe_state.compatibility
+            if compatibility is not None:
+                context_lines.append(f"probe_payload_family={compatibility.payload_family or 'unknown'}")
+                context_lines.append(f"probe_supported={str(compatibility.supported).lower()}")
+                context_lines.append(f"probe_device_generation={compatibility.device_generation}")
         if extra_fields:
             for key, value in extra_fields.items():
                 if value is None:
@@ -162,23 +179,41 @@ class CommandContext:
         return self.connection
 
     def resolve_validated_managed_connection(self, *, profile: str) -> ResolvedConnection:
+        return self.resolve_validated_managed_target(profile=profile, include_probe=False).connection
+
+    def resolve_validated_managed_target(self, *, profile: str, include_probe: bool = False) -> ManagedTargetState:
         if self.values is None:
             raise RuntimeError("CommandContext values are not set.")
-        self.connection = runtime.resolve_validated_managed_connection(
+        target = runtime.resolve_validated_managed_target(
             self.values,
             command_name=self.command_name,
             profile=profile,
+            include_probe=include_probe,
         )
-        return self.connection
+        self.connection = target.connection
+        if target.probe_state is not None:
+            self.probe_state = target.probe_state
+            self.compatibility = target.probe_state.compatibility
+        return target
 
-    def probe_compatibility(
+    def probe_device_state(
         self,
-        probe: Callable[[ResolvedConnection], DeviceCompatibility] | None = None,
-    ) -> DeviceCompatibility:
+        probe: Callable[[ResolvedConnection], ProbedDeviceState] | None = None,
+    ) -> ProbedDeviceState:
         if self.connection is None:
             raise RuntimeError("CommandContext connection is not set.")
-        probe_fn = probe or runtime.probe_compatibility
-        self.compatibility = probe_fn(self.connection)
+        probe_fn = probe or runtime.probe_connection_state
+        self.probe_state = probe_fn(self.connection)
+        self.compatibility = self.probe_state.compatibility
+        return self.probe_state
+
+    def require_compatibility(self) -> DeviceCompatibility:
+        if self.connection is None:
+            raise RuntimeError("CommandContext connection is not set.")
+        self.compatibility = runtime.require_connection_compatibility(self.connection) if self.probe_state is None else runtime.require_compatibility(
+            self.probe_state.compatibility,
+            fallback_error=self.probe_state.probe_result.error or "Failed to determine remote device OS compatibility.",
+        )
         self.update_fields(device_os_version=build_device_os_version(
             self.compatibility.os_name,
             self.compatibility.os_release,

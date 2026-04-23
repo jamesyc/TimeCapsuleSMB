@@ -4,7 +4,6 @@ from collections.abc import Callable
 import ipaddress
 from pathlib import Path
 from typing import Optional
-import shlex
 
 from timecapsulesmb.checks.bonjour import run_bonjour_checks
 from timecapsulesmb.checks.local_tools import check_required_artifacts, check_required_local_tools
@@ -15,38 +14,22 @@ from timecapsulesmb.checks.smb import (
     check_authenticated_smb_file_ops_detailed,
     check_authenticated_smb_listing,
 )
+from timecapsulesmb.cli.runtime import probe_device_state
 from timecapsulesmb.core.config import extract_host, missing_required_keys, validate_config_values
-from timecapsulesmb.device.probe import build_device_paths, discover_volume_root
+from timecapsulesmb.device.compat import render_compatibility_message
+from timecapsulesmb.device.probe import (
+    ProbedDeviceState,
+    RUNTIME_SMB_CONF,
+    build_device_paths,
+    discover_volume_root,
+    probe_managed_mdns_takeover,
+    nbns_marker_enabled,
+    probe_remote_interface,
+    read_active_smb_conf,
+    read_interface_ipv4,
+)
 from timecapsulesmb.transport.local import find_free_local_port
-from timecapsulesmb.transport.ssh import run_ssh, ssh_local_forward
-
-
-def _read_interface_ipv4(host: str, password: str, ssh_opts: str, iface: str) -> str:
-    probe_cmd = (
-        f"/sbin/ifconfig {shlex.quote(iface)} 2>/dev/null | "
-        "sed -n 's/^[[:space:]]*inet[[:space:]]\\([0-9.]*\\).*/\\1/p' | "
-        "sed -n '1p'"
-    )
-    proc = run_ssh(
-        host,
-        password,
-        ssh_opts,
-        f"/bin/sh -c {shlex.quote(probe_cmd)}",
-        check=False,
-    )
-    iface_ip = proc.stdout.strip()
-    if not iface_ip:
-        raise SystemExit(f"could not determine IPv4 for interface {iface}")
-    return iface_ip
-
-
-def _remote_interface_exists(host: str, password: str, ssh_opts: str, iface: str) -> bool:
-    script = f"/sbin/ifconfig {shlex.quote(iface)} >/dev/null 2>&1"
-    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}", check=False)
-    return_code = getattr(proc, "returncode", 0)
-    if not isinstance(return_code, int):
-        return True
-    return return_code == 0
+from timecapsulesmb.transport.ssh import ssh_local_forward
 
 
 def _parse_xattr_tdb_paths(smb_conf: str) -> list[str]:
@@ -83,59 +66,6 @@ def _parse_active_share_names(smb_conf: str) -> list[str]:
     return shares
 
 
-def _read_active_smb_conf(host: str, password: str, ssh_opts: str) -> str:
-    smb_conf = "/mnt/Memory/samba4/etc/smb.conf"
-    proc = run_ssh(
-        host,
-        password,
-        ssh_opts,
-        f"/bin/sh -c {shlex.quote(f'if [ -f {shlex.quote(smb_conf)} ]; then cat {shlex.quote(smb_conf)}; fi')}",
-        check=False,
-    )
-    return proc.stdout
-
-
-def _managed_mdns_takeover_ready(host: str, password: str, ssh_opts: str) -> bool:
-    script = r'''
-mdns_ready=0
-apple_alive=0
-
-if /usr/bin/pkill -0 mdns-advertiser >/dev/null 2>&1; then
-    mdns_ready=1
-fi
-
-ps_out="$(/bin/ps ax -o stat= -o ucomm= 2>/dev/null || true)"
-while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    stat_field="${line%% *}"
-    ucomm_field="${line#* }"
-    if [ "$ucomm_field" = "mDNSResponder" ] && [ "${stat_field#Z}" = "$stat_field" ]; then
-        apple_alive=1
-        break
-    fi
-done <<EOF
-$ps_out
-EOF
-
-if [ "$mdns_ready" -eq 1 ] && [ "$apple_alive" -eq 0 ]; then
-    exit 0
-fi
-exit 1
-'''
-    proc = run_ssh(
-        host,
-        password,
-        ssh_opts,
-        f"/bin/sh -c {shlex.quote(script)}",
-        check=False,
-        timeout=20,
-    )
-    return_code = getattr(proc, "returncode", 0)
-    if not isinstance(return_code, int):
-        return True
-    return return_code == 0
-
-
 def _parse_bonjour_host_label(target: Optional[str]) -> Optional[str]:
     if not target:
         return None
@@ -162,10 +92,9 @@ def _configured_smb_server(host_label: str) -> str:
 
 
 def check_xattr_tdb_persistence(host: str, password: str, ssh_opts: str) -> CheckResult:
-    smb_conf = "/mnt/Memory/samba4/etc/smb.conf"
-    proc_stdout = _read_active_smb_conf(host, password, ssh_opts)
+    proc_stdout = read_active_smb_conf(host, password, ssh_opts)
     if not proc_stdout.strip():
-        return CheckResult("WARN", f"could not inspect active smb.conf at {smb_conf}")
+        return CheckResult("WARN", f"could not inspect active smb.conf at {RUNTIME_SMB_CONF}")
 
     paths = _parse_xattr_tdb_paths(proc_stdout)
     if not paths:
@@ -183,6 +112,7 @@ def run_doctor_checks(
     *,
     env_exists: bool,
     repo_root: Path,
+    precomputed_probe_state: ProbedDeviceState | None = None,
     skip_ssh: bool = False,
     skip_bonjour: bool = False,
     skip_smb: bool = False,
@@ -238,14 +168,28 @@ def run_doctor_checks(
         active_smb_conf_reason = "SSH check skipped"
 
     if not skip_ssh and ssh_ok:
-        if not _remote_interface_exists(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts, values["TC_NET_IFACE"]):
-            add_result(CheckResult("FAIL", f"TC_NET_IFACE is invalid. Run the `configure` command again. The configured network interface was not found on the device."))
-        if _managed_mdns_takeover_ready(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts):
+        interface_probe = probe_remote_interface(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts, values["TC_NET_IFACE"])
+        if not interface_probe.exists:
+            add_result(CheckResult("FAIL", f"TC_NET_IFACE is invalid. Run the `configure` command again. {interface_probe.detail}."))
+        try:
+            probed_state = precomputed_probe_state or probe_device_state(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
+            probe_result = probed_state.probe_result
+            compatibility = probed_state.compatibility
+            if compatibility is None:
+                add_result(CheckResult("FAIL", probe_result.error or "could not determine device compatibility"))
+            elif compatibility.supported:
+                add_result(CheckResult("PASS", render_compatibility_message(compatibility)))
+            else:
+                add_result(CheckResult("FAIL", render_compatibility_message(compatibility)))
+        except (Exception, SystemExit) as e:
+            add_result(CheckResult("FAIL", f"device compatibility check failed: {e}"))
+        mdns_probe = probe_managed_mdns_takeover(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
+        if mdns_probe.ready:
             add_result(CheckResult("PASS", "managed mDNS takeover is active"))
         else:
-            add_result(CheckResult("FAIL", "managed mDNS takeover is not active"))
+            add_result(CheckResult("FAIL", f"managed mDNS takeover is not active ({mdns_probe.detail})"))
         try:
-            active_smb_conf = _read_active_smb_conf(
+            active_smb_conf = read_active_smb_conf(
                 values["TC_HOST"],
                 values["TC_PASSWORD"],
                 ssh_opts,
@@ -277,7 +221,11 @@ def run_doctor_checks(
         add_result(CheckResult("SKIP", "Bonjour check skipped for SSH-proxied target; local mDNS may find a different Time Capsule"))
     elif not skip_bonjour:
         try:
-            bonjour_results, bonjour_instance, bonjour_target = run_bonjour_checks(values["TC_MDNS_INSTANCE_NAME"])
+            bonjour_results, bonjour_instance, bonjour_target = run_bonjour_checks(
+                values["TC_MDNS_INSTANCE_NAME"],
+                preferred_host=values.get("TC_MDNS_HOST_LABEL"),
+                preferred_ip=host,
+            )
             bonjour_reason = ""
             for result in bonjour_results:
                 add_result(result)
@@ -317,19 +265,16 @@ def run_doctor_checks(
         try:
             volume_root = discover_volume_root(values["TC_HOST"], values["TC_PASSWORD"], values["TC_SSH_OPTS"])
             device_paths = build_device_paths(volume_root, values["TC_PAYLOAD_DIR_NAME"])
-            marker_path = f"{device_paths.payload_dir}/private/nbns.enabled"
-            proc = run_ssh(
+            if nbns_marker_enabled(
                 values["TC_HOST"],
                 values["TC_PASSWORD"],
                 values["TC_SSH_OPTS"],
-                f"/bin/sh -c {shlex.quote(f'if [ -f {shlex.quote(marker_path)} ]; then echo enabled; fi')}",
-                check=False,
-            )
-            if proc.stdout.strip() == "enabled":
+                device_paths.payload_dir,
+            ):
                 if proxied_ssh:
                     add_result(CheckResult("SKIP", "NBNS check skipped for SSH-proxied target; UDP/137 is not reachable through the SSH jump host"))
                 else:
-                    expected_ip = _read_interface_ipv4(
+                    expected_ip = read_interface_ipv4(
                         values["TC_HOST"],
                         values["TC_PASSWORD"],
                         values["TC_SSH_OPTS"],

@@ -36,7 +36,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     volume_root = discover_volume_root(host, password, ssh_opts)
     device_paths = build_device_paths(volume_root, values["TC_PAYLOAD_DIR_NAME"])
-    plan = build_uninstall_plan(host, device_paths)
+    plan = build_uninstall_plan(host, device_paths, reboot_after_uninstall=not args.no_reboot)
 
     if args.dry_run:
         if args.json:

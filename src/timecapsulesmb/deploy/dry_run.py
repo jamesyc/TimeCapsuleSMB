@@ -4,7 +4,7 @@ from dataclasses import asdict
 
 from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE
 from timecapsulesmb.deploy.commands import render_remote_actions
-from timecapsulesmb.deploy.planner import DeploymentPlan, UninstallPlan
+from timecapsulesmb.deploy.planner import ActivationPlan, DeploymentPlan, UninstallPlan
 
 
 def format_deployment_plan(plan: DeploymentPlan) -> str:
@@ -45,12 +45,11 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
         lines.append(f"  {NETBSD4_REBOOT_FOLLOWUP}")
     lines.append("")
     lines.append("Post-deploy checks:")
-    if plan.activation_actions:
-        lines.append("  fstat shows smbd bound to TCP 445")
-        lines.append("  fstat shows mdns-advertiser bound to UDP 5353")
+    if plan.post_deploy_checks:
+        for check in plan.post_deploy_checks:
+            lines.append(f"  {check.description}")
     else:
-        lines.append("  Bonjour _smb._tcp browse/resolve")
-        lines.append("  Authenticated SMB listing")
+        lines.append("  none")
     return "\n".join(lines)
 
 
@@ -59,17 +58,27 @@ def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
     data["smbd_path"] = str(plan.smbd_path)
     data["mdns_path"] = str(plan.mdns_path)
     data["nbns_path"] = str(plan.nbns_path)
-    if plan.activation_actions:
-        data["post_deploy_checks"] = [
-            "netbsd4_smbd_bound_445",
-            "netbsd4_mdns_bound_5353",
-        ]
-    else:
-        data["post_deploy_checks"] = [
-            "bonjour_browse_resolve",
-            "authenticated_smb_listing",
-        ]
     return data
+
+
+def format_activation_plan(plan: ActivationPlan) -> str:
+    lines: list[str] = []
+    lines.append("Dry run: NetBSD4 activation plan")
+    lines.append("")
+    lines.append("Remote actions:")
+    for command in render_remote_actions(plan.actions):
+        lines.append(f"  {command}")
+    lines.append("")
+    lines.append("Pre-activation shortcut:")
+    lines.append("  skip rc.local if NetBSD4 payload is already healthy")
+    lines.append("")
+    lines.append("Post-activation checks:")
+    for check in plan.post_activation_checks:
+        lines.append(f"  {check.description}")
+    lines.append("")
+    lines.append("This will start the deployed Samba payload on the Time Capsule.")
+    lines.append(f"{NETBSD4_REBOOT_GUIDANCE}")
+    return "\n".join(lines)
 
 
 def format_uninstall_plan(plan: UninstallPlan) -> str:
@@ -86,18 +95,17 @@ def format_uninstall_plan(plan: UninstallPlan) -> str:
         lines.append(f"  {command}")
     lines.append("")
     lines.append("Reboot:")
-    lines.append("  yes")
+    lines.append(f"  {'yes' if plan.reboot_required else 'no'}")
     lines.append("")
     lines.append("Post-uninstall checks:")
-    lines.append("  SSH returns after reboot")
-    lines.append("  Managed payload and flash hooks are absent")
+    if plan.post_uninstall_checks:
+        for check in plan.post_uninstall_checks:
+            lines.append(f"  {check.description}")
+    else:
+        lines.append("  none")
     return "\n".join(lines)
 
 
 def uninstall_plan_to_jsonable(plan: UninstallPlan) -> dict[str, object]:
     data = asdict(plan)
-    data["post_uninstall_checks"] = [
-        "ssh_returns_after_reboot",
-        "managed_files_absent",
-    ]
     return data

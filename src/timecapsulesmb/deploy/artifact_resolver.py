@@ -4,6 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from timecapsulesmb.deploy.artifacts import ArtifactRecord, load_artifact_manifest
+from timecapsulesmb.device.compat import (
+    PAYLOAD_FAMILY_NETBSD4BE,
+    PAYLOAD_FAMILY_NETBSD4LE,
+    PAYLOAD_FAMILY_NETBSD6,
+)
 
 
 @dataclass(frozen=True)
@@ -27,19 +32,19 @@ def resolve_required_artifacts(repo_root: Path, names: list[str]) -> dict[str, R
 
 
 def resolve_payload_artifacts(repo_root: Path, payload_family: str) -> dict[str, ResolvedArtifact]:
-    if payload_family == "netbsd4le_samba4":
+    if payload_family == PAYLOAD_FAMILY_NETBSD4LE:
         names = {
             "smbd": "smbd-netbsd4le",
             "mdns-advertiser": "mdns-advertiser-netbsd4le",
             "nbns-advertiser": "nbns-advertiser-netbsd4le",
         }
-    elif payload_family == "netbsd4be_samba4":
+    elif payload_family == PAYLOAD_FAMILY_NETBSD4BE:
         names = {
             "smbd": "smbd-netbsd4be",
             "mdns-advertiser": "mdns-advertiser-netbsd4be",
             "nbns-advertiser": "nbns-advertiser-netbsd4be",
         }
-    elif payload_family == "netbsd6_samba4":
+    elif payload_family == PAYLOAD_FAMILY_NETBSD6:
         names = {
             "smbd": "smbd",
             "mdns-advertiser": "mdns-advertiser",

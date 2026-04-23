@@ -5,6 +5,7 @@ from importlib import resources
 from pathlib import Path
 
 from timecapsulesmb.core.config import DEFAULTS, shell_quote
+from timecapsulesmb.device.compat import PAYLOAD_FAMILY_NETBSD6, is_netbsd4_payload_family
 
 
 @dataclass(frozen=True)
@@ -15,7 +16,7 @@ class TemplateBundle:
 
 
 def cache_directory_replacements(payload_family: str, payload_dir_name: str) -> tuple[str, str]:
-    if payload_family in {"netbsd4le_samba4", "netbsd4be_samba4"}:
+    if is_netbsd4_payload_family(payload_family):
         return (
             "$PAYLOAD_DIR/cache",
             "__PAYLOAD_DIR__/cache",
@@ -46,7 +47,7 @@ def build_template_bundle(
     *,
     adisk_disk_key: str = "dk0",
     adisk_uuid: str = "",
-    payload_family: str = "netbsd6_samba4",
+    payload_family: str = PAYLOAD_FAMILY_NETBSD6,
     debug_logging: bool = False,
     data_root: str | None = None,
 ) -> TemplateBundle:

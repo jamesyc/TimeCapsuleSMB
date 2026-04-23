@@ -4,12 +4,13 @@ import argparse
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import load_env_values, probe_compatibility
+from timecapsulesmb.cli.runtime import load_env_values
 from timecapsulesmb.identity import ensure_install_id
-from timecapsulesmb.deploy.commands import render_remote_actions
+from timecapsulesmb.deploy.dry_run import format_activation_plan
 from timecapsulesmb.deploy.executor import run_remote_actions
-from timecapsulesmb.deploy.planner import build_netbsd4_activation_actions
+from timecapsulesmb.deploy.planner import build_netbsd4_activation_plan
 from timecapsulesmb.deploy.verify import netbsd4_activation_is_already_healthy, verify_netbsd4_activation
+from timecapsulesmb.device.compat import is_netbsd4_payload_family, render_compatibility_message
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_red
 
@@ -24,30 +25,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     values = load_env_values()
     telemetry = TelemetryClient.from_values(values)
     with CommandContext(telemetry, "activate", "activate_started", "activate_finished", values=values, args=args) as command_context:
-        connection = command_context.resolve_validated_managed_connection(profile="activate")
-        compatibility = command_context.probe_compatibility(probe_compatibility)
+        target = command_context.resolve_validated_managed_target(profile="activate", include_probe=True)
+        connection = target.connection
+        compatibility = command_context.require_compatibility()
         host, password, ssh_opts = connection.host, connection.password, connection.ssh_opts
+        compatibility_message = render_compatibility_message(compatibility)
         if not compatibility.supported:
-            raise SystemExit(compatibility.message)
-        print(compatibility.message)
-        if compatibility.payload_family not in {"netbsd4le_samba4", "netbsd4be_samba4"}:
+            raise SystemExit(compatibility_message)
+        print(compatibility_message)
+        if not is_netbsd4_payload_family(compatibility.payload_family):
             raise SystemExit("activate is only supported for NetBSD4 Time Capsules; use deploy for persistent NetBSD6 installs.")
 
-        actions = build_netbsd4_activation_actions()
+        plan = build_netbsd4_activation_plan()
 
         if args.dry_run:
-            print("Dry run: NetBSD4 activation plan")
-            print("")
-            print("Remote actions:")
-            for command in render_remote_actions(actions):
-                print(f"  {command}")
-            print("")
-            print("Post-activation checks:")
-            print("  fstat shows smbd bound to TCP 445")
-            print("  fstat shows mdns-advertiser bound to UDP 5353")
-            print("")
-            print("This will start the deployed Samba payload on the Time Capsule.")
-            print(color_red(NETBSD4_REBOOT_GUIDANCE))
+            print(format_activation_plan(plan))
             command_context.succeed()
             return 0
 
@@ -67,7 +59,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 0
 
         print("Activating NetBSD4 payload without file transfer.")
-        run_remote_actions(host, password, ssh_opts, actions)
+        run_remote_actions(host, password, ssh_opts, plan.actions)
         if not verify_netbsd4_activation(host, password, ssh_opts):
             print("NetBSD4 activation failed.")
             command_context.fail_with_error("NetBSD4 activation failed.")

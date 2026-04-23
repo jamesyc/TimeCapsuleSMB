@@ -25,6 +25,12 @@ class FileTransfer:
 
 
 @dataclass(frozen=True)
+class PlannedCheck:
+    id: str
+    description: str
+
+
+@dataclass(frozen=True)
 class DeploymentPlan:
     host: str
     volume_root: str
@@ -43,6 +49,13 @@ class DeploymentPlan:
     post_auth_actions: list[RemoteAction]
     activation_actions: list[RemoteAction]
     reboot_required: bool
+    post_deploy_checks: list[PlannedCheck]
+
+
+@dataclass(frozen=True)
+class ActivationPlan:
+    actions: list[RemoteAction]
+    post_activation_checks: list[PlannedCheck]
 
 
 @dataclass(frozen=True)
@@ -54,6 +67,30 @@ class UninstallPlan:
     verify_absent_targets: list[str]
     remote_actions: list[RemoteAction]
     reboot_required: bool
+    post_uninstall_checks: list[PlannedCheck]
+
+
+NETBSD4_ACTIVATION_CHECKS = [
+    PlannedCheck("netbsd4_runtime_smb_conf_present", "managed runtime smb.conf is present"),
+    PlannedCheck("netbsd4_smbd_ready_marker_present", "managed smbd ready marker is present"),
+    PlannedCheck("netbsd4_smbd_bound_445", "smbd is bound to TCP 445"),
+    PlannedCheck("netbsd4_mdns_bound_5353", "mdns-advertiser is bound to UDP 5353"),
+]
+
+NETBSD6_REBOOT_DEPLOY_CHECKS = [
+    PlannedCheck("ssh_goes_down_after_reboot", "SSH goes down after reboot request"),
+    PlannedCheck("ssh_returns_after_reboot", "SSH returns after reboot"),
+    PlannedCheck("managed_smbd_ready", "managed smbd becomes ready"),
+    PlannedCheck("managed_mdns_takeover_ready", "managed mDNS takeover becomes ready"),
+    PlannedCheck("bonjour_browse_resolve", "Bonjour _smb._tcp browse/resolve"),
+    PlannedCheck("authenticated_smb_listing", "authenticated SMB listing"),
+]
+
+UNINSTALL_REBOOT_CHECKS = [
+    PlannedCheck("ssh_goes_down_after_reboot", "SSH goes down after reboot request"),
+    PlannedCheck("ssh_returns_after_reboot", "SSH returns after reboot"),
+    PlannedCheck("managed_files_absent", "managed payload and flash hooks are absent"),
+]
 
 
 def build_netbsd4_activation_actions() -> list[RemoteAction]:
@@ -69,6 +106,13 @@ def build_netbsd4_activation_actions() -> list[RemoteAction]:
     ]
 
 
+def build_netbsd4_activation_plan() -> ActivationPlan:
+    return ActivationPlan(
+        actions=build_netbsd4_activation_actions(),
+        post_activation_checks=NETBSD4_ACTIVATION_CHECKS,
+    )
+
+
 def build_deployment_plan(
     host: str,
     device_paths: DevicePaths,
@@ -78,6 +122,7 @@ def build_deployment_plan(
     *,
     install_nbns: bool = False,
     activate_netbsd4: bool = False,
+    reboot_after_deploy: bool = True,
 ) -> DeploymentPlan:
     payload_dir = device_paths.payload_dir
     flash_targets = {
@@ -96,6 +141,7 @@ def build_deployment_plan(
     }
     private_dir = f"{payload_dir}/private"
     cache_dir = f"{payload_dir}/cache"
+    reboot_required = (not activate_netbsd4) and reboot_after_deploy
     return DeploymentPlan(
         host=host,
         volume_root=device_paths.volume_root,
@@ -147,11 +193,12 @@ def build_deployment_plan(
         + ([enable_nbns_action(private_dir)] if install_nbns else []),
         post_auth_actions=[install_permissions_action(payload_dir)],
         activation_actions=build_netbsd4_activation_actions() if activate_netbsd4 else [],
-        reboot_required=not activate_netbsd4,
+        reboot_required=reboot_required,
+        post_deploy_checks=NETBSD4_ACTIVATION_CHECKS if activate_netbsd4 else (NETBSD6_REBOOT_DEPLOY_CHECKS if reboot_required else []),
     )
 
 
-def build_uninstall_plan(host: str, device_paths: DevicePaths) -> UninstallPlan:
+def build_uninstall_plan(host: str, device_paths: DevicePaths, *, reboot_after_uninstall: bool = True) -> UninstallPlan:
     payload_dir = device_paths.payload_dir
     flash_targets = {
         "rc.local": "/mnt/Flash/rc.local",
@@ -194,5 +241,6 @@ def build_uninstall_plan(host: str, device_paths: DevicePaths) -> UninstallPlan:
             remove_path_action("/root/tc-netbsd4le"),
             remove_path_action("/root/tc-netbsd4be"),
         ],
-        reboot_required=True,
+        reboot_required=reboot_after_uninstall,
+        post_uninstall_checks=UNINSTALL_REBOOT_CHECKS if reboot_after_uninstall else [],
     )

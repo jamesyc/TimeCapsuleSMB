@@ -3,8 +3,8 @@ from __future__ import annotations
 import shlex
 
 from timecapsulesmb.checks.models import CheckResult
+from timecapsulesmb.device.probe import probe_ssh_command
 from timecapsulesmb.transport.local import tcp_open
-from timecapsulesmb.transport.ssh import run_ssh
 
 
 def ssh_opts_use_proxy(ssh_opts: str) -> bool:
@@ -35,14 +35,19 @@ def check_ssh_reachability(host: str) -> CheckResult:
 
 
 def check_ssh_login(target: str, password: str, ssh_opts: str) -> CheckResult:
-    try:
-        proc = run_ssh(target, password, ssh_opts, "/bin/echo ok", check=False, timeout=30)
-    except SystemExit as e:
-        return CheckResult("FAIL", str(e))
-    if proc.returncode == 0 and proc.stdout.strip().endswith("ok"):
+    result = probe_ssh_command(
+        target,
+        password,
+        ssh_opts,
+        "/bin/echo ok",
+        timeout=30,
+        expected_stdout_suffix="ok",
+    )
+    if result.ok:
         return CheckResult("PASS", f"SSH command works for {target}")
-    detail = proc.stdout.strip() or f"rc={proc.returncode}"
-    return CheckResult("FAIL", f"SSH command failed for {target}: {detail}")
+    if result.detail.startswith("Connecting to the device failed, SSH error:"):
+        return CheckResult("FAIL", result.detail)
+    return CheckResult("FAIL", f"SSH command failed for {target}: {result.detail}")
 
 
 def check_smb_port(host: str) -> CheckResult:

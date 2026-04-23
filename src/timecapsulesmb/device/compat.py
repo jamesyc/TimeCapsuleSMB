@@ -9,6 +9,11 @@ from timecapsulesmb.core.config import AIRPORT_SYAP_TO_MODEL
 NETBSD4LE_SYAP_CANDIDATES = ("113", "116")
 NETBSD4BE_SYAP_CANDIDATES = ("106", "109")
 NETBSD6_SYAP_CANDIDATES = ("119",)
+PAYLOAD_FAMILY_NETBSD6 = "netbsd6_samba4"
+PAYLOAD_FAMILY_NETBSD4LE = "netbsd4le_samba4"
+PAYLOAD_FAMILY_NETBSD4BE = "netbsd4be_samba4"
+NETBSD4_PAYLOAD_FAMILIES = frozenset((PAYLOAD_FAMILY_NETBSD4LE, PAYLOAD_FAMILY_NETBSD4BE))
+SUPPORTED_PAYLOAD_FAMILIES = frozenset((PAYLOAD_FAMILY_NETBSD6, PAYLOAD_FAMILY_NETBSD4LE, PAYLOAD_FAMILY_NETBSD4BE))
 
 
 class ProbeFacts(Protocol):
@@ -24,6 +29,22 @@ def _models_for_syaps(values: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(AIRPORT_SYAP_TO_MODEL[value] for value in values if value in AIRPORT_SYAP_TO_MODEL)
 
 
+def is_netbsd4_payload_family(payload_family: str | None) -> bool:
+    return payload_family in NETBSD4_PAYLOAD_FAMILIES
+
+
+def is_netbsd6_payload_family(payload_family: str | None) -> bool:
+    return payload_family == PAYLOAD_FAMILY_NETBSD6
+
+
+def device_family_from_payload_family(payload_family: str | None) -> str | None:
+    if is_netbsd4_payload_family(payload_family):
+        return "netbsd4"
+    if is_netbsd6_payload_family(payload_family):
+        return "netbsd6"
+    return None
+
+
 @dataclass(frozen=True)
 class DeviceCompatibility:
     os_name: str
@@ -33,7 +54,8 @@ class DeviceCompatibility:
     payload_family: Optional[str]
     device_generation: str
     supported: bool
-    message: str
+    reason_code: str
+    reason_detail: str = ""
     syap_candidates: tuple[str, ...] = ()
     model_candidates: tuple[str, ...] = ()
 
@@ -44,6 +66,40 @@ class DeviceCompatibility:
     @property
     def exact_model(self) -> str | None:
         return self.model_candidates[0] if len(self.model_candidates) == 1 else None
+
+
+def require_compatibility(compat: DeviceCompatibility | None, *, fallback_error: str | None = None) -> DeviceCompatibility:
+    if compat is None:
+        raise SystemExit(fallback_error or "Failed to determine remote device OS compatibility.")
+    return compat
+
+
+def render_compatibility_message(compat: DeviceCompatibility) -> str:
+    if compat.reason_code == "unsupported_os":
+        return (
+            f"Unsupported device OS: {compat.os_name or 'unknown'} {compat.os_release or 'unknown'}. "
+            "This repo currently supports NetBSD 4 and NetBSD 6 Time Capsules."
+        )
+    if compat.reason_code == "unsupported_netbsd6_endianness":
+        return (
+            f"Detected NetBSD {compat.os_release} ({compat.arch}) with {compat.elf_endianness}-endian binaries, "
+            "which is not supported by the current Samba payload."
+        )
+    if compat.reason_code == "supported_netbsd6":
+        return f"Detected supported device: NetBSD {compat.os_release} ({compat.arch})..."
+    if compat.reason_code == "unsupported_netbsd4_endianness":
+        return (
+            f"Detected NetBSD {compat.os_release} ({compat.arch}) with {compat.elf_endianness}-endian binaries, "
+            "which is not supported by the current checked-in Samba payload."
+        )
+    if compat.reason_code == "supported_netbsd4":
+        return f"Detected supported older device: NetBSD {compat.os_release} ({compat.arch})."
+    if compat.reason_code == "unsupported_netbsd_release":
+        return (
+            f"This Time Capsule is running NetBSD {compat.os_release}, which is not supported by the current Samba payload. "
+            "Only NetBSD 4 and NetBSD 6 devices are supported right now."
+        )
+    return compat.reason_detail or "Failed to classify remote device compatibility."
 
 
 def classify_device_compatibility(os_name: str, os_release: str, arch: str, elf_endianness: str = "unknown") -> DeviceCompatibility:
@@ -61,7 +117,7 @@ def classify_device_compatibility(os_name: str, os_release: str, arch: str, elf_
             payload_family=None,
             device_generation="unknown",
             supported=False,
-            message=f"Unsupported device OS: {normalized_name or 'unknown'} {normalized_release or 'unknown'}. This repo currently supports NetBSD 4 and NetBSD 6 Time Capsules.",
+            reason_code="unsupported_os",
         )
 
     major = normalized_release.split(".", 1)[0]
@@ -75,19 +131,19 @@ def classify_device_compatibility(os_name: str, os_release: str, arch: str, elf_
                 payload_family=None,
                 device_generation="unknown",
                 supported=False,
-                message=f"Detected NetBSD {normalized_release} ({normalized_arch}) with {normalized_endianness}-endian binaries, which is not supported by the current Samba payload.",
+                reason_code="unsupported_netbsd6_endianness",
             )
         return DeviceCompatibility(
             os_name=normalized_name,
             os_release=normalized_release,
             arch=normalized_arch,
             elf_endianness=normalized_endianness,
-            payload_family="netbsd6_samba4",
+            payload_family=PAYLOAD_FAMILY_NETBSD6,
             device_generation="gen5",
             syap_candidates=NETBSD6_SYAP_CANDIDATES,
             model_candidates=_models_for_syaps(NETBSD6_SYAP_CANDIDATES),
             supported=True,
-            message=f"Detected supported device: NetBSD {normalized_release} ({normalized_arch})...",
+            reason_code="supported_netbsd6",
         )
     if major == "4":
         if normalized_endianness not in {"big", "little"}:
@@ -99,9 +155,9 @@ def classify_device_compatibility(os_name: str, os_release: str, arch: str, elf_
                 payload_family=None,
                 device_generation="unknown",
                 supported=False,
-                message=f"Detected NetBSD {normalized_release} ({normalized_arch}) with {normalized_endianness}-endian binaries, which is not supported by the current checked-in Samba payload.",
+                reason_code="unsupported_netbsd4_endianness",
             )
-        payload_family = "netbsd4be_samba4" if normalized_endianness == "big" else "netbsd4le_samba4"
+        payload_family = PAYLOAD_FAMILY_NETBSD4BE if normalized_endianness == "big" else PAYLOAD_FAMILY_NETBSD4LE
         syap_candidates = NETBSD4BE_SYAP_CANDIDATES if normalized_endianness == "big" else NETBSD4LE_SYAP_CANDIDATES
         return DeviceCompatibility(
             os_name=normalized_name,
@@ -113,7 +169,7 @@ def classify_device_compatibility(os_name: str, os_release: str, arch: str, elf_
             syap_candidates=syap_candidates,
             model_candidates=_models_for_syaps(syap_candidates),
             supported=True,
-            message=f"Detected supported older device: NetBSD {normalized_release} ({normalized_arch}).",
+            reason_code="supported_netbsd4",
         )
 
     return DeviceCompatibility(
@@ -124,7 +180,7 @@ def classify_device_compatibility(os_name: str, os_release: str, arch: str, elf_
         payload_family=None,
         device_generation="unknown",
         supported=False,
-        message=f"This Time Capsule is running NetBSD {normalized_release}, which is not supported by the current Samba payload. Only NetBSD 4 and NetBSD 6 devices are supported right now.",
+        reason_code="unsupported_netbsd_release",
     )
 
 

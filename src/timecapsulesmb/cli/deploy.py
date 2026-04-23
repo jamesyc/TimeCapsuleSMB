@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import load_env_values, probe_compatibility
+from timecapsulesmb.cli.runtime import load_env_values
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
@@ -26,6 +26,7 @@ from timecapsulesmb.deploy.verify import (
     wait_for_post_reboot_mdns_takeover,
     wait_for_post_reboot_smbd,
 )
+from timecapsulesmb.device.compat import is_netbsd4_payload_family, render_compatibility_message
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root, wait_for_ssh_state
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import run_ssh
@@ -61,27 +62,29 @@ def main(argv: Optional[list[str]] = None) -> int:
             reboot_was_attempted=False,
             device_came_back_after_reboot=False,
         )
-        connection = command_context.resolve_validated_managed_connection(profile="deploy")
+        target = command_context.resolve_validated_managed_target(profile="deploy", include_probe=True)
+        connection = target.connection
         host, password, ssh_opts = connection.host, connection.password, connection.ssh_opts
 
         artifact_results = validate_artifacts(REPO_ROOT)
         failures = [message for _, ok, message in artifact_results if not ok]
         if failures:
             raise SystemExit("; ".join(failures))
-        volume_root = discover_volume_root(host, password, ssh_opts)
-        compatibility = command_context.probe_compatibility(probe_compatibility)
+        compatibility = command_context.require_compatibility()
+        compatibility_message = render_compatibility_message(compatibility)
         if not compatibility.supported:
             if not args.allow_unsupported:
-                raise SystemExit(compatibility.message)
+                raise SystemExit(compatibility_message)
             if not args.json:
-                print(f"Warning: {compatibility.message}")
+                print(f"Warning: {compatibility_message}")
                 print("Continuing because --allow-unsupported was provided.")
         elif not args.json:
-            print(compatibility.message)
+            print(compatibility_message)
         if not compatibility.payload_family:
-            raise SystemExit(f"{compatibility.message}\nNo deployable payload is available for this detected device.")
+            raise SystemExit(f"{compatibility_message}\nNo deployable payload is available for this detected device.")
         payload_family = compatibility.payload_family
-        is_netbsd4 = payload_family in {"netbsd4le_samba4", "netbsd4be_samba4"}
+        is_netbsd4 = is_netbsd4_payload_family(payload_family)
+        volume_root = discover_volume_root(host, password, ssh_opts)
         resolved_artifacts = resolve_payload_artifacts(REPO_ROOT, payload_family)
         smbd_path = resolved_artifacts["smbd"].absolute_path
         mdns_path = resolved_artifacts["mdns-advertiser"].absolute_path
@@ -95,6 +98,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             nbns_path,
             install_nbns=args.install_nbns,
             activate_netbsd4=is_netbsd4,
+            reboot_after_deploy=not args.no_reboot,
         )
 
         if args.dry_run:

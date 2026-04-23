@@ -16,9 +16,9 @@ from timecapsulesmb.core.config import (
     write_env_file,
 )
 from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.cli.runtime import probe_device_state
 from timecapsulesmb.identity import ensure_install_id
-from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
-from timecapsulesmb.device.probe import ProbeResult, probe_device
+from timecapsulesmb.device.compat import DeviceCompatibility, render_compatibility_message
 from timecapsulesmb.discovery.bonjour import (
     Discovered,
     discover_time_capsule_candidates,
@@ -27,7 +27,6 @@ from timecapsulesmb.discovery.bonjour import (
     preferred_host,
 )
 from timecapsulesmb.telemetry import TelemetryClient
-from timecapsulesmb.transport.local import tcp_open
 
 HIDDEN_CONFIG_KEYS = {"TC_SSH_OPTS", "TC_CONFIGURE_ID"}
 NO_SAVED_VALUE_HINT_KEYS = {"TC_PASSWORD", *HIDDEN_CONFIG_KEYS}
@@ -117,21 +116,6 @@ def prompt_host_and_password(existing: dict[str, str], values: dict[str, str], d
     password_default = values.get("TC_PASSWORD", existing.get("TC_PASSWORD", ""))
     values["TC_HOST"] = prompt_valid_config_value("TC_HOST", "Time Capsule SSH target", host_default)
     values["TC_PASSWORD"] = prompt("Time Capsule root password", password_default, True)
-
-
-def probe_device_if_reachable(host: str, password: str, ssh_opts: str):
-    probe_host = host.split("@", 1)[1] if "@" in host else host
-    if not tcp_open(probe_host, 22):
-        return ProbeResult(
-            ssh_port_reachable=False,
-            ssh_authenticated=False,
-            error="SSH is not reachable yet.",
-            os_name="",
-            os_release="",
-            arch="",
-            elf_endianness="unknown",
-        )
-    return probe_device(host, password, ssh_opts)
 
 
 def validated_value_or_empty(key: str, value: str, label: str) -> str:
@@ -263,7 +247,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             discovered_airport_syap = discovered_record_airport_syap(discovered_record)
         prompt_host_and_password(existing, values, discovered_host)
         while True:
-            probe_result = probe_device_if_reachable(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
+            probed_state = probe_device_state(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
+            probe_result = probed_state.probe_result
             if not probe_result.ssh_port_reachable:
                 print("\nSSH is not reachable yet, so configure cannot validate this password.")
                 print("That is okay if you have not run 'tcapsule prep-device' yet.")
@@ -273,9 +258,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 prompt_host_and_password(existing, values, discovered_host)
                 continue
             if probe_result.ssh_authenticated:
-                probed_device = compatibility_from_probe_result(probe_result)
+                probed_device = probed_state.compatibility
                 if probed_device is not None and not probed_device.supported:
-                    raise SystemExit(probed_device.message)
+                    raise SystemExit(render_compatibility_message(probed_device))
                 break
             print("\nThe provided Time Capsule SSH target and password did not work.")
             if confirm("Save this information still?", True):

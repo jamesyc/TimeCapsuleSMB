@@ -1,12 +1,27 @@
 from __future__ import annotations
 
 import shlex
+import subprocess
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from typing import TYPE_CHECKING
 
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import run_ssh
+
+if TYPE_CHECKING:
+    from timecapsulesmb.device.compat import DeviceCompatibility
+
+
+RUNTIME_SMB_CONF = "/mnt/Memory/samba4/etc/smb.conf"
+SMBD_READY_MARKER = "/mnt/Memory/samba4/var/smbd.ready"
+SMBD_READY_HELPERS = rf'''
+smbd_ready_marker_present() {{
+    [ -f {SMBD_READY_MARKER} ]
+}}
+'''
 
 
 @dataclass(frozen=True)
@@ -33,6 +48,37 @@ class ProbeResult:
     os_release: str
     arch: str
     elf_endianness: str
+
+
+@dataclass(frozen=True)
+class ProbedDeviceState:
+    probe_result: ProbeResult
+    compatibility: DeviceCompatibility | None
+
+
+@dataclass(frozen=True)
+class SshCommandProbeResult:
+    ok: bool
+    detail: str
+
+
+@dataclass(frozen=True)
+class RemoteInterfaceProbeResult:
+    iface: str
+    exists: bool
+    detail: str
+
+
+@dataclass(frozen=True)
+class ManagedSmbdProbeResult:
+    ready: bool
+    detail: str
+
+
+@dataclass(frozen=True)
+class ManagedMdnsTakeoverProbeResult:
+    ready: bool
+    detail: str
 
 
 def probe_device(host: str, password: str, ssh_opts: str) -> ProbeResult:
@@ -71,6 +117,27 @@ def probe_device(host: str, password: str, ssh_opts: str) -> ProbeResult:
         arch=arch,
         elf_endianness=elf_endianness,
     )
+
+
+def probe_ssh_command(
+    host: str,
+    password: str,
+    ssh_opts: str,
+    command: str,
+    *,
+    timeout: int = 30,
+    expected_stdout_suffix: str | None = None,
+) -> SshCommandProbeResult:
+    try:
+        proc = run_ssh(host, password, ssh_opts, command, check=False, timeout=timeout)
+    except SystemExit as exc:
+        return SshCommandProbeResult(ok=False, detail=str(exc))
+    if proc.returncode == 0:
+        stdout = proc.stdout.strip()
+        if expected_stdout_suffix is None or stdout.endswith(expected_stdout_suffix):
+            return SshCommandProbeResult(ok=True, detail=stdout)
+    detail = proc.stdout.strip() or f"rc={proc.returncode}"
+    return SshCommandProbeResult(ok=False, detail=detail)
 
 
 def _probe_remote_os_info(host: str, password: str, ssh_opts: str) -> tuple[str, str, str]:
@@ -137,13 +204,263 @@ exit 1
     return MountedVolume(device=device, mountpoint=mountpoint)
 
 
-def remote_interface_exists(host: str, password: str, ssh_opts: str, iface: str) -> bool:
+def probe_remote_interface(host: str, password: str, ssh_opts: str, iface: str) -> RemoteInterfaceProbeResult:
     script = f"/sbin/ifconfig {shlex.quote(iface)} >/dev/null 2>&1"
     proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}", check=False)
     return_code = getattr(proc, "returncode", 0)
     if not isinstance(return_code, int):
-        return True
-    return return_code == 0
+        return RemoteInterfaceProbeResult(iface=iface, exists=True, detail=f"ifconfig {iface} returned non-integer status")
+    if return_code == 0:
+        return RemoteInterfaceProbeResult(iface=iface, exists=True, detail=f"interface {iface} exists")
+    return RemoteInterfaceProbeResult(iface=iface, exists=False, detail=f"interface {iface} was not found on the device")
+
+
+def remote_interface_exists(host: str, password: str, ssh_opts: str, iface: str) -> bool:
+    return probe_remote_interface(host, password, ssh_opts, iface).exists
+
+
+def read_interface_ipv4(host: str, password: str, ssh_opts: str, iface: str) -> str:
+    probe_cmd = (
+        f"/sbin/ifconfig {shlex.quote(iface)} 2>/dev/null | "
+        "sed -n 's/^[[:space:]]*inet[[:space:]]\\([0-9.]*\\).*/\\1/p' | "
+        "sed -n '1p'"
+    )
+    proc = run_ssh(
+        host,
+        password,
+        ssh_opts,
+        f"/bin/sh -c {shlex.quote(probe_cmd)}",
+        check=False,
+    )
+    iface_ip = proc.stdout.strip()
+    if not iface_ip:
+        raise SystemExit(f"could not determine IPv4 for interface {iface}")
+    return iface_ip
+
+
+def read_active_smb_conf(host: str, password: str, ssh_opts: str) -> str:
+    quoted_conf = shlex.quote(RUNTIME_SMB_CONF)
+    script = f"if [ -f {quoted_conf} ]; then cat {quoted_conf}; fi"
+    proc = run_ssh(
+        host,
+        password,
+        ssh_opts,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+    )
+    return proc.stdout
+
+
+def probe_managed_smbd(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 120) -> ManagedSmbdProbeResult:
+    script = rf'''
+{SMBD_READY_HELPERS}
+attempt=0
+max_attempts=$((({timeout_seconds} + 4) / 5))
+while [ "$attempt" -lt "$max_attempts" ]; do
+    smbd_ready=0
+
+    if /usr/bin/pkill -0 smbd >/dev/null 2>&1; then
+        if [ -f {RUNTIME_SMB_CONF} ] && smbd_ready_marker_present; then
+            smbd_ready=1
+        fi
+    fi
+
+    if [ "$smbd_ready" -eq 1 ]; then
+        exit 0
+    fi
+
+    attempt=$((attempt + 1))
+    sleep 5
+done
+exit 1
+'''
+    proc = run_ssh(
+        host,
+        password,
+        ssh_opts,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=timeout_seconds + 30,
+    )
+    if proc.returncode == 0:
+        return ManagedSmbdProbeResult(ready=True, detail="managed smbd ready")
+    return ManagedSmbdProbeResult(ready=False, detail=proc.stdout.strip() or "managed smbd not ready")
+
+
+def managed_smbd_ready(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 120) -> bool:
+    return probe_managed_smbd(host, password, ssh_opts, timeout_seconds=timeout_seconds).ready
+
+
+def probe_managed_mdns_takeover(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 20) -> ManagedMdnsTakeoverProbeResult:
+    script = r'''
+mdns_ready=0
+apple_alive=0
+
+if /usr/bin/pkill -0 mdns-advertiser >/dev/null 2>&1; then
+    mdns_ready=1
+fi
+
+ps_out="$(/bin/ps ax -o stat= -o ucomm= 2>/dev/null || true)"
+while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    stat_field="${line%% *}"
+    ucomm_field="${line#* }"
+    if [ "$ucomm_field" = "mDNSResponder" ] && [ "${stat_field#Z}" = "$stat_field" ]; then
+        apple_alive=1
+        break
+    fi
+done <<EOF
+$ps_out
+EOF
+
+if [ "$mdns_ready" -eq 1 ] && [ "$apple_alive" -eq 0 ]; then
+    exit 0
+fi
+exit 1
+'''
+    proc = run_ssh(
+        host,
+        password,
+        ssh_opts,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=timeout_seconds,
+    )
+    return_code = getattr(proc, "returncode", 0)
+    if not isinstance(return_code, int):
+        return ManagedMdnsTakeoverProbeResult(ready=True, detail="managed mDNS takeover probe returned non-integer status")
+    if return_code == 0:
+        return ManagedMdnsTakeoverProbeResult(ready=True, detail="managed mDNS takeover active")
+    return ManagedMdnsTakeoverProbeResult(ready=False, detail=proc.stdout.strip() or "managed mDNS takeover not active")
+
+
+def managed_mdns_takeover_ready(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 20) -> bool:
+    return probe_managed_mdns_takeover(host, password, ssh_opts, timeout_seconds=timeout_seconds).ready
+
+
+def nbns_marker_enabled(host: str, password: str, ssh_opts: str, payload_dir: str) -> bool:
+    marker_path = f"{payload_dir}/private/nbns.enabled"
+    quoted_marker = shlex.quote(marker_path)
+    script = f"if [ -f {quoted_marker} ]; then echo enabled; fi"
+    proc = run_ssh(
+        host,
+        password,
+        ssh_opts,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+    )
+    return proc.stdout.strip() == "enabled"
+
+
+def netbsd4_runtime_services_healthy(host: str, password: str, ssh_opts: str) -> bool:
+    script = r'''
+''' + SMBD_READY_HELPERS + rf'''
+if ! command -v fstat >/dev/null 2>&1; then
+    exit 1
+fi
+out="$(fstat 2>&1)"
+if [ ! -f {RUNTIME_SMB_CONF} ]; then
+    exit 1
+fi
+if ! smbd_ready_marker_present; then
+    exit 1
+fi
+case "$out" in
+    *smbd*":445"*mdns-advertiser*":5353"*|*mdns-advertiser*":5353"*smbd*":445"*)
+        exit 0
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+'''
+    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote(script)}", check=False)
+    return proc.returncode == 0
+
+
+def probe_netbsd4_activation_status(
+    host: str,
+    password: str,
+    ssh_opts: str,
+    *,
+    timeout_seconds: int = 180,
+) -> subprocess.CompletedProcess[str]:
+    script = rf'''
+{SMBD_READY_HELPERS}
+if ! command -v fstat >/dev/null 2>&1; then
+    echo "FAIL:fstat missing"
+    exit 1
+fi
+attempt=0
+max_attempts=$((({timeout_seconds} + 4) / 5))
+while [ "$attempt" -lt "$max_attempts" ]; do
+    out="$(fstat 2>&1)"
+    runtime_conf=0
+    if [ -f {RUNTIME_SMB_CONF} ]; then
+        runtime_conf=1
+    fi
+    runtime_log=0
+    if smbd_ready_marker_present; then
+        runtime_log=1
+    fi
+    case "$out" in
+        *smbd*":445"*mdns-advertiser*":5353"*|*mdns-advertiser*":5353"*smbd*":445"*)
+            if [ "$runtime_conf" -eq 1 ] && [ "$runtime_log" -eq 1 ]; then
+                break
+            fi
+            ;;
+    esac
+    attempt=$((attempt + 1))
+    sleep 5
+done
+echo "$out" | sed -n '/\.445/p;/\.5353/p'
+status=0
+if [ -f {RUNTIME_SMB_CONF} ]; then
+    echo "PASS:managed runtime smb.conf present"
+else
+    echo "FAIL:managed runtime smb.conf missing"
+    status=1
+fi
+if smbd_ready_marker_present; then
+    echo "PASS:managed smbd ready marker present"
+else
+    echo "FAIL:managed smbd ready marker missing"
+    status=1
+fi
+case "$out" in
+    *smbd*":445"*) echo "PASS:smbd bound to TCP 445" ;;
+    *) echo "FAIL:smbd is not bound to TCP 445"; status=1 ;;
+esac
+case "$out" in
+    *mdns-advertiser*":5353"*) echo "PASS:mdns-advertiser bound to UDP 5353" ;;
+    *) echo "FAIL:mdns-advertiser is not bound to UDP 5353"; status=1 ;;
+esac
+exit "$status"
+'''
+    return run_ssh(
+        host,
+        password,
+        ssh_opts,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=timeout_seconds + 30,
+    )
+
+
+def probe_paths_absent(
+    host: str,
+    password: str,
+    ssh_opts: str,
+    paths: Iterable[str],
+) -> subprocess.CompletedProcess[str]:
+    script_lines = [
+        "missing=0",
+    ]
+    for target in paths:
+        quoted = shlex.quote(target)
+        script_lines.append(f"if [ -e {quoted} ]; then echo PRESENT:{target}; missing=1; else echo ABSENT:{target}; fi")
+    script_lines.append("exit \"$missing\"")
+    return run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote('; '.join(script_lines))}", check=False)
 
 
 def discover_volume_root(host: str, password: str, ssh_opts: str) -> str:
