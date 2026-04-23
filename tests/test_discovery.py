@@ -13,6 +13,8 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.discovery.bonjour import (
     Discovered,
+    ServiceObservation,
+    _merge_observations,
     discover,
     discover_time_capsule_candidates,
     discovered_record_airport_syap,
@@ -117,6 +119,73 @@ class DiscoveryTests(unittest.TestCase):
         )
         enrich_airport_properties_by_ipv4([airport, samba])
         self.assertNotIn("syAP", samba.properties)
+
+    def test_merge_observations_merges_same_hostname_with_overlapping_ip(self) -> None:
+        observations = [
+            ServiceObservation(
+                name="Home",
+                hostname="capsule.local",
+                service_type="_smb._tcp.local.",
+                ipv4=["10.0.1.1"],
+                properties={"model": "TimeCapsule8,119"},
+            ),
+            ServiceObservation(
+                name="Home",
+                hostname="capsule.local",
+                service_type="_airport._tcp.local.",
+                ipv4=["10.0.1.1"],
+                properties={"syAP": "119"},
+            ),
+        ]
+        records = _merge_observations(observations)
+        self.assertEqual(len(records), 2)
+        self.assertEqual({frozenset(record.services) for record in records}, {frozenset({"_smb._tcp.local."}), frozenset({"_airport._tcp.local."})})
+
+    def test_merge_observations_keeps_same_hostname_with_different_ips_separate(self) -> None:
+        observations = [
+            ServiceObservation(
+                name="Home",
+                hostname="capsule.local",
+                service_type="_smb._tcp.local.",
+                ipv4=["10.0.1.1"],
+            ),
+            ServiceObservation(
+                name="Kitchen",
+                hostname="capsule.local",
+                service_type="_smb._tcp.local.",
+                ipv4=["10.0.1.2"],
+            ),
+        ]
+        records = _merge_observations(observations)
+        self.assertEqual(len(records), 2)
+        self.assertEqual({tuple(record.ipv4) for record in records}, {("10.0.1.1",), ("10.0.1.2",)})
+
+    def test_merge_observations_keeps_different_hostnames_with_same_ipv4_separate(self) -> None:
+        observations = [
+            ServiceObservation(
+                name="AirPort Time Capsule",
+                hostname="airport.local",
+                service_type="_airport._tcp.local.",
+                ipv4=["192.168.1.217"],
+                properties={"syAP": "119"},
+            ),
+            ServiceObservation(
+                name="Time Capsule Samba 4",
+                hostname="timecapsulesamba4.local",
+                service_type="_smb._tcp.local.",
+                ipv4=["192.168.1.217"],
+                properties={"model": "TimeCapsule8,119"},
+            ),
+        ]
+        records = _merge_observations(observations)
+        self.assertEqual(len(records), 2)
+        self.assertEqual(
+            {(record.name, record.hostname, frozenset(record.services)) for record in records},
+            {
+                ("AirPort Time Capsule", "airport.local", frozenset({"_airport._tcp.local."})),
+                ("Time Capsule Samba 4", "timecapsulesamba4.local", frozenset({"_smb._tcp.local."})),
+            },
+        )
 
 
 if __name__ == "__main__":

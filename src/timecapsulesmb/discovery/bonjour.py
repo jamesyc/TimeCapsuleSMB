@@ -40,6 +40,16 @@ class Discovered:
         return self.hostname or (self.ipv4[0] if self.ipv4 else (self.ipv6[0] if self.ipv6 else ""))
 
 
+@dataclass
+class ServiceObservation:
+    name: str
+    hostname: str
+    service_type: str
+    ipv4: list[str] = field(default_factory=list)
+    ipv6: list[str] = field(default_factory=list)
+    properties: dict[str, str] = field(default_factory=dict)
+
+
 def preferred_host(rec: Discovered) -> str:
     return rec.prefer_host()
 
@@ -117,12 +127,70 @@ def looks_like_time_capsule(name: str, hostname: str, props: dict[str, str]) -> 
     return "timecapsule" in model.replace(" ", "")
 
 
+def _normalize_hostname(value: str) -> str:
+    return value.strip().rstrip(".").lower()
+
+
+def _observation_merge_key(observation: ServiceObservation) -> tuple[str, str, str]:
+    return (
+        observation.service_type,
+        observation.name.strip(),
+        _normalize_hostname(observation.hostname),
+    )
+
+
+def _observation_matches_record(record: Discovered, observation: ServiceObservation) -> bool:
+    if record.services and observation.service_type not in record.services:
+        return False
+    observation_host = _normalize_hostname(observation.hostname)
+    record_host = _normalize_hostname(record.hostname)
+    observation_ipv4 = set(observation.ipv4)
+    record_ipv4 = set(record.ipv4)
+    observation_ipv6 = set(observation.ipv6)
+    record_ipv6 = set(record.ipv6)
+
+    if observation_host and record_host and observation_host == record_host:
+        if observation_ipv4 and record_ipv4 and observation_ipv4.isdisjoint(record_ipv4):
+            return False
+        if observation_ipv6 and record_ipv6 and observation_ipv6.isdisjoint(record_ipv6):
+            return False
+        return True
+
+    if observation_ipv4 and record_ipv4 and not observation_ipv4.isdisjoint(record_ipv4):
+        return True
+    if observation_ipv6 and record_ipv6 and not observation_ipv6.isdisjoint(record_ipv6):
+        return True
+    return False
+
+
+def _merge_observations(observations: list[ServiceObservation]) -> list[Discovered]:
+    records: list[Discovered] = []
+    for observation in observations:
+        match = next((record for record in records if _observation_matches_record(record, observation)), None)
+        if match is None:
+            match = Discovered(name=observation.name, hostname=observation.hostname.rstrip("."))
+            records.append(match)
+        match.services.add(observation.service_type)
+        if not match.name and observation.name:
+            match.name = observation.name
+        if not match.hostname and observation.hostname:
+            match.hostname = observation.hostname.rstrip(".")
+        for ip in observation.ipv4:
+            if ip not in match.ipv4:
+                match.ipv4.append(ip)
+        for ip in observation.ipv6:
+            if ip not in match.ipv6:
+                match.ipv6.append(ip)
+        match.properties.update({k: v for k, v in observation.properties.items() if v})
+    return records
+
+
 class Collector:
     def __init__(self, zc: Any, services: list[str]):
         self.zc = zc
         self.services = services
         self.lock = threading.Lock()
-        self.records: dict[str, Discovered] = {}
+        self.observations: dict[tuple[str, str, str], ServiceObservation] = {}
         self._browsers: list[Any] = []
 
     def start(self) -> None:
@@ -165,20 +233,21 @@ class Collector:
             except Exception:
                 continue
 
-        key = hostname or name
+        key = _observation_merge_key(
+            ServiceObservation(
+                name=name,
+                hostname=hostname,
+                service_type=stype,
+            )
+        )
         if not key:
             return
 
         with self.lock:
-            rec = self.records.get(key)
+            rec = self.observations.get(key)
             if not rec:
-                rec = Discovered(name=name, hostname=hostname.rstrip("."))
-                self.records[key] = rec
-            rec.services.add(stype)
-            if not rec.name and name:
-                rec.name = name
-            if not rec.hostname and hostname:
-                rec.hostname = hostname.rstrip(".")
+                rec = ServiceObservation(name=name, hostname=hostname.rstrip("."), service_type=stype)
+                self.observations[key] = rec
             for ip in ipv4:
                 if ip not in rec.ipv4:
                     rec.ipv4.append(ip)
@@ -189,7 +258,7 @@ class Collector:
 
     def results(self) -> list[Discovered]:
         with self.lock:
-            return list(self.records.values())
+            return _merge_observations(list(self.observations.values()))
 
 
 def discover(timeout: float = 5.0) -> list[Discovered]:
