@@ -111,11 +111,13 @@ class ConfigTests(unittest.TestCase):
         self.assertIsNone(validate_mdns_device_model_matches_syap("119", "TimeCapsule8,119"))
         self.assertEqual(
             validate_mdns_device_model_matches_syap("119", "TimeCapsule"),
-            "TC_MDNS_DEVICE_MODEL must match the configured syAP.",
+            'TC_MDNS_DEVICE_MODEL "TimeCapsule" must match the configured '
+            'syAP expected value "TimeCapsule8,119".'
         )
         self.assertEqual(
             validate_mdns_device_model_matches_syap("119", "TimeCapsule6,113"),
-            "TC_MDNS_DEVICE_MODEL must match the configured syAP.",
+            'TC_MDNS_DEVICE_MODEL "TimeCapsule6,113" must match the configured '
+            'syAP expected value "TimeCapsule8,119".'
         )
         self.assertIsNone(validate_mdns_device_model_matches_syap("", "TimeCapsule"))
 
@@ -377,7 +379,9 @@ class ConfigTests(unittest.TestCase):
         values["TC_MDNS_DEVICE_MODEL"] = "TimeCapsule"
         errors = validate_config_values(values, profile="deploy")
         self.assertEqual(errors[0].key, "TC_MDNS_DEVICE_MODEL")
-        self.assertEqual(errors[0].message, "TC_MDNS_DEVICE_MODEL must match the configured syAP.")
+        self.assertEqual(errors[0].message,
+                         'TC_MDNS_DEVICE_MODEL "TimeCapsule" must match the '
+                         'configured syAP expected value "TimeCapsule8,119".')
 
     def test_app_config_require_raises_for_missing_value(self) -> None:
         config = AppConfig({"TC_HOST": ""})

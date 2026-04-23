@@ -377,7 +377,8 @@ def validate_mdns_device_model_matches_syap(syap: str, device_model: str) -> Opt
     if expected_model is None:
         return None
     if device_model != expected_model:
-        return "TC_MDNS_DEVICE_MODEL must match the configured syAP."
+        return ('TC_MDNS_DEVICE_MODEL "%s" must match the configured '
+                'syAP expected value "%s".' % (device_model, expected_model))
     return None
 
 
