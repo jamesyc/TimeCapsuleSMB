@@ -85,6 +85,13 @@ def mounted_smb_shares() -> list[MountedSmbShare]:
     return parse_mounted_smb_shares(proc.stdout)
 
 
+def path_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
 def default_share_path() -> Optional[Path]:
     values = load_env_values()
     require_valid_config(values, profile="repair_xattrs")
@@ -93,7 +100,7 @@ def default_share_path() -> Optional[Path]:
     if not share_name or not target_host:
         return None
 
-    candidates = [share for share in mounted_smb_shares() if share.share == share_name and share.mountpoint.exists()]
+    candidates = [share for share in mounted_smb_shares() if share.share == share_name and path_exists(share.mountpoint)]
     for share in candidates:
         if share.server.lower() == target_host.lower():
             return share.mountpoint

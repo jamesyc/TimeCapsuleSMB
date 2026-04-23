@@ -612,6 +612,23 @@ class RepairXattrsTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", return_value=mock.Mock(returncode=0, stdout=mount_output)):
                 self.assertIsNone(repair_xattrs.default_share_path())
 
+    def test_default_share_path_ignores_inaccessible_smb_mountpoints(self) -> None:
+        env = {"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}
+        shares = [
+            repair_xattrs.MountedSmbShare("Time Capsule Samba 4._smb._tcp.local", "Data", Path("/Volumes/.timemachine/Data")),
+            repair_xattrs.MountedSmbShare("192.168.1.217", "Data", Path("/Volumes/Data")),
+        ]
+
+        def fake_path_exists(path: Path) -> bool:
+            if str(path).startswith("/Volumes/.timemachine"):
+                return False
+            return True
+
+        with mock.patch("timecapsulesmb.cli.repair_xattrs.load_env_values", return_value=env):
+            with mock.patch("timecapsulesmb.cli.repair_xattrs.mounted_smb_shares", return_value=shares):
+                with mock.patch("timecapsulesmb.cli.repair_xattrs.path_exists", side_effect=fake_path_exists):
+                    self.assertEqual(repair_xattrs.default_share_path(), Path("/Volumes/Data"))
+
     def test_default_share_path_rejects_ambiguous_matching_smb_shares(self) -> None:
         env = {"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}
         shares = [
