@@ -2646,7 +2646,7 @@ class CliTests(unittest.TestCase):
                                 with redirect_stdout(output):
                                     rc = configure.main([])
         self.assertEqual(rc, 0)
-        self.assertEqual(host_label_defaults, ["timecapsulesamba4"])
+        self.assertEqual(host_label_defaults, ["timecapsulesamba002"])
         self.assertEqual(fake_values["TC_MDNS_HOST_LABEL"], "timecapsulesamba4")
 
     def test_configure_invalid_hidden_mdns_device_model_falls_back_to_inferred_value(self) -> None:
@@ -2925,9 +2925,668 @@ class CliTests(unittest.TestCase):
                                 with redirect_stdout(output):
                                     rc = configure.main([])
         self.assertEqual(rc, 0)
-        self.assertEqual(netbios_defaults, ["TimeCapsule"])
+        self.assertEqual(netbios_defaults, ["TimeCapsule002"])
         self.assertEqual(fake_values["TC_NETBIOS_NAME"], "TimeCapsule")
         self.assertNotIn("Found saved value: ABCDEFGHIJKLMNOP", output.getvalue())
+
+    def test_configure_derives_name_defaults_from_host_ipv4(self) -> None:
+        output = io.StringIO()
+        defaults: dict[str, str] = {}
+        prompt_values = iter([
+            "root@10.0.1.7",
+            "goodpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule007",
+            ".samba4",
+            "Time Capsule Samba 007",
+            "timecapsulesamba007",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            if label in {"Samba NetBIOS name", "mDNS SMB instance name", "mDNS host label"}:
+                defaults[label] = default
+            return next(prompt_values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_time_capsule_candidates", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
+                        with mock.patch(
+                            "timecapsulesmb.cli.configure.probe_remote_interface_candidates",
+                            return_value=RemoteInterfaceCandidatesProbeResult(
+                                candidates=(
+                                    RemoteInterfaceCandidate(
+                                        name="bridge0",
+                                        ipv4_addrs=("10.0.1.7",),
+                                        up=True,
+                                        active=True,
+                                        loopback=False,
+                                    ),
+                                ),
+                                preferred_iface="bridge0",
+                                detail="ok",
+                            ),
+                        ):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file"):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(defaults["Samba NetBIOS name"], "TimeCapsule007")
+        self.assertEqual(defaults["mDNS SMB instance name"], "Time Capsule Samba 007")
+        self.assertEqual(defaults["mDNS host label"], "timecapsulesamba007")
+
+    def test_configure_derives_name_defaults_from_zero_padded_host_ipv4(self) -> None:
+        output = io.StringIO()
+        defaults: dict[str, str] = {}
+        prompt_values = iter([
+            "root@010.000.001.007",
+            "goodpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule007",
+            ".samba4",
+            "Time Capsule Samba 007",
+            "timecapsulesamba007",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            if label in {"Samba NetBIOS name", "mDNS SMB instance name", "mDNS host label"}:
+                defaults[label] = default
+            return next(prompt_values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_time_capsule_candidates", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
+                        with mock.patch(
+                            "timecapsulesmb.cli.configure.probe_remote_interface_candidates",
+                            return_value=RemoteInterfaceCandidatesProbeResult(
+                                candidates=(
+                                    RemoteInterfaceCandidate(
+                                        name="bridge0",
+                                        ipv4_addrs=("10.0.1.7",),
+                                        up=True,
+                                        active=True,
+                                        loopback=False,
+                                    ),
+                                ),
+                                preferred_iface="bridge0",
+                                detail="ok",
+                            ),
+                        ):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file"):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(defaults["Samba NetBIOS name"], "TimeCapsule007")
+        self.assertEqual(defaults["mDNS SMB instance name"], "Time Capsule Samba 007")
+        self.assertEqual(defaults["mDNS host label"], "timecapsulesamba007")
+
+    def test_configure_derives_name_defaults_from_discovered_ipv4_when_host_is_hostname(self) -> None:
+        output = io.StringIO()
+        defaults: dict[str, str] = {}
+        prompt_values = iter([
+            "root@capsule.local",
+            "goodpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule072",
+            ".samba4",
+            "Time Capsule Samba 072",
+            "timecapsulesamba072",
+            "119",
+        ])
+        discovered = Discovered(
+            name="AirPort Time Capsule",
+            hostname="capsule.local",
+            ipv4=("192.168.1.72",),
+            services={"_airport._tcp.local."},
+            properties={},
+        )
+
+        def fake_prompt(label, default, _secret):
+            if label in {"Samba NetBIOS name", "mDNS SMB instance name", "mDNS host label"}:
+                defaults[label] = default
+            return next(prompt_values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_default_record", return_value=discovered):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
+                        with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file"):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(defaults["Samba NetBIOS name"], "TimeCapsule072")
+        self.assertEqual(defaults["mDNS SMB instance name"], "Time Capsule Samba 072")
+        self.assertEqual(defaults["mDNS host label"], "timecapsulesamba072")
+
+    def test_configure_derives_name_defaults_from_probed_interface_when_host_and_discovery_lack_usable_ipv4(self) -> None:
+        output = io.StringIO()
+        defaults: dict[str, str] = {}
+        prompt_values = iter([
+            "root@capsule.local",
+            "goodpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule217",
+            ".samba4",
+            "Time Capsule Samba 217",
+            "timecapsulesamba217",
+        ])
+        discovered = Discovered(
+            name="AirPort Time Capsule",
+            hostname="capsule.local",
+            ipv4=("169.254.10.7",),
+            services=set(),
+            properties={},
+        )
+        interface_probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(
+                    name="bridge0",
+                    ipv4_addrs=("192.168.1.217", "169.254.10.7"),
+                    up=True,
+                    active=True,
+                    loopback=False,
+                ),
+            ),
+            preferred_iface="bridge0",
+            detail="ok",
+        )
+
+        def fake_prompt(label, default, _secret):
+            if label in {"Samba NetBIOS name", "mDNS SMB instance name", "mDNS host label"}:
+                defaults[label] = default
+            return next(prompt_values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_default_record", return_value=discovered):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
+                        with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates", return_value=interface_probe):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file"):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(defaults["Samba NetBIOS name"], "TimeCapsule217")
+        self.assertEqual(defaults["mDNS SMB instance name"], "Time Capsule Samba 217")
+        self.assertEqual(defaults["mDNS host label"], "timecapsulesamba217")
+
+    def test_configure_falls_back_to_generic_name_defaults_when_only_link_local_ip_is_available(self) -> None:
+        output = io.StringIO()
+        defaults: dict[str, str] = {}
+        prompt_values = iter([
+            "root@169.254.1.7",
+            "goodpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            ".samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+            "119",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            if label in {"Samba NetBIOS name", "mDNS SMB instance name", "mDNS host label"}:
+                defaults[label] = default
+            return next(prompt_values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_time_capsule_candidates", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
+                        with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file"):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(defaults["Samba NetBIOS name"], "TimeCapsule")
+        self.assertEqual(defaults["mDNS SMB instance name"], "Time Capsule Samba 4")
+        self.assertEqual(defaults["mDNS host label"], "timecapsulesamba4")
+
+    def test_configure_falls_back_to_generic_name_defaults_when_host_is_hostname_and_no_other_ipv4_is_available(self) -> None:
+        output = io.StringIO()
+        defaults: dict[str, str] = {}
+        prompt_values = iter([
+            "root@capsule.local",
+            "goodpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            ".samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+            "119",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            if label in {"Samba NetBIOS name", "mDNS SMB instance name", "mDNS host label"}:
+                defaults[label] = default
+            return next(prompt_values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_time_capsule_candidates", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
+                        with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file"):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(defaults["Samba NetBIOS name"], "TimeCapsule")
+        self.assertEqual(defaults["mDNS SMB instance name"], "Time Capsule Samba 4")
+        self.assertEqual(defaults["mDNS host label"], "timecapsulesamba4")
+
+    def test_configure_falls_back_to_generic_name_defaults_when_host_is_ipv6(self) -> None:
+        output = io.StringIO()
+        defaults: dict[str, str] = {}
+        prompt_values = iter([
+            "root@fe80::1",
+            "goodpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            ".samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+            "119",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            if label in {"Samba NetBIOS name", "mDNS SMB instance name", "mDNS host label"}:
+                defaults[label] = default
+            return next(prompt_values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_time_capsule_candidates", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
+                        with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file"):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(defaults["Samba NetBIOS name"], "TimeCapsule")
+        self.assertEqual(defaults["mDNS SMB instance name"], "Time Capsule Samba 4")
+        self.assertEqual(defaults["mDNS host label"], "timecapsulesamba4")
+
+    def test_configure_falls_back_to_generic_name_defaults_when_discovered_ip_is_only_link_local_and_probe_is_unavailable(self) -> None:
+        output = io.StringIO()
+        defaults: dict[str, str] = {}
+        prompt_values = iter([
+            "root@capsule.local",
+            "goodpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            ".samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+            "119",
+        ])
+        discovered = Discovered(
+            name="AirPort Time Capsule",
+            hostname="capsule.local",
+            ipv4=("169.254.117.175",),
+            services={"_airport._tcp.local."},
+            properties={},
+        )
+
+        def fake_prompt(label, default, _secret):
+            if label in {"Samba NetBIOS name", "mDNS SMB instance name", "mDNS host label"}:
+                defaults[label] = default
+            return next(prompt_values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_default_record", return_value=discovered):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
+                        with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file"):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(defaults["Samba NetBIOS name"], "TimeCapsule")
+        self.assertEqual(defaults["mDNS SMB instance name"], "Time Capsule Samba 4")
+        self.assertEqual(defaults["mDNS host label"], "timecapsulesamba4")
+
+    def test_configure_keeps_valid_saved_name_values_instead_of_derived_defaults(self) -> None:
+        output = io.StringIO()
+        defaults: dict[str, str] = {}
+        existing = {
+            "TC_NETBIOS_NAME": "KitchenCapsule",
+            "TC_MDNS_INSTANCE_NAME": "Kitchen Samba",
+            "TC_MDNS_HOST_LABEL": "kitchensamba",
+        }
+        prompt_values = iter([
+            "root@192.168.1.217",
+            "goodpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "KitchenCapsule",
+            ".samba4",
+            "Kitchen Samba",
+            "kitchensamba",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            if label in {"Samba NetBIOS name", "mDNS SMB instance name", "mDNS host label"}:
+                defaults[label] = default
+            return next(prompt_values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
+            with mock.patch("timecapsulesmb.cli.configure.discover_time_capsule_candidates", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
+                        with mock.patch(
+                            "timecapsulesmb.cli.configure.probe_remote_interface_candidates",
+                            return_value=RemoteInterfaceCandidatesProbeResult(
+                                candidates=(
+                                    RemoteInterfaceCandidate(
+                                        name="bridge0",
+                                        ipv4_addrs=("192.168.1.217",),
+                                        up=True,
+                                        active=True,
+                                        loopback=False,
+                                    ),
+                                ),
+                                preferred_iface="bridge0",
+                                detail="ok",
+                            ),
+                        ):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file"):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(defaults["Samba NetBIOS name"], "KitchenCapsule")
+        self.assertEqual(defaults["mDNS SMB instance name"], "Kitchen Samba")
+        self.assertEqual(defaults["mDNS host label"], "kitchensamba")
+        self.assertIn("Found saved value: KitchenCapsule", output.getvalue())
+
+    def test_configure_saved_name_values_outrank_host_discovered_and_probed_defaults(self) -> None:
+        output = io.StringIO()
+        defaults: dict[str, str] = {}
+        existing = {
+            "TC_NETBIOS_NAME": "KitchenCapsule",
+            "TC_MDNS_INSTANCE_NAME": "Kitchen Samba",
+            "TC_MDNS_HOST_LABEL": "kitchensamba",
+        }
+        discovered = Discovered(
+            name="AirPort Time Capsule",
+            hostname="capsule.local",
+            ipv4=("192.168.1.72",),
+            services=set(),
+            properties={},
+        )
+        interface_probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(
+                    name="bridge0",
+                    ipv4_addrs=("192.168.1.217",),
+                    up=True,
+                    active=True,
+                    loopback=False,
+                ),
+            ),
+            preferred_iface="bridge0",
+            detail="ok",
+        )
+        prompt_values = iter([
+            "root@10.0.1.7",
+            "goodpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "KitchenCapsule",
+            ".samba4",
+            "Kitchen Samba",
+            "kitchensamba",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            if label in {"Samba NetBIOS name", "mDNS SMB instance name", "mDNS host label"}:
+                defaults[label] = default
+            return next(prompt_values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
+            with mock.patch("timecapsulesmb.cli.configure.discover_default_record", return_value=discovered):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
+                        with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates", return_value=interface_probe):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file"):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(defaults["Samba NetBIOS name"], "KitchenCapsule")
+        self.assertEqual(defaults["mDNS SMB instance name"], "Kitchen Samba")
+        self.assertEqual(defaults["mDNS host label"], "kitchensamba")
+
+    def test_configure_host_ipv4_name_defaults_outrank_discovered_and_probed_defaults(self) -> None:
+        output = io.StringIO()
+        defaults: dict[str, str] = {}
+        discovered = Discovered(
+            name="AirPort Time Capsule",
+            hostname="capsule.local",
+            ipv4=("192.168.1.72",),
+            services=set(),
+            properties={},
+        )
+        interface_probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(
+                    name="bridge0",
+                    ipv4_addrs=("192.168.1.217",),
+                    up=True,
+                    active=True,
+                    loopback=False,
+                ),
+            ),
+            preferred_iface="bridge0",
+            detail="ok",
+        )
+        prompt_values = iter([
+            "root@10.0.1.7",
+            "goodpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule007",
+            ".samba4",
+            "Time Capsule Samba 007",
+            "timecapsulesamba007",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            if label in {"Samba NetBIOS name", "mDNS SMB instance name", "mDNS host label"}:
+                defaults[label] = default
+            return next(prompt_values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_default_record", return_value=discovered):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
+                        with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates", return_value=interface_probe):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file"):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(defaults["Samba NetBIOS name"], "TimeCapsule007")
+        self.assertEqual(defaults["mDNS SMB instance name"], "Time Capsule Samba 007")
+        self.assertEqual(defaults["mDNS host label"], "timecapsulesamba007")
+
+    def test_configure_discovered_ipv4_name_defaults_outrank_probed_defaults(self) -> None:
+        output = io.StringIO()
+        defaults: dict[str, str] = {}
+        discovered = Discovered(
+            name="AirPort Time Capsule",
+            hostname="capsule.local",
+            ipv4=("192.168.1.72",),
+            services=set(),
+            properties={},
+        )
+        interface_probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(
+                    name="bridge0",
+                    ipv4_addrs=("192.168.1.217",),
+                    up=True,
+                    active=True,
+                    loopback=False,
+                ),
+            ),
+            preferred_iface="bridge0",
+            detail="ok",
+        )
+        prompt_values = iter([
+            "root@capsule.local",
+            "goodpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule072",
+            ".samba4",
+            "Time Capsule Samba 072",
+            "timecapsulesamba072",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            if label in {"Samba NetBIOS name", "mDNS SMB instance name", "mDNS host label"}:
+                defaults[label] = default
+            return next(prompt_values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_default_record", return_value=discovered):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
+                        with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates", return_value=interface_probe):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file"):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(defaults["Samba NetBIOS name"], "TimeCapsule072")
+        self.assertEqual(defaults["mDNS SMB instance name"], "Time Capsule Samba 072")
+        self.assertEqual(defaults["mDNS host label"], "timecapsulesamba072")
+
+    def test_configure_discovered_zero_padded_ipv4_name_defaults_outrank_probed_defaults(self) -> None:
+        output = io.StringIO()
+        defaults: dict[str, str] = {}
+        discovered = Discovered(
+            name="AirPort Time Capsule",
+            hostname="capsule.local",
+            ipv4=("192.168.001.072",),
+            services=set(),
+            properties={},
+        )
+        interface_probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(
+                    name="bridge0",
+                    ipv4_addrs=("192.168.1.217",),
+                    up=True,
+                    active=True,
+                    loopback=False,
+                ),
+            ),
+            preferred_iface="bridge0",
+            detail="ok",
+        )
+        prompt_values = iter([
+            "root@capsule.local",
+            "goodpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule072",
+            ".samba4",
+            "Time Capsule Samba 072",
+            "timecapsulesamba072",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            if label in {"Samba NetBIOS name", "mDNS SMB instance name", "mDNS host label"}:
+                defaults[label] = default
+            return next(prompt_values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_default_record", return_value=discovered):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
+                        with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates", return_value=interface_probe):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file"):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(defaults["Samba NetBIOS name"], "TimeCapsule072")
+        self.assertEqual(defaults["mDNS SMB instance name"], "Time Capsule Samba 072")
+        self.assertEqual(defaults["mDNS host label"], "timecapsulesamba072")
+
+    def test_configure_invalid_saved_name_values_fall_back_to_derived_defaults(self) -> None:
+        output = io.StringIO()
+        defaults: dict[str, str] = {}
+        existing = {
+            "TC_NETBIOS_NAME": "ABCDEFGHIJKLMNOP",
+            "TC_MDNS_INSTANCE_NAME": "",
+            "TC_MDNS_HOST_LABEL": "bad host",
+        }
+        prompt_values = iter([
+            "root@192.168.1.217",
+            "goodpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule217",
+            ".samba4",
+            "Time Capsule Samba 217",
+            "timecapsulesamba217",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            if label in {"Samba NetBIOS name", "mDNS SMB instance name", "mDNS host label"}:
+                defaults[label] = default
+            return next(prompt_values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
+            with mock.patch("timecapsulesmb.cli.configure.discover_time_capsule_candidates", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
+                        with mock.patch(
+                            "timecapsulesmb.cli.configure.probe_remote_interface_candidates",
+                            return_value=RemoteInterfaceCandidatesProbeResult(
+                                candidates=(
+                                    RemoteInterfaceCandidate(
+                                        name="bridge0",
+                                        ipv4_addrs=("192.168.1.217",),
+                                        up=True,
+                                        active=True,
+                                        loopback=False,
+                                    ),
+                                ),
+                                preferred_iface="bridge0",
+                                detail="ok",
+                            ),
+                        ):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file"):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(defaults["Samba NetBIOS name"], "TimeCapsule217")
+        self.assertEqual(defaults["mDNS SMB instance name"], "Time Capsule Samba 217")
+        self.assertEqual(defaults["mDNS host label"], "timecapsulesamba217")
+        self.assertNotIn("Found saved value: ABCDEFGHIJKLMNOP", output.getvalue())
+        self.assertNotIn("Found saved value: bad host", output.getvalue())
 
     def test_doctor_returns_failure_when_checks_fatal(self) -> None:
         output = io.StringIO()
