@@ -2,8 +2,7 @@ from __future__ import annotations
 
 
 NETBSD4_REBOOT_GUIDANCE = (
-    "Tested NetBSD4 devices cannot auto-run Samba after a reboot; "
-    "other NetBSD4 generations may auto-start Samba if their firmware runs /mnt/Flash/rc.local after a reboot."
+    "NetBSD 4 devices cannot auto-run Samba after a reboot."
 )
 
 NETBSD4_REBOOT_FOLLOWUP = "Run `activate` after a reboot if the device did not auto-start Samba."

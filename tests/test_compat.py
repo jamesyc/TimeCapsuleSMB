@@ -19,6 +19,7 @@ from timecapsulesmb.device.compat import (
     device_family_from_payload_family,
     is_netbsd4_payload_family,
     is_netbsd6_payload_family,
+    payload_family_description,
     require_compatibility,
     render_compatibility_message,
 )
@@ -99,7 +100,7 @@ class CompatibilityTests(unittest.TestCase):
         compat = classify_device_compatibility("NetBSD", "6.0", "earmv4", "little")
         self.assertEqual(
             render_compatibility_message(compat),
-            "Detected supported device: NetBSD 6.0 (earmv4)...",
+            "Detected supported device: NetBSD 6.0 (earmv4, little-endian).",
         )
 
     def test_require_compatibility_raises_with_fallback_for_missing_probe(self) -> None:
@@ -134,3 +135,8 @@ class CompatibilityTests(unittest.TestCase):
         self.assertEqual(device_family_from_payload_family(PAYLOAD_FAMILY_NETBSD6), "netbsd6")
         self.assertIsNone(device_family_from_payload_family("other"))
         self.assertIsNone(device_family_from_payload_family(None))
+
+    def test_payload_family_description_names_endian_lanes(self) -> None:
+        self.assertEqual(payload_family_description(PAYLOAD_FAMILY_NETBSD4LE), "NetBSD 4 little-endian")
+        self.assertEqual(payload_family_description(PAYLOAD_FAMILY_NETBSD4BE), "NetBSD 4 big-endian")
+        self.assertEqual(payload_family_description(PAYLOAD_FAMILY_NETBSD6), "NetBSD 6 little-endian")

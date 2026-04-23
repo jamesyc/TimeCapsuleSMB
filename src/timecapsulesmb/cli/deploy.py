@@ -26,7 +26,7 @@ from timecapsulesmb.deploy.verify import (
     wait_for_post_reboot_mdns_takeover,
     wait_for_post_reboot_smbd,
 )
-from timecapsulesmb.device.compat import is_netbsd4_payload_family, render_compatibility_message
+from timecapsulesmb.device.compat import is_netbsd4_payload_family, payload_family_description, render_compatibility_message
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root_conn as discover_volume_root, wait_for_ssh_state_conn
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import run_ssh_conn
@@ -84,6 +84,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             raise SystemExit(f"{compatibility_message}\nNo deployable payload is available for this detected device.")
         payload_family = compatibility.payload_family
         is_netbsd4 = is_netbsd4_payload_family(payload_family)
+        if not args.json:
+            print(f"Using {payload_family_description(payload_family)} payload.")
         volume_root = discover_volume_root(connection)
         resolved_artifacts = resolve_payload_artifacts(REPO_ROOT, payload_family)
         smbd_path = resolved_artifacts["smbd"].absolute_path
@@ -110,11 +112,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 0
 
         if is_netbsd4 and not args.yes:
-            print("Detected NetBSD 4 Time Capsule.")
             print("Deploy will activate Samba immediately without rebooting.")
             print(color_red(NETBSD4_REBOOT_GUIDANCE))
             print(NETBSD4_REBOOT_FOLLOWUP)
-            answer = input("Continue with NetBSD4 deploy + activation? [y/N]: ").strip().lower()
+            answer = input("Continue with NetBSD 4 deploy + activation? [y/N]: ").strip().lower()
             if answer not in {"y", "yes"}:
                 print("Deployment cancelled.")
                 command_context.cancel_with_error("Cancelled by user at NetBSD4 deploy confirmation prompt.")

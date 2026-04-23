@@ -2802,7 +2802,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         text = output.getvalue()
         payload_dir = f"/Volumes/dk2/{values['TC_PAYLOAD_DIR_NAME']}"
-        self.assertIn("Detected supported older device: NetBSD 4.0", text)
+        self.assertIn("Detected supported device: NetBSD 4.0 (earmv4, little-endian).", text)
+        self.assertIn("Using NetBSD 4 little-endian payload.", text)
         self.assertIn(f"bin/samba4-netbsd4le/smbd -> {payload_dir}/smbd", text)
         self.assertIn(f"bin/mdns-netbsd4le/mdns-advertiser -> {payload_dir}/mdns-advertiser", text)
         self.assertIn("bin/mdns-netbsd4le/mdns-advertiser -> /mnt/Flash/mdns-advertiser", text)
@@ -2815,8 +2816,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("pkill wcifsfs >/dev/null 2>&1 || true", text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
         self.assertIn("Deploy will activate Samba immediately without rebooting.", text)
-        self.assertIn("Tested NetBSD4 devices cannot auto-run Samba after a reboot;", text)
-        self.assertIn("other NetBSD4 generations may auto-start Samba if their firmware runs /mnt/Flash/rc.local after a reboot.", text)
+        self.assertIn("NetBSD 4 devices cannot auto-run Samba after a reboot.", text)
         self.assertIn("Run `activate` after a reboot if the device did not auto-start Samba.", text)
 
     def test_deploy_netbsd4_prompt_decline_cancels_before_remote_actions(self) -> None:
@@ -3377,8 +3377,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("smbd is bound to TCP 445", text)
         self.assertIn("mdns-advertiser is bound to UDP 5353", text)
         self.assertIn("This will start the deployed Samba payload on the Time Capsule.", text)
-        self.assertIn("Tested NetBSD4 devices cannot auto-run Samba after a reboot;", text)
-        self.assertIn("other NetBSD4 generations may auto-start Samba if their firmware runs /mnt/Flash/rc.local after a reboot.", text)
+        self.assertIn("NetBSD 4 devices cannot auto-run Samba after a reboot.", text)
 
     def test_activate_ensures_install_id_before_telemetry(self) -> None:
         output = io.StringIO()

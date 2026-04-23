@@ -45,6 +45,16 @@ def device_family_from_payload_family(payload_family: str | None) -> str | None:
     return None
 
 
+def payload_family_description(payload_family: str | None) -> str:
+    if payload_family == PAYLOAD_FAMILY_NETBSD4LE:
+        return "NetBSD 4 little-endian"
+    if payload_family == PAYLOAD_FAMILY_NETBSD4BE:
+        return "NetBSD 4 big-endian"
+    if payload_family == PAYLOAD_FAMILY_NETBSD6:
+        return "NetBSD 6 little-endian"
+    return "unknown"
+
+
 @dataclass(frozen=True)
 class DeviceCompatibility:
     os_name: str
@@ -86,14 +96,14 @@ def render_compatibility_message(compat: DeviceCompatibility) -> str:
             "which is not supported by the current Samba payload."
         )
     if compat.reason_code == "supported_netbsd6":
-        return f"Detected supported device: NetBSD {compat.os_release} ({compat.arch})..."
+        return f"Detected supported device: NetBSD {compat.os_release} ({compat.arch}, {compat.elf_endianness}-endian)."
     if compat.reason_code == "unsupported_netbsd4_endianness":
         return (
             f"Detected NetBSD {compat.os_release} ({compat.arch}) with {compat.elf_endianness}-endian binaries, "
             "which is not supported by the current checked-in Samba payload."
         )
     if compat.reason_code == "supported_netbsd4":
-        return f"Detected supported older device: NetBSD {compat.os_release} ({compat.arch})."
+        return f"Detected supported device: NetBSD {compat.os_release} ({compat.arch}, {compat.elf_endianness}-endian)."
     if compat.reason_code == "unsupported_netbsd_release":
         return (
             f"This Time Capsule is running NetBSD {compat.os_release}, which is not supported by the current Samba payload. "
