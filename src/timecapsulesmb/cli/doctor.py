@@ -36,6 +36,16 @@ def build_doctor_error(results: list[CheckResult]) -> str | None:
     return "\n".join(lines) if lines else None
 
 
+def print_followup_help() -> None:
+    print("")
+    print("For other issues:")
+    print("- (If you have xattr issues, or macOS Error -50) then try running:")
+    print("    .venv/bin/tcapsule repair-xattrs")
+    print("")
+    print("- (If you have disk corruption issues) then try running:")
+    print("    .venv/bin/tcapsule fsck")
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run local diagnostics for the current TimeCapsuleSMB setup.")
     parser.add_argument("--skip-ssh", action="store_true", help="Skip SSH reachability checks")
@@ -104,6 +114,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if fatal:
             print("\nSummary: doctor found one or more fatal problems.")
+            print_followup_help()
             error = build_doctor_error(results)
             if error:
                 command_context.set_error(error)
@@ -112,5 +123,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 1
 
         print("\nSummary: doctor checks passed.")
+        print_followup_help()
         command_context.succeed()
         return 0

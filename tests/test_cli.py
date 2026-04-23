@@ -546,10 +546,10 @@ class CliTests(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("This writes a local .env configuration file", text)
         self.assertIn(f"Review the .env file configuration: wrote {configure.ENV_PATH}", text)
-        self.assertIn("  - Prep your device to enable SSH on it:", text)
-        self.assertIn("      Run .venv/bin/tcapsule prep-device", text)
-        self.assertIn("  - Deploy this configuration to your Time Capsule:", text)
-        self.assertIn("      Run .venv/bin/tcapsule deploy", text)
+        self.assertIn("- Prep your device to enable SSH on it, run:", text)
+        self.assertIn("    .venv/bin/tcapsule prep-device", text)
+        self.assertIn("- Deploy this configuration to your Time Capsule, run:", text)
+        self.assertIn("    .venv/bin/tcapsule deploy", text)
 
     def test_configure_ensures_install_id_before_telemetry(self) -> None:
         output = io.StringIO()
