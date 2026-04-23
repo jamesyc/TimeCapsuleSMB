@@ -3104,7 +3104,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             str(ctx.exception),
             "TC_MDNS_DEVICE_MODEL is invalid. Run the `configure` command again.\n"
-            "TC_MDNS_DEVICE_MODEL must match the configured syAP.",
+            'TC_MDNS_DEVICE_MODEL "TimeCapsule" must match the configured '
+            'syAP expected value "TimeCapsule8,119".'
         )
 
     def test_deploy_rejects_missing_remote_interface(self) -> None:
