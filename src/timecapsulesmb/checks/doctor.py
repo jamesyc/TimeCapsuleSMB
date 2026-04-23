@@ -11,8 +11,8 @@ from timecapsulesmb.checks.models import CheckResult, is_fatal
 from timecapsulesmb.checks.network import check_smb_port, check_ssh_login, ssh_opts_use_proxy
 from timecapsulesmb.checks.nbns import check_nbns_name_resolution
 from timecapsulesmb.checks.smb import (
-    check_authenticated_smb_file_ops_detailed,
     check_authenticated_smb_listing,
+    check_authenticated_smb_file_ops_detailed,
 )
 from timecapsulesmb.cli.runtime import probe_device_state
 from timecapsulesmb.core.config import extract_host, missing_required_keys, validate_config_values
@@ -78,6 +78,13 @@ def _parse_bonjour_host_label(target: Optional[str]) -> Optional[str]:
     return host
 
 
+def _parse_bonjour_target_host(target: Optional[str]) -> Optional[str]:
+    if not target:
+        return None
+    host = target.rsplit(":", 1)[0].rstrip(".")
+    return host or None
+
+
 def _configured_smb_server(host_label: str) -> str:
     value = host_label.strip()
     if not value:
@@ -90,6 +97,19 @@ def _configured_smb_server(host_label: str) -> str:
     if "." in value:
         return value
     return f"{value}.local"
+
+
+def _doctor_smb_servers(values: dict[str, str], bonjour_target: Optional[str]) -> list[str]:
+    ordered: list[str] = []
+
+    def add(value: Optional[str]) -> None:
+        if value and value not in ordered:
+            ordered.append(value)
+
+    add(_configured_smb_server(values["TC_MDNS_HOST_LABEL"]))
+    add(_parse_bonjour_target_host(bonjour_target))
+    add(extract_host(values["TC_HOST"]))
+    return ordered
 
 
 def check_xattr_tdb_persistence(host: str, password: str, ssh_opts: str) -> CheckResult:
@@ -329,22 +349,25 @@ def run_doctor_checks(
         except (Exception, SystemExit) as e:
             add_result(CheckResult("FAIL", f"authenticated SMB checks failed through SSH tunnel: {e}"))
     elif not skip_smb:
-        smb_server = _configured_smb_server(values["TC_MDNS_HOST_LABEL"])
-        add_result(
-            check_authenticated_smb_listing(
+        smb_servers = _doctor_smb_servers(values, bonjour_target)
+        listing_result = check_authenticated_smb_listing(
+            values["TC_SAMBA_USER"],
+            values["TC_PASSWORD"],
+            smb_servers,
+            expected_share_name=values["TC_SHARE_NAME"],
+        )
+        add_result(listing_result)
+        if listing_result.status == "PASS":
+            smb_server = listing_result.message.removeprefix(
+                f"authenticated SMB listing works for {values['TC_SAMBA_USER']}@"
+            )
+            for result in check_authenticated_smb_file_ops_detailed(
                 values["TC_SAMBA_USER"],
                 values["TC_PASSWORD"],
                 smb_server,
-                expected_share_name=values["TC_SHARE_NAME"],
-            )
-        )
-        for result in check_authenticated_smb_file_ops_detailed(
-            values["TC_SAMBA_USER"],
-            values["TC_PASSWORD"],
-            smb_server,
-            values["TC_SHARE_NAME"],
-        ):
-            add_result(result)
+                values["TC_SHARE_NAME"],
+            ):
+                add_result(result)
 
     fatal = any(is_fatal(result) for result in results)
     return results, fatal

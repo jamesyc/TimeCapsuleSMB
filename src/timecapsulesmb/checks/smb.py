@@ -41,7 +41,7 @@ def _run_smbclient_listing(
 def check_authenticated_smb_listing(
     username: str,
     password: str,
-    server: str,
+    server: str | list[str],
     *,
     expected_share_name: Optional[str] = None,
     port: Optional[int] = None,
@@ -49,8 +49,20 @@ def check_authenticated_smb_listing(
 ) -> CheckResult:
     if not command_exists("smbclient"):
         return CheckResult("FAIL", "missing local tool smbclient")
+    if isinstance(server, list):
+        return try_authenticated_smb_listing(
+            username,
+            password,
+            server,
+            expected_share_name=expected_share_name,
+            port=port,
+            timeout=timeout,
+        )
 
-    proc = _run_smbclient_listing(server, username, password, port=port, timeout=timeout)
+    try:
+        proc = _run_smbclient_listing(server, username, password, port=port, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return CheckResult("FAIL", f"authenticated SMB listing failed: timed out via {server}")
     if proc.returncode == 0:
         if expected_share_name is not None and expected_share_name not in proc.stdout:
             return CheckResult(
@@ -68,6 +80,7 @@ def try_authenticated_smb_listing(
     password: str,
     servers: list[str],
     *,
+    expected_share_name: Optional[str] = None,
     port: Optional[int] = None,
     timeout: int = 12,
 ) -> CheckResult:
@@ -82,6 +95,9 @@ def try_authenticated_smb_listing(
             failure_msg = f"timed out via {server}"
             continue
         if proc.returncode == 0:
+            if expected_share_name is not None and expected_share_name not in proc.stdout:
+                failure_msg = f"expected share {expected_share_name!r} not found via {server}"
+                continue
             return CheckResult("PASS", f"authenticated SMB listing works for {username}@{server}")
         detail = (proc.stderr or proc.stdout).strip().splitlines()
         failure_msg = detail[-1] if detail else f"failed with rc={proc.returncode} via {server}"

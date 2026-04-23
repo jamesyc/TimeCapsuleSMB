@@ -233,6 +233,16 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(result.status, "FAIL")
         self.assertIn("timed out", result.message)
 
+    def test_check_authenticated_smb_listing_handles_timeout(self) -> None:
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+            with mock.patch(
+                "timecapsulesmb.checks.smb.run_local_capture",
+                side_effect=subprocess.TimeoutExpired(cmd=["smbclient"], timeout=20),
+            ):
+                result = check_authenticated_smb_listing("admin", "pw", "home.local", expected_share_name="Data")
+        self.assertEqual(result.status, "FAIL")
+        self.assertIn("timed out via home.local", result.message)
+
     def test_run_doctor_checks_respects_skip_flags(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
@@ -934,7 +944,10 @@ class CheckTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.checks.doctor.run_bonjour_checks", return_value=([], None, None)):
                             with mock.patch(
                                 "timecapsulesmb.checks.doctor.check_authenticated_smb_listing",
-                                return_value=mock.Mock(status="PASS", message="listing ok"),
+                                return_value=mock.Mock(
+                                    status="PASS",
+                                    message="authenticated SMB listing works for admin@timecapsulesamba4.local",
+                                ),
                             ) as listing_mock:
                                 with mock.patch(
                                     "timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops_detailed",
@@ -946,7 +959,7 @@ class CheckTests(unittest.TestCase):
         listing_mock.assert_called_once_with(
             "admin",
             "pw",
-            "timecapsulesamba4.local",
+            ["timecapsulesamba4.local", "10.0.0.2"],
             expected_share_name="Data",
         )
 
@@ -971,7 +984,10 @@ class CheckTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.checks.doctor.run_bonjour_checks", return_value=([], None, None)):
                             with mock.patch(
                                 "timecapsulesmb.checks.doctor.check_authenticated_smb_listing",
-                                return_value=mock.Mock(status="PASS", message="listing ok"),
+                                return_value=mock.Mock(
+                                    status="PASS",
+                                    message="authenticated SMB listing works for admin@10.0.1.99",
+                                ),
                             ) as listing_mock:
                                 with mock.patch(
                                     "timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops_detailed",
@@ -983,7 +999,7 @@ class CheckTests(unittest.TestCase):
         listing_mock.assert_called_once_with(
             "admin",
             "pw",
-            "10.0.1.99",
+            ["10.0.1.99", "10.0.0.2"],
             expected_share_name="Data",
         )
 
@@ -1012,6 +1028,42 @@ class CheckTests(unittest.TestCase):
                 )
         self.assertEqual(result.status, "PASS")
         self.assertIn("listing works", result.message)
+
+    def test_try_authenticated_smb_listing_falls_back_to_second_server_when_first_times_out(self) -> None:
+        proc = subprocess.CompletedProcess(["smbclient"], 0, "Data\nPublic\n", "")
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+            with mock.patch(
+                "timecapsulesmb.checks.smb.run_local_capture",
+                side_effect=[
+                    subprocess.TimeoutExpired(cmd=["smbclient"], timeout=12),
+                    proc,
+                ],
+            ):
+                result = try_authenticated_smb_listing(
+                    "admin",
+                    "pw",
+                    ["home.local", "10.0.1.1"],
+                    expected_share_name="Data",
+                )
+        self.assertEqual(result.status, "PASS")
+        self.assertIn("admin@10.0.1.1", result.message)
+
+    def test_try_authenticated_smb_listing_continues_when_share_missing_on_first_server(self) -> None:
+        missing_proc = subprocess.CompletedProcess(["smbclient"], 0, "Public\n", "")
+        good_proc = subprocess.CompletedProcess(["smbclient"], 0, "Data\nPublic\n", "")
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+            with mock.patch(
+                "timecapsulesmb.checks.smb.run_local_capture",
+                side_effect=[missing_proc, good_proc],
+            ):
+                result = try_authenticated_smb_listing(
+                    "admin",
+                    "pw",
+                    ["home.local", "10.0.1.1"],
+                    expected_share_name="Data",
+                )
+        self.assertEqual(result.status, "PASS")
+        self.assertIn("admin@10.0.1.1", result.message)
 
     def test_exercise_mounted_share_file_ops_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
