@@ -163,6 +163,22 @@ class RemoteInterfaceProbeResult:
 
 
 @dataclass(frozen=True)
+class RemoteInterfaceCandidate:
+    name: str
+    ipv4_addrs: tuple[str, ...]
+    up: bool
+    active: bool
+    loopback: bool
+
+
+@dataclass(frozen=True)
+class RemoteInterfaceCandidatesProbeResult:
+    candidates: tuple[RemoteInterfaceCandidate, ...]
+    preferred_iface: str | None
+    detail: str
+
+
+@dataclass(frozen=True)
 class ManagedSmbdProbeResult:
     ready: bool
     detail: str
@@ -375,6 +391,139 @@ def probe_remote_interface_conn(connection: SshConnection, iface: str) -> Remote
 
 def remote_interface_exists(host: str, password: str, ssh_opts: str, iface: str) -> bool:
     return probe_remote_interface(host, password, ssh_opts, iface).exists
+
+
+def _is_link_local_ipv4(value: str) -> bool:
+    return value.startswith("169.254.")
+
+
+def _is_loopback_ipv4(value: str) -> bool:
+    return value.startswith("127.")
+
+
+def _is_private_ipv4(value: str) -> bool:
+    if value.startswith("10.") or value.startswith("192.168."):
+        return True
+    if not value.startswith("172."):
+        return False
+    parts = value.split(".")
+    if len(parts) < 2:
+        return False
+    try:
+        second = int(parts[1])
+    except ValueError:
+        return False
+    return 16 <= second <= 31
+
+
+def _parse_ifconfig_candidates(output: str) -> tuple[RemoteInterfaceCandidate, ...]:
+    candidates: list[RemoteInterfaceCandidate] = []
+    current_name: str | None = None
+    current_ipv4: list[str] = []
+    current_up = False
+    current_active = False
+    current_loopback = False
+
+    def flush() -> None:
+        nonlocal current_name, current_ipv4, current_up, current_active, current_loopback
+        if current_name is not None:
+            candidates.append(
+                RemoteInterfaceCandidate(
+                    name=current_name,
+                    ipv4_addrs=tuple(current_ipv4),
+                    up=current_up,
+                    active=current_active,
+                    loopback=current_loopback,
+                )
+            )
+        current_name = None
+        current_ipv4 = []
+        current_up = False
+        current_active = False
+        current_loopback = False
+
+    for raw_line in output.splitlines():
+        line = raw_line.rstrip()
+        if not line:
+            continue
+        if not line.startswith((" ", "\t")) and ":" in line:
+            flush()
+            header, _sep, _rest = line.partition(":")
+            flags = line.partition("<")[2].partition(">")[0]
+            current_name = header.strip()
+            current_up = "UP" in flags.split(",")
+            current_loopback = "LOOPBACK" in flags.split(",")
+            continue
+        if current_name is None:
+            continue
+        stripped = line.strip()
+        if stripped.startswith("inet "):
+            parts = stripped.split()
+            if len(parts) >= 2:
+                current_ipv4.append(parts[1])
+            continue
+        if stripped == "status: active":
+            current_active = True
+
+    flush()
+    return tuple(candidates)
+
+
+def _interface_preference_key(candidate: RemoteInterfaceCandidate, target_ips: Iterable[str] = ()) -> tuple[int, int, int, int, int, int, int]:
+    target_ip_set = {value for value in target_ips if value}
+    non_loopback_ipv4 = tuple(addr for addr in candidate.ipv4_addrs if not _is_loopback_ipv4(addr))
+    non_link_local_ipv4 = tuple(addr for addr in non_loopback_ipv4 if not _is_link_local_ipv4(addr))
+    private_non_link_local_ipv4 = tuple(addr for addr in non_link_local_ipv4 if _is_private_ipv4(addr))
+    bridge_bonus = 1 if candidate.name.startswith("bridge") else 0
+    ethernet_bonus = 1 if candidate.name.startswith(("bcmeth", "gec", "en", "eth", "wm", "re")) else 0
+    return (
+        1 if target_ip_set.intersection(candidate.ipv4_addrs) else 0,
+        1 if private_non_link_local_ipv4 else 0,
+        1 if non_link_local_ipv4 else 0,
+        1 if candidate.active else 0,
+        1 if candidate.up else 0,
+        bridge_bonus,
+        ethernet_bonus,
+    )
+
+
+def preferred_interface_name(
+    candidates: tuple[RemoteInterfaceCandidate, ...],
+    *,
+    target_ips: Iterable[str] = (),
+) -> str | None:
+    eligible = [candidate for candidate in candidates if not candidate.loopback and candidate.ipv4_addrs]
+    if not eligible:
+        return None
+    best = max(eligible, key=lambda candidate: (_interface_preference_key(candidate, target_ips), candidate.name))
+    return best.name
+
+
+def probe_remote_interface_candidates(host: str, password: str, ssh_opts: str) -> RemoteInterfaceCandidatesProbeResult:
+    return probe_remote_interface_candidates_conn(_conn(host, password, ssh_opts))
+
+
+def probe_remote_interface_candidates_conn(connection: SshConnection) -> RemoteInterfaceCandidatesProbeResult:
+    proc = run_ssh_conn(connection, "/sbin/ifconfig -a", check=False, timeout=30)
+    if proc.returncode != 0:
+        return RemoteInterfaceCandidatesProbeResult(
+            candidates=(),
+            preferred_iface=None,
+            detail=f"ifconfig -a failed: rc={proc.returncode}",
+        )
+    candidates = _parse_ifconfig_candidates(proc.stdout)
+    preferred_iface = preferred_interface_name(candidates)
+    if preferred_iface is None:
+        return RemoteInterfaceCandidatesProbeResult(
+            candidates=candidates,
+            preferred_iface=None,
+            detail="no non-loopback IPv4 interface candidates found",
+        )
+    return RemoteInterfaceCandidatesProbeResult(
+        candidates=candidates,
+        preferred_iface=preferred_iface,
+        detail=f"preferred interface {preferred_iface}",
+    )
 
 
 def read_interface_ipv4(host: str, password: str, ssh_opts: str, iface: str) -> str:

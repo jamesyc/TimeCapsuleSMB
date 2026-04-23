@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import getpass
+import ipaddress
 import uuid
 from dataclasses import dataclass
 from typing import Optional
@@ -10,6 +11,7 @@ from timecapsulesmb.core.config import (
     CONFIG_FIELDS,
     DEFAULTS,
     ENV_PATH,
+    extract_host,
     infer_mdns_device_model_from_airport_syap,
     parse_env_values,
     upsert_env_key,
@@ -19,6 +21,11 @@ from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import probe_device_state
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.device.compat import DeviceCompatibility, render_compatibility_message
+from timecapsulesmb.device.probe import (
+    RemoteInterfaceCandidatesProbeResult,
+    preferred_interface_name,
+    probe_remote_interface_candidates,
+)
 from timecapsulesmb.discovery.bonjour import (
     Discovered,
     discover_time_capsule_candidates,
@@ -36,6 +43,12 @@ NO_SAVED_VALUE_HINT_KEYS = {"TC_PASSWORD", *HIDDEN_CONFIG_KEYS}
 class ConfigureValueChoice:
     value: str
     source: str
+
+
+@dataclass(frozen=True)
+class InterfaceIpMatch:
+    iface: str
+    ip: str
 
 
 def prompt(label: str, default: str, secret: bool) -> str:
@@ -199,6 +212,60 @@ def print_automatic_value_choice(key: str, choice: ConfigureValueChoice) -> None
         print(f"Using {key} derived from TC_AIRPORT_SYAP: {choice.value}")
 
 
+def _ipv4_literal(value: str) -> str | None:
+    try:
+        parsed = ipaddress.ip_address(value)
+    except ValueError:
+        return None
+    if parsed.version != 4:
+        return None
+    return str(parsed)
+
+
+def interface_target_ips(values: dict[str, str], discovered_record: Discovered | None) -> tuple[str, ...]:
+    ordered: list[str] = []
+    host_ip = _ipv4_literal(extract_host(values.get("TC_HOST", "")))
+    if host_ip:
+        ordered.append(host_ip)
+    if discovered_record is not None:
+        for value in discovered_record.ipv4:
+            ip_value = _ipv4_literal(value)
+            if ip_value and ip_value not in ordered:
+                ordered.append(ip_value)
+    return tuple(ordered)
+
+
+def _is_link_local_ipv4(value: str) -> bool:
+    return value.startswith("169.254.")
+
+
+def interface_candidate_for_ip(result: RemoteInterfaceCandidatesProbeResult, target_ips: tuple[str, ...]) -> InterfaceIpMatch | None:
+    # Prefer exact non-link-local matches first. Link-local can still be used,
+    # but only when it is the only exact address we can match to an interface.
+    ordered_target_ips = tuple(ip for ip in target_ips if not _is_link_local_ipv4(ip)) + tuple(
+        ip for ip in target_ips if _is_link_local_ipv4(ip)
+    )
+    for target_ip in ordered_target_ips:
+        for candidate in result.candidates:
+            if candidate.loopback:
+                continue
+            if target_ip in candidate.ipv4_addrs:
+                return InterfaceIpMatch(iface=candidate.name, ip=target_ip)
+    return None
+
+
+def print_probed_interface_default(result: RemoteInterfaceCandidatesProbeResult, preferred_iface: str) -> None:
+    candidate_names = [candidate.name for candidate in result.candidates if candidate.ipv4_addrs and not candidate.loopback]
+    if candidate_names:
+        print("Found network interfaces with IPv4 on the device:")
+        for candidate in result.candidates:
+            if not candidate.ipv4_addrs or candidate.loopback:
+                continue
+            marker = " (suggested)" if candidate.name == preferred_iface else ""
+            print(f"  {candidate.name}: {', '.join(candidate.ipv4_addrs)}{marker}")
+    print(f"Using probed default for TC_NET_IFACE: {preferred_iface}")
+
+
 def prompt_config_value(
     existing: dict[str, str],
     key: str,
@@ -227,6 +294,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     values: dict[str, str] = {}
     discovered_airport_syap: Optional[str] = None
     probed_device: DeviceCompatibility | None = None
+    probed_interfaces: RemoteInterfaceCandidatesProbeResult | None = None
     with CommandContext(
         telemetry,
         "configure",
@@ -262,6 +330,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 probed_device = probed_state.compatibility
                 if probed_device is not None and not probed_device.supported:
                     raise SystemExit(render_compatibility_message(probed_device))
+                probed_interfaces = probe_remote_interface_candidates(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
                 break
             print("\nThe provided Time Capsule SSH target and password did not work.")
             if confirm("Save this information still?", True):
@@ -321,6 +390,50 @@ def main(argv: Optional[list[str]] = None) -> int:
                     continue
                 print_syap_prompt_help()
                 values[key] = prompt_valid_config_value(key, label, DEFAULTS["TC_AIRPORT_SYAP"])
+                continue
+            if key == "TC_NET_IFACE":
+                saved_iface_choice = saved_value_choice(existing, key, label)
+                candidate_names = {
+                    candidate.name
+                    for candidate in (probed_interfaces.candidates if probed_interfaces is not None else ())
+                    if candidate.ipv4_addrs and not candidate.loopback
+                }
+                target_ips = interface_target_ips(values, discovered_record)
+                exact_target_match = (
+                    interface_candidate_for_ip(probed_interfaces, target_ips)
+                    if probed_interfaces is not None
+                    else None
+                )
+                if saved_iface_choice is not None and (not candidate_names or saved_iface_choice.value in candidate_names):
+                    if exact_target_match and exact_target_match.iface != saved_iface_choice.value:
+                        print_saved_value_hint(saved_iface_choice.value)
+                        print(
+                            f"Probed target IP {exact_target_match.ip} is on {exact_target_match.iface}, "
+                            f"so {exact_target_match.iface} is suggested instead."
+                        )
+                    else:
+                        print_saved_value_hint(saved_iface_choice.value)
+                        values[key] = prompt_valid_config_value(key, label, saved_iface_choice.value)
+                        continue
+                if exact_target_match and probed_interfaces is not None:
+                    print_probed_interface_default(probed_interfaces, exact_target_match.iface)
+                    values[key] = prompt_valid_config_value(key, label, exact_target_match.iface)
+                    continue
+                if saved_iface_choice is not None and not candidate_names:
+                    print_saved_value_hint(saved_iface_choice.value)
+                    values[key] = prompt_valid_config_value(key, label, saved_iface_choice.value)
+                    continue
+                if probed_interfaces is not None and probed_interfaces.candidates:
+                    preferred_iface = preferred_interface_name(probed_interfaces.candidates, target_ips=target_ips)
+                    if preferred_iface:
+                        print_probed_interface_default(probed_interfaces, preferred_iface)
+                        values[key] = prompt_valid_config_value(key, label, preferred_iface)
+                        continue
+                if probed_interfaces is not None and probed_interfaces.preferred_iface:
+                    print_probed_interface_default(probed_interfaces, probed_interfaces.preferred_iface)
+                    values[key] = prompt_valid_config_value(key, label, probed_interfaces.preferred_iface)
+                    continue
+                values[key] = prompt_config_value(existing, key, label, default, secret=secret)
                 continue
             if key == "TC_MDNS_DEVICE_MODEL":
                 syap_derived_model = infer_mdns_device_model_from_airport_syap(values.get("TC_AIRPORT_SYAP", ""))

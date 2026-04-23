@@ -23,7 +23,14 @@ from timecapsulesmb.cli.main import main
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.core.config import DEFAULTS
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
-from timecapsulesmb.device.probe import MountedVolume, ProbeResult, ProbedDeviceState, RemoteInterfaceProbeResult
+from timecapsulesmb.device.probe import (
+    MountedVolume,
+    ProbeResult,
+    ProbedDeviceState,
+    RemoteInterfaceCandidate,
+    RemoteInterfaceCandidatesProbeResult,
+    RemoteInterfaceProbeResult,
+)
 from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.discovery.bonjour import Discovered
 
@@ -138,6 +145,24 @@ class CliTests(unittest.TestCase):
             mock.patch(
                 "timecapsulesmb.cli.runtime.probe_remote_interface",
                 return_value=RemoteInterfaceProbeResult(iface="bridge0", exists=True, detail="interface bridge0 exists"),
+            )
+        )
+        self._exit_stack.enter_context(
+            mock.patch(
+                "timecapsulesmb.cli.configure.probe_remote_interface_candidates",
+                return_value=RemoteInterfaceCandidatesProbeResult(
+                    candidates=(
+                        RemoteInterfaceCandidate(
+                            name="bridge0",
+                            ipv4_addrs=("192.168.1.217",),
+                            up=True,
+                            active=True,
+                            loopback=False,
+                        ),
+                    ),
+                    preferred_iface="bridge0",
+                    detail="preferred interface bridge0",
+                ),
             )
         )
 
@@ -682,6 +707,477 @@ class CliTests(unittest.TestCase):
         self.assertEqual(fake_values["TC_AIRPORT_SYAP"], "119")
         self.assertNotIn("mDNS device model hint", seen_defaults)
         self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
+
+    def test_configure_uses_target_ip_interface_default_instead_of_static_bridge0(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        seen_defaults = {}
+        prompt_values = iter([
+            "root@10.0.1.1",
+            "rootpw",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            seen_defaults[label] = default
+            if label == "Network interface on the Time Capsule":
+                return default
+            if label in {"Airport Utility syAP code", "mDNS device model hint"}:
+                raise AssertionError(f"{label} should be auto-filled for NetBSD 6 little-endian")
+            return next(prompt_values)
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        interface_probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.1.1",), up=True, active=True, loopback=False),
+                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=(), up=True, active=False, loopback=False),
+            ),
+            preferred_iface="bcmeth1",
+            detail="preferred interface bcmeth1",
+        )
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_time_capsule_candidates", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
+                        with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates", return_value=interface_probe):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen_defaults["Network interface on the Time Capsule"], "bcmeth1")
+        self.assertEqual(fake_values["TC_NET_IFACE"], "bcmeth1")
+        self.assertIn("Found network interfaces with IPv4 on the device:", output.getvalue())
+        self.assertIn("bcmeth1: 10.0.1.1 (suggested)", output.getvalue())
+        self.assertIn("Using probed default for TC_NET_IFACE: bcmeth1", output.getvalue())
+
+    def test_configure_uses_discovered_ip_for_interface_default_when_host_is_name(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        seen_defaults = {}
+        record = Discovered(
+            name="AirPort Time Capsule",
+            hostname="AirPort-Time-Capsule.local",
+            ipv4=["10.0.1.1"],
+            services={"_airport._tcp.local."},
+            properties={"syAP": "119"},
+        )
+        prompt_values = iter([
+            "rootpw",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            seen_defaults[label] = default
+            if label in {"Time Capsule SSH target", "Network interface on the Time Capsule"}:
+                return default
+            if label in {"Airport Utility syAP code", "mDNS device model hint"}:
+                raise AssertionError(f"{label} should be auto-filled")
+            return next(prompt_values)
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        interface_probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.1.1",), up=True, active=True, loopback=False),
+                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("192.168.1.217",), up=True, active=True, loopback=False),
+            ),
+            preferred_iface="bridge0",
+            detail="preferred interface bridge0",
+        )
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_time_capsule_candidates", return_value=[record]):
+                with mock.patch("timecapsulesmb.cli.configure.discovered_record_root_host", return_value="root@AirPort-Time-Capsule.local"):
+                    with mock.patch("builtins.input", side_effect=["1"]):
+                        with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                            with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
+                                with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates", return_value=interface_probe):
+                                    with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                        with redirect_stdout(output):
+                                            rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen_defaults["Network interface on the Time Capsule"], "bcmeth1")
+        self.assertEqual(fake_values["TC_NET_IFACE"], "bcmeth1")
+        self.assertIn("bcmeth1: 10.0.1.1 (suggested)", output.getvalue())
+
+    def test_configure_keeps_saved_interface_when_it_matches_probed_candidates(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        seen_defaults = {}
+        existing = {"TC_NET_IFACE": "bcmeth1"}
+        prompt_values = iter([
+            "root@10.0.0.2",
+            "rootpw",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            seen_defaults[label] = default
+            if label == "Network interface on the Time Capsule":
+                return default
+            if label in {"Airport Utility syAP code", "mDNS device model hint"}:
+                raise AssertionError(f"{label} should be auto-filled for NetBSD 6 little-endian")
+            return next(prompt_values)
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        interface_probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("192.168.1.217",), up=True, active=True, loopback=False),
+                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.1.1",), up=True, active=True, loopback=False),
+            ),
+            preferred_iface="bridge0",
+            detail="preferred interface bridge0",
+        )
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
+            with mock.patch("timecapsulesmb.cli.configure.discover_time_capsule_candidates", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
+                        with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates", return_value=interface_probe):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen_defaults["Network interface on the Time Capsule"], "bcmeth1")
+        self.assertEqual(fake_values["TC_NET_IFACE"], "bcmeth1")
+        self.assertIn("Found saved value: bcmeth1", output.getvalue())
+
+    def test_configure_target_ip_match_overrides_conflicting_saved_interface(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        seen_defaults = {}
+        existing = {"TC_NET_IFACE": "bridge0"}
+        prompt_values = iter([
+            "root@10.0.1.1",
+            "rootpw",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            seen_defaults[label] = default
+            if label == "Network interface on the Time Capsule":
+                return default
+            if label in {"Airport Utility syAP code", "mDNS device model hint"}:
+                raise AssertionError(f"{label} should be auto-filled for NetBSD 6 little-endian")
+            return next(prompt_values)
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        interface_probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("192.168.1.217",), up=True, active=True, loopback=False),
+                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.1.1",), up=True, active=True, loopback=False),
+            ),
+            preferred_iface="bridge0",
+            detail="preferred interface bridge0",
+        )
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
+            with mock.patch("timecapsulesmb.cli.configure.discover_time_capsule_candidates", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
+                        with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates", return_value=interface_probe):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen_defaults["Network interface on the Time Capsule"], "bcmeth1")
+        self.assertEqual(fake_values["TC_NET_IFACE"], "bcmeth1")
+        self.assertIn("bcmeth1: 10.0.1.1 (suggested)", output.getvalue())
+        self.assertIn("Found saved value: bridge0", output.getvalue())
+        self.assertIn("Probed target IP 10.0.1.1 is on bcmeth1, so bcmeth1 is suggested instead.", output.getvalue())
+
+    def test_configure_private_discovered_ip_beats_link_local_ssh_target(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        seen_defaults = {}
+        record = Discovered(
+            name="AirPort Time Capsule",
+            hostname="AirPort-Time-Capsule.local",
+            ipv4=["192.168.1.217"],
+            services={"_airport._tcp.local."},
+            properties={"syAP": "119"},
+        )
+        prompt_values = iter([
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            seen_defaults[label] = default
+            if label == "Time Capsule SSH target":
+                return "root@169.254.44.9"
+            if label == "Time Capsule root password":
+                return "rootpw"
+            if label == "Network interface on the Time Capsule":
+                return default
+            if label in {"Airport Utility syAP code", "mDNS device model hint"}:
+                raise AssertionError(f"{label} should be auto-filled")
+            return next(prompt_values)
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        interface_probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("169.254.44.9",), up=True, active=True, loopback=False),
+                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("192.168.1.217",), up=True, active=True, loopback=False),
+            ),
+            preferred_iface="bridge0",
+            detail="preferred interface bridge0",
+        )
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_time_capsule_candidates", return_value=[record]):
+                with mock.patch("timecapsulesmb.cli.configure.discovered_record_root_host", return_value="root@AirPort-Time-Capsule.local"):
+                    with mock.patch("builtins.input", side_effect=["1"]):
+                        with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                            with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
+                                with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates", return_value=interface_probe):
+                                    with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                        with redirect_stdout(output):
+                                            rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen_defaults["Network interface on the Time Capsule"], "bridge0")
+        self.assertEqual(fake_values["TC_NET_IFACE"], "bridge0")
+        self.assertIn("bridge0: 192.168.1.217 (suggested)", output.getvalue())
+
+    def test_configure_link_local_target_ip_can_win_when_it_is_the_only_exact_match(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        seen_defaults = {}
+        prompt_values = iter([
+            "root@169.254.44.9",
+            "rootpw",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            seen_defaults[label] = default
+            if label == "Network interface on the Time Capsule":
+                return default
+            if label in {"Airport Utility syAP code", "mDNS device model hint"}:
+                raise AssertionError(f"{label} should be auto-filled")
+            return next(prompt_values)
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        interface_probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("169.254.44.9",), up=True, active=True, loopback=False),
+                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("192.168.1.217",), up=True, active=True, loopback=False),
+            ),
+            preferred_iface="bridge0",
+            detail="preferred interface bridge0",
+        )
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_time_capsule_candidates", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
+                        with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates", return_value=interface_probe):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen_defaults["Network interface on the Time Capsule"], "bcmeth1")
+        self.assertEqual(fake_values["TC_NET_IFACE"], "bcmeth1")
+        self.assertIn("bcmeth1: 169.254.44.9 (suggested)", output.getvalue())
+
+    def test_configure_multiple_private_interfaces_without_exact_match_prints_candidates_and_prompts(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        seen_defaults = {}
+        prompt_values = iter([
+            "root@time-capsule.local",
+            "rootpw",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            seen_defaults[label] = default
+            if label == "Network interface on the Time Capsule":
+                return default
+            if label in {"Airport Utility syAP code", "mDNS device model hint"}:
+                raise AssertionError(f"{label} should be auto-filled")
+            return next(prompt_values)
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        interface_probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.1.1",), up=True, active=True, loopback=False),
+                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("192.168.1.217",), up=True, active=True, loopback=False),
+            ),
+            preferred_iface="bridge0",
+            detail="preferred interface bridge0",
+        )
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_time_capsule_candidates", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
+                        with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates", return_value=interface_probe):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen_defaults["Network interface on the Time Capsule"], "bridge0")
+        self.assertEqual(fake_values["TC_NET_IFACE"], "bridge0")
+        text = output.getvalue()
+        self.assertIn("Found network interfaces with IPv4 on the device:", text)
+        self.assertIn("bcmeth1: 10.0.1.1", text)
+        self.assertIn("bridge0: 192.168.1.217 (suggested)", text)
+
+    def test_configure_uses_ssh_target_ip_before_discovered_ip_for_interface_default(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        seen_defaults = {}
+        record = Discovered(
+            name="AirPort Time Capsule",
+            hostname="AirPort-Time-Capsule.local",
+            ipv4=["192.168.1.217"],
+            services={"_airport._tcp.local."},
+            properties={"syAP": "119"},
+        )
+        prompt_values = iter([
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            seen_defaults[label] = default
+            if label == "Time Capsule SSH target":
+                return "root@10.0.1.1"
+            if label == "Time Capsule root password":
+                return "rootpw"
+            if label == "Network interface on the Time Capsule":
+                return default
+            if label in {"Airport Utility syAP code", "mDNS device model hint"}:
+                raise AssertionError(f"{label} should be auto-filled")
+            return next(prompt_values)
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        interface_probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.1.1",), up=True, active=True, loopback=False),
+                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("192.168.1.217",), up=True, active=True, loopback=False),
+            ),
+            preferred_iface="bridge0",
+            detail="preferred interface bridge0",
+        )
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_time_capsule_candidates", return_value=[record]):
+                with mock.patch("timecapsulesmb.cli.configure.discovered_record_root_host", return_value="root@AirPort-Time-Capsule.local"):
+                    with mock.patch("builtins.input", side_effect=["1"]):
+                        with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                            with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
+                                with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates", return_value=interface_probe):
+                                    with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                        with redirect_stdout(output):
+                                            rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen_defaults["Network interface on the Time Capsule"], "bcmeth1")
+        self.assertEqual(fake_values["TC_NET_IFACE"], "bcmeth1")
+        self.assertIn("bcmeth1: 10.0.1.1 (suggested)", output.getvalue())
+
+    def test_configure_falls_back_to_static_default_when_probe_has_no_ipv4_candidates(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        seen_defaults = {}
+        prompt_values = iter([
+            "root@10.0.0.2",
+            "rootpw",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            seen_defaults[label] = default
+            if label == "Network interface on the Time Capsule":
+                return default
+            if label in {"Airport Utility syAP code", "mDNS device model hint"}:
+                raise AssertionError(f"{label} should be auto-filled")
+            return next(prompt_values)
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        interface_probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(name="lo0", ipv4_addrs=("127.0.0.1",), up=True, active=True, loopback=True),
+                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=(), up=True, active=True, loopback=False),
+            ),
+            preferred_iface=None,
+            detail="no non-loopback IPv4 interface candidates found",
+        )
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_time_capsule_candidates", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
+                        with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates", return_value=interface_probe):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen_defaults["Network interface on the Time Capsule"], "bridge0")
+        self.assertEqual(fake_values["TC_NET_IFACE"], "bridge0")
+        self.assertNotIn("Using probed default for TC_NET_IFACE", output.getvalue())
 
     def test_configure_skipped_mdns_netbsd6_little_autofills_syap_and_model(self) -> None:
         output = io.StringIO()
