@@ -43,6 +43,15 @@ SSH_TRANSPORT_ERROR_PATTERNS = (
     "ssh: ",
 )
 
+SSH_CLIENT_NOISE_PATTERNS = (
+    re.compile(r"^Warning: Permanently added .+ to the list of known hosts\.$"),
+    re.compile(r"^\*\* WARNING: connection is not using a post-quantum key exchange algorithm\.$"),
+    re.compile(r"^\*\* This session may be vulnerable to \"store now, decrypt later\" attacks\.$"),
+    re.compile(r"^\*\* The server may need to be upgraded\. See https://openssh\.com/pq\.html$"),
+)
+
+SSH_AUTHENTICITY_PROMPT = r"Are you sure you want to continue connecting \(yes/no/\[fingerprint\]\)\?"
+
 
 def ssh_opts_use_proxy(ssh_opts: str) -> bool:
     try:
@@ -81,6 +90,19 @@ def _extract_ssh_transport_error(output: str) -> str | None:
     return None
 
 
+def _strip_ssh_client_noise(output: str) -> str:
+    kept: list[str] = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if any(pattern.match(line) for pattern in SSH_CLIENT_NOISE_PATTERNS):
+            continue
+        kept.append(raw_line)
+    if not kept:
+        return ""
+    suffix = "\n" if output.endswith(("\n", "\r\n")) else ""
+    return "\n".join(kept) + suffix
+
+
 def _spawn_with_password(cmd: list[str], password: str, *, timeout: int, timeout_message: str) -> tuple[int, str]:
     try:
         import pexpect
@@ -91,10 +113,12 @@ def _spawn_with_password(cmd: list[str], password: str, *, timeout: int, timeout
     output: list[str] = []
     try:
         while True:
-            idx = child.expect(["[Pp]assword:", pexpect.EOF, pexpect.TIMEOUT], timeout=timeout)
+            idx = child.expect([SSH_AUTHENTICITY_PROMPT, "[Pp]assword:", pexpect.EOF, pexpect.TIMEOUT], timeout=timeout)
             if idx == 0:
-                child.sendline(password)
+                child.sendline("yes")
             elif idx == 1:
+                child.sendline(password)
+            elif idx == 2:
                 output.append(child.before or "")
                 break
             else:
@@ -185,6 +209,7 @@ def run_ssh(host: str, password: str, ssh_opts: str, remote_cmd: str, *, check: 
     transport_error = _extract_ssh_transport_error(stdout)
     if transport_error:
         raise SshTransportError(f"Connecting to the device failed, SSH error: {transport_error}")
+    stdout = _strip_ssh_client_noise(stdout)
     if check and rc != 0:
         raise SystemExit(stdout.strip() or f"ssh command failed with rc={rc}")
     return subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr="")
@@ -226,11 +251,13 @@ def ssh_local_forward(
     try:
         password_sent = False
         while True:
-            idx = child.expect(["[Pp]assword:", pexpect.EOF, pexpect.TIMEOUT], timeout=1)
+            idx = child.expect([SSH_AUTHENTICITY_PROMPT, "[Pp]assword:", pexpect.EOF, pexpect.TIMEOUT], timeout=1)
             if idx == 0:
+                child.sendline("yes")
+            elif idx == 1:
                 child.sendline(password)
                 password_sent = True
-            elif idx == 1:
+            elif idx == 2:
                 output.append(child.before or "")
                 text = "".join(output)
                 transport_error = _extract_ssh_transport_error(text)

@@ -79,7 +79,7 @@ class SSHTransportTests(unittest.TestCase):
         except Exception:
             self.skipTest("pexpect not available")
         fake_child = mock.Mock()
-        fake_child.expect.side_effect = [1]
+        fake_child.expect.side_effect = [2]
         fake_child.before = "TimeCapsule�\n"
         fake_child.exitstatus = 0
         fake_child.signalstatus = None
@@ -93,6 +93,27 @@ class SSHTransportTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(output, "TimeCapsule�\n")
         self.assertEqual(spawn_mock.call_args.kwargs["codec_errors"], "replace")
+
+    def test_spawn_with_password_accepts_first_connection_authenticity_prompt(self) -> None:
+        try:
+            import pexpect  # noqa: F401
+        except Exception:
+            self.skipTest("pexpect not available")
+        fake_child = mock.Mock()
+        fake_child.expect.side_effect = [0, 1, 2]
+        fake_child.before = "NetBSD\n"
+        fake_child.exitstatus = 0
+        fake_child.signalstatus = None
+        with mock.patch("pexpect.spawn", return_value=fake_child):
+            rc, output = ssh_transport._spawn_with_password(
+                ["ssh", "host", "cmd"],
+                "pw",
+                timeout=10,
+                timeout_message="timeout",
+            )
+        self.assertEqual(rc, 0)
+        self.assertEqual(output, "NetBSD\n")
+        self.assertEqual(fake_child.sendline.call_args_list, [mock.call("yes"), mock.call("pw")])
 
     def test_run_ssh_retries_transient_permission_denied(self) -> None:
         with mock.patch(
@@ -157,6 +178,54 @@ class SSHTransportTests(unittest.TestCase):
             str(exc.exception),
             "Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied",
         )
+
+    def test_run_ssh_strips_known_hosts_warning_before_returning_stdout(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.transport.ssh._ssh_option_supported",
+            return_value=True,
+        ):
+            with mock.patch(
+                "timecapsulesmb.transport.ssh._spawn_with_password",
+                return_value=(
+                    0,
+                    "Warning: Permanently added '192.168.1.118' (RSA) to the list of known hosts.\n"
+                    "NetBSD\n4.0_STABLE\nearmv4\n",
+                ),
+            ):
+                proc = ssh_transport.run_ssh(
+                    "root@192.168.1.118",
+                    "pw",
+                    "-o StrictHostKeyChecking=no",
+                    "uname -s",
+                    check=False,
+                    timeout=10,
+                )
+        self.assertEqual(proc.stdout, "NetBSD\n4.0_STABLE\nearmv4\n")
+
+    def test_run_ssh_strips_post_quantum_warning_before_returning_stdout(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.transport.ssh._ssh_option_supported",
+            return_value=True,
+        ):
+            with mock.patch(
+                "timecapsulesmb.transport.ssh._spawn_with_password",
+                return_value=(
+                    0,
+                    "** WARNING: connection is not using a post-quantum key exchange algorithm.\n"
+                    "** This session may be vulnerable to \"store now, decrypt later\" attacks.\n"
+                    "** The server may need to be upgraded. See https://openssh.com/pq.html\n"
+                    "NetBSD\n4.0_STABLE\nearmv4\n",
+                ),
+            ):
+                proc = ssh_transport.run_ssh(
+                    "root@192.168.1.118",
+                    "pw",
+                    "-o StrictHostKeyChecking=no",
+                    "uname -s",
+                    check=False,
+                    timeout=10,
+                )
+        self.assertEqual(proc.stdout, "NetBSD\n4.0_STABLE\nearmv4\n")
 
     def test_normalize_ssh_tokens_expands_identity_and_preserves_proxyjump(self) -> None:
         with mock.patch(

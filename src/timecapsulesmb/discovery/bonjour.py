@@ -218,6 +218,7 @@ def discover(timeout: float = 5.0) -> list[Discovered]:
         except Exception:
             pass
 
+    all_results = enrich_airport_properties_by_ipv4(all_results)
     filtered = [record for record in all_results if looks_like_time_capsule(record.name, record.hostname, record.properties)]
     if not filtered:
         filtered = [record for record in all_results if "_airport._tcp.local." in record.services]
@@ -227,6 +228,22 @@ def discover(timeout: float = 5.0) -> list[Discovered]:
 
 def discover_time_capsule_candidates(timeout: float = 5.0) -> list[Discovered]:
     return discover(timeout=timeout)
+
+
+def enrich_airport_properties_by_ipv4(records: list[Discovered]) -> list[Discovered]:
+    airport_records = [record for record in records if "_airport._tcp.local." in record.services and record.properties]
+    for record in records:
+        if "_airport._tcp.local." in record.services:
+            continue
+        record_ips = set(record.ipv4)
+        if not record_ips:
+            continue
+        for airport_record in airport_records:
+            if not record_ips.intersection(airport_record.ipv4):
+                continue
+            for key, value in airport_record.properties.items():
+                record.properties.setdefault(key, value)
+    return records
 
 
 def print_table(records: list[Discovered]) -> None:

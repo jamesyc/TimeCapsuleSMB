@@ -338,7 +338,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("Please enter the SSH target and password again.\n")
             prompt_host_and_password(existing, values, discovered_host)
 
-        discovered_airport_identity = discovered_record is not None
+        discovered_services = getattr(discovered_record, "services", set()) if discovered_record is not None else set()
+        if not isinstance(discovered_services, (set, frozenset, list, tuple)):
+            discovered_services = set()
+        discovered_airport_identity = "_airport._tcp.local." in discovered_services
         valid_discovered_syap = validated_value_or_empty(
             "TC_AIRPORT_SYAP",
             discovered_airport_syap or "",
@@ -364,15 +367,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                     print_automatic_value_choice(key, discovered_syap_choice)
                     values[key] = discovered_syap_choice.value
                     continue
+                if inferred_syap_choice is not None:
+                    print_automatic_value_choice(key, inferred_syap_choice)
+                    values[key] = inferred_syap_choice.value
+                    continue
                 if discovered_airport_identity:
                     print_syap_prompt_help()
                     if saved_syap_choice is not None:
                         print_saved_value_hint(saved_syap_choice.value)
                     values[key] = prompt_valid_config_value(key, label, saved_syap_choice.value if saved_syap_choice is not None else "")
-                    continue
-                if inferred_syap_choice is not None:
-                    print_automatic_value_choice(key, inferred_syap_choice)
-                    values[key] = inferred_syap_choice.value
                     continue
                 if saved_syap_choice is not None:
                     print_automatic_value_choice(key, saved_syap_choice)

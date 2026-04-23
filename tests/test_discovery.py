@@ -17,6 +17,7 @@ from timecapsulesmb.discovery.bonjour import (
     discover_time_capsule_candidates,
     discovered_record_airport_syap,
     discovered_record_root_host,
+    enrich_airport_properties_by_ipv4,
     looks_like_time_capsule,
     prefer_routable_ipv4,
     preferred_host,
@@ -78,6 +79,44 @@ class DiscoveryTests(unittest.TestCase):
             results = discover_time_capsule_candidates(timeout=1.5)
         self.assertEqual(results, [record])
         discover_mock.assert_called_once_with(timeout=1.5)
+
+    def test_enrich_airport_properties_by_ipv4_copies_syap_to_samba_record(self) -> None:
+        airport = Discovered(
+            name="James's AirPort Time Capsule",
+            hostname="Jamess-AirPort-Time-Capsule.local",
+            ipv4=["192.168.1.217"],
+            services={"_airport._tcp.local."},
+            properties={"syAP": "119", "syVs": "7.9.1"},
+        )
+        samba = Discovered(
+            name="Time Capsule Samba 4",
+            hostname="timecapsulesamba4.local",
+            ipv4=["192.168.1.217"],
+            services={"_smb._tcp.local.", "_device-info._tcp.local."},
+            properties={"model": "TimeCapsule8,119"},
+        )
+        enrich_airport_properties_by_ipv4([airport, samba])
+        self.assertEqual(samba.properties["syAP"], "119")
+        self.assertEqual(samba.properties["syVs"], "7.9.1")
+        self.assertEqual(samba.properties["model"], "TimeCapsule8,119")
+
+    def test_enrich_airport_properties_by_ipv4_does_not_cross_devices(self) -> None:
+        airport = Discovered(
+            name="Other AirPort Time Capsule",
+            hostname="other.local",
+            ipv4=["192.168.1.72"],
+            services={"_airport._tcp.local."},
+            properties={"syAP": "106"},
+        )
+        samba = Discovered(
+            name="Time Capsule Samba 4",
+            hostname="timecapsulesamba4.local",
+            ipv4=["192.168.1.217"],
+            services={"_smb._tcp.local."},
+            properties={"model": "TimeCapsule8,119"},
+        )
+        enrich_airport_properties_by_ipv4([airport, samba])
+        self.assertNotIn("syAP", samba.properties)
 
 
 if __name__ == "__main__":
