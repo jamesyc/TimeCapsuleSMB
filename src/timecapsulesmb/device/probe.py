@@ -817,9 +817,9 @@ exit 1
     return volume
 
 
-def build_device_paths(volume_root: str, payload_dir_name: str) -> DevicePaths:
+def build_device_paths(volume_root: str, payload_dir_name: str, *, share_use_disk_root: bool = False) -> DevicePaths:
     disk_key = PurePosixPath(volume_root).name
-    data_root = f"{volume_root}/ShareRoot"
+    data_root = volume_root if share_use_disk_root else f"{volume_root}/ShareRoot"
     return DevicePaths(
         volume_root=volume_root,
         payload_dir=f"{volume_root}/{payload_dir_name}",

@@ -187,6 +187,45 @@ class DeployModuleTests(unittest.TestCase):
         )
         self.assertEqual(plan.post_auth_actions, [install_permissions_action(payload_dir)])
 
+    def test_build_device_paths_uses_shareroot_when_disk_root_false(self) -> None:
+        paths = build_device_paths("/Volumes/dk2", ".samba4", share_use_disk_root=False)
+        self.assertEqual(paths.volume_root, "/Volumes/dk2")
+        self.assertEqual(paths.payload_dir, "/Volumes/dk2/.samba4")
+        self.assertEqual(paths.data_root, "/Volumes/dk2/ShareRoot")
+        self.assertEqual(paths.data_root_marker, "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported")
+
+    def test_build_device_paths_can_use_disk_root_as_share_path(self) -> None:
+        paths = build_device_paths("/Volumes/dk2", ".samba4", share_use_disk_root=True)
+        self.assertEqual(paths.volume_root, "/Volumes/dk2")
+        self.assertEqual(paths.payload_dir, "/Volumes/dk2/.samba4")
+        self.assertEqual(paths.data_root, "/Volumes/dk2")
+        self.assertEqual(paths.data_root_marker, "/Volumes/dk2/.com.apple.timemachine.supported")
+
+    def test_shareroot_deployment_plan_initializes_shareroot_marker_when_disk_root_false(self) -> None:
+        paths = build_device_paths("/Volumes/dk2", ".samba4", share_use_disk_root=False)
+        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
+        self.assertIn(
+            initialize_data_root_action("/Volumes/dk2/ShareRoot", "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported"),
+            plan.pre_upload_actions,
+        )
+        self.assertNotIn(
+            initialize_data_root_action("/Volumes/dk2", "/Volumes/dk2/.com.apple.timemachine.supported"),
+            plan.pre_upload_actions,
+        )
+
+    def test_disk_root_deployment_plan_initializes_volume_root_marker(self) -> None:
+        paths = build_device_paths("/Volumes/dk2", ".samba4", share_use_disk_root=True)
+        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
+        self.assertEqual(plan.payload_dir, "/Volumes/dk2/.samba4")
+        self.assertIn(
+            initialize_data_root_action("/Volumes/dk2", "/Volumes/dk2/.com.apple.timemachine.supported"),
+            plan.pre_upload_actions,
+        )
+        self.assertNotIn(
+            initialize_data_root_action("/Volumes/dk2/ShareRoot", "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported"),
+            plan.pre_upload_actions,
+        )
+
     def test_render_template_text_replaces_tokens(self) -> None:
         self.assertEqual(render_template_text("hello __TOKEN__", {"__TOKEN__": "world"}), "hello world")
 
@@ -905,6 +944,70 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("CACHE_DIRECTORY=$PAYLOAD_DIR/cache", rendered)
         self.assertIn("cache directory = $CACHE_DIRECTORY", rendered)
         self.assertIn("reset on zero vc = yes", rendered)
+
+    def test_render_start_script_defaults_to_shareroot_mode(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(values)
+        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
+        self.assertIn("SHARE_USE_DISK_ROOT=false", rendered)
+        discover_start = rendered.index("discover_preexisting_data_root()")
+        discover_end = rendered.index("\nresolve_data_root_on_mounted_volume()")
+        discover_section = rendered[discover_start:discover_end]
+        self.assertIn('if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then', discover_section)
+        self.assertLess(
+            discover_section.index('if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then'),
+            discover_section.index("if data_root=$(wait_for_existing_data_root); then"),
+        )
+        resolve_start = rendered.index("resolve_data_root_on_mounted_volume()")
+        resolve_end = rendered.index("\nwait_for_existing_data_root()")
+        resolve_section = rendered[resolve_start:resolve_end]
+        self.assertIn('if data_root=$(find_data_root_under_volume "$volume_root"); then', resolve_section)
+        self.assertLess(
+            resolve_section.index('if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then'),
+            resolve_section.index('if data_root=$(find_data_root_under_volume "$volume_root"); then'),
+        )
+
+    def test_render_start_script_disk_root_mode_skips_apple_data_root_detection(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(values, share_use_disk_root=True)
+        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
+        self.assertIn("SHARE_USE_DISK_ROOT=true", rendered)
+        discover_start = rendered.index("discover_preexisting_data_root()")
+        discover_end = rendered.index("\nresolve_data_root_on_mounted_volume()")
+        discover_section = rendered[discover_start:discover_end]
+        self.assertIn('if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then', discover_section)
+        self.assertIn("return 1", discover_section)
+        self.assertLess(
+            discover_section.index('if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then'),
+            discover_section.index("if data_root=$(wait_for_existing_data_root); then"),
+        )
+        resolve_start = rendered.index("resolve_data_root_on_mounted_volume()")
+        resolve_end = rendered.index("\nwait_for_existing_data_root()")
+        resolve_section = rendered[resolve_start:resolve_end]
+        self.assertIn('log "disk-root share mode: using mounted volume root $volume_root"', resolve_section)
+        self.assertIn('echo "$volume_root"', resolve_section)
+        self.assertLess(
+            resolve_section.index('if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then'),
+            resolve_section.index('if data_root=$(find_data_root_under_volume "$volume_root"); then'),
+        )
 
     def test_render_start_script_defers_netbsd4_cache_assignment_until_data_root_exists(self) -> None:
         values = {

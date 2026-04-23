@@ -631,6 +631,7 @@ class CliTests(unittest.TestCase):
                                                 rc = configure.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_SAMBA_USER"], "admin")
+        self.assertEqual(fake_values["TC_SHARE_USE_DISK_ROOT"], "false")
         uuid.UUID(fake_values["TC_CONFIGURE_ID"])
         telemetry_values = telemetry_factory.call_args.args[0]
         self.assertEqual(telemetry_values["TC_CONFIGURE_ID"], fake_values["TC_CONFIGURE_ID"])
@@ -646,6 +647,74 @@ class CliTests(unittest.TestCase):
         self.assertIn("    .venv/bin/tcapsule prep-device", text)
         self.assertIn("- Deploy this configuration to your Time Capsule, run:", text)
         self.assertIn("    .venv/bin/tcapsule deploy", text)
+
+    def test_configure_hidden_share_use_disk_root_arg_writes_true(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        prompt_values = iter([
+            "root@10.0.0.2",
+            "pw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+            "119",
+        ])
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_time_capsule_candidates", return_value=[]):
+                with mock.patch(
+                    "timecapsulesmb.cli.configure.prompt",
+                    side_effect=lambda label, default, _secret: default if label == "mDNS device model hint" else next(prompt_values),
+                ):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
+                        with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                with mock.patch("timecapsulesmb.cli.configure.CommandContext", return_value=FakeCommandContext()):
+                                    with redirect_stdout(output):
+                                        rc = configure.main(["--share-use-disk-root"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(fake_values["TC_SHARE_USE_DISK_ROOT"], "true")
+
+    def test_configure_plain_rerun_preserves_existing_share_use_disk_root_true(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        prompt_values = iter([
+            "root@10.0.0.2",
+            "pw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+            "119",
+        ])
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={"TC_SHARE_USE_DISK_ROOT": "true"}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_time_capsule_candidates", return_value=[]):
+                with mock.patch(
+                    "timecapsulesmb.cli.configure.prompt",
+                    side_effect=lambda label, default, _secret: default if label == "mDNS device model hint" else next(prompt_values),
+                ):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
+                        with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                with mock.patch("timecapsulesmb.cli.configure.CommandContext", return_value=FakeCommandContext()):
+                                    with redirect_stdout(output):
+                                        rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(fake_values["TC_SHARE_USE_DISK_ROOT"], "true")
 
     def test_configure_ensures_install_id_before_telemetry(self) -> None:
         output = io.StringIO()
@@ -4295,6 +4364,7 @@ class CliTests(unittest.TestCase):
             payload_family="netbsd4le_samba4",
             debug_logging=False,
             data_root="/Volumes/dk2/ShareRoot",
+            share_use_disk_root=False,
         )
 
     def test_deploy_debug_logging_renders_disk_logging_template(self) -> None:
@@ -4335,6 +4405,7 @@ class CliTests(unittest.TestCase):
             payload_family="netbsd6_samba4",
             debug_logging=True,
             data_root="/Volumes/dk2/ShareRoot",
+            share_use_disk_root=False,
         )
         rendered_actions = [action.kind for action in actions_mock.call_args_list[0].args[1]]
         self.assertNotIn("prepare_log_dir", rendered_actions)
@@ -4680,6 +4751,60 @@ class CliTests(unittest.TestCase):
                 "bonjour_browse_resolve",
                 "authenticated_smb_listing",
             ],
+        )
+
+    def test_deploy_dry_run_json_uses_shareroot_when_disk_root_false(self) -> None:
+        output = io.StringIO()
+        values = self.make_valid_env(TC_PAYLOAD_DIR_NAME=".samba4", TC_SHARE_USE_DISK_ROOT="false")
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
+                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
+                    with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
+                        with redirect_stdout(output):
+                            rc = deploy.main(["--dry-run", "--json"])
+        self.assertEqual(rc, 0)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["payload_dir"], "/Volumes/dk2/.samba4")
+        self.assertIn(
+            {
+                "kind": "initialize_data_root",
+                "args": ["/Volumes/dk2/ShareRoot", "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported"],
+            },
+            payload["pre_upload_actions"],
+        )
+        self.assertNotIn(
+            {
+                "kind": "initialize_data_root",
+                "args": ["/Volumes/dk2", "/Volumes/dk2/.com.apple.timemachine.supported"],
+            },
+            payload["pre_upload_actions"],
+        )
+
+    def test_deploy_dry_run_json_uses_disk_root_when_configured(self) -> None:
+        output = io.StringIO()
+        values = self.make_valid_env(TC_PAYLOAD_DIR_NAME=".samba4", TC_SHARE_USE_DISK_ROOT="true")
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
+                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root", return_value="/Volumes/dk2"):
+                    with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
+                        with redirect_stdout(output):
+                            rc = deploy.main(["--dry-run", "--json"])
+        self.assertEqual(rc, 0)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["payload_dir"], "/Volumes/dk2/.samba4")
+        self.assertIn(
+            {
+                "kind": "initialize_data_root",
+                "args": ["/Volumes/dk2", "/Volumes/dk2/.com.apple.timemachine.supported"],
+            },
+            payload["pre_upload_actions"],
+        )
+        self.assertNotIn(
+            {
+                "kind": "initialize_data_root",
+                "args": ["/Volumes/dk2/ShareRoot", "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported"],
+            },
+            payload["pre_upload_actions"],
         )
 
     def test_deploy_netbsd4_dry_run_json_outputs_activation_plan(self) -> None:

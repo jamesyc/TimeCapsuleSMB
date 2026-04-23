@@ -8,6 +8,7 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import load_env_values
+from timecapsulesmb.core.config import parse_bool
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
@@ -87,11 +88,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not args.json:
             print(f"Using {payload_family_description(payload_family)} payload.")
         volume_root = discover_volume_root(connection)
+        share_use_disk_root = parse_bool(values.get("TC_SHARE_USE_DISK_ROOT", "false"))
         resolved_artifacts = resolve_payload_artifacts(REPO_ROOT, payload_family)
         smbd_path = resolved_artifacts["smbd"].absolute_path
         mdns_path = resolved_artifacts["mdns-advertiser"].absolute_path
         nbns_path = resolved_artifacts["nbns-advertiser"].absolute_path
-        device_paths = build_device_paths(volume_root, values["TC_PAYLOAD_DIR_NAME"])
+        device_paths = build_device_paths(
+            volume_root,
+            values["TC_PAYLOAD_DIR_NAME"],
+            share_use_disk_root=share_use_disk_root,
+        )
         plan = build_deployment_plan(
             host,
             device_paths,
@@ -131,6 +137,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             payload_family=payload_family,
             debug_logging=args.debug_logging,
             data_root=device_paths.data_root,
+            share_use_disk_root=share_use_disk_root,
         )
 
         with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp:

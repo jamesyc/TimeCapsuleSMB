@@ -50,6 +50,7 @@ def build_template_bundle(
     payload_family: str = PAYLOAD_FAMILY_NETBSD6,
     debug_logging: bool = False,
     data_root: str | None = None,
+    share_use_disk_root: bool = False,
 ) -> TemplateBundle:
     device_model = values.get("TC_MDNS_DEVICE_MODEL", DEFAULTS["TC_MDNS_DEVICE_MODEL"])
     start_cache_directory, smbconf_cache_directory = cache_directory_replacements(
@@ -83,6 +84,7 @@ def build_template_bundle(
             "__ADISK_UUID__": shell_quote(adisk_uuid),
             "__MDNS_LOG_ENABLED__": mdns_log_enabled,
             "__MDNS_LOG_FILE__": shell_quote(mdns_log_file),
+            "__SHARE_USE_DISK_ROOT__": "true" if share_use_disk_root else "false",
         },
         watchdog_replacements={
             "__SMB_SHARE_NAME__": shell_quote(values["TC_SHARE_NAME"]),

@@ -29,6 +29,7 @@ RAM_LOG="$RAM_VAR/rc.local.log"
 SMBD_LOG="$RAM_VAR/log.smbd"
 MDNS_LOG_ENABLED=__MDNS_LOG_ENABLED__
 MDNS_LOG_FILE=__MDNS_LOG_FILE__
+SHARE_USE_DISK_ROOT=__SHARE_USE_DISK_ROOT__
 MDNS_BIN=/mnt/Flash/mdns-advertiser
 LEGACY_PREFIX_NETBSD7=/root/tc-netbsd7
 LEGACY_PREFIX_NETBSD4=/root/tc-netbsd4
@@ -271,6 +272,13 @@ mount_device_if_possible() {
 }
 
 discover_preexisting_data_root() {
+    # Disk-root share mode serves the mounted volume root, so skip Apple's
+    # ShareRoot/Shared data-root detection and let the normal mount fallback
+    # resolve the volume root.
+    if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then
+        return 1
+    fi
+
     if data_root=$(wait_for_existing_data_root); then
         log "found Apple-mounted data root: $data_root"
         echo "$data_root"
@@ -282,6 +290,12 @@ discover_preexisting_data_root() {
 
 resolve_data_root_on_mounted_volume() {
     volume_root=$1
+
+    if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then
+        log "disk-root share mode: using mounted volume root $volume_root"
+        echo "$volume_root"
+        return 0
+    fi
 
     if data_root=$(find_data_root_under_volume "$volume_root"); then
         echo "$data_root"

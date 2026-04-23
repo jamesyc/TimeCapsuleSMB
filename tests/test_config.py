@@ -21,12 +21,14 @@ from timecapsulesmb.core.config import (
     DEFAULTS,
     extract_host,
     missing_required_keys,
+    parse_bool,
     parse_env_value,
     parse_env_values,
     render_env_text,
     upsert_env_key,
     validate_adisk_share_name,
     validate_airport_syap,
+    validate_bool,
     validate_dns_name,
     validate_config_values,
     validate_mdns_device_model_matches_syap,
@@ -69,7 +71,20 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("TC_MDNS_INSTANCE_NAME='Time Capsule Samba 4'", rendered)
         self.assertIn("TC_MDNS_DEVICE_MODEL=TimeCapsule", rendered)
         self.assertIn("TC_AIRPORT_SYAP=''", rendered)
+        self.assertIn("TC_SHARE_USE_DISK_ROOT=false", rendered)
         self.assertIn("TC_CONFIGURE_ID=12345678-1234-1234-1234-123456789012", rendered)
+
+    def test_parse_bool_accepts_true_case_insensitively(self) -> None:
+        self.assertTrue(parse_bool("true"))
+        self.assertTrue(parse_bool("TRUE"))
+        self.assertFalse(parse_bool("false"))
+        self.assertFalse(parse_bool(""))
+
+    def test_validate_bool_accepts_true_false_and_missing_default(self) -> None:
+        self.assertIsNone(validate_bool("true", "Flag"))
+        self.assertIsNone(validate_bool("false", "Flag"))
+        self.assertIsNone(validate_bool("", "Flag"))
+        self.assertEqual(validate_bool("yes", "Flag"), "Flag must be true or false.")
 
     def test_write_env_file_round_trips_mdns_device_model(self) -> None:
         values = dict(DEFAULTS)

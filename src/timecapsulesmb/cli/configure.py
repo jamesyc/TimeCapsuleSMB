@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import getpass
 import ipaddress
 import uuid
@@ -14,6 +15,7 @@ from timecapsulesmb.core.config import (
     extract_host,
     infer_mdns_device_model_from_airport_syap,
     parse_env_values,
+    parse_bool,
     upsert_env_key,
     write_env_file,
 )
@@ -348,6 +350,10 @@ def prompt_config_value(
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="Create or update the local TimeCapsuleSMB .env configuration.")
+    parser.add_argument("--share-use-disk-root", action="store_true", help=argparse.SUPPRESS)
+    args = parser.parse_args(argv)
+
     ensure_install_id()
     existing = parse_env_values(ENV_PATH, defaults={})
     configure_id = str(uuid.uuid4())
@@ -373,6 +379,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         ssh_opts = existing.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"])
         values["TC_SSH_OPTS"] = ssh_opts
+        existing_share_use_disk_root = parse_bool(existing.get("TC_SHARE_USE_DISK_ROOT", DEFAULTS["TC_SHARE_USE_DISK_ROOT"]))
+        values["TC_SHARE_USE_DISK_ROOT"] = "true" if args.share_use_disk_root or existing_share_use_disk_root else "false"
         discovered_record = discover_default_record(existing)
         discovered_host = discovered_record_root_host(discovered_record) if discovered_record else None
         if discovered_record is not None:

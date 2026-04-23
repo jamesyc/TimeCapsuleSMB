@@ -49,6 +49,7 @@ DEFAULTS = {
     "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
     "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
     "TC_AIRPORT_SYAP": "",
+    "TC_SHARE_USE_DISK_ROOT": "false",
 }
 
 REQUIRED_ENV_KEYS = [
@@ -91,6 +92,7 @@ ENV_FILE_KEYS = [
     "TC_MDNS_HOST_LABEL",
     "TC_MDNS_DEVICE_MODEL",
     "TC_AIRPORT_SYAP",
+    "TC_SHARE_USE_DISK_ROOT",
     "TC_CONFIGURE_ID",
 ]
 
@@ -379,6 +381,18 @@ def validate_nonempty(value: str, field_name: str) -> Optional[str]:
     return None
 
 
+def parse_bool(value: str) -> bool:
+    return value.strip().lower() == "true"
+
+
+def validate_bool(value: str, field_name: str) -> Optional[str]:
+    if value == "":
+        return None
+    if value.strip().lower() not in {"true", "false"}:
+        return f"{field_name} must be true or false."
+    return None
+
+
 def validate_airport_syap(value: str, field_name: str) -> Optional[str]:
     if not value:
         return f"{field_name} cannot be blank."
@@ -414,6 +428,7 @@ CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
     "TC_MDNS_HOST_LABEL": validate_mdns_host_label,
     "TC_AIRPORT_SYAP": validate_airport_syap,
     "TC_MDNS_DEVICE_MODEL": validate_mdns_device_model,
+    "TC_SHARE_USE_DISK_ROOT": validate_bool,
 }
 
 CONFIG_VALIDATION_PROFILES: dict[str, tuple[str, ...]] = {
@@ -427,6 +442,7 @@ CONFIG_VALIDATION_PROFILES: dict[str, tuple[str, ...]] = {
         "TC_MDNS_HOST_LABEL",
         "TC_MDNS_DEVICE_MODEL",
         "TC_AIRPORT_SYAP",
+        "TC_SHARE_USE_DISK_ROOT",
     ),
     "deploy": (
         "TC_HOST",
@@ -439,6 +455,7 @@ CONFIG_VALIDATION_PROFILES: dict[str, tuple[str, ...]] = {
         "TC_MDNS_HOST_LABEL",
         "TC_MDNS_DEVICE_MODEL",
         "TC_AIRPORT_SYAP",
+        "TC_SHARE_USE_DISK_ROOT",
     ),
     "activate": (
         "TC_HOST",
@@ -451,6 +468,7 @@ CONFIG_VALIDATION_PROFILES: dict[str, tuple[str, ...]] = {
         "TC_MDNS_HOST_LABEL",
         "TC_MDNS_DEVICE_MODEL",
         "TC_AIRPORT_SYAP",
+        "TC_SHARE_USE_DISK_ROOT",
     ),
     "doctor": (
         "TC_HOST",
@@ -463,6 +481,7 @@ CONFIG_VALIDATION_PROFILES: dict[str, tuple[str, ...]] = {
         "TC_MDNS_HOST_LABEL",
         "TC_MDNS_DEVICE_MODEL",
         "TC_AIRPORT_SYAP",
+        "TC_SHARE_USE_DISK_ROOT",
     ),
     "uninstall": ("TC_HOST", "TC_PAYLOAD_DIR_NAME"),
     "fsck": ("TC_HOST",),
