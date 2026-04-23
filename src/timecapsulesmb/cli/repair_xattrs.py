@@ -7,6 +7,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from urllib.parse import unquote
 
 from timecapsulesmb.cli.runtime import load_env_values
 from timecapsulesmb.core.config import require_valid_config
@@ -45,19 +46,61 @@ class RepairSummary:
     failed: int = 0
 
 
+@dataclass(frozen=True)
+class MountedSmbShare:
+    server: str
+    share: str
+    mountpoint: Path
+
+
 def run_capture(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
+
+
+def ssh_target_host(target: str) -> str:
+    return target.rsplit("@", 1)[-1].strip()
+
+
+def parse_mounted_smb_shares(mount_output: str) -> list[MountedSmbShare]:
+    shares: list[MountedSmbShare] = []
+    for line in mount_output.splitlines():
+        if " (smbfs," not in line and " (smbfs)" not in line:
+            continue
+        if not line.startswith("//") or " on " not in line:
+            continue
+        source, rest = line[2:].split(" on ", 1)
+        mountpoint_text = rest.split(" (", 1)[0]
+        if "/" not in source:
+            continue
+        user_and_server, share = source.rsplit("/", 1)
+        server = user_and_server.rsplit("@", 1)[-1]
+        shares.append(MountedSmbShare(server=unquote(server), share=unquote(share), mountpoint=Path(mountpoint_text)))
+    return shares
+
+
+def mounted_smb_shares() -> list[MountedSmbShare]:
+    proc = run_capture(["mount"])
+    if proc.returncode != 0:
+        return []
+    return parse_mounted_smb_shares(proc.stdout)
 
 
 def default_share_path() -> Optional[Path]:
     values = load_env_values()
     require_valid_config(values, profile="repair_xattrs")
     share_name = values.get("TC_SHARE_NAME")
-    if not share_name:
+    target_host = ssh_target_host(values.get("TC_HOST", ""))
+    if not share_name or not target_host:
         return None
-    candidate = Path("/Volumes") / share_name
-    if candidate.exists():
-        return candidate
+
+    candidates = [share for share in mounted_smb_shares() if share.share == share_name and share.mountpoint.exists()]
+    for share in candidates:
+        if share.server.lower() == target_host.lower():
+            return share.mountpoint
+    if len(candidates) == 1:
+        return candidates[0].mountpoint
+    if len(candidates) > 1:
+        raise SystemExit(f"Found multiple mounted SMB shares named {share_name!r}; pass --path explicitly.")
     return None
 
 
@@ -220,7 +263,7 @@ def confirm(prompt: str) -> bool:
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Repair files whose SMB xattr metadata is broken by clearing the macOS arch flag.")
-    parser.add_argument("--path", type=Path, default=None, help="Mounted SMB share path or subdirectory to scan. Defaults to /Volumes/<TC_SHARE_NAME>.")
+    parser.add_argument("--path", type=Path, default=None, help="Mounted SMB share path or subdirectory to scan. Defaults to the mounted SMB share matching .env.")
     parser.add_argument("--dry-run", action="store_true", help="Only scan and report files; do not prompt or repair")
     parser.add_argument("--yes", action="store_true", help="Repair without prompting")
     parser.add_argument("--recursive", dest="recursive", action="store_true", default=True, help="Scan recursively (default)")
