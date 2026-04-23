@@ -15,6 +15,13 @@ VENVDIR = REPO_ROOT / ".venv"
 REQUIREMENTS = REPO_ROOT / "requirements.txt"
 ANSI_RED = "\033[31m"
 ANSI_RESET = "\033[0m"
+HOMEBREW_INSTALL_COMMAND = '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+MACOS_SSHPASS_TAP = "hudochenkov/sshpass"
+MACOS_SSHPASS_FORMULA = "sshpass"
+
+
+class BootstrapError(Exception):
+    pass
 
 
 def run(cmd: list[str], *, cwd: Optional[Path] = None) -> None:
@@ -98,6 +105,46 @@ def maybe_install_smbclient() -> None:
     print("After installing smbclient, rerun './tcapsule bootstrap' or use '.venv/bin/tcapsule doctor'.", flush=True)
 
 
+def maybe_install_sshpass() -> None:
+    if shutil.which("sshpass"):
+        print("Found local sshpass.", flush=True)
+        return
+
+    print("sshpass is required for NetBSD4 devices that do not provide remote scp.", flush=True)
+    platform_label = current_platform_label()
+    if platform_label == "macOS":
+        brew = shutil.which("brew")
+        if not brew:
+            print(red("Homebrew is missing, please install Homebrew:"), flush=True)
+            print(HOMEBREW_INSTALL_COMMAND, flush=True)
+            raise BootstrapError("Homebrew is required to install sshpass on macOS.")
+        print(f"Installing sshpass via 'brew tap {MACOS_SSHPASS_TAP}' and 'brew install {MACOS_SSHPASS_FORMULA}'", flush=True)
+        run([brew, "tap", MACOS_SSHPASS_TAP])
+        run([brew, "install", MACOS_SSHPASS_FORMULA])
+        return
+
+    if platform_label == "Linux":
+        if apt_get := shutil.which("apt-get"):
+            run(["sudo", apt_get, "update"])
+            run(["sudo", apt_get, "install", "-y", "sshpass"])
+            return
+        if dnf := shutil.which("dnf"):
+            run(["sudo", dnf, "install", "-y", "sshpass"])
+            return
+        if yum := shutil.which("yum"):
+            run(["sudo", yum, "install", "-y", "sshpass"])
+            return
+        if zypper := shutil.which("zypper"):
+            run(["sudo", zypper, "install", "-y", "sshpass"])
+            return
+        if pacman := shutil.which("pacman"):
+            run(["sudo", pacman, "-S", "--needed", "sshpass"])
+            return
+        raise BootstrapError("No supported Linux package manager found to install sshpass.")
+
+    raise BootstrapError(f"Automatic sshpass installation is not implemented for {platform_label}.")
+
+
 def maybe_install_airpyrt(skip_airpyrt: bool) -> bool:
     if skip_airpyrt:
         print("Skipping AirPyrt setup.", flush=True)
@@ -154,11 +201,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         venv_python = ensure_venv(args.python)
         install_python_requirements(venv_python)
         maybe_install_smbclient()
+        maybe_install_sshpass()
         airpyrt_ready = maybe_install_airpyrt(args.skip_airpyrt)
         ensure_install_id()
     except subprocess.CalledProcessError as e:
         print(f"Command failed with exit code {e.returncode}: {e.cmd}", file=sys.stderr)
         return e.returncode or 1
+    except BootstrapError as e:
+        print(str(e), file=sys.stderr)
+        return 1
 
     print("\nHost setup complete.", flush=True)
     print("Next steps:", flush=True)

@@ -16,7 +16,7 @@ from timecapsulesmb.checks.smb import (
 )
 from timecapsulesmb.cli.runtime import probe_device_state
 from timecapsulesmb.core.config import extract_host, missing_required_keys, validate_config_values
-from timecapsulesmb.device.compat import render_compatibility_message
+from timecapsulesmb.device.compat import is_netbsd4_payload_family, is_netbsd6_payload_family, render_compatibility_message
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
     RUNTIME_SMB_CONF,
@@ -29,6 +29,7 @@ from timecapsulesmb.device.probe import (
     read_interface_ipv4,
 )
 from timecapsulesmb.transport.local import find_free_local_port
+from timecapsulesmb.transport.local import command_exists
 from timecapsulesmb.transport.ssh import SshConnection, ssh_local_forward_conn
 
 
@@ -126,6 +127,18 @@ def run_doctor_checks(
         if on_result is not None:
             on_result(result)
 
+    def add_sshpass_result_for_payload(payload_family: str | None) -> None:
+        if command_exists("sshpass"):
+            add_result(CheckResult("PASS", "found local tool sshpass"))
+            return
+        if is_netbsd4_payload_family(payload_family):
+            add_result(CheckResult("FAIL", "missing local tool sshpass; NetBSD4 upload fallback requires sshpass"))
+            return
+        if is_netbsd6_payload_family(payload_family):
+            add_result(CheckResult("INFO", "local sshpass not installed; not needed for this NetBSD6 target unless remote scp is unavailable"))
+            return
+        add_result(CheckResult("INFO", "local sshpass not installed; target upload fallback requirement unknown"))
+
     for result in check_required_local_tools():
         add_result(result)
     for result in check_required_artifacts(repo_root):
@@ -179,6 +192,7 @@ def run_doctor_checks(
                 add_result(CheckResult("FAIL", probe_result.error or "could not determine device compatibility"))
             elif compatibility.supported:
                 add_result(CheckResult("PASS", render_compatibility_message(compatibility)))
+                add_sshpass_result_for_payload(compatibility.payload_family)
             else:
                 add_result(CheckResult("FAIL", render_compatibility_message(compatibility)))
         except (Exception, SystemExit) as e:

@@ -380,11 +380,12 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", return_value=bootstrap.VENVDIR / "bin" / "python"):
                 with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
                     with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_smbclient"):
-                        with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_airpyrt", return_value=True):
-                            with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
-                                with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
-                                    with redirect_stdout(output):
-                                        rc = bootstrap.main(["--skip-airpyrt"])
+                        with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_sshpass"):
+                            with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_airpyrt", return_value=True):
+                                with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
+                                    with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
+                                        with redirect_stdout(output):
+                                            rc = bootstrap.main(["--skip-airpyrt"])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("Detected host platform", text)
@@ -400,10 +401,11 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", return_value=bootstrap.VENVDIR / "bin" / "python"):
                     with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
                         with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_smbclient"):
-                            with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_airpyrt", return_value=False):
-                                with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
-                                    with redirect_stdout(output):
-                                        rc = bootstrap.main(["--skip-airpyrt"])
+                            with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_sshpass"):
+                                with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_airpyrt", return_value=False):
+                                    with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
+                                        with redirect_stdout(output):
+                                            rc = bootstrap.main(["--skip-airpyrt"])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("Detected host platform: Linux", text)
@@ -419,13 +421,14 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", return_value=bootstrap.VENVDIR / "bin" / "python"):
                 with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
                     with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_smbclient"):
-                        with mock.patch("timecapsulesmb.cli.bootstrap.run") as run_mock:
-                            with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", return_value="/usr/bin/make"):
-                                with mock.patch("timecapsulesmb.cli.bootstrap.confirm", return_value=True):
-                                    with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
-                                        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
-                                            with redirect_stdout(output):
-                                                rc = bootstrap.main([])
+                        with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_sshpass"):
+                            with mock.patch("timecapsulesmb.cli.bootstrap.run") as run_mock:
+                                with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", return_value="/usr/bin/make"):
+                                    with mock.patch("timecapsulesmb.cli.bootstrap.confirm", return_value=True):
+                                        with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
+                                            with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
+                                                with redirect_stdout(output):
+                                                    rc = bootstrap.main([])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("Provisioning AirPyrt via 'make airpyrt'", text)
@@ -439,13 +442,14 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", return_value=bootstrap.VENVDIR / "bin" / "python"):
                 with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
                     with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_smbclient"):
-                        with mock.patch("timecapsulesmb.cli.bootstrap.run") as run_mock:
-                            with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", return_value="/usr/bin/make"):
-                                with mock.patch("timecapsulesmb.cli.bootstrap.confirm", return_value=False):
-                                    with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
-                                        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
-                                            with redirect_stdout(output):
-                                                rc = bootstrap.main([])
+                        with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_sshpass"):
+                            with mock.patch("timecapsulesmb.cli.bootstrap.run") as run_mock:
+                                with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", return_value="/usr/bin/make"):
+                                    with mock.patch("timecapsulesmb.cli.bootstrap.confirm", return_value=False):
+                                        with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
+                                            with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
+                                                with redirect_stdout(output):
+                                                    rc = bootstrap.main([])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("AirPyrt support is optional", text)
@@ -466,16 +470,17 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", return_value=bootstrap.VENVDIR / "bin" / "python"):
                 with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
                     with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_smbclient"):
-                        with mock.patch(
-                            "timecapsulesmb.cli.bootstrap.run",
-                            side_effect=subprocess.CalledProcessError(2, ["make", "airpyrt"]),
-                        ):
-                            with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", return_value="/usr/bin/make"):
-                                with mock.patch("timecapsulesmb.cli.bootstrap.confirm", return_value=True):
-                                    with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
-                                        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
-                                            with redirect_stdout(output):
-                                                rc = bootstrap.main([])
+                        with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_sshpass"):
+                            with mock.patch(
+                                "timecapsulesmb.cli.bootstrap.run",
+                                side_effect=subprocess.CalledProcessError(2, ["make", "airpyrt"]),
+                            ):
+                                with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", return_value="/usr/bin/make"):
+                                    with mock.patch("timecapsulesmb.cli.bootstrap.confirm", return_value=True):
+                                        with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
+                                            with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
+                                                with redirect_stdout(output):
+                                                    rc = bootstrap.main([])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("Warning: AirPyrt setup failed", text)
@@ -512,6 +517,72 @@ class CliTests(unittest.TestCase):
         self.assertIn("smbclient is required", text)
         self.assertIn("sudo apt-get update && sudo apt-get install -y smbclient", text)
         self.assertIn("After installing smbclient", text)
+
+    def test_bootstrap_installs_sshpass_via_homebrew_on_macos(self) -> None:
+        output = io.StringIO()
+
+        def fake_which(name: str):
+            if name == "sshpass":
+                return None
+            if name == "brew":
+                return "/opt/homebrew/bin/brew"
+            return None
+
+        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
+            with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", side_effect=fake_which):
+                with mock.patch("timecapsulesmb.cli.bootstrap.run") as run_mock:
+                    with redirect_stdout(output):
+                        bootstrap.maybe_install_sshpass()
+        self.assertIn("Installing sshpass", output.getvalue())
+        self.assertEqual(
+            run_mock.call_args_list,
+            [
+                mock.call(["/opt/homebrew/bin/brew", "tap", "hudochenkov/sshpass"]),
+                mock.call(["/opt/homebrew/bin/brew", "install", "sshpass"]),
+            ],
+        )
+
+    def test_bootstrap_fails_when_homebrew_missing_for_sshpass_on_macos(self) -> None:
+        output = io.StringIO()
+
+        def fake_which(_name: str):
+            return None
+
+        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
+            with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", side_effect=fake_which):
+                with self.assertRaises(bootstrap.BootstrapError):
+                    with redirect_stdout(output):
+                        bootstrap.maybe_install_sshpass()
+        text = output.getvalue()
+        self.assertIn("Homebrew is missing, please install Homebrew", text)
+        self.assertIn("https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh", text)
+        self.assertIn("\033[31m", text)
+
+    def test_bootstrap_installs_sshpass_via_apt_on_linux(self) -> None:
+        def fake_which(name: str):
+            if name == "sshpass":
+                return None
+            if name == "apt-get":
+                return "/usr/bin/apt-get"
+            return None
+
+        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
+            with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", side_effect=fake_which):
+                with mock.patch("timecapsulesmb.cli.bootstrap.run") as run_mock:
+                    bootstrap.maybe_install_sshpass()
+        self.assertEqual(
+            run_mock.call_args_list,
+            [
+                mock.call(["sudo", "/usr/bin/apt-get", "update"]),
+                mock.call(["sudo", "/usr/bin/apt-get", "install", "-y", "sshpass"]),
+            ],
+        )
+
+    def test_bootstrap_fails_when_linux_package_manager_missing_for_sshpass(self) -> None:
+        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
+            with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", return_value=None):
+                with self.assertRaises(bootstrap.BootstrapError):
+                    bootstrap.maybe_install_sshpass()
 
     def test_bootstrap_prints_linux_airpyrt_guidance(self) -> None:
         output = io.StringIO()

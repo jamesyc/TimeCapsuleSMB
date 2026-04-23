@@ -390,6 +390,17 @@ class SSHTransportTests(unittest.TestCase):
         self.assertEqual(subprocess_run_mock.call_count, 2)
         self.assertFalse(connection.remote_has_scp)
 
+    def test_run_scp_conn_explains_missing_sshpass_for_cat_fallback(self) -> None:
+        with NamedTemporaryFile() as tmp:
+            src = Path(tmp.name)
+            src.write_bytes(b"hello")
+            connection = ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no", remote_has_scp=False)
+            with mock.patch("timecapsulesmb.transport.ssh.shutil.which", return_value=None):
+                with self.assertRaises(SystemExit) as exc:
+                    ssh_transport.run_scp_conn(connection, src, "/tmp/test-upload", timeout=10)
+        self.assertIn("local sshpass is missing", str(exc.exception))
+        self.assertIn("tcapsule bootstrap", str(exc.exception))
+
     def test_run_scp_conn_raises_transport_error_from_scp_output(self) -> None:
         with NamedTemporaryFile() as tmp:
             src = Path(tmp.name)

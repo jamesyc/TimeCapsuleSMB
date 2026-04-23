@@ -379,7 +379,10 @@ def run_scp_conn(connection: SshConnection, src: Path, dest: str, *, timeout: in
         return
 
     if shutil.which("sshpass") is None:
-        raise SystemExit("Remote scp is unavailable and local sshpass is required for streaming upload fallback.")
+        raise SystemExit(
+            "Remote scp is unavailable and local sshpass is missing. "
+            "Run `.venv/bin/tcapsule bootstrap` to install sshpass, then rerun deploy."
+        )
 
     remote_cmd = f"/bin/sh -c {shlex.quote('cat > ' + shlex.quote(dest))}"
     cmd = ["sshpass", "-e", "ssh", *_normalize_ssh_tokens(connection.ssh_opts), connection.host, remote_cmd]

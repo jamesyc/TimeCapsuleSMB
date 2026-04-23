@@ -206,6 +206,121 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(fatal)
         self.assertEqual(results[0].status, "PASS")
 
+    def test_run_doctor_checks_fails_missing_sshpass_for_netbsd4(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule6,113",
+            "TC_AIRPORT_SYAP": "113",
+        }
+        netbsd4_state = mock.Mock(
+            probe_result=mock.Mock(ssh_authenticated=True, error=None),
+            compatibility=DeviceCompatibility(
+                os_name="NetBSD",
+                os_release="4.0_STABLE",
+                arch="evbarm",
+                elf_endianness="little",
+                payload_family="netbsd4le_samba4",
+                device_generation="gen1-4",
+                supported=True,
+                reason_code="supported_netbsd4",
+            ),
+        )
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.check_ssh_login", return_value=mock.Mock(status="PASS", message="ssh ok")):
+                    with mock.patch("timecapsulesmb.checks.doctor.command_exists", return_value=False):
+                        with mock.patch("timecapsulesmb.checks.doctor.probe_managed_mdns_takeover", return_value=mock.Mock(ready=True, detail="ok")):
+                            with mock.patch("timecapsulesmb.checks.doctor.read_active_smb_conf", return_value=""):
+                                with mock.patch("timecapsulesmb.checks.doctor.check_xattr_tdb_persistence", return_value=mock.Mock(status="WARN", message="xattr skipped")):
+                                    with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="SKIP", message="port skipped")):
+                                        with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root", side_effect=SystemExit("skip nbns")):
+                                            results, fatal = run_doctor_checks(
+                                                values,
+                                                env_exists=True,
+                                                repo_root=REPO_ROOT,
+                                                precomputed_probe_state=netbsd4_state,
+                                                skip_bonjour=True,
+                                                skip_smb=True,
+                                            )
+        self.assertTrue(fatal)
+        self.assertTrue(any(result.status == "FAIL" and "missing local tool sshpass" in result.message for result in results))
+
+    def test_run_doctor_checks_infos_missing_sshpass_for_netbsd6(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+            "TC_AIRPORT_SYAP": "119",
+        }
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.check_ssh_login", return_value=mock.Mock(status="PASS", message="ssh ok")):
+                    with mock.patch("timecapsulesmb.checks.doctor.command_exists", return_value=False):
+                        with mock.patch("timecapsulesmb.checks.doctor.probe_managed_mdns_takeover", return_value=mock.Mock(ready=True, detail="ok")):
+                            with mock.patch("timecapsulesmb.checks.doctor.read_active_smb_conf", return_value=""):
+                                with mock.patch("timecapsulesmb.checks.doctor.check_xattr_tdb_persistence", return_value=mock.Mock(status="WARN", message="xattr skipped")):
+                                    with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="SKIP", message="port skipped")):
+                                        with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root", side_effect=SystemExit("skip nbns")):
+                                            results, fatal = run_doctor_checks(
+                                                values,
+                                                env_exists=True,
+                                                repo_root=REPO_ROOT,
+                                                skip_bonjour=True,
+                                                skip_smb=True,
+                                            )
+        self.assertFalse(any(result.status == "FAIL" and "sshpass" in result.message for result in results))
+        self.assertTrue(any(result.status == "INFO" and "sshpass not installed" in result.message for result in results))
+
+    def test_run_doctor_checks_passes_when_sshpass_installed(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+            "TC_AIRPORT_SYAP": "119",
+        }
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.check_ssh_login", return_value=mock.Mock(status="PASS", message="ssh ok")):
+                    with mock.patch("timecapsulesmb.checks.doctor.command_exists", return_value=True):
+                        with mock.patch("timecapsulesmb.checks.doctor.probe_managed_mdns_takeover", return_value=mock.Mock(ready=True, detail="ok")):
+                            with mock.patch("timecapsulesmb.checks.doctor.read_active_smb_conf", return_value=""):
+                                with mock.patch("timecapsulesmb.checks.doctor.check_xattr_tdb_persistence", return_value=mock.Mock(status="WARN", message="xattr skipped")):
+                                    with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="SKIP", message="port skipped")):
+                                        with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root", side_effect=SystemExit("skip nbns")):
+                                            results, _fatal = run_doctor_checks(
+                                                values,
+                                                env_exists=True,
+                                                repo_root=REPO_ROOT,
+                                                skip_bonjour=True,
+                                                skip_smb=True,
+                                            )
+        self.assertTrue(any(result.status == "PASS" and result.message == "found local tool sshpass" for result in results))
+
     def test_run_doctor_checks_reports_invalid_env_values(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
