@@ -246,6 +246,19 @@ class CliTests(unittest.TestCase):
             elf_endianness="little",
         )
 
+    def make_probe_result_netbsd4le_acpdata_113(self) -> ProbeResult:
+        return ProbeResult(
+            ssh_port_reachable=True,
+            ssh_authenticated=True,
+            error=None,
+            os_name="NetBSD",
+            os_release="4.0",
+            arch="earmv4",
+            elf_endianness="little",
+            airport_model="TimeCapsule6,113",
+            airport_syap="113",
+        )
+
     def make_probe_result_netbsd4be(self) -> ProbeResult:
         return ProbeResult(
             ssh_port_reachable=True,
@@ -255,6 +268,19 @@ class CliTests(unittest.TestCase):
             os_release="4.0",
             arch="earmv4",
             elf_endianness="big",
+        )
+
+    def make_probe_result_netbsd4be_acpdata_106(self) -> ProbeResult:
+        return ProbeResult(
+            ssh_port_reachable=True,
+            ssh_authenticated=True,
+            error=None,
+            os_name="NetBSD",
+            os_release="4.0",
+            arch="earmv4",
+            elf_endianness="big",
+            airport_model="TimeCapsule6,106",
+            airport_syap="106",
         )
 
     def make_probe_result_netbsd4_unknown(self) -> ProbeResult:
@@ -918,6 +944,78 @@ class CliTests(unittest.TestCase):
         self.assertIn("1st gen (early 2008)      TimeCapsule6,106    106", text)
         self.assertIn("2nd gen (early 2009)      TimeCapsule6,109    109", text)
         self.assertIn("From detected connection, syAP code should be one of: 106, 109", text)
+
+    def test_configure_probed_netbsd4be_acpdata_identity_autofills_generation(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        prompt_values = iter([
+            "root@10.0.0.2",
+            "rootpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+        ])
+
+        def fake_prompt(label, _default, _secret):
+            if label in {"Airport Utility syAP code", "mDNS device model hint"}:
+                raise AssertionError(f"{label} should be autofilled from ACPData identity")
+            return next(prompt_values)
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_time_capsule_candidates", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_netbsd4be_acpdata_106())):
+                        with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                            with redirect_stdout(output):
+                                rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(fake_values["TC_AIRPORT_SYAP"], "106")
+        self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,106")
+        self.assertIn("Using probed TC_AIRPORT_SYAP: 106", output.getvalue())
+        self.assertIn("Using probed TC_MDNS_DEVICE_MODEL: TimeCapsule6,106", output.getvalue())
+
+    def test_configure_probed_netbsd4le_acpdata_identity_autofills_generation(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        prompt_values = iter([
+            "root@10.0.0.2",
+            "rootpw",
+            "bridge0",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+        ])
+
+        def fake_prompt(label, _default, _secret):
+            if label in {"Airport Utility syAP code", "mDNS device model hint"}:
+                raise AssertionError(f"{label} should be autofilled from ACPData identity")
+            return next(prompt_values)
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_time_capsule_candidates", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_device_state", return_value=self.make_probe_state(self.make_probe_result_netbsd4le_acpdata_113())):
+                        with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                            with redirect_stdout(output):
+                                rc = configure.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(fake_values["TC_AIRPORT_SYAP"], "113")
+        self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,113")
+        self.assertIn("Using probed TC_AIRPORT_SYAP: 113", output.getvalue())
+        self.assertIn("Using probed TC_MDNS_DEVICE_MODEL: TimeCapsule6,113", output.getvalue())
 
     def test_configure_saves_airport_syap_from_discovery_without_prompting(self) -> None:
         output = io.StringIO()

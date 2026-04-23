@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, ssh_opts_use_proxy
+from timecapsulesmb.core.config import AIRPORT_SYAP_TO_MODEL
 
 if TYPE_CHECKING:
     from timecapsulesmb.device.compat import DeviceCompatibility
@@ -138,6 +139,8 @@ class ProbeResult:
     os_release: str
     arch: str
     elf_endianness: str
+    airport_model: str | None = None
+    airport_syap: str | None = None
 
 
 @dataclass(frozen=True)
@@ -171,6 +174,13 @@ class ManagedMdnsTakeoverProbeResult:
     detail: str
 
 
+@dataclass(frozen=True)
+class AirportIdentityProbeResult:
+    model: str | None
+    syap: str | None
+    detail: str
+
+
 def _conn(host: str, password: str, ssh_opts: str) -> SshConnection:
     return SshConnection(host=host, password=password, ssh_opts=ssh_opts)
 
@@ -200,6 +210,7 @@ def probe_device_conn(connection: SshConnection) -> ProbeResult:
     try:
         os_name, os_release, arch = _probe_remote_os_info_conn(connection)
         elf_endianness = _probe_remote_elf_endianness_conn(connection)
+        airport_identity = probe_remote_airport_identity_conn(connection)
     except SystemExit as exc:
         return ProbeResult(
             ssh_port_reachable=True,
@@ -219,6 +230,8 @@ def probe_device_conn(connection: SshConnection) -> ProbeResult:
         os_release=os_release,
         arch=arch,
         elf_endianness=elf_endianness,
+        airport_model=airport_identity.model,
+        airport_syap=airport_identity.syap,
     )
 
 
@@ -285,6 +298,32 @@ esac
     if value in {"little", "big", "unknown"}:
         return value
     return "unknown"
+
+
+def extract_airport_identity_from_acpdata(text: str) -> AirportIdentityProbeResult:
+    for syap, model in AIRPORT_SYAP_TO_MODEL.items():
+        if model in text:
+            return AirportIdentityProbeResult(model=model, syap=syap, detail=f"found {model} in ACPData")
+    return AirportIdentityProbeResult(model=None, syap=None, detail="no TimeCapsule model found in ACPData")
+
+
+def probe_remote_airport_identity_conn(connection: SshConnection) -> AirportIdentityProbeResult:
+    script = r"""
+if [ ! -f /mnt/Flash/ACPData.bin ]; then
+  exit 0
+fi
+if [ -x /usr/bin/strings ]; then
+  /usr/bin/strings /mnt/Flash/ACPData.bin 2>/dev/null
+else
+  /usr/bin/sed -n 's/.*\(TimeCapsule[0-9],[0-9][0-9][0-9]\).*/\1/p' /mnt/Flash/ACPData.bin 2>/dev/null
+fi | /usr/bin/sed -n 's/.*\(TimeCapsule[0-9],[0-9][0-9][0-9]\).*/\1/p' | /usr/bin/sed -n '1p'
+"""
+    proc = run_ssh_conn(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=30)
+    if proc.returncode != 0:
+        return AirportIdentityProbeResult(model=None, syap=None, detail=f"could not read ACPData: rc={proc.returncode}")
+    if not proc.stdout:
+        return AirportIdentityProbeResult(model=None, syap=None, detail="ACPData missing or empty")
+    return extract_airport_identity_from_acpdata(proc.stdout)
 
 
 def discover_mounted_volume(host: str, password: str, ssh_opts: str) -> MountedVolume:

@@ -73,6 +73,27 @@ class SSHTransportTests(unittest.TestCase):
             ],
         )
 
+    def test_spawn_with_password_replaces_invalid_utf8_output(self) -> None:
+        try:
+            import pexpect  # noqa: F401
+        except Exception:
+            self.skipTest("pexpect not available")
+        fake_child = mock.Mock()
+        fake_child.expect.side_effect = [1]
+        fake_child.before = "TimeCapsule�\n"
+        fake_child.exitstatus = 0
+        fake_child.signalstatus = None
+        with mock.patch("pexpect.spawn", return_value=fake_child) as spawn_mock:
+            rc, output = ssh_transport._spawn_with_password(
+                ["ssh", "host", "cmd"],
+                "pw",
+                timeout=10,
+                timeout_message="timeout",
+            )
+        self.assertEqual(rc, 0)
+        self.assertEqual(output, "TimeCapsule�\n")
+        self.assertEqual(spawn_mock.call_args.kwargs["codec_errors"], "replace")
+
     def test_run_ssh_retries_transient_permission_denied(self) -> None:
         with mock.patch(
             "timecapsulesmb.transport.ssh._ssh_option_supported",

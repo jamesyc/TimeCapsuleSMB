@@ -23,10 +23,32 @@ class ProbeFacts(Protocol):
     os_release: str
     arch: str
     elf_endianness: str
+    airport_model: str | None
+    airport_syap: str | None
 
 
 def _models_for_syaps(values: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(AIRPORT_SYAP_TO_MODEL[value] for value in values if value in AIRPORT_SYAP_TO_MODEL)
+
+
+def _narrow_candidates_from_airport_identity(
+    syap_candidates: tuple[str, ...],
+    airport_model: str | None,
+    airport_syap: str | None,
+) -> tuple[tuple[str, ...], tuple[str, ...], str]:
+    detail = ""
+    if airport_syap in syap_candidates:
+        return (airport_syap,), _models_for_syaps((airport_syap,)), "airport_identity"
+    if airport_model:
+        for syap, model in AIRPORT_SYAP_TO_MODEL.items():
+            if model == airport_model:
+                if syap in syap_candidates:
+                    return (syap,), (model,), "airport_identity"
+                detail = f"ACPData model {airport_model} did not match detected device candidates: {', '.join(syap_candidates)}"
+                break
+    elif airport_syap:
+        detail = f"ACPData syAP {airport_syap} did not match detected device candidates: {', '.join(syap_candidates)}"
+    return syap_candidates, _models_for_syaps(syap_candidates), detail
 
 
 def is_netbsd4_payload_family(payload_family: str | None) -> bool:
@@ -112,7 +134,15 @@ def render_compatibility_message(compat: DeviceCompatibility) -> str:
     return compat.reason_detail or "Failed to classify remote device compatibility."
 
 
-def classify_device_compatibility(os_name: str, os_release: str, arch: str, elf_endianness: str = "unknown") -> DeviceCompatibility:
+def classify_device_compatibility(
+    os_name: str,
+    os_release: str,
+    arch: str,
+    elf_endianness: str = "unknown",
+    *,
+    airport_model: str | None = None,
+    airport_syap: str | None = None,
+) -> DeviceCompatibility:
     normalized_name = os_name.strip()
     normalized_release = os_release.strip()
     normalized_arch = arch.strip()
@@ -154,6 +184,11 @@ def classify_device_compatibility(os_name: str, os_release: str, arch: str, elf_
             model_candidates=_models_for_syaps(NETBSD6_SYAP_CANDIDATES),
             supported=True,
             reason_code="supported_netbsd6",
+            reason_detail=(
+                f"ACPData model {airport_model or airport_syap} did not match detected NetBSD 6 Time Capsule candidate 119"
+                if (airport_model and airport_model != "TimeCapsule8,119") or (airport_syap and airport_syap != "119")
+                else ""
+            ),
         )
     if major == "4":
         if normalized_endianness not in {"big", "little"}:
@@ -169,6 +204,11 @@ def classify_device_compatibility(os_name: str, os_release: str, arch: str, elf_
             )
         payload_family = PAYLOAD_FAMILY_NETBSD4BE if normalized_endianness == "big" else PAYLOAD_FAMILY_NETBSD4LE
         syap_candidates = NETBSD4BE_SYAP_CANDIDATES if normalized_endianness == "big" else NETBSD4LE_SYAP_CANDIDATES
+        narrowed_syaps, narrowed_models, reason_detail = _narrow_candidates_from_airport_identity(
+            syap_candidates,
+            airport_model,
+            airport_syap,
+        )
         return DeviceCompatibility(
             os_name=normalized_name,
             os_release=normalized_release,
@@ -176,10 +216,11 @@ def classify_device_compatibility(os_name: str, os_release: str, arch: str, elf_
             elf_endianness=normalized_endianness,
             payload_family=payload_family,
             device_generation="gen1-4",
-            syap_candidates=syap_candidates,
-            model_candidates=_models_for_syaps(syap_candidates),
+            syap_candidates=narrowed_syaps,
+            model_candidates=narrowed_models,
             supported=True,
             reason_code="supported_netbsd4",
+            reason_detail=reason_detail,
         )
 
     return DeviceCompatibility(
@@ -197,4 +238,11 @@ def classify_device_compatibility(os_name: str, os_release: str, arch: str, elf_
 def compatibility_from_probe_result(result: ProbeFacts) -> DeviceCompatibility | None:
     if not result.ssh_authenticated:
         return None
-    return classify_device_compatibility(result.os_name, result.os_release, result.arch, result.elf_endianness)
+    return classify_device_compatibility(
+        result.os_name,
+        result.os_release,
+        result.arch,
+        result.elf_endianness,
+        airport_model=result.airport_model,
+        airport_syap=result.airport_syap,
+    )

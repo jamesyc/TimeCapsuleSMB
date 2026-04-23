@@ -247,6 +247,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             discovered_airport_syap = discovered_record_airport_syap(discovered_record)
         prompt_host_and_password(existing, values, discovered_host)
         while True:
+            print("Checking login information...")
             probed_state = probe_device_state(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
             probe_result = probed_state.probe_result
             if not probe_result.ssh_port_reachable:

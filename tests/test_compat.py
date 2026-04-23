@@ -69,6 +69,48 @@ class CompatibilityTests(unittest.TestCase):
         self.assertEqual(compat.exact_syap, None)
         self.assertEqual(compat.exact_model, None)
 
+    def test_classify_netbsd4_big_endian_narrows_from_acpdata_model(self) -> None:
+        compat = classify_device_compatibility(
+            "NetBSD",
+            "4.0_STABLE",
+            "earmv4",
+            "big",
+            airport_model="TimeCapsule6,106",
+            airport_syap="106",
+        )
+        self.assertTrue(compat.supported)
+        self.assertEqual(compat.payload_family, "netbsd4be_samba4")
+        self.assertEqual(compat.exact_syap, "106")
+        self.assertEqual(compat.exact_model, "TimeCapsule6,106")
+
+    def test_classify_netbsd4_little_endian_narrows_from_acpdata_model(self) -> None:
+        compat = classify_device_compatibility(
+            "NetBSD",
+            "4.0_STABLE",
+            "earmv4",
+            "little",
+            airport_model="TimeCapsule6,113",
+            airport_syap="113",
+        )
+        self.assertTrue(compat.supported)
+        self.assertEqual(compat.payload_family, "netbsd4le_samba4")
+        self.assertEqual(compat.exact_syap, "113")
+        self.assertEqual(compat.exact_model, "TimeCapsule6,113")
+
+    def test_classify_netbsd4_keeps_candidate_set_when_acpdata_mismatches_endian_lane(self) -> None:
+        compat = classify_device_compatibility(
+            "NetBSD",
+            "4.0_STABLE",
+            "earmv4",
+            "big",
+            airport_model="TimeCapsule6,113",
+            airport_syap="113",
+        )
+        self.assertTrue(compat.supported)
+        self.assertEqual(compat.syap_candidates, ("106", "109"))
+        self.assertEqual(compat.model_candidates, ("TimeCapsule6,106", "TimeCapsule6,109"))
+        self.assertIn("did not match detected device candidates", compat.reason_detail)
+
     def test_classify_netbsd4_unknown_endianness_as_unsupported(self) -> None:
         compat = classify_device_compatibility("NetBSD", "4.0_STABLE", "earmv4", "unknown")
         self.assertFalse(compat.supported)

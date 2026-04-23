@@ -58,11 +58,13 @@ from timecapsulesmb.device.probe import (
     build_device_paths,
     discover_mounted_volume,
     discover_volume_root,
+    extract_airport_identity_from_acpdata,
     managed_mdns_takeover_ready,
     managed_smbd_ready,
     probe_device,
     probe_managed_mdns_takeover,
     probe_managed_smbd,
+    probe_remote_airport_identity_conn,
     wait_for_ssh_state,
 )
 from timecapsulesmb.transport.ssh import SshConnection
@@ -221,6 +223,30 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("derive_airport_fields()", content)
         self.assertIn("get_airport_syvs()", content)
         self.assertIn("sed -n 's/^\\([0-9]\\)\\([0-9]\\)\\([0-9]\\).*/\\1.\\2.\\3/p'", content)
+
+    def test_extract_airport_identity_from_acpdata_finds_time_capsule_model(self) -> None:
+        result = extract_airport_identity_from_acpdata("prefix\x00psyAM\x00pTimeCapsule6,113\x00suffix")
+        self.assertEqual(result.model, "TimeCapsule6,113")
+        self.assertEqual(result.syap, "113")
+        self.assertIn("found TimeCapsule6,113", result.detail)
+
+    def test_extract_airport_identity_from_acpdata_ignores_garbage(self) -> None:
+        result = extract_airport_identity_from_acpdata("prefix\x00not a model\x00suffix")
+        self.assertIsNone(result.model)
+        self.assertIsNone(result.syap)
+        self.assertIn("no TimeCapsule model", result.detail)
+
+    def test_probe_remote_airport_identity_filters_acpdata_on_device(self) -> None:
+        proc = mock.Mock(stdout="TimeCapsule6,113\n", returncode=0)
+        connection = SshConnection("host", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
+            result = probe_remote_airport_identity_conn(connection)
+        self.assertEqual(result.model, "TimeCapsule6,113")
+        self.assertEqual(result.syap, "113")
+        command = run_ssh_mock.call_args.args[3]
+        self.assertIn("/usr/bin/strings /mnt/Flash/ACPData.bin", command)
+        self.assertIn("TimeCapsule[0-9],[0-9][0-9][0-9]", command)
+        self.assertNotIn("/bin/cat /mnt/Flash/ACPData.bin", command)
 
     def test_common_sh_helpers_take_iface_argument(self) -> None:
         content = load_boot_asset_text("common.sh")
@@ -1789,11 +1815,12 @@ int main(void) {{
         with mock.patch("timecapsulesmb.device.probe.tcp_open", side_effect=AssertionError("direct TCP probe should be skipped")):
             with mock.patch("timecapsulesmb.device.probe._probe_remote_os_info_conn", return_value=("NetBSD", "4.0", "earmv4")):
                 with mock.patch("timecapsulesmb.device.probe._probe_remote_elf_endianness_conn", return_value="big"):
-                    result = probe_device(
-                        "root@192.168.1.118",
-                        "pw",
-                        "-o ProxyCommand=ssh\\ -W\\ %h:%p\\ bastion",
-                    )
+                    with mock.patch("timecapsulesmb.device.probe.probe_remote_airport_identity_conn", return_value=mock.Mock(model=None, syap=None)):
+                        result = probe_device(
+                            "root@192.168.1.118",
+                            "pw",
+                            "-o ProxyCommand=ssh\\ -W\\ %h:%p\\ bastion",
+                        )
         self.assertTrue(result.ssh_port_reachable)
         self.assertTrue(result.ssh_authenticated)
         self.assertEqual(result.os_release, "4.0")

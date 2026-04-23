@@ -87,7 +87,7 @@ def _spawn_with_password(cmd: list[str], password: str, *, timeout: int, timeout
     except Exception as e:
         raise SystemExit(f"pexpect is required for SSH transport: {e}")
 
-    child = pexpect.spawn(cmd[0], cmd[1:], encoding="utf-8", timeout=timeout)
+    child = pexpect.spawn(cmd[0], cmd[1:], encoding="utf-8", codec_errors="replace", timeout=timeout)
     output: list[str] = []
     try:
         while True:
@@ -220,7 +220,7 @@ def ssh_local_forward(
         *_normalize_ssh_tokens(ssh_opts),
         host,
     ]
-    child = pexpect.spawn(cmd[0], cmd[1:], encoding="utf-8", timeout=ready_timeout)
+    child = pexpect.spawn(cmd[0], cmd[1:], encoding="utf-8", codec_errors="replace", timeout=ready_timeout)
     output: list[str] = []
     start_time = time.time()
     try:
