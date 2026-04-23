@@ -177,7 +177,6 @@ Run:
 
 This is a non-destructive diagnostic command. `tcapsule doctor` checks:
 
-- that your `.env` is complete
 - that your `.env` is complete and valid
 - that the required local tools exist
 - that the checked-in binaries are present and match the expected checksums
