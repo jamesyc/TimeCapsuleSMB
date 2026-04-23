@@ -44,6 +44,19 @@ def _record_matches_preferred_ip(record, preferred_ips: set[str]) -> bool:
     return any(ip in preferred_ips for ip in record.ipv4 + record.ipv6)
 
 
+def _describe_record(record) -> str:
+    host = record.hostname or "-"
+    ips = ",".join(record.ipv4 + record.ipv6) or "-"
+    name = record.name or "-"
+    return f"{name!r} @ {host} [{ips}]"
+
+
+def _candidate_summary(records) -> str:
+    if not records:
+        return "none"
+    return "; ".join(_describe_record(record) for record in records)
+
+
 def _select_record(
     records,
     expected_instance_name: str,
@@ -85,12 +98,52 @@ def run_bonjour_checks(
     matching = [record for record in records if service_type in record.services]
     preferred_hosts = {_normalize_host_name(preferred_host)} if preferred_host else set()
     preferred_ips = {preferred_ip.strip()} if preferred_ip else set()
-    selected = _select_record(
-        matching,
-        expected_instance_name,
-        preferred_hosts=preferred_hosts,
-        preferred_ips=preferred_ips,
-    )
+    selected = None
+
+    if preferred_ips:
+        ip_matching = [record for record in matching if _record_matches_preferred_ip(record, preferred_ips)]
+        if not ip_matching:
+            results.append(
+                CheckResult(
+                    "FAIL",
+                    f"no discovered _smb._tcp instance matched configured target IP {preferred_ip!r}",
+                )
+            )
+            if matching:
+                results.append(CheckResult("INFO", f"discovered _smb._tcp candidates: {_candidate_summary(matching)}"))
+            return results, None, None
+        if preferred_hosts:
+            host_and_ip_matching = [record for record in ip_matching if _record_matches_preferred_host(record, preferred_hosts)]
+            if not host_and_ip_matching:
+                results.append(
+                    CheckResult(
+                        "FAIL",
+                        "discovered _smb._tcp records matched configured target IP "
+                        f"{preferred_ip!r} but not configured host label {preferred_host!r}",
+                    )
+                )
+                results.append(CheckResult("INFO", f"matching target-IP candidates: {_candidate_summary(ip_matching)}"))
+                return results, None, None
+            selected = _select_record(
+                host_and_ip_matching,
+                expected_instance_name,
+                preferred_hosts=preferred_hosts,
+                preferred_ips=preferred_ips,
+            )
+        else:
+            selected = _select_record(
+                ip_matching,
+                expected_instance_name,
+                preferred_hosts=preferred_hosts,
+                preferred_ips=preferred_ips,
+            )
+    else:
+        selected = _select_record(
+            matching,
+            expected_instance_name,
+            preferred_hosts=preferred_hosts,
+            preferred_ips=preferred_ips,
+        )
     discovered_instance = selected.name if selected else None
     target = None
 

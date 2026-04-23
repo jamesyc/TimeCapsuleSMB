@@ -164,6 +164,65 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(instance, "Time Capsule Samba 4")
         self.assertEqual(target, "timecapsulesamba4.local:445")
 
+    def test_run_bonjour_checks_fails_when_no_record_matches_configured_target_ip(self) -> None:
+        other = mock.Mock()
+        other.name = "Kitchen"
+        other.hostname = "kitchen.local"
+        other.ipv4 = ["10.0.1.2"]
+        other.ipv6 = []
+        other.services = {"_smb._tcp.local."}
+
+        with mock.patch("timecapsulesmb.checks.bonjour.discover", return_value=[other]):
+            results, instance, target = run_bonjour_checks(
+                "Home",
+                preferred_host="home",
+                preferred_ip="10.0.1.1",
+            )
+        self.assertEqual([result.status for result in results], ["FAIL", "INFO"])
+        self.assertIn("no discovered _smb._tcp instance matched configured target IP '10.0.1.1'", results[0].message)
+        self.assertIn("'Kitchen' @ kitchen.local [10.0.1.2]", results[1].message)
+        self.assertIsNone(instance)
+        self.assertIsNone(target)
+
+    def test_run_bonjour_checks_fails_when_target_ip_matches_but_host_label_does_not(self) -> None:
+        record = mock.Mock()
+        record.name = "Home"
+        record.hostname = "kitchen.local"
+        record.ipv4 = ["10.0.1.1"]
+        record.ipv6 = []
+        record.services = {"_smb._tcp.local."}
+
+        with mock.patch("timecapsulesmb.checks.bonjour.discover", return_value=[record]):
+            results, instance, target = run_bonjour_checks(
+                "Home",
+                preferred_host="home",
+                preferred_ip="10.0.1.1",
+            )
+        self.assertEqual([result.status for result in results], ["FAIL", "INFO"])
+        self.assertIn("matched configured target IP '10.0.1.1' but not configured host label 'home'", results[0].message)
+        self.assertIn("'Home' @ kitchen.local [10.0.1.1]", results[1].message)
+        self.assertIsNone(instance)
+        self.assertIsNone(target)
+
+    def test_run_bonjour_checks_warns_for_wrong_instance_name_on_exact_target_match(self) -> None:
+        record = mock.Mock()
+        record.name = "Kitchen"
+        record.hostname = "home.local"
+        record.ipv4 = ["10.0.1.1"]
+        record.ipv6 = []
+        record.services = {"_smb._tcp.local."}
+
+        with mock.patch("timecapsulesmb.checks.bonjour.discover", return_value=[record]):
+            results, instance, target = run_bonjour_checks(
+                "Home",
+                preferred_host="home",
+                preferred_ip="10.0.1.1",
+            )
+        self.assertEqual([result.status for result in results], ["WARN", "PASS"])
+        self.assertIn("expected 'Home'", results[0].message)
+        self.assertEqual(instance, "Kitchen")
+        self.assertEqual(target, "home.local:445")
+
     def test_try_authenticated_smb_listing_handles_timeout(self) -> None:
         with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
             with mock.patch(
