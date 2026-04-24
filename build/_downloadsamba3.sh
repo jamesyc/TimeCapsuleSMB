@@ -2,6 +2,7 @@
 set -eu
 
 . "$(dirname "$0")/env.sh"
+. "$(dirname "$0")/_patch_helpers.sh"
 
 mkdir -p "$OUT" "$SAMBA3_WORK"
 
@@ -18,9 +19,11 @@ mkdir -p "$OUT" "$SAMBA3_WORK"
     curl -L "$SAMBA3_TARBALL_URL" -o "$ARCHIVE_PATH"
     tar -xzf "$ARCHIVE_PATH" -C "$SAMBA3_WORK"
 
-    perl -0pi -e 's/if \\(defined\\(@\\$podl\\)\\) \\{/if (\\$podl) {/g' \
+    # Samba 3.6's pidl scripts use Perl syntax removed by modern host Perl.
+    # Keep the generated-IDL tooling runnable on the build VM.
+    patch_perl "Samba 3 pidl ODL modern Perl compatibility" 's/if \(defined\(@\$podl\)\) \{/if (\$podl) {/g' \
         "$SAMBA3_SRC_DIR/pidl/lib/Parse/Pidl/ODL.pm"
-    perl -0pi -e 's/defined \\@\\$pidl/defined(\\$pidl)/g' \
+    patch_perl "Samba 3 pidl modern Perl compatibility" 's/defined @\$pidl/defined(\$pidl)/g' \
         "$SAMBA3_SRC_DIR/pidl/pidl"
 
     ls -ld "$SAMBA3_SRC_DIR"

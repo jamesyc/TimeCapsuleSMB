@@ -2,6 +2,7 @@
 set -eu
 
 . "$(dirname "$0")/env.sh"
+. "$(dirname "$0")/_patch_helpers.sh"
 
 TOOLDIR="$TOOLS"
 DESTDIR="$OBJ/destdir.evbarm"
@@ -219,7 +220,8 @@ SAMBA4_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_a
     # Force IPC$ to be non-guest. macOS Time Machine currently sees
     # SupportsGuest=1 from Samba 4.8 and then attempts the wrong auth flow.
     # Keeping this patch in the build script makes the experiment reproducible.
-    perl -0pi -e 's/lp_add_ipc\("IPC\\\$", \(lp_restrict_anonymous\(\) < 2\)\);/lp_add_ipc("IPC\$", false);/' \
+    patch_perl_any "Samba 4 IPC guest advertisement source patch" \
+        's/lp_add_ipc\("IPC\$\", \(lp_restrict_anonymous\(\) < 2\)\);/lp_add_ipc("IPC\$", false);/' \
         "$SAMBA4_SRC_DIR/source3/param/loadparm.c"
 
     CONFIGURE_ARGS="\

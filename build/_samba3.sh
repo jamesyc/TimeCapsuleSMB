@@ -2,6 +2,7 @@
 set -eu
 
 . "$(dirname "$0")/env.sh"
+. "$(dirname "$0")/_patch_helpers.sh"
 
 dump_elf_diagnostics() {
     label="$1"
@@ -112,12 +113,13 @@ SAMBA3_TC_SHELL="$SAMBA3_BUILD/timecapsule-bin-sh"
     mkdir -p "$SAMBA3_BUILD"
     cd "$SAMBA3_SOURCE3_DIR"
     make distclean >/dev/null 2>&1 || true
-    # Samba 3.6.x bundles pidl code that predates modern Perl rejecting
-    # defined(@array). Patch the two offending call sites in-place so the
-    # release tarball can still regenerate or validate generated IDL stubs.
-    perl -0pi -e 's/if \\(defined\\(@\\$podl\\)\\) \\{/if (\\$podl) {/g' \
+    # Invariant guards: downloadsamba3old*.sh applies these source patches.
+    # The build should fail if it is pointed at an unpatched source tree.
+    patch_require_fixed "Samba 3 pidl ODL modern Perl compatibility invariant" \
+        'if ($podl) {' \
         "$SAMBA3_SRC_DIR/pidl/lib/Parse/Pidl/ODL.pm"
-    perl -0pi -e 's/defined \\@\\$pidl/defined(\\$pidl)/g' \
+    patch_require_fixed "Samba 3 pidl modern Perl compatibility invariant" \
+        'defined($pidl)' \
         "$SAMBA3_SRC_DIR/pidl/pidl"
 
     if [ ! -f "$SAMBA3_SOURCE3_DIR/configure" ]; then
@@ -150,7 +152,8 @@ SAMBA3_TC_SHELL="$SAMBA3_BUILD/timecapsule-bin-sh"
     # generated Makefile produced ET_DYN output with /usr/lib/ld.so.1, which the
     # NetBSD 4 Time Capsule cannot run. Scrub those flags after configure so the
     # final smbd link remains static ET_EXEC while keeping the NetBSD ELF notes.
-    perl -0pi -e 's/(^LDFLAGS\s*=\s*)-pie\s+/$1/mg; s/\s-pie(\s|$)/$1/g; s/(^LDSHFLAGS\s*=\s*)-fPIE\s+/$1/mg; s/\s-fPIE(\s|$)/$1/g' \
+    patch_perl_any "Samba 3 generated Makefile PIE flag scrub" \
+        's/(^LDFLAGS\s*=\s*)-pie\s+/$1/mg; s/\s-pie(\s|$)/$1/g; s/(^LDSHFLAGS\s*=\s*)-fPIE\s+/$1/mg; s/\s-fPIE(\s|$)/$1/g' \
         "$SAMBA3_SOURCE3_DIR/Makefile"
     gmake -n bin/smbd >"$SAMBA3_LINK_PLAN" 2>&1 || true
     echo "===== planned smbd link ====="

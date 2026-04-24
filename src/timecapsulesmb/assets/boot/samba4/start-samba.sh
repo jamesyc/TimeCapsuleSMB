@@ -485,6 +485,7 @@ stage_runtime() {
     acl_xattr:ignore system acls = yes
     fruit:resource = file
     fruit:metadata = stream
+    fruit:encoding = native
     fruit:time machine = yes
     fruit:posix_rename = yes
     xattr_tdb:file = $PAYLOAD_DIR/private/xattr.tdb

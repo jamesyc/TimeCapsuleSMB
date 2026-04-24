@@ -2,6 +2,7 @@
 set -eu
 
 . "$(dirname "$0")/env.sh"
+. "$(dirname "$0")/_patch_helpers.sh"
 
 mkdir -p "$OUT" "$SAMBA4_WORK"
 
@@ -35,28 +36,33 @@ mkdir -p "$OUT" "$SAMBA4_WORK"
         git clone --depth 1 --branch "$SAMBA4_GIT_REF" "$SAMBA4_GIT_URL" "$SAMBA4_SRC_DIR"
     fi
 
-    perl -0pi -e 's/perl_inc = read_perl_config_var\('\''print "\@INC"'\''\)\n(?:\s*if '\''\.'\'' in perl_inc:\n)*(?:\s*perl_inc\.remove\('\''\.'\''\)\n)?/perl_inc = read_perl_config_var('\''print "\@INC"'\'')\n    if '\''.'\'' in perl_inc:\n        perl_inc.remove('\''.'\'')\n/s' \
+    # Invariant guard: Samba 4.8.12 already removes "." from Perl @INC here.
+    # Keep checking it because waf must not pass cwd into host Perl include
+    # resolution during the cross-build.
+    patch_require_fixed "Samba 4 waf Perl @INC invariant" \
+        "if '.' in perl_inc:" \
         "$SAMBA4_SRC_DIR/buildtools/wafsamba/samba_perl.py"
-    perl -0pi -e 's/#ifndef PRINT_MAX_JOBID/#include <time.h>\n\n#ifndef PRINT_MAX_JOBID/' \
+    patch_perl_any "Samba 4 source patch" 's/#ifndef PRINT_MAX_JOBID/#include <time.h>\n\n#ifndef PRINT_MAX_JOBID/' \
         "$SAMBA4_SRC_DIR/lib/param/loadparm.h"
-    perl -0pi -e 's/conf\.SAMBA_CHECK_PYTHON_HEADERS\(mandatory=True\)/conf.SAMBA_CHECK_PYTHON_HEADERS(mandatory=False)/g' \
+    # Invariant guard: ctdb is already optional in this upstream release. The
+    # root wscript and ldb forms below still need actual source patches.
+    patch_require_fixed "Samba 4 ctdb optional Python headers invariant" \
+        "SAMBA_CHECK_PYTHON_HEADERS(mandatory=False)" \
+        "$SAMBA4_SRC_DIR/ctdb/wscript"
+    patch_perl_any "Samba 4 source patch" 's/conf\.SAMBA_CHECK_PYTHON_HEADERS\(mandatory=\(not conf\.env\.disable_python\)\)/conf.SAMBA_CHECK_PYTHON_HEADERS(mandatory=False)/g' \
         "$SAMBA4_SRC_DIR/wscript" \
-        "$SAMBA4_SRC_DIR/ctdb/wscript" \
         "$SAMBA4_SRC_DIR/lib/ldb/wscript"
-    perl -0pi -e 's/conf\.SAMBA_CHECK_PYTHON_HEADERS\(mandatory=\(not conf\.env\.disable_python\)\)/conf.SAMBA_CHECK_PYTHON_HEADERS(mandatory=False)/g' \
-        "$SAMBA4_SRC_DIR/wscript" \
+    patch_perl_any "Samba 4 source patch" 's/conf\.SAMBA_CHECK_PYTHON_HEADERS\(mandatory=not conf\.env\.disable_python\)/conf.SAMBA_CHECK_PYTHON_HEADERS(mandatory=False)/g' \
         "$SAMBA4_SRC_DIR/lib/ldb/wscript"
-    perl -0pi -e 's/conf\.SAMBA_CHECK_PYTHON_HEADERS\(mandatory=not conf\.env\.disable_python\)/conf.SAMBA_CHECK_PYTHON_HEADERS(mandatory=False)/g' \
-        "$SAMBA4_SRC_DIR/lib/ldb/wscript"
-    perl -0pi -e 's/conf\.SAMBA_CHECK_PYTHON_HEADERS\(mandatory=False\)\n/conf.SAMBA_CHECK_PYTHON_HEADERS(mandatory=False)\n    conf.env.disable_python = not conf.env.HAVE_PYTHON_H\n/' \
+    patch_perl_any "Samba 4 source patch" 's/conf\.SAMBA_CHECK_PYTHON_HEADERS\(mandatory=False\)\n/conf.SAMBA_CHECK_PYTHON_HEADERS(mandatory=False)\n    conf.env.disable_python = not conf.env.HAVE_PYTHON_H\n/' \
         "$SAMBA4_SRC_DIR/wscript"
-    perl -0pi -e 's/enabled=enabled\)/enabled=(enabled and not bld.env.disable_python and bld.CONFIG_SET('\''HAVE_PYTHON_H'\'')))/' \
+    patch_perl_any "Samba 4 source patch" 's/enabled=enabled\)/enabled=(enabled and not bld.env.disable_python and bld.CONFIG_SET('\''HAVE_PYTHON_H'\'')))/' \
         "$SAMBA4_SRC_DIR/buildtools/wafsamba/samba_python.py"
     # dynconfig.c includes replace.h, which includes generated config.h. On a
     # clean waf tree that file lives under bin/default/include, so dynconfig
     # needs the "include" build path explicitly or the compile dies on
     # "config.h: No such file or directory".
-    perl -0pi -e "s/deps='replace',\\n/deps='replace',\\n                        includes='include',\\n/" \
+    patch_perl_any "Samba 4 source patch" "s/deps='replace',\\n/deps='replace',\\n                        includes='include',\\n/" \
         "$SAMBA4_SRC_DIR/dynconfig/wscript"
 
     # Samba 4.8 bundles a very old waf. During long cross-configure runs it can
@@ -73,8 +79,13 @@ mkdir -p "$OUT" "$SAMBA4_WORK"
                 inserted = 1
             }
         }
+        END { if (inserted != 1) exit 1 }
     ' "$SAMBA4_SRC_DIR/third_party/waf/wafadmin/Build.py" >"$SAMBA4_SRC_DIR/third_party/waf/wafadmin/Build.py.tmp"
-    mv "$SAMBA4_SRC_DIR/third_party/waf/wafadmin/Build.py.tmp" \
+    patch_replace_checked "Samba 4 waf build cache directory creation patch" \
+        "$SAMBA4_SRC_DIR/third_party/waf/wafadmin/Build.py" \
+        "$SAMBA4_SRC_DIR/third_party/waf/wafadmin/Build.py.tmp"
+    patch_require_fixed "Samba 4 waf build cache directory creation patch" \
+        "os.makedirs(self.bdir)" \
         "$SAMBA4_SRC_DIR/third_party/waf/wafadmin/Build.py"
     awk '
         {
@@ -86,8 +97,13 @@ mkdir -p "$OUT" "$SAMBA4_WORK"
             }
             print
         }
+        END { if (inserted != 1) exit 1 }
     ' "$SAMBA4_SRC_DIR/third_party/waf/wafadmin/Tools/config_c.py" >"$SAMBA4_SRC_DIR/third_party/waf/wafadmin/Tools/config_c.py.tmp"
-    mv "$SAMBA4_SRC_DIR/third_party/waf/wafadmin/Tools/config_c.py.tmp" \
+    patch_replace_checked "Samba 4 waf conf check directory creation patch" \
+        "$SAMBA4_SRC_DIR/third_party/waf/wafadmin/Tools/config_c.py" \
+        "$SAMBA4_SRC_DIR/third_party/waf/wafadmin/Tools/config_c.py.tmp"
+    patch_require_fixed "Samba 4 waf conf check directory creation patch" \
+        "os.makedirs(dir)" \
         "$SAMBA4_SRC_DIR/third_party/waf/wafadmin/Tools/config_c.py"
 
     # On the NetBSD 4 Time Capsule, Samba's first talloc NULL-context
@@ -97,36 +113,16 @@ mkdir -p "$OUT" "$SAMBA4_WORK"
     # lp_set_logfile(). Keep talloc's magic stable for this static NetBSD4
     # target by disabling the randomized constructor update.
     if [ "$SDK_FAMILY" = "netbsd4" ]; then
-        perl -0pi -e 's/(void talloc_lib_init\(void\)\n\{\n)/$1\treturn;\n\n/s' \
+        patch_perl_any "Samba 4 source patch" 's/(void talloc_lib_init\(void\)\n\{\n)/$1\treturn;\n\n/s' \
             "$SAMBA4_SRC_DIR/lib/talloc/talloc.c"
     fi
 
     awk '
         BEGIN { wrap = 0 }
-        !wrap && /^bld\.SAMBA_SUBSYSTEM\('\''pyrpc_util'\''/ {
+        !wrap && /^[[:space:]]*bld\.SAMBA_SUBSYSTEM\('\''PROVISION'\''/ {
             print "if not bld.env.disable_python:"
             wrap = 1
-        }
-        {
-            if (wrap) {
-                print "    " $0
-                if ($0 ~ /^\t\)$/) {
-                    print "else:"
-                    print "    bld.SAMBA_SUBSYSTEM('\''pyrpc_util'\'', source='\'''\'')"
-                    wrap = 0
-                }
-            } else {
-                print
-            }
-        }
-    ' "$SAMBA4_SRC_DIR/source4/librpc/wscript_build" >"$SAMBA4_SRC_DIR/source4/librpc/wscript_build.tmp"
-    mv "$SAMBA4_SRC_DIR/source4/librpc/wscript_build.tmp" "$SAMBA4_SRC_DIR/source4/librpc/wscript_build"
-
-    awk '
-        BEGIN { wrap = 0 }
-        !wrap && /^bld\.SAMBA_SUBSYSTEM\('\''PROVISION'\''/ {
-            print "if not bld.env.disable_python:"
-            wrap = 1
+            inserted = 1
         }
         {
             if (wrap) {
@@ -140,29 +136,11 @@ mkdir -p "$OUT" "$SAMBA4_WORK"
                 print
             }
         }
+        END { if (inserted != 1) exit 1 }
     ' "$SAMBA4_SRC_DIR/source4/param/wscript_build" >"$SAMBA4_SRC_DIR/source4/param/wscript_build.tmp"
-    mv "$SAMBA4_SRC_DIR/source4/param/wscript_build.tmp" "$SAMBA4_SRC_DIR/source4/param/wscript_build"
-
-    awk '
-        BEGIN { wrap = 0 }
-        !wrap && /^bld\.SAMBA_SUBSYSTEM\('\''pyparam_util'\''/ {
-            print "if not bld.env.disable_python:"
-            wrap = 1
-        }
-        {
-            if (wrap) {
-                print "    " $0
-                if ($0 ~ /^\t\)$/) {
-                    print "else:"
-                    print "    bld.SAMBA_SUBSYSTEM('\''pyparam_util'\'', source='\'''\'')"
-                    wrap = 0
-                }
-            } else {
-                print
-            }
-        }
-    ' "$SAMBA4_SRC_DIR/source4/param/wscript_build" >"$SAMBA4_SRC_DIR/source4/param/wscript_build.tmp"
-    mv "$SAMBA4_SRC_DIR/source4/param/wscript_build.tmp" "$SAMBA4_SRC_DIR/source4/param/wscript_build"
+    patch_replace_checked "Samba 4 PROVISION optional Python wrapper patch" \
+        "$SAMBA4_SRC_DIR/source4/param/wscript_build" \
+        "$SAMBA4_SRC_DIR/source4/param/wscript_build.tmp"
 
     cat >"$SAMBA4_SRC_DIR/python/wscript_build" <<'EOF'
 #!/usr/bin/env python
@@ -205,9 +183,9 @@ EOF
 
     # The native NetBSD 6 getifaddrs() probe can hang on the Time Capsule.
     # Force Samba onto the older libreplace interface enumeration path.
-    perl -0pi -e "s/conf\\.CHECK_FUNCS\\('timegm getifaddrs freeifaddrs mmap setgroups syscall setsid'\\)/conf.CHECK_FUNCS('timegm mmap setgroups syscall setsid')/" \
+    patch_perl_any "Samba 4 source patch" "s/conf\\.CHECK_FUNCS\\('timegm getifaddrs freeifaddrs mmap setgroups syscall setsid'\\)/conf.CHECK_FUNCS('timegm mmap setgroups syscall setsid')/" \
         "$SAMBA4_SRC_DIR/lib/replace/wscript"
-    perl -0pi -e "s/for method in \\['HAVE_IFACE_GETIFADDRS', 'HAVE_IFACE_AIX', 'HAVE_IFACE_IFCONF', 'HAVE_IFACE_IFREQ'\\]:/for method in ['HAVE_IFACE_IFCONF', 'HAVE_IFACE_IFREQ', 'HAVE_IFACE_AIX']:/" \
+    patch_perl_any "Samba 4 source patch" "s/for method in \\['HAVE_IFACE_GETIFADDRS', 'HAVE_IFACE_AIX', 'HAVE_IFACE_IFCONF', 'HAVE_IFACE_IFREQ'\\]:/for method in ['HAVE_IFACE_IFCONF', 'HAVE_IFACE_IFREQ', 'HAVE_IFACE_AIX']:/" \
         "$SAMBA4_SRC_DIR/lib/replace/wscript"
 
     # The NetBSD Time Capsule build only needs file serving plus the macOS
@@ -540,84 +518,84 @@ EOF
 #include "includes.h"
 EOF
 
-    perl -0pi -e "s/printing\\/printspoolss\\.c/printing\\/printspoolss_disabled.c/" \
+    patch_perl_any "Samba 4 source patch" "s/printing\\/printspoolss\\.c/printing\\/printspoolss_disabled.c/" \
         "$SAMBA4_SRC_DIR/source3/wscript_build"
-    perl -0pi -e "s/bld\\.SAMBA3_SUBSYSTEM\\('PRINTBASE',\\n\\s*source='''\\n\\s*printing\\/notify\\.c\\n\\s*printing\\/printing_db\\.c\\n\\s*'''/bld.SAMBA3_SUBSYSTEM('PRINTBASE',\\n                    source='''\\n                           printing\\/notify_disabled.c\\n                           printing\\/queue_process_disabled.c\\n                           '''/s" \
+    patch_perl_any "Samba 4 source patch" "s/bld\\.SAMBA3_SUBSYSTEM\\('PRINTBASE',\\n\\s*source='''\\n\\s*printing\\/notify\\.c\\n\\s*printing\\/printing_db\\.c\\n\\s*'''/bld.SAMBA3_SUBSYSTEM('PRINTBASE',\\n                    source='''\\n                           printing\\/notify_disabled.c\\n                           printing\\/queue_process_disabled.c\\n                           '''/s" \
         "$SAMBA4_SRC_DIR/source3/wscript_build"
-    perl -0pi -e "s/bld\\.SAMBA3_SUBSYSTEM\\('PRINTBACKEND',\\n\\s*source='''\\n.*?\\n\\s*'''/bld.SAMBA3_SUBSYSTEM('PRINTBACKEND',\\n                    source='''\\n                           printing\\/printing_disabled.c\\n                           '''/s" \
+    patch_perl_any "Samba 4 source patch" "s/bld\\.SAMBA3_SUBSYSTEM\\('PRINTBACKEND',\\n\\s*source='''\\n.*?\\n\\s*'''/bld.SAMBA3_SUBSYSTEM('PRINTBACKEND',\\n                    source='''\\n                           printing\\/printing_disabled.c\\n                           '''/s" \
         "$SAMBA4_SRC_DIR/source3/wscript_build"
-    perl -0pi -e "s/bld\\.SAMBA3_SUBSYSTEM\\('PRINTING',\\n\\s*source='''\\n.*?\\n\\s*'''/bld.SAMBA3_SUBSYSTEM('PRINTING',\\n                    source='''\\n                           printing\\/printing_disabled.c\\n                           '''/s" \
+    patch_perl_any "Samba 4 source patch" "s/bld\\.SAMBA3_SUBSYSTEM\\('PRINTING',\\n\\s*source='''\\n.*?\\n\\s*'''/bld.SAMBA3_SUBSYSTEM('PRINTING',\\n                    source='''\\n                           printing\\/printing_disabled.c\\n                           '''/s" \
         "$SAMBA4_SRC_DIR/source3/wscript_build"
 
-    perl -0pi -e "s/bld\\.SAMBA3_SUBSYSTEM\\('RPC_SPOOLSS',\\n\\s*source='''.*?''',\\n\\s*deps='.*?'\\)/bld.SAMBA3_SUBSYSTEM('RPC_SPOOLSS',\\n                    source='''spoolss\\/spoolss_disabled.c''',\\n                    deps='')/s" \
+    patch_perl_any "Samba 4 source patch" "s/bld\\.SAMBA3_SUBSYSTEM\\('RPC_SPOOLSS',\\n\\s*source='''.*?''',\\n\\s*deps='.*?'\\)/bld.SAMBA3_SUBSYSTEM('RPC_SPOOLSS',\\n                    source='''spoolss\\/spoolss_disabled.c''',\\n                    deps='')/s" \
         "$SAMBA4_SRC_DIR/source3/rpc_server/wscript_build"
-    perl -0pi -e "s/bld\\.SAMBA3_SUBSYSTEM\\('RPC_IREMOTEWINSPOOL',\\n\\s*source='''.*?''',\\n\\s*deps='RPC_SPOOLSS'\\)/bld.SAMBA3_SUBSYSTEM('RPC_IREMOTEWINSPOOL',\\n                    source='''spoolss\\/iremotewinspool_disabled.c''',\\n                    deps='')/s" \
+    patch_perl_any "Samba 4 source patch" "s/bld\\.SAMBA3_SUBSYSTEM\\('RPC_IREMOTEWINSPOOL',\\n\\s*source='''.*?''',\\n\\s*deps='RPC_SPOOLSS'\\)/bld.SAMBA3_SUBSYSTEM('RPC_IREMOTEWINSPOOL',\\n                    source='''spoolss\\/iremotewinspool_disabled.c''',\\n                    deps='')/s" \
         "$SAMBA4_SRC_DIR/source3/rpc_server/wscript_build"
-    perl -0pi -e "s/bld\\.SAMBA3_SUBSYSTEM\\('RPC_WKSSVC',\\n\\s*source='''.*?''',\\n\\s*deps='LIBNET'\\)/bld.SAMBA3_SUBSYSTEM('RPC_WKSSVC',\\n                    source='''wkssvc\\/wkssvc_disabled.c''',\\n                    deps='')/s" \
+    patch_perl_any "Samba 4 source patch" "s/bld\\.SAMBA3_SUBSYSTEM\\('RPC_WKSSVC',\\n\\s*source='''.*?''',\\n\\s*deps='LIBNET'\\)/bld.SAMBA3_SUBSYSTEM('RPC_WKSSVC',\\n                    source='''wkssvc\\/wkssvc_disabled.c''',\\n                    deps='')/s" \
         "$SAMBA4_SRC_DIR/source3/rpc_server/wscript_build"
-    perl -0pi -e "s/\\n\\s*RPC_SPOOLSS\\n\\s*RPC_IREMOTEWINSPOOL//s" \
+    patch_perl_any "Samba 4 source patch" "s/\\n\\s*RPC_SPOOLSS\\n\\s*RPC_IREMOTEWINSPOOL//s" \
         "$SAMBA4_SRC_DIR/source3/rpc_server/wscript_build"
-    perl -0pi -e "s/\\n\\s*RPC_WKSSVC\\n//s" \
+    patch_perl_any "Samba 4 source patch" "s/\\n\\s*RPC_WKSSVC\\n//s" \
         "$SAMBA4_SRC_DIR/source3/rpc_server/wscript_build"
 
-    perl -0pi -e "s/static bool rpc_setup_spoolss\\(.*?\\n\\}\\n\\n/static bool rpc_setup_spoolss(struct tevent_context *ev_ctx,\\n                              struct messaging_context *msg_ctx)\\n{\\n    return true;\\n}\\n\\n/s" \
+    patch_perl_any "Samba 4 source patch" "s/static bool rpc_setup_spoolss\\(.*?\\n\\}\\n\\n/static bool rpc_setup_spoolss(struct tevent_context *ev_ctx,\\n                              struct messaging_context *msg_ctx)\\n{\\n    return true;\\n}\\n\\n/s" \
         "$SAMBA4_SRC_DIR/source3/rpc_server/rpc_service_setup.c"
-    perl -0pi -e "s/static bool rpc_setup_wkssvc\\(.*?\\n\\}\\n\\n/static bool rpc_setup_wkssvc(struct tevent_context *ev_ctx,\\n                             struct messaging_context *msg_ctx)\\n{\\n    return true;\\n}\\n\\n/s" \
+    patch_perl_any "Samba 4 source patch" "s/static bool rpc_setup_wkssvc\\(.*?\\n\\}\\n\\n/static bool rpc_setup_wkssvc(struct tevent_context *ev_ctx,\\n                             struct messaging_context *msg_ctx)\\n{\\n    return true;\\n}\\n\\n/s" \
         "$SAMBA4_SRC_DIR/source3/rpc_server/rpc_service_setup.c"
-    perl -0pi -e 's/^\s*rpc_spoolss_shutdown\(\);\n//m' \
+    patch_perl_any "Samba 4 source patch" 's/^\s*rpc_spoolss_shutdown\(\);\n//m' \
         "$SAMBA4_SRC_DIR/source3/smbd/server_exit.c"
-    perl -0pi -e 's/^\s*rpc_wkssvc_shutdown\(\);\n//m' \
+    patch_perl_any "Samba 4 source patch" 's/^\s*rpc_wkssvc_shutdown\(\);\n//m' \
         "$SAMBA4_SRC_DIR/source3/smbd/server_exit.c"
-    perl -0pi -e "s/bool lp_disable_spoolss\\( void \\)\\n\\{\\n.*?\\n\\}/bool lp_disable_spoolss( void )\\n{\\n\\treturn true;\\n\\}/s" \
+    patch_perl_any "Samba 4 source patch" "s/bool lp_disable_spoolss\\( void \\)\\n\\{\\n.*?\\n\\}/bool lp_disable_spoolss( void )\\n{\\n\\treturn true;\\n\\}/s" \
         "$SAMBA4_SRC_DIR/source3/param/loadparm.c"
-    perl -0pi -e "s/epmapper wkssvc rpcecho/epmapper rpcecho/" \
+    patch_perl_any "Samba 4 source patch" "s/epmapper wkssvc rpcecho/epmapper rpcecho/" \
         "$SAMBA4_SRC_DIR/source3/param/loadparm.c"
-    perl -0pi -e "s/static bool api_DosPrintQGetInfo\\(.*?^\\}/static bool api_DosPrintQGetInfo(struct smbd_server_connection *sconn,\\n\\t\\t\\t connection_struct *conn, uint64_t vuid,\\n\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
+    patch_perl_any "Samba 4 source patch" "s/static bool api_DosPrintQGetInfo\\(.*?^\\}/static bool api_DosPrintQGetInfo(struct smbd_server_connection *sconn,\\n\\t\\t\\t connection_struct *conn, uint64_t vuid,\\n\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
         "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
-    perl -0pi -e "s/static bool api_DosPrintQEnum\\(.*?^\\}/static bool api_DosPrintQEnum(struct smbd_server_connection *sconn,\\n\\t\\t\\t      connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt, int mprcnt,\\n\\t\\t\\t\\tchar **rdata, char** rparam,\\n\\t\\t\\t\\tint *rdata_len, int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
+    patch_perl_any "Samba 4 source patch" "s/static bool api_DosPrintQEnum\\(.*?^\\}/static bool api_DosPrintQEnum(struct smbd_server_connection *sconn,\\n\\t\\t\\t      connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt, int mprcnt,\\n\\t\\t\\t\\tchar **rdata, char** rparam,\\n\\t\\t\\t\\tint *rdata_len, int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
         "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
-    perl -0pi -e "s/static bool api_PrintJobInfo\\(.*?^\\}/static bool api_PrintJobInfo(struct smbd_server_connection *sconn,\\n\\t\\t\\t     connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
+    patch_perl_any "Samba 4 source patch" "s/static bool api_PrintJobInfo\\(.*?^\\}/static bool api_PrintJobInfo(struct smbd_server_connection *sconn,\\n\\t\\t\\t     connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
         "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
-    perl -0pi -e "s/static bool api_WPrintJobGetInfo\\(.*?^\\}/static bool api_WPrintJobGetInfo(struct smbd_server_connection *sconn,\\n\\t\\t\\t\\t connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
+    patch_perl_any "Samba 4 source patch" "s/static bool api_WPrintJobGetInfo\\(.*?^\\}/static bool api_WPrintJobGetInfo(struct smbd_server_connection *sconn,\\n\\t\\t\\t\\t connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
         "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
-    perl -0pi -e "s/static bool api_WPrintDestGetInfo\\(.*?^\\}/static bool api_WPrintDestGetInfo(struct smbd_server_connection *sconn,\\n\\t\\t\\t\\t  connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
+    patch_perl_any "Samba 4 source patch" "s/static bool api_WPrintDestGetInfo\\(.*?^\\}/static bool api_WPrintDestGetInfo(struct smbd_server_connection *sconn,\\n\\t\\t\\t\\t  connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
         "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
-    perl -0pi -e "s/static bool api_WPrintDestEnum\\(.*?^\\}/static bool api_WPrintDestEnum(struct smbd_server_connection *sconn,\\n\\t\\t\\t       connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
+    patch_perl_any "Samba 4 source patch" "s/static bool api_WPrintDestEnum\\(.*?^\\}/static bool api_WPrintDestEnum(struct smbd_server_connection *sconn,\\n\\t\\t\\t       connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
         "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
-    perl -0pi -e "s/static bool api_WPrintJobEnumerate\\(.*?^\\}/static bool api_WPrintJobEnumerate(struct smbd_server_connection *sconn,\\n\\t\\t\\t   connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
+    patch_perl_any "Samba 4 source patch" "s/static bool api_WPrintJobEnumerate\\(.*?^\\}/static bool api_WPrintJobEnumerate(struct smbd_server_connection *sconn,\\n\\t\\t\\t   connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
         "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
-    perl -0pi -e "s/static bool api_RNetServerGetInfo\\(.*?^\\}/static bool api_RNetServerGetInfo(struct smbd_server_connection *sconn,\\n\\t\\t\\t  connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
+    patch_perl_any "Samba 4 source patch" "s/static bool api_RNetServerGetInfo\\(.*?^\\}/static bool api_RNetServerGetInfo(struct smbd_server_connection *sconn,\\n\\t\\t\\t  connection_struct *conn, uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
         "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
-    perl -0pi -e "s/static bool api_NetWkstaGetInfo\\(.*?^\\}/static bool api_NetWkstaGetInfo(struct smbd_server_connection *sconn,\\n\\t\\t\\t\\tconnection_struct *conn,uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
+    patch_perl_any "Samba 4 source patch" "s/static bool api_NetWkstaGetInfo\\(.*?^\\}/static bool api_NetWkstaGetInfo(struct smbd_server_connection *sconn,\\n\\t\\t\\t\\tconnection_struct *conn,uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
         "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
-    perl -0pi -e "s/static bool api_RNetSessionEnum\\(.*?^\\}/static bool api_RNetSessionEnum(struct smbd_server_connection *sconn,\\n\\t\\t\\t   connection_struct *conn,uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
+    patch_perl_any "Samba 4 source patch" "s/static bool api_RNetSessionEnum\\(.*?^\\}/static bool api_RNetSessionEnum(struct smbd_server_connection *sconn,\\n\\t\\t\\t   connection_struct *conn,uint64_t vuid,\\n\\t\\t\\t\\tchar *param, int tpscnt,\\n\\t\\t\\t\\tchar *data, int tdscnt,\\n\\t\\t\\t\\tint mdrcnt,int mprcnt,\\n\\t\\t\\t\\tchar **rdata,char **rparam,\\n\\t\\t\\t\\tint *rdata_len,int *rparam_len)\\n{\\n\\treturn False;\\n\\}/ms" \
         "$SAMBA4_SRC_DIR/source3/smbd/lanman.c"
-    perl -0pi -e "s/void reply_printqueue\\(struct smb_request \\*req\\)\\n\\{.*?^\\}/void reply_printqueue(struct smb_request *req)\\n{\\n\\treply_nterror(req, NT_STATUS_NOT_SUPPORTED);\\n\\treturn;\\n\\}/ms" \
+    patch_perl_any "Samba 4 source patch" "s/void reply_printqueue\\(struct smb_request \\*req\\)\\n\\{.*?^\\}/void reply_printqueue(struct smb_request *req)\\n{\\n\\treply_nterror(req, NT_STATUS_NOT_SUPPORTED);\\n\\treturn;\\n\\}/ms" \
         "$SAMBA4_SRC_DIR/source3/smbd/reply.c"
-    perl -0pi -e "s/WERROR _srvsvc_NetFileEnum\\(.*?^\\}/WERROR _srvsvc_NetFileEnum(struct pipes_struct *p,\\n\\t\\t\\t   struct srvsvc_NetFileEnum *r)\\n{\\n\\treturn WERR_NOT_SUPPORTED;\\n\\}/ms" \
+    patch_perl_any "Samba 4 source patch" "s/WERROR _srvsvc_NetFileEnum\\(.*?^\\}/WERROR _srvsvc_NetFileEnum(struct pipes_struct *p,\\n\\t\\t\\t   struct srvsvc_NetFileEnum *r)\\n{\\n\\treturn WERR_NOT_SUPPORTED;\\n\\}/ms" \
         "$SAMBA4_SRC_DIR/source3/rpc_server/srvsvc/srv_srvsvc_nt.c"
-    perl -0pi -e "s/WERROR _srvsvc_NetSrvGetInfo\\(.*?^\\}/WERROR _srvsvc_NetSrvGetInfo(struct pipes_struct *p,\\n\\t\\t\\t     struct srvsvc_NetSrvGetInfo *r)\\n{\\n\\treturn WERR_NOT_SUPPORTED;\\n\\}/ms" \
+    patch_perl_any "Samba 4 source patch" "s/WERROR _srvsvc_NetSrvGetInfo\\(.*?^\\}/WERROR _srvsvc_NetSrvGetInfo(struct pipes_struct *p,\\n\\t\\t\\t     struct srvsvc_NetSrvGetInfo *r)\\n{\\n\\treturn WERR_NOT_SUPPORTED;\\n\\}/ms" \
         "$SAMBA4_SRC_DIR/source3/rpc_server/srvsvc/srv_srvsvc_nt.c"
-    perl -0pi -e "s/WERROR _srvsvc_NetSrvSetInfo\\(.*?^\\}/WERROR _srvsvc_NetSrvSetInfo(struct pipes_struct *p,\\n\\t\\t\\t     struct srvsvc_NetSrvSetInfo *r)\\n{\\n\\treturn WERR_NOT_SUPPORTED;\\n\\}/ms" \
+    patch_perl_any "Samba 4 source patch" "s/WERROR _srvsvc_NetSrvSetInfo\\(.*?^\\}/WERROR _srvsvc_NetSrvSetInfo(struct pipes_struct *p,\\n\\t\\t\\t     struct srvsvc_NetSrvSetInfo *r)\\n{\\n\\treturn WERR_NOT_SUPPORTED;\\n\\}/ms" \
         "$SAMBA4_SRC_DIR/source3/rpc_server/srvsvc/srv_srvsvc_nt.c"
-    perl -0pi -e "s/WERROR _srvsvc_NetConnEnum\\(.*?^\\}/WERROR _srvsvc_NetConnEnum(struct pipes_struct *p,\\n\\t\\t\\t   struct srvsvc_NetConnEnum *r)\\n{\\n\\treturn WERR_NOT_SUPPORTED;\\n\\}/ms" \
+    patch_perl_any "Samba 4 source patch" "s/WERROR _srvsvc_NetConnEnum\\(.*?^\\}/WERROR _srvsvc_NetConnEnum(struct pipes_struct *p,\\n\\t\\t\\t   struct srvsvc_NetConnEnum *r)\\n{\\n\\treturn WERR_NOT_SUPPORTED;\\n\\}/ms" \
         "$SAMBA4_SRC_DIR/source3/rpc_server/srvsvc/srv_srvsvc_nt.c"
-    perl -0pi -e "s/WERROR _srvsvc_NetSessEnum\\(.*?^\\}/WERROR _srvsvc_NetSessEnum(struct pipes_struct *p,\\n\\t\\t\\t   struct srvsvc_NetSessEnum *r)\\n{\\n\\treturn WERR_NOT_SUPPORTED;\\n\\}/ms" \
+    patch_perl_any "Samba 4 source patch" "s/WERROR _srvsvc_NetSessEnum\\(.*?^\\}/WERROR _srvsvc_NetSessEnum(struct pipes_struct *p,\\n\\t\\t\\t   struct srvsvc_NetSessEnum *r)\\n{\\n\\treturn WERR_NOT_SUPPORTED;\\n\\}/ms" \
         "$SAMBA4_SRC_DIR/source3/rpc_server/srvsvc/srv_srvsvc_nt.c"
-    perl -0pi -e "s/WERROR _srvsvc_NetSessDel\\(.*?^\\}/WERROR _srvsvc_NetSessDel(struct pipes_struct *p,\\n\\t\\t\\t  struct srvsvc_NetSessDel *r)\\n{\\n\\treturn WERR_NOT_SUPPORTED;\\n\\}/ms" \
+    patch_perl_any "Samba 4 source patch" "s/WERROR _srvsvc_NetSessDel\\(.*?^\\}/WERROR _srvsvc_NetSessDel(struct pipes_struct *p,\\n\\t\\t\\t  struct srvsvc_NetSessDel *r)\\n{\\n\\treturn WERR_NOT_SUPPORTED;\\n\\}/ms" \
         "$SAMBA4_SRC_DIR/source3/rpc_server/srvsvc/srv_srvsvc_nt.c"
-    perl -0pi -e "s/WERROR _srvsvc_NetRemoteTOD\\(.*?^\\}/WERROR _srvsvc_NetRemoteTOD(struct pipes_struct *p,\\n\\t\\t\\t    struct srvsvc_NetRemoteTOD *r)\\n{\\n\\treturn WERR_NOT_SUPPORTED;\\n\\}/ms" \
+    patch_perl_any "Samba 4 source patch" "s/WERROR _srvsvc_NetRemoteTOD\\(.*?^\\}/WERROR _srvsvc_NetRemoteTOD(struct pipes_struct *p,\\n\\t\\t\\t    struct srvsvc_NetRemoteTOD *r)\\n{\\n\\treturn WERR_NOT_SUPPORTED;\\n\\}/ms" \
         "$SAMBA4_SRC_DIR/source3/rpc_server/srvsvc/srv_srvsvc_nt.c"
 
-    perl -0pi -e "s/SRC = '''tevent\\.c tevent_debug\\.c tevent_fd\\.c tevent_immediate\\.c\\n             tevent_queue\\.c tevent_req\\.c\\n             tevent_poll\\.c tevent_threads\\.c\\n             tevent_signal\\.c tevent_standard\\.c tevent_timed\\.c tevent_util\\.c tevent_wakeup\\.c'''/SRC = '''tevent.c tevent_debug.c tevent_fd.c tevent_immediate.c\\n             tevent_queue.c tevent_req.c\\n             tevent_poll.c\\n             tevent_signal.c tevent_standard.c tevent_timed.c tevent_util.c tevent_wakeup.c'''\\n\\n    if bld.CONFIG_SET('HAVE_PTHREAD'):\\n        SRC += ' tevent_threads.c'/s" \
+    patch_perl_any "Samba 4 source patch" "s/SRC = '''tevent\\.c tevent_debug\\.c tevent_fd\\.c tevent_immediate\\.c\\n             tevent_queue\\.c tevent_req\\.c\\n             tevent_poll\\.c tevent_threads\\.c\\n             tevent_signal\\.c tevent_standard\\.c tevent_timed\\.c tevent_util\\.c tevent_wakeup\\.c'''/SRC = '''tevent.c tevent_debug.c tevent_fd.c tevent_immediate.c\\n             tevent_queue.c tevent_req.c\\n             tevent_poll.c\\n             tevent_signal.c tevent_standard.c tevent_timed.c tevent_util.c tevent_wakeup.c'''\\n\\n    if bld.CONFIG_SET('HAVE_PTHREAD'):\\n        SRC += ' tevent_threads.c'/s" \
         "$SAMBA4_SRC_DIR/lib/tevent/wscript"
-    perl -0pi -e "s/\\n\\ttevent_poll_init\\(\\);\\n\\ttevent_poll_mt_init\\(\\);/\\n\\ttevent_poll_init();\\n#ifdef HAVE_PTHREAD\\n\\ttevent_poll_mt_init();\\n#endif/s" \
+    patch_perl_any "Samba 4 source patch" "s/\\n\\ttevent_poll_init\\(\\);\\n\\ttevent_poll_mt_init\\(\\);/\\n\\ttevent_poll_init();\\n#ifdef HAVE_PTHREAD\\n\\ttevent_poll_mt_init();\\n#endif/s" \
         "$SAMBA4_SRC_DIR/lib/tevent/tevent.c"
-    perl -0pi -e "s/\\n\\tif \\(ev->threaded_contexts != NULL\\) \\{\\n\\t\\ttevent_common_threaded_activate_immediate\\(ev\\);\\n\\t\\}/\\n#ifdef HAVE_PTHREAD\\n\\tif (ev->threaded_contexts != NULL) {\\n\\t\\ttevent_common_threaded_activate_immediate(ev);\\n\\t}\\n#endif/s" \
+    patch_perl_any "Samba 4 source patch" "s/\\n\\tif \\(ev->threaded_contexts != NULL\\) \\{\\n\\t\\ttevent_common_threaded_activate_immediate\\(ev\\);\\n\\t\\}/\\n#ifdef HAVE_PTHREAD\\n\\tif (ev->threaded_contexts != NULL) {\\n\\t\\ttevent_common_threaded_activate_immediate(ev);\\n\\t}\\n#endif/s" \
         "$SAMBA4_SRC_DIR/lib/tevent/tevent_poll.c"
-    perl -0pi -e "s/\\n\\tif \\(ev->threaded_contexts != NULL\\) \\{\\n\\t\\ttevent_common_threaded_activate_immediate\\(ev\\);\\n\\t\\}/\\n#ifdef HAVE_PTHREAD\\n\\tif (ev->threaded_contexts != NULL) {\\n\\t\\ttevent_common_threaded_activate_immediate(ev);\\n\\t}\\n#endif/s" \
+    patch_perl_any "Samba 4 source patch" "s/\\n\\tif \\(ev->threaded_contexts != NULL\\) \\{\\n\\t\\ttevent_common_threaded_activate_immediate\\(ev\\);\\n\\t\\}/\\n#ifdef HAVE_PTHREAD\\n\\tif (ev->threaded_contexts != NULL) {\\n\\t\\ttevent_common_threaded_activate_immediate(ev);\\n\\t}\\n#endif/s" \
         "$SAMBA4_SRC_DIR/lib/tevent/tevent_epoll.c"
-    perl -0pi -e "s/\\n\\tif \\(ev->threaded_contexts != NULL\\) \\{\\n\\t\\ttevent_common_threaded_activate_immediate\\(ev\\);\\n\\t\\}/\\n#ifdef HAVE_PTHREAD\\n\\tif (ev->threaded_contexts != NULL) {\\n\\t\\ttevent_common_threaded_activate_immediate(ev);\\n\\t}\\n#endif/s" \
+    patch_perl_any "Samba 4 source patch" "s/\\n\\tif \\(ev->threaded_contexts != NULL\\) \\{\\n\\t\\ttevent_common_threaded_activate_immediate\\(ev\\);\\n\\t\\}/\\n#ifdef HAVE_PTHREAD\\n\\tif (ev->threaded_contexts != NULL) {\\n\\t\\ttevent_common_threaded_activate_immediate(ev);\\n\\t}\\n#endif/s" \
         "$SAMBA4_SRC_DIR/lib/tevent/tevent_port.c"
 
     # The AirPort's NetBSD userland aborts in malloc when the Samba build pulls
@@ -625,13 +603,14 @@ EOF
     # stripping pthread dependencies from Samba's wscript graph before
     # configure; the generated cache is forced off later in _samba4.sh.
     if [ "$NO_PTHREADS" = "1" ]; then
-        perl -0pi -e "s/tevent execinfo pthread strv/tevent execinfo strv/" \
+        patch_perl_any "Samba 4 source patch" "s/tevent execinfo pthread strv/tevent execinfo strv/" \
             "$SAMBA4_SRC_DIR/lib/util/wscript_build"
-        perl -0pi -e "s/public_deps='talloc tevent execinfo pthread/public_deps='talloc tevent execinfo/" \
+        patch_perl_any "Samba 4 source patch" "s/public_deps='talloc tevent execinfo pthread/public_deps='talloc tevent execinfo/" \
             "$SAMBA4_SRC_DIR/lib/util/wscript_build"
-        perl -0pi -e "s/deps='replace socket-blocking sys_rw pthread'/deps='replace socket-blocking sys_rw'/" \
-            "$SAMBA4_SRC_DIR/lib/pthreadpool/wscript_build"
-        perl -0pi -e "s/public_deps='replace pthread'/public_deps='replace'/" \
+        # Samba 4.8.12's pthreadpool build target declares pthread directly.
+        # This Time Capsule build disables HAVE_PTHREAD and scrubs pthread from
+        # the waf cache later, so keep the source graph from reintroducing it.
+        patch_perl_any "Samba 4 no-pthreads pthreadpool dependency patch" "s/deps='pthread rt replace tevent-util'/deps='rt replace tevent-util'/" \
             "$SAMBA4_SRC_DIR/lib/pthreadpool/wscript_build"
     fi
 
@@ -640,18 +619,24 @@ EOF
     # than patch generated link lines repeatedly, turn off the optional
     # backtrace/execinfo feature at the source-tree level for reproducible
     # static cross-builds.
-    perl -0pi -e "s/tevent execinfo pthread strv/tevent pthread strv/" \
+    patch_perl_any "Samba 4 execinfo dependency removal patch" "s/tevent execinfo(?: pthread)? strv/tevent strv/" \
         "$SAMBA4_SRC_DIR/lib/util/wscript_build"
-    perl -0pi -e "s/public_deps='talloc tevent execinfo pthread/public_deps='talloc tevent pthread/" \
+    patch_perl_any "Samba 4 execinfo public dependency removal patch" "s/public_deps='talloc tevent execinfo(?: pthread)?/public_deps='talloc tevent/" \
         "$SAMBA4_SRC_DIR/lib/util/wscript_build"
-    perl -0pi -e "s/ deps='roken wind asn1 hx509 hcrypto com_err HEIMDAL_CONFIG heimbase execinfo samba_intl',/ deps='roken wind asn1 hx509 hcrypto com_err HEIMDAL_CONFIG heimbase samba_intl',/" \
+    patch_perl_any "Samba 4 source patch" "s/ deps='roken wind asn1 hx509 hcrypto com_err HEIMDAL_CONFIG heimbase execinfo samba_intl',/ deps='roken wind asn1 hx509 hcrypto com_err HEIMDAL_CONFIG heimbase samba_intl',/" \
         "$SAMBA4_SRC_DIR/source4/heimdal_build/wscript_build"
 
-    # NetBSD/HFS + fruit/streams_xattr/xattr_tdb hits a Samba bug where a
-    # missing TDB record is treated as corruption instead of "no xattrs yet".
-    # That bubbles up as EINVAL from listxattr/getxattr and breaks SMB
-    # rename/delete paths. Patch xattr_tdb to treat NOT_FOUND as an empty set.
-    perl -0pi -e 's/\tstatus = dbwrap_fetch\(db, frame, key, &data\);\n\tif \(!NT_STATUS_IS_OK\(status\)\) \{\n\t\treturn NT_STATUS_INTERNAL_DB_CORRUPTION;\n\t\}/\tstatus = dbwrap_fetch(db, frame, key, \&data);\n\tif (NT_STATUS_EQUAL(status, NT_STATUS_NOT_FOUND)) {\n\t\t*presult = talloc_zero(mem_ctx, struct tdb_xattrs);\n\t\tif (*presult == NULL) {\n\t\t\treturn NT_STATUS_NO_MEMORY;\n\t\t}\n\t\treturn NT_STATUS_OK;\n\t}\n\tif (!NT_STATUS_IS_OK(status)) {\n\t\treturn NT_STATUS_INTERNAL_DB_CORRUPTION;\n\t}/' \
+    # NetBSD/HFS does not provide native xattrs, so this build stacks
+    # fruit -> streams_xattr -> xattr_tdb. Vanilla Samba 4.8.12 treats an
+    # xattr_tdb miss as internal database corruption. For files/directories
+    # that simply have no xattr_tdb row yet, that bubbles through
+    # listxattr/getxattr as EINVAL and macOS reports unreadable xattrs.
+    # Missing rows are normal for untouched files, so return an allocated
+    # empty xattr set and preserve real database errors as hard failures.
+    patch_perl_any "Samba 4 xattr_tdb missing-row empty-xattrs patch" 's/\tstatus = dbwrap_fetch\(db_ctx, mem_ctx,\n\t\t\t      make_tdb_data\(id_buf, sizeof\(id_buf\)\),\n\t\t\t      &data\);\n\tif \(!NT_STATUS_IS_OK\(status\)\) \{\n\t\treturn NT_STATUS_INTERNAL_DB_CORRUPTION;\n\t\}/\tstatus = dbwrap_fetch(db_ctx, mem_ctx,\n\t\t\t      make_tdb_data(id_buf, sizeof(id_buf)),\n\t\t\t      \&data);\n\tif (NT_STATUS_EQUAL(status, NT_STATUS_NOT_FOUND)) {\n\t\t*presult = talloc_zero(mem_ctx, struct tdb_xattrs);\n\t\tif (*presult == NULL) {\n\t\t\treturn NT_STATUS_NO_MEMORY;\n\t\t}\n\t\treturn NT_STATUS_OK;\n\t}\n\tif (!NT_STATUS_IS_OK(status)) {\n\t\treturn NT_STATUS_INTERNAL_DB_CORRUPTION;\n\t}/' \
+        "$SAMBA4_SRC_DIR/source3/lib/xattr_tdb.c"
+    patch_require_grep "Samba 4 xattr_tdb missing-row empty-xattrs patch" \
+        "NT_STATUS_EQUAL(status, NT_STATUS_NOT_FOUND)" \
         "$SAMBA4_SRC_DIR/source3/lib/xattr_tdb.c"
 
     # Time Machine requires Samba fruit's durable handles, but the AirPort
@@ -671,7 +656,7 @@ EOF
     # safe identity predicate. Samba defaults to log level 0, so log this rare
     # allowed reconnect warning at DEBUG(0) with a unique marker that is easy
     # to grep in normal production logs.
-    perl -0pi -e 's/\tif \(cookie_st->st_ex_blocks != fsp_st->st_ex_blocks\) \{\n\t\tDEBUG\(1, \("vfs_default_durable_reconnect \(%s\): "\n\t\t\t  "stat_ex\.%s differs: "\n\t\t\t  "cookie:%llu != stat:%llu, "\n\t\t\t  "denying durable reconnect\\n",\n\t\t\t  name,\n\t\t\t  "st_ex_blocks",\n\t\t\t  \(unsigned long long\)cookie_st->st_ex_blocks,\n\t\t\t  \(unsigned long long\)fsp_st->st_ex_blocks\)\);\n\t\treturn false;\n\t\}/\tif (cookie_st->st_ex_blocks != fsp_st->st_ex_blocks) {\n\t\tDEBUG(0, ("TIMECAPSULE_DURABLE_ST_BLOCKS_MISMATCH: "\n\t\t\t  "vfs_default_durable_reconnect (%s): "\n\t\t\t  "stat_ex.%s differs: "\n\t\t\t  "cookie:%llu != stat:%llu, "\n\t\t\t  "allowing durable reconnect on Time Capsule build\\n",\n\t\t\t  name,\n\t\t\t  "st_ex_blocks",\n\t\t\t  (unsigned long long)cookie_st->st_ex_blocks,\n\t\t\t  (unsigned long long)fsp_st->st_ex_blocks));\n\t}/s' \
+    patch_perl_any "Samba 4 source patch" 's/\tif \(cookie_st->st_ex_blocks != fsp_st->st_ex_blocks\) \{\n\t\tDEBUG\(1, \("vfs_default_durable_reconnect \(%s\): "\n\t\t\t  "stat_ex\.%s differs: "\n\t\t\t  "cookie:%llu != stat:%llu, "\n\t\t\t  "denying durable reconnect\\n",\n\t\t\t  name,\n\t\t\t  "st_ex_blocks",\n\t\t\t  \(unsigned long long\)cookie_st->st_ex_blocks,\n\t\t\t  \(unsigned long long\)fsp_st->st_ex_blocks\)\);\n\t\treturn false;\n\t\}/\tif (cookie_st->st_ex_blocks != fsp_st->st_ex_blocks) {\n\t\tDEBUG(0, ("TIMECAPSULE_DURABLE_ST_BLOCKS_MISMATCH: "\n\t\t\t  "vfs_default_durable_reconnect (%s): "\n\t\t\t  "stat_ex.%s differs: "\n\t\t\t  "cookie:%llu != stat:%llu, "\n\t\t\t  "allowing durable reconnect on Time Capsule build\\n",\n\t\t\t  name,\n\t\t\t  "st_ex_blocks",\n\t\t\t  (unsigned long long)cookie_st->st_ex_blocks,\n\t\t\t  (unsigned long long)fsp_st->st_ex_blocks));\n\t}/s' \
         "$SAMBA4_SRC_DIR/source3/smbd/durable.c"
     if awk '
         /\tif \(cookie_st->st_ex_blocks != fsp_st->st_ex_blocks\) \{/ {
