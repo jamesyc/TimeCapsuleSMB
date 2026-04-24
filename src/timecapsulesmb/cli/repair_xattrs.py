@@ -194,15 +194,21 @@ def iter_scan_paths(
     include_root_directory: bool = False,
     summary: RepairSummary,
 ):
-    root = root.resolve()
-    if root.is_file():
+    try:
+        root = root.resolve()
+        root_is_file = root.is_file()
+        root_is_dir = root.is_dir()
+    except OSError as exc:
+        raise SystemExit(f"Cannot access path: {root}: {exc}") from exc
+
+    if root_is_file:
         if not should_skip_path(root, root.parent, include_hidden=include_hidden, include_time_machine=include_time_machine):
             yield root, "file"
         else:
             summary.skipped += 1
         return
 
-    if not root.is_dir():
+    if not root_is_dir:
         raise SystemExit(f"Path does not exist or is not a regular file/directory: {root}")
 
     if include_directories and include_root_directory and not should_skip_path(root, root, include_hidden=include_hidden, include_time_machine=include_time_machine):

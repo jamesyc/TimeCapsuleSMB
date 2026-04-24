@@ -853,6 +853,28 @@ class RepairXattrsTests(unittest.TestCase):
                         rc = repair_xattrs.main(["--path", str(target)])
         self.assertEqual(rc, 0)
 
+    def test_explicit_inaccessible_repair_path_reports_clean_error(self) -> None:
+        target = Path("/Volumes/.timemachine/Data")
+        summary = repair_xattrs.RepairSummary()
+
+        with mock.patch("pathlib.Path.resolve", return_value=target):
+            with mock.patch("pathlib.Path.is_file", side_effect=PermissionError("permission denied")):
+                with self.assertRaises(SystemExit) as cm:
+                    list(
+                        repair_xattrs.iter_scan_paths(
+                            target,
+                            recursive=True,
+                            max_depth=None,
+                            include_hidden=False,
+                            include_time_machine=False,
+                            include_directories=True,
+                            summary=summary,
+                        )
+                    )
+
+        self.assertIn("Cannot access path", str(cm.exception))
+        self.assertIn("permission denied", str(cm.exception))
+
     def test_dry_run_and_yes_are_mutually_exclusive(self) -> None:
         with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
             with redirect_stderr(io.StringIO()):
