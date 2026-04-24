@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 from timecapsulesmb.cli.util import CLI_VERSION, RELEASE_TAG, SAMBA_VERSION
-from timecapsulesmb.device.compat import device_family_from_payload_family
 from timecapsulesmb.identity import BOOTSTRAP_PATH, load_install_identity
 
 
@@ -137,10 +136,6 @@ def build_device_os_version(os_name: str | None, os_release: str | None, arch: s
     if not os_name or not os_release or not arch:
         return None
     return f"{os_name} {os_release} ({arch})"
-
-
-def detect_device_family(payload_family: str | None) -> str | None:
-    return device_family_from_payload_family(payload_family)
 
 
 def detect_host_os() -> str:

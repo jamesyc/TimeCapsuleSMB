@@ -5,7 +5,7 @@ import uuid
 from typing import TYPE_CHECKING, Callable
 
 from timecapsulesmb.cli import runtime
-from timecapsulesmb.telemetry import build_device_os_version, detect_device_family
+from timecapsulesmb.telemetry import build_device_os_version
 
 if TYPE_CHECKING:
     from timecapsulesmb.cli.runtime import ManagedTargetState
@@ -229,7 +229,7 @@ class CommandContext:
             self.compatibility.os_release,
             self.compatibility.arch,
         ))
-        self.update_fields(device_family=detect_device_family(self.compatibility.payload_family))
+        self.update_fields(device_family=self.compatibility.payload_family)
         return self.compatibility
 
     def finish(self, *, result: str, **fields: object) -> None:

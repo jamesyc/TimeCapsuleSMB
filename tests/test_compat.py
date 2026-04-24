@@ -16,7 +16,6 @@ from timecapsulesmb.device.compat import (
     PAYLOAD_FAMILY_NETBSD4LE,
     PAYLOAD_FAMILY_NETBSD6,
     classify_device_compatibility,
-    device_family_from_payload_family,
     is_netbsd4_payload_family,
     is_netbsd6_payload_family,
     payload_family_description,
@@ -170,13 +169,6 @@ class CompatibilityTests(unittest.TestCase):
         self.assertFalse(is_netbsd4_payload_family(PAYLOAD_FAMILY_NETBSD6))
         self.assertTrue(is_netbsd6_payload_family(PAYLOAD_FAMILY_NETBSD6))
         self.assertFalse(is_netbsd6_payload_family(PAYLOAD_FAMILY_NETBSD4LE))
-
-    def test_device_family_from_payload_family_handles_unknown(self) -> None:
-        self.assertEqual(device_family_from_payload_family(PAYLOAD_FAMILY_NETBSD4LE), "netbsd4")
-        self.assertEqual(device_family_from_payload_family(PAYLOAD_FAMILY_NETBSD4BE), "netbsd4")
-        self.assertEqual(device_family_from_payload_family(PAYLOAD_FAMILY_NETBSD6), "netbsd6")
-        self.assertIsNone(device_family_from_payload_family("other"))
-        self.assertIsNone(device_family_from_payload_family(None))
 
     def test_payload_family_description_names_endian_lanes(self) -> None:
         self.assertEqual(payload_family_description(PAYLOAD_FAMILY_NETBSD4LE), "NetBSD 4 little-endian")

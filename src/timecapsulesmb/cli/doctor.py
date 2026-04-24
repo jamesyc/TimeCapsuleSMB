@@ -11,7 +11,7 @@ from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import inspect_managed_connection, load_env_values
 from timecapsulesmb.core.config import ENV_PATH
 from timecapsulesmb.identity import ensure_install_id
-from timecapsulesmb.telemetry import TelemetryClient, build_device_os_version, detect_device_family
+from timecapsulesmb.telemetry import TelemetryClient, build_device_os_version
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -80,7 +80,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                             command_context.compatibility.os_release,
                             command_context.compatibility.arch,
                         ),
-                        device_family=detect_device_family(command_context.compatibility.payload_family),
+                        device_family=command_context.compatibility.payload_family,
                     )
             except SystemExit as exc:
                 command_context.preflight_error = f"doctor pre-inspection failed: {exc}"

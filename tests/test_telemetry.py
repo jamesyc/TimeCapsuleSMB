@@ -207,7 +207,7 @@ class TelemetryTests(unittest.TestCase):
                                         reason_code="supported_netbsd6",
                                     ),
                                 )
-                                command.update_fields(device_family="netbsd6", device_os_version="NetBSD 6.0 (earmv4)")
+                                command.update_fields(device_family="netbsd6_samba4", device_os_version="NetBSD 6.0 (earmv4)")
                                 raise SystemExit("Connecting to the device failed, SSH error: timeout")
         finished_payload = send_mock.call_args.args[0]
         self.assertIn("probe_ssh_port_reachable=true", finished_payload["error"])

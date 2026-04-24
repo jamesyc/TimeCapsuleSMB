@@ -59,14 +59,6 @@ def is_netbsd6_payload_family(payload_family: str | None) -> bool:
     return payload_family == PAYLOAD_FAMILY_NETBSD6
 
 
-def device_family_from_payload_family(payload_family: str | None) -> str | None:
-    if is_netbsd4_payload_family(payload_family):
-        return "netbsd4"
-    if is_netbsd6_payload_family(payload_family):
-        return "netbsd6"
-    return None
-
-
 def payload_family_description(payload_family: str | None) -> str:
     if payload_family == PAYLOAD_FAMILY_NETBSD4LE:
         return "NetBSD 4 little-endian"
