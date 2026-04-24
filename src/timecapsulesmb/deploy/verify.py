@@ -4,6 +4,7 @@ import ipaddress
 import time
 
 from timecapsulesmb.checks.bonjour import run_bonjour_checks
+from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.checks.smb import try_authenticated_smb_listing
 from timecapsulesmb.deploy.planner import UninstallPlan
 from timecapsulesmb.device.probe import (
@@ -100,7 +101,7 @@ def wait_for_post_reboot_bonjour(
     *,
     timeout_seconds: float = 30.0,
     poll_interval_seconds: float = 2.0,
-) -> tuple[object, str | None, str | None]:
+) -> tuple[list[CheckResult], str | None, str | None]:
     deadline = time.monotonic() + timeout_seconds
     last_results = []
     last_instance = None

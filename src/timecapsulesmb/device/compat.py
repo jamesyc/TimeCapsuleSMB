@@ -17,14 +17,29 @@ SUPPORTED_PAYLOAD_FAMILIES = frozenset((PAYLOAD_FAMILY_NETBSD6, PAYLOAD_FAMILY_N
 
 
 class ProbeFacts(Protocol):
-    ssh_authenticated: bool
-    error: str | None
-    os_name: str
-    os_release: str
-    arch: str
-    elf_endianness: str
-    airport_model: str | None
-    airport_syap: str | None
+    @property
+    def ssh_authenticated(self) -> bool: ...
+
+    @property
+    def error(self) -> str | None: ...
+
+    @property
+    def os_name(self) -> str: ...
+
+    @property
+    def os_release(self) -> str: ...
+
+    @property
+    def arch(self) -> str: ...
+
+    @property
+    def elf_endianness(self) -> str: ...
+
+    @property
+    def airport_model(self) -> str | None: ...
+
+    @property
+    def airport_syap(self) -> str | None: ...
 
 
 def _models_for_syaps(values: tuple[str, ...]) -> tuple[str, ...]:

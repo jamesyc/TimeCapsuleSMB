@@ -9,6 +9,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
+from collections.abc import Sequence
 
 
 SERVICE_TYPES = [
@@ -35,12 +36,14 @@ class Discovered:
     name: str
     hostname: str
     service_type: str = ""
-    ipv4: list[str] = field(default_factory=list)
-    ipv6: list[str] = field(default_factory=list)
+    ipv4: Sequence[str] = field(default_factory=list)
+    ipv6: Sequence[str] = field(default_factory=list)
     services: set[str] = field(default_factory=set)
     properties: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        self.ipv4 = list(self.ipv4)
+        self.ipv6 = list(self.ipv6)
         if self.service_type and not self.services:
             self.services.add(self.service_type)
         elif not self.service_type and len(self.services) == 1:
