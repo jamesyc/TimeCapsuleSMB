@@ -48,6 +48,9 @@ class RecordingCommandContext:
 class RepairXattrsTests(unittest.TestCase):
     def setUp(self) -> None:
         RecordingCommandContext.instances = []
+        self.telemetry_patch = mock.patch("timecapsulesmb.cli.repair_xattrs.TelemetryClient.from_values", return_value=mock.Mock())
+        self.telemetry_patch.start()
+        self.addCleanup(self.telemetry_patch.stop)
 
     def test_finds_arch_file_when_xattr_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
