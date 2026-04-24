@@ -38,6 +38,7 @@ from timecapsulesmb.discovery.bonjour import (
     record_has_service,
 )
 from timecapsulesmb.telemetry import TelemetryClient
+from timecapsulesmb.cli.util import color_cyan
 
 HIDDEN_CONFIG_KEYS = {"TC_SSH_OPTS", "TC_CONFIGURE_ID"}
 NO_SAVED_VALUE_HINT_KEYS = {"TC_PASSWORD", *HIDDEN_CONFIG_KEYS}
@@ -63,7 +64,7 @@ class DerivedNameDefaults:
 
 
 def prompt(label: str, default: str, secret: bool) -> str:
-    suffix = f" [{default}]" if default and not secret else ""
+    suffix = f" [{color_cyan(default)}]" if default and not secret else ""
     text = f"{label}{suffix}: "
     while True:
         value = getpass.getpass(text) if secret else input(text)
@@ -97,7 +98,7 @@ def choose_device(records):
     while True:
         try:
             raw = input("Select a device by number (q to skip discovery): ").strip()
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
             print()
             return None
         if raw.lower() in {"q", "quit", "exit"}:
@@ -377,7 +378,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         command_context.update_fields(configure_id=configure_id)
         print("This writes a local .env configuration file in this folder. The other tcapsule commands use that file.")
         print(f"Writing {ENV_PATH}")
-        print("\033[31mPress Enter\033[0m to accept the current/default value.\n")
+        print(f"Press Enter to accept the [{color_cyan('saved/suggested/default')}] value.")
+        print("Most users can just keep the suggested values.\n")
 
         ssh_opts = existing.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"])
         values["TC_SSH_OPTS"] = ssh_opts

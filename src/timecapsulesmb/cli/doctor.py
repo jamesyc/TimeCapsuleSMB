@@ -9,6 +9,7 @@ from timecapsulesmb.checks.doctor import run_doctor_checks
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import inspect_managed_connection, load_env_values
+from timecapsulesmb.cli.util import color_green, color_red
 from timecapsulesmb.core.config import ENV_PATH
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.telemetry import TelemetryClient, build_device_os_version
@@ -18,7 +19,12 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def print_result(result: CheckResult) -> None:
-    print(f"{result.status} {result.message}")
+    status = result.status
+    if status == "PASS":
+        status = color_green(status)
+    elif status == "FAIL":
+        status = color_red(status)
+    print(f"{status} {result.message}")
 
 
 def build_doctor_error(results: list[CheckResult]) -> str | None:

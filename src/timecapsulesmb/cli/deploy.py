@@ -86,7 +86,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         payload_family = compatibility.payload_family
         is_netbsd4 = is_netbsd4_payload_family(payload_family)
         if not args.json:
-            print(f"Using {payload_family_description(payload_family)} payload.")
+            print(f"Using {payload_family_description(payload_family)} payload...")
         volume_root = discover_volume_root(connection)
         share_use_disk_root = parse_bool(values.get("TC_SHARE_USE_DISK_ROOT", "false"))
         resolved_artifacts = resolve_payload_artifacts(REPO_ROOT, payload_family)

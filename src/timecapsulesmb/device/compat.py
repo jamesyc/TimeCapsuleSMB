@@ -114,14 +114,14 @@ def render_compatibility_message(compat: DeviceCompatibility) -> str:
     if compat.reason_code == "unsupported_netbsd4_endianness":
         return (
             f"Detected NetBSD {compat.os_release} ({compat.arch}) with {compat.elf_endianness}-endian binaries, "
-            "which is not supported by the current checked-in Samba payload."
+            "which is not supported by the current Samba payload."
         )
     if compat.reason_code == "supported_netbsd4":
         return f"Detected supported device: NetBSD {compat.os_release} ({compat.arch}, {compat.elf_endianness}-endian)."
     if compat.reason_code == "unsupported_netbsd_release":
         return (
-            f"This Time Capsule is running NetBSD {compat.os_release}, which is not supported by the current Samba payload. "
-            "Only NetBSD 4 and NetBSD 6 devices are supported right now."
+            f"Detected NetBSD {compat.os_release} ({compat.arch}) with {compat.elf_endianness}-endian binaries, "
+            "which is not supported by the current Samba payload."
         )
     return compat.reason_detail or "Failed to classify remote device compatibility."
 

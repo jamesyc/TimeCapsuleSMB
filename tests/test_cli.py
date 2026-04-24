@@ -1989,6 +1989,30 @@ class CliTests(unittest.TestCase):
         self.assertIn("Found devices:", output.getvalue())
         self.assertIn(f"Discovery skipped. Falling back to {DEFAULTS['TC_HOST']}.", output.getvalue())
 
+    def test_configure_ctrl_c_during_discovery_selection_cancels(self) -> None:
+        output = io.StringIO()
+        record = Discovered(
+            name="Time Capsule Samba 4",
+            hostname="timecapsulesamba4.local",
+            ipv4=["192.168.1.217"],
+            services={"_airport._tcp.local."},
+            properties={"syAP": "119"},
+        )
+        command_context = FakeCommandContext()
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_time_capsule_candidates", return_value=[record]):
+                with mock.patch("builtins.input", side_effect=KeyboardInterrupt):
+                    with mock.patch("timecapsulesmb.cli.configure.CommandContext", return_value=command_context):
+                        with redirect_stdout(output):
+                            with self.assertRaises(KeyboardInterrupt):
+                                configure.main([])
+        self.assertIn("Found devices:", output.getvalue())
+        self.assertNotIn("Discovery skipped.", output.getvalue())
+        command_context.finish.assert_called_once()
+        self.assertEqual(command_context.finish.call_args.kwargs["result"], "cancelled")
+        self.assertEqual(command_context.finish.call_args.kwargs["error"], "Cancelled by user")
+
     def test_configure_skipped_discovery_reprompts_invalid_existing_syap(self) -> None:
         output = io.StringIO()
         fake_values = {}
@@ -3699,7 +3723,22 @@ class CliTests(unittest.TestCase):
                 with redirect_stdout(output):
                     rc = doctor.main([])
         self.assertEqual(rc, 0)
-        self.assertIn("PASS streamed", output.getvalue())
+        self.assertIn("\033[32mPASS\033[0m streamed", output.getvalue())
+
+    def test_doctor_streams_fail_results_in_red_in_human_mode(self) -> None:
+        output = io.StringIO()
+        streamed_result = doctor.CheckResult("FAIL", "broken")
+
+        def fake_run_doctor_checks(*_args, **kwargs):
+            kwargs["on_result"](streamed_result)
+            return ([streamed_result], True)
+
+        with mock.patch("timecapsulesmb.cli.doctor.load_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
+                with redirect_stdout(output):
+                    rc = doctor.main([])
+        self.assertEqual(rc, 1)
+        self.assertIn("\033[31mFAIL\033[0m broken", output.getvalue())
 
     def test_doctor_streams_info_results_in_human_mode(self) -> None:
         output = io.StringIO()
@@ -4245,7 +4284,7 @@ class CliTests(unittest.TestCase):
         text = output.getvalue()
         payload_dir = f"/Volumes/dk2/{values['TC_PAYLOAD_DIR_NAME']}"
         self.assertIn("Detected supported device: NetBSD 4.0 (earmv4, little-endian).", text)
-        self.assertIn("Using NetBSD 4 little-endian payload.", text)
+        self.assertIn("Using NetBSD 4 little-endian payload...", text)
         self.assertIn(f"bin/samba4-netbsd4le/smbd -> {payload_dir}/smbd", text)
         self.assertIn(f"bin/mdns-netbsd4le/mdns-advertiser -> {payload_dir}/mdns-advertiser", text)
         self.assertIn("bin/mdns-netbsd4le/mdns-advertiser -> /mnt/Flash/mdns-advertiser", text)
