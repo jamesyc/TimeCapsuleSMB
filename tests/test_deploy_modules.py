@@ -23,6 +23,7 @@ from timecapsulesmb.deploy.commands import (
     initialize_data_root_action,
     install_permissions_action,
     prepare_dirs_action,
+    remove_path_action,
     render_remote_action,
     run_script_action,
     stop_process_action,
@@ -2388,6 +2389,17 @@ PASS:mdns-advertiser bound to UDP 5353
         plan = build_uninstall_plan("root@10.0.0.2", paths)
         rendered = [render_remote_action(action) for action in plan.remote_actions]
         self.assertTrue(rendered[0].startswith("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true;"))
+
+    def test_build_uninstall_plan_removes_mdns_snapshots(self) -> None:
+        paths = build_device_paths("/Volumes/dk2", "samba4")
+        plan = build_uninstall_plan("root@10.0.0.2", paths)
+
+        self.assertEqual(plan.flash_targets["allmdns.txt"], "/mnt/Flash/allmdns.txt")
+        self.assertEqual(plan.flash_targets["applemdns.txt"], "/mnt/Flash/applemdns.txt")
+        self.assertIn("/mnt/Flash/allmdns.txt", plan.verify_absent_targets)
+        self.assertIn("/mnt/Flash/applemdns.txt", plan.verify_absent_targets)
+        self.assertIn(remove_path_action("/mnt/Flash/allmdns.txt"), plan.remote_actions)
+        self.assertIn(remove_path_action("/mnt/Flash/applemdns.txt"), plan.remote_actions)
 
     def test_remote_action_rendering_quotes_payload_paths_with_spaces(self) -> None:
         payload_dir = "/Volumes/dk2/Time Capsule Samba 4"

@@ -207,6 +207,8 @@ def build_uninstall_plan(host: str, device_paths: DevicePaths, *, reboot_after_u
         "watchdog.sh": "/mnt/Flash/watchdog.sh",
         "dfree.sh": "/mnt/Flash/dfree.sh",
         "mdns-advertiser": "/mnt/Flash/mdns-advertiser",
+        "allmdns.txt": "/mnt/Flash/allmdns.txt",
+        "applemdns.txt": "/mnt/Flash/applemdns.txt",
     }
     verify_absent_targets = [
         payload_dir,
@@ -235,6 +237,8 @@ def build_uninstall_plan(host: str, device_paths: DevicePaths, *, reboot_after_u
             remove_path_action(flash_targets["watchdog.sh"]),
             remove_path_action(flash_targets["dfree.sh"]),
             remove_path_action(flash_targets["mdns-advertiser"]),
+            remove_path_action(flash_targets["allmdns.txt"]),
+            remove_path_action(flash_targets["applemdns.txt"]),
             remove_path_action("/mnt/Memory/samba4"),
             remove_path_action("/root/tc-netbsd7"),
             remove_path_action("/root/tc-netbsd4"),
