@@ -190,7 +190,7 @@ def iter_scan_paths(
     max_depth: Optional[int],
     include_hidden: bool,
     include_time_machine: bool,
-    include_directories: bool,
+    include_directories: bool = False,
     include_root_directory: bool = False,
     summary: RepairSummary,
 ):
@@ -307,7 +307,7 @@ def find_findings(
     max_depth: Optional[int],
     include_hidden: bool,
     include_time_machine: bool,
-    include_directories: bool,
+    include_directories: bool = False,
     include_root_directory: bool = False,
     fix_permissions: bool = False,
     summary: RepairSummary,
@@ -341,42 +341,6 @@ def find_findings(
             summary.not_repairable += 1
         findings.append(finding)
     return findings
-
-
-def find_candidates(
-    root: Path,
-    *,
-    recursive: bool,
-    max_depth: Optional[int],
-    include_hidden: bool,
-    include_time_machine: bool,
-    summary: RepairSummary,
-    include_directories: bool = False,
-    include_root_directory: bool = False,
-) -> list[RepairCandidate]:
-    findings = find_findings(
-        root,
-        recursive=recursive,
-        max_depth=max_depth,
-        include_hidden=include_hidden,
-        include_time_machine=include_time_machine,
-        include_directories=include_directories,
-        include_root_directory=include_root_directory,
-        summary=summary,
-    )
-    candidates = [
-        RepairCandidate(
-            path=finding.path,
-            flags=finding.flags or "arch",
-            path_type=finding.path_type,
-            xattr_error=finding.xattr_error,
-            actions=tuple(action for action in finding.actions if action == ACTION_CLEAR_ARCH_FLAG),
-        )
-        for finding in findings
-        if ACTION_CLEAR_ARCH_FLAG in finding.actions
-    ]
-    summary.repairable = len(candidates)
-    return candidates
 
 
 def apply_permission_repair(path: Path, path_type: str) -> bool:

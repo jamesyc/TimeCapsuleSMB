@@ -67,7 +67,7 @@ class RepairXattrsTests(unittest.TestCase):
 
             summary = repair_xattrs.RepairSummary()
             with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", side_effect=fake_run):
-                candidates = repair_xattrs.find_candidates(
+                findings = repair_xattrs.find_findings(
                     root,
                     recursive=True,
                     max_depth=None,
@@ -76,11 +76,13 @@ class RepairXattrsTests(unittest.TestCase):
                     summary=summary,
                 )
 
-        self.assertEqual([candidate.path.name for candidate in candidates], ["broken.txt"])
+        self.assertEqual([finding.path.name for finding in findings], ["broken.txt"])
+        self.assertEqual(findings[0].kind, "repairable_arch_flag")
+        self.assertEqual(findings[0].actions, (repair_xattrs.ACTION_CLEAR_ARCH_FLAG,))
         self.assertEqual(summary.scanned, 1)
         self.assertEqual(summary.repairable, 1)
 
-    def test_find_candidates_can_scan_repairable_directories(self) -> None:
+    def test_find_findings_can_scan_repairable_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             target = root / "broken-dir"
@@ -95,7 +97,7 @@ class RepairXattrsTests(unittest.TestCase):
 
             summary = repair_xattrs.RepairSummary()
             with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", side_effect=fake_run):
-                candidates = repair_xattrs.find_candidates(
+                findings = repair_xattrs.find_findings(
                     root,
                     recursive=True,
                     max_depth=None,
@@ -105,8 +107,10 @@ class RepairXattrsTests(unittest.TestCase):
                     summary=summary,
                 )
 
-        self.assertEqual([candidate.path.name for candidate in candidates], ["broken-dir"])
-        self.assertEqual(candidates[0].path_type, "directory")
+        self.assertEqual([finding.path.name for finding in findings], ["broken-dir"])
+        self.assertEqual(findings[0].kind, "repairable_arch_flag")
+        self.assertEqual(findings[0].path_type, "directory")
+        self.assertEqual(findings[0].actions, (repair_xattrs.ACTION_CLEAR_ARCH_FLAG,))
         self.assertEqual(summary.scanned_dirs, 1)
 
     def test_does_not_repair_when_xattr_is_readable(self) -> None:
@@ -116,7 +120,7 @@ class RepairXattrsTests(unittest.TestCase):
 
             with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", return_value=mock.Mock(returncode=0, stdout="", stderr="")):
                 summary = repair_xattrs.RepairSummary()
-                candidates = repair_xattrs.find_candidates(
+                findings = repair_xattrs.find_findings(
                     root,
                     recursive=True,
                     max_depth=None,
@@ -125,7 +129,7 @@ class RepairXattrsTests(unittest.TestCase):
                     summary=summary,
                 )
 
-        self.assertEqual(candidates, [])
+        self.assertEqual(findings, [])
         self.assertEqual(summary.scanned, 1)
 
     def test_does_not_repair_without_arch_flag(self) -> None:
@@ -142,7 +146,7 @@ class RepairXattrsTests(unittest.TestCase):
 
             summary = repair_xattrs.RepairSummary()
             with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", side_effect=fake_run):
-                candidates = repair_xattrs.find_candidates(
+                findings = repair_xattrs.find_findings(
                     root,
                     recursive=True,
                     max_depth=None,
@@ -151,8 +155,11 @@ class RepairXattrsTests(unittest.TestCase):
                     summary=summary,
                 )
 
-        self.assertEqual(candidates, [])
+        self.assertEqual([finding.path.name for finding in findings], ["bad-but-not-arch.txt"])
+        self.assertEqual(findings[0].kind, "unreadable_no_arch_flag")
+        self.assertEqual(findings[0].actions, ())
         self.assertEqual(summary.scanned, 1)
+        self.assertEqual(summary.not_repairable, 1)
 
     def test_unreadable_without_arch_is_reported_not_repairable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -194,7 +201,7 @@ class RepairXattrsTests(unittest.TestCase):
 
             summary = repair_xattrs.RepairSummary()
             with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", side_effect=fake_run):
-                candidates = repair_xattrs.find_candidates(
+                findings = repair_xattrs.find_findings(
                     root,
                     recursive=True,
                     max_depth=None,
@@ -203,8 +210,9 @@ class RepairXattrsTests(unittest.TestCase):
                     summary=summary,
                 )
 
-        self.assertEqual([candidate.path.name for candidate in candidates], ["broken.txt"])
-        self.assertEqual(candidates[0].flags, "arch,nodump")
+        self.assertEqual([finding.path.name for finding in findings], ["broken.txt"])
+        self.assertEqual(findings[0].flags, "arch,nodump")
+        self.assertEqual(findings[0].actions, (repair_xattrs.ACTION_CLEAR_ARCH_FLAG,))
 
     def test_does_not_repair_when_stat_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -220,7 +228,7 @@ class RepairXattrsTests(unittest.TestCase):
 
             summary = repair_xattrs.RepairSummary()
             with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", side_effect=fake_run):
-                candidates = repair_xattrs.find_candidates(
+                findings = repair_xattrs.find_findings(
                     root,
                     recursive=True,
                     max_depth=None,
@@ -229,8 +237,11 @@ class RepairXattrsTests(unittest.TestCase):
                     summary=summary,
                 )
 
-        self.assertEqual(candidates, [])
+        self.assertEqual([finding.path.name for finding in findings], ["bad-stat.txt"])
+        self.assertEqual(findings[0].kind, "xattr_failed_stat_failed")
+        self.assertEqual(findings[0].actions, ())
         self.assertEqual(summary.scanned, 1)
+        self.assertEqual(summary.not_repairable, 1)
 
     def test_dry_run_does_not_call_chflags(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -542,7 +553,7 @@ class RepairXattrsTests(unittest.TestCase):
 
             summary = repair_xattrs.RepairSummary()
             with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", side_effect=fake_run):
-                candidates = repair_xattrs.find_candidates(
+                findings = repair_xattrs.find_findings(
                     root,
                     recursive=True,
                     max_depth=None,
@@ -551,7 +562,7 @@ class RepairXattrsTests(unittest.TestCase):
                     summary=summary,
                 )
 
-        self.assertEqual([candidate.path.name for candidate in candidates], ["visible.txt"])
+        self.assertEqual([finding.path.name for finding in findings], ["visible.txt"])
         self.assertEqual(summary.skipped, 2)
 
     def test_include_flags_scan_hidden_and_time_machine_paths(self) -> None:
@@ -571,7 +582,7 @@ class RepairXattrsTests(unittest.TestCase):
 
             summary = repair_xattrs.RepairSummary()
             with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", side_effect=fake_run):
-                candidates = repair_xattrs.find_candidates(
+                findings = repair_xattrs.find_findings(
                     root,
                     recursive=True,
                     max_depth=None,
@@ -580,7 +591,7 @@ class RepairXattrsTests(unittest.TestCase):
                     summary=summary,
                 )
 
-        self.assertEqual(sorted(candidate.path.name for candidate in candidates), [".hidden.txt", "backup.txt"])
+        self.assertEqual(sorted(finding.path.name for finding in findings), [".hidden.txt", "backup.txt"])
         self.assertEqual(summary.skipped, 0)
 
     def test_skips_top_level_hidden_file_by_default(self) -> None:
@@ -590,7 +601,7 @@ class RepairXattrsTests(unittest.TestCase):
 
             summary = repair_xattrs.RepairSummary()
             with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture") as run_mock:
-                candidates = repair_xattrs.find_candidates(
+                findings = repair_xattrs.find_findings(
                     target,
                     recursive=True,
                     max_depth=None,
@@ -599,7 +610,7 @@ class RepairXattrsTests(unittest.TestCase):
                     summary=summary,
                 )
 
-        self.assertEqual(candidates, [])
+        self.assertEqual(findings, [])
         self.assertEqual(summary.skipped, 1)
         run_mock.assert_not_called()
 
@@ -617,7 +628,7 @@ class RepairXattrsTests(unittest.TestCase):
 
             summary = repair_xattrs.RepairSummary()
             with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", side_effect=fake_run):
-                candidates = repair_xattrs.find_candidates(
+                findings = repair_xattrs.find_findings(
                     target,
                     recursive=True,
                     max_depth=None,
@@ -626,7 +637,7 @@ class RepairXattrsTests(unittest.TestCase):
                     summary=summary,
                 )
 
-        self.assertEqual([candidate.path for candidate in candidates], [target.resolve()])
+        self.assertEqual([finding.path for finding in findings], [target.resolve()])
 
     def test_skips_bundle_like_directories_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -645,7 +656,7 @@ class RepairXattrsTests(unittest.TestCase):
 
             summary = repair_xattrs.RepairSummary()
             with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", side_effect=fake_run):
-                candidates = repair_xattrs.find_candidates(
+                findings = repair_xattrs.find_findings(
                     root,
                     recursive=True,
                     max_depth=None,
@@ -654,7 +665,7 @@ class RepairXattrsTests(unittest.TestCase):
                     summary=summary,
                 )
 
-        self.assertEqual([candidate.path.name for candidate in candidates], ["outside.txt"])
+        self.assertEqual([finding.path.name for finding in findings], ["outside.txt"])
         self.assertEqual(summary.skipped, 1)
 
     def test_skips_symlinks(self) -> None:
@@ -674,7 +685,7 @@ class RepairXattrsTests(unittest.TestCase):
 
             summary = repair_xattrs.RepairSummary()
             with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", side_effect=fake_run):
-                candidates = repair_xattrs.find_candidates(
+                findings = repair_xattrs.find_findings(
                     root,
                     recursive=True,
                     max_depth=None,
@@ -683,7 +694,7 @@ class RepairXattrsTests(unittest.TestCase):
                     summary=summary,
                 )
 
-        self.assertEqual([candidate.path.name for candidate in candidates], ["target.txt"])
+        self.assertEqual([finding.path.name for finding in findings], ["target.txt"])
         self.assertEqual(summary.skipped, 1)
 
     def test_no_recursive_skips_nested_files(self) -> None:
@@ -703,7 +714,7 @@ class RepairXattrsTests(unittest.TestCase):
 
             summary = repair_xattrs.RepairSummary()
             with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", side_effect=fake_run):
-                candidates = repair_xattrs.find_candidates(
+                findings = repair_xattrs.find_findings(
                     root,
                     recursive=False,
                     max_depth=None,
@@ -712,7 +723,7 @@ class RepairXattrsTests(unittest.TestCase):
                     summary=summary,
                 )
 
-        self.assertEqual([candidate.path.name for candidate in candidates], ["top.txt"])
+        self.assertEqual([finding.path.name for finding in findings], ["top.txt"])
         self.assertEqual(summary.skipped, 1)
 
     def test_max_depth_limits_nested_scan(self) -> None:
@@ -734,7 +745,7 @@ class RepairXattrsTests(unittest.TestCase):
 
             summary = repair_xattrs.RepairSummary()
             with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", side_effect=fake_run):
-                candidates = repair_xattrs.find_candidates(
+                findings = repair_xattrs.find_findings(
                     root,
                     recursive=True,
                     max_depth=1,
@@ -743,7 +754,7 @@ class RepairXattrsTests(unittest.TestCase):
                     summary=summary,
                 )
 
-        self.assertEqual([candidate.path.name for candidate in candidates], ["one.txt"])
+        self.assertEqual([finding.path.name for finding in findings], ["one.txt"])
         self.assertEqual(summary.skipped, 1)
 
     def test_single_file_path_scans_that_file(self) -> None:
@@ -760,7 +771,7 @@ class RepairXattrsTests(unittest.TestCase):
 
             summary = repair_xattrs.RepairSummary()
             with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", side_effect=fake_run):
-                candidates = repair_xattrs.find_candidates(
+                findings = repair_xattrs.find_findings(
                     target,
                     recursive=True,
                     max_depth=None,
@@ -769,7 +780,7 @@ class RepairXattrsTests(unittest.TestCase):
                     summary=summary,
                 )
 
-        self.assertEqual([candidate.path for candidate in candidates], [target.resolve()])
+        self.assertEqual([finding.path for finding in findings], [target.resolve()])
 
     def test_parse_mounted_smb_shares_decodes_mount_output(self) -> None:
         shares = repair_xattrs.parse_mounted_smb_shares(
