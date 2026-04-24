@@ -120,9 +120,6 @@ class FakeCommandContext:
     def resolve_env_connection(self, **_kwargs):
         return self.connection
 
-    def resolve_validated_managed_connection(self, **_kwargs):
-        return self.connection
-
     def resolve_validated_managed_target(self, **_kwargs):
         return mock.Mock(connection=self.connection, probe_state=None)
 

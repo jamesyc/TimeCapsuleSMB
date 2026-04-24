@@ -153,10 +153,6 @@ def parse_env_values(path: Path, *, defaults: Optional[dict[str, str]] = None) -
     return values
 
 
-def load_config(path: Path = ENV_PATH) -> AppConfig:
-    return AppConfig(parse_env_values(path))
-
-
 def missing_required_keys(values: dict[str, str]) -> list[str]:
     return [key for key in REQUIRED_ENV_KEYS if not values.get(key, "")]
 
@@ -372,12 +368,6 @@ def validate_ssh_target(value: str, field_name: str) -> Optional[str]:
         return f"{field_name} username may contain only letters, numbers, dots, underscores, and hyphens."
     if host.startswith("-"):
         return f"{field_name} host must not start with a hyphen."
-    return None
-
-
-def validate_nonempty(value: str, field_name: str) -> Optional[str]:
-    if not value:
-        return f"{field_name} cannot be blank."
     return None
 
 

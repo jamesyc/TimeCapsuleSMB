@@ -285,10 +285,6 @@ def filter_service_records(records: list[Discovered], service: str) -> list[Disc
     return [record for record in records if record_has_service(record, service)]
 
 
-def discover_service(service: str, timeout: float = 5.0) -> list[Discovered]:
-    return filter_service_records(discover(timeout=timeout), service)
-
-
 def print_table(records: list[Discovered]) -> None:
     if not records:
         print("No Bonjour services discovered.")

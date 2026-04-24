@@ -26,12 +26,6 @@ def load_env_values(*, env_path: Path = ENV_PATH, defaults: dict[str, str] | Non
     return parse_env_values(env_path, defaults=resolved_defaults)
 
 
-def load_validated_env(*, profile: str, env_path: Path = ENV_PATH, defaults: dict[str, str] | None = None) -> dict[str, str]:
-    values = load_env_values(env_path=env_path, defaults=defaults)
-    require_valid_config(values, profile=profile)
-    return values
-
-
 def require_airport_syap(values: dict[str, str], *, command_name: str) -> None:
     AppConfig(values).require(
         "TC_AIRPORT_SYAP",
@@ -64,20 +58,6 @@ def resolve_env_connection(
         config.require(key)
     host, password = resolve_ssh_credentials(values, allow_empty_password=allow_empty_password)
     return SshConnection(host=host, password=password, ssh_opts=config.get("TC_SSH_OPTS"))
-
-
-def resolve_validated_managed_connection(
-    values: dict[str, str],
-    *,
-    command_name: str,
-    profile: str,
-) -> SshConnection:
-    return resolve_validated_managed_target(
-        values,
-        command_name=command_name,
-        profile=profile,
-        include_probe=False,
-    ).connection
 
 
 def inspect_managed_connection(

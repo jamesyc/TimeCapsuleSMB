@@ -188,9 +188,6 @@ class CommandContext:
         )
         return self.connection
 
-    def resolve_validated_managed_connection(self, *, profile: str) -> SshConnection:
-        return self.resolve_validated_managed_target(profile=profile, include_probe=False).connection
-
     def resolve_validated_managed_target(self, *, profile: str, include_probe: bool = False) -> ManagedTargetState:
         if self.values is None:
             raise RuntimeError("CommandContext values are not set.")

@@ -389,10 +389,6 @@ def probe_remote_interface_conn(connection: SshConnection, iface: str) -> Remote
     return RemoteInterfaceProbeResult(iface=iface, exists=False, detail=f"interface {iface} was not found on the device")
 
 
-def remote_interface_exists(host: str, password: str, ssh_opts: str, iface: str) -> bool:
-    return probe_remote_interface(host, password, ssh_opts, iface).exists
-
-
 def _is_link_local_ipv4(value: str) -> bool:
     return value.startswith("169.254.")
 
@@ -666,10 +662,6 @@ def nbns_marker_enabled_conn(connection: SshConnection, payload_dir: str) -> boo
     return proc.stdout.strip() == "enabled"
 
 
-def netbsd4_runtime_services_healthy(host: str, password: str, ssh_opts: str) -> bool:
-    return netbsd4_runtime_services_healthy_conn(_conn(host, password, ssh_opts))
-
-
 def netbsd4_runtime_services_healthy_conn(connection: SshConnection) -> bool:
     script = rf'''
 {SMBD_STATUS_HELPERS}
@@ -684,16 +676,6 @@ mdns_bound_5353 "$out"
 '''
     proc = run_ssh_conn(connection, f"/bin/sh -c {shlex.quote(script)}", check=False)
     return proc.returncode == 0
-
-
-def probe_netbsd4_activation_status(
-    host: str,
-    password: str,
-    ssh_opts: str,
-    *,
-    timeout_seconds: int = 180,
-) -> subprocess.CompletedProcess[str]:
-    return probe_netbsd4_activation_status_conn(_conn(host, password, ssh_opts), timeout_seconds=timeout_seconds)
 
 
 def probe_netbsd4_activation_status_conn(
@@ -736,15 +718,6 @@ exit "$status"
         check=False,
         timeout=timeout_seconds + 30,
     )
-
-
-def probe_paths_absent(
-    host: str,
-    password: str,
-    ssh_opts: str,
-    paths: Iterable[str],
-) -> subprocess.CompletedProcess[str]:
-    return probe_paths_absent_conn(_conn(host, password, ssh_opts), paths)
 
 
 def probe_paths_absent_conn(

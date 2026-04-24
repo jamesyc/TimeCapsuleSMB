@@ -6,12 +6,6 @@ from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import ssh_opts_use_proxy
 
 
-def check_ssh_reachability(host: str) -> CheckResult:
-    if tcp_open(host, 22):
-        return CheckResult("PASS", f"SSH reachable at {host}:22")
-    return CheckResult("FAIL", f"SSH not reachable at {host}:22")
-
-
 def check_ssh_login(target: str, password: str, ssh_opts: str) -> CheckResult:
     result = probe_ssh_command(
         target,

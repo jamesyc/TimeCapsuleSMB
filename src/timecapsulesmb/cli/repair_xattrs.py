@@ -243,28 +243,6 @@ def iter_scan_paths(
                 summary.skipped += 1
 
 
-def iter_regular_files(
-    root: Path,
-    *,
-    recursive: bool,
-    max_depth: Optional[int],
-    include_hidden: bool,
-    include_time_machine: bool,
-    summary: RepairSummary,
-):
-    for path, path_type in iter_scan_paths(
-        root,
-        recursive=recursive,
-        max_depth=max_depth,
-        include_hidden=include_hidden,
-        include_time_machine=include_time_machine,
-        include_directories=False,
-        summary=summary,
-    ):
-        if path_type == "file":
-            yield path
-
-
 def file_flags(path: Path) -> Optional[str]:
     proc = run_capture(["stat", "-f", "%Sf", str(path)])
     if proc.returncode != 0:
@@ -320,13 +298,6 @@ def classify_path(path: Path, path_type: str, *, fix_permissions: bool = False) 
         xattr_error=xattr_error_text(status),
         actions=(ACTION_CLEAR_ARCH_FLAG,) + permission_actions,
     )
-
-
-def is_repairable(path: Path) -> tuple[bool, Optional[str]]:
-    finding = classify_path(path, "file")
-    if ACTION_CLEAR_ARCH_FLAG not in finding.actions:
-        return False, None
-    return True, finding.flags
 
 
 def find_findings(

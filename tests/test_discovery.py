@@ -17,7 +17,6 @@ from timecapsulesmb.discovery.bonjour import (
     SMB_SERVICE,
     ServiceObservation,
     discover,
-    discover_service,
     discover_time_capsule_candidates,
     discovered_record_airport_syap,
     discovered_record_root_host,
@@ -165,12 +164,6 @@ class DiscoveryTests(unittest.TestCase):
                 ("_device-info._tcp.local.", "Time Capsule Samba 4", "timecapsulesamba4.local", ("192.168.1.217",)),
             },
         )
-
-    def test_discover_service_filters_discover_results(self) -> None:
-        smb = Discovered(name="Time Capsule Samba 4", hostname="timecapsulesamba4.local", service_type="_smb._tcp.local.")
-        device_info = Discovered(name="Time Capsule Samba 4", hostname="timecapsulesamba4.local", service_type="_device-info._tcp.local.")
-        with mock.patch("timecapsulesmb.discovery.bonjour.discover", return_value=[device_info, smb]):
-            self.assertEqual(discover_service(SMB_SERVICE, timeout=1.0), [smb])
 
     def test_filter_service_records_accepts_service_prefix_for_airport(self) -> None:
         airport = Discovered(name="AirPort Time Capsule", hostname="airport.local", service_type="_airport._tcp.local")
