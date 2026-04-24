@@ -583,3 +583,4 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("    .venv/bin/tcapsule deploy")
         command_context.succeed()
         return 0
+    return 1

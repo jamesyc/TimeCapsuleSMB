@@ -564,6 +564,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     telemetry = TelemetryClient.from_values(values)
     with CommandContext(telemetry, "repair-xattrs", "repair_xattrs_started", "repair_xattrs_finished", values=values, args=args) as command_context:
         return run_repair(args, command_context)
+    return 1
 
 
 if __name__ == "__main__":

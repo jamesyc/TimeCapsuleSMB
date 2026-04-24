@@ -67,3 +67,4 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}")
         command_context.succeed()
         return 0
+    return 1

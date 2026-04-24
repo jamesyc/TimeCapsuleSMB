@@ -132,3 +132,4 @@ def main(argv: Optional[list[str]] = None) -> int:
         print_followup_help()
         command_context.succeed()
         return 0
+    return 1

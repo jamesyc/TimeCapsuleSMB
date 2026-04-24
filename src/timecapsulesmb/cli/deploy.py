@@ -225,3 +225,4 @@ def main(argv: Optional[list[str]] = None) -> int:
         command_context.fail_with_error("Timed out waiting for SSH after reboot.")
         command_context.add_debug_context()
         return 1
+    return 1
