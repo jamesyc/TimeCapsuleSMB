@@ -15,7 +15,12 @@ if str(SRC_ROOT) not in sys.path:
 
 import subprocess
 
-from timecapsulesmb.checks.bonjour import parse_browse_instance, parse_lookup_target, run_bonjour_checks
+from timecapsulesmb.checks.bonjour import (
+    build_bonjour_target_hints,
+    parse_browse_instance,
+    parse_lookup_target,
+    run_bonjour_checks,
+)
 from timecapsulesmb.checks.doctor import _configured_smb_server, check_xattr_tdb_persistence, run_doctor_checks
 from timecapsulesmb.checks.local_tools import check_required_local_tools
 from timecapsulesmb.checks.network import check_ssh_login, ssh_opts_use_proxy
@@ -65,6 +70,18 @@ class CheckTests(unittest.TestCase):
                 ),
             )
         )
+        self._exit_stack.enter_context(
+            mock.patch(
+                "timecapsulesmb.checks.doctor.probe_managed_smbd",
+                return_value=mock.Mock(ready=True, detail="managed smbd ready"),
+            )
+        )
+        self._exit_stack.enter_context(
+            mock.patch(
+                "timecapsulesmb.checks.doctor.probe_managed_mdns_takeover",
+                return_value=mock.Mock(ready=True, detail="managed mDNS takeover active"),
+            )
+        )
 
     def tearDown(self) -> None:
         self._exit_stack.close()
@@ -81,6 +98,30 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(_configured_smb_server("timecapsulesamba4"), "timecapsulesamba4.local")
         self.assertEqual(_configured_smb_server("timecapsulesamba4.local"), "timecapsulesamba4.local")
         self.assertEqual(_configured_smb_server("10.0.1.99"), "10.0.1.99")
+
+    def test_build_bonjour_target_hints_uses_instance_host_label_and_ip_literal(self) -> None:
+        hints = build_bonjour_target_hints(
+            {
+                "TC_MDNS_INSTANCE_NAME": "Home",
+                "TC_MDNS_HOST_LABEL": "home",
+                "TC_HOST": "root@10.0.1.1",
+            }
+        )
+        self.assertEqual(hints.expected_instance_name, "Home")
+        self.assertEqual(hints.preferred_host, "home")
+        self.assertEqual(hints.preferred_ip, "10.0.1.1")
+
+    def test_build_bonjour_target_hints_ignores_non_ip_ssh_target(self) -> None:
+        hints = build_bonjour_target_hints(
+            {
+                "TC_MDNS_INSTANCE_NAME": "Home",
+                "TC_MDNS_HOST_LABEL": "home",
+                "TC_HOST": "root@timecapsule.local",
+            }
+        )
+        self.assertEqual(hints.expected_instance_name, "Home")
+        self.assertEqual(hints.preferred_host, "home")
+        self.assertIsNone(hints.preferred_ip)
 
     def test_run_doctor_checks_marks_missing_env_as_fatal(self) -> None:
         values = {

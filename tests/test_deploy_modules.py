@@ -48,21 +48,18 @@ from timecapsulesmb.deploy.templates import (
     render_template_text,
 )
 from timecapsulesmb.deploy.verify import (
-    verify_netbsd4_activation,
-    verify_post_deploy,
-    wait_for_post_reboot_mdns_ready,
-    wait_for_post_reboot_mdns_takeover,
-    wait_for_post_reboot_bonjour,
-    wait_for_post_reboot_smbd,
+    verify_managed_runtime,
 )
 from timecapsulesmb.device.probe import (
+    ManagedMdnsTakeoverProbeResult,
+    ManagedRuntimeProbeResult,
+    ManagedSmbdProbeResult,
     build_device_paths,
     discover_mounted_volume,
     discover_volume_root,
     extract_airport_identity_from_acpdata,
-    managed_mdns_takeover_ready,
-    managed_smbd_ready,
     probe_device,
+    probe_managed_runtime_conn,
     probe_managed_mdns_takeover,
     probe_managed_smbd,
     probe_remote_airport_identity_conn,
@@ -2037,272 +2034,98 @@ int main(void) {{
             ],
         )
 
-    def test_verify_netbsd4_activation_passes_when_fstat_has_smb_and_mdns_ports(self) -> None:
-        fstat_output = """
-PASS:managed runtime smb.conf present
-PASS:managed smbd reported daemon_ready
-root     smbd        2846   28* internet stream tcp c2b3a310 192.168.1.118:445
-root     mdns-advertiser  3056    3* internet dgram udp c2ad757c *:5353
-PASS:smbd bound to TCP 445
-PASS:mdns-advertiser bound to UDP 5353
-"""
-        with mock.patch(
-            "timecapsulesmb.device.probe.run_ssh",
-            return_value=mock.Mock(returncode=0, stdout=fstat_output),
-        ):
+    def test_verify_managed_runtime_passes_when_runtime_probe_succeeds(self) -> None:
+        result = ManagedRuntimeProbeResult(
+            ready=True,
+            detail="managed runtime is ready",
+            smbd=ManagedSmbdProbeResult(True, "managed smbd ready", ("PASS:managed smbd ready",)),
+            mdns=ManagedMdnsTakeoverProbeResult(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
+            lines=("PASS:managed smbd ready", "PASS:managed mDNS takeover active"),
+        )
+        with mock.patch("timecapsulesmb.deploy.verify.probe_managed_runtime_conn", return_value=result):
             with redirect_stdout(io.StringIO()):
-                self.assertTrue(verify_netbsd4_activation("host", "pw", "-o foo"))
+                self.assertTrue(verify_managed_runtime("host", "pw", "-o foo", heading="NetBSD4 activation verification:"))
 
-    def test_verify_netbsd4_activation_fails_when_fstat_check_fails(self) -> None:
-        fstat_output = """
-PASS:managed runtime smb.conf present
-PASS:managed smbd reported daemon_ready
-FAIL:smbd is not bound to TCP 445
-PASS:mdns-advertiser bound to UDP 5353
-"""
-        with mock.patch(
-            "timecapsulesmb.device.probe.run_ssh",
-            return_value=mock.Mock(returncode=1, stdout=fstat_output),
-        ):
+    def test_verify_managed_runtime_fails_when_runtime_probe_fails(self) -> None:
+        result = ManagedRuntimeProbeResult(
+            ready=False,
+            detail="managed runtime is not ready",
+            smbd=ManagedSmbdProbeResult(False, "managed smbd is not ready", ("FAIL:managed smbd is not ready",)),
+            mdns=ManagedMdnsTakeoverProbeResult(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",)),
+            lines=("FAIL:managed smbd is not ready", "PASS:managed mDNS takeover active"),
+        )
+        with mock.patch("timecapsulesmb.deploy.verify.probe_managed_runtime_conn", return_value=result):
             with redirect_stdout(io.StringIO()):
-                self.assertFalse(verify_netbsd4_activation("host", "pw", "-o foo"))
+                self.assertFalse(verify_managed_runtime("host", "pw", "-o foo", heading="NetBSD4 activation verification:"))
 
-    def test_verify_netbsd4_activation_fails_when_fstat_is_missing(self) -> None:
-        fstat_output = """
-FAIL:fstat missing
-"""
+    def test_probe_managed_smbd_single_shot_checks_runtime_conf_parent_and_fresh_daemon_ready(self) -> None:
         with mock.patch(
             "timecapsulesmb.device.probe.run_ssh",
-            return_value=mock.Mock(returncode=1, stdout=fstat_output),
-        ):
-            with redirect_stdout(io.StringIO()):
-                self.assertFalse(verify_netbsd4_activation("host", "pw", "-o foo"))
-
-    def test_verify_netbsd4_activation_polls_for_background_launcher(self) -> None:
-        with mock.patch(
-            "timecapsulesmb.device.probe.run_ssh",
-            return_value=mock.Mock(returncode=1, stdout="FAIL:smbd is not bound to TCP 445\n"),
+            return_value=mock.Mock(returncode=0, stdout=""),
         ) as run_ssh_mock:
-            with redirect_stdout(io.StringIO()):
-                verify_netbsd4_activation("host", "pw", "-o foo")
+            self.assertTrue(probe_managed_smbd("host", "pw", "-o foo", timeout_seconds=45).ready)
         remote_command = run_ssh_mock.call_args.args[3]
-        self.assertIn('max_attempts=$(((180 + 4) / 5))', remote_command)
-        self.assertIn('while [ "$attempt" -lt "$max_attempts" ]; do', remote_command)
-        self.assertIn("sleep 5", remote_command)
-        self.assertIn("/mnt/Memory/samba4/etc/smb.conf", remote_command)
-        self.assertIn("smbd_log_has_daemon_ready()", remote_command)
-        self.assertIn("managed_smbd_ready 1", remote_command)
-
-    def test_verify_netbsd4_activation_requires_smbd_process_name_for_445(self) -> None:
-        fstat_output = """
-PASS:managed runtime smb.conf present
-PASS:managed smbd reported daemon_ready
-root     otherd      1111   28* internet stream tcp c2b3a310 192.168.1.118:445
-root     mdns-advertiser  3056    3* internet dgram udp c2ad757c *:5353
-FAIL:smbd is not bound to TCP 445
-PASS:mdns-advertiser bound to UDP 5353
-"""
-        with mock.patch(
-            "timecapsulesmb.device.probe.run_ssh",
-            return_value=mock.Mock(returncode=1, stdout=fstat_output),
-        ):
-            with redirect_stdout(io.StringIO()):
-                self.assertFalse(verify_netbsd4_activation("host", "pw", "-o foo"))
-
-    def test_verify_netbsd4_activation_fails_when_managed_runtime_missing(self) -> None:
-        fstat_output = """
-FAIL:managed runtime smb.conf missing
-FAIL:managed smbd did not report daemon_ready
-root     smbd        2846   28* internet stream tcp c2b3a310 192.168.1.118:445
-root     mdns-advertiser  3056    3* internet dgram udp c2ad757c *:5353
-PASS:smbd bound to TCP 445
-PASS:mdns-advertiser bound to UDP 5353
-"""
-        with mock.patch(
-            "timecapsulesmb.device.probe.run_ssh",
-            return_value=mock.Mock(returncode=1, stdout=fstat_output),
-        ):
-            with redirect_stdout(io.StringIO()):
-                self.assertFalse(verify_netbsd4_activation("host", "pw", "-o foo"))
-
-    def test_verify_post_deploy_uses_ip_host_label_without_appending_local(self) -> None:
-        values = {
-            "TC_SAMBA_USER": "admin",
-            "TC_PASSWORD": "pw",
-            "TC_MDNS_HOST_LABEL": "10.0.1.99",
-            "TC_MDNS_INSTANCE_NAME": "Home-Samba",
-            "TC_HOST": "root@10.0.0.2",
-        }
-        with mock.patch("timecapsulesmb.deploy.verify.wait_for_post_reboot_bonjour", return_value=([], None, None)):
-            with mock.patch("timecapsulesmb.deploy.verify.command_exists", return_value=True):
-                with mock.patch(
-                    "timecapsulesmb.deploy.verify.try_authenticated_smb_listing",
-                    return_value=mock.Mock(status="PASS", message="authenticated SMB listing works for admin@10.0.1.99"),
-                ) as listing_mock:
-                    with redirect_stdout(io.StringIO()):
-                        verify_post_deploy(values)
-        listing_mock.assert_called_once_with("admin", "pw", ["10.0.1.99", "10.0.0.2"])
-
-    def test_wait_for_post_reboot_bonjour_returns_early_when_instance_and_target_appear(self) -> None:
-        with mock.patch(
-            "timecapsulesmb.deploy.verify.run_bonjour_checks",
-            side_effect=[
-                ([], None, None),
-                ([mock.Mock()], "Time Capsule Samba 4", "timecapsulesamba4.local:445"),
-            ],
-        ) as bonjour_mock:
-            with mock.patch("timecapsulesmb.deploy.verify.time.sleep") as sleep_mock:
-                results, instance, target = wait_for_post_reboot_bonjour("Time Capsule Samba 4", timeout_seconds=30.0)
-        self.assertEqual(instance, "Time Capsule Samba 4")
-        self.assertEqual(target, "timecapsulesamba4.local:445")
-        self.assertEqual(bonjour_mock.call_count, 2)
-        sleep_mock.assert_called_once()
-
-    def test_wait_for_post_reboot_bonjour_returns_last_result_on_timeout(self) -> None:
-        monotonic_values = iter([0.0, 1.0, 3.0, 4.0, 6.1])
-        with mock.patch(
-            "timecapsulesmb.deploy.verify.run_bonjour_checks",
-            side_effect=[
-                ([mock.Mock(status="FAIL")], None, None),
-                ([mock.Mock(status="WARN")], "Other Samba", None),
-            ],
-        ):
-            with mock.patch("timecapsulesmb.deploy.verify.time.monotonic", side_effect=lambda: next(monotonic_values)):
-                with mock.patch("timecapsulesmb.deploy.verify.time.sleep") as sleep_mock:
-                    results, instance, target = wait_for_post_reboot_bonjour("Time Capsule Samba 4", timeout_seconds=5.0, poll_interval_seconds=2.0)
-        self.assertEqual(instance, "Other Samba")
-        self.assertIsNone(target)
-        self.assertEqual(len(results), 1)
-        sleep_mock.assert_called()
-
-    def test_wait_for_post_reboot_smbd_passes_when_managed_smbd_is_ready(self) -> None:
-        with mock.patch(
-            "timecapsulesmb.device.probe.run_ssh",
-            return_value=mock.Mock(returncode=0),
-        ) as run_ssh_mock:
-            self.assertTrue(wait_for_post_reboot_smbd("host", "pw", "-o foo", timeout_seconds=45))
-        remote_command = run_ssh_mock.call_args.args[3]
-        self.assertIn("managed_smbd_ready 1", remote_command)
+        self.assertIn("capture_ps_out()", remote_command)
+        self.assertIn("smbd_parent_process_present()", remote_command)
         self.assertIn("smbd_log_path_from_config()", remote_command)
         self.assertIn("file_tail_bytes()", remote_command)
-        self.assertIn("smbd_log_has_daemon_ready()", remote_command)
-        self.assertIn("/daemon_ready/p", remote_command)
+        self.assertIn("capture_ps_lstart_out()", remote_command)
+        self.assertIn("smbd_parent_start_ts()", remote_command)
+        self.assertIn("last_daemon_ready_ts()", remote_command)
+        self.assertIn("smbd_log_has_fresh_daemon_ready()", remote_command)
         self.assertNotIn("/usr/bin/tail", remote_command)
-        self.assertIn('max_attempts=$(((45 + 4) / 5))', remote_command)
-        self.assertIn('while [ "$attempt" -lt "$max_attempts" ]; do', remote_command)
-        self.assertIn("sleep 5", remote_command)
+        self.assertNotIn("max_attempts", remote_command)
+        self.assertNotIn("sleep 5", remote_command)
         self.assertNotIn("nbns-advertiser", remote_command)
-
-    def test_wait_for_post_reboot_smbd_fails_when_remote_probe_times_out(self) -> None:
-        with mock.patch(
-            "timecapsulesmb.device.probe.run_ssh",
-            return_value=mock.Mock(returncode=1),
-        ):
-            self.assertFalse(wait_for_post_reboot_smbd("host", "pw", "-o foo", timeout_seconds=12))
 
     def test_probe_managed_smbd_returns_detail_when_not_ready(self) -> None:
         with mock.patch(
             "timecapsulesmb.device.probe.run_ssh",
-            return_value=mock.Mock(returncode=1, stdout="still starting\n"),
+            return_value=mock.Mock(returncode=1, stdout="FAIL:managed smbd parent process is not running\n"),
         ):
             result = probe_managed_smbd("host", "pw", "-o foo", timeout_seconds=12)
         self.assertFalse(result.ready)
-        self.assertEqual(result.detail, "still starting")
+        self.assertEqual(result.detail, "managed smbd parent process is not running")
 
-    def test_managed_smbd_ready_uses_structured_probe_result(self) -> None:
-        with mock.patch(
-            "timecapsulesmb.device.probe.probe_managed_smbd",
-            return_value=mock.Mock(ready=True),
-        ) as probe_mock:
-            ready = managed_smbd_ready("host", "pw", "-o foo", timeout_seconds=12)
-        self.assertTrue(ready)
-        probe_mock.assert_called_once_with("host", "pw", "-o foo", timeout_seconds=12)
-
-    def test_wait_for_post_reboot_mdns_takeover_passes_when_managed_mdns_is_ready(self) -> None:
+    def test_probe_managed_mdns_takeover_single_shot_checks_process_binding_and_apple_responder(self) -> None:
         with mock.patch(
             "timecapsulesmb.device.probe.run_ssh",
-            return_value=mock.Mock(returncode=0),
+            return_value=mock.Mock(returncode=0, stdout=""),
         ) as run_ssh_mock:
-            self.assertTrue(wait_for_post_reboot_mdns_takeover("host", "pw", "-o foo", timeout_seconds=45))
+            self.assertTrue(probe_managed_mdns_takeover("host", "pw", "-o foo", timeout_seconds=45).ready)
         remote_command = run_ssh_mock.call_args.args[3]
-        self.assertIn('/usr/bin/pkill -0 mdns-advertiser >/dev/null 2>&1', remote_command)
-        self.assertIn('ucomm_field" = "mDNSResponder"', remote_command)
+        self.assertIn("capture_ps_out()", remote_command)
+        self.assertIn("mdns_process_present()", remote_command)
+        self.assertIn("apple_mdns_present()", remote_command)
+        self.assertIn("mdns_bound_5353()", remote_command)
         self.assertNotIn("max_attempts", remote_command)
-
-    def test_wait_for_post_reboot_mdns_takeover_fails_when_remote_probe_times_out(self) -> None:
-        with mock.patch(
-            "timecapsulesmb.device.probe.run_ssh",
-            return_value=mock.Mock(returncode=1),
-        ):
-            self.assertFalse(wait_for_post_reboot_mdns_takeover("host", "pw", "-o foo", timeout_seconds=12))
+        self.assertNotIn("sleep 5", remote_command)
 
     def test_probe_managed_mdns_takeover_returns_detail_when_not_ready(self) -> None:
         with mock.patch(
             "timecapsulesmb.device.probe.run_ssh",
-            return_value=mock.Mock(returncode=1, stdout="apple responder still alive\n"),
+            return_value=mock.Mock(returncode=1, stdout="FAIL:Apple mDNSResponder is still running\n"),
         ):
             result = probe_managed_mdns_takeover("host", "pw", "-o foo", timeout_seconds=12)
         self.assertFalse(result.ready)
-        self.assertEqual(result.detail, "apple responder still alive")
+        self.assertEqual(result.detail, "Apple mDNSResponder is still running")
 
-    def test_managed_mdns_takeover_ready_uses_structured_probe_result(self) -> None:
-        with mock.patch(
-            "timecapsulesmb.device.probe.probe_managed_mdns_takeover",
-            return_value=mock.Mock(ready=False),
-        ) as probe_mock:
-            ready = managed_mdns_takeover_ready("host", "pw", "-o foo", timeout_seconds=12)
-        self.assertFalse(ready)
-        probe_mock.assert_called_once_with("host", "pw", "-o foo", timeout_seconds=12)
-
-    def test_wait_for_post_reboot_mdns_ready_requires_takeover_and_bonjour(self) -> None:
-        monotonic_values = iter([0.0, 1.0, 1.0, 6.0, 6.0, 7.0, 7.0, 8.0, 8.0])
-        with mock.patch(
-            "timecapsulesmb.deploy.verify.probe_managed_mdns_takeover_conn",
-            side_effect=[mock.Mock(ready=False), mock.Mock(ready=True), mock.Mock(ready=True)],
-        ) as takeover_mock:
-            with mock.patch(
-                "timecapsulesmb.deploy.verify.run_bonjour_checks",
-                side_effect=[
-                    ([mock.Mock(status="WARN")], None, None),
-                    ([mock.Mock(status="PASS")], "Time Capsule Samba 4", "timecapsulesamba4.local:445"),
-                ],
-            ) as bonjour_mock:
-                with mock.patch("timecapsulesmb.deploy.verify.time.monotonic", side_effect=lambda: next(monotonic_values)):
-                    with mock.patch("timecapsulesmb.deploy.verify.time.sleep") as sleep_mock:
-                        ready = wait_for_post_reboot_mdns_ready(
-                            "host",
-                            "pw",
-                            "-o foo",
-                            "Time Capsule Samba 4",
-                            timeout_seconds=15.0,
-                            poll_interval_seconds=5.0,
-                        )
-        self.assertTrue(ready)
-        self.assertEqual(takeover_mock.call_count, 3)
-        self.assertEqual(bonjour_mock.call_count, 2)
-        sleep_mock.assert_called()
-
-    def test_wait_for_post_reboot_mdns_ready_times_out_when_bonjour_never_appears(self) -> None:
-        monotonic_values = iter([0.0, 1.0, 1.0, 6.0, 6.0, 11.0, 11.0, 12.1])
-        with mock.patch(
-            "timecapsulesmb.deploy.verify.probe_managed_mdns_takeover_conn",
-            return_value=mock.Mock(ready=True),
-        ):
-            with mock.patch(
-                "timecapsulesmb.deploy.verify.run_bonjour_checks",
-                return_value=([mock.Mock(status="WARN")], None, None),
-            ):
-                with mock.patch("timecapsulesmb.deploy.verify.time.monotonic", side_effect=lambda: next(monotonic_values)):
-                    with mock.patch("timecapsulesmb.deploy.verify.time.sleep"):
-                        ready = wait_for_post_reboot_mdns_ready(
-                            "host",
-                            "pw",
-                            "-o foo",
-                            "Time Capsule Samba 4",
-                            timeout_seconds=12.0,
-                            poll_interval_seconds=5.0,
-                        )
-        self.assertFalse(ready)
+    def test_probe_managed_runtime_polls_both_probes_and_rechecks_mdns_after_settle(self) -> None:
+        smbd_ready = ManagedSmbdProbeResult(True, "managed smbd ready", ("PASS:managed smbd ready",))
+        mdns_not_ready = ManagedMdnsTakeoverProbeResult(False, "managed mDNS takeover not active", ("FAIL:managed mDNS takeover not active",))
+        mdns_ready = ManagedMdnsTakeoverProbeResult(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",))
+        connection = SshConnection("host", "pw", "-o foo")
+        monotonic_values = iter([0.0, 0.0, 0.2, 1.3, 1.4, 5.1, 5.2, 5.3, 10.5, 10.6, 10.7])
+        with mock.patch("timecapsulesmb.device.probe.probe_managed_smbd_conn", side_effect=[smbd_ready, smbd_ready]) as smbd_mock:
+            with mock.patch("timecapsulesmb.device.probe.probe_managed_mdns_takeover_conn", side_effect=[mdns_not_ready, mdns_ready, mdns_ready]) as mdns_mock:
+                with mock.patch("timecapsulesmb.device.probe.time.monotonic", side_effect=lambda: next(monotonic_values)):
+                    with mock.patch("timecapsulesmb.device.probe.time.sleep") as sleep_mock:
+                        result = probe_managed_runtime_conn(connection, timeout_seconds=20, poll_interval_seconds=5.0, smbd_mdns_stagger_seconds=1.0, mdns_settle_seconds=5.0)
+        self.assertTrue(result.ready)
+        self.assertEqual(smbd_mock.call_count, 1)
+        self.assertEqual(mdns_mock.call_count, 3)
+        self.assertNotIn(mock.call(1.0), sleep_mock.call_args_list)
+        self.assertIn(mock.call(5.0), sleep_mock.call_args_list)
 
     def test_format_deployment_plan_contains_concrete_actions(self) -> None:
         payload_dir_name = "samba4"
@@ -2359,7 +2182,7 @@ PASS:mdns-advertiser bound to UDP 5353
         self.assertIn("Run `activate` after a reboot if the device did not auto-start Samba.", text)
         self.assertIn("managed runtime smb.conf is present", text)
         self.assertIn("smbd is bound to TCP 445", text)
-        self.assertIn("managed smbd reported daemon_ready", text)
+        self.assertIn("managed smbd reported fresh daemon_ready", text)
         self.assertIn("mdns-advertiser is bound to UDP 5353", text)
 
     def test_netbsd6_no_reboot_plan_has_no_reboot_checks(self) -> None:

@@ -22,6 +22,14 @@ runtime_smb_conf_present() {{
     [ -f {RUNTIME_SMB_CONF} ]
 }}
 
+capture_ps_out() {{
+    /bin/ps axww -o pid= -o ppid= -o stat= -o time= -o ucomm= -o command= 2>/dev/null || true
+}}
+
+capture_ps_lstart_out() {{
+    /bin/ps axww -o pid -o ppid -o lstart -o ucomm -o command 2>/dev/null || true
+}}
+
 smbd_log_path_from_config() {{
     /usr/bin/sed -n 's/^[[:space:]]*log file[[:space:]]*=[[:space:]]*//p' {RUNTIME_SMB_CONF} 2>/dev/null \
         | /usr/bin/sed -n '1p'
@@ -61,6 +69,176 @@ smbd_log_has_daemon_ready() {{
     [ -n "$ready_line" ]
 }}
 
+normalize_month_name() {{
+    case "$1" in
+        Jan) echo 01 ;;
+        Feb) echo 02 ;;
+        Mar) echo 03 ;;
+        Apr) echo 04 ;;
+        May) echo 05 ;;
+        Jun) echo 06 ;;
+        Jul) echo 07 ;;
+        Aug) echo 08 ;;
+        Sep) echo 09 ;;
+        Oct) echo 10 ;;
+        Nov) echo 11 ;;
+        Dec) echo 12 ;;
+        *) return 1 ;;
+    esac
+}}
+
+normalize_lstart_fields() {{
+    month_name=$1
+    day_value=$2
+    time_value=$3
+    year_value=$4
+    month_value=$(normalize_month_name "$month_name") || return 1
+    case "$day_value" in
+        [0-9]) day_value="0$day_value" ;;
+    esac
+    echo "$year_value/$month_value/$day_value $time_value"
+}}
+
+smbd_parent_process_present() {{
+    ps_out=$1
+    smbd_pids=""
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        set -- $line
+        [ "$#" -ge 5 ] || continue
+        if [ "$5" = "smbd" ]; then
+            smbd_pids="$smbd_pids $1"
+        fi
+    done <<EOF
+$ps_out
+EOF
+
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        set -- $line
+        [ "$#" -ge 5 ] || continue
+        if [ "$5" = "smbd" ]; then
+            case " $smbd_pids " in
+                *" $2 "*) ;;
+                *) return 0 ;;
+            esac
+        fi
+    done <<EOF
+$ps_out
+EOF
+    return 1
+}}
+
+mdns_process_present() {{
+    ps_out=$1
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        set -- $line
+        [ "$#" -ge 5 ] || continue
+        if [ "$5" = "mdns-advertiser" ]; then
+            return 0
+        fi
+    done <<EOF
+$ps_out
+EOF
+    return 1
+}}
+
+apple_mdns_present() {{
+    ps_out=$1
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        set -- $line
+        [ "$#" -ge 5 ] || continue
+        if [ "$5" = "mDNSResponder" ]; then
+            case "$3" in
+                Z*) ;;
+                *) return 0 ;;
+            esac
+        fi
+    done <<EOF
+$ps_out
+EOF
+    return 1
+}}
+
+smbd_parent_start_ts() {{
+    ps_out=$1
+    ps_lstart_out=$2
+    smbd_pids=""
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        set -- $line
+        [ "$#" -ge 5 ] || continue
+        if [ "$5" = "smbd" ]; then
+            smbd_pids="$smbd_pids $1"
+        fi
+    done <<EOF
+$ps_out
+EOF
+
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        case "$line" in
+            *STARTED*) continue ;;
+        esac
+        set -- $line
+        [ "$#" -ge 8 ] || continue
+        if [ "$8" = "smbd" ]; then
+            case " $smbd_pids " in
+                *" $2 "*) ;;
+                *)
+                    normalize_lstart_fields "$4" "$5" "$6" "$7"
+                    return $?
+                    ;;
+            esac
+        fi
+    done <<EOF
+$ps_lstart_out
+EOF
+    return 1
+}}
+
+last_daemon_ready_ts() {{
+    smbd_log_path=$1
+    current_ts=""
+    ready_ts=""
+    [ -f "$smbd_log_path" ] || return 1
+    while IFS= read -r line; do
+        case "$line" in
+            \[[0-9][0-9][0-9][0-9]/[0-9][0-9]/[0-9][0-9]\ [0-9][0-9]:[0-9][0-9]:[0-9][0-9]*)
+                line_ts=${{line#\[}}
+                current_ts=${{line_ts%%.*}}
+                ;;
+        esac
+        case "$line" in
+            *daemon_ready*)
+                if [ -n "$current_ts" ]; then
+                    ready_ts=$current_ts
+                fi
+                ;;
+        esac
+    done <<EOF
+$(file_tail_bytes "$smbd_log_path" 2097152)
+EOF
+    [ -n "$ready_ts" ] || return 1
+    echo "$ready_ts"
+}}
+
+smbd_log_has_fresh_daemon_ready() {{
+    ps_out=$1
+    ps_lstart_out=$2
+    smbd_log_path=$(smbd_log_path_from_config)
+    [ -n "$smbd_log_path" ] || return 1
+    [ -f "$smbd_log_path" ] || return 1
+    parent_start_ts=$(smbd_parent_start_ts "$ps_out" "$ps_lstart_out" || true)
+    [ -n "$parent_start_ts" ] || return 1
+    daemon_ready_ts=$(last_daemon_ready_ts "$smbd_log_path" || true)
+    [ -n "$daemon_ready_ts" ] || return 1
+    [ "$daemon_ready_ts" \< "$parent_start_ts" ] && return 1
+    return 0
+}}
+
 smbd_bound_445() {{
     case "$1" in
         *smbd*":445"*) return 0 ;;
@@ -76,24 +254,31 @@ mdns_bound_5353() {{
 }}
 
 managed_smbd_ready() {{
-    require_daemon_ready=$1
-    fstat_out=$2
+    ps_out=$1
+    ps_lstart_out=$2
+    fstat_out=$3
     runtime_smb_conf_present || return 1
+    smbd_parent_process_present "$ps_out" || return 1
     smbd_bound_445 "$fstat_out" || return 1
-    if [ "$require_daemon_ready" = "1" ]; then
-        smbd_log_has_daemon_ready || return 1
-    fi
+    smbd_log_has_fresh_daemon_ready "$ps_out" "$ps_lstart_out" || return 1
     return 0
 }}
 
 describe_managed_smbd_status() {{
-    require_daemon_ready=$1
-    fstat_out=$2
+    ps_out=$1
+    ps_lstart_out=$2
+    fstat_out=$3
     status=0
     if runtime_smb_conf_present; then
         echo "PASS:managed runtime smb.conf present"
     else
         echo "FAIL:managed runtime smb.conf missing"
+        status=1
+    fi
+    if smbd_parent_process_present "$ps_out"; then
+        echo "PASS:managed smbd parent process is running"
+    else
+        echo "FAIL:managed smbd parent process is not running"
         status=1
     fi
     if smbd_bound_445 "$fstat_out"; then
@@ -102,13 +287,45 @@ describe_managed_smbd_status() {{
         echo "FAIL:smbd is not bound to TCP 445"
         status=1
     fi
-    if [ "$require_daemon_ready" = "1" ]; then
-        if smbd_log_has_daemon_ready; then
-            echo "PASS:managed smbd reported daemon_ready"
-        else
-            echo "FAIL:managed smbd did not report daemon_ready"
-            status=1
-        fi
+    if smbd_log_has_fresh_daemon_ready "$ps_out" "$ps_lstart_out"; then
+        echo "PASS:managed smbd reported fresh daemon_ready"
+    else
+        echo "FAIL:managed smbd did not report fresh daemon_ready"
+        status=1
+    fi
+    return "$status"
+}}
+
+managed_mdns_takeover_ready() {{
+    ps_out=$1
+    fstat_out=$2
+    mdns_process_present "$ps_out" || return 1
+    mdns_bound_5353 "$fstat_out" || return 1
+    apple_mdns_present "$ps_out" && return 1
+    return 0
+}}
+
+describe_managed_mdns_status() {{
+    ps_out=$1
+    fstat_out=$2
+    status=0
+    if mdns_process_present "$ps_out"; then
+        echo "PASS:mdns-advertiser process is running"
+    else
+        echo "FAIL:mdns-advertiser process is not running"
+        status=1
+    fi
+    if mdns_bound_5353 "$fstat_out"; then
+        echo "PASS:mdns-advertiser bound to UDP 5353"
+    else
+        echo "FAIL:mdns-advertiser is not bound to UDP 5353"
+        status=1
+    fi
+    if apple_mdns_present "$ps_out"; then
+        echo "FAIL:Apple mDNSResponder is still running"
+        status=1
+    else
+        echo "PASS:Apple mDNSResponder is not running"
     fi
     return "$status"
 }}
@@ -182,12 +399,23 @@ class RemoteInterfaceCandidatesProbeResult:
 class ManagedSmbdProbeResult:
     ready: bool
     detail: str
+    lines: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class ManagedMdnsTakeoverProbeResult:
     ready: bool
     detail: str
+    lines: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ManagedRuntimeProbeResult:
+    ready: bool
+    detail: str
+    smbd: ManagedSmbdProbeResult
+    mdns: ManagedMdnsTakeoverProbeResult
+    lines: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -558,75 +786,39 @@ def read_active_smb_conf_conn(connection: SshConnection) -> str:
     return proc.stdout
 
 
-def probe_managed_smbd(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 120) -> ManagedSmbdProbeResult:
+def _probe_lines(stdout: str) -> tuple[str, ...]:
+    return tuple(line.strip() for line in stdout.splitlines() if line.strip())
+
+
+def _probe_detail(lines: tuple[str, ...], default: str) -> str:
+    failures = [line.removeprefix("FAIL:") for line in lines if line.startswith("FAIL:")]
+    if failures:
+        return "; ".join(failures)
+    passes = [line.removeprefix("PASS:") for line in lines if line.startswith("PASS:")]
+    if passes:
+        return "; ".join(passes)
+    return default
+
+
+def probe_managed_smbd(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 20) -> ManagedSmbdProbeResult:
     return probe_managed_smbd_conn(_conn(host, password, ssh_opts), timeout_seconds=timeout_seconds)
 
 
-def probe_managed_smbd_conn(connection: SshConnection, *, timeout_seconds: int = 120) -> ManagedSmbdProbeResult:
+def probe_managed_smbd_conn(connection: SshConnection, *, timeout_seconds: int = 20) -> ManagedSmbdProbeResult:
     script = rf'''
 {SMBD_STATUS_HELPERS}
 if ! command -v fstat >/dev/null 2>&1; then
     echo "FAIL:fstat missing"
     exit 1
 fi
-attempt=0
-max_attempts=$((({timeout_seconds} + 4) / 5))
-while [ "$attempt" -lt "$max_attempts" ]; do
-    out="$(fstat 2>&1)"
-    if managed_smbd_ready 1 "$out"; then
-        exit 0
-    fi
-    attempt=$((attempt + 1))
-    sleep 5
-done
-describe_managed_smbd_status 1 "$out"
-exit 1
-'''
-    proc = run_ssh_conn(
-        connection,
-        f"/bin/sh -c {shlex.quote(script)}",
-        check=False,
-        timeout=timeout_seconds + 30,
-    )
-    if proc.returncode == 0:
-        return ManagedSmbdProbeResult(ready=True, detail="managed smbd ready")
-    return ManagedSmbdProbeResult(ready=False, detail=proc.stdout.strip() or "managed smbd not ready")
-
-
-def managed_smbd_ready(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 120) -> bool:
-    return probe_managed_smbd(host, password, ssh_opts, timeout_seconds=timeout_seconds).ready
-
-
-def probe_managed_mdns_takeover(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 20) -> ManagedMdnsTakeoverProbeResult:
-    return probe_managed_mdns_takeover_conn(_conn(host, password, ssh_opts), timeout_seconds=timeout_seconds)
-
-
-def probe_managed_mdns_takeover_conn(connection: SshConnection, *, timeout_seconds: int = 20) -> ManagedMdnsTakeoverProbeResult:
-    script = r'''
-mdns_ready=0
-apple_alive=0
-
-if /usr/bin/pkill -0 mdns-advertiser >/dev/null 2>&1; then
-    mdns_ready=1
+ps_out="$(capture_ps_out)"
+ps_lstart_out="$(capture_ps_lstart_out)"
+out="$(fstat 2>&1)"
+status=0
+if ! describe_managed_smbd_status "$ps_out" "$ps_lstart_out" "$out"; then
+    status=1
 fi
-
-ps_out="$(/bin/ps ax -o stat= -o ucomm= 2>/dev/null || true)"
-while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    stat_field="${line%% *}"
-    ucomm_field="${line#* }"
-    if [ "$ucomm_field" = "mDNSResponder" ] && [ "${stat_field#Z}" = "$stat_field" ]; then
-        apple_alive=1
-        break
-    fi
-done <<EOF
-$ps_out
-EOF
-
-if [ "$mdns_ready" -eq 1 ] && [ "$apple_alive" -eq 0 ]; then
-    exit 0
-fi
-exit 1
+exit "$status"
 '''
     proc = run_ssh_conn(
         connection,
@@ -634,16 +826,135 @@ exit 1
         check=False,
         timeout=timeout_seconds,
     )
+    lines = _probe_lines(proc.stdout)
+    if proc.returncode == 0:
+        return ManagedSmbdProbeResult(ready=True, detail=_probe_detail(lines, "managed smbd ready"), lines=lines)
+    return ManagedSmbdProbeResult(ready=False, detail=_probe_detail(lines, "managed smbd not ready"), lines=lines)
+
+
+def probe_managed_mdns_takeover(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 20) -> ManagedMdnsTakeoverProbeResult:
+    return probe_managed_mdns_takeover_conn(_conn(host, password, ssh_opts), timeout_seconds=timeout_seconds)
+
+
+def probe_managed_mdns_takeover_conn(connection: SshConnection, *, timeout_seconds: int = 20) -> ManagedMdnsTakeoverProbeResult:
+    script = rf'''
+{SMBD_STATUS_HELPERS}
+if ! command -v fstat >/dev/null 2>&1; then
+    echo "FAIL:fstat missing"
+    exit 1
+fi
+ps_out="$(capture_ps_out)"
+out="$(fstat 2>&1)"
+status=0
+if ! describe_managed_mdns_status "$ps_out" "$out"; then
+    status=1
+fi
+exit "$status"
+'''
+    proc = run_ssh_conn(
+        connection,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=timeout_seconds,
+    )
+    lines = _probe_lines(proc.stdout)
     return_code = getattr(proc, "returncode", 0)
     if not isinstance(return_code, int):
-        return ManagedMdnsTakeoverProbeResult(ready=True, detail="managed mDNS takeover probe returned non-integer status")
+        return ManagedMdnsTakeoverProbeResult(
+            ready=True,
+            detail="managed mDNS takeover probe returned non-integer status",
+            lines=lines,
+        )
     if return_code == 0:
-        return ManagedMdnsTakeoverProbeResult(ready=True, detail="managed mDNS takeover active")
-    return ManagedMdnsTakeoverProbeResult(ready=False, detail=proc.stdout.strip() or "managed mDNS takeover not active")
+        return ManagedMdnsTakeoverProbeResult(
+            ready=True,
+            detail=_probe_detail(lines, "managed mDNS takeover active"),
+            lines=lines,
+        )
+    return ManagedMdnsTakeoverProbeResult(
+        ready=False,
+        detail=_probe_detail(lines, "managed mDNS takeover not active"),
+        lines=lines,
+    )
 
 
-def managed_mdns_takeover_ready(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 20) -> bool:
-    return probe_managed_mdns_takeover(host, password, ssh_opts, timeout_seconds=timeout_seconds).ready
+def probe_managed_runtime(
+    host: str,
+    password: str,
+    ssh_opts: str,
+    *,
+    timeout_seconds: int = 120,
+    poll_interval_seconds: float = 5.0,
+    smbd_mdns_stagger_seconds: float = 1.0,
+    mdns_settle_seconds: float = 5.0,
+) -> ManagedRuntimeProbeResult:
+    return probe_managed_runtime_conn(
+        _conn(host, password, ssh_opts),
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        smbd_mdns_stagger_seconds=smbd_mdns_stagger_seconds,
+        mdns_settle_seconds=mdns_settle_seconds,
+    )
+
+
+def probe_managed_runtime_conn(
+    connection: SshConnection,
+    *,
+    timeout_seconds: int = 120,
+    poll_interval_seconds: float = 5.0,
+    smbd_mdns_stagger_seconds: float = 1.0,
+    mdns_settle_seconds: float = 5.0,
+) -> ManagedRuntimeProbeResult:
+    deadline = time.monotonic() + timeout_seconds
+    last_smbd = ManagedSmbdProbeResult(ready=False, detail="managed smbd not ready")
+    last_mdns = ManagedMdnsTakeoverProbeResult(ready=False, detail="managed mDNS takeover not active")
+    smbd_ready = False
+    mdns_ready = False
+
+    while time.monotonic() < deadline:
+        iteration_start = time.monotonic()
+        if not smbd_ready:
+            last_smbd = probe_managed_smbd_conn(connection, timeout_seconds=20)
+            smbd_ready = last_smbd.ready
+        
+        if not mdns_ready:
+            if not smbd_ready:
+                time.sleep(smbd_mdns_stagger_seconds)
+            last_mdns = probe_managed_mdns_takeover_conn(connection, timeout_seconds=20)
+            mdns_ready = last_mdns.ready
+
+        if smbd_ready and mdns_ready:
+            time.sleep(mdns_settle_seconds)
+            settled_mdns = probe_managed_mdns_takeover_conn(connection, timeout_seconds=20)
+            if settled_mdns.ready:
+                lines = last_smbd.lines + settled_mdns.lines + ("PASS:mdns-advertiser remained healthy after settle delay",)
+                return ManagedRuntimeProbeResult(
+                    ready=True,
+                    detail="managed runtime is ready",
+                    smbd=last_smbd,
+                    mdns=settled_mdns,
+                    lines=lines,
+                )
+            last_mdns = ManagedMdnsTakeoverProbeResult(
+                ready=False,
+                detail=f"{settled_mdns.detail}; mdns-advertiser did not survive settle delay",
+                lines=settled_mdns.lines + ("FAIL:mdns-advertiser did not remain healthy after settle delay",),
+            )
+            mdns_ready = False
+
+        elapsed = time.monotonic() - iteration_start
+        sleep_for = max(0.0, poll_interval_seconds - elapsed)
+        if sleep_for > 0:
+            time.sleep(sleep_for)
+
+    lines = last_smbd.lines + last_mdns.lines
+    return ManagedRuntimeProbeResult(
+        ready=False,
+        detail=f"{last_smbd.detail}; {last_mdns.detail}",
+        smbd=last_smbd,
+        mdns=last_mdns,
+        lines=lines,
+    )
 
 
 def nbns_marker_enabled(host: str, password: str, ssh_opts: str, payload_dir: str) -> bool:
@@ -660,64 +971,6 @@ def nbns_marker_enabled_conn(connection: SshConnection, payload_dir: str) -> boo
         check=False,
     )
     return proc.stdout.strip() == "enabled"
-
-
-def netbsd4_runtime_services_healthy_conn(connection: SshConnection) -> bool:
-    script = rf'''
-{SMBD_STATUS_HELPERS}
-if ! command -v fstat >/dev/null 2>&1; then
-    exit 1
-fi
-out="$(fstat 2>&1)"
-if ! managed_smbd_ready 0 "$out"; then
-    exit 1
-fi
-mdns_bound_5353 "$out"
-'''
-    proc = run_ssh_conn(connection, f"/bin/sh -c {shlex.quote(script)}", check=False)
-    return proc.returncode == 0
-
-
-def probe_netbsd4_activation_status_conn(
-    connection: SshConnection,
-    *,
-    timeout_seconds: int = 180,
-) -> subprocess.CompletedProcess[str]:
-    script = rf'''
-{SMBD_STATUS_HELPERS}
-if ! command -v fstat >/dev/null 2>&1; then
-    echo "FAIL:fstat missing"
-    exit 1
-fi
-attempt=0
-max_attempts=$((({timeout_seconds} + 4) / 5))
-while [ "$attempt" -lt "$max_attempts" ]; do
-    out="$(fstat 2>&1)"
-    if managed_smbd_ready 1 "$out" && mdns_bound_5353 "$out"; then
-        break
-    fi
-    attempt=$((attempt + 1))
-    sleep 5
-done
-echo "$out" | sed -n '/\.445/p;/\.5353/p'
-status=0
-if ! describe_managed_smbd_status 1 "$out"; then
-    status=1
-fi
-if mdns_bound_5353 "$out"; then
-    echo "PASS:mdns-advertiser bound to UDP 5353"
-else
-    echo "FAIL:mdns-advertiser is not bound to UDP 5353"
-    status=1
-fi
-exit "$status"
-'''
-    return run_ssh_conn(
-        connection,
-        f"/bin/sh -c {shlex.quote(script)}",
-        check=False,
-        timeout=timeout_seconds + 30,
-    )
 
 
 def probe_paths_absent_conn(

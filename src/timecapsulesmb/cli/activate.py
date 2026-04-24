@@ -9,8 +9,9 @@ from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.dry_run import format_activation_plan
 from timecapsulesmb.deploy.executor import run_remote_actions
 from timecapsulesmb.deploy.planner import build_netbsd4_activation_plan
-from timecapsulesmb.deploy.verify import netbsd4_activation_is_already_healthy, verify_netbsd4_activation
+from timecapsulesmb.deploy.verify import verify_managed_runtime
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, render_compatibility_message
+from timecapsulesmb.device.probe import probe_managed_runtime_conn
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_red
 
@@ -52,14 +53,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.add_debug_context()
                 return 0
 
-        if netbsd4_activation_is_already_healthy(connection):
+        if probe_managed_runtime_conn(connection, timeout_seconds=20).ready:
             print("NetBSD4 payload already active; skipping rc.local.")
             command_context.succeed()
             return 0
 
         print("Activating NetBSD4 payload without file transfer.")
         run_remote_actions(connection, plan.actions)
-        if not verify_netbsd4_activation(connection):
+        if not verify_managed_runtime(connection, timeout_seconds=180, heading="Waiting for verification of NetBSD 4 device activation..."):
             print("NetBSD4 activation failed.")
             command_context.fail_with_error("NetBSD4 activation failed.")
             command_context.add_debug_context()

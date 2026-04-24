@@ -1,9 +1,38 @@
 from __future__ import annotations
 
+import ipaddress
+from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from timecapsulesmb.checks.models import CheckResult
+from timecapsulesmb.core.config import extract_host
 from timecapsulesmb.discovery.bonjour import SMB_SERVICE, discover, filter_service_records
+
+
+@dataclass(frozen=True)
+class BonjourTargetHints:
+    expected_instance_name: str
+    preferred_host: str | None
+    preferred_ip: str | None
+
+
+def _ip_literal(value: str) -> str | None:
+    candidate = value.strip()
+    if not candidate:
+        return None
+    try:
+        ipaddress.ip_address(candidate)
+    except ValueError:
+        return None
+    return candidate
+
+
+def build_bonjour_target_hints(values: dict[str, str]) -> BonjourTargetHints:
+    return BonjourTargetHints(
+        expected_instance_name=values["TC_MDNS_INSTANCE_NAME"],
+        preferred_host=values.get("TC_MDNS_HOST_LABEL") or None,
+        preferred_ip=_ip_literal(extract_host(values.get("TC_HOST", ""))),
+    )
 
 
 def parse_browse_instance(output: str) -> Optional[str]:

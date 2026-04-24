@@ -5,7 +5,7 @@ import ipaddress
 from pathlib import Path
 from typing import Optional
 
-from timecapsulesmb.checks.bonjour import run_bonjour_checks
+from timecapsulesmb.checks.bonjour import build_bonjour_target_hints, run_bonjour_checks
 from timecapsulesmb.checks.local_tools import check_required_artifacts, check_required_local_tools
 from timecapsulesmb.checks.models import CheckResult, is_fatal
 from timecapsulesmb.checks.network import check_smb_port, check_ssh_login, ssh_opts_use_proxy
@@ -23,6 +23,7 @@ from timecapsulesmb.device.probe import (
     build_device_paths,
     discover_volume_root,
     probe_managed_mdns_takeover,
+    probe_managed_smbd,
     nbns_marker_enabled,
     probe_remote_interface,
     read_active_smb_conf,
@@ -217,6 +218,11 @@ def run_doctor_checks(
                 add_result(CheckResult("FAIL", render_compatibility_message(compatibility)))
         except (Exception, SystemExit) as e:
             add_result(CheckResult("FAIL", f"device compatibility check failed: {e}"))
+        smbd_probe = probe_managed_smbd(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
+        if smbd_probe.ready:
+            add_result(CheckResult("PASS", "managed smbd is ready"))
+        else:
+            add_result(CheckResult("FAIL", f"managed smbd is not ready ({smbd_probe.detail})"))
         mdns_probe = probe_managed_mdns_takeover(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
         if mdns_probe.ready:
             add_result(CheckResult("PASS", "managed mDNS takeover is active"))
@@ -255,10 +261,11 @@ def run_doctor_checks(
         add_result(CheckResult("SKIP", "Bonjour check skipped for SSH-proxied target; local mDNS may find a different Time Capsule"))
     elif not skip_bonjour:
         try:
+            bonjour_hints = build_bonjour_target_hints(values)
             bonjour_results, bonjour_instance, bonjour_target = run_bonjour_checks(
-                values["TC_MDNS_INSTANCE_NAME"],
-                preferred_host=values.get("TC_MDNS_HOST_LABEL"),
-                preferred_ip=host,
+                bonjour_hints.expected_instance_name,
+                preferred_host=bonjour_hints.preferred_host,
+                preferred_ip=bonjour_hints.preferred_ip,
             )
             bonjour_reason = ""
             for result in bonjour_results:

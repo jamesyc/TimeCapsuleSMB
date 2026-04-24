@@ -22,16 +22,13 @@ from timecapsulesmb.deploy.executor import (
 from timecapsulesmb.deploy.planner import build_deployment_plan
 from timecapsulesmb.deploy.templates import build_template_bundle, render_template, write_boot_asset
 from timecapsulesmb.deploy.verify import (
-    verify_netbsd4_activation,
-    verify_post_deploy,
-    wait_for_post_reboot_mdns_takeover,
-    wait_for_post_reboot_smbd,
+    verify_managed_runtime,
 )
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, payload_family_description, render_compatibility_message
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root_conn as discover_volume_root, wait_for_ssh_state_conn
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import run_ssh_conn
-from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_red
+from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_green, color_red
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -175,17 +172,19 @@ def main(argv: Optional[list[str]] = None) -> int:
         if is_netbsd4:
             print("Activating NetBSD4 payload without reboot.")
             run_remote_actions(connection, plan.activation_actions)
-            if not verify_netbsd4_activation(connection):
+            if not verify_managed_runtime(connection, timeout_seconds=180, heading="Waiting for verification of NetBSD 4 device activation..."):
                 print("NetBSD4 activation failed.")
                 command_context.fail_with_error("NetBSD4 activation failed.")
                 command_context.add_debug_context()
                 return 1
             print(f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}")
+            print(color_green("Deploy Finished."))
             command_context.succeed()
             return 0
 
         if args.no_reboot:
             print("Skipping reboot.")
+            print(color_green("Deploy Finished."))
             command_context.succeed()
             return 0
 
@@ -205,19 +204,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         if wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=240):
             command_context.update_fields(device_came_back_after_reboot=True)
             print("Device is back online.")
-            print("Waiting for managed smbd to finish starting...")
-            if not wait_for_post_reboot_smbd(connection):
-                print("Managed smbd did not become ready after reboot.")
-                command_context.fail_with_error("Managed smbd did not become ready after reboot.")
+            print("Waiting for managed runtime to finish starting...")
+            if not verify_managed_runtime(connection, timeout_seconds=180, heading="Waiting for verification that device successfully finished loading..."):
+                print("Managed runtime did not become ready after reboot.")
+                command_context.fail_with_error("Managed runtime did not become ready after reboot.")
                 command_context.add_debug_context()
                 return 1
-            print("Waiting for managed mDNS takeover to finish...")
-            if not wait_for_post_reboot_mdns_takeover(connection):
-                print("Managed mDNS did not become ready after reboot.")
-                command_context.fail_with_error("Managed mDNS did not become ready after reboot.")
-                command_context.add_debug_context()
-                return 1
-            verify_post_deploy(values)
+            print(color_green("Deploy Finished."))
             command_context.succeed()
             return 0
 

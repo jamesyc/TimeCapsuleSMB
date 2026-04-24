@@ -4097,21 +4097,20 @@ class CliTests(unittest.TestCase):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
                                         with mock.patch("timecapsulesmb.cli.deploy.run_ssh_conn"):
                                             with mock.patch("timecapsulesmb.cli.deploy.wait_for_ssh_state_conn", side_effect=[True, True]):
-                                                with mock.patch("timecapsulesmb.cli.deploy.wait_for_post_reboot_smbd", return_value=True) as ready_mock:
-                                                    with mock.patch("timecapsulesmb.cli.deploy.wait_for_post_reboot_mdns_takeover", return_value=True) as mdns_ready_mock:
-                                                        with mock.patch("timecapsulesmb.cli.deploy.verify_post_deploy") as verify_mock:
-                                                            with mock.patch("builtins.input", return_value="y"):
-                                                                with redirect_stdout(output):
-                                                                    rc = deploy.main([])
+                                                with mock.patch("timecapsulesmb.cli.deploy.verify_managed_runtime", return_value=True) as verify_runtime_mock:
+                                                    with mock.patch("builtins.input", return_value="y"):
+                                                        with redirect_stdout(output):
+                                                            rc = deploy.main([])
         self.assertEqual(rc, 0)
-        self.assertEqual(ready_mock.call_args.args[0].host, "root@10.0.0.2")
-        self.assertEqual(mdns_ready_mock.call_args.args[0].host, "root@10.0.0.2")
-        verify_mock.assert_called_once_with(values)
+        self.assertEqual(verify_runtime_mock.call_args.args[0].host, "root@10.0.0.2")
         text = output.getvalue()
         self.assertIn("Device is back online.", text)
-        self.assertIn("Waiting for managed smbd to finish starting...", text)
-        self.assertIn("Waiting for managed mDNS takeover to finish...", text)
-        self.assertNotIn("Bonjour visibility", text)
+        self.assertIn("Waiting for managed runtime to finish starting...", text)
+        self.assertIn("Deploy Finished.", text)
+        self.assertEqual(
+            verify_runtime_mock.call_args.kwargs["heading"],
+            "Waiting for verification that device successfully finished loading...",
+        )
 
     def test_deploy_returns_failure_when_managed_smbd_never_becomes_ready(self) -> None:
         output = io.StringIO()
@@ -4142,17 +4141,13 @@ class CliTests(unittest.TestCase):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
                                         with mock.patch("timecapsulesmb.cli.deploy.run_ssh_conn"):
                                             with mock.patch("timecapsulesmb.cli.deploy.wait_for_ssh_state_conn", side_effect=[True, True]):
-                                                with mock.patch("timecapsulesmb.cli.deploy.wait_for_post_reboot_smbd", return_value=False) as ready_mock:
-                                                    with mock.patch("timecapsulesmb.cli.deploy.wait_for_post_reboot_mdns_takeover") as mdns_ready_mock:
-                                                        with mock.patch("timecapsulesmb.cli.deploy.verify_post_deploy") as verify_mock:
-                                                            with mock.patch("builtins.input", return_value="y"):
-                                                                with redirect_stdout(output):
-                                                                    rc = deploy.main([])
+                                                with mock.patch("timecapsulesmb.cli.deploy.verify_managed_runtime", return_value=False) as verify_runtime_mock:
+                                                    with mock.patch("builtins.input", return_value="y"):
+                                                        with redirect_stdout(output):
+                                                            rc = deploy.main([])
         self.assertEqual(rc, 1)
-        self.assertEqual(ready_mock.call_args.args[0].host, "root@10.0.0.2")
-        mdns_ready_mock.assert_not_called()
-        verify_mock.assert_not_called()
-        self.assertIn("Managed smbd did not become ready after reboot.", output.getvalue())
+        self.assertEqual(verify_runtime_mock.call_args.args[0].host, "root@10.0.0.2")
+        self.assertIn("Managed runtime did not become ready after reboot.", output.getvalue())
 
     def test_deploy_returns_failure_when_managed_mdns_never_becomes_ready(self) -> None:
         output = io.StringIO()
@@ -4183,17 +4178,13 @@ class CliTests(unittest.TestCase):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
                                         with mock.patch("timecapsulesmb.cli.deploy.run_ssh_conn"):
                                             with mock.patch("timecapsulesmb.cli.deploy.wait_for_ssh_state_conn", side_effect=[True, True]):
-                                                with mock.patch("timecapsulesmb.cli.deploy.wait_for_post_reboot_smbd", return_value=True) as ready_mock:
-                                                    with mock.patch("timecapsulesmb.cli.deploy.wait_for_post_reboot_mdns_takeover", return_value=False) as mdns_ready_mock:
-                                                        with mock.patch("timecapsulesmb.cli.deploy.verify_post_deploy") as verify_mock:
-                                                            with mock.patch("builtins.input", return_value="y"):
-                                                                with redirect_stdout(output):
-                                                                    rc = deploy.main([])
+                                                with mock.patch("timecapsulesmb.cli.deploy.verify_managed_runtime", return_value=False) as verify_runtime_mock:
+                                                    with mock.patch("builtins.input", return_value="y"):
+                                                        with redirect_stdout(output):
+                                                            rc = deploy.main([])
         self.assertEqual(rc, 1)
-        self.assertEqual(ready_mock.call_args.args[0].host, "root@10.0.0.2")
-        self.assertEqual(mdns_ready_mock.call_args.args[0].host, "root@10.0.0.2")
-        verify_mock.assert_not_called()
-        self.assertIn("Managed mDNS did not become ready after reboot.", output.getvalue())
+        self.assertEqual(verify_runtime_mock.call_args.args[0].host, "root@10.0.0.2")
+        self.assertIn("Managed runtime did not become ready after reboot.", output.getvalue())
 
     def test_deploy_install_nbns_touches_marker(self) -> None:
         values = {
@@ -4355,7 +4346,7 @@ class CliTests(unittest.TestCase):
                                 with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
                                     with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
                                         with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
-                                            with mock.patch("timecapsulesmb.cli.deploy.verify_netbsd4_activation", return_value=True):
+                                            with mock.patch("timecapsulesmb.cli.deploy.verify_managed_runtime", return_value=True):
                                                 with redirect_stdout(output):
                                                     rc = deploy.main([])
         self.assertEqual(rc, 0)
@@ -4391,7 +4382,7 @@ class CliTests(unittest.TestCase):
                                 with mock.patch("timecapsulesmb.cli.deploy.build_template_bundle", return_value=template_bundle) as template_mock:
                                     with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
                                         with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
-                                            with mock.patch("timecapsulesmb.cli.deploy.verify_netbsd4_activation", return_value=True):
+                                            with mock.patch("timecapsulesmb.cli.deploy.verify_managed_runtime", return_value=True):
                                                 rc = deploy.main(["--yes", "--no-reboot"])
         self.assertEqual(rc, 0)
         template_mock.assert_called_once_with(
@@ -4471,7 +4462,7 @@ class CliTests(unittest.TestCase):
                             with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
                                 with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
-                                        with mock.patch("timecapsulesmb.cli.deploy.verify_netbsd4_activation", return_value=True) as verify_mock:
+                                        with mock.patch("timecapsulesmb.cli.deploy.verify_managed_runtime", return_value=True) as verify_mock:
                                             with mock.patch("timecapsulesmb.cli.deploy.run_ssh_conn") as run_ssh_mock:
                                                 with redirect_stdout(output):
                                                     rc = deploy.main(["--yes"])
@@ -4516,7 +4507,7 @@ class CliTests(unittest.TestCase):
                             with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
                                 with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
-                                        with mock.patch("timecapsulesmb.cli.deploy.verify_netbsd4_activation", return_value=True):
+                                        with mock.patch("timecapsulesmb.cli.deploy.verify_managed_runtime", return_value=True):
                                             with mock.patch("timecapsulesmb.cli.deploy.run_ssh_conn") as run_ssh_mock:
                                                 with redirect_stdout(output):
                                                     rc = deploy.main(["--yes", "--no-reboot"])
@@ -4550,7 +4541,7 @@ class CliTests(unittest.TestCase):
                             with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
                                 with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
-                                        with mock.patch("timecapsulesmb.cli.deploy.verify_netbsd4_activation", return_value=False):
+                                        with mock.patch("timecapsulesmb.cli.deploy.verify_managed_runtime", return_value=False):
                                             with redirect_stdout(output):
                                                 rc = deploy.main(["--yes"])
         self.assertEqual(rc, 1)
@@ -4908,7 +4899,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("skip rc.local if NetBSD4 payload is already healthy", text)
         self.assertIn("managed runtime smb.conf is present", text)
         self.assertIn("smbd is bound to TCP 445", text)
-        self.assertIn("managed smbd reported daemon_ready", text)
+        self.assertIn("managed smbd reported fresh daemon_ready", text)
         self.assertIn("mdns-advertiser is bound to UDP 5353", text)
         self.assertIn("This will start the deployed Samba payload on the Time Capsule.", text)
         self.assertIn("NetBSD 4 devices cannot auto-run Samba after a reboot.", text)
@@ -4975,9 +4966,9 @@ class CliTests(unittest.TestCase):
         values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
-                with mock.patch("timecapsulesmb.cli.activate.netbsd4_activation_is_already_healthy", return_value=False):
+                with mock.patch("timecapsulesmb.cli.activate.probe_managed_runtime_conn", return_value=mock.Mock(ready=False)):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
-                        with mock.patch("timecapsulesmb.cli.activate.verify_netbsd4_activation", return_value=True) as verify_mock:
+                        with mock.patch("timecapsulesmb.cli.activate.verify_managed_runtime", return_value=True) as verify_mock:
                             with redirect_stdout(output):
                                 rc = activate.main(["--yes"])
         self.assertEqual(rc, 0)
@@ -4994,6 +4985,7 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(actions_mock.call_args.kwargs, {})
         self.assertEqual(verify_mock.call_args.args[0].host, "root@10.0.0.2")
+        self.assertEqual(verify_mock.call_args.kwargs["heading"], "Waiting for verification of NetBSD 4 device activation...")
         self.assertIn("without file transfer", output.getvalue())
 
     def test_activate_skips_rc_local_when_payload_is_already_healthy(self) -> None:
@@ -5001,9 +4993,9 @@ class CliTests(unittest.TestCase):
         values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
-                with mock.patch("timecapsulesmb.cli.activate.netbsd4_activation_is_already_healthy", return_value=True):
+                with mock.patch("timecapsulesmb.cli.activate.probe_managed_runtime_conn", return_value=mock.Mock(ready=True)):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
-                        with mock.patch("timecapsulesmb.cli.activate.verify_netbsd4_activation") as verify_mock:
+                        with mock.patch("timecapsulesmb.cli.activate.verify_managed_runtime") as verify_mock:
                             with redirect_stdout(output):
                                 rc = activate.main(["--yes"])
         self.assertEqual(rc, 0)
@@ -5016,9 +5008,9 @@ class CliTests(unittest.TestCase):
         values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.activate.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
-                with mock.patch("timecapsulesmb.cli.activate.netbsd4_activation_is_already_healthy", return_value=False):
+                with mock.patch("timecapsulesmb.cli.activate.probe_managed_runtime_conn", return_value=mock.Mock(ready=False)):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions"):
-                        with mock.patch("timecapsulesmb.cli.activate.verify_netbsd4_activation", return_value=False):
+                        with mock.patch("timecapsulesmb.cli.activate.verify_managed_runtime", return_value=False):
                             with redirect_stdout(output):
                                 rc = activate.main(["--yes"])
         self.assertEqual(rc, 1)
