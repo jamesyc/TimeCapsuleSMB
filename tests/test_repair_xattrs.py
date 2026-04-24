@@ -848,7 +848,7 @@ class RepairXattrsTests(unittest.TestCase):
             target = Path(tmp) / "file.txt"
             target.write_text("data")
             with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
-                with mock.patch("timecapsulesmb.cli.repair_xattrs.find_candidates", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.repair_xattrs.find_findings", return_value=[]):
                     with redirect_stdout(io.StringIO()):
                         rc = repair_xattrs.main(["--path", str(target)])
         self.assertEqual(rc, 0)
