@@ -147,6 +147,7 @@ class CliTests(unittest.TestCase):
                 return_value=RemoteInterfaceProbeResult(iface="bridge0", exists=True, detail="interface bridge0 exists"),
             )
         )
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=False))
         self._exit_stack.enter_context(
             mock.patch(
                 "timecapsulesmb.cli.configure.probe_remote_interface_candidates",
