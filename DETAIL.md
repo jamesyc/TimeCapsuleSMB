@@ -270,6 +270,17 @@ Current practical result:
 - Apple `_airport._tcp` and other records can be preserved
 - snapshot replay preserves non-ASCII or binary host targets via `HOST_HEX`
 
+## Bonjour Discovery Boundaries
+
+Local Bonjour discovery is intentionally service-centric. `timecapsulesmb.discovery.bonjour.discover()` returns one normalized record per service instance, not one merged record per physical device.
+
+That distinction matters:
+- `_airport._tcp.local.` is the Apple device identity and is the only service configure uses for the interactive device list
+- `_smb._tcp.local.` is the managed Samba service identity and is what doctor/deploy Bonjour checks use
+- `_device-info._tcp.local.` may share the same name, hostname, and IP as `_smb._tcp.local.`, but it must remain a separate raw record
+
+Do not merge `_airport`, `_smb`, and `_device-info` records inside `bonjour.discover()`. Merging service records creates ambiguous objects with one name/hostname but multiple meanings, and it causes duplicate-looking or misleading configure/doctor output. The stored `service_type` should remain the raw observed value. Callers should filter raw discovery results by the service prefix they actually need, such as `_airport` for configure and `_smb` for doctor/deploy. Prefix filtering intentionally matches both `_smb._tcp.local.` and `_smb._tcp.local`.
+
 ## Apple mDNS Snapshot File
 
 The mDNS snapshot files are:

@@ -12,14 +12,16 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.discovery.bonjour import (
+    AIRPORT_SERVICE,
     Discovered,
+    SMB_SERVICE,
     ServiceObservation,
-    _merge_observations,
     discover,
+    discover_service,
     discover_time_capsule_candidates,
     discovered_record_airport_syap,
     discovered_record_root_host,
-    enrich_airport_properties_by_ipv4,
+    filter_service_records,
     looks_like_time_capsule,
     prefer_routable_ipv4,
     preferred_host,
@@ -75,117 +77,104 @@ class DiscoveryTests(unittest.TestCase):
         fake_collector.start.assert_called_once()
         fake_zc.close.assert_called_once()
 
-    def test_discover_time_capsule_candidates_delegates_to_discover(self) -> None:
-        record = Discovered(name="TC", hostname="capsule.local")
-        with mock.patch("timecapsulesmb.discovery.bonjour.discover", return_value=[record]) as discover_mock:
+    def test_discover_time_capsule_candidates_returns_airport_records_only(self) -> None:
+        airport = Discovered(
+            name="AirPort Time Capsule",
+            hostname="airport.local",
+            service_type="_airport._tcp.local.",
+            properties={"syAP": "119"},
+        )
+        samba = Discovered(
+            name="Time Capsule Samba 4",
+            hostname="timecapsulesamba4.local",
+            service_type="_smb._tcp.local.",
+            properties={"model": "TimeCapsule8,119"},
+        )
+        with mock.patch("timecapsulesmb.discovery.bonjour.discover", return_value=[samba, airport]) as discover_mock:
             results = discover_time_capsule_candidates(timeout=1.5)
-        self.assertEqual(results, [record])
+        self.assertEqual(results, [airport])
         discover_mock.assert_called_once_with(timeout=1.5)
 
-    def test_enrich_airport_properties_by_ipv4_copies_syap_to_samba_record(self) -> None:
+    def test_filter_service_records_returns_only_matching_service(self) -> None:
         airport = Discovered(
             name="James's AirPort Time Capsule",
             hostname="Jamess-AirPort-Time-Capsule.local",
+            service_type="_airport._tcp.local.",
             ipv4=["192.168.1.217"],
-            services={"_airport._tcp.local."},
             properties={"syAP": "119", "syVs": "7.9.1"},
         )
         samba = Discovered(
             name="Time Capsule Samba 4",
             hostname="timecapsulesamba4.local",
+            service_type="_smb._tcp.local.",
             ipv4=["192.168.1.217"],
-            services={"_smb._tcp.local.", "_device-info._tcp.local."},
             properties={"model": "TimeCapsule8,119"},
         )
-        enrich_airport_properties_by_ipv4([airport, samba])
-        self.assertEqual(samba.properties["syAP"], "119")
-        self.assertEqual(samba.properties["syVs"], "7.9.1")
-        self.assertEqual(samba.properties["model"], "TimeCapsule8,119")
+        self.assertEqual(filter_service_records([airport, samba], SMB_SERVICE), [samba])
+        self.assertEqual(filter_service_records([airport, samba], "_smb._tcp.local"), [samba])
 
-    def test_enrich_airport_properties_by_ipv4_does_not_cross_devices(self) -> None:
-        airport = Discovered(
-            name="Other AirPort Time Capsule",
-            hostname="other.local",
-            ipv4=["192.168.1.72"],
-            services={"_airport._tcp.local."},
-            properties={"syAP": "106"},
-        )
-        samba = Discovered(
-            name="Time Capsule Samba 4",
-            hostname="timecapsulesamba4.local",
-            ipv4=["192.168.1.217"],
-            services={"_smb._tcp.local."},
-            properties={"model": "TimeCapsule8,119"},
-        )
-        enrich_airport_properties_by_ipv4([airport, samba])
-        self.assertNotIn("syAP", samba.properties)
-
-    def test_merge_observations_merges_same_hostname_with_overlapping_ip(self) -> None:
-        observations = [
-            ServiceObservation(
-                name="Home",
-                hostname="capsule.local",
-                service_type="_smb._tcp.local.",
-                ipv4=["10.0.1.1"],
-                properties={"model": "TimeCapsule8,119"},
-            ),
-            ServiceObservation(
-                name="Home",
-                hostname="capsule.local",
-                service_type="_airport._tcp.local.",
-                ipv4=["10.0.1.1"],
-                properties={"syAP": "119"},
-            ),
-        ]
-        records = _merge_observations(observations)
-        self.assertEqual(len(records), 2)
-        self.assertEqual({frozenset(record.services) for record in records}, {frozenset({"_smb._tcp.local."}), frozenset({"_airport._tcp.local."})})
-
-    def test_merge_observations_keeps_same_hostname_with_different_ips_separate(self) -> None:
-        observations = [
-            ServiceObservation(
-                name="Home",
-                hostname="capsule.local",
-                service_type="_smb._tcp.local.",
-                ipv4=["10.0.1.1"],
-            ),
-            ServiceObservation(
-                name="Kitchen",
-                hostname="capsule.local",
-                service_type="_smb._tcp.local.",
-                ipv4=["10.0.1.2"],
-            ),
-        ]
-        records = _merge_observations(observations)
-        self.assertEqual(len(records), 2)
-        self.assertEqual({tuple(record.ipv4) for record in records}, {("10.0.1.1",), ("10.0.1.2",)})
-
-    def test_merge_observations_keeps_different_hostnames_with_same_ipv4_separate(self) -> None:
-        observations = [
-            ServiceObservation(
+    def test_collector_results_preserve_raw_service_records(self) -> None:
+        observations = {
+            ("_airport._tcp.local.", "AirPort Time Capsule", "airport.local"): ServiceObservation(
                 name="AirPort Time Capsule",
                 hostname="airport.local",
                 service_type="_airport._tcp.local.",
                 ipv4=["192.168.1.217"],
                 properties={"syAP": "119"},
             ),
-            ServiceObservation(
+            ("_smb._tcp.local.", "Time Capsule Samba 4", "timecapsulesamba4.local"): ServiceObservation(
                 name="Time Capsule Samba 4",
                 hostname="timecapsulesamba4.local",
                 service_type="_smb._tcp.local.",
                 ipv4=["192.168.1.217"],
+            ),
+            ("_device-info._tcp.local.", "Time Capsule Samba 4", "timecapsulesamba4.local"): ServiceObservation(
+                name="Time Capsule Samba 4",
+                hostname="timecapsulesamba4.local",
+                service_type="_device-info._tcp.local.",
+                ipv4=["192.168.1.217"],
                 properties={"model": "TimeCapsule8,119"},
             ),
+        }
+        fake_collector = mock.Mock()
+        fake_collector.results.return_value = [
+            Discovered(
+                name=observation.name,
+                hostname=observation.hostname,
+                service_type=observation.service_type,
+                ipv4=list(observation.ipv4),
+                properties=dict(observation.properties),
+            )
+            for observation in observations.values()
         ]
-        records = _merge_observations(observations)
-        self.assertEqual(len(records), 2)
+        fake_zc = mock.Mock()
+        fake_ip_version = mock.Mock()
+        fake_ip_version.V4Only = object()
+        fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
+
+        with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
+            with mock.patch("timecapsulesmb.discovery.bonjour.Collector", return_value=fake_collector):
+                with mock.patch("timecapsulesmb.discovery.bonjour.time.sleep"):
+                    records = discover(timeout=0.1)
+
         self.assertEqual(
-            {(record.name, record.hostname, frozenset(record.services)) for record in records},
+            {(record.service_type, record.name, record.hostname, tuple(record.ipv4)) for record in records},
             {
-                ("AirPort Time Capsule", "airport.local", frozenset({"_airport._tcp.local."})),
-                ("Time Capsule Samba 4", "timecapsulesamba4.local", frozenset({"_smb._tcp.local."})),
+                ("_airport._tcp.local.", "AirPort Time Capsule", "airport.local", ("192.168.1.217",)),
+                ("_smb._tcp.local.", "Time Capsule Samba 4", "timecapsulesamba4.local", ("192.168.1.217",)),
+                ("_device-info._tcp.local.", "Time Capsule Samba 4", "timecapsulesamba4.local", ("192.168.1.217",)),
             },
         )
+
+    def test_discover_service_filters_discover_results(self) -> None:
+        smb = Discovered(name="Time Capsule Samba 4", hostname="timecapsulesamba4.local", service_type="_smb._tcp.local.")
+        device_info = Discovered(name="Time Capsule Samba 4", hostname="timecapsulesamba4.local", service_type="_device-info._tcp.local.")
+        with mock.patch("timecapsulesmb.discovery.bonjour.discover", return_value=[device_info, smb]):
+            self.assertEqual(discover_service(SMB_SERVICE, timeout=1.0), [smb])
+
+    def test_filter_service_records_accepts_service_prefix_for_airport(self) -> None:
+        airport = Discovered(name="AirPort Time Capsule", hostname="airport.local", service_type="_airport._tcp.local")
+        self.assertEqual(filter_service_records([airport], AIRPORT_SERVICE), [airport])
 
 
 if __name__ == "__main__":

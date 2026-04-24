@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.discovery.bonjour import discover
+from timecapsulesmb.discovery.bonjour import SMB_SERVICE, discover, filter_service_records
 
 
 def parse_browse_instance(output: str) -> Optional[str]:
@@ -82,7 +82,7 @@ def _select_record(
 def run_bonjour_checks(
     expected_instance_name: str,
     *,
-    service_type: str = "_smb._tcp.local.",
+    service_type: str = SMB_SERVICE,
     timeout: float = 5.0,
     preferred_host: str | None = None,
     preferred_ip: str | None = None,
@@ -95,7 +95,7 @@ def run_bonjour_checks(
         return [CheckResult("FAIL", f"Bonjour check failed: {e}")], None, None
 
     results: list[CheckResult] = []
-    matching = [record for record in records if service_type in record.services]
+    matching = filter_service_records(records, service_type)
     preferred_hosts = {_normalize_host_name(preferred_host)} if preferred_host else set()
     preferred_ips = {preferred_ip.strip()} if preferred_ip else set()
     selected = None

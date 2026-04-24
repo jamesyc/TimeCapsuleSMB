@@ -30,10 +30,12 @@ from timecapsulesmb.device.probe import (
 )
 from timecapsulesmb.discovery.bonjour import (
     Discovered,
+    AIRPORT_SERVICE,
     discover_time_capsule_candidates,
     discovered_record_airport_syap,
     discovered_record_root_host,
     preferred_host,
+    record_has_service,
 )
 from timecapsulesmb.telemetry import TelemetryClient
 
@@ -410,10 +412,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("Please enter the SSH target and password again.\n")
             prompt_host_and_password(existing, values, discovered_host)
 
-        discovered_services = getattr(discovered_record, "services", set()) if discovered_record is not None else set()
-        if not isinstance(discovered_services, (set, frozenset, list, tuple)):
-            discovered_services = set()
-        discovered_airport_identity = "_airport._tcp.local." in discovered_services
+        discovered_airport_identity = (
+            record_has_service(discovered_record, AIRPORT_SERVICE)
+            if discovered_record is not None
+            else False
+        )
         valid_discovered_syap = validated_value_or_empty(
             "TC_AIRPORT_SYAP",
             discovered_airport_syap or "",

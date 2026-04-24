@@ -18,6 +18,9 @@ SERVICE_TYPES = [
     "_device-info._tcp.local.",
 ]
 
+AIRPORT_SERVICE = "_airport"
+SMB_SERVICE = "_smb"
+
 TIME_CAPSULE_HINTS = (
     "time capsule",
     "timecapsule",
@@ -31,10 +34,17 @@ TIME_CAPSULE_HINTS = (
 class Discovered:
     name: str
     hostname: str
+    service_type: str = ""
     ipv4: list[str] = field(default_factory=list)
     ipv6: list[str] = field(default_factory=list)
     services: set[str] = field(default_factory=set)
     properties: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.service_type and not self.services:
+            self.services.add(self.service_type)
+        elif not self.service_type and len(self.services) == 1:
+            self.service_type = next(iter(self.services))
 
     def prefer_host(self) -> str:
         return self.hostname or (self.ipv4[0] if self.ipv4 else (self.ipv6[0] if self.ipv6 else ""))
@@ -139,52 +149,6 @@ def _observation_merge_key(observation: ServiceObservation) -> tuple[str, str, s
     )
 
 
-def _observation_matches_record(record: Discovered, observation: ServiceObservation) -> bool:
-    if record.services and observation.service_type not in record.services:
-        return False
-    observation_host = _normalize_hostname(observation.hostname)
-    record_host = _normalize_hostname(record.hostname)
-    observation_ipv4 = set(observation.ipv4)
-    record_ipv4 = set(record.ipv4)
-    observation_ipv6 = set(observation.ipv6)
-    record_ipv6 = set(record.ipv6)
-
-    if observation_host and record_host and observation_host == record_host:
-        if observation_ipv4 and record_ipv4 and observation_ipv4.isdisjoint(record_ipv4):
-            return False
-        if observation_ipv6 and record_ipv6 and observation_ipv6.isdisjoint(record_ipv6):
-            return False
-        return True
-
-    if observation_ipv4 and record_ipv4 and not observation_ipv4.isdisjoint(record_ipv4):
-        return True
-    if observation_ipv6 and record_ipv6 and not observation_ipv6.isdisjoint(record_ipv6):
-        return True
-    return False
-
-
-def _merge_observations(observations: list[ServiceObservation]) -> list[Discovered]:
-    records: list[Discovered] = []
-    for observation in observations:
-        match = next((record for record in records if _observation_matches_record(record, observation)), None)
-        if match is None:
-            match = Discovered(name=observation.name, hostname=observation.hostname.rstrip("."))
-            records.append(match)
-        match.services.add(observation.service_type)
-        if not match.name and observation.name:
-            match.name = observation.name
-        if not match.hostname and observation.hostname:
-            match.hostname = observation.hostname.rstrip(".")
-        for ip in observation.ipv4:
-            if ip not in match.ipv4:
-                match.ipv4.append(ip)
-        for ip in observation.ipv6:
-            if ip not in match.ipv6:
-                match.ipv6.append(ip)
-        match.properties.update({k: v for k, v in observation.properties.items() if v})
-    return records
-
-
 class Collector:
     def __init__(self, zc: Any, services: list[str]):
         self.zc = zc
@@ -258,7 +222,17 @@ class Collector:
 
     def results(self) -> list[Discovered]:
         with self.lock:
-            return _merge_observations(list(self.observations.values()))
+            return [
+                Discovered(
+                    name=observation.name,
+                    hostname=observation.hostname.rstrip("."),
+                    service_type=observation.service_type,
+                    ipv4=list(observation.ipv4),
+                    ipv6=list(observation.ipv6),
+                    properties=dict(observation.properties),
+                )
+                for observation in self.observations.values()
+            ]
 
 
 def discover(timeout: float = 5.0) -> list[Discovered]:
@@ -280,50 +254,51 @@ def discover(timeout: float = 5.0) -> list[Discovered]:
         collector = Collector(zc, SERVICE_TYPES)
         collector.start()
         time.sleep(timeout)
-        all_results = collector.results()
+        records = collector.results()
     finally:
         try:
             zc.close()
         except Exception:
             pass
 
-    all_results = enrich_airport_properties_by_ipv4(all_results)
-    filtered = [record for record in all_results if looks_like_time_capsule(record.name, record.hostname, record.properties)]
-    if not filtered:
-        filtered = [record for record in all_results if "_airport._tcp.local." in record.services]
-    filtered.sort(key=lambda record: (record.hostname or "", record.name or ""))
-    return filtered
+    records.sort(key=lambda record: (record.service_type or "", record.hostname or "", record.name or ""))
+    return records
 
 
 def discover_time_capsule_candidates(timeout: float = 5.0) -> list[Discovered]:
-    return discover(timeout=timeout)
+    records = filter_service_records(discover(timeout=timeout), AIRPORT_SERVICE)
+    return [record for record in records if looks_like_time_capsule(record.name, record.hostname, record.properties)]
 
 
-def enrich_airport_properties_by_ipv4(records: list[Discovered]) -> list[Discovered]:
-    airport_records = [record for record in records if "_airport._tcp.local." in record.services and record.properties]
-    for record in records:
-        if "_airport._tcp.local." in record.services:
-            continue
-        record_ips = set(record.ipv4)
-        if not record_ips:
-            continue
-        for airport_record in airport_records:
-            if not record_ips.intersection(airport_record.ipv4):
-                continue
-            for key, value in airport_record.properties.items():
-                record.properties.setdefault(key, value)
-    return records
+def record_has_service(record: Discovered, service: str) -> bool:
+    raw_service = getattr(record, "service_type", "")
+    if isinstance(raw_service, str) and raw_service.startswith(service):
+        return True
+    services = getattr(record, "services", set())
+    return isinstance(services, (set, frozenset, list, tuple)) and any(
+        isinstance(value, str) and value.startswith(service)
+        for value in services
+    )
+
+
+def filter_service_records(records: list[Discovered], service: str) -> list[Discovered]:
+    return [record for record in records if record_has_service(record, service)]
+
+
+def discover_service(service: str, timeout: float = 5.0) -> list[Discovered]:
+    return filter_service_records(discover(timeout=timeout), service)
 
 
 def print_table(records: list[Discovered]) -> None:
     if not records:
-        print("No Time Capsules discovered.")
+        print("No Bonjour services discovered.")
         return
-    headers = ["#", "Name", "Hostname (preferred)", "IPv4", "IPv6"]
+    headers = ["#", "Service", "Name", "Hostname (preferred)", "IPv4", "IPv6"]
     rows = []
     for i, record in enumerate(records, start=1):
         rows.append([
             str(i),
+            record.service_type or "-",
             record.name,
             record.hostname,
             ",".join(record.ipv4) if record.ipv4 else "-",
