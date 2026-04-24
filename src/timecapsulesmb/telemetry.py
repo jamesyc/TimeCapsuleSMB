@@ -18,7 +18,7 @@ from timecapsulesmb.device.compat import device_family_from_payload_family
 from timecapsulesmb.identity import BOOTSTRAP_PATH, load_install_identity
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_TELEMETRY_URL = "https://timecapsulesmb.jamesyc.com/v1/events"
 TELEMETRY_URL_ENV = "TCAPSULE_TELEMETRY_URL"
 TELEMETRY_TOKEN_ENV = "TCAPSULE_TELEMETRY_TOKEN"

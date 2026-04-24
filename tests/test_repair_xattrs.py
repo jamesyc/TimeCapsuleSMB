@@ -17,7 +17,38 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.cli import repair_xattrs
 
 
+class RecordingCommandContext:
+    instances: list["RecordingCommandContext"] = []
+
+    def __init__(self, *_args, **_kwargs) -> None:
+        self.result = "failure"
+        self.error: str | None = None
+        self.finished = False
+        RecordingCommandContext.instances.append(self)
+
+    def __enter__(self) -> "RecordingCommandContext":
+        return self
+
+    def __exit__(self, exc_type, exc, _tb) -> bool:
+        if exc_type is SystemExit:
+            self.result = "failure"
+            self.error = str(exc)
+        self.finished = True
+        return False
+
+    def succeed(self) -> None:
+        self.result = "success"
+        self.error = None
+
+    def fail_with_error(self, message: str) -> None:
+        self.result = "failure"
+        self.error = message
+
+
 class RepairXattrsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        RecordingCommandContext.instances = []
+
     def test_finds_arch_file_when_xattr_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -45,6 +76,35 @@ class RepairXattrsTests(unittest.TestCase):
         self.assertEqual([candidate.path.name for candidate in candidates], ["broken.txt"])
         self.assertEqual(summary.scanned, 1)
         self.assertEqual(summary.repairable, 1)
+
+    def test_find_candidates_can_scan_repairable_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "broken-dir"
+            target.mkdir()
+
+            def fake_run(args: list[str]):
+                if args[0] == "xattr":
+                    return mock.Mock(returncode=1, stdout="", stderr="Invalid argument")
+                if args[0] == "stat":
+                    return mock.Mock(returncode=0, stdout="arch\n", stderr="")
+                raise AssertionError(args)
+
+            summary = repair_xattrs.RepairSummary()
+            with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", side_effect=fake_run):
+                candidates = repair_xattrs.find_candidates(
+                    root,
+                    recursive=True,
+                    max_depth=None,
+                    include_hidden=False,
+                    include_time_machine=False,
+                    include_directories=True,
+                    summary=summary,
+                )
+
+        self.assertEqual([candidate.path.name for candidate in candidates], ["broken-dir"])
+        self.assertEqual(candidates[0].path_type, "directory")
+        self.assertEqual(summary.scanned_dirs, 1)
 
     def test_does_not_repair_when_xattr_is_readable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -90,6 +150,31 @@ class RepairXattrsTests(unittest.TestCase):
 
         self.assertEqual(candidates, [])
         self.assertEqual(summary.scanned, 1)
+
+    def test_unreadable_without_arch_is_reported_not_repairable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "bad-but-not-arch.txt").write_text("data")
+
+            def fake_run(args: list[str]):
+                if args[0] == "xattr":
+                    return mock.Mock(returncode=1, stdout="", stderr="Invalid argument")
+                if args[0] == "stat":
+                    return mock.Mock(returncode=0, stdout="-\n", stderr="")
+                raise AssertionError(args)
+
+            output = io.StringIO()
+            with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
+                with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", side_effect=fake_run):
+                    with mock.patch("timecapsulesmb.cli.repair_xattrs.TelemetryClient.from_values", return_value=mock.Mock()):
+                        with mock.patch("timecapsulesmb.cli.repair_xattrs.CommandContext", RecordingCommandContext):
+                            with redirect_stdout(output):
+                                rc = repair_xattrs.main(["--path", str(root), "--dry-run", "--verbose"])
+
+        self.assertEqual(rc, 0)
+        self.assertIn("WARN unreadable_no_arch_flag", output.getvalue())
+        self.assertEqual(RecordingCommandContext.instances[-1].result, "failure")
+        self.assertIn("unreadable_no_arch_flag", RecordingCommandContext.instances[-1].error or "")
 
     def test_repairs_when_arch_is_one_of_multiple_flags(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -168,6 +253,31 @@ class RepairXattrsTests(unittest.TestCase):
         self.assertIn("Would repair:", output.getvalue())
         self.assertIn("No changes made.", output.getvalue())
 
+    def test_dry_run_with_detected_issues_records_failure_telemetry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "broken.txt").write_text("data")
+
+            def fake_run(args: list[str]):
+                if args[0] == "xattr":
+                    return mock.Mock(returncode=1, stdout="", stderr="Invalid argument")
+                if args[0] == "stat":
+                    return mock.Mock(returncode=0, stdout="arch\n", stderr="")
+                if args[0] == "chflags":
+                    raise AssertionError("dry-run should not call chflags")
+                raise AssertionError(args)
+
+            with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
+                with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", side_effect=fake_run):
+                    with mock.patch("timecapsulesmb.cli.repair_xattrs.TelemetryClient.from_values", return_value=mock.Mock()):
+                        with mock.patch("timecapsulesmb.cli.repair_xattrs.CommandContext", RecordingCommandContext):
+                            with redirect_stdout(io.StringIO()):
+                                rc = repair_xattrs.main(["--path", str(root), "--dry-run"])
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(RecordingCommandContext.instances[-1].result, "failure")
+        self.assertIn("repair-xattrs detected issues", RecordingCommandContext.instances[-1].error or "")
+
     def test_apply_repairs_after_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -222,6 +332,86 @@ class RepairXattrsTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         input_mock.assert_not_called()
+
+    def test_successful_repairs_record_success_telemetry_without_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "broken.txt").write_text("data")
+            repaired = False
+
+            def fake_run(args: list[str]):
+                nonlocal repaired
+                if args[0] == "xattr":
+                    return mock.Mock(returncode=0 if repaired else 1, stdout="", stderr="Invalid argument")
+                if args[0] == "stat":
+                    return mock.Mock(returncode=0, stdout="arch\n", stderr="")
+                if args[0] == "chflags":
+                    repaired = True
+                    return mock.Mock(returncode=0, stdout="", stderr="")
+                raise AssertionError(args)
+
+            with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
+                with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", side_effect=fake_run):
+                    with mock.patch("timecapsulesmb.cli.repair_xattrs.TelemetryClient.from_values", return_value=mock.Mock()):
+                        with mock.patch("timecapsulesmb.cli.repair_xattrs.CommandContext", RecordingCommandContext):
+                            with redirect_stdout(io.StringIO()):
+                                rc = repair_xattrs.main(["--path", str(root), "--yes"])
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(RecordingCommandContext.instances[-1].result, "success")
+        self.assertIsNone(RecordingCommandContext.instances[-1].error)
+
+    def test_fix_permissions_repairs_files_and_directories_without_chflags(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            file_path = root / "file.txt"
+            file_path.write_text("data")
+            dir_path = root / "dir"
+            dir_path.mkdir()
+            chmod_calls: list[list[str]] = []
+
+            def fake_run(args: list[str]):
+                if args[0] == "xattr":
+                    return mock.Mock(returncode=0, stdout="", stderr="")
+                if args[0] == "chmod":
+                    chmod_calls.append(args)
+                    return mock.Mock(returncode=0, stdout="", stderr="")
+                if args[0] == "chflags":
+                    raise AssertionError("permission repair should not call chflags")
+                raise AssertionError(args)
+
+            with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
+                with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", side_effect=fake_run):
+                    with redirect_stdout(io.StringIO()):
+                        rc = repair_xattrs.main(["--path", str(root), "--fix-permissions", "--yes"])
+
+        self.assertEqual(rc, 0)
+        self.assertIn(["chmod", "ugo+rw", str(file_path.resolve())], chmod_calls)
+        self.assertIn(["chmod", "ugo+rwx", str(dir_path.resolve())], chmod_calls)
+
+    def test_fix_permissions_excludes_samba4_even_when_hidden_included(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hidden_payload = root / ".samba4"
+            hidden_payload.mkdir()
+            (hidden_payload / "private-file").write_text("secret")
+            visible = root / "visible.txt"
+            visible.write_text("data")
+
+            with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", return_value=mock.Mock(returncode=0, stdout="", stderr="")):
+                summary = repair_xattrs.RepairSummary()
+                findings = repair_xattrs.find_findings(
+                    root,
+                    recursive=True,
+                    max_depth=None,
+                    include_hidden=True,
+                    include_time_machine=True,
+                    include_directories=True,
+                    fix_permissions=True,
+                    summary=summary,
+                )
+
+        self.assertTrue(all(".samba4" not in finding.path.parts for finding in findings))
 
     def test_prompt_decline_does_not_repair(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

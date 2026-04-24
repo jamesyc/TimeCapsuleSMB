@@ -21,7 +21,7 @@ from timecapsulesmb.telemetry import MAX_SEND_ATTEMPTS, TelemetryClient
 
 
 class TelemetryTests(unittest.TestCase):
-    def test_emit_builds_schema_v2_payload(self) -> None:
+    def test_emit_builds_schema_v3_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bootstrap_path = Path(tmp) / ".bootstrap"
             bootstrap_path.write_text("INSTALL_ID=test-install\n")
@@ -38,7 +38,7 @@ class TelemetryTests(unittest.TestCase):
                 with mock.patch.object(client, "_dispatch_payload_async") as dispatch_mock:
                     client.emit("deploy_started")
         payload = dispatch_mock.call_args.args[0]
-        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(payload["schema_version"], 3)
         self.assertEqual(payload["event"], "deploy_started")
         self.assertEqual(payload["install_id"], "test-install")
         self.assertEqual(payload["configure_id"], "config-id")
@@ -133,6 +133,36 @@ class TelemetryTests(unittest.TestCase):
         self.assertIn("Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied", finished_payload["error"])
         self.assertIn("Debug context:", finished_payload["error"])
         self.assertIn("ssh_opts=-L 108:127.0.0.1:108", finished_payload["error"])
+
+    def test_command_context_failure_without_error_gets_fallback_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                with mock.patch.object(client, "_dispatch_payload_async"):
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        command = CommandContext(client, "deploy", "deploy_started", "deploy_finished")
+                        command.fail()
+                        command.finish(result=command.result)
+        finished_payload = send_mock.call_args.args[0]
+        self.assertEqual(finished_payload["result"], "failure")
+        self.assertEqual(finished_payload["error"], "deploy failed without additional details.")
+
+    def test_command_context_captures_unexpected_exception_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                with mock.patch.object(client, "_dispatch_payload_async"):
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        with self.assertRaises(RuntimeError):
+                            with CommandContext(client, "deploy", "deploy_started", "deploy_finished"):
+                                raise RuntimeError("upload failed")
+        finished_payload = send_mock.call_args.args[0]
+        self.assertEqual(finished_payload["result"], "failure")
+        self.assertEqual(finished_payload["error"], "RuntimeError: upload failed")
 
     def test_command_context_debug_context_includes_cached_probe_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

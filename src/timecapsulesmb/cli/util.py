@@ -6,8 +6,8 @@ NETBSD4_REBOOT_GUIDANCE = (
 )
 
 NETBSD4_REBOOT_FOLLOWUP = "Run `activate` after a reboot if the device did not auto-start Samba."
-CLI_VERSION = "2.0.0-beta11"
-RELEASE_TAG = "v2.0.0-beta11"
+CLI_VERSION = "2.0.0-beta12"
+RELEASE_TAG = "v2.0.0-beta12"
 SAMBA_VERSION = "4.8.12"
 
 ANSI_RED = "\033[31m"

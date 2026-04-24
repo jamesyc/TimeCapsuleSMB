@@ -61,6 +61,12 @@ class CommandContext:
                     self.set_error(message)
                 if "SSH error:" in message:
                     self.add_debug_context()
+        elif exc_type is not None:
+            self.result = "failure"
+            if not self.error_lines:
+                exc_name = getattr(exc_type, "__name__", str(exc_type))
+                message = str(exc) if exc is not None else ""
+                self.set_error(f"{exc_name}: {message}" if message else exc_name)
         self.finish(result=self.result, **self.finish_fields)
         return False
 
@@ -232,6 +238,8 @@ class CommandContext:
         self.finished = True
         duration_sec = round(time.monotonic() - self.start_time, 3)
         error = None if result == "success" else self.build_error()
+        if result != "success" and error is None:
+            error = f"{self.command_name} failed without additional details."
         self.telemetry.emit(
             self.finished_event,
             synchronous=True,
