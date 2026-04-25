@@ -104,54 +104,6 @@ def try_authenticated_smb_listing(
     return CheckResult("FAIL", f"authenticated SMB listing failed: {failure_msg}")
 
 
-def exercise_mounted_share_file_ops(root: Path, *, prefix: str = "doctor-fileops") -> None:
-    test_dir = root / f"{prefix}-{uuid.uuid4().hex[:8]}"
-    test_file = test_dir / "sample.txt"
-    renamed_file = test_dir / "sample-renamed.txt"
-
-    test_dir.mkdir()
-    test_file.write_text("line1\n")
-    with test_file.open("a", encoding="utf-8") as handle:
-        handle.write("line2\n")
-
-    content = test_file.read_text()
-    if content != "line1\nline2\n":
-        raise RuntimeError(f"unexpected file contents after append: {content!r}")
-
-    test_file.rename(renamed_file)
-    if not renamed_file.exists():
-        raise RuntimeError("renamed file is missing")
-
-    copied = test_dir / "sample-copy.txt"
-    copied.write_text(renamed_file.read_text())
-    copied.unlink()
-    renamed_file.unlink()
-    test_dir.rmdir()
-
-
-def check_authenticated_smb_file_ops(
-    username: str,
-    password: str,
-    server: str,
-    share_name: str,
-    *,
-    port: Optional[int] = None,
-    timeout: int = 20,
-) -> CheckResult:
-    results = check_authenticated_smb_file_ops_detailed(
-        username,
-        password,
-        server,
-        share_name,
-        port=port,
-        timeout=timeout,
-    )
-    first_fail = next((result for result in results if result.status == "FAIL"), None)
-    if first_fail is not None:
-        return first_fail
-    return results[-1]
-
-
 def check_authenticated_smb_file_ops_detailed(
     username: str,
     password: str,

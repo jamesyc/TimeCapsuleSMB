@@ -27,7 +27,7 @@ from timecapsulesmb.deploy.verify import (
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, payload_family_description, render_compatibility_message
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root_conn, wait_for_ssh_state_conn
 from timecapsulesmb.telemetry import TelemetryClient
-from timecapsulesmb.transport.ssh import run_ssh_conn
+from timecapsulesmb.transport.ssh import run_ssh
 from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_green, color_red
 
 
@@ -197,7 +197,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.add_debug_context()
                 return 0
 
-        run_ssh_conn(connection, "/sbin/reboot", check=False)
+        run_ssh(connection, "/sbin/reboot", check=False)
         command_context.update_fields(reboot_was_attempted=True)
         print("Reboot requested. Waiting for the device to go down...")
         wait_for_ssh_state_conn(connection, expected_up=False, timeout_seconds=60)

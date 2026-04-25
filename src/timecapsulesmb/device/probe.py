@@ -266,7 +266,7 @@ class AirportIdentityProbeResult:
     detail: str
 
 
-def run_ssh_conn(connection: SshConnection, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
+def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
     return run_ssh(connection.host, connection.password, connection.ssh_opts, remote_cmd, check=check, timeout=timeout)
 
 
@@ -319,7 +319,7 @@ def probe_ssh_command_conn(
     expected_stdout_suffix: str | None = None,
 ) -> SshCommandProbeResult:
     try:
-        proc = run_ssh_conn(connection, command, check=False, timeout=timeout)
+        proc = run_ssh(connection, command, check=False, timeout=timeout)
     except SystemExit as exc:
         return SshCommandProbeResult(ok=False, detail=str(exc))
     if proc.returncode == 0:
@@ -332,7 +332,7 @@ def probe_ssh_command_conn(
 
 def _probe_remote_os_info_conn(connection: SshConnection) -> tuple[str, str, str]:
     script = "printf '%s\\n%s\\n%s\\n' \"$(uname -s)\" \"$(uname -r)\" \"$(uname -m)\""
-    proc = run_ssh_conn(connection, f"/bin/sh -c {shlex.quote(script)}")
+    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}")
     lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
     if len(lines) < 3:
         raise SystemExit("Failed to determine remote device OS compatibility.")
@@ -358,7 +358,7 @@ case "$b5" in
   *) echo unknown ;;
 esac
 """
-    proc = run_ssh_conn(connection, f"/bin/sh -c {shlex.quote(script)}", check=False)
+    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False)
     endianness = (proc.stdout or "").strip().splitlines()
     value = endianness[-1].strip() if endianness else ""
     if value in {"little", "big", "unknown"}:
@@ -384,7 +384,7 @@ else
   /usr/bin/sed -n 's/.*\(TimeCapsule[0-9],[0-9][0-9][0-9]\).*/\1/p' /mnt/Flash/ACPData.bin 2>/dev/null
 fi | /usr/bin/sed -n 's/.*\(TimeCapsule[0-9],[0-9][0-9][0-9]\).*/\1/p' | /usr/bin/sed -n '1p'
 """
-    proc = run_ssh_conn(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=30)
+    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=30)
     if proc.returncode != 0:
         return AirportIdentityProbeResult(model=None, syap=None, detail=f"could not read ACPData: rc={proc.returncode}")
     if not proc.stdout:
@@ -411,7 +411,7 @@ done
 
 exit 1
     '''
-    proc = run_ssh_conn(connection, f"/bin/sh -c {shlex.quote(script)}", check=False)
+    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False)
     lines = proc.stdout.strip().splitlines()
     result = lines[-1].strip() if lines else ""
     if proc.returncode != 0 or not result:
@@ -422,7 +422,7 @@ exit 1
 
 def probe_remote_interface_conn(connection: SshConnection, iface: str) -> RemoteInterfaceProbeResult:
     script = f"/sbin/ifconfig {shlex.quote(iface)} >/dev/null 2>&1"
-    proc = run_ssh_conn(connection, f"/bin/sh -c {shlex.quote(script)}", check=False)
+    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False)
     return_code = getattr(proc, "returncode", 0)
     if not isinstance(return_code, int):
         return RemoteInterfaceProbeResult(iface=iface, exists=True, detail=f"ifconfig {iface} returned non-integer status")
@@ -538,7 +538,7 @@ def preferred_interface_name(
 
 
 def probe_remote_interface_candidates_conn(connection: SshConnection) -> RemoteInterfaceCandidatesProbeResult:
-    proc = run_ssh_conn(connection, "/sbin/ifconfig -a", check=False, timeout=30)
+    proc = run_ssh(connection, "/sbin/ifconfig -a", check=False, timeout=30)
     if proc.returncode != 0:
         return RemoteInterfaceCandidatesProbeResult(
             candidates=(),
@@ -566,7 +566,7 @@ def read_interface_ipv4_conn(connection: SshConnection, iface: str) -> str:
         "sed -n 's/^[[:space:]]*inet[[:space:]]\\([0-9.]*\\).*/\\1/p' | "
         "sed -n '1p'"
     )
-    proc = run_ssh_conn(
+    proc = run_ssh(
         connection,
         f"/bin/sh -c {shlex.quote(probe_cmd)}",
         check=False,
@@ -580,7 +580,7 @@ def read_interface_ipv4_conn(connection: SshConnection, iface: str) -> str:
 def read_active_smb_conf_conn(connection: SshConnection) -> str:
     quoted_conf = shlex.quote(RUNTIME_SMB_CONF)
     script = f"if [ -f {quoted_conf} ]; then cat {quoted_conf}; fi"
-    proc = run_ssh_conn(
+    proc = run_ssh(
         connection,
         f"/bin/sh -c {shlex.quote(script)}",
         check=False,
@@ -617,7 +617,7 @@ if ! describe_managed_smbd_status "$ps_out" "$out"; then
 fi
 exit "$status"
 '''
-    proc = run_ssh_conn(
+    proc = run_ssh(
         connection,
         f"/bin/sh -c {shlex.quote(script)}",
         check=False,
@@ -644,7 +644,7 @@ if ! describe_managed_mdns_status "$ps_out" "$out"; then
 fi
 exit "$status"
 '''
-    proc = run_ssh_conn(
+    proc = run_ssh(
         connection,
         f"/bin/sh -c {shlex.quote(script)}",
         check=False,
@@ -735,7 +735,7 @@ def nbns_marker_enabled_conn(connection: SshConnection, payload_dir: str) -> boo
     marker_path = f"{payload_dir}/private/nbns.enabled"
     quoted_marker = shlex.quote(marker_path)
     script = f"if [ -f {quoted_marker} ]; then echo enabled; fi"
-    proc = run_ssh_conn(
+    proc = run_ssh(
         connection,
         f"/bin/sh -c {shlex.quote(script)}",
         check=False,
@@ -754,7 +754,7 @@ def probe_paths_absent_conn(
         quoted = shlex.quote(target)
         script_lines.append(f"if [ -e {quoted} ]; then echo PRESENT:{target}; missing=1; else echo ABSENT:{target}; fi")
     script_lines.append("exit \"$missing\"")
-    return run_ssh_conn(connection, f"/bin/sh -c {shlex.quote('; '.join(script_lines))}", check=False)
+    return run_ssh(connection, f"/bin/sh -c {shlex.quote('; '.join(script_lines))}", check=False)
 
 
 def discover_volume_root_conn(connection: SshConnection) -> str:
@@ -801,7 +801,7 @@ done
 
 exit 1
     '''
-    proc = run_ssh_conn(connection, f"/bin/sh -c {shlex.quote(script)}")
+    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}")
     lines = proc.stdout.strip().splitlines()
     volume = lines[-1].strip() if lines else ""
     if not volume:
@@ -830,7 +830,7 @@ def wait_for_ssh_state_conn(
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         try:
-            proc = run_ssh_conn(connection, "/bin/echo ok", check=False, timeout=10)
+            proc = run_ssh(connection, "/bin/echo ok", check=False, timeout=10)
             is_up = proc.returncode == 0 and proc.stdout.strip().endswith("ok")
         except SystemExit:
             is_up = False

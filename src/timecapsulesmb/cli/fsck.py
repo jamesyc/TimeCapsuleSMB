@@ -7,7 +7,7 @@ from typing import Optional
 from timecapsulesmb.cli.runtime import load_env_values, resolve_env_connection
 from timecapsulesmb.core.config import require_valid_config
 from timecapsulesmb.device.probe import discover_mounted_volume_conn, wait_for_ssh_state_conn
-from timecapsulesmb.transport.ssh import run_ssh_conn
+from timecapsulesmb.transport.ssh import run_ssh
 
 
 def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> str:
@@ -56,7 +56,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 0
 
     script = build_remote_fsck_script(mounted.device, mounted.mountpoint, reboot=not args.no_reboot)
-    proc = run_ssh_conn(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=240)
+    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=240)
     if proc.stdout:
         print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
 

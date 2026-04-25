@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Tuple
 
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import extract_host
@@ -33,23 +33,6 @@ def build_bonjour_target_hints(values: dict[str, str]) -> BonjourTargetHints:
         preferred_host=values.get("TC_MDNS_HOST_LABEL") or None,
         preferred_ip=_ip_literal(extract_host(values.get("TC_HOST", ""))),
     )
-
-
-def parse_browse_instance(output: str) -> Optional[str]:
-    for line in output.splitlines():
-        if " Add " in line and "_smb._tcp." in line:
-            marker = "_smb._tcp."
-            idx = line.find(marker)
-            if idx != -1:
-                return line[idx + len(marker):].strip()
-    return None
-
-
-def parse_lookup_target(output: str) -> Optional[str]:
-    for line in output.splitlines():
-        if " can be reached at " in line:
-            return line.split(" can be reached at ", 1)[1].strip()
-    return None
 
 
 def _normalize_host_name(value: str) -> str:

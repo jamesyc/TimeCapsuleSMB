@@ -192,14 +192,14 @@ def _normalize_ssh_tokens(ssh_opts: str) -> list[str]:
     return expanded
 
 
-def run_ssh(host: str, password: str, ssh_opts: str, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
-    cmd = ["ssh", *_normalize_ssh_tokens(ssh_opts), host, remote_cmd]
+def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
+    cmd = ["ssh", *_normalize_ssh_tokens(connection.ssh_opts), connection.host, remote_cmd]
     rc = 1
     stdout = ""
     for attempt in range(3):
         rc, stdout = _spawn_with_password(
             cmd,
-            password,
+            connection.password,
             timeout=timeout,
             timeout_message="Timed out waiting for ssh command to finish.",
         )
@@ -215,15 +215,9 @@ def run_ssh(host: str, password: str, ssh_opts: str, remote_cmd: str, *, check: 
     return subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr="")
 
 
-def run_ssh_conn(connection: SshConnection, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
-    return run_ssh(connection.host, connection.password, connection.ssh_opts, remote_cmd, check=check, timeout=timeout)
-
-
 @contextmanager
 def ssh_local_forward(
-    host: str,
-    password: str,
-    ssh_opts: str,
+    connection: SshConnection,
     *,
     local_port: int,
     remote_host: str,
@@ -242,8 +236,8 @@ def ssh_local_forward(
         "ExitOnForwardFailure=yes",
         "-L",
         f"{local_port}:{remote_host}:{remote_port}",
-        *_normalize_ssh_tokens(ssh_opts),
-        host,
+        *_normalize_ssh_tokens(connection.ssh_opts),
+        connection.host,
     ]
     child = pexpect.spawn(cmd[0], cmd[1:], encoding="utf-8", codec_errors="replace", timeout=ready_timeout)
     output: list[str] = []
@@ -255,7 +249,7 @@ def ssh_local_forward(
             if idx == 0:
                 child.sendline("yes")
             elif idx == 1:
-                child.sendline(password)
+                child.sendline(connection.password)
                 password_sent = True
             elif idx == 2:
                 output.append(child.before or "")
@@ -283,28 +277,8 @@ def ssh_local_forward(
         except Exception:
             pass
 
-
-def ssh_local_forward_conn(
-    connection: SshConnection,
-    *,
-    local_port: int,
-    remote_host: str,
-    remote_port: int,
-    ready_timeout: int = 20,
-):
-    return ssh_local_forward(
-        connection.host,
-        connection.password,
-        connection.ssh_opts,
-        local_port=local_port,
-        remote_host=remote_host,
-        remote_port=remote_port,
-        ready_timeout=ready_timeout,
-    )
-
-
 def probe_remote_scp_available(connection: SshConnection) -> bool:
-    probe = run_ssh_conn(
+    probe = run_ssh(
         connection,
         "/bin/sh -c 'command -v scp >/dev/null 2>&1'",
         check=False,
@@ -319,7 +293,7 @@ def ensure_remote_scp_capability(connection: SshConnection) -> bool:
     return connection.remote_has_scp
 
 
-def _verify_remote_size_conn(connection: SshConnection, src: Path, dest: str, *, timeout: int) -> None:
+def _verify_remote_size(connection: SshConnection, src: Path, dest: str, *, timeout: int) -> None:
     expected_size = src.stat().st_size
     quoted_dest = shlex.quote(dest)
     remote_script = (
@@ -332,7 +306,7 @@ def _verify_remote_size_conn(connection: SshConnection, src: Path, dest: str, *,
     proc = None
     actual_size = None
     for attempt in range(3):
-        proc = run_ssh_conn(connection, remote_cmd, check=False, timeout=timeout)
+        proc = run_ssh(connection, remote_cmd, check=False, timeout=timeout)
         matches = re.findall(r"^\s*([0-9]+)\s*$", proc.stdout, flags=re.MULTILINE)
         actual_size = int(matches[-1]) if matches else None
         if proc.returncode == 0 and actual_size == expected_size:
@@ -344,18 +318,7 @@ def _verify_remote_size_conn(connection: SshConnection, src: Path, dest: str, *,
         f"got {actual_size if actual_size is not None else 'unknown'} bytes"
     )
 
-
-def _verify_remote_size(host: str, password: str, ssh_opts: str, src: Path, dest: str, *, timeout: int) -> None:
-    _verify_remote_size_conn(SshConnection(host=host, password=password, ssh_opts=ssh_opts), src, dest, timeout=timeout)
-
-
-def run_scp(host: str, password: str, ssh_opts: str, src: Path, dest: str, *, timeout: int = 120) -> None:
-    connection = SshConnection(host=host, password=password, ssh_opts=ssh_opts)
-    connection.remote_has_scp = probe_remote_scp_available(connection)
-    run_scp_conn(connection, src, dest, timeout=timeout)
-
-
-def run_scp_conn(connection: SshConnection, src: Path, dest: str, *, timeout: int = 120) -> None:
+def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 120) -> None:
     if ensure_remote_scp_capability(connection):
         cmd = ["scp", "-O", *_normalize_ssh_tokens(connection.ssh_opts), str(src), f"{connection.host}:{dest}"]
         rc = 1
@@ -375,7 +338,7 @@ def run_scp_conn(connection: SshConnection, src: Path, dest: str, *, timeout: in
             if transport_error:
                 raise SshTransportError(f"Connecting to the device failed, SSH error: {transport_error}")
             raise SystemExit(stdout.strip() or f"scp failed with rc={rc}")
-        _verify_remote_size_conn(connection, src, dest, timeout=30)
+        _verify_remote_size(connection, src, dest, timeout=30)
         return
 
     if shutil.which("sshpass") is None:
@@ -414,4 +377,4 @@ def run_scp_conn(connection: SshConnection, src: Path, dest: str, *, timeout: in
         if transport_error:
             raise SshTransportError(f"Connecting to the device failed, SSH error: {transport_error}")
         raise SystemExit(stdout or f"ssh cat upload failed with rc={proc.returncode}")
-    _verify_remote_size_conn(connection, src, dest, timeout=30)
+    _verify_remote_size(connection, src, dest, timeout=30)

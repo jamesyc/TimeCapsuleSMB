@@ -15,19 +15,19 @@ from timecapsulesmb.deploy.commands import (
     render_remote_actions,
 )
 from timecapsulesmb.deploy.planner import DeploymentPlan, UninstallPlan
-from timecapsulesmb.transport.ssh import SshConnection, run_scp_conn, run_ssh_conn
+from timecapsulesmb.transport.ssh import SshConnection, run_scp, run_ssh
 
 
 def remote_prepare_dirs(connection: SshConnection, payload_dir: str) -> None:
-    run_ssh_conn(connection, render_remote_action(prepare_dirs_action(payload_dir)))
+    run_ssh(connection, render_remote_action(prepare_dirs_action(payload_dir)))
 
 
 def remote_initialize_data_root(connection: SshConnection, data_root: str, marker_path: str) -> None:
-    run_ssh_conn(connection, render_remote_action(initialize_data_root_action(data_root, marker_path)))
+    run_ssh(connection, render_remote_action(initialize_data_root_action(data_root, marker_path)))
 
 
 def remote_install_permissions(connection: SshConnection, payload_dir: str) -> None:
-    run_ssh_conn(connection, render_remote_action(install_permissions_action(payload_dir)))
+    run_ssh(connection, render_remote_action(install_permissions_action(payload_dir)))
 
 
 def remote_install_auth_files(connection: SshConnection, private_dir: str, samba_user: str, samba_password: str) -> None:
@@ -38,13 +38,13 @@ def remote_install_auth_files(connection: SshConnection, private_dir: str, samba
         username_map_path = tmpdir / "username.map"
         smbpasswd_path.write_text(smbpasswd_text)
         username_map_path.write_text(username_map_text)
-        run_scp_conn(connection, smbpasswd_path, f"{private_dir}/smbpasswd")
-        run_scp_conn(connection, username_map_path, f"{private_dir}/username.map")
+        run_scp(connection, smbpasswd_path, f"{private_dir}/smbpasswd")
+        run_scp(connection, username_map_path, f"{private_dir}/username.map")
 
 
 def remote_ensure_adisk_uuid(connection: SshConnection, private_dir: str) -> str:
     remote_path = f"{private_dir}/adisk.uuid"
-    proc = run_ssh_conn(
+    proc = run_ssh(
         connection,
         f"/bin/sh -c {shlex.quote(f'if [ -f {shlex.quote(remote_path)} ]; then cat {shlex.quote(remote_path)}; fi')}",
         check=False,
@@ -58,7 +58,7 @@ def remote_ensure_adisk_uuid(connection: SshConnection, private_dir: str) -> str
         tmpdir = Path(tmp)
         uuid_path = tmpdir / "adisk.uuid"
         uuid_path.write_text(f"{adisk_uuid}\n")
-        run_scp_conn(connection, uuid_path, remote_path)
+        run_scp(connection, uuid_path, remote_path)
     return adisk_uuid
 
 
@@ -73,28 +73,28 @@ def upload_deployment_payload(
     rendered_watchdog: Path,
     rendered_smbconf: Path,
 ) -> None:
-    run_scp_conn(connection, plan.smbd_path, plan.payload_targets["smbd"])
-    run_scp_conn(connection, plan.mdns_path, plan.payload_targets["mdns-advertiser"])
-    run_scp_conn(connection, plan.mdns_path, plan.flash_targets["mdns-advertiser"])
-    run_scp_conn(connection, plan.nbns_path, plan.payload_targets["nbns-advertiser"])
-    run_scp_conn(connection, rc_local, plan.flash_targets["rc.local"])
-    run_scp_conn(connection, common_sh, plan.flash_targets["common.sh"])
-    run_scp_conn(connection, rendered_start, plan.flash_targets["start-samba.sh"])
-    run_scp_conn(connection, rendered_watchdog, plan.flash_targets["watchdog.sh"])
-    run_scp_conn(connection, rendered_dfree, plan.flash_targets["dfree.sh"])
-    run_scp_conn(connection, rendered_smbconf, plan.payload_targets["smb.conf.template"])
+    run_scp(connection, plan.smbd_path, plan.payload_targets["smbd"])
+    run_scp(connection, plan.mdns_path, plan.payload_targets["mdns-advertiser"])
+    run_scp(connection, plan.mdns_path, plan.flash_targets["mdns-advertiser"])
+    run_scp(connection, plan.nbns_path, plan.payload_targets["nbns-advertiser"])
+    run_scp(connection, rc_local, plan.flash_targets["rc.local"])
+    run_scp(connection, common_sh, plan.flash_targets["common.sh"])
+    run_scp(connection, rendered_start, plan.flash_targets["start-samba.sh"])
+    run_scp(connection, rendered_watchdog, plan.flash_targets["watchdog.sh"])
+    run_scp(connection, rendered_dfree, plan.flash_targets["dfree.sh"])
+    run_scp(connection, rendered_smbconf, plan.payload_targets["smb.conf.template"])
 
 
 def remote_enable_nbns(connection: SshConnection, private_dir: str) -> None:
-    run_ssh_conn(connection, render_remote_action(enable_nbns_action(private_dir)))
+    run_ssh(connection, render_remote_action(enable_nbns_action(private_dir)))
 
 
 def run_remote_actions(connection: SshConnection, actions) -> None:
     for command in render_remote_actions(list(actions)):
-        run_ssh_conn(connection, command)
+        run_ssh(connection, command)
 
 
 def remote_uninstall_payload(connection: SshConnection, plan: UninstallPlan) -> None:
     # Use for loop to avoid rc=255 bug on NetBSD 4 Time Capsules
     for command in render_remote_actions(plan.remote_actions):
-        run_ssh_conn(connection, command)
+        run_ssh(connection, command)

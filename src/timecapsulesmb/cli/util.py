@@ -14,7 +14,6 @@ SAMBA_VERSION = "4.8.12"
 ANSI_RED = "\033[31m"
 ANSI_GREEN = "\033[32m"
 ANSI_CYAN = "\033[36m"
-ANSI_BOLD_CYAN = "\033[1;36m"
 ANSI_RESET = "\033[0m"
 
 
@@ -28,7 +27,3 @@ def color_green(text: str) -> str:
 
 def color_cyan(text: str) -> str:
     return f"{ANSI_CYAN}{text}{ANSI_RESET}"
-
-
-def color_bold_cyan(text: str) -> str:
-    return f"{ANSI_BOLD_CYAN}{text}{ANSI_RESET}"

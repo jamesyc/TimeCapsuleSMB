@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 from timecapsulesmb.cli import runtime
 from timecapsulesmb.telemetry import build_device_os_version
@@ -70,14 +70,8 @@ class CommandContext:
         self.finish(result=self.result, **self.finish_fields)
         return False
 
-    def set_result(self, result: str) -> None:
-        self.result = result
-
     def succeed(self) -> None:
         self.result = "success"
-
-    def cancel(self) -> None:
-        self.result = "cancelled"
 
     def cancel_with_error(self, message: str = "Cancelled by user") -> None:
         self.result = "cancelled"
@@ -97,11 +91,6 @@ class CommandContext:
 
     def set_error(self, message: str) -> None:
         self.error_lines = [line.rstrip() for line in message.splitlines() if line.strip()]
-
-    def add_error_line(self, message: str) -> None:
-        line = message.strip()
-        if line:
-            self.error_lines.append(line)
 
     def add_debug_context(self, *, extra_fields: dict[str, object] | None = None) -> None:
         if self._debug_context_added:
@@ -170,9 +159,6 @@ class CommandContext:
             return None
         return "\n".join(self.error_lines)
 
-    def set_values(self, values: dict[str, str]) -> None:
-        self.values = values
-
     def resolve_env_connection(
         self,
         *,
@@ -202,17 +188,6 @@ class CommandContext:
             self.probe_state = target.probe_state
             self.compatibility = target.probe_state.compatibility
         return target
-
-    def probe_device_state(
-        self,
-        probe: Callable[[SshConnection], ProbedDeviceState] | None = None,
-    ) -> ProbedDeviceState:
-        if self.connection is None:
-            raise RuntimeError("CommandContext connection is not set.")
-        probe_fn = probe or runtime.probe_connection_state
-        self.probe_state = probe_fn(self.connection)
-        self.compatibility = self.probe_state.compatibility
-        return self.probe_state
 
     def require_compatibility(self) -> DeviceCompatibility:
         if self.connection is None:

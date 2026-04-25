@@ -12,7 +12,7 @@ from timecapsulesmb.deploy.executor import remote_uninstall_payload
 from timecapsulesmb.deploy.planner import build_uninstall_plan
 from timecapsulesmb.deploy.verify import verify_post_uninstall
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root_conn, wait_for_ssh_state_conn
-from timecapsulesmb.transport.ssh import run_ssh_conn
+from timecapsulesmb.transport.ssh import run_ssh
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -58,7 +58,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("Skipped reboot. The Time Capsule may need a manual reboot to fully clear running processes.")
             return 0
 
-    run_ssh_conn(connection, "/sbin/reboot", check=False)
+    run_ssh(connection, "/sbin/reboot", check=False)
     print("Reboot requested. Waiting for the device to go down...")
     wait_for_ssh_state_conn(connection, expected_up=False, timeout_seconds=60)
     print("Waiting for the device to come back up...")

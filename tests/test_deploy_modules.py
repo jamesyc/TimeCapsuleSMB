@@ -336,7 +336,7 @@ class DeployModuleTests(unittest.TestCase):
             result = probe_remote_airport_identity_conn(connection)
         self.assertEqual(result.model, "TimeCapsule6,113")
         self.assertEqual(result.syap, "113")
-        command = run_ssh_mock.call_args.args[3]
+        command = run_ssh_mock.call_args.args[1]
         self.assertIn("/usr/bin/strings /mnt/Flash/ACPData.bin", command)
         self.assertIn("TimeCapsule[0-9],[0-9][0-9][0-9]", command)
         self.assertNotIn("/bin/cat /mnt/Flash/ACPData.bin", command)
@@ -2175,7 +2175,7 @@ int main(void) {{
         with mock.patch("timecapsulesmb.device.probe.discover_mounted_volume_conn", side_effect=SystemExit("no mounted volume")):
             with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
                 discover_volume_root_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
-        cmd = run_ssh_mock.call_args.args[3]
+        cmd = run_ssh_mock.call_args.args[1]
         self.assertIn('volume="/Volumes/$dev"', cmd)
         self.assertIn('if [ ! -d "$volume" ]; then\n    mkdir -p "$volume"\n    created_mountpoint=1\n  fi', cmd)
         self.assertIn('df_line=$(/bin/df -k "$volume" 2>/dev/null | /usr/bin/tail -n +2 || true)', cmd)
@@ -2186,7 +2186,7 @@ int main(void) {{
         with mock.patch("timecapsulesmb.device.probe.discover_mounted_volume_conn", side_effect=SystemExit("no mounted volume")):
             with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
                 discover_volume_root_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
-        cmd = run_ssh_mock.call_args.args[3]
+        cmd = run_ssh_mock.call_args.args[1]
         self.assertIn('created_mountpoint=0', cmd)
         self.assertIn('created_mountpoint=1', cmd)
         self.assertIn('/bin/rmdir "$volume" >/dev/null 2>&1 || true', cmd)
@@ -2228,14 +2228,14 @@ int main(void) {{
 
     def test_remote_prepare_dirs_builds_expected_command(self) -> None:
         connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh_conn") as run_ssh_mock:
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
             remote_prepare_dirs(connection, "/Volumes/dk2/samba4")
         command = run_ssh_mock.call_args.args[1]
         self.assertEqual(command, render_remote_action(prepare_dirs_action("/Volumes/dk2/samba4")))
 
     def test_remote_initialize_data_root_builds_expected_command(self) -> None:
         connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh_conn") as run_ssh_mock:
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
             remote_initialize_data_root(
                 connection,
                 "/Volumes/dk2/ShareRoot",
@@ -2254,15 +2254,15 @@ int main(void) {{
 
     def test_remote_install_permissions_builds_expected_command(self) -> None:
         connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh_conn") as run_ssh_mock:
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
             remote_install_permissions(connection, "/Volumes/dk2/samba4")
         command = run_ssh_mock.call_args.args[1]
         self.assertEqual(command, render_remote_action(install_permissions_action("/Volumes/dk2/samba4")))
 
     def test_remote_ensure_adisk_uuid_reuses_existing_file(self) -> None:
         connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh_conn", return_value=mock.Mock(stdout="12345678-1234-1234-1234-123456789012\n")):
-            with mock.patch("timecapsulesmb.deploy.executor.run_scp_conn") as scp_mock:
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh", return_value=mock.Mock(stdout="12345678-1234-1234-1234-123456789012\n")):
+            with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
                 result = remote_ensure_adisk_uuid(connection, "/Volumes/dk2/samba4/private")
         self.assertEqual(result, "12345678-1234-1234-1234-123456789012")
         scp_mock.assert_not_called()
@@ -2270,16 +2270,16 @@ int main(void) {{
     def test_remote_ensure_adisk_uuid_creates_new_file_when_missing(self) -> None:
         fixed_uuid = uuid.UUID("12345678-1234-1234-1234-123456789012")
         connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh_conn", return_value=mock.Mock(stdout="\n")):
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh", return_value=mock.Mock(stdout="\n")):
             with mock.patch("timecapsulesmb.deploy.executor.uuid.uuid4", return_value=fixed_uuid):
-                with mock.patch("timecapsulesmb.deploy.executor.run_scp_conn") as scp_mock:
+                with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
                     result = remote_ensure_adisk_uuid(connection, "/Volumes/dk2/samba4/private")
         self.assertEqual(result, str(fixed_uuid))
         self.assertEqual(scp_mock.call_count, 1)
 
     def test_remote_enable_nbns_creates_marker_without_touch(self) -> None:
         connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh_conn") as run_ssh_mock:
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
             remote_enable_nbns(connection, "/Volumes/dk2/samba4/private")
         self.assertEqual(run_ssh_mock.call_args.args[1], render_remote_action(enable_nbns_action("/Volumes/dk2/samba4/private")))
 
@@ -2287,7 +2287,7 @@ int main(void) {{
         paths = build_device_paths("/Volumes/dk2", "samba4")
         plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
         connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_scp_conn") as scp_mock:
+        with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
             upload_deployment_payload(
                 plan,
                 connection=connection,
@@ -2346,7 +2346,7 @@ int main(void) {{
             return_value=mock.Mock(returncode=0, stdout=""),
         ) as run_ssh_mock:
             self.assertTrue(probe_managed_smbd_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=45).ready)
-        remote_command = run_ssh_mock.call_args.args[3]
+        remote_command = run_ssh_mock.call_args.args[1]
         self.assertIn("capture_ps_out()", remote_command)
         self.assertIn("smbd_parent_process_present()", remote_command)
         self.assertIn("smbd_bound_445()", remote_command)
@@ -2375,7 +2375,7 @@ int main(void) {{
             return_value=mock.Mock(returncode=0, stdout=""),
         ) as run_ssh_mock:
             self.assertTrue(probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=45).ready)
-        remote_command = run_ssh_mock.call_args.args[3]
+        remote_command = run_ssh_mock.call_args.args[1]
         self.assertIn("capture_ps_out()", remote_command)
         self.assertIn("mdns_process_present()", remote_command)
         self.assertIn("apple_mdns_present()", remote_command)
@@ -2537,7 +2537,7 @@ int main(void) {{
     def test_deployment_plan_and_executor_share_permission_command_generation(self) -> None:
         payload_dir = "/Volumes/dk2/Time Capsule Samba 4"
         connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh_conn") as run_ssh_mock:
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
             remote_install_permissions(connection, payload_dir)
         self.assertEqual(run_ssh_mock.call_args.args[1], render_remote_action(install_permissions_action(payload_dir)))
 
@@ -2546,7 +2546,7 @@ int main(void) {{
         plan = build_uninstall_plan("root@10.0.0.2", paths)
         expected = [render_remote_action(action) for action in plan.remote_actions]
         connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh_conn") as run_ssh_mock:
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
             remote_uninstall_payload(connection, plan)
         self.assertEqual([call.args[1] for call in run_ssh_mock.call_args_list], expected)
 
@@ -2565,14 +2565,16 @@ int main(void) {{
 
     def test_wait_for_ssh_state_uses_real_ssh_probe_for_expected_up(self) -> None:
         proc = mock.Mock(returncode=0, stdout="ok\n")
+        connection = SshConnection("root@10.0.0.2", "pw", "-o ProxyCommand=jump")
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
-            self.assertTrue(wait_for_ssh_state_conn(SshConnection("root@10.0.0.2", "pw", "-o ProxyCommand=jump"), expected_up=True, timeout_seconds=1))
-        run_ssh_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o ProxyCommand=jump", "/bin/echo ok", check=False, timeout=10)
+            self.assertTrue(wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=1))
+        run_ssh_mock.assert_called_once_with(connection, "/bin/echo ok", check=False, timeout=10)
 
     def test_wait_for_ssh_state_treats_probe_failure_as_down(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o ProxyCommand=jump")
         with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=SystemExit("timeout")) as run_ssh_mock:
-            self.assertTrue(wait_for_ssh_state_conn(SshConnection("root@10.0.0.2", "pw", "-o ProxyCommand=jump"), expected_up=False, timeout_seconds=1))
-        run_ssh_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o ProxyCommand=jump", "/bin/echo ok", check=False, timeout=10)
+            self.assertTrue(wait_for_ssh_state_conn(connection, expected_up=False, timeout_seconds=1))
+        run_ssh_mock.assert_called_once_with(connection, "/bin/echo ok", check=False, timeout=10)
 
     def test_wait_for_ssh_state_retries_until_up(self) -> None:
         fail = mock.Mock(returncode=255, stdout="")

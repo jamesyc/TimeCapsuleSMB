@@ -30,7 +30,7 @@ lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> metric 0 mtu 33172
 """
         connection = SshConnection("root@10.0.0.2", "pw", "")
         proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=ifconfig_output)
-        with mock.patch("timecapsulesmb.device.probe.run_ssh_conn", return_value=proc):
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
             result = probe_remote_interface_candidates_conn(connection)
         self.assertEqual(result.preferred_iface, "bridge0")
         self.assertEqual([candidate.name for candidate in result.candidates], ["gec0", "bridge0", "lo0"])
@@ -47,7 +47,7 @@ bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu
 """
         connection = SshConnection("root@10.0.0.2", "pw", "")
         proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=ifconfig_output)
-        with mock.patch("timecapsulesmb.device.probe.run_ssh_conn", return_value=proc):
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
             result = probe_remote_interface_candidates_conn(connection)
         self.assertEqual(result.preferred_iface, "bcmeth1")
 
@@ -58,7 +58,7 @@ lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> metric 0 mtu 33172
 """
         connection = SshConnection("root@10.0.0.2", "pw", "")
         proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=ifconfig_output)
-        with mock.patch("timecapsulesmb.device.probe.run_ssh_conn", return_value=proc):
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
             result = probe_remote_interface_candidates_conn(connection)
         self.assertIsNone(result.preferred_iface)
         self.assertIn("no non-loopback IPv4 interface candidates found", result.detail)
@@ -74,7 +74,7 @@ bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu
 """
         connection = SshConnection("root@10.0.0.2", "pw", "")
         proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=ifconfig_output)
-        with mock.patch("timecapsulesmb.device.probe.run_ssh_conn", return_value=proc):
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
             result = probe_remote_interface_candidates_conn(connection)
         self.assertEqual(result.preferred_iface, "bridge0")
         self.assertEqual(preferred_interface_name(result.candidates, target_ips=("10.0.1.1",)), "bcmeth1")
@@ -90,7 +90,7 @@ bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu
 """
         connection = SshConnection("root@10.0.0.2", "pw", "")
         proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=ifconfig_output)
-        with mock.patch("timecapsulesmb.device.probe.run_ssh_conn", return_value=proc):
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
             result = probe_remote_interface_candidates_conn(connection)
         self.assertEqual(result.preferred_iface, "bridge0")
 
@@ -105,7 +105,7 @@ bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu
 """
         connection = SshConnection("root@10.0.0.2", "pw", "")
         proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=ifconfig_output)
-        with mock.patch("timecapsulesmb.device.probe.run_ssh_conn", return_value=proc):
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
             result = probe_remote_interface_candidates_conn(connection)
         self.assertEqual(preferred_interface_name(result.candidates, target_ips=("169.254.44.9",)), "bcmeth1")
 
@@ -120,7 +120,7 @@ bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu
 """
         connection = SshConnection("root@10.0.0.2", "pw", "")
         proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=ifconfig_output)
-        with mock.patch("timecapsulesmb.device.probe.run_ssh_conn", return_value=proc):
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
             result = probe_remote_interface_candidates_conn(connection)
         self.assertEqual(
             [(candidate.name, candidate.ipv4_addrs) for candidate in result.candidates],

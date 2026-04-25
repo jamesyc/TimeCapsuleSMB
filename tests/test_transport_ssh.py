@@ -53,9 +53,7 @@ class SSHTransportTests(unittest.TestCase):
                 return_value=(0, "ok\n"),
             ) as spawn_mock:
                 proc = ssh_transport.run_ssh(
-                    "root@192.168.1.67",
-                    "pw",
-                    "-o PubkeyAcceptedAlgorithms=+ssh-rsa",
+                    ssh_transport.SshConnection("root@192.168.1.67", "pw", "-o PubkeyAcceptedAlgorithms=+ssh-rsa"),
                     "/bin/echo ok",
                     check=False,
                     timeout=10,
@@ -129,9 +127,7 @@ class SSHTransportTests(unittest.TestCase):
             ) as spawn_mock:
                 with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep_mock:
                     proc = ssh_transport.run_ssh(
-                        "root@192.168.1.118",
-                        "pw",
-                        "-o StrictHostKeyChecking=no",
+                        ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no"),
                         "/bin/echo ok",
                         check=False,
                         timeout=10,
@@ -167,9 +163,7 @@ class SSHTransportTests(unittest.TestCase):
             ):
                 with self.assertRaises(SystemExit) as exc:
                     ssh_transport.run_ssh(
-                        "root@192.168.1.67",
-                        "pw",
-                        "-o LocalForward=127.0.0.1:108:127.0.0.1:108",
+                        ssh_transport.SshConnection("root@192.168.1.67", "pw", "-o LocalForward=127.0.0.1:108:127.0.0.1:108"),
                         "/bin/echo ok",
                         check=False,
                         timeout=10,
@@ -193,9 +187,7 @@ class SSHTransportTests(unittest.TestCase):
                 ),
             ):
                 proc = ssh_transport.run_ssh(
-                    "root@192.168.1.118",
-                    "pw",
-                    "-o StrictHostKeyChecking=no",
+                    ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no"),
                     "uname -s",
                     check=False,
                     timeout=10,
@@ -218,9 +210,7 @@ class SSHTransportTests(unittest.TestCase):
                 ),
             ):
                 proc = ssh_transport.run_ssh(
-                    "root@192.168.1.118",
-                    "pw",
-                    "-o StrictHostKeyChecking=no",
+                    ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no"),
                     "uname -s",
                     check=False,
                     timeout=10,
@@ -283,9 +273,7 @@ class SSHTransportTests(unittest.TestCase):
                 return_value=(0, "ok\n"),
             ) as spawn_mock:
                 ssh_transport.run_ssh(
-                    "root@192.168.1.118",
-                    "pw",
-                    "-J jamesyc@ig1wx38mgh6to6vo.myfritz.net:22123 -o HostKeyAlgorithms=+ssh-rsa",
+                    ssh_transport.SshConnection("root@192.168.1.118", "pw", "-J jamesyc@ig1wx38mgh6to6vo.myfritz.net:22123 -o HostKeyAlgorithms=+ssh-rsa"),
                     "/bin/echo ok",
                     check=False,
                     timeout=10,
@@ -331,9 +319,7 @@ class SSHTransportTests(unittest.TestCase):
             ) as run_ssh_mock:
                 with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep_mock:
                     ssh_transport._verify_remote_size(
-                        "root@192.168.1.118",
-                        "pw",
-                        "-o StrictHostKeyChecking=no",
+                        ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no"),
                         src,
                         "/tmp/test-upload",
                         timeout=30,
@@ -346,32 +332,26 @@ class SSHTransportTests(unittest.TestCase):
             src = Path(tmp.name)
             src.write_bytes(b"hello")
             with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
-                with mock.patch(
-                    "timecapsulesmb.transport.ssh.run_ssh",
-                    side_effect=[subprocess.CompletedProcess(["ssh"], 1, stdout="", stderr=""), subprocess.CompletedProcess(["ssh"], 0, stdout="5\n", stderr="")],
-                ) as run_ssh_mock:
-                    with mock.patch("timecapsulesmb.transport.ssh.shutil.which", return_value="/opt/homebrew/bin/sshpass"):
-                        with mock.patch(
-                            "timecapsulesmb.transport.ssh.subprocess.run",
-                            side_effect=[
-                                subprocess.CompletedProcess(["sshpass"], 255, stdout=b"Permission denied, please try again.\n", stderr=b""),
-                                subprocess.CompletedProcess(["sshpass"], 0, stdout=b"", stderr=b""),
-                            ],
-                        ) as subprocess_run_mock:
+                with mock.patch("timecapsulesmb.transport.ssh.shutil.which", return_value="/opt/homebrew/bin/sshpass"):
+                    with mock.patch(
+                        "timecapsulesmb.transport.ssh.subprocess.run",
+                        side_effect=[
+                            subprocess.CompletedProcess(["sshpass"], 255, stdout=b"Permission denied, please try again.\n", stderr=b""),
+                            subprocess.CompletedProcess(["sshpass"], 0, stdout=b"", stderr=b""),
+                        ],
+                    ) as subprocess_run_mock:
+                        with mock.patch("timecapsulesmb.transport.ssh._verify_remote_size"):
                             with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep_mock:
                                 ssh_transport.run_scp(
-                                    "root@192.168.1.118",
-                                    "pw",
-                                    "-o StrictHostKeyChecking=no",
+                                    ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no", remote_has_scp=False),
                                     src,
                                     "/tmp/test-upload",
                                     timeout=10,
                                 )
         self.assertEqual(subprocess_run_mock.call_count, 2)
         sleep_mock.assert_called_once_with(1)
-        self.assertEqual(run_ssh_mock.call_count, 2)
 
-    def test_run_scp_conn_caches_remote_scp_capability(self) -> None:
+    def test_run_scp_caches_remote_scp_capability(self) -> None:
         with NamedTemporaryFile() as tmp:
             src = Path(tmp.name)
             src.write_bytes(b"hello")
@@ -383,25 +363,25 @@ class SSHTransportTests(unittest.TestCase):
                             "timecapsulesmb.transport.ssh.subprocess.run",
                             return_value=subprocess.CompletedProcess(["sshpass"], 0, stdout=b"", stderr=b""),
                         ) as subprocess_run_mock:
-                            with mock.patch("timecapsulesmb.transport.ssh._verify_remote_size_conn"):
-                                ssh_transport.run_scp_conn(connection, src, "/tmp/one", timeout=10)
-                                ssh_transport.run_scp_conn(connection, src, "/tmp/two", timeout=10)
+                            with mock.patch("timecapsulesmb.transport.ssh._verify_remote_size"):
+                                ssh_transport.run_scp(connection, src, "/tmp/one", timeout=10)
+                                ssh_transport.run_scp(connection, src, "/tmp/two", timeout=10)
         probe_mock.assert_called_once_with(connection)
         self.assertEqual(subprocess_run_mock.call_count, 2)
         self.assertFalse(connection.remote_has_scp)
 
-    def test_run_scp_conn_explains_missing_sshpass_for_cat_fallback(self) -> None:
+    def test_run_scp_explains_missing_sshpass_for_cat_fallback(self) -> None:
         with NamedTemporaryFile() as tmp:
             src = Path(tmp.name)
             src.write_bytes(b"hello")
             connection = ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no", remote_has_scp=False)
             with mock.patch("timecapsulesmb.transport.ssh.shutil.which", return_value=None):
                 with self.assertRaises(SystemExit) as exc:
-                    ssh_transport.run_scp_conn(connection, src, "/tmp/test-upload", timeout=10)
+                    ssh_transport.run_scp(connection, src, "/tmp/test-upload", timeout=10)
         self.assertIn("local sshpass is missing", str(exc.exception))
         self.assertIn("tcapsule bootstrap", str(exc.exception))
 
-    def test_run_scp_conn_raises_transport_error_from_scp_output(self) -> None:
+    def test_run_scp_raises_transport_error_from_scp_output(self) -> None:
         with NamedTemporaryFile() as tmp:
             src = Path(tmp.name)
             src.write_bytes(b"hello")
@@ -412,7 +392,7 @@ class SSHTransportTests(unittest.TestCase):
                     return_value=(255, "bind [127.0.0.1]:108: Permission denied\n"),
                 ):
                     with self.assertRaises(ssh_transport.SshTransportError) as exc:
-                        ssh_transport.run_scp_conn(connection, src, "/tmp/test-upload", timeout=10)
+                        ssh_transport.run_scp(connection, src, "/tmp/test-upload", timeout=10)
         self.assertIn("Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied", str(exc.exception))
 
 
