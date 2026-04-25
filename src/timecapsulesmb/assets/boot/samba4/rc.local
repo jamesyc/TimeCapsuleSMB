@@ -13,7 +13,7 @@ set +e
 if /usr/bin/pkill -0 -f /mnt/Flash/watchdog.sh >/dev/null 2>&1; then
     :
 else
-    /mnt/Flash/watchdog.sh </dev/null >/dev/null 2>&1 &
+    /mnt/Flash/watchdog.sh 1200 </dev/null >/dev/null 2>&1 &
 fi
 set -e
 

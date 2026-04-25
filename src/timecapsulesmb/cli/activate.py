@@ -60,7 +60,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         print("Activating NetBSD4 payload without file transfer.")
         run_remote_actions(connection, plan.actions)
-        if not verify_managed_runtime(connection, timeout_seconds=180, heading="Waiting for verification of NetBSD 4 device activation..."):
+        if not verify_managed_runtime(connection, timeout_seconds=180, heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up..."):
             print("NetBSD4 activation failed.")
             command_context.fail_with_error("NetBSD4 activation failed.")
             command_context.add_debug_context()

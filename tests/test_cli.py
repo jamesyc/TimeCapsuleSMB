@@ -4108,7 +4108,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Deploy Finished.", text)
         self.assertEqual(
             verify_runtime_mock.call_args.kwargs["heading"],
-            "Waiting for verification that device successfully finished loading...",
+            "Wait for device to finish loading; it can take a few minutes for Samba to start up...",
         )
 
     def test_deploy_returns_failure_when_managed_smbd_never_becomes_ready(self) -> None:
@@ -4983,7 +4983,10 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(actions_mock.call_args.kwargs, {})
         self.assertEqual(verify_mock.call_args.args[0].host, "root@10.0.0.2")
-        self.assertEqual(verify_mock.call_args.kwargs["heading"], "Waiting for verification of NetBSD 4 device activation...")
+        self.assertEqual(
+            verify_mock.call_args.kwargs["heading"],
+            "Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up...",
+        )
         self.assertIn("without file transfer", output.getvalue())
 
     def test_activate_skips_rc_local_when_payload_is_already_healthy(self) -> None:

@@ -48,8 +48,8 @@ MDNS_DEVICE_MODEL=__MDNS_DEVICE_MODEL__
 AIRPORT_SYAP=__AIRPORT_SYAP__
 ADISK_DISK_KEY=__ADISK_DISK_KEY__
 ADISK_UUID=__ADISK_UUID__
-MDNS_STARTUP_DELAY_SECONDS=30
-SCRIPT_START_TS=$(/bin/date +%s)
+MDNS_CAPTURE_PID=
+APPLE_MDNS_SNAPSHOT_START=$(/bin/ls -lnT "$APPLE_MDNS_SNAPSHOT" 2>/dev/null || true)
 
 log() {
     log_dir=${RAM_LOG%/*}
@@ -66,13 +66,33 @@ log() {
     mv "$tmp_log" "$RAM_LOG"
 }
 
+log_mdns_snapshot_age() {
+    snapshot_path=$1
+    if [ ! -f "$snapshot_path" ]; then
+        log "trusted Apple mDNS snapshot missing at $snapshot_path"
+        return 1
+    fi
+
+    snapshot_current=$(/bin/ls -lnT "$snapshot_path" 2>/dev/null || true)
+    if [ -z "$APPLE_MDNS_SNAPSHOT_START" ]; then
+        log "trusted Apple mDNS snapshot was created during this boot run: $snapshot_path"
+    elif [ "$snapshot_current" != "$APPLE_MDNS_SNAPSHOT_START" ]; then
+        log "trusted Apple mDNS snapshot was updated during this boot run: $snapshot_path"
+    else
+        log "trusted Apple mDNS snapshot predates this boot run; accepting stale snapshot: $snapshot_path"
+    fi
+    return 0
+}
+
 cleanup_old_runtime() {
+    log "cleaning old managed runtime processes and RAM state"
     /usr/bin/pkill -f /mnt/Flash/watchdog.sh >/dev/null 2>&1 || true
     /usr/bin/pkill smbd >/dev/null 2>&1 || true
     /usr/bin/pkill "$MDNS_PROC_NAME" >/dev/null 2>&1 || true
     /usr/bin/pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true
     sleep 1
     rm -rf /mnt/Memory/samba4
+    log "old managed runtime cleanup complete"
 }
 
 locks_root_is_mounted() {
@@ -149,6 +169,7 @@ wait_for_bind_interfaces() {
     while [ "$attempt" -lt 60 ]; do
         iface_ip=$(get_iface_ipv4 "$NET_IFACE" || true)
         if [ -n "$iface_ip" ] && [ "$iface_ip" != "0.0.0.0" ]; then
+            log "network interface $NET_IFACE ready with IPv4 $iface_ip"
             echo "127.0.0.1/8 $iface_ip/24"
             return 0
         fi
@@ -157,6 +178,7 @@ wait_for_bind_interfaces() {
         sleep 1
     done
 
+    log "timed out waiting for IPv4 on $NET_IFACE"
     return 1
 }
 
@@ -189,21 +211,25 @@ find_data_root_under_volume() {
     volume_root=$1
 
     if [ -f "$volume_root/ShareRoot/.com.apple.timemachine.supported" ]; then
+        log "data root match: $volume_root/ShareRoot marker"
         echo "$volume_root/ShareRoot"
         return 0
     fi
 
     if [ -f "$volume_root/Shared/.com.apple.timemachine.supported" ]; then
+        log "data root match: $volume_root/Shared marker"
         echo "$volume_root/Shared"
         return 0
     fi
 
     if [ -d "$volume_root/ShareRoot" ]; then
+        log "data root match: $volume_root/ShareRoot directory"
         echo "$volume_root/ShareRoot"
         return 0
     fi
 
     if [ -d "$volume_root/Shared" ]; then
+        log "data root match: $volume_root/Shared directory"
         echo "$volume_root/Shared"
         return 0
     fi
@@ -227,19 +253,22 @@ mount_device_if_possible() {
     created_mountpoint=0
 
     if [ ! -b "$dev_path" ]; then
+        log "mount candidate skipped; missing block device $dev_path"
         return 1
     fi
 
     if [ ! -d "$volume_root" ]; then
         mkdir -p "$volume_root"
         created_mountpoint=1
+        log "created mountpoint $volume_root for $dev_path"
     fi
 
+    log "launching mount_hfs for $dev_path at $volume_root"
     /sbin/mount_hfs "$dev_path" "$volume_root" >/dev/null 2>&1 &
     mount_pid=$!
     attempt=0
     while kill -0 "$mount_pid" >/dev/null 2>&1; do
-        if [ "$attempt" -ge 10 ]; then
+        if [ "$attempt" -ge 30 ]; then
             kill "$mount_pid" >/dev/null 2>&1 || true
             sleep 1
             kill -9 "$mount_pid" >/dev/null 2>&1 || true
@@ -261,6 +290,7 @@ mount_device_if_possible() {
     wait "$mount_pid" >/dev/null 2>&1 || true
 
     if is_volume_root_mounted "$volume_root"; then
+        log "mounted $dev_path at $volume_root after ${attempt}s"
         return 0
     fi
 
@@ -268,6 +298,7 @@ mount_device_if_possible() {
         /bin/rmdir "$volume_root" >/dev/null 2>&1 || true
     fi
 
+    log "mount_hfs exited for $dev_path at $volume_root, but volume is not mounted"
     return 1
 }
 
@@ -298,6 +329,7 @@ resolve_data_root_on_mounted_volume() {
     fi
 
     if data_root=$(find_data_root_under_volume "$volume_root"); then
+        log "using existing data root $data_root under $volume_root"
         echo "$data_root"
         return 0
     fi
@@ -314,14 +346,16 @@ resolve_data_root_on_mounted_volume() {
 
 wait_for_existing_data_root() {
     attempt=0
-    while [ "$attempt" -lt 30 ]; do
+    while [ "$attempt" -lt 20 ]; do
         if data_root=$(find_existing_data_root); then
+            log "data root was mounted after ${attempt}s"
             echo "$data_root"
             return 0
         fi
         attempt=$((attempt + 1))
         sleep 1
     done
+    log "data root was not mounted after ${attempt}s"
     return 1
 }
 
@@ -336,10 +370,12 @@ try_mount_candidate() {
 
     mount_device_if_possible "$dev_path" "$volume_root" || true
     if is_volume_root_mounted "$volume_root"; then
+        log "mount candidate succeeded: $dev_path at $volume_root"
         echo "$volume_root"
         return 0
     fi
 
+    log "mount candidate failed: $dev_path at $volume_root"
     return 1
 }
 
@@ -347,6 +383,7 @@ mount_fallback_volume() {
     log "no Apple-mounted data root found; falling back to manual mount"
     attempt=0
     while [ "$attempt" -lt 30 ]; do
+        log "manual mount attempt $((attempt + 1)): probing /dev/dk2 and /dev/dk3"
         if volume_root=$(try_mount_candidate /dev/dk2 /Volumes/dk2); then
             echo "$volume_root"
             return 0
@@ -361,6 +398,7 @@ mount_fallback_volume() {
         sleep 1
     done
 
+    log "manual mount fallback exhausted without mounted data volume"
     return 1
 }
 
@@ -370,6 +408,7 @@ find_payload_dir() {
 
     payload_dir="$volume_root/$PAYLOAD_DIR_NAME"
     if [ -d "$payload_dir" ]; then
+        log "payload directory found at volume root: $payload_dir"
         echo "$payload_dir"
         return 0
     fi
@@ -378,10 +417,12 @@ find_payload_dir() {
     # payload under the share root instead of at the volume root.
     payload_dir="$data_root/$PAYLOAD_DIR_NAME"
     if [ -d "$payload_dir" ]; then
+        log "payload directory found at legacy data-root path: $payload_dir"
         echo "$payload_dir"
         return 0
     fi
 
+    log "payload directory missing; checked $volume_root/$PAYLOAD_DIR_NAME and $data_root/$PAYLOAD_DIR_NAME"
     return 1
 }
 
@@ -389,15 +430,18 @@ find_payload_smbd() {
     payload_dir=$1
 
     if [ -x "$payload_dir/smbd" ]; then
+        log "selected smbd binary $payload_dir/smbd"
         echo "$payload_dir/smbd"
         return 0
     fi
 
     if [ -x "$payload_dir/sbin/smbd" ]; then
+        log "selected smbd binary $payload_dir/sbin/smbd"
         echo "$payload_dir/sbin/smbd"
         return 0
     fi
 
+    log "no smbd binary found in $payload_dir"
     return 1
 }
 
@@ -405,10 +449,12 @@ find_payload_nbns() {
     payload_dir=$1
 
     if [ -x "$payload_dir/nbns-advertiser" ]; then
+        log "selected nbns binary $payload_dir/nbns-advertiser"
         echo "$payload_dir/nbns-advertiser"
         return 0
     fi
 
+    log "nbns binary not found in $payload_dir"
     return 1
 }
 
@@ -425,9 +471,13 @@ stage_runtime() {
         chmod 755 "$RAM_SBIN/nbns-advertiser"
         cp "$payload_dir/private/nbns.enabled" "$RAM_PRIVATE/nbns.enabled"
         chmod 600 "$RAM_PRIVATE/nbns.enabled"
+        log "staged nbns runtime binary and enabled marker"
+    else
+        log "nbns runtime staging skipped"
     fi
 
     if [ -f "$payload_dir/$PAYLOAD_TEMPLATE_NAME" ]; then
+        log "rendering smb.conf from payload template $payload_dir/$PAYLOAD_TEMPLATE_NAME"
         sed \
             -e "s#__DATA_ROOT__#$DATA_ROOT#g" \
             -e "s#__PAYLOAD_DIR__#$PAYLOAD_DIR#g" \
@@ -436,6 +486,7 @@ stage_runtime() {
         return 0
     fi
 
+    log "payload smb.conf template missing; generating fallback smb.conf"
     cat >"$RAM_ETC/smb.conf" <<EOF
 [global]
     netbios name = $SMB_NETBIOS_NAME
@@ -507,29 +558,110 @@ start_smbd() {
     fi
 
     ensure_parent_dir "$smbd_ready_log" || log "could not create smbd log directory for $smbd_ready_log"
+    log "starting smbd from $RAM_SBIN/smbd with config $RAM_ETC/smb.conf and ready log $smbd_ready_log"
     "$RAM_SBIN/smbd" -D -s "$RAM_ETC/smb.conf"
-    wait_for_smbd_ready "$smbd_ready_log"
+    if wait_for_smbd_ready "$smbd_ready_log"; then
+        return 0
+    fi
+    log "smbd did not report daemon_ready in $smbd_ready_log"
+    return 1
 }
 
-start_mdns() {
+prepare_mdns_identity() {
+    iface_mac=$1
+
     if [ ! -x "$MDNS_BIN" ]; then
-        log "mdns advertiser launch skipped; missing $MDNS_BIN"
-        return 0
+        log "mdns skipped; missing $MDNS_BIN"
+        return 1
     fi
 
-    now_ts=$(/bin/date +%s)
-    elapsed=$((now_ts - SCRIPT_START_TS))
-    log "mdns startup: elapsed=${elapsed}s delay=${MDNS_STARTUP_DELAY_SECONDS}s"
-    if [ "$elapsed" -lt "$MDNS_STARTUP_DELAY_SECONDS" ]; then
-        log "mdns startup: sleeping $((MDNS_STARTUP_DELAY_SECONDS - elapsed))s before launch"
-        sleep $((MDNS_STARTUP_DELAY_SECONDS - elapsed))
-    fi
-
-    iface_mac=$(get_iface_mac "$NET_IFACE" || true)
     log "mdns startup: interface $NET_IFACE mac=${iface_mac:-missing}"
     if [ -z "$iface_mac" ]; then
-        log "mdns advertiser launch skipped; missing $NET_IFACE MAC address"
+        log "mdns skipped; missing $NET_IFACE MAC address"
+        return 1
+    fi
+
+    if derive_airport_fields "$iface_mac"; then
+        log "mdns startup: derived airport fields wama=${AIRPORT_WAMA:-missing} rama=${AIRPORT_RAMA:-missing} ram2=${AIRPORT_RAM2:-missing} syvs=${AIRPORT_SYVS:-missing} srcv=${AIRPORT_SRCV:-missing}"
+    else
+        log "airport clone fields incomplete; skipping _airport._tcp advertisement"
+    fi
+    return 0
+}
+
+start_mdns_capture() {
+    iface_mac=$(get_iface_mac "$NET_IFACE" || true)
+    if ! prepare_mdns_identity "$iface_mac"; then
         return 0
+    fi
+
+    log "starting mDNS snapshot capture"
+    set -- "$MDNS_BIN" \
+        --save-all-snapshot "$ALL_MDNS_SNAPSHOT" \
+        --save-snapshot "$APPLE_MDNS_SNAPSHOT"
+    if [ -n "${AIRPORT_WAMA:-}" ] || [ -n "${AIRPORT_RAMA:-}" ] || [ -n "${AIRPORT_RAM2:-}" ] || [ -n "${AIRPORT_SYVS:-}" ] || [ -n "${AIRPORT_SRCV:-}" ]; then
+        set -- "$@" \
+            --airport-wama "$AIRPORT_WAMA" \
+            --airport-rama "$AIRPORT_RAMA" \
+            --airport-ram2 "$AIRPORT_RAM2" \
+            --airport-syvs "$AIRPORT_SYVS" \
+            --airport-srcv "$AIRPORT_SRCV"
+        if [ -n "$AIRPORT_SYAP" ]; then
+            set -- "$@" --airport-syap "$AIRPORT_SYAP"
+        else
+            log "airport syAP missing during mDNS capture"
+        fi
+    fi
+
+    if [ "$MDNS_LOG_ENABLED" = "1" ]; then
+        log "mdns capture: debug logging enabled at $MDNS_LOG_FILE"
+        trim_log_file "$MDNS_LOG_FILE" 131072
+        printf '%s rc.local: launching mdns-advertiser capture\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>"$MDNS_LOG_FILE"
+        "$@" >>"$MDNS_LOG_FILE" 2>&1 &
+    else
+        log "mdns capture: debug logging disabled"
+        "$@" >/dev/null 2>&1 &
+    fi
+    MDNS_CAPTURE_PID=$!
+    log "mDNS snapshot capture launched as pid $MDNS_CAPTURE_PID"
+}
+
+wait_for_mdns_capture() {
+    if [ -z "$MDNS_CAPTURE_PID" ]; then
+        return 0
+    fi
+
+    log "waiting for mDNS snapshot capture pid $MDNS_CAPTURE_PID"
+    if ! kill -0 "$MDNS_CAPTURE_PID" >/dev/null 2>&1; then
+        if [ -f "$APPLE_MDNS_SNAPSHOT" ]; then
+            log "mDNS snapshot capture already finished; trusted snapshot is available"
+        else
+            log "mDNS snapshot capture already finished before wait; no trusted snapshot is available"
+        fi
+        MDNS_CAPTURE_PID=
+        return 0
+    fi
+
+    if wait "$MDNS_CAPTURE_PID"; then
+        log "mDNS snapshot capture finished"
+    else
+        log "mDNS snapshot capture exited with failure; final advertiser will use generated records if needed"
+    fi
+    MDNS_CAPTURE_PID=
+}
+
+start_mdns_advertiser() {
+    iface_mac=$(get_iface_mac "$NET_IFACE" || true)
+    if ! prepare_mdns_identity "$iface_mac"; then
+        log "final mdns advertiser skipped; identity preparation failed"
+        return 0
+    fi
+
+    wait_for_mdns_capture
+    if log_mdns_snapshot_age "$APPLE_MDNS_SNAPSHOT"; then
+        :
+    else
+        log "mdns advertiser will fall back to generated records"
     fi
 
     log "mdns startup: killing prior $MDNS_PROC_NAME processes"
@@ -538,14 +670,11 @@ start_mdns() {
 
     log "starting mdns advertiser for $BRIDGE0_IP on $NET_IFACE"
     set -- "$MDNS_BIN" \
-        --save-all-snapshot "$ALL_MDNS_SNAPSHOT" \
-        --save-snapshot "$APPLE_MDNS_SNAPSHOT" \
         --load-snapshot "$APPLE_MDNS_SNAPSHOT" \
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
         --device-model "$MDNS_DEVICE_MODEL"
-    if derive_airport_fields "$iface_mac"; then
-        log "mdns startup: derived airport fields wama=${AIRPORT_WAMA:-missing} rama=${AIRPORT_RAMA:-missing} ram2=${AIRPORT_RAM2:-missing} syvs=${AIRPORT_SYVS:-missing} srcv=${AIRPORT_SRCV:-missing}"
+    if [ -n "${AIRPORT_WAMA:-}" ] || [ -n "${AIRPORT_RAMA:-}" ] || [ -n "${AIRPORT_RAM2:-}" ] || [ -n "${AIRPORT_SYVS:-}" ] || [ -n "${AIRPORT_SRCV:-}" ]; then
         set -- "$@" \
             --airport-wama "$AIRPORT_WAMA" \
             --airport-rama "$AIRPORT_RAMA" \
@@ -557,8 +686,6 @@ start_mdns() {
         else
             log "airport syAP missing; advertising _airport._tcp without syAP"
         fi
-    else
-        log "airport clone fields incomplete; skipping _airport._tcp advertisement"
     fi
     set -- "$@" \
         --adisk-share "$SMB_SHARE_NAME" \
@@ -623,42 +750,42 @@ if ! prepare_locks_ramdisk; then
 fi
 prepare_ram_root
 prepare_legacy_prefix
-log "boot start"
+log "managed Samba boot startup beginning"
 
 BIND_INTERFACES=$(wait_for_bind_interfaces) || {
-    log "failed to determine $NET_IFACE IPv4 address"
+    log "network startup failed: could not determine $NET_IFACE IPv4 address"
     exit 1
 }
 BRIDGE0_IP=${BIND_INTERFACES#127.0.0.1/8 }
 BRIDGE0_IP=${BRIDGE0_IP%%/*}
 
-start_mdns
+start_mdns_capture
 
-log "waiting for Apple-mounted data volume before manual mount fallback"
+log "disk discovery: waiting for Apple-mounted data volume before manual mount fallback"
 
 if DATA_ROOT=$(discover_preexisting_data_root); then
     :
 else
     VOLUME_ROOT=$(mount_fallback_volume) || {
-        log "failed to mount fallback data volume"
+        log "disk discovery failed: no fallback data volume mounted"
         exit 1
     }
     DATA_ROOT=$(resolve_data_root_on_mounted_volume "$VOLUME_ROOT") || {
-        log "failed to discover or initialize data root on mounted volume"
+        log "data root resolution failed on mounted volume $VOLUME_ROOT"
         exit 1
     }
-    log "found data root after manual mount: $DATA_ROOT"
+    log "data root resolved after manual mount: $DATA_ROOT"
 fi
 
 PAYLOAD_DIR=$(find_payload_dir "$DATA_ROOT") || {
-    log "missing payload directory under mounted volume"
+    log "payload discovery failed: missing payload directory under mounted volume"
     exit 1
 }
 CACHE_DIRECTORY=__CACHE_DIRECTORY__
-log "data root: $DATA_ROOT"
+log "data root selected: $DATA_ROOT"
 
 SMBD_SRC=$(find_payload_smbd "$PAYLOAD_DIR") || {
-    log "missing smbd in payload directory"
+    log "payload discovery failed: missing smbd binary in $PAYLOAD_DIR"
     exit 1
 }
 
@@ -670,14 +797,15 @@ else
 fi
 
 stage_runtime "$PAYLOAD_DIR" "$SMBD_SRC" "$NBNS_SRC"
-log "runtime staged under $RAM_ROOT"
-
-start_nbns
+log "runtime staging complete under $RAM_ROOT"
 
 start_smbd || {
-    log "smbd did not become ready"
+    log "smbd startup failed: daemon_ready was not observed"
     exit 1
 }
-log "smbd ready"
+log "smbd startup complete: daemon_ready observed"
+
+start_mdns_advertiser
+start_nbns
 
 exit 0

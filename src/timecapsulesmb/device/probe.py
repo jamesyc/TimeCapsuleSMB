@@ -886,7 +886,7 @@ def probe_managed_runtime(
     timeout_seconds: int = 120,
     poll_interval_seconds: float = 5.0,
     smbd_mdns_stagger_seconds: float = 1.0,
-    mdns_settle_seconds: float = 5.0,
+    mdns_settle_seconds: float = 3.0,
 ) -> ManagedRuntimeProbeResult:
     return probe_managed_runtime_conn(
         _conn(host, password, ssh_opts),
@@ -903,7 +903,7 @@ def probe_managed_runtime_conn(
     timeout_seconds: int = 120,
     poll_interval_seconds: float = 5.0,
     smbd_mdns_stagger_seconds: float = 1.0,
-    mdns_settle_seconds: float = 5.0,
+    mdns_settle_seconds: float = 3.0,
 ) -> ManagedRuntimeProbeResult:
     deadline = time.monotonic() + timeout_seconds
     last_smbd = ManagedSmbdProbeResult(ready=False, detail="managed smbd not ready")

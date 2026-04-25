@@ -172,7 +172,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if is_netbsd4:
             print("Activating NetBSD4 payload without reboot.")
             run_remote_actions(connection, plan.activation_actions)
-            if not verify_managed_runtime(connection, timeout_seconds=180, heading="Waiting for verification of NetBSD 4 device activation..."):
+            if not verify_managed_runtime(connection, timeout_seconds=180, heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up..."):
                 print("NetBSD4 activation failed.")
                 command_context.fail_with_error("NetBSD4 activation failed.")
                 command_context.add_debug_context()
@@ -205,7 +205,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.update_fields(device_came_back_after_reboot=True)
             print("Device is back online.")
             print("Waiting for managed runtime to finish starting...")
-            if not verify_managed_runtime(connection, timeout_seconds=180, heading="Waiting for verification that device successfully finished loading..."):
+            if not verify_managed_runtime(connection, timeout_seconds=180, heading="Wait for device to finish loading; it can take a few minutes for Samba to start up..."):
                 print("Managed runtime did not become ready after reboot.")
                 command_context.fail_with_error("Managed runtime did not become ready after reboot.")
                 command_context.add_debug_context()

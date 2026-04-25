@@ -25,7 +25,7 @@ ADISK_UUID=__ADISK_UUID__
 
 RECOVERY_POLL_SECONDS=10
 STEADY_POLL_SECONDS=300
-INITIAL_STARTUP_DELAY_SECONDS=30
+INITIAL_STARTUP_DELAY_SECONDS=${1:-30}
 SNAPSHOT_BOOTSTRAP_GRACE_SECONDS=120
 WATCHDOG_START_TS=$(/bin/date +%s)
 
@@ -50,13 +50,13 @@ start_smbd_if_needed() {
     fi
 
     if [ ! -x "$SMBD_BIN" ] || [ ! -f "$SMBD_CONF" ]; then
-        log "smbd missing and runtime not ready"
+        log "watchdog recovery: smbd is not running, but runtime is not staged yet"
         return 0
     fi
 
     rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true
     "$SMBD_BIN" -D -s "$SMBD_CONF" >/dev/null 2>&1 || true
-    log "smbd restart requested"
+    log "watchdog recovery: smbd restart requested"
 }
 
 restart_mdns() {
@@ -65,18 +65,18 @@ restart_mdns() {
     fi
 
     if [ ! -f "$APPLE_MDNS_SNAPSHOT" ] && [ "$elapsed" -lt "$SNAPSHOT_BOOTSTRAP_GRACE_SECONDS" ]; then
-        log "mdns restart deferred; waiting for startup snapshot bootstrap"
+        log "watchdog recovery: mdns restart deferred while startup snapshot capture may still be running"
         return 0
     fi
 
     iface_ip=$(get_iface_ipv4 "$NET_IFACE" || true)
     iface_mac=$(get_iface_mac "$NET_IFACE" || true)
     if [ -z "$iface_ip" ] || [ "$iface_ip" = "0.0.0.0" ]; then
-        log "mdns restart skipped; missing $NET_IFACE IPv4"
+        log "watchdog recovery: mdns restart skipped because $NET_IFACE has no IPv4 address"
         return 0
     fi
     if [ -z "$iface_mac" ]; then
-        log "mdns restart skipped; missing $NET_IFACE MAC address"
+        log "watchdog recovery: mdns restart skipped because $NET_IFACE has no MAC address"
         return 0
     fi
 
@@ -123,7 +123,7 @@ restart_mdns() {
     else
         "$@" >/dev/null 2>&1 &
     fi
-    log "mdns restart requested"
+    log "watchdog recovery: mdns restart requested"
 }
 
 restart_nbns() {
@@ -132,13 +132,13 @@ restart_nbns() {
     fi
 
     if [ ! -x "$NBNS_BIN" ]; then
-        log "nbns restart skipped; missing runtime binary"
+        log "watchdog recovery: nbns restart skipped because runtime binary is missing"
         return 0
     fi
 
     iface_ip=$(get_iface_ipv4 "$NET_IFACE" || true)
     if [ -z "$iface_ip" ] || [ "$iface_ip" = "0.0.0.0" ]; then
-        log "nbns restart skipped; missing $NET_IFACE IPv4"
+        log "watchdog recovery: nbns restart skipped because $NET_IFACE has no IPv4 address"
         return 0
     fi
 
@@ -151,7 +151,7 @@ restart_nbns() {
         --name "$SMB_NETBIOS_NAME" \
         --ipv4 "$iface_ip" \
         >/dev/null 2>&1 &
-    log "nbns restart requested"
+    log "watchdog recovery: nbns restart requested"
 }
 
 nbns_enabled() {
@@ -177,7 +177,7 @@ all_managed_services_healthy() {
 }
 
 elapsed=0
-log "watchdog start"
+log "watchdog startup beginning; initial recovery delay ${INITIAL_STARTUP_DELAY_SECONDS}s"
 sleep "$INITIAL_STARTUP_DELAY_SECONDS"
 
 while :; do
