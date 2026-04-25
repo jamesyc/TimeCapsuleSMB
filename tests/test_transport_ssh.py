@@ -136,6 +136,54 @@ class SSHTransportTests(unittest.TestCase):
         self.assertEqual(spawn_mock.call_count, 2)
         sleep_mock.assert_called_once_with(1)
 
+    def test_run_ssh_check_false_returns_nonzero_process(self) -> None:
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+            with mock.patch(
+                "timecapsulesmb.transport.ssh._spawn_with_password",
+                return_value=(7, "remote command failed\n"),
+            ):
+                proc = ssh_transport.run_ssh(
+                    ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no"),
+                    "/bin/false",
+                    check=False,
+                    timeout=10,
+                )
+        self.assertEqual(proc.returncode, 7)
+        self.assertEqual(proc.stdout, "remote command failed\n")
+
+    def test_run_ssh_check_true_raises_on_nonzero_process(self) -> None:
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+            with mock.patch(
+                "timecapsulesmb.transport.ssh._spawn_with_password",
+                return_value=(7, "remote command failed\n"),
+            ):
+                with self.assertRaises(SystemExit) as exc:
+                    ssh_transport.run_ssh(
+                        ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no"),
+                        "/bin/false",
+                        check=True,
+                        timeout=10,
+                    )
+        self.assertEqual(str(exc.exception), "remote command failed")
+
+    def test_run_ssh_check_true_uses_rc_fallback_when_output_is_noise_only(self) -> None:
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+            with mock.patch(
+                "timecapsulesmb.transport.ssh._spawn_with_password",
+                return_value=(
+                    7,
+                    "Warning: Permanently added '192.168.1.118' (RSA) to the list of known hosts.\n",
+                ),
+            ):
+                with self.assertRaises(SystemExit) as exc:
+                    ssh_transport.run_ssh(
+                        ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no"),
+                        "/bin/false",
+                        check=True,
+                        timeout=10,
+                    )
+        self.assertEqual(str(exc.exception), "ssh command failed with rc=7")
+
     def test_extract_ssh_transport_error_detects_forward_bind_failure(self) -> None:
         output = (
             "bind [127.0.0.1]:108: Permission denied\n"
@@ -237,6 +285,10 @@ class SSHTransportTests(unittest.TestCase):
             ],
         )
 
+    def test_ssh_opts_use_proxy_falls_back_for_unbalanced_quotes(self) -> None:
+        self.assertTrue(ssh_transport.ssh_opts_use_proxy("-J jump.example 'unterminated"))
+        self.assertTrue(ssh_transport.ssh_opts_use_proxy("-oProxyCommand='unterminated"))
+
     def test_normalize_ssh_tokens_preserves_proxycommand_payload(self) -> None:
         with mock.patch(
             "timecapsulesmb.transport.ssh._ssh_option_supported",
@@ -303,6 +355,71 @@ class SSHTransportTests(unittest.TestCase):
             ),
         ):
             self.assertFalse(ssh_transport._ssh_option_supported("PubkeyAcceptedAlgorithms"))
+
+    def test_ssh_option_supported_returns_false_when_ssh_binary_is_missing(self) -> None:
+        with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=OSError("missing ssh")):
+            self.assertFalse(ssh_transport._ssh_option_supported("PubkeyAcceptedAlgorithms"))
+
+    def test_spawn_with_password_reports_missing_pexpect(self) -> None:
+        with mock.patch.dict("sys.modules", {"pexpect": None}):
+            with self.assertRaises(SystemExit) as exc:
+                ssh_transport._spawn_with_password(
+                    ["ssh", "host", "cmd"],
+                    "pw",
+                    timeout=10,
+                    timeout_message="timeout",
+                )
+        self.assertIn("pexpect is required for SSH transport", str(exc.exception))
+
+    def test_ssh_local_forward_waits_for_port_and_closes_child(self) -> None:
+        try:
+            import pexpect  # noqa: F401
+        except Exception:
+            self.skipTest("pexpect not available")
+        fake_child = mock.Mock()
+        fake_child.expect.side_effect = [0, 1, 3]
+        fake_child.before = ""
+        fake_child.isalive.return_value = True
+        with mock.patch("pexpect.spawn", return_value=fake_child) as spawn_mock:
+            with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+                with mock.patch("timecapsulesmb.transport.ssh.tcp_open", return_value=True) as tcp_open_mock:
+                    with ssh_transport.ssh_local_forward(
+                        ssh_transport.SshConnection("root@192.168.1.118", "pw", "-J jump.example"),
+                        local_port=10445,
+                        remote_host="127.0.0.1",
+                        remote_port=445,
+                        ready_timeout=5,
+                    ):
+                        pass
+        cmd = spawn_mock.call_args.args[0:2]
+        self.assertEqual(cmd[0], "ssh")
+        self.assertIn("-J", cmd[1])
+        self.assertIn("jump.example", cmd[1])
+        self.assertEqual(fake_child.sendline.call_args_list, [mock.call("yes"), mock.call("pw")])
+        tcp_open_mock.assert_called_once_with("127.0.0.1", 10445, timeout=0.2)
+        fake_child.close.assert_called_once_with(force=True)
+
+    def test_ssh_local_forward_reports_transport_error_before_ready(self) -> None:
+        try:
+            import pexpect  # noqa: F401
+        except Exception:
+            self.skipTest("pexpect not available")
+        fake_child = mock.Mock()
+        fake_child.expect.side_effect = [2]
+        fake_child.before = "bind [127.0.0.1]:10445: Permission denied\n"
+        with mock.patch("pexpect.spawn", return_value=fake_child):
+            with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+                with self.assertRaises(ssh_transport.SshTransportError) as exc:
+                    with ssh_transport.ssh_local_forward(
+                        ssh_transport.SshConnection("root@192.168.1.118", "pw", ""),
+                        local_port=10445,
+                        remote_host="127.0.0.1",
+                        remote_port=445,
+                        ready_timeout=5,
+                    ):
+                        pass
+        self.assertIn("bind [127.0.0.1]:10445: Permission denied", str(exc.exception))
+        fake_child.close.assert_called_once_with(force=True)
 
     def test_verify_remote_size_retries_transient_failure(self) -> None:
         with NamedTemporaryFile() as tmp:

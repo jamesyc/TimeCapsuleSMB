@@ -12,11 +12,62 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.device.probe import preferred_interface_name, probe_remote_interface_candidates_conn
+from timecapsulesmb.device import probe
+from timecapsulesmb.device.probe import preferred_interface_name, probe_remote_interface_candidates_conn, probe_remote_interface_conn
 from timecapsulesmb.transport.ssh import SshConnection
 
 
 class ProbeTests(unittest.TestCase):
+    def test_probe_run_ssh_wrapper_passes_connection_to_transport_runner(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="ok\n")
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh_command", return_value=proc) as run_ssh_mock:
+            result = probe.run_ssh(connection, "/bin/echo ok", check=False, timeout=7)
+
+        self.assertIs(result, proc)
+        run_ssh_mock.assert_called_once_with(connection, "/bin/echo ok", check=False, timeout=7)
+
+    def test_probe_remote_interface_conn_uses_connection_wrapper_without_old_positional_shape(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="bridge0\n")
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh_command", return_value=proc) as run_ssh_mock:
+            result = probe_remote_interface_conn(connection, "bridge0")
+
+        self.assertTrue(result.exists)
+        run_ssh_mock.assert_called_once()
+        args, kwargs = run_ssh_mock.call_args
+        self.assertEqual(args[0], connection)
+        self.assertEqual(len(args), 2)
+        self.assertFalse(kwargs["check"])
+
+    def test_probe_device_conn_uses_connection_wrapper_for_remote_probe_sequence(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+
+        def fake_run_ssh(_connection: SshConnection, remote_cmd: str, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            if "uname -s" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="NetBSD\n6.0\nearmv4\n")
+            if "bs=1 skip=5" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="little\n")
+            if "ACPData.bin" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="TimeCapsule8,119\n")
+            self.fail(f"unexpected remote command: {remote_cmd}")
+
+        with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=True):
+            with mock.patch("timecapsulesmb.device.probe.run_ssh_command", side_effect=fake_run_ssh) as run_ssh_mock:
+                result = probe.probe_device_conn(connection)
+
+        self.assertTrue(result.ssh_authenticated)
+        self.assertEqual(result.os_name, "NetBSD")
+        self.assertEqual(result.elf_endianness, "little")
+        self.assertEqual(result.airport_model, "TimeCapsule8,119")
+        self.assertEqual(run_ssh_mock.call_count, 3)
+        for call in run_ssh_mock.call_args_list:
+            args, _kwargs = call
+            self.assertEqual(args[0], connection)
+            self.assertEqual(len(args), 2)
+
     def test_probe_remote_interface_candidates_prefers_bridge0_with_private_ipv4(self) -> None:
         ifconfig_output = """
 gec0: flags=eb43<UP,BROADCAST,RUNNING,PROMISC,ALLMULTI,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
