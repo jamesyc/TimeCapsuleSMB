@@ -25,7 +25,7 @@ from timecapsulesmb.deploy.verify import (
     verify_managed_runtime,
 )
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, payload_family_description, render_compatibility_message
-from timecapsulesmb.device.probe import build_device_paths, discover_volume_root_conn as discover_volume_root, wait_for_ssh_state_conn
+from timecapsulesmb.device.probe import build_device_paths, discover_volume_root_conn, wait_for_ssh_state_conn
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import run_ssh_conn
 from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_green, color_red
@@ -62,7 +62,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         target = command_context.resolve_validated_managed_target(profile="deploy", include_probe=True)
         connection = target.connection
-        host, password, ssh_opts = connection.host, connection.password, connection.ssh_opts
+        host = connection.host
+        smb_password = connection.password
 
         artifact_results = validate_artifacts(REPO_ROOT)
         failures = [message for _, ok, message in artifact_results if not ok]
@@ -84,7 +85,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         is_netbsd4 = is_netbsd4_payload_family(payload_family)
         if not args.json:
             print(f"Using {payload_family_description(payload_family)} payload...")
-        volume_root = discover_volume_root(connection)
+        volume_root = discover_volume_root_conn(connection)
         share_use_disk_root = parse_bool(values.get("TC_SHARE_USE_DISK_ROOT", "false"))
         resolved_artifacts = resolve_payload_artifacts(REPO_ROOT, payload_family)
         smbd_path = resolved_artifacts["smbd"].absolute_path
@@ -163,7 +164,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 rendered_smbconf=rendered_smbconf,
             )
 
-        remote_install_auth_files(connection, plan.private_dir, values["TC_SAMBA_USER"], password)
+        remote_install_auth_files(connection, plan.private_dir, values["TC_SAMBA_USER"], smb_password)
         run_remote_actions(connection, plan.post_auth_actions)
 
         print(f"Deployed Samba payload to {plan.payload_dir}")

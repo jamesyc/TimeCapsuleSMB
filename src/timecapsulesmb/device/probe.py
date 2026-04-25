@@ -266,17 +266,8 @@ class AirportIdentityProbeResult:
     detail: str
 
 
-def _conn(host: str, password: str, ssh_opts: str) -> SshConnection:
-    return SshConnection(host=host, password=password, ssh_opts=ssh_opts)
-
-
 def run_ssh_conn(connection: SshConnection, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
     return run_ssh(connection.host, connection.password, connection.ssh_opts, remote_cmd, check=check, timeout=timeout)
-
-
-def probe_device(host: str, password: str, ssh_opts: str) -> ProbeResult:
-    connection = _conn(host, password, ssh_opts)
-    return probe_device_conn(connection)
 
 
 def probe_device_conn(connection: SshConnection) -> ProbeResult:
@@ -320,17 +311,15 @@ def probe_device_conn(connection: SshConnection) -> ProbeResult:
     )
 
 
-def probe_ssh_command(
-    host: str,
-    password: str,
-    ssh_opts: str,
+def probe_ssh_command_conn(
+    connection: SshConnection,
     command: str,
     *,
     timeout: int = 30,
     expected_stdout_suffix: str | None = None,
 ) -> SshCommandProbeResult:
     try:
-        proc = run_ssh_conn(_conn(host, password, ssh_opts), command, check=False, timeout=timeout)
+        proc = run_ssh_conn(connection, command, check=False, timeout=timeout)
     except SystemExit as exc:
         return SshCommandProbeResult(ok=False, detail=str(exc))
     if proc.returncode == 0:
@@ -341,10 +330,6 @@ def probe_ssh_command(
     return SshCommandProbeResult(ok=False, detail=detail)
 
 
-def _probe_remote_os_info(host: str, password: str, ssh_opts: str) -> tuple[str, str, str]:
-    return _probe_remote_os_info_conn(_conn(host, password, ssh_opts))
-
-
 def _probe_remote_os_info_conn(connection: SshConnection) -> tuple[str, str, str]:
     script = "printf '%s\\n%s\\n%s\\n' \"$(uname -s)\" \"$(uname -r)\" \"$(uname -m)\""
     proc = run_ssh_conn(connection, f"/bin/sh -c {shlex.quote(script)}")
@@ -352,10 +337,6 @@ def _probe_remote_os_info_conn(connection: SshConnection) -> tuple[str, str, str
     if len(lines) < 3:
         raise SystemExit("Failed to determine remote device OS compatibility.")
     return lines[0], lines[1], lines[2]
-
-
-def _probe_remote_elf_endianness(host: str, password: str, ssh_opts: str, path: str = "/bin/sh") -> str:
-    return _probe_remote_elf_endianness_conn(_conn(host, password, ssh_opts), path=path)
 
 
 def _probe_remote_elf_endianness_conn(connection: SshConnection, path: str = "/bin/sh") -> str:
@@ -411,10 +392,6 @@ fi | /usr/bin/sed -n 's/.*\(TimeCapsule[0-9],[0-9][0-9][0-9]\).*/\1/p' | /usr/bi
     return extract_airport_identity_from_acpdata(proc.stdout)
 
 
-def discover_mounted_volume(host: str, password: str, ssh_opts: str) -> MountedVolume:
-    return discover_mounted_volume_conn(_conn(host, password, ssh_opts))
-
-
 def discover_mounted_volume_conn(connection: SshConnection) -> MountedVolume:
     script = r'''
 for dev in dk2 dk3; do
@@ -441,10 +418,6 @@ exit 1
         raise SystemExit("Failed to discover a mounted Time Capsule HFS data volume on the device.")
     device, mountpoint = result.split(" ", 1)
     return MountedVolume(device=device, mountpoint=mountpoint)
-
-
-def probe_remote_interface(host: str, password: str, ssh_opts: str, iface: str) -> RemoteInterfaceProbeResult:
-    return probe_remote_interface_conn(_conn(host, password, ssh_opts), iface)
 
 
 def probe_remote_interface_conn(connection: SshConnection, iface: str) -> RemoteInterfaceProbeResult:
@@ -564,10 +537,6 @@ def preferred_interface_name(
     return best.name
 
 
-def probe_remote_interface_candidates(host: str, password: str, ssh_opts: str) -> RemoteInterfaceCandidatesProbeResult:
-    return probe_remote_interface_candidates_conn(_conn(host, password, ssh_opts))
-
-
 def probe_remote_interface_candidates_conn(connection: SshConnection) -> RemoteInterfaceCandidatesProbeResult:
     proc = run_ssh_conn(connection, "/sbin/ifconfig -a", check=False, timeout=30)
     if proc.returncode != 0:
@@ -591,10 +560,6 @@ def probe_remote_interface_candidates_conn(connection: SshConnection) -> RemoteI
     )
 
 
-def read_interface_ipv4(host: str, password: str, ssh_opts: str, iface: str) -> str:
-    return read_interface_ipv4_conn(_conn(host, password, ssh_opts), iface)
-
-
 def read_interface_ipv4_conn(connection: SshConnection, iface: str) -> str:
     probe_cmd = (
         f"/sbin/ifconfig {shlex.quote(iface)} 2>/dev/null | "
@@ -610,10 +575,6 @@ def read_interface_ipv4_conn(connection: SshConnection, iface: str) -> str:
     if not iface_ip:
         raise SystemExit(f"could not determine IPv4 for interface {iface}")
     return iface_ip
-
-
-def read_active_smb_conf(host: str, password: str, ssh_opts: str) -> str:
-    return read_active_smb_conf_conn(_conn(host, password, ssh_opts))
 
 
 def read_active_smb_conf_conn(connection: SshConnection) -> str:
@@ -641,10 +602,6 @@ def _probe_detail(lines: tuple[str, ...], default: str) -> str:
     return default
 
 
-def probe_managed_smbd(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 20) -> ManagedSmbdProbeResult:
-    return probe_managed_smbd_conn(_conn(host, password, ssh_opts), timeout_seconds=timeout_seconds)
-
-
 def probe_managed_smbd_conn(connection: SshConnection, *, timeout_seconds: int = 20) -> ManagedSmbdProbeResult:
     script = rf'''
 {SMBD_STATUS_HELPERS}
@@ -670,10 +627,6 @@ exit "$status"
     if proc.returncode == 0:
         return ManagedSmbdProbeResult(ready=True, detail=_probe_detail(lines, "managed smbd ready"), lines=lines)
     return ManagedSmbdProbeResult(ready=False, detail=_probe_detail(lines, "managed smbd not ready"), lines=lines)
-
-
-def probe_managed_mdns_takeover(host: str, password: str, ssh_opts: str, *, timeout_seconds: int = 20) -> ManagedMdnsTakeoverProbeResult:
-    return probe_managed_mdns_takeover_conn(_conn(host, password, ssh_opts), timeout_seconds=timeout_seconds)
 
 
 def probe_managed_mdns_takeover_conn(connection: SshConnection, *, timeout_seconds: int = 20) -> ManagedMdnsTakeoverProbeResult:
@@ -715,25 +668,6 @@ exit "$status"
         ready=False,
         detail=_probe_detail(lines, "managed mDNS takeover not active"),
         lines=lines,
-    )
-
-
-def probe_managed_runtime(
-    host: str,
-    password: str,
-    ssh_opts: str,
-    *,
-    timeout_seconds: int = 120,
-    poll_interval_seconds: float = 5.0,
-    smbd_mdns_stagger_seconds: float = 1.0,
-    mdns_settle_seconds: float = 3.0,
-) -> ManagedRuntimeProbeResult:
-    return probe_managed_runtime_conn(
-        _conn(host, password, ssh_opts),
-        timeout_seconds=timeout_seconds,
-        poll_interval_seconds=poll_interval_seconds,
-        smbd_mdns_stagger_seconds=smbd_mdns_stagger_seconds,
-        mdns_settle_seconds=mdns_settle_seconds,
     )
 
 
@@ -797,10 +731,6 @@ def probe_managed_runtime_conn(
     )
 
 
-def nbns_marker_enabled(host: str, password: str, ssh_opts: str, payload_dir: str) -> bool:
-    return nbns_marker_enabled_conn(_conn(host, password, ssh_opts), payload_dir)
-
-
 def nbns_marker_enabled_conn(connection: SshConnection, payload_dir: str) -> bool:
     marker_path = f"{payload_dir}/private/nbns.enabled"
     quoted_marker = shlex.quote(marker_path)
@@ -825,10 +755,6 @@ def probe_paths_absent_conn(
         script_lines.append(f"if [ -e {quoted} ]; then echo PRESENT:{target}; missing=1; else echo ABSENT:{target}; fi")
     script_lines.append("exit \"$missing\"")
     return run_ssh_conn(connection, f"/bin/sh -c {shlex.quote('; '.join(script_lines))}", check=False)
-
-
-def discover_volume_root(host: str, password: str, ssh_opts: str) -> str:
-    return discover_volume_root_conn(_conn(host, password, ssh_opts))
 
 
 def discover_volume_root_conn(connection: SshConnection) -> str:
@@ -893,17 +819,6 @@ def build_device_paths(volume_root: str, payload_dir_name: str, *, share_use_dis
         data_root=data_root,
         data_root_marker=f"{data_root}/.com.apple.timemachine.supported",
     )
-
-
-def wait_for_ssh_state(
-    host: str,
-    password: str,
-    ssh_opts: str,
-    *,
-    expected_up: bool,
-    timeout_seconds: int = 180,
-) -> bool:
-    return wait_for_ssh_state_conn(_conn(host, password, ssh_opts), expected_up=expected_up, timeout_seconds=timeout_seconds)
 
 
 def wait_for_ssh_state_conn(

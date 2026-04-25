@@ -1,25 +1,23 @@
 from __future__ import annotations
 
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.device.probe import probe_ssh_command
+from timecapsulesmb.device.probe import probe_ssh_command_conn
 from timecapsulesmb.transport.local import tcp_open
-from timecapsulesmb.transport.ssh import ssh_opts_use_proxy
+from timecapsulesmb.transport.ssh import SshConnection, ssh_opts_use_proxy
 
 
-def check_ssh_login(target: str, password: str, ssh_opts: str) -> CheckResult:
-    result = probe_ssh_command(
-        target,
-        password,
-        ssh_opts,
+def check_ssh_login(connection: SshConnection) -> CheckResult:
+    result = probe_ssh_command_conn(
+        connection,
         "/bin/echo ok",
         timeout=30,
         expected_stdout_suffix="ok",
     )
     if result.ok:
-        return CheckResult("PASS", f"SSH command works for {target}")
+        return CheckResult("PASS", f"SSH command works for {connection.host}")
     if result.detail.startswith("Connecting to the device failed, SSH error:"):
         return CheckResult("FAIL", result.detail)
-    return CheckResult("FAIL", f"SSH command failed for {target}: {result.detail}")
+    return CheckResult("FAIL", f"SSH command failed for {connection.host}: {result.detail}")
 
 
 def check_smb_port(host: str) -> CheckResult:

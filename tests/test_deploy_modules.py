@@ -55,15 +55,15 @@ from timecapsulesmb.device.probe import (
     ManagedRuntimeProbeResult,
     ManagedSmbdProbeResult,
     build_device_paths,
-    discover_mounted_volume,
-    discover_volume_root,
+    discover_mounted_volume_conn,
+    discover_volume_root_conn,
     extract_airport_identity_from_acpdata,
-    probe_device,
+    probe_device_conn,
     probe_managed_runtime_conn,
-    probe_managed_mdns_takeover,
-    probe_managed_smbd,
+    probe_managed_mdns_takeover_conn,
+    probe_managed_smbd_conn,
     probe_remote_airport_identity_conn,
-    wait_for_ssh_state,
+    wait_for_ssh_state_conn,
 )
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -2146,18 +2146,18 @@ int main(void) {{
         proc = mock.Mock(stdout="\n")
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
             with self.assertRaises(SystemExit):
-                discover_volume_root("root@10.0.0.2", "pw", "-o foo")
+                discover_volume_root_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
 
     def test_discover_volume_root_prefers_existing_share_root(self) -> None:
         proc = mock.Mock(stdout="/Volumes/dk3\n")
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
-            self.assertEqual(discover_volume_root("root@10.0.0.2", "pw", "-o foo"), "/Volumes/dk3")
+            self.assertEqual(discover_volume_root_conn(SshConnection("root@10.0.0.2", "pw", "-o foo")), "/Volumes/dk3")
 
     def test_discover_volume_root_uses_discover_mounted_volume_first(self) -> None:
         mounted = mock.Mock(mountpoint="/Volumes/dk2")
         with mock.patch("timecapsulesmb.device.probe.discover_mounted_volume_conn", return_value=mounted) as mounted_mock:
             with mock.patch("timecapsulesmb.device.probe.run_ssh") as run_ssh_mock:
-                volume = discover_volume_root("root@10.0.0.2", "pw", "-o foo")
+                volume = discover_volume_root_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
         self.assertEqual(volume, "/Volumes/dk2")
         self.assertEqual(mounted_mock.call_args.args[0], SshConnection("root@10.0.0.2", "pw", "-o foo"))
         run_ssh_mock.assert_not_called()
@@ -2166,7 +2166,7 @@ int main(void) {{
         proc = mock.Mock(stdout="/Volumes/dk3\n")
         with mock.patch("timecapsulesmb.device.probe.discover_mounted_volume_conn", side_effect=SystemExit("no mounted volume")):
             with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
-                volume = discover_volume_root("root@10.0.0.2", "pw", "-o foo")
+                volume = discover_volume_root_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
         self.assertEqual(volume, "/Volumes/dk3")
         run_ssh_mock.assert_called_once()
 
@@ -2174,7 +2174,7 @@ int main(void) {{
         proc = mock.Mock(stdout="/Volumes/dk2\n")
         with mock.patch("timecapsulesmb.device.probe.discover_mounted_volume_conn", side_effect=SystemExit("no mounted volume")):
             with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
-                discover_volume_root("root@10.0.0.2", "pw", "-o foo")
+                discover_volume_root_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
         cmd = run_ssh_mock.call_args.args[3]
         self.assertIn('volume="/Volumes/$dev"', cmd)
         self.assertIn('if [ ! -d "$volume" ]; then\n    mkdir -p "$volume"\n    created_mountpoint=1\n  fi', cmd)
@@ -2185,7 +2185,7 @@ int main(void) {{
         proc = mock.Mock(stdout="/Volumes/dk2\n")
         with mock.patch("timecapsulesmb.device.probe.discover_mounted_volume_conn", side_effect=SystemExit("no mounted volume")):
             with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
-                discover_volume_root("root@10.0.0.2", "pw", "-o foo")
+                discover_volume_root_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
         cmd = run_ssh_mock.call_args.args[3]
         self.assertIn('created_mountpoint=0', cmd)
         self.assertIn('created_mountpoint=1', cmd)
@@ -2194,7 +2194,7 @@ int main(void) {{
     def test_discover_mounted_volume_returns_active_device_and_mountpoint(self) -> None:
         proc = mock.Mock(stdout="/dev/dk2 /Volumes/dk2\n", returncode=0)
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
-            mounted = discover_mounted_volume("root@10.0.0.2", "pw", "-o foo")
+            mounted = discover_mounted_volume_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
         self.assertEqual(mounted.device, "/dev/dk2")
         self.assertEqual(mounted.mountpoint, "/Volumes/dk2")
 
@@ -2202,17 +2202,15 @@ int main(void) {{
         proc = mock.Mock(stdout="", returncode=1)
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
             with self.assertRaises(SystemExit):
-                discover_mounted_volume("root@10.0.0.2", "pw", "-o foo")
+                discover_mounted_volume_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
 
     def test_probe_device_skips_direct_tcp_check_for_proxy_ssh_options(self) -> None:
         with mock.patch("timecapsulesmb.device.probe.tcp_open", side_effect=AssertionError("direct TCP probe should be skipped")):
             with mock.patch("timecapsulesmb.device.probe._probe_remote_os_info_conn", return_value=("NetBSD", "4.0", "earmv4")):
                 with mock.patch("timecapsulesmb.device.probe._probe_remote_elf_endianness_conn", return_value="big"):
                     with mock.patch("timecapsulesmb.device.probe.probe_remote_airport_identity_conn", return_value=mock.Mock(model=None, syap=None)):
-                        result = probe_device(
-                            "root@192.168.1.118",
-                            "pw",
-                            "-o ProxyCommand=ssh\\ -W\\ %h:%p\\ bastion",
+                        result = probe_device_conn(
+                            SshConnection("root@192.168.1.118", "pw", "-o ProxyCommand=ssh\\ -W\\ %h:%p\\ bastion")
                         )
         self.assertTrue(result.ssh_port_reachable)
         self.assertTrue(result.ssh_authenticated)
@@ -2222,7 +2220,7 @@ int main(void) {{
     def test_probe_device_direct_target_fails_before_ssh_when_port_closed(self) -> None:
         with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=False) as tcp_open_mock:
             with mock.patch("timecapsulesmb.device.probe._probe_remote_os_info_conn", side_effect=AssertionError("should not ssh")):
-                result = probe_device("root@10.0.0.2", "pw", "-o HostKeyAlgorithms=+ssh-rsa")
+                result = probe_device_conn(SshConnection("root@10.0.0.2", "pw", "-o HostKeyAlgorithms=+ssh-rsa"))
         tcp_open_mock.assert_called_once_with("10.0.0.2", 22)
         self.assertFalse(result.ssh_port_reachable)
         self.assertFalse(result.ssh_authenticated)
@@ -2328,7 +2326,7 @@ int main(void) {{
         )
         with mock.patch("timecapsulesmb.deploy.verify.probe_managed_runtime_conn", return_value=result):
             with redirect_stdout(io.StringIO()):
-                self.assertTrue(verify_managed_runtime("host", "pw", "-o foo", heading="NetBSD4 activation verification:"))
+                self.assertTrue(verify_managed_runtime(SshConnection("host", "pw", "-o foo"), heading="NetBSD4 activation verification:"))
 
     def test_verify_managed_runtime_fails_when_runtime_probe_fails(self) -> None:
         result = ManagedRuntimeProbeResult(
@@ -2340,14 +2338,14 @@ int main(void) {{
         )
         with mock.patch("timecapsulesmb.deploy.verify.probe_managed_runtime_conn", return_value=result):
             with redirect_stdout(io.StringIO()):
-                self.assertFalse(verify_managed_runtime("host", "pw", "-o foo", heading="NetBSD4 activation verification:"))
+                self.assertFalse(verify_managed_runtime(SshConnection("host", "pw", "-o foo"), heading="NetBSD4 activation verification:"))
 
     def test_probe_managed_smbd_single_shot_checks_runtime_conf_parent_and_port_binding(self) -> None:
         with mock.patch(
             "timecapsulesmb.device.probe.run_ssh",
             return_value=mock.Mock(returncode=0, stdout=""),
         ) as run_ssh_mock:
-            self.assertTrue(probe_managed_smbd("host", "pw", "-o foo", timeout_seconds=45).ready)
+            self.assertTrue(probe_managed_smbd_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=45).ready)
         remote_command = run_ssh_mock.call_args.args[3]
         self.assertIn("capture_ps_out()", remote_command)
         self.assertIn("smbd_parent_process_present()", remote_command)
@@ -2367,7 +2365,7 @@ int main(void) {{
             "timecapsulesmb.device.probe.run_ssh",
             return_value=mock.Mock(returncode=1, stdout="FAIL:managed smbd parent process is not running\n"),
         ):
-            result = probe_managed_smbd("host", "pw", "-o foo", timeout_seconds=12)
+            result = probe_managed_smbd_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=12)
         self.assertFalse(result.ready)
         self.assertEqual(result.detail, "managed smbd parent process is not running")
 
@@ -2376,7 +2374,7 @@ int main(void) {{
             "timecapsulesmb.device.probe.run_ssh",
             return_value=mock.Mock(returncode=0, stdout=""),
         ) as run_ssh_mock:
-            self.assertTrue(probe_managed_mdns_takeover("host", "pw", "-o foo", timeout_seconds=45).ready)
+            self.assertTrue(probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=45).ready)
         remote_command = run_ssh_mock.call_args.args[3]
         self.assertIn("capture_ps_out()", remote_command)
         self.assertIn("mdns_process_present()", remote_command)
@@ -2390,7 +2388,7 @@ int main(void) {{
             "timecapsulesmb.device.probe.run_ssh",
             return_value=mock.Mock(returncode=1, stdout="FAIL:Apple mDNSResponder is still running\n"),
         ):
-            result = probe_managed_mdns_takeover("host", "pw", "-o foo", timeout_seconds=12)
+            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=12)
         self.assertFalse(result.ready)
         self.assertEqual(result.detail, "Apple mDNSResponder is still running")
 
@@ -2568,12 +2566,12 @@ int main(void) {{
     def test_wait_for_ssh_state_uses_real_ssh_probe_for_expected_up(self) -> None:
         proc = mock.Mock(returncode=0, stdout="ok\n")
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
-            self.assertTrue(wait_for_ssh_state("root@10.0.0.2", "pw", "-o ProxyCommand=jump", expected_up=True, timeout_seconds=1))
+            self.assertTrue(wait_for_ssh_state_conn(SshConnection("root@10.0.0.2", "pw", "-o ProxyCommand=jump"), expected_up=True, timeout_seconds=1))
         run_ssh_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o ProxyCommand=jump", "/bin/echo ok", check=False, timeout=10)
 
     def test_wait_for_ssh_state_treats_probe_failure_as_down(self) -> None:
         with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=SystemExit("timeout")) as run_ssh_mock:
-            self.assertTrue(wait_for_ssh_state("root@10.0.0.2", "pw", "-o ProxyCommand=jump", expected_up=False, timeout_seconds=1))
+            self.assertTrue(wait_for_ssh_state_conn(SshConnection("root@10.0.0.2", "pw", "-o ProxyCommand=jump"), expected_up=False, timeout_seconds=1))
         run_ssh_mock.assert_called_once_with("root@10.0.0.2", "pw", "-o ProxyCommand=jump", "/bin/echo ok", check=False, timeout=10)
 
     def test_wait_for_ssh_state_retries_until_up(self) -> None:
@@ -2581,7 +2579,7 @@ int main(void) {{
         ok = mock.Mock(returncode=0, stdout="ok\n")
         with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=[fail, ok]) as run_ssh_mock:
             with mock.patch("timecapsulesmb.device.probe.time.sleep") as sleep_mock:
-                self.assertTrue(wait_for_ssh_state("root@10.0.0.2", "pw", "-o ProxyCommand=jump", expected_up=True, timeout_seconds=6))
+                self.assertTrue(wait_for_ssh_state_conn(SshConnection("root@10.0.0.2", "pw", "-o ProxyCommand=jump"), expected_up=True, timeout_seconds=6))
         self.assertEqual(run_ssh_mock.call_count, 2)
         sleep_mock.assert_called_once_with(5)
 
@@ -2589,7 +2587,7 @@ int main(void) {{
         ok = mock.Mock(returncode=0, stdout="ok\n")
         with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=[ok, SystemExit("down")]) as run_ssh_mock:
             with mock.patch("timecapsulesmb.device.probe.time.sleep") as sleep_mock:
-                self.assertTrue(wait_for_ssh_state("root@10.0.0.2", "pw", "-o ProxyCommand=jump", expected_up=False, timeout_seconds=6))
+                self.assertTrue(wait_for_ssh_state_conn(SshConnection("root@10.0.0.2", "pw", "-o ProxyCommand=jump"), expected_up=False, timeout_seconds=6))
         self.assertEqual(run_ssh_mock.call_count, 2)
         sleep_mock.assert_called_once_with(5)
 
@@ -2598,7 +2596,7 @@ int main(void) {{
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=ok) as run_ssh_mock:
             with mock.patch("timecapsulesmb.device.probe.time.time", side_effect=[0.0, 0.0, 2.0]):
                 with mock.patch("timecapsulesmb.device.probe.time.sleep") as sleep_mock:
-                    self.assertFalse(wait_for_ssh_state("root@10.0.0.2", "pw", "-o ProxyCommand=jump", expected_up=False, timeout_seconds=1))
+                    self.assertFalse(wait_for_ssh_state_conn(SshConnection("root@10.0.0.2", "pw", "-o ProxyCommand=jump"), expected_up=False, timeout_seconds=1))
         run_ssh_mock.assert_called_once()
         sleep_mock.assert_called_once_with(5)
 

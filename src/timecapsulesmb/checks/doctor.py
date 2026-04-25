@@ -14,20 +14,20 @@ from timecapsulesmb.checks.smb import (
     check_authenticated_smb_listing,
     check_authenticated_smb_file_ops_detailed,
 )
-from timecapsulesmb.cli.runtime import probe_device_state
+from timecapsulesmb.cli.runtime import probe_connection_state, resolve_env_connection
 from timecapsulesmb.core.config import extract_host, missing_required_keys, validate_config_values
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, is_netbsd6_payload_family, render_compatibility_message
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
     RUNTIME_SMB_CONF,
     build_device_paths,
-    discover_volume_root,
-    probe_managed_mdns_takeover,
-    probe_managed_smbd,
-    nbns_marker_enabled,
-    probe_remote_interface,
-    read_active_smb_conf,
-    read_interface_ipv4,
+    discover_volume_root_conn,
+    probe_managed_mdns_takeover_conn,
+    probe_managed_smbd_conn,
+    nbns_marker_enabled_conn,
+    probe_remote_interface_conn,
+    read_active_smb_conf_conn,
+    read_interface_ipv4_conn,
 )
 from timecapsulesmb.transport.local import find_free_local_port
 from timecapsulesmb.transport.local import command_exists
@@ -139,8 +139,8 @@ def _doctor_smb_servers(values: dict[str, str], bonjour_target: Optional[str]) -
     return ordered
 
 
-def check_xattr_tdb_persistence(host: str, password: str, ssh_opts: str) -> CheckResult:
-    proc_stdout = read_active_smb_conf(host, password, ssh_opts)
+def check_xattr_tdb_persistence(connection: SshConnection) -> CheckResult:
+    proc_stdout = read_active_smb_conf_conn(connection)
     if not proc_stdout.strip():
         return CheckResult("WARN", f"could not inspect active smb.conf at {RUNTIME_SMB_CONF}")
 
@@ -209,9 +209,10 @@ def run_doctor_checks(
     if not env_valid:
         return results, any(is_fatal(result) for result in results)
 
-    host = extract_host(values["TC_HOST"])
-    ssh_opts = values.get("TC_SSH_OPTS", "")
-    proxied_ssh = ssh_opts_use_proxy(ssh_opts)
+    connection = resolve_env_connection(values)
+    host = extract_host(connection.host)
+    smb_password = values["TC_PASSWORD"]
+    proxied_ssh = ssh_opts_use_proxy(connection.ssh_opts)
     ssh_ok = False
     bonjour_instance: Optional[str] = None
     bonjour_target: Optional[str] = None
@@ -220,7 +221,7 @@ def run_doctor_checks(
     active_smb_conf_reason = "SSH check not run"
 
     if not skip_ssh:
-        ssh_result = check_ssh_login(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
+        ssh_result = check_ssh_login(connection)
         add_result(ssh_result)
         ssh_ok = ssh_result.status == "PASS"
     else:
@@ -228,11 +229,11 @@ def run_doctor_checks(
         active_smb_conf_reason = "SSH check skipped"
 
     if not skip_ssh and ssh_ok:
-        interface_probe = probe_remote_interface(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts, values["TC_NET_IFACE"])
+        interface_probe = probe_remote_interface_conn(connection, values["TC_NET_IFACE"])
         if not interface_probe.exists:
             add_result(CheckResult("FAIL", f"TC_NET_IFACE is invalid. Run the `configure` command again. {interface_probe.detail}."))
         try:
-            probed_state = precomputed_probe_state or probe_device_state(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
+            probed_state = precomputed_probe_state or probe_connection_state(connection)
             probe_result = probed_state.probe_result
             compatibility = probed_state.compatibility
             if compatibility is None:
@@ -244,7 +245,7 @@ def run_doctor_checks(
                 add_result(CheckResult("FAIL", render_compatibility_message(compatibility)))
         except (Exception, SystemExit) as e:
             add_result(CheckResult("FAIL", f"device compatibility check failed: {e}"))
-        smbd_probe = probe_managed_smbd(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
+        smbd_probe = probe_managed_smbd_conn(connection)
         _add_probe_line_results(
             add_result,
             getattr(smbd_probe, "lines", ()),
@@ -252,27 +253,19 @@ def run_doctor_checks(
             fallback_pass_message="managed smbd is ready",
             fallback_fail_message=f"managed smbd is not ready ({smbd_probe.detail})",
         )
-        mdns_probe = probe_managed_mdns_takeover(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
+        mdns_probe = probe_managed_mdns_takeover_conn(connection)
         if mdns_probe.ready:
             add_result(CheckResult("PASS", "managed mDNS takeover is active"))
         else:
             add_result(CheckResult("FAIL", f"managed mDNS takeover is not active ({mdns_probe.detail})"))
         try:
-            active_smb_conf = read_active_smb_conf(
-                values["TC_HOST"],
-                values["TC_PASSWORD"],
-                ssh_opts,
-            )
+            active_smb_conf = read_active_smb_conf_conn(connection)
             if not active_smb_conf.strip():
                 active_smb_conf_reason = "active smb.conf unavailable"
             else:
                 active_smb_conf_reason = ""
             add_result(
-                check_xattr_tdb_persistence(
-                    values["TC_HOST"],
-                    values["TC_PASSWORD"],
-                    ssh_opts,
-                )
+                check_xattr_tdb_persistence(connection)
             )
         except (Exception, SystemExit) as e:
             active_smb_conf_reason = str(e)
@@ -333,23 +326,13 @@ def run_doctor_checks(
 
     if not skip_ssh and ssh_ok:
         try:
-            volume_root = discover_volume_root(values["TC_HOST"], values["TC_PASSWORD"], values["TC_SSH_OPTS"])
+            volume_root = discover_volume_root_conn(connection)
             device_paths = build_device_paths(volume_root, values["TC_PAYLOAD_DIR_NAME"])
-            if nbns_marker_enabled(
-                values["TC_HOST"],
-                values["TC_PASSWORD"],
-                values["TC_SSH_OPTS"],
-                device_paths.payload_dir,
-            ):
+            if nbns_marker_enabled_conn(connection, device_paths.payload_dir):
                 if proxied_ssh:
                     add_result(CheckResult("SKIP", "NBNS check skipped for SSH-proxied target; UDP/137 is not reachable through the SSH jump host"))
                 else:
-                    expected_ip = read_interface_ipv4(
-                        values["TC_HOST"],
-                        values["TC_PASSWORD"],
-                        values["TC_SSH_OPTS"],
-                        values["TC_NET_IFACE"],
-                    )
+                    expected_ip = read_interface_ipv4_conn(connection, values["TC_NET_IFACE"])
                     add_result(check_nbns_name_resolution(values["TC_NETBIOS_NAME"], host, expected_ip))
             else:
                 add_result(CheckResult("SKIP", "NBNS responder not enabled"))
@@ -360,7 +343,7 @@ def run_doctor_checks(
         local_port = find_free_local_port()
         try:
             with ssh_local_forward_conn(
-                SshConnection(values["TC_HOST"], values["TC_PASSWORD"], values["TC_SSH_OPTS"]),
+                connection,
                 local_port=local_port,
                 remote_host=host,
                 remote_port=445,
@@ -368,7 +351,7 @@ def run_doctor_checks(
                 add_result(
                     check_authenticated_smb_listing(
                         values["TC_SAMBA_USER"],
-                        values["TC_PASSWORD"],
+                        smb_password,
                         "127.0.0.1",
                         expected_share_name=values["TC_SHARE_NAME"],
                         port=local_port,
@@ -376,7 +359,7 @@ def run_doctor_checks(
                 )
                 for result in check_authenticated_smb_file_ops_detailed(
                     values["TC_SAMBA_USER"],
-                    values["TC_PASSWORD"],
+                    smb_password,
                     "127.0.0.1",
                     values["TC_SHARE_NAME"],
                     port=local_port,
@@ -388,7 +371,7 @@ def run_doctor_checks(
         smb_servers = _doctor_smb_servers(values, bonjour_target)
         listing_result = check_authenticated_smb_listing(
             values["TC_SAMBA_USER"],
-            values["TC_PASSWORD"],
+            smb_password,
             smb_servers,
             expected_share_name=values["TC_SHARE_NAME"],
         )
@@ -399,7 +382,7 @@ def run_doctor_checks(
             )
             for result in check_authenticated_smb_file_ops_detailed(
                 values["TC_SAMBA_USER"],
-                values["TC_PASSWORD"],
+                smb_password,
                 smb_server,
                 values["TC_SHARE_NAME"],
             ):

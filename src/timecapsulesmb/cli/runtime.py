@@ -9,7 +9,7 @@ from timecapsulesmb.device.probe import (
     ProbedDeviceState,
     RemoteInterfaceProbeResult,
     probe_device_conn,
-    probe_remote_interface_conn as probe_remote_interface,
+    probe_remote_interface_conn,
 )
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -66,7 +66,7 @@ def inspect_managed_connection(
     *,
     include_probe: bool = False,
 ) -> ManagedTargetState:
-    interface_probe = probe_remote_interface(connection, iface)
+    interface_probe = probe_remote_interface_conn(connection, iface)
     probe_state = probe_connection_state(connection) if include_probe else None
     return ManagedTargetState(connection=connection, interface_probe=interface_probe, probe_state=probe_state)
 
@@ -88,12 +88,6 @@ def resolve_validated_managed_target(
             f"{target.interface_probe.detail}."
         )
     return target
-
-
-def probe_device_state(host: str, password: str, ssh_opts: str) -> ProbedDeviceState:
-    probe_result = probe_device_conn(SshConnection(host=host, password=password, ssh_opts=ssh_opts))
-    compatibility = compatibility_from_probe_result(probe_result)
-    return ProbedDeviceState(probe_result=probe_result, compatibility=compatibility)
 
 
 def probe_connection_state(connection: SshConnection) -> ProbedDeviceState:

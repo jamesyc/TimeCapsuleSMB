@@ -20,24 +20,24 @@ from timecapsulesmb.core.config import (
     write_env_file,
 )
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import probe_device_state
+from timecapsulesmb.cli.runtime import probe_connection_state
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.device.compat import DeviceCompatibility, render_compatibility_message
 from timecapsulesmb.device.probe import (
     RemoteInterfaceCandidatesProbeResult,
     preferred_interface_name,
-    probe_remote_interface_candidates,
+    probe_remote_interface_candidates_conn,
 )
 from timecapsulesmb.discovery.bonjour import (
     Discovered,
     AIRPORT_SERVICE,
-    discover_time_capsule_candidates,
-    discovered_record_airport_syap,
+    discover,
     discovered_record_root_host,
-    preferred_host,
+    filter_service_records,
     record_has_service,
 )
 from timecapsulesmb.telemetry import TelemetryClient
+from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.cli.util import color_cyan
 
 HIDDEN_CONFIG_KEYS = {"TC_SSH_OPTS", "TC_CONFIGURE_ID"}
@@ -89,7 +89,7 @@ def confirm(prompt_text: str, default_no: bool = False) -> bool:
 def list_devices(records) -> None:
     print("Found devices:")
     for i, record in enumerate(records, start=1):
-        pref = preferred_host(record)
+        pref = record.prefer_host()
         ipv4 = ",".join(record.ipv4) if record.ipv4 else "-"
         print(f"  {i}. {record.name} | host: {pref} | IPv4: {ipv4}")
 
@@ -115,7 +115,7 @@ def choose_device(records):
 
 def discover_default_record(existing: dict[str, str]) -> Optional[Discovered]:
     print("Attempting to discover Time Capsules on the local network via mDNS...", flush=True)
-    records = discover_time_capsule_candidates(timeout=5.0)
+    records = filter_service_records(discover(timeout=5.0), AIRPORT_SERVICE)
     if not records:
         print("No Time Capsules discovered. Falling back to manual SSH target entry.\n", flush=True)
         return None
@@ -127,7 +127,7 @@ def discover_default_record(existing: dict[str, str]) -> Optional[Discovered]:
         return None
 
     chosen_host = discovered_record_root_host(selected)
-    selected_host = chosen_host.removeprefix("root@") if chosen_host else preferred_host(selected)
+    selected_host = chosen_host.removeprefix("root@") if chosen_host else selected.prefer_host()
     print(f"Selected: {selected.name} ({selected_host})\n", flush=True)
     return selected
 
@@ -388,11 +388,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         discovered_record = discover_default_record(existing)
         discovered_host = discovered_record_root_host(discovered_record) if discovered_record else None
         if discovered_record is not None:
-            discovered_airport_syap = discovered_record_airport_syap(discovered_record)
+            discovered_airport_syap = discovered_record.properties.get("syAP") or None
         prompt_host_and_password(existing, values, discovered_host)
         while True:
             print("Checking login information...")
-            probed_state = probe_device_state(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
+            connection = SshConnection(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
+            probed_state = probe_connection_state(connection)
             probe_result = probed_state.probe_result
             if not probe_result.ssh_port_reachable:
                 print("\nSSH is not reachable yet, so configure cannot validate this password.")
@@ -406,7 +407,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 probed_device = probed_state.compatibility
                 if probed_device is not None and not probed_device.supported:
                     raise SystemExit(render_compatibility_message(probed_device))
-                probed_interfaces = probe_remote_interface_candidates(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
+                probed_interfaces = probe_remote_interface_candidates_conn(connection)
                 break
             print("\nThe provided Time Capsule SSH target and password did not work.")
             if confirm("Save this information still?", True):

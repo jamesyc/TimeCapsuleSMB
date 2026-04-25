@@ -22,14 +22,6 @@ SERVICE_TYPES = [
 AIRPORT_SERVICE = "_airport"
 SMB_SERVICE = "_smb"
 
-TIME_CAPSULE_HINTS = (
-    "time capsule",
-    "timecapsule",
-    "capsule",
-    "airport time capsule",
-    "airport",
-)
-
 
 @dataclass
 class Discovered:
@@ -63,10 +55,6 @@ class ServiceObservation:
     properties: dict[str, str] = field(default_factory=dict)
 
 
-def preferred_host(rec: Discovered) -> str:
-    return rec.prefer_host()
-
-
 def prefer_routable_ipv4(rec: Discovered) -> str:
     for ip in rec.ipv4:
         if not ip.startswith("169.254."):
@@ -75,13 +63,8 @@ def prefer_routable_ipv4(rec: Discovered) -> str:
 
 
 def discovered_record_root_host(rec: Discovered) -> str | None:
-    chosen_host = prefer_routable_ipv4(rec) or preferred_host(rec)
+    chosen_host = prefer_routable_ipv4(rec) or rec.prefer_host()
     return f"root@{chosen_host}" if chosen_host else None
-
-
-def discovered_record_airport_syap(rec: Discovered) -> str | None:
-    value = rec.properties.get("syAP")
-    return value or None
 
 
 def _bytes_to_ip(addr_bytes: bytes) -> str:
@@ -125,19 +108,6 @@ def _display_name(fullname: str, service_type: str) -> str:
     if fullname.endswith(suffix):
         return fullname[: -len(suffix)].rstrip(".")
     return fullname.rstrip(".")
-
-
-def looks_like_time_capsule(name: str, hostname: str, props: dict[str, str]) -> bool:
-    lowered_name = name.lower()
-    if any(hint in lowered_name for hint in TIME_CAPSULE_HINTS):
-        return True
-    lowered_host = hostname.lower()
-    if any(hint in lowered_host for hint in TIME_CAPSULE_HINTS):
-        return True
-    model = props.get("model", "").lower()
-    if any(hint in model for hint in TIME_CAPSULE_HINTS):
-        return True
-    return "timecapsule" in model.replace(" ", "")
 
 
 def _normalize_hostname(value: str) -> str:
@@ -266,11 +236,6 @@ def discover(timeout: float = 5.0) -> list[Discovered]:
 
     records.sort(key=lambda record: (record.service_type or "", record.hostname or "", record.name or ""))
     return records
-
-
-def discover_time_capsule_candidates(timeout: float = 5.0) -> list[Discovered]:
-    records = filter_service_records(discover(timeout=timeout), AIRPORT_SERVICE)
-    return [record for record in records if looks_like_time_capsule(record.name, record.hostname, record.properties)]
 
 
 def record_has_service(record: Discovered, service: str) -> bool:

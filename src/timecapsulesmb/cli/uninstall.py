@@ -11,7 +11,7 @@ from timecapsulesmb.deploy.dry_run import format_uninstall_plan, uninstall_plan_
 from timecapsulesmb.deploy.executor import remote_uninstall_payload
 from timecapsulesmb.deploy.planner import build_uninstall_plan
 from timecapsulesmb.deploy.verify import verify_post_uninstall
-from timecapsulesmb.device.probe import build_device_paths, discover_volume_root_conn as discover_volume_root, wait_for_ssh_state_conn
+from timecapsulesmb.device.probe import build_device_paths, discover_volume_root_conn, wait_for_ssh_state_conn
 from timecapsulesmb.transport.ssh import run_ssh_conn
 
 
@@ -33,7 +33,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     require_valid_config(values, profile="uninstall")
     connection = resolve_env_connection(values, allow_empty_password=True)
 
-    volume_root = discover_volume_root(connection)
+    volume_root = discover_volume_root_conn(connection)
     device_paths = build_device_paths(volume_root, values["TC_PAYLOAD_DIR_NAME"])
     plan = build_uninstall_plan(connection.host, device_paths, reboot_after_uninstall=not args.no_reboot)
 
