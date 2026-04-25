@@ -38,8 +38,15 @@
 #define SNAPSHOT_MAX_TXT_ITEMS 16
 #define SNAPSHOT_LINE_MAX 1024
 #define SNAPSHOT_MAX_SERVICE_TYPES 64
+#ifndef SNAPSHOT_CAPTURE_TIMEOUT_SECONDS
 #define SNAPSHOT_CAPTURE_TIMEOUT_SECONDS 60
+#endif
+#ifndef SNAPSHOT_CAPTURE_RETRY_INTERVAL_SECONDS
 #define SNAPSHOT_CAPTURE_RETRY_INTERVAL_SECONDS 5
+#endif
+#ifndef SNAPSHOT_CAPTURE_STEP_SECONDS
+#define SNAPSHOT_CAPTURE_STEP_SECONDS 5
+#endif
 #define TAKEOVER_RETRY_COUNT 6
 #define STARTUP_BURST_COUNT 7
 
@@ -385,9 +392,10 @@ static int service_type_set_add(struct service_type_set *set, const char *servic
 static void usage(const char *prog) {
     fprintf(stderr,
             "Usage: %s --instance <name> --host <label> --ipv4 <address> [options]\n"
+            "       %s --save-snapshot <path> [--save-all-snapshot <path>] [airport identity options]\n"
             "Options:\n"
             "  --save-all-snapshot <path> Capture raw LAN-wide mDNS records into a snapshot file\n"
-            "  --save-snapshot <path> Capture Apple mDNS records into a snapshot file\n"
+            "  --save-snapshot <path> Capture Apple mDNS records into a snapshot file; without --load-snapshot, capture and exit\n"
             "  --load-snapshot <path> Kill Apple mDNSResponder and replay snapshot records\n"
             "  --shared-bind     Allow shared UDP 5353 binding instead of exclusive takeover\n"
             "  --service <type>   Service type (default: _smb._tcp.local.)\n"
@@ -409,7 +417,7 @@ static void usage(const char *prog) {
             "  --airport-port <p> _airport._tcp service port (default: 5009)\n"
             "  --port <port>      Service port (default: 445)\n"
             "  --ttl <seconds>    Record TTL (default: 120)\n",
-            prog);
+            prog, prog);
 }
 
 static int append_bytes(uint8_t *buf, size_t *off, size_t cap, const void *src, size_t len) {
@@ -1637,18 +1645,18 @@ static int capture_mdns_snapshot_raw(struct service_record_set *out) {
     mdns_dest.sin_addr.s_addr = inet_addr(MDNS_GROUP);
 
     (void)send_query_question(sockfd, &mdns_dest, "_services._dns-sd._udp.local.", DNS_TYPE_PTR);
-    (void)collect_mdns_responses(sockfd, 5, out, &service_types);
+    (void)collect_mdns_responses(sockfd, SNAPSHOT_CAPTURE_STEP_SECONDS, out, &service_types);
 
     for (i = 0; i < service_types.count; i++) {
         (void)send_query_question(sockfd, &mdns_dest, service_types.types[i], DNS_TYPE_PTR);
     }
-    (void)collect_mdns_responses(sockfd, 5, out, &service_types);
+    (void)collect_mdns_responses(sockfd, SNAPSHOT_CAPTURE_STEP_SECONDS, out, &service_types);
 
     for (i = 0; i < out->count; i++) {
         (void)send_query_question(sockfd, &mdns_dest, out->records[i].instance_fqdn, DNS_TYPE_SRV);
         (void)send_query_question(sockfd, &mdns_dest, out->records[i].instance_fqdn, DNS_TYPE_TXT);
     }
-    (void)collect_mdns_responses(sockfd, 5, out, &service_types);
+    (void)collect_mdns_responses(sockfd, SNAPSHOT_CAPTURE_STEP_SECONDS, out, &service_types);
     close(sockfd);
 
     return out->count > 0 ? 0 : -1;
@@ -2553,6 +2561,7 @@ int main(int argc, char **argv) {
     time_t last_announce = 0;
     int use_snapshot_records = 0;
     int shared_bind = 0;
+    int capture_only = 0;
     static const unsigned int startup_burst_offsets_ms[STARTUP_BURST_COUNT] = {0, 250, 1000, 2000, 3000, 4000, 5000};
     size_t startup_burst_index = 0;
     long long startup_burst_start_ms = 0;
@@ -2631,13 +2640,16 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (cfg.instance_name[0] == '\0' || cfg.host_label[0] == '\0' || cfg.ipv4_addr == 0) {
+    capture_only = (cfg.load_snapshot_path[0] == '\0' &&
+                    (cfg.save_all_snapshot_path[0] != '\0' || cfg.save_snapshot_path[0] != '\0'));
+
+    if (!capture_only && (cfg.instance_name[0] == '\0' || cfg.host_label[0] == '\0' || cfg.ipv4_addr == 0)) {
         usage(argv[0]);
         return EXIT_MISSING_REQUIRED_ARGS;
     }
 
-    if (validate_single_dns_label(cfg.instance_name, "instance name") != 0 ||
-        validate_single_dns_label(cfg.host_label, "host label") != 0) {
+    if ((cfg.instance_name[0] != '\0' && validate_single_dns_label(cfg.instance_name, "instance name") != 0) ||
+        (cfg.host_label[0] != '\0' && validate_single_dns_label(cfg.host_label, "host label") != 0)) {
         return EXIT_INVALID_DNS_LABEL;
     }
     if (validate_dns_name(cfg.service_type, "service type") != 0) {
@@ -2669,8 +2681,15 @@ int main(int argc, char **argv) {
         }
     }
 
-    snprintf(cfg.host_fqdn, sizeof(cfg.host_fqdn), "%s.local.", cfg.host_label);
-    log_startup_config(&cfg, shared_bind);
+    if (!capture_only) {
+        snprintf(cfg.host_fqdn, sizeof(cfg.host_fqdn), "%s.local.", cfg.host_label);
+        log_startup_config(&cfg, shared_bind);
+    } else {
+        fprintf(stderr, "mdns capture-only: save_all=%s save_trusted=%s airport_identity=%s\n",
+                cfg.save_all_snapshot_path[0] != '\0' ? cfg.save_all_snapshot_path : "(none)",
+                cfg.save_snapshot_path[0] != '\0' ? cfg.save_snapshot_path : "(none)",
+                cfg_has_airport_identity_macs(&cfg) ? "present" : "missing");
+    }
 
     if (cfg.save_all_snapshot_path[0] != '\0' || cfg.save_snapshot_path[0] != '\0') {
         struct service_record_set captured_records;
@@ -2703,6 +2722,11 @@ int main(int argc, char **argv) {
         } else {
             fprintf(stderr, "warning: could not capture Apple mDNS snapshot\n");
         }
+    }
+
+    if (capture_only) {
+        fprintf(stderr, "mdns capture-only: exiting without UDP 5353 takeover or advertisement\n");
+        return EXIT_OK;
     }
 
     if (cfg.load_snapshot_path[0] != '\0') {

@@ -93,6 +93,62 @@ class DeployModuleTests(unittest.TestCase):
                 check=False,
             )
 
+    def _compile_mdns_advertiser_binary(self, tmp: Path) -> Path:
+        if shutil.which("cc") is None:
+            self.skipTest("cc not available")
+
+        bin_path = tmp / "mdns-advertiser"
+        proc = subprocess.run(
+            [
+                "cc",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-DSNAPSHOT_CAPTURE_TIMEOUT_SECONDS=0",
+                "-DSNAPSHOT_CAPTURE_RETRY_INTERVAL_SECONDS=0",
+                "-DSNAPSHOT_CAPTURE_STEP_SECONDS=0",
+                str(REPO_ROOT / "build" / "mdns-advertiser.c"),
+                "-o",
+                str(bin_path),
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return bin_path
+
+    def _run_mdns_advertiser_until_ready_or_exit(self, bin_path: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+        proc = subprocess.Popen(
+            [str(bin_path), *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            stdout, stderr = proc.communicate(timeout=2)
+            return subprocess.CompletedProcess([str(bin_path), *args], proc.returncode, stdout, stderr)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            try:
+                stdout, stderr = proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                stdout, stderr = proc.communicate(timeout=2)
+            return subprocess.CompletedProcess([str(bin_path), *args], proc.returncode, stdout, stderr)
+
+    def _write_matching_airport_snapshot(self, path: Path) -> None:
+        path.write_text(
+            "BEGIN\n"
+            "TYPE=_airport._tcp.local.\n"
+            "INSTANCE=Home\n"
+            "HOST=Home.local.\n"
+            "PORT=5009\n"
+            "TXT=waMA=80-EA-96-E6-58-68,syAP=119\n"
+            "END\n"
+        )
+
     def test_nt_hash_hex_is_stable(self) -> None:
         self.assertEqual(nt_hash_hex("password"), "8846F7EAEE8FB117AD06BDD830B7586C")
 
@@ -1267,6 +1323,133 @@ int main(void) {{
 '''.format(mdns_source=mdns_source)
         run = self._compile_and_run_c_helper(source, "mdns_airport_txt_invalid_mac")
         self.assertEqual(run.returncode, 0, run.stderr)
+
+    def test_mdns_advertiser_no_args_returns_usage_without_running(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bin_path = self._compile_mdns_advertiser_binary(Path(tmpdir))
+            run = subprocess.run([str(bin_path)], capture_output=True, text=True, check=False)
+        self.assertEqual(run.returncode, 4)
+        self.assertIn("Usage:", run.stderr)
+        self.assertNotIn("serving summary", run.stderr)
+
+    def test_mdns_advertiser_save_args_capture_and_exit_without_takeover(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bin_path = self._compile_mdns_advertiser_binary(tmp)
+            all_snapshot = tmp / "allmdns.txt"
+            apple_snapshot = tmp / "applemdns.txt"
+            run = subprocess.run(
+                [
+                    str(bin_path),
+                    "--save-all-snapshot",
+                    str(all_snapshot),
+                    "--save-snapshot",
+                    str(apple_snapshot),
+                    "--airport-wama",
+                    "80:EA:96:E6:58:68",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("mdns capture-only:", run.stderr)
+        self.assertIn("exiting without UDP 5353 takeover or advertisement", run.stderr)
+        self.assertNotIn("serving summary", run.stderr)
+        self.assertNotIn("mDNS takeover", run.stderr)
+
+    def test_mdns_advertiser_load_arg_requires_advertising_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bin_path = self._compile_mdns_advertiser_binary(tmp)
+            snapshot = tmp / "applemdns.txt"
+            self._write_matching_airport_snapshot(snapshot)
+            run = subprocess.run(
+                [str(bin_path), "--load-snapshot", str(snapshot)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(run.returncode, 4)
+        self.assertIn("Usage:", run.stderr)
+        self.assertNotIn("snapshot load:", run.stderr)
+
+    def test_mdns_advertiser_load_arg_reaches_takeover_after_loading_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bin_path = self._compile_mdns_advertiser_binary(tmp)
+            snapshot = tmp / "applemdns.txt"
+            self._write_matching_airport_snapshot(snapshot)
+            run = self._run_mdns_advertiser_until_ready_or_exit(
+                bin_path,
+                [
+                    "--load-snapshot",
+                    str(snapshot),
+                    "--instance",
+                    "TimeCapsule",
+                    "--host",
+                    "timecapsulesamba",
+                    "--ipv4",
+                    "127.0.0.1",
+                    "--airport-wama",
+                    "80:EA:96:E6:58:68",
+                ],
+            )
+        self.assertIn("snapshot load: loaded 1 records, advertising 1 snapshot records", run.stderr)
+        self.assertIn("serving summary:", run.stderr)
+        self.assertNotIn("mdns capture-only:", run.stderr)
+
+    def test_mdns_advertiser_save_and_load_args_preserve_combined_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bin_path = self._compile_mdns_advertiser_binary(tmp)
+            all_snapshot = tmp / "allmdns.txt"
+            apple_snapshot = tmp / "applemdns.txt"
+            self._write_matching_airport_snapshot(apple_snapshot)
+            run = self._run_mdns_advertiser_until_ready_or_exit(
+                bin_path,
+                [
+                    "--save-all-snapshot",
+                    str(all_snapshot),
+                    "--save-snapshot",
+                    str(apple_snapshot),
+                    "--load-snapshot",
+                    str(apple_snapshot),
+                    "--instance",
+                    "TimeCapsule",
+                    "--host",
+                    "timecapsulesamba",
+                    "--ipv4",
+                    "127.0.0.1",
+                    "--airport-wama",
+                    "80:EA:96:E6:58:68",
+                ],
+            )
+        self.assertIn("warning: could not capture Apple mDNS snapshot", run.stderr)
+        self.assertIn("snapshot load: loaded 1 records, advertising 1 snapshot records", run.stderr)
+        self.assertIn("serving summary:", run.stderr)
+        self.assertNotIn("mdns capture-only:", run.stderr)
+
+    def test_mdns_advertiser_capture_only_validates_optional_dns_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bin_path = self._compile_mdns_advertiser_binary(tmp)
+            run = subprocess.run(
+                [
+                    str(bin_path),
+                    "--save-snapshot",
+                    str(tmp / "applemdns.txt"),
+                    "--host",
+                    "bad.host",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(run.returncode, 5)
+        self.assertIn("host label must not contain dots", run.stderr)
+        self.assertNotIn("mdns capture-only:", run.stderr)
 
     def test_mdns_advertiser_extracts_service_type_from_arbitrary_instance_fqdn(self) -> None:
         if shutil.which("cc") is None:
