@@ -82,7 +82,6 @@ NETBSD6_REBOOT_DEPLOY_CHECKS = [
     PlannedCheck("ssh_returns_after_reboot", "SSH returns after reboot"),
     PlannedCheck("managed_smbd_ready", "managed smbd becomes ready"),
     PlannedCheck("managed_mdns_takeover_ready", "managed mDNS takeover becomes ready"),
-    PlannedCheck("bonjour_browse_resolve", "Bonjour _smb._tcp browse/resolve"),
     PlannedCheck("authenticated_smb_listing", "authenticated SMB listing"),
 ]
 

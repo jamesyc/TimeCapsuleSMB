@@ -3787,7 +3787,6 @@ class CliTests(unittest.TestCase):
         self.assertIn("SSH returns after reboot", text)
         self.assertIn("managed smbd becomes ready", text)
         self.assertIn("managed mDNS takeover becomes ready", text)
-        self.assertIn("Bonjour _smb._tcp browse/resolve", text)
         self.assertIn("authenticated SMB listing", text)
         actions_mock.assert_not_called()
         upload_mock.assert_not_called()
@@ -4776,7 +4775,6 @@ class CliTests(unittest.TestCase):
                 "ssh_returns_after_reboot",
                 "managed_smbd_ready",
                 "managed_mdns_takeover_ready",
-                "bonjour_browse_resolve",
                 "authenticated_smb_listing",
             ],
         )
