@@ -325,7 +325,7 @@ describe_managed_mdns_status() {{
         echo "FAIL:Apple mDNSResponder is still running"
         status=1
     else
-        echo "PASS:Apple mDNSResponder is not running"
+        echo "PASS:Apple mDNSResponder is stopped"
     fi
     return "$status"
 }}
