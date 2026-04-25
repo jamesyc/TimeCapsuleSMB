@@ -541,7 +541,7 @@ class DeployModuleTests(unittest.TestCase):
         discover_body = rendered[rendered.index("discover_preexisting_data_root()"):rendered.index("resolve_data_root_on_mounted_volume()")]
         self.assertIn("wait_for_existing_data_root", discover_body)
         wait_section = rendered[rendered.index("wait_for_existing_data_root()"):rendered.index("try_mount_candidate()")]
-        self.assertIn('while [ "$attempt" -lt 20 ]; do', wait_section)
+        self.assertIn('while [ "$attempt" -lt 30 ]; do', wait_section)
         self.assertIn('log "data root was mounted after ${attempt}s"', wait_section)
         self.assertIn('log "data root was not mounted after ${attempt}s"', wait_section)
 

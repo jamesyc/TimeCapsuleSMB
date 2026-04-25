@@ -346,7 +346,7 @@ resolve_data_root_on_mounted_volume() {
 
 wait_for_existing_data_root() {
     attempt=0
-    while [ "$attempt" -lt 20 ]; do
+    while [ "$attempt" -lt 30 ]; do
         if data_root=$(find_existing_data_root); then
             log "data root was mounted after ${attempt}s"
             echo "$data_root"
