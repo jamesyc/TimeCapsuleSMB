@@ -373,9 +373,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         "configure",
         "configure_started",
         "configure_finished",
+        values=values,
+        args=args,
         configure_id=configure_id,
     ) as command_context:
         command_context.update_fields(configure_id=configure_id)
+        command_context.set_stage("startup")
         print("This writes a local .env configuration file in this folder. The other tcapsule commands use that file.")
         print(f"Writing {ENV_PATH}")
         print(f"Press Enter to accept the [{color_cyan('saved/suggested/default')}] value.")
@@ -385,36 +388,55 @@ def main(argv: Optional[list[str]] = None) -> int:
         values["TC_SSH_OPTS"] = ssh_opts
         existing_share_use_disk_root = parse_bool(existing.get("TC_SHARE_USE_DISK_ROOT", DEFAULTS["TC_SHARE_USE_DISK_ROOT"]))
         values["TC_SHARE_USE_DISK_ROOT"] = "true" if args.share_use_disk_root or existing_share_use_disk_root else "false"
+        command_context.set_stage("bonjour_discovery")
         discovered_record = discover_default_record(existing)
+        command_context.add_debug_fields(selected_bonjour_record=discovered_record)
         discovered_host = discovered_record_root_host(discovered_record) if discovered_record else None
+        command_context.add_debug_fields(discovered_host=discovered_host)
         if discovered_record is not None:
             discovered_airport_syap = discovered_record.properties.get("syAP") or None
+            command_context.add_debug_fields(discovered_airport_syap=discovered_airport_syap)
+        command_context.set_stage("prompt_host_password")
         prompt_host_and_password(existing, values, discovered_host)
         while True:
+            command_context.set_stage("ssh_probe")
             print("Checking login information...")
             connection = SshConnection(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
+            command_context.connection = connection
             probed_state = probe_connection_state(connection)
+            command_context.probe_state = probed_state
             probe_result = probed_state.probe_result
             if not probe_result.ssh_port_reachable:
                 print("\nSSH is not reachable yet, so configure cannot validate this password.")
                 print("That is okay if you have not run 'tcapsule prep-device' yet.")
                 if confirm("Save this information still?", True):
+                    command_context.add_debug_fields(configure_saved_without_ssh_reachability=True)
                     break
                 print("Please enter the SSH target and password again.\n")
+                command_context.add_debug_fields(configure_retry_reason="ssh_not_reachable")
+                command_context.set_stage("prompt_host_password")
                 prompt_host_and_password(existing, values, discovered_host)
                 continue
             if probe_result.ssh_authenticated:
                 probed_device = probed_state.compatibility
+                command_context.compatibility = probed_device
                 if probed_device is not None and not probed_device.supported:
+                    command_context.add_debug_fields(configure_failure_reason="unsupported_device")
                     raise SystemExit(render_compatibility_message(probed_device))
+                command_context.set_stage("interface_probe")
                 probed_interfaces = probe_remote_interface_candidates_conn(connection)
+                command_context.add_debug_fields(interface_candidates=probed_interfaces)
                 break
             print("\nThe provided Time Capsule SSH target and password did not work.")
             if confirm("Save this information still?", True):
+                command_context.add_debug_fields(configure_saved_without_ssh_authentication=True)
                 break
             print("Please enter the SSH target and password again.\n")
+            command_context.add_debug_fields(configure_retry_reason="ssh_authentication_failed")
+            command_context.set_stage("prompt_host_password")
             prompt_host_and_password(existing, values, discovered_host)
 
+        command_context.set_stage("prompt_config_fields")
         discovered_airport_identity = (
             record_has_service(discovered_record, AIRPORT_SERVICE)
             if discovered_record is not None
@@ -439,6 +461,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         saved_syap_choice = saved_value_choice(existing, "TC_AIRPORT_SYAP", "Airport Utility syAP code")
         saved_model_choice = saved_value_choice(existing, "TC_MDNS_DEVICE_MODEL", "mDNS device model hint")
         name_defaults = derived_name_defaults(values, discovered_record, probed_interfaces)
+        if name_defaults is not None:
+            command_context.add_debug_fields(
+                derived_netbios_name=name_defaults.netbios_name,
+                derived_mdns_instance_name=name_defaults.mdns_instance_name,
+                derived_mdns_host_label=name_defaults.mdns_host_label,
+            )
         derived_prompt_defaults = {
             "TC_NETBIOS_NAME": name_defaults.netbios_name if name_defaults is not None else DEFAULTS["TC_NETBIOS_NAME"],
             "TC_MDNS_INSTANCE_NAME": (
@@ -502,26 +530,32 @@ def main(argv: Optional[list[str]] = None) -> int:
                         )
                     else:
                         print_saved_value_hint(saved_iface_choice.value)
+                        command_context.add_debug_fields(selected_net_iface=saved_iface_choice.value, selected_net_iface_source="saved")
                         values[key] = prompt_valid_config_value(key, label, saved_iface_choice.value)
                         continue
                 if exact_target_match and probed_interfaces is not None:
                     print_probed_interface_default(probed_interfaces, exact_target_match.iface)
+                    command_context.add_debug_fields(selected_net_iface=exact_target_match.iface, selected_net_iface_source="target_ip_match")
                     values[key] = prompt_valid_config_value(key, label, exact_target_match.iface)
                     continue
                 if saved_iface_choice is not None and not candidate_names:
                     print_saved_value_hint(saved_iface_choice.value)
+                    command_context.add_debug_fields(selected_net_iface=saved_iface_choice.value, selected_net_iface_source="saved_no_probe_candidates")
                     values[key] = prompt_valid_config_value(key, label, saved_iface_choice.value)
                     continue
                 if probed_interfaces is not None and probed_interfaces.candidates:
                     preferred_iface = preferred_interface_name(probed_interfaces.candidates, target_ips=target_ips)
                     if preferred_iface:
                         print_probed_interface_default(probed_interfaces, preferred_iface)
+                        command_context.add_debug_fields(selected_net_iface=preferred_iface, selected_net_iface_source="probed_preferred_for_target_ips")
                         values[key] = prompt_valid_config_value(key, label, preferred_iface)
                         continue
                 if probed_interfaces is not None and probed_interfaces.preferred_iface:
                     print_probed_interface_default(probed_interfaces, probed_interfaces.preferred_iface)
+                    command_context.add_debug_fields(selected_net_iface=probed_interfaces.preferred_iface, selected_net_iface_source="probed_preferred")
                     values[key] = prompt_valid_config_value(key, label, probed_interfaces.preferred_iface)
                     continue
+                command_context.add_debug_fields(selected_net_iface_source="manual_or_default")
                 values[key] = prompt_config_value(existing, key, label, default, secret=secret)
                 continue
             if key in derived_prompt_defaults:
@@ -569,6 +603,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             values[key] = prompt_config_value(existing, key, label, default, secret=secret)
 
         values["TC_CONFIGURE_ID"] = configure_id
+        command_context.set_stage("write_env")
         write_env_file(ENV_PATH, values)
         command_context.update_fields(
             configure_id=configure_id,

@@ -123,7 +123,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             if answer not in {"y", "yes"}:
                 print("Deployment cancelled.")
                 command_context.cancel_with_error("Cancelled by user at NetBSD4 deploy confirmation prompt.")
-                command_context.add_debug_context()
                 return 0
 
         run_remote_actions(connection, plan.pre_upload_actions)
@@ -176,7 +175,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             if not verify_managed_runtime(connection, timeout_seconds=180, heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up..."):
                 print("NetBSD4 activation failed.")
                 command_context.fail_with_error("NetBSD4 activation failed.")
-                command_context.add_debug_context()
                 return 1
             print(f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}")
             print(color_green("Deploy Finished."))
@@ -194,7 +192,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             if answer not in {"", "y", "yes"}:
                 print("Deployment complete without reboot.")
                 command_context.cancel_with_error("Cancelled by user at reboot confirmation prompt.")
-                command_context.add_debug_context()
                 return 0
 
         run_ssh(connection, "/sbin/reboot", check=False)
@@ -209,7 +206,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             if not verify_managed_runtime(connection, timeout_seconds=180, heading="Wait for device to finish loading; it can take a few minutes for Samba to start up..."):
                 print("Managed runtime did not become ready after reboot.")
                 command_context.fail_with_error("Managed runtime did not become ready after reboot.")
-                command_context.add_debug_context()
                 return 1
             print(color_green("Deploy Finished."))
             command_context.succeed()
@@ -217,6 +213,5 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         print("Timed out waiting for SSH after reboot.")
         command_context.fail_with_error("Timed out waiting for SSH after reboot.")
-        command_context.add_debug_context()
         return 1
     return 1

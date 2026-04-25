@@ -8,8 +8,9 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
+from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.transport.local import tcp_open
-from timecapsulesmb.transport.ssh import SshConnection, run_ssh, ssh_opts_use_proxy
+from timecapsulesmb.transport.ssh import SshConnection, run_ssh as run_ssh_command, ssh_opts_use_proxy
 from timecapsulesmb.core.config import AIRPORT_SYAP_TO_MODEL
 
 if TYPE_CHECKING:
@@ -267,7 +268,7 @@ class AirportIdentityProbeResult:
 
 
 def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
-    return run_ssh(connection.host, connection.password, connection.ssh_opts, remote_cmd, check=check, timeout=timeout)
+    return run_ssh_command(connection, remote_cmd, check=check, timeout=timeout)
 
 
 def probe_device_conn(connection: SshConnection) -> ProbeResult:
@@ -291,7 +292,7 @@ def probe_device_conn(connection: SshConnection) -> ProbeResult:
         return ProbeResult(
             ssh_port_reachable=True,
             ssh_authenticated=False,
-            error=str(exc) or "SSH authentication failed.",
+            error=system_exit_message(exc) or "SSH authentication failed.",
             os_name="",
             os_release="",
             arch="",
@@ -321,7 +322,7 @@ def probe_ssh_command_conn(
     try:
         proc = run_ssh(connection, command, check=False, timeout=timeout)
     except SystemExit as exc:
-        return SshCommandProbeResult(ok=False, detail=str(exc))
+        return SshCommandProbeResult(ok=False, detail=system_exit_message(exc))
     if proc.returncode == 0:
         stdout = proc.stdout.strip()
         if expected_stdout_suffix is None or stdout.endswith(expected_stdout_suffix):

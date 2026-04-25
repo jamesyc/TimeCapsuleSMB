@@ -11,6 +11,7 @@ from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import inspect_managed_connection, load_env_values
 from timecapsulesmb.cli.util import color_green, color_red
 from timecapsulesmb.core.config import ENV_PATH
+from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.telemetry import TelemetryClient, build_device_os_version
 
@@ -89,7 +90,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         device_family=command_context.compatibility.payload_family,
                     )
             except SystemExit as exc:
-                command_context.preflight_error = f"doctor pre-inspection failed: {exc}"
+                command_context.preflight_error = f"doctor pre-inspection failed: {system_exit_message(exc)}"
 
         results, fatal = run_doctor_checks(
             values,
@@ -112,7 +113,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                 error = build_doctor_error(results)
                 if error:
                     command_context.set_error(error)
-                    command_context.add_debug_context()
                 command_context.fail()
             else:
                 command_context.succeed()
@@ -124,7 +124,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             error = build_doctor_error(results)
             if error:
                 command_context.set_error(error)
-                command_context.add_debug_context()
             command_context.fail()
             return 1
 

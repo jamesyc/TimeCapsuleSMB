@@ -45,7 +45,6 @@ class FakeCommandContext:
         self.result = "failure"
         self.finish_fields: dict[str, object] = {}
         self.error_lines: list[str] = []
-        self.debug_context_added = False
         self.finish = mock.Mock()
         self.connection = connection or SshConnection("root@10.0.0.2", "pw", "-o foo")
         self.probe_state = None
@@ -96,6 +95,12 @@ class FakeCommandContext:
             if value is not None:
                 self.finish_fields[key] = value
 
+    def set_stage(self, _stage: str) -> None:
+        pass
+
+    def add_debug_fields(self, **_fields: object) -> None:
+        pass
+
     def set_error(self, message: str) -> None:
         self.error_lines = [line.rstrip() for line in message.splitlines() if line.strip()]
 
@@ -103,19 +108,6 @@ class FakeCommandContext:
         line = message.strip()
         if line:
             self.error_lines.append(line)
-
-    def add_debug_context(self, *, extra_fields: dict[str, object] | None = None) -> None:
-        self.debug_context_added = True
-        if self.error_lines:
-            self.error_lines.append("")
-        self.error_lines.append("Debug context:")
-        self.error_lines.append("command=fake")
-        self.error_lines.append(f"host={self.connection.host}")
-        self.error_lines.append(f"ssh_opts={self.connection.ssh_opts}")
-        if extra_fields:
-            for key, value in extra_fields.items():
-                if value is not None:
-                    self.error_lines.append(f"{key}={value}")
 
     def resolve_env_connection(self, **_kwargs):
         return self.connection
@@ -331,6 +323,32 @@ class CliTests(unittest.TestCase):
     def make_probe_state(self, probe_result: ProbeResult) -> ProbedDeviceState:
         compatibility = compatibility_from_probe_result(probe_result) if probe_result.ssh_authenticated else None
         return ProbedDeviceState(probe_result=probe_result, compatibility=compatibility)
+
+    def configure_finished_error(self) -> str:
+        for call in reversed(self._telemetry_client.emit.call_args_list):
+            if call.args and call.args[0] == "configure_finished":
+                return call.kwargs["error"]
+        self.fail("configure_finished telemetry was not emitted")
+
+    def configure_finished_result(self) -> str:
+        for call in reversed(self._telemetry_client.emit.call_args_list):
+            if call.args and call.args[0] == "configure_finished":
+                return call.kwargs["result"]
+        self.fail("configure_finished telemetry was not emitted")
+
+    def configure_prompt_defaults(self, *, host: str = "root@10.0.0.2", password: str = "pw"):
+        def fake_prompt(label, default, _secret):
+            if label == "Time Capsule SSH target":
+                return host
+            if label == "Time Capsule root password":
+                return password
+            if label == "Airport Utility syAP code":
+                return "119"
+            if label == "mDNS device model hint":
+                return "TimeCapsule8,119"
+            return default
+
+        return fake_prompt
 
     def test_dispatches_to_command_handler(self) -> None:
         with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"doctor": mock.Mock(return_value=7)}):
@@ -765,6 +783,119 @@ class CliTests(unittest.TestCase):
         self.assertIn("TC_HOST=root@10.0.0.2", text)
         self.assertIn("TC_CONFIGURE_ID=", text)
         self.assertEqual(text.count("TC_CONFIGURE_ID="), 1)
+
+    def test_configure_telemetry_includes_bonjour_stage_when_discovery_fails(self) -> None:
+        with mock.patch("timecapsulesmb.cli.configure.ensure_install_id"):
+            with mock.patch("timecapsulesmb.cli.configure.upsert_env_key"):
+                with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+                    with mock.patch("timecapsulesmb.cli.configure.discover_default_record", side_effect=SystemExit("zeroconf missing")):
+                        with self.assertRaises(SystemExit):
+                            with redirect_stdout(io.StringIO()):
+                                configure.main([])
+
+        self.assertEqual(self.configure_finished_result(), "failure")
+        error = self.configure_finished_error()
+        self.assertIn("zeroconf missing", error)
+        self.assertIn("Debug context:", error)
+        self.assertIn("command=configure", error)
+        self.assertIn("stage=bonjour_discovery", error)
+        self.assertIn("TC_SHARE_USE_DISK_ROOT=false", error)
+
+    def test_configure_telemetry_records_unreachable_ssh_saved_branch_on_later_failure(self) -> None:
+        with mock.patch("timecapsulesmb.cli.configure.ensure_install_id"):
+            with mock.patch("timecapsulesmb.cli.configure.upsert_env_key"):
+                with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+                    with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                        with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=self.configure_prompt_defaults()):
+                            with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
+                                with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                                    with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=RuntimeError("disk full")):
+                                        with self.assertRaises(RuntimeError):
+                                            with redirect_stdout(io.StringIO()):
+                                                configure.main([])
+
+        error = self.configure_finished_error()
+        self.assertIn("RuntimeError: disk full", error)
+        self.assertIn("stage=write_env", error)
+        self.assertIn("host=root@10.0.0.2", error)
+        self.assertIn("ssh_opts=-o HostKeyAlgorithms=+ssh-rsa", error)
+        self.assertIn("TC_HOST=root@10.0.0.2", error)
+        self.assertIn("configure_saved_without_ssh_reachability=true", error)
+        self.assertIn("probe_ssh_port_reachable=false", error)
+        self.assertIn("probe_ssh_authenticated=false", error)
+        self.assertIn("probe_error=SSH is not reachable yet.", error)
+        self.assertNotIn("TC_PASSWORD", error)
+        self.assertNotIn("pw", error)
+
+    def test_configure_telemetry_records_auth_failed_saved_branch_on_later_failure(self) -> None:
+        with mock.patch("timecapsulesmb.cli.configure.ensure_install_id"):
+            with mock.patch("timecapsulesmb.cli.configure.upsert_env_key"):
+                with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+                    with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                        with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=self.configure_prompt_defaults(password="badpw")):
+                            with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_auth_failed())):
+                                with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
+                                    with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=RuntimeError("cannot write env")):
+                                        with self.assertRaises(RuntimeError):
+                                            with redirect_stdout(io.StringIO()):
+                                                configure.main([])
+
+        error = self.configure_finished_error()
+        self.assertIn("RuntimeError: cannot write env", error)
+        self.assertIn("configure_saved_without_ssh_authentication=true", error)
+        self.assertIn("probe_ssh_port_reachable=true", error)
+        self.assertIn("probe_ssh_authenticated=false", error)
+        self.assertIn("probe_error=SSH authentication failed.", error)
+        self.assertNotIn("badpw", error)
+
+    def test_configure_telemetry_records_unsupported_device_reason(self) -> None:
+        with mock.patch("timecapsulesmb.cli.configure.ensure_install_id"):
+            with mock.patch("timecapsulesmb.cli.configure.upsert_env_key"):
+                with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+                    with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                        with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=self.configure_prompt_defaults()):
+                            with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd5())):
+                                with self.assertRaises(SystemExit):
+                                    with redirect_stdout(io.StringIO()):
+                                        configure.main([])
+
+        error = self.configure_finished_error()
+        self.assertIn("not supported", error)
+        self.assertIn("stage=ssh_probe", error)
+        self.assertIn("configure_failure_reason=unsupported_device", error)
+        self.assertIn("probe_supported=false", error)
+        self.assertIn("probe_reason_code=", error)
+
+    def test_configure_telemetry_records_interface_candidates_and_exact_match_source(self) -> None:
+        interface_probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.1.1",), up=True, active=True, loopback=False),
+                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("192.168.1.217",), up=True, active=True, loopback=False),
+            ),
+            preferred_iface="bridge0",
+            detail="preferred interface bridge0",
+        )
+
+        with mock.patch("timecapsulesmb.cli.configure.ensure_install_id"):
+            with mock.patch("timecapsulesmb.cli.configure.upsert_env_key"):
+                with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+                    with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                        with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=self.configure_prompt_defaults(host="root@10.0.1.1")):
+                            with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
+                                with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates_conn", return_value=interface_probe):
+                                    with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=RuntimeError("cannot write env")):
+                                        with self.assertRaises(RuntimeError):
+                                            with redirect_stdout(io.StringIO()):
+                                                configure.main([])
+
+        error = self.configure_finished_error()
+        self.assertIn("RuntimeError: cannot write env", error)
+        self.assertIn("interface_candidates=[", error)
+        self.assertIn("name:bcmeth1", error)
+        self.assertIn("ipv4:[10.0.1.1]", error)
+        self.assertIn("name:bridge0", error)
+        self.assertIn("selected_net_iface=bcmeth1", error)
+        self.assertIn("selected_net_iface_source=target_ip_match", error)
 
     def test_configure_uses_discovered_host_when_available(self) -> None:
         output = io.StringIO()

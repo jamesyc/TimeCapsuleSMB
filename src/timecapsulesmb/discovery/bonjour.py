@@ -4,7 +4,6 @@ import argparse
 import ipaddress
 import json
 import socket
-import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -213,13 +212,10 @@ def discover(timeout: float = 5.0) -> list[Discovered]:
     try:
         from zeroconf import IPVersion, Zeroconf
     except Exception as e:
-        print(
-            "Failed to import zeroconf.\n"
-            "Run './tcapsule bootstrap' first, or use 'make install'.\n",
-            e,
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        raise SystemExit(
+            "Failed to import zeroconf. Run './tcapsule bootstrap' first, or use 'make install'. "
+            f"{type(e).__name__}: {e}"
+        ) from e
 
     # Our Time Capsule targets advertise over IPv4, and zeroconf 0.147.x can
     # miss _smb._tcp browse results on macOS when run in dual-stack mode.

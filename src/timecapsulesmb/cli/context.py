@@ -5,7 +5,9 @@ import uuid
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.cli import runtime
+from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.telemetry import build_device_os_version
+from timecapsulesmb.telemetry.debug import debug_summary, render_command_debug_lines
 
 if TYPE_CHECKING:
     from timecapsulesmb.cli.runtime import ManagedTargetState
@@ -39,7 +41,8 @@ class CommandContext:
         self.finish_fields: dict[str, object] = {}
         self.error_lines: list[str] = []
         self.preflight_error: str | None = None
-        self._debug_context_added = False
+        self.debug_stage: str | None = None
+        self.debug_fields: dict[str, object] = {}
         self.connection: SshConnection | None = None
         self.probe_state: ProbedDeviceState | None = None
         self.compatibility: DeviceCompatibility | None = None
@@ -54,13 +57,11 @@ class CommandContext:
             if not self.error_lines:
                 self.set_error("Cancelled by user")
         elif exc_type is SystemExit:
-            message = str(exc)
+            message = system_exit_message(exc)
             if message and message not in {"0", "None"}:
                 self.result = "failure"
                 if not self.error_lines:
                     self.set_error(message)
-                if "SSH error:" in message:
-                    self.add_debug_context()
         elif exc_type is not None:
             self.result = "failure"
             if not self.error_lines:
@@ -89,75 +90,34 @@ class CommandContext:
             if value is not None:
                 self.finish_fields[key] = value
 
+    def set_stage(self, stage: str) -> None:
+        self.debug_stage = stage
+
+    def add_debug_fields(self, **fields: object) -> None:
+        for key, value in fields.items():
+            if value is not None:
+                self.debug_fields[key] = debug_summary(value)
+
     def set_error(self, message: str) -> None:
         self.error_lines = [line.rstrip() for line in message.splitlines() if line.strip()]
-
-    def add_debug_context(self, *, extra_fields: dict[str, object] | None = None) -> None:
-        if self._debug_context_added:
-            return
-        self._debug_context_added = True
-        context_lines = ["Debug context:", f"command={self.command_name}"]
-        host = None
-        ssh_opts = None
-        if self.connection is not None:
-            host = self.connection.host
-            ssh_opts = self.connection.ssh_opts
-        elif self.values is not None:
-            host = self.values.get("TC_HOST") or None
-            ssh_opts = self.values.get("TC_SSH_OPTS") or None
-        if host:
-            context_lines.append(f"host={host}")
-        if ssh_opts:
-            context_lines.append(f"ssh_opts={ssh_opts}")
-        if self.values is not None:
-            net_iface = self.values.get("TC_NET_IFACE")
-            device_model = self.values.get("TC_MDNS_DEVICE_MODEL")
-            device_syap = self.values.get("TC_AIRPORT_SYAP")
-            if net_iface:
-                context_lines.append(f"net_iface={net_iface}")
-            if device_model:
-                context_lines.append(f"device_model={device_model}")
-            if device_syap:
-                context_lines.append(f"device_syap={device_syap}")
-        if self.preflight_error:
-            context_lines.append(f"preflight_error={self.preflight_error}")
-        for key in ("device_os_version", "device_family", "nbns_enabled", "reboot_was_attempted", "device_came_back_after_reboot"):
-            value = self.finish_fields.get(key)
-            if value is None:
-                continue
-            if isinstance(value, bool):
-                rendered = str(value).lower()
-            else:
-                rendered = str(value)
-            context_lines.append(f"{key}={rendered}")
-        if self.probe_state is not None:
-            probe_result = self.probe_state.probe_result
-            context_lines.append(f"probe_ssh_port_reachable={str(probe_result.ssh_port_reachable).lower()}")
-            context_lines.append(f"probe_ssh_authenticated={str(probe_result.ssh_authenticated).lower()}")
-            context_lines.append(f"probe_os_name={probe_result.os_name or 'unknown'}")
-            context_lines.append(f"probe_os_release={probe_result.os_release or 'unknown'}")
-            context_lines.append(f"probe_arch={probe_result.arch or 'unknown'}")
-            context_lines.append(f"probe_elf_endianness={probe_result.elf_endianness or 'unknown'}")
-            if probe_result.error:
-                context_lines.append(f"probe_error={probe_result.error}")
-            compatibility = self.probe_state.compatibility
-            if compatibility is not None:
-                context_lines.append(f"probe_payload_family={compatibility.payload_family or 'unknown'}")
-                context_lines.append(f"probe_supported={str(compatibility.supported).lower()}")
-                context_lines.append(f"probe_device_generation={compatibility.device_generation}")
-        if extra_fields:
-            for key, value in extra_fields.items():
-                if value is None:
-                    continue
-                context_lines.append(f"{key}={str(value).lower() if isinstance(value, bool) else value}")
-        if self.error_lines:
-            self.error_lines.append("")
-        self.error_lines.extend(context_lines)
 
     def build_error(self) -> str | None:
         if not self.error_lines:
             return None
-        return "\n".join(self.error_lines)
+        return "\n".join([
+            *self.error_lines,
+            "",
+            *render_command_debug_lines(
+                command_name=self.command_name,
+                stage=self.debug_stage,
+                connection=self.connection,
+                values=self.values,
+                preflight_error=self.preflight_error,
+                finish_fields=self.finish_fields,
+                probe_state=self.probe_state,
+                debug_fields=self.debug_fields,
+            ),
+        ])
 
     def resolve_env_connection(
         self,

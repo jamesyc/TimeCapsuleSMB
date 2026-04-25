@@ -50,7 +50,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             if answer not in {"y", "yes"}:
                 print("Activation cancelled.")
                 command_context.cancel_with_error("Cancelled by user at NetBSD4 activation confirmation prompt.")
-                command_context.add_debug_context()
                 return 0
 
         if probe_managed_runtime_conn(connection, timeout_seconds=20).ready:
@@ -63,7 +62,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not verify_managed_runtime(connection, timeout_seconds=180, heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up..."):
             print("NetBSD4 activation failed.")
             command_context.fail_with_error("NetBSD4 activation failed.")
-            command_context.add_debug_context()
             return 1
         print(f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}")
         command_context.succeed()
