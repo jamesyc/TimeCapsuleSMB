@@ -10,7 +10,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.deploy.artifact_resolver import resolve_artifact, resolve_payload_artifacts, resolve_required_artifacts
+from timecapsulesmb.deploy.artifact_resolver import resolve_artifact, resolve_payload_artifacts
 
 
 class ArtifactResolverTests(unittest.TestCase):
@@ -47,12 +47,6 @@ class ArtifactResolverTests(unittest.TestCase):
         self.assertEqual(smbd.repo_relative_path, "bin/samba4-netbsd4be/smbd")
         self.assertEqual(mdns.repo_relative_path, "bin/mdns-netbsd4be/mdns-advertiser")
         self.assertEqual(nbns.repo_relative_path, "bin/nbns-netbsd4be/nbns-advertiser")
-
-    def test_resolve_required_artifacts_returns_named_mapping(self) -> None:
-        artifacts = resolve_required_artifacts(REPO_ROOT, ["smbd", "mdns-advertiser", "nbns-advertiser"])
-        self.assertIn("smbd", artifacts)
-        self.assertIn("mdns-advertiser", artifacts)
-        self.assertIn("nbns-advertiser", artifacts)
 
     def test_resolve_netbsd4_payload_returns_logical_deploy_names(self) -> None:
         artifacts = resolve_payload_artifacts(REPO_ROOT, "netbsd4le_samba4")

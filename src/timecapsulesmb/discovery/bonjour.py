@@ -55,15 +55,16 @@ class ServiceObservation:
     properties: dict[str, str] = field(default_factory=dict)
 
 
-def prefer_routable_ipv4(rec: Discovered) -> str:
+def discovered_record_root_host(rec: Discovered) -> str | None:
+    chosen_host = ""
     for ip in rec.ipv4:
         if not ip.startswith("169.254."):
-            return ip
-    return rec.ipv4[0] if rec.ipv4 else ""
-
-
-def discovered_record_root_host(rec: Discovered) -> str | None:
-    chosen_host = prefer_routable_ipv4(rec) or rec.prefer_host()
+            chosen_host = ip
+            break
+    if not chosen_host and rec.ipv4:
+        chosen_host = rec.ipv4[0]
+    if not chosen_host:
+        chosen_host = rec.prefer_host()
     return f"root@{chosen_host}" if chosen_host else None
 
 

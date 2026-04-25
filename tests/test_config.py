@@ -16,7 +16,6 @@ from timecapsulesmb.core.config import (
     AIRPORT_SYAP_TO_MODEL,
     AppConfig,
     build_adisk_share_txt,
-    build_instance_fqdn,
     build_mdns_device_model_txt,
     DEFAULTS,
     extract_host,
@@ -29,7 +28,6 @@ from timecapsulesmb.core.config import (
     validate_adisk_share_name,
     validate_airport_syap,
     validate_bool,
-    validate_dns_name,
     validate_config_values,
     validate_mdns_device_model_matches_syap,
     validate_mdns_device_model,
@@ -39,7 +37,6 @@ from timecapsulesmb.core.config import (
     validate_net_iface,
     validate_payload_dir_name,
     validate_samba_user,
-    validate_single_dns_label,
     validate_ssh_target,
     write_env_file,
 )
@@ -230,30 +227,6 @@ class ConfigTests(unittest.TestCase):
     def test_extract_host_removes_user_prefix(self) -> None:
         self.assertEqual(extract_host("root@10.0.0.5"), "10.0.0.5")
         self.assertEqual(extract_host("10.0.0.5"), "10.0.0.5")
-
-    def test_validate_single_dns_label_rejects_dots(self) -> None:
-        self.assertEqual(
-            validate_single_dns_label("time.capsule", "mDNS host label"),
-            "mDNS host label must not contain dots.",
-        )
-
-    def test_validate_single_dns_label_rejects_long_values(self) -> None:
-        self.assertEqual(
-            validate_single_dns_label("a" * 64, "mDNS SMB instance name"),
-            "mDNS SMB instance name must be 63 bytes or fewer.",
-        )
-
-    def test_validate_dns_name_rejects_empty_label(self) -> None:
-        self.assertEqual(
-            validate_dns_name("_smb..local.", "service type"),
-            "service type contains an empty label.",
-        )
-
-    def test_validate_dns_name_allows_trailing_dot(self) -> None:
-        self.assertIsNone(validate_dns_name("_smb._tcp.local.", "service type"))
-
-    def test_build_instance_fqdn_returns_none_when_too_long(self) -> None:
-        self.assertIsNone(build_instance_fqdn("a" * 63, ("b" * 63 + ".") * 4))
 
     def test_build_mdns_device_model_txt(self) -> None:
         self.assertEqual(build_mdns_device_model_txt("TimeCapsule"), "model=TimeCapsule")

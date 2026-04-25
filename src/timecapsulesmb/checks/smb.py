@@ -14,13 +14,6 @@ def _smbclient_base_args() -> list[str]:
     return ["smbclient", "-s", "/dev/null"]
 
 
-def _smbclient_target_args(server: str, *, port: Optional[int] = None) -> list[str]:
-    args = [f"//{server}"]
-    if port is not None:
-        return ["-p", str(port), *args]
-    return args
-
-
 def _run_smbclient_listing(
     server: str,
     username: str,

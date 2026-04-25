@@ -177,13 +177,6 @@ def _has_only_safe_chars(value: str, pattern: str) -> bool:
     return re.fullmatch(pattern, value) is not None
 
 
-def build_instance_fqdn(instance_name: str, service_type: str) -> Optional[str]:
-    value = f"{instance_name}.{service_type}"
-    if len(value.encode("utf-8")) > MAX_DNS_NAME_BYTES:
-        return None
-    return value
-
-
 def build_mdns_device_model_txt(value: str) -> Optional[str]:
     txt = MODEL_TXT_PREFIX + value
     if len(txt.encode("utf-8")) > MAX_DNS_TXT_BYTES:
@@ -208,30 +201,6 @@ def validate_dns_label(value: str, field_name: str) -> Optional[str]:
     if _contains_invalid_control_character(value):
         return f"{field_name} contains an invalid control character."
     return None
-
-
-def validate_dns_name(value: str, field_name: str) -> Optional[str]:
-    if not value:
-        return f"{field_name} cannot be blank."
-    if len(value.encode("utf-8")) > MAX_DNS_NAME_BYTES:
-        return f"{field_name} must be {MAX_DNS_NAME_BYTES} bytes or fewer."
-    if value.startswith("."):
-        return f"{field_name} contains an empty label."
-    stripped = value[:-1] if value.endswith(".") else value
-    if not stripped:
-        return f"{field_name} contains an empty label."
-    if _contains_invalid_control_character(value):
-        return f"{field_name} contains an invalid control character."
-    for label in stripped.split("."):
-        if not label:
-            return f"{field_name} contains an empty label."
-        if len(label.encode("utf-8")) > MAX_DNS_LABEL_BYTES:
-            return f"{field_name} contains a label longer than {MAX_DNS_LABEL_BYTES} bytes."
-    return None
-
-
-def validate_single_dns_label(value: str, field_name: str) -> Optional[str]:
-    return validate_dns_label(value, field_name)
 
 
 def validate_mdns_device_model(value: str, field_name: str) -> Optional[str]:

@@ -27,10 +27,6 @@ def resolve_artifact(repo_root: Path, name: str) -> ResolvedArtifact:
     return resolved_artifact_from_record(repo_root, record)
 
 
-def resolve_required_artifacts(repo_root: Path, names: list[str]) -> dict[str, ResolvedArtifact]:
-    return {name: resolve_artifact(repo_root, name) for name in names}
-
-
 def resolve_payload_artifacts(repo_root: Path, payload_family: str) -> dict[str, ResolvedArtifact]:
     if payload_family == PAYLOAD_FAMILY_NETBSD4LE:
         names = {

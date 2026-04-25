@@ -19,7 +19,6 @@ from timecapsulesmb.discovery.bonjour import (
     discover,
     discovered_record_root_host,
     filter_service_records,
-    prefer_routable_ipv4,
 )
 
 
@@ -27,10 +26,6 @@ class DiscoveryTests(unittest.TestCase):
     def test_preferred_host_uses_hostname_then_ipv4(self) -> None:
         record = Discovered(name="TC", hostname="capsule.local", ipv4=["10.0.0.2"])
         self.assertEqual(record.prefer_host(), "capsule.local")
-
-    def test_prefer_routable_ipv4_skips_link_local(self) -> None:
-        record = Discovered(name="TC", hostname="", ipv4=["169.254.1.2", "10.0.0.4"])
-        self.assertEqual(prefer_routable_ipv4(record), "10.0.0.4")
 
     def test_discovered_record_root_host_prefers_routable_ipv4(self) -> None:
         record = Discovered(name="TC", hostname="capsule.local", ipv4=["169.254.1.2", "10.0.0.4"])
