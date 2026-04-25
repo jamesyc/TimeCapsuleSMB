@@ -266,10 +266,6 @@ class AirportIdentityProbeResult:
     detail: str
 
 
-def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
-    return run_ssh(connection.host, connection.password, connection.ssh_opts, remote_cmd, check=check, timeout=timeout)
-
-
 def probe_device_conn(connection: SshConnection) -> ProbeResult:
     probe_host = connection.host.split("@", 1)[1] if "@" in connection.host else connection.host
     if not ssh_opts_use_proxy(connection.ssh_opts) and not tcp_open(probe_host, 22):
