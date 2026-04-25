@@ -18,21 +18,11 @@ from timecapsulesmb.transport.ssh import SshConnection
 
 
 class ProbeTests(unittest.TestCase):
-    def test_probe_run_ssh_wrapper_passes_connection_to_transport_runner(self) -> None:
-        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
-        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="ok\n")
-
-        with mock.patch("timecapsulesmb.device.probe.run_ssh_command", return_value=proc) as run_ssh_mock:
-            result = probe.run_ssh(connection, "/bin/echo ok", check=False, timeout=7)
-
-        self.assertIs(result, proc)
-        run_ssh_mock.assert_called_once_with(connection, "/bin/echo ok", check=False, timeout=7)
-
     def test_probe_remote_interface_conn_uses_connection_wrapper_without_old_positional_shape(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
         proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="bridge0\n")
 
-        with mock.patch("timecapsulesmb.device.probe.run_ssh_command", return_value=proc) as run_ssh_mock:
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
             result = probe_remote_interface_conn(connection, "bridge0")
 
         self.assertTrue(result.exists)
@@ -55,7 +45,7 @@ class ProbeTests(unittest.TestCase):
             self.fail(f"unexpected remote command: {remote_cmd}")
 
         with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=True):
-            with mock.patch("timecapsulesmb.device.probe.run_ssh_command", side_effect=fake_run_ssh) as run_ssh_mock:
+            with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=fake_run_ssh) as run_ssh_mock:
                 result = probe.probe_device_conn(connection)
 
         self.assertTrue(result.ssh_authenticated)

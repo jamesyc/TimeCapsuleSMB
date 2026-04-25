@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.transport.local import tcp_open
-from timecapsulesmb.transport.ssh import SshConnection, run_ssh as run_ssh_command, ssh_opts_use_proxy
+from timecapsulesmb.transport.ssh import SshConnection, run_ssh, ssh_opts_use_proxy
 from timecapsulesmb.core.config import AIRPORT_SYAP_TO_MODEL
 
 if TYPE_CHECKING:
@@ -265,10 +265,6 @@ class AirportIdentityProbeResult:
     model: str | None
     syap: str | None
     detail: str
-
-
-def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
-    return run_ssh_command(connection, remote_cmd, check=check, timeout=timeout)
 
 
 def probe_device_conn(connection: SshConnection) -> ProbeResult:
