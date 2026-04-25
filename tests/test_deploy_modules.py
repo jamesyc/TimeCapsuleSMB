@@ -311,8 +311,8 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("get_airport_syvs()", content)
         self.assertIn("wait_for_process()", content)
         self.assertIn("ensure_parent_dir()", content)
-        self.assertIn("wait_for_smbd_ready()", content)
-        self.assertIn('/usr/bin/tail -c 65536 "$smbd_log_path"', content)
+        self.assertNotIn("wait_for_smbd_ready()", content)
+        self.assertNotIn("daemon_ready", content)
         self.assertIn("derive_airport_fields()", content)
         self.assertIn("get_airport_syvs()", content)
         self.assertIn("sed -n 's/^\\([0-9]\\)\\([0-9]\\)\\([0-9]\\).*/\\1.\\2.\\3/p'", content)
@@ -536,7 +536,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertLess(main_section.index('start_mdns'), main_section.index('log "disk discovery: waiting for Apple-mounted data volume before manual mount fallback"'))
         self.assertLess(main_section.index('log "disk discovery: waiting for Apple-mounted data volume before manual mount fallback"'), main_section.index('if DATA_ROOT=$(discover_preexisting_data_root); then'))
         self.assertLess(main_section.index('if DATA_ROOT=$(discover_preexisting_data_root); then'), main_section.index('VOLUME_ROOT=$(mount_fallback_volume) || {'))
-        self.assertLess(main_section.index('log "smbd startup complete: daemon_ready observed"'), main_section.rindex('start_mdns_advertiser'))
+        self.assertLess(main_section.index('log "smbd startup complete: process observed"'), main_section.rindex('start_mdns_advertiser'))
         self.assertLess(main_section.rindex('start_mdns_advertiser'), main_section.rindex('start_nbns'))
         discover_body = rendered[rendered.index("discover_preexisting_data_root()"):rendered.index("resolve_data_root_on_mounted_volume()")]
         self.assertIn("wait_for_existing_data_root", discover_body)
@@ -545,7 +545,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('log "data root was mounted after ${attempt}s"', wait_section)
         self.assertIn('log "data root was not mounted after ${attempt}s"', wait_section)
 
-    def test_render_start_script_starts_final_mdns_after_smbd_ready(self) -> None:
+    def test_render_start_script_starts_final_mdns_after_smbd_process_observed(self) -> None:
         values = {
             "TC_PAYLOAD_DIR_NAME": "samba4",
             "TC_SHARE_NAME": "Data",
@@ -560,12 +560,12 @@ class DeployModuleTests(unittest.TestCase):
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         main_section = rendered[rendered.index("\ncleanup_old_runtime\nif ! prepare_locks_ramdisk; then"):]
         smbd_start = main_section.index("start_smbd || {")
-        smbd_ready = main_section.index('log "smbd startup complete: daemon_ready observed"')
+        smbd_ready = main_section.index('log "smbd startup complete: process observed"')
         final_mdns = main_section.index("start_mdns_advertiser")
         self.assertLess(smbd_start, smbd_ready)
         self.assertLess(smbd_ready, final_mdns)
 
-    def test_render_start_script_starts_nbns_after_smbd_ready(self) -> None:
+    def test_render_start_script_starts_nbns_after_smbd_process_observed(self) -> None:
         values = {
             "TC_PAYLOAD_DIR_NAME": "samba4",
             "TC_SHARE_NAME": "Data",
@@ -579,7 +579,7 @@ class DeployModuleTests(unittest.TestCase):
         bundle = build_template_bundle(values)
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         main_section = rendered[rendered.index("\ncleanup_old_runtime\nif ! prepare_locks_ramdisk; then"):]
-        smbd_ready = main_section.index('log "smbd startup complete: daemon_ready observed"')
+        smbd_ready = main_section.index('log "smbd startup complete: process observed"')
         nbns_start = main_section.index("start_nbns")
         self.assertLess(smbd_ready, nbns_start)
 
@@ -851,7 +851,7 @@ class DeployModuleTests(unittest.TestCase):
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn('log "payload discovery failed: missing payload directory under mounted volume"', rendered)
         self.assertIn('log "payload discovery failed: missing smbd binary in $PAYLOAD_DIR"', rendered)
-        self.assertIn('log "smbd startup failed: daemon_ready was not observed"', rendered)
+        self.assertIn('log "smbd startup failed: process was not observed"', rendered)
 
     def test_render_start_script_prefers_root_level_payload_dir_with_share_root_fallback(self) -> None:
         values = {
@@ -999,7 +999,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('log "mount_hfs command timed out, but volume is mounted"', mount_section)
         self.assertIn('log "mount_hfs timed out for $dev_path at $volume_root and volume was not mounted at the immediate re-check, will try manual mount"', mount_section)
 
-    def test_render_start_script_waits_for_smbd_ready_after_launch(self) -> None:
+    def test_render_start_script_waits_for_smbd_process_after_launch(self) -> None:
         values = {
             "TC_PAYLOAD_DIR_NAME": "samba4",
             "TC_SHARE_NAME": "Data",
@@ -1013,17 +1013,19 @@ class DeployModuleTests(unittest.TestCase):
         bundle = build_template_bundle(values)
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn('"$RAM_SBIN/smbd" -D -s "$RAM_ETC/smb.conf"', rendered)
-        self.assertIn('if configured_smbd_log=$(get_smbd_log_path_from_config "$RAM_ETC/smb.conf" || true); then', rendered)
-        self.assertIn('ensure_parent_dir "$smbd_ready_log"', rendered)
-        self.assertIn('wait_for_smbd_ready "$smbd_ready_log"', rendered)
+        self.assertIn('if wait_for_process smbd 15; then', rendered)
+        self.assertNotIn('get_smbd_log_path_from_config', rendered)
+        self.assertNotIn('wait_for_smbd_ready', rendered)
+        self.assertNotIn('daemon_ready', rendered)
         self.assertNotIn("SMBD_READY_MARKER", rendered)
         self.assertIn('if wait_for_process "$MDNS_PROC_NAME" 100; then', rendered)
-        self.assertIn('log "smbd startup complete: daemon_ready observed"', rendered)
+        self.assertIn('log "smbd startup complete: process observed"', rendered)
 
-    def test_common_script_extracts_smbd_log_path_from_config(self) -> None:
+    def test_common_script_has_no_smbd_daemon_ready_helpers(self) -> None:
         common = (REPO_ROOT / "src/timecapsulesmb/assets/boot/samba4/common.sh").read_text()
-        self.assertIn("get_smbd_log_path_from_config()", common)
-        self.assertIn("log file", common)
+        self.assertNotIn("get_smbd_log_path_from_config()", common)
+        self.assertNotIn("wait_for_smbd_ready()", common)
+        self.assertNotIn("daemon_ready", common)
 
     def test_render_smb_conf_uses_ram_cache_directory_by_default(self) -> None:
         values = {
@@ -2340,7 +2342,7 @@ int main(void) {{
             with redirect_stdout(io.StringIO()):
                 self.assertFalse(verify_managed_runtime("host", "pw", "-o foo", heading="NetBSD4 activation verification:"))
 
-    def test_probe_managed_smbd_single_shot_checks_runtime_conf_parent_and_fresh_daemon_ready(self) -> None:
+    def test_probe_managed_smbd_single_shot_checks_runtime_conf_parent_and_port_binding(self) -> None:
         with mock.patch(
             "timecapsulesmb.device.probe.run_ssh",
             return_value=mock.Mock(returncode=0, stdout=""),
@@ -2349,12 +2351,12 @@ int main(void) {{
         remote_command = run_ssh_mock.call_args.args[3]
         self.assertIn("capture_ps_out()", remote_command)
         self.assertIn("smbd_parent_process_present()", remote_command)
-        self.assertIn("smbd_log_path_from_config()", remote_command)
-        self.assertIn("file_tail_bytes()", remote_command)
-        self.assertIn("capture_ps_lstart_out()", remote_command)
-        self.assertIn("smbd_parent_start_ts()", remote_command)
-        self.assertIn("last_daemon_ready_ts()", remote_command)
-        self.assertIn("smbd_log_has_fresh_daemon_ready()", remote_command)
+        self.assertIn("smbd_bound_445()", remote_command)
+        self.assertNotIn("smbd_ready_marker_matches_parent()", remote_command)
+        self.assertNotIn("/mnt/Memory/samba4/var/smbd.ready", remote_command)
+        self.assertNotIn("capture_ps_lstart_out()", remote_command)
+        self.assertNotIn("normalize_lstart_fields()", remote_command)
+        self.assertNotIn("smbd_log_has_fresh_daemon_ready()", remote_command)
         self.assertNotIn("/usr/bin/tail", remote_command)
         self.assertNotIn("max_attempts", remote_command)
         self.assertNotIn("sleep 5", remote_command)
@@ -2464,7 +2466,6 @@ int main(void) {{
         self.assertIn("Run `activate` after a reboot if the device did not auto-start Samba.", text)
         self.assertIn("managed runtime smb.conf is present", text)
         self.assertIn("smbd is bound to TCP 445", text)
-        self.assertIn("managed smbd reported fresh daemon_ready", text)
         self.assertIn("mdns-advertiser is bound to UDP 5353", text)
 
     def test_netbsd6_no_reboot_plan_has_no_reboot_checks(self) -> None:

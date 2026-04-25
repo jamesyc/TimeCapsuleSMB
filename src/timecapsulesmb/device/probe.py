@@ -26,79 +26,6 @@ capture_ps_out() {{
     /bin/ps axww -o pid= -o ppid= -o stat= -o time= -o ucomm= -o command= 2>/dev/null || true
 }}
 
-capture_ps_lstart_out() {{
-    /bin/ps axww -o pid -o ppid -o lstart -o ucomm -o command 2>/dev/null || true
-}}
-
-smbd_log_path_from_config() {{
-    /usr/bin/sed -n 's/^[[:space:]]*log file[[:space:]]*=[[:space:]]*//p' {RUNTIME_SMB_CONF} 2>/dev/null \
-        | /usr/bin/sed -n '1p'
-}}
-
-file_tail_bytes() {{
-    file_tail_path=$1
-    file_tail_bytes=${{2:-262144}}
-    if [ -f "$file_tail_path" ]; then
-        set -- $(/bin/ls -l "$file_tail_path" 2>/dev/null)
-        file_tail_size=$5
-        case "$file_tail_size" in
-            ''|*[!0-9]*) file_tail_size=0 ;;
-        esac
-        case "$file_tail_bytes" in
-            ''|*[!0-9]*) file_tail_bytes=262144 ;;
-        esac
-        file_tail_block_size=4096
-        file_tail_blocks=$(((file_tail_bytes + file_tail_block_size - 1) / file_tail_block_size))
-        if [ "$file_tail_size" -gt "$file_tail_bytes" ]; then
-            file_tail_skip=$((file_tail_size / file_tail_block_size - file_tail_blocks))
-            [ "$file_tail_skip" -lt 0 ] && file_tail_skip=0
-        else
-            file_tail_skip=0
-        fi
-        /bin/dd if="$file_tail_path" bs=$file_tail_block_size skip=$file_tail_skip 2>/dev/null \
-            || /bin/cat "$file_tail_path" 2>/dev/null \
-            || true
-    fi
-}}
-
-smbd_log_has_daemon_ready() {{
-    smbd_log_path=$(smbd_log_path_from_config)
-    [ -n "$smbd_log_path" ] || return 1
-    [ -f "$smbd_log_path" ] || return 1
-    ready_line=$(file_tail_bytes "$smbd_log_path" 262144 | /usr/bin/sed -n '/daemon_ready/p' | /usr/bin/sed -n '1p')
-    [ -n "$ready_line" ]
-}}
-
-normalize_month_name() {{
-    case "$1" in
-        Jan) echo 01 ;;
-        Feb) echo 02 ;;
-        Mar) echo 03 ;;
-        Apr) echo 04 ;;
-        May) echo 05 ;;
-        Jun) echo 06 ;;
-        Jul) echo 07 ;;
-        Aug) echo 08 ;;
-        Sep) echo 09 ;;
-        Oct) echo 10 ;;
-        Nov) echo 11 ;;
-        Dec) echo 12 ;;
-        *) return 1 ;;
-    esac
-}}
-
-normalize_lstart_fields() {{
-    month_name=$1
-    day_value=$2
-    time_value=$3
-    year_value=$4
-    month_value=$(normalize_month_name "$month_name") || return 1
-    case "$day_value" in
-        [0-9]) day_value="0$day_value" ;;
-    esac
-    echo "$year_value/$month_value/$day_value $time_value"
-}}
-
 smbd_parent_process_present() {{
     ps_out=$1
     smbd_pids=""
@@ -162,83 +89,6 @@ EOF
     return 1
 }}
 
-smbd_parent_start_ts() {{
-    ps_out=$1
-    ps_lstart_out=$2
-    smbd_pids=""
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        set -- $line
-        [ "$#" -ge 5 ] || continue
-        if [ "$5" = "smbd" ]; then
-            smbd_pids="$smbd_pids $1"
-        fi
-    done <<EOF
-$ps_out
-EOF
-
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        case "$line" in
-            *STARTED*) continue ;;
-        esac
-        set -- $line
-        [ "$#" -ge 8 ] || continue
-        if [ "$8" = "smbd" ]; then
-            case " $smbd_pids " in
-                *" $2 "*) ;;
-                *)
-                    normalize_lstart_fields "$4" "$5" "$6" "$7"
-                    return $?
-                    ;;
-            esac
-        fi
-    done <<EOF
-$ps_lstart_out
-EOF
-    return 1
-}}
-
-last_daemon_ready_ts() {{
-    smbd_log_path=$1
-    current_ts=""
-    ready_ts=""
-    [ -f "$smbd_log_path" ] || return 1
-    while IFS= read -r line; do
-        case "$line" in
-            \[[0-9][0-9][0-9][0-9]/[0-9][0-9]/[0-9][0-9]\ [0-9][0-9]:[0-9][0-9]:[0-9][0-9]*)
-                line_ts=${{line#\[}}
-                current_ts=${{line_ts%%.*}}
-                ;;
-        esac
-        case "$line" in
-            *daemon_ready*)
-                if [ -n "$current_ts" ]; then
-                    ready_ts=$current_ts
-                fi
-                ;;
-        esac
-    done <<EOF
-$(file_tail_bytes "$smbd_log_path" 2097152)
-EOF
-    [ -n "$ready_ts" ] || return 1
-    echo "$ready_ts"
-}}
-
-smbd_log_has_fresh_daemon_ready() {{
-    ps_out=$1
-    ps_lstart_out=$2
-    smbd_log_path=$(smbd_log_path_from_config)
-    [ -n "$smbd_log_path" ] || return 1
-    [ -f "$smbd_log_path" ] || return 1
-    parent_start_ts=$(smbd_parent_start_ts "$ps_out" "$ps_lstart_out" || true)
-    [ -n "$parent_start_ts" ] || return 1
-    daemon_ready_ts=$(last_daemon_ready_ts "$smbd_log_path" || true)
-    [ -n "$daemon_ready_ts" ] || return 1
-    [ "$daemon_ready_ts" \< "$parent_start_ts" ] && return 1
-    return 0
-}}
-
 smbd_bound_445() {{
     case "$1" in
         *smbd*":445"*) return 0 ;;
@@ -255,19 +105,16 @@ mdns_bound_5353() {{
 
 managed_smbd_ready() {{
     ps_out=$1
-    ps_lstart_out=$2
-    fstat_out=$3
+    fstat_out=$2
     runtime_smb_conf_present || return 1
     smbd_parent_process_present "$ps_out" || return 1
     smbd_bound_445 "$fstat_out" || return 1
-    smbd_log_has_fresh_daemon_ready "$ps_out" "$ps_lstart_out" || return 1
     return 0
 }}
 
 describe_managed_smbd_status() {{
     ps_out=$1
-    ps_lstart_out=$2
-    fstat_out=$3
+    fstat_out=$2
     status=0
     if runtime_smb_conf_present; then
         echo "PASS:managed runtime smb.conf present"
@@ -285,12 +132,6 @@ describe_managed_smbd_status() {{
         echo "PASS:smbd bound to TCP 445"
     else
         echo "FAIL:smbd is not bound to TCP 445"
-        status=1
-    fi
-    if smbd_log_has_fresh_daemon_ready "$ps_out" "$ps_lstart_out"; then
-        echo "PASS:managed smbd reported fresh daemon_ready"
-    else
-        echo "FAIL:managed smbd did not report fresh daemon_ready"
         status=1
     fi
     return "$status"
@@ -812,10 +653,9 @@ if ! command -v fstat >/dev/null 2>&1; then
     exit 1
 fi
 ps_out="$(capture_ps_out)"
-ps_lstart_out="$(capture_ps_lstart_out)"
 out="$(fstat 2>&1)"
 status=0
-if ! describe_managed_smbd_status "$ps_out" "$ps_lstart_out" "$out"; then
+if ! describe_managed_smbd_status "$ps_out" "$out"; then
     status=1
 fi
 exit "$status"

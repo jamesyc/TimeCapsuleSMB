@@ -332,19 +332,19 @@ This matters because:
 3. recreates the RAM runtime tree
 4. waits for the device IP on the configured network interface
    - default: `bridge0`
-5. waits briefly for an Apple-mounted data root under `/Volumes/dk2` or `/Volumes/dk3`, giving a chance for Apple to mount the disk so Airport Utility does not give a "disk corrupt" error
-6. if Apple did not mount it, falls back to bounded manual `mount_hfs` attempts
-7. discovers or initializes the real data root by checking:
+5. starts the mDNS snapshot capture phase without taking over UDP 5353 yet
+6. waits briefly for an Apple-mounted data root under `/Volumes/dk2` or `/Volumes/dk3`, giving a chance for Apple to mount the disk so Airport Utility does not give a "disk corrupt" error
+7. if Apple did not mount it, falls back to bounded manual `mount_hfs` attempts
+8. discovers or initializes the real data root by checking:
    - `ShareRoot/.com.apple.timemachine.supported`
    - `Shared/.com.apple.timemachine.supported`
-8. finds the persistent payload directory
-9. copies `smbd` into `/mnt/Memory/samba4/sbin`
-10. if `private/nbns.enabled` exists in the persistent payload, also copies `nbns-advertiser` into `/mnt/Memory/samba4/sbin`
-11. renders `smb.conf` from the template
-12. starts `mdns-advertiser`
-   - the helper itself handles Apple snapshot save, takeover, and replay
-13. starts the NBNS responder if enabled
-14. starts `smbd` and waits until `daemon_ready`
+9. finds the persistent payload directory
+10. copies `smbd` into `/mnt/Memory/samba4/sbin`
+11. if `private/nbns.enabled` exists in the persistent payload, also copies `nbns-advertiser` into `/mnt/Memory/samba4/sbin`
+12. renders `smb.conf` from the template
+13. starts `smbd` and waits briefly until the process is observed
+14. starts the final `mdns-advertiser` phase, which takes over UDP 5353 and advertises the configured services plus the captured Apple records when available
+15. starts the NBNS responder if enabled
 
 The boot log is written to:
 - `/mnt/Memory/samba4/var/rc.local.log`

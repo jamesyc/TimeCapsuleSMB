@@ -550,20 +550,12 @@ EOF
 }
 
 start_smbd() {
-    smbd_ready_log=$SMBD_LOG
-    if configured_smbd_log=$(get_smbd_log_path_from_config "$RAM_ETC/smb.conf" || true); then
-        if [ -n "$configured_smbd_log" ]; then
-            smbd_ready_log=$configured_smbd_log
-        fi
-    fi
-
-    ensure_parent_dir "$smbd_ready_log" || log "could not create smbd log directory for $smbd_ready_log"
-    log "starting smbd from $RAM_SBIN/smbd with config $RAM_ETC/smb.conf and ready log $smbd_ready_log"
+    log "starting smbd from $RAM_SBIN/smbd with config $RAM_ETC/smb.conf"
     "$RAM_SBIN/smbd" -D -s "$RAM_ETC/smb.conf"
-    if wait_for_smbd_ready "$smbd_ready_log"; then
+    if wait_for_process smbd 15; then
         return 0
     fi
-    log "smbd did not report daemon_ready in $smbd_ready_log"
+    log "smbd process was not observed after launch"
     return 1
 }
 
@@ -800,10 +792,10 @@ stage_runtime "$PAYLOAD_DIR" "$SMBD_SRC" "$NBNS_SRC"
 log "runtime staging complete under $RAM_ROOT"
 
 start_smbd || {
-    log "smbd startup failed: daemon_ready was not observed"
+    log "smbd startup failed: process was not observed"
     exit 1
 }
-log "smbd startup complete: daemon_ready observed"
+log "smbd startup complete: process observed"
 
 start_mdns_advertiser
 start_nbns

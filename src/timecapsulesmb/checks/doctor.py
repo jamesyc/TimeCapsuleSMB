@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 import ipaddress
 from pathlib import Path
 from typing import Optional
@@ -66,6 +66,32 @@ def _parse_active_share_names(smb_conf: str) -> list[str]:
             if section_name and section_name.lower() != "global":
                 shares.append(section_name)
     return shares
+
+
+def _add_probe_line_results(
+    add_result: Callable[[CheckResult], None],
+    lines: Iterable[str],
+    *,
+    fallback_ready: bool,
+    fallback_pass_message: str,
+    fallback_fail_message: str,
+) -> None:
+    emitted = False
+    for line in lines:
+        if line.startswith("PASS:"):
+            add_result(CheckResult("PASS", line.removeprefix("PASS:")))
+            emitted = True
+        elif line.startswith("FAIL:"):
+            add_result(CheckResult("FAIL", line.removeprefix("FAIL:")))
+            emitted = True
+
+    if emitted:
+        return
+
+    if fallback_ready:
+        add_result(CheckResult("PASS", fallback_pass_message))
+    else:
+        add_result(CheckResult("FAIL", fallback_fail_message))
 
 
 def _parse_bonjour_host_label(target: Optional[str]) -> Optional[str]:
@@ -219,10 +245,13 @@ def run_doctor_checks(
         except (Exception, SystemExit) as e:
             add_result(CheckResult("FAIL", f"device compatibility check failed: {e}"))
         smbd_probe = probe_managed_smbd(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
-        if smbd_probe.ready:
-            add_result(CheckResult("PASS", "managed smbd is ready"))
-        else:
-            add_result(CheckResult("FAIL", f"managed smbd is not ready ({smbd_probe.detail})"))
+        _add_probe_line_results(
+            add_result,
+            getattr(smbd_probe, "lines", ()),
+            fallback_ready=smbd_probe.ready,
+            fallback_pass_message="managed smbd is ready",
+            fallback_fail_message=f"managed smbd is not ready ({smbd_probe.detail})",
+        )
         mdns_probe = probe_managed_mdns_takeover(values["TC_HOST"], values["TC_PASSWORD"], ssh_opts)
         if mdns_probe.ready:
             add_result(CheckResult("PASS", "managed mDNS takeover is active"))

@@ -72,15 +72,17 @@ class UninstallPlan:
 
 NETBSD4_ACTIVATION_CHECKS = [
     PlannedCheck("netbsd4_runtime_smb_conf_present", "managed runtime smb.conf is present"),
+    PlannedCheck("netbsd4_smbd_parent_process", "managed smbd parent process is running"),
     PlannedCheck("netbsd4_smbd_bound_445", "smbd is bound to TCP 445"),
-    PlannedCheck("netbsd4_smbd_daemon_ready", "managed smbd reported fresh daemon_ready"),
     PlannedCheck("netbsd4_mdns_bound_5353", "mdns-advertiser is bound to UDP 5353"),
 ]
 
 NETBSD6_REBOOT_DEPLOY_CHECKS = [
     PlannedCheck("ssh_goes_down_after_reboot", "SSH goes down after reboot request"),
     PlannedCheck("ssh_returns_after_reboot", "SSH returns after reboot"),
-    PlannedCheck("managed_smbd_ready", "managed smbd becomes ready"),
+    PlannedCheck("managed_runtime_smb_conf_present", "managed runtime smb.conf is present"),
+    PlannedCheck("managed_smbd_parent_process", "managed smbd parent process is running"),
+    PlannedCheck("managed_smbd_bound_445", "smbd is bound to TCP 445"),
     PlannedCheck("managed_mdns_takeover_ready", "managed mDNS takeover becomes ready"),
     PlannedCheck("authenticated_smb_listing", "authenticated SMB listing"),
 ]

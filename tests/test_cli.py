@@ -3785,7 +3785,9 @@ class CliTests(unittest.TestCase):
         self.assertIn("generated smbpasswd", text)
         self.assertIn("SSH goes down after reboot request", text)
         self.assertIn("SSH returns after reboot", text)
-        self.assertIn("managed smbd becomes ready", text)
+        self.assertIn("managed runtime smb.conf is present", text)
+        self.assertIn("managed smbd parent process is running", text)
+        self.assertIn("smbd is bound to TCP 445", text)
         self.assertIn("managed mDNS takeover becomes ready", text)
         self.assertIn("authenticated SMB listing", text)
         actions_mock.assert_not_called()
@@ -3806,7 +3808,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Reboot:\n  no", text)
         self.assertIn("Post-deploy checks:\n  none", text)
         self.assertNotIn("SSH returns after reboot", text)
-        self.assertNotIn("managed smbd becomes ready", text)
+        self.assertNotIn("smbd is bound to TCP 445", text)
 
     def test_deploy_ensures_install_id_before_telemetry(self) -> None:
         output = io.StringIO()
@@ -4773,7 +4775,9 @@ class CliTests(unittest.TestCase):
             [
                 "ssh_goes_down_after_reboot",
                 "ssh_returns_after_reboot",
-                "managed_smbd_ready",
+                "managed_runtime_smb_conf_present",
+                "managed_smbd_parent_process",
+                "managed_smbd_bound_445",
                 "managed_mdns_takeover_ready",
                 "authenticated_smb_listing",
             ],
@@ -4870,8 +4874,8 @@ class CliTests(unittest.TestCase):
             [check["id"] for check in payload["post_deploy_checks"]],
             [
                 "netbsd4_runtime_smb_conf_present",
+                "netbsd4_smbd_parent_process",
                 "netbsd4_smbd_bound_445",
-                "netbsd4_smbd_daemon_ready",
                 "netbsd4_mdns_bound_5353",
             ],
         )
@@ -4896,8 +4900,8 @@ class CliTests(unittest.TestCase):
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
         self.assertIn("skip rc.local if NetBSD4 payload is already healthy", text)
         self.assertIn("managed runtime smb.conf is present", text)
+        self.assertIn("managed smbd parent process is running", text)
         self.assertIn("smbd is bound to TCP 445", text)
-        self.assertIn("managed smbd reported fresh daemon_ready", text)
         self.assertIn("mdns-advertiser is bound to UDP 5353", text)
         self.assertIn("This will start the deployed Samba payload on the Time Capsule.", text)
         self.assertIn("NetBSD 4 devices cannot auto-run Samba after a reboot.", text)

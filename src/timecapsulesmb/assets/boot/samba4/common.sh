@@ -86,40 +86,6 @@ trim_log_file() {
     fi
 }
 
-wait_for_smbd_ready() {
-    smbd_log_path=$1
-    max_attempts=${2:-15}
-    attempt=0
-    while [ "$attempt" -lt "$max_attempts" ]; do
-        if [ -f "$smbd_log_path" ]; then
-            smbd_log=$(/usr/bin/tail -c 65536 "$smbd_log_path" 2>/dev/null || /bin/cat "$smbd_log_path" 2>/dev/null || true)
-            case "$smbd_log" in
-                *daemon_ready*)
-                    return 0
-                    ;;
-            esac
-        fi
-        attempt=$((attempt + 1))
-        sleep 1
-    done
-    return 1
-}
-
-get_smbd_log_path_from_config() {
-    smbd_conf_path=$1
-    configured_log=$(
-        /usr/bin/sed -n 's/^[[:space:]]*log file[[:space:]]*=[[:space:]]*//p' "$smbd_conf_path" 2>/dev/null \
-            | /usr/bin/sed -n '1p'
-    )
-
-    if [ -n "$configured_log" ]; then
-        echo "$configured_log"
-        return 0
-    fi
-
-    return 1
-}
-
 derive_airport_fields() {
     iface_mac=$1
 

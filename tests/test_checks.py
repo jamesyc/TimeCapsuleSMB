@@ -73,7 +73,15 @@ class CheckTests(unittest.TestCase):
         self._exit_stack.enter_context(
             mock.patch(
                 "timecapsulesmb.checks.doctor.probe_managed_smbd",
-                return_value=mock.Mock(ready=True, detail="managed smbd ready"),
+                return_value=mock.Mock(
+                    ready=True,
+                    detail="managed smbd ready",
+                    lines=(
+                        "PASS:managed runtime smb.conf present",
+                        "PASS:managed smbd parent process is running",
+                        "PASS:smbd bound to TCP 445",
+                    ),
+                ),
             )
         )
         self._exit_stack.enter_context(
@@ -517,6 +525,47 @@ class CheckTests(unittest.TestCase):
                                                 results, fatal = run_doctor_checks(values, env_exists=True, repo_root=REPO_ROOT)
         self.assertTrue(fatal)
         self.assertTrue(any("managed mDNS takeover is not active" in result.message for result in results))
+
+    def test_run_doctor_checks_reports_managed_smbd_subchecks(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+            "TC_AIRPORT_SYAP": "119",
+        }
+        smbd_probe = mock.Mock(
+            ready=False,
+            detail="smbd is not bound to TCP 445",
+            lines=(
+                "PASS:managed runtime smb.conf present",
+                "PASS:managed smbd parent process is running",
+                "FAIL:smbd is not bound to TCP 445",
+            ),
+        )
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.check_ssh_login", return_value=mock.Mock(status="PASS", message="ssh ok")):
+                    with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
+                        with mock.patch("timecapsulesmb.checks.doctor.run_bonjour_checks", return_value=([], None, None)):
+                            with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=mock.Mock(status="PASS", message="listing ok")):
+                                with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops_detailed", return_value=[]):
+                                    with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root", return_value="/Volumes/dk2"):
+                                        with mock.patch("timecapsulesmb.checks.doctor.probe_managed_smbd", return_value=smbd_probe):
+                                            with mock.patch("timecapsulesmb.checks.doctor.probe_managed_mdns_takeover", return_value=mock.Mock(ready=True, detail="managed mDNS takeover active")):
+                                                with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(returncode=0, stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n")):
+                                                    results, fatal = run_doctor_checks(values, env_exists=True, repo_root=REPO_ROOT)
+        self.assertTrue(fatal)
+        self.assertTrue(any(result.status == "PASS" and result.message == "managed smbd parent process is running" for result in results))
+        self.assertTrue(any(result.status == "FAIL" and result.message == "smbd is not bound to TCP 445" for result in results))
+        self.assertFalse(any(result.message.startswith("managed smbd is not ready") for result in results))
 
     def test_run_doctor_checks_reports_supported_device_compatibility(self) -> None:
         values = {
