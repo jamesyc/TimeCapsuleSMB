@@ -13,6 +13,8 @@
 #   make venv                    - create local virtualenv at .venv
 #   make install                 - install Python dependencies into .venv
 #   make test                    - run C compile checks and Python unittest suite
+#   make coverage                - run Python tests with coverage and show missing lines
+#   make coverage-html           - write an HTML coverage report to htmlcov/
 #   make test-c                  - compile-check mdns/nbns helper sources
 #   make discover                - run tcapsule discover (depends on install)
 #   make bootstrap-host          - run the host bootstrap helper
@@ -26,7 +28,7 @@
 #   make airpyrt-clean           - remove the local .airpyrt-venv
 #   make airpyrt-uninstall-pyenv - uninstall the pyenv Python 2.7.18 interpreter
 
-.PHONY: venv install test test-c discover bootstrap-host prep-device setup clean \
+.PHONY: venv install test coverage coverage-html test-c discover bootstrap-host prep-device setup clean \
         airpyrt airpyrt-clone airpyrt-bootstrap airpyrt-venv airpyrt-install airpyrt-clean airpyrt-uninstall-pyenv
 
 VENVDIR := .venv
@@ -46,6 +48,14 @@ install: venv
 
 test: install test-c
 	PYTHONPATH=src $(PY) -m unittest discover -s tests -v
+
+coverage: install
+	PYTHONPATH=src $(PY) -m coverage run -m unittest discover -s tests -v
+	$(PY) -m coverage report
+
+coverage-html: coverage
+	$(PY) -m coverage html
+	@echo "Open htmlcov/index.html to inspect line-by-line coverage."
 
 test-c:
 	cc -Wall -Wextra -Werror -o /tmp/mdns-advertiser-test build/mdns-advertiser.c

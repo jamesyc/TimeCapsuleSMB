@@ -584,6 +584,15 @@ Current `.bootstrap` values include:
 - `INSTALL_ID`
 - optional `TELEMETRY=false`
 
+## Local Test Coverage
+
+Fresh clones install `coverage.py` through `requirements.txt` during `./tcapsule bootstrap` or `make install`.
+
+Coverage entry points:
+- `make test` runs C compile checks plus the Python unittest suite
+- `make coverage` runs the Python unittest suite with branch coverage and prints missing source lines
+- `make coverage-html` writes the browsable report to `htmlcov/index.html`
+
 Optional deploy flag:
 - `--install-nbns`
   - enables the bundled NBNS responder on the next boot by creating `private/nbns.enabled`
