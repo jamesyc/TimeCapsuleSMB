@@ -13,6 +13,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.discovery.bonjour import (
     AIRPORT_SERVICE,
+    Collector,
     Discovered,
     SMB_SERVICE,
     ServiceObservation,
@@ -54,7 +55,70 @@ class DiscoveryTests(unittest.TestCase):
 
         fake_zeroconf_module.Zeroconf.assert_called_once_with(ip_version=fake_ip_version.V4Only)
         fake_collector.start.assert_called_once()
+        fake_collector.resolve_pending.assert_called_once()
         fake_zc.close.assert_called_once()
+
+    def test_collector_queues_browse_events_and_resolves_after_browse_window(self) -> None:
+        class FakeStateChange:
+            Added = object()
+            Updated = object()
+
+        class FakeInfo:
+            name = "Home._smb._tcp.local."
+            server = "home.local."
+            properties: dict[bytes, bytes] = {}
+            addresses = [bytes([10, 0, 1, 1])]
+
+        fake_zeroconf_module = mock.Mock(ServiceStateChange=FakeStateChange)
+        fake_zc = mock.Mock()
+        fake_zc.get_service_info.return_value = FakeInfo()
+        collector = Collector(fake_zc, ["_smb._tcp.local."])
+
+        with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
+            collector._on_service_state_change(
+                zeroconf=fake_zc,
+                service_type="_smb._tcp.local.",
+                name="Home._smb._tcp.local.",
+                state_change=FakeStateChange.Added,
+            )
+
+        fake_zc.get_service_info.assert_not_called()
+        collector.resolve_pending()
+
+        fake_zc.get_service_info.assert_called_once_with("_smb._tcp.local.", "Home._smb._tcp.local.", 2000)
+        records = collector.results()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].name, "Home")
+        self.assertEqual(records[0].hostname, "home.local")
+        self.assertEqual(records[0].ipv4, ["10.0.1.1"])
+
+    def test_collector_keeps_resolving_pending_records_after_one_resolve_fails(self) -> None:
+        class FakeInfo:
+            def __init__(self, name: str, server: str, address: str) -> None:
+                self.name = name
+                self.server = server
+                self.properties: dict[bytes, bytes] = {}
+                self.addresses = [bytes(int(part) for part in address.split("."))]
+
+        fake_zc = mock.Mock()
+        fake_zc.get_service_info.side_effect = [
+            OSError("transient resolve failure"),
+            FakeInfo("Kitchen._smb._tcp.local.", "kitchen.local.", "10.0.1.99"),
+        ]
+        collector = Collector(fake_zc, ["_smb._tcp.local."])
+        collector.pending = {
+            ("_smb._tcp.local.", "Home._smb._tcp.local."),
+            ("_smb._tcp.local.", "Kitchen._smb._tcp.local."),
+        }
+
+        collector.resolve_pending(timeout_ms=500)
+
+        self.assertEqual(fake_zc.get_service_info.call_count, 2)
+        records = collector.results()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].name, "Kitchen")
+        self.assertEqual(records[0].ipv4, ["10.0.1.99"])
+        self.assertEqual(collector.pending, set())
 
     def test_filter_service_records_returns_only_matching_service(self) -> None:
         airport = Discovered(

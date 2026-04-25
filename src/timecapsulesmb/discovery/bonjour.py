@@ -128,6 +128,7 @@ class Collector:
         self.services = services
         self.lock = threading.Lock()
         self.observations: dict[tuple[str, str, str], ServiceObservation] = {}
+        self.pending: set[tuple[str, str]] = set()
         self._browsers: list[Any] = []
 
     def start(self) -> None:
@@ -140,13 +141,23 @@ class Collector:
     def _on_service_state_change(self, *, zeroconf: Any, service_type: str, name: str, state_change: Any) -> None:
         from zeroconf import ServiceStateChange
 
-        try:
-            if state_change is ServiceStateChange.Added or state_change is ServiceStateChange.Updated:
-                info = zeroconf.get_service_info(service_type, name, 2000)
-                if info:
-                    self._add_info(service_type, info)
-        except Exception:
-            pass
+        if state_change is ServiceStateChange.Added or state_change is ServiceStateChange.Updated:
+            with self.lock:
+                self.pending.add((service_type, name))
+
+    def resolve_pending(self, timeout_ms: int = 2000) -> None:
+        with self.lock:
+            pending = sorted(self.pending)
+
+        for service_type, name in pending:
+            try:
+                info = self.zc.get_service_info(service_type, name, timeout_ms)
+            except Exception:
+                info = None
+            if info:
+                self._add_info(service_type, info)
+            with self.lock:
+                self.pending.discard((service_type, name))
 
     def _add_info(self, stype: str, info: Any) -> None:
         name = _display_name(info.name or "", stype)
@@ -224,6 +235,7 @@ def discover(timeout: float = 5.0) -> list[Discovered]:
         collector = Collector(zc, SERVICE_TYPES)
         collector.start()
         time.sleep(timeout)
+        collector.resolve_pending()
         records = collector.results()
     finally:
         try:
