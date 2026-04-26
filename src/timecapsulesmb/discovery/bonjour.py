@@ -113,10 +113,18 @@ def _decode_props(props: dict[bytes, bytes]) -> dict[str, str]:
             continue
         if not key:
             continue
-        out[key] = value
         if "," not in value:
+            out[key] = value
             continue
-        for chunk in value.split(","):
+
+        chunks = [chunk.strip() for chunk in value.split(",")]
+        first_chunk = chunks[0] if chunks else ""
+        if "=" in first_chunk:
+            out[key] = value
+        else:
+            out[key] = first_chunk
+
+        for chunk in chunks:
             if "=" not in chunk:
                 continue
             extra_key, extra_value = chunk.split("=", 1)

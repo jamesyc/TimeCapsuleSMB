@@ -27,6 +27,7 @@ from timecapsulesmb.discovery.bonjour import (
     discover_resolved_records,
     discovered_record_root_host,
     resolve_service_instance,
+    resolved_service_from_info,
     filter_service_records,
     run_cli,
 )
@@ -156,6 +157,44 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(record.hostname, "home.local")
         self.assertEqual(record.port, 445)
         self.assertEqual(record.ipv4, ["10.0.1.1"])
+
+    def test_resolved_service_from_info_splits_airport_packed_txt_value(self) -> None:
+        class FakeInfo:
+            name = "AirPort Time Capsule._airport._tcp.local."
+            server = "AirPort-Time-Capsule.local."
+            port = 5009
+            properties = {
+                b"waMA": (
+                    b"00-23-DF-D9-7B-53,raMA=00-21-E9-B9-70-E3,raSt=3,"
+                    b"raNA=0,syAP=106,syVs=7.8.1"
+                ),
+            }
+            addresses = [bytes([192, 168, 1, 72])]
+
+        record = resolved_service_from_info("_airport._tcp.local.", FakeInfo())
+
+        self.assertEqual(record.properties["waMA"], "00-23-DF-D9-7B-53")
+        self.assertEqual(record.properties["raMA"], "00-21-E9-B9-70-E3")
+        self.assertEqual(record.properties["raSt"], "3")
+        self.assertEqual(record.properties["raNA"], "0")
+        self.assertEqual(record.properties["syAP"], "106")
+        self.assertEqual(record.properties["syVs"], "7.8.1")
+
+    def test_resolved_service_from_info_expands_sys_packed_txt_without_losing_raw_sys(self) -> None:
+        class FakeInfo:
+            name = "Home._adisk._tcp.local."
+            server = "home.local."
+            port = 9
+            properties = {
+                b"sys": b"waMA=80:EA:96:E6:58:68,adVF=0x1010",
+            }
+            addresses = [bytes([10, 0, 1, 1])]
+
+        record = resolved_service_from_info("_adisk._tcp.local.", FakeInfo())
+
+        self.assertEqual(record.properties["sys"], "waMA=80:EA:96:E6:58:68,adVF=0x1010")
+        self.assertEqual(record.properties["waMA"], "80:EA:96:E6:58:68")
+        self.assertEqual(record.properties["adVF"], "0x1010")
 
     def test_collector_queues_browse_events_and_resolves_after_browse_window(self) -> None:
         class FakeStateChange:

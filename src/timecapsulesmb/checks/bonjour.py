@@ -7,10 +7,11 @@ from dataclasses import dataclass
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import extract_host
 from timecapsulesmb.discovery.bonjour import (
+    BonjourDiscoverySnapshot,
     BonjourResolvedService,
     BonjourServiceInstance,
     SMB_SERVICE,
-    browse_service_instances,
+    discover_snapshot,
     resolve_service_instance,
 )
 
@@ -81,14 +82,13 @@ def _candidate_summary(instances: list[BonjourServiceInstance]) -> str:
     return "; ".join(_describe_instance(instance) for instance in instances)
 
 
-def browse_smb_instances(timeout: float = 5.0) -> tuple[list[BonjourServiceInstance], CheckResult | None]:
+def discover_smb_services(timeout: float = 5.0) -> tuple[BonjourDiscoverySnapshot | None, CheckResult | None]:
     try:
-        instances = browse_service_instances(SMB_SERVICE, timeout=timeout)
+        return discover_snapshot(SMB_SERVICE, timeout=timeout), None
     except SystemExit as e:
-        return [], CheckResult("FAIL", f"Bonjour check failed: {e}")
+        return None, CheckResult("FAIL", f"Bonjour check failed: {e}")
     except Exception as e:
-        return [], CheckResult("FAIL", f"Bonjour check failed: {e}")
-    return instances, None
+        return None, CheckResult("FAIL", f"Bonjour check failed: {e}")
 
 
 def select_smb_instance(
@@ -120,6 +120,26 @@ def check_smb_instance(selection: BonjourInstanceSelection) -> list[CheckResult]
         ),
         CheckResult("INFO", f"discovered _smb._tcp candidates: {_candidate_summary(selection.candidates)}"),
     ]
+
+
+def select_resolved_smb_record(
+    records: list[BonjourResolvedService],
+    instance: BonjourServiceInstance,
+) -> BonjourResolvedService | None:
+    for record in records:
+        if record.service_type != instance.service_type:
+            continue
+        if record.fullname and instance.fullname and record.fullname == instance.fullname:
+            return record
+
+    matching_name = [
+        record
+        for record in records
+        if record.service_type == instance.service_type and record.name == instance.name
+    ]
+    if not matching_name:
+        return None
+    return sorted(matching_name, key=lambda record: (record.hostname or "", record.fullname or ""))[0]
 
 
 def resolve_smb_instance(instance: BonjourServiceInstance, timeout_ms: int = 2000) -> tuple[BonjourResolvedService | None, CheckResult | None]:
