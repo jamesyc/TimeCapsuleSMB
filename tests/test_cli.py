@@ -137,6 +137,7 @@ class CliTests(unittest.TestCase):
             )
         )
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=False))
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.cli.configure.missing_required_python_module", return_value=None))
         self._exit_stack.enter_context(
             mock.patch(
                 "timecapsulesmb.cli.configure.probe_remote_interface_candidates_conn",
