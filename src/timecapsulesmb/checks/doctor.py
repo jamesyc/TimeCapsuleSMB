@@ -5,7 +5,16 @@ import ipaddress
 from pathlib import Path
 from typing import Optional
 
-from timecapsulesmb.checks.bonjour import build_bonjour_target_hints, run_bonjour_checks
+from timecapsulesmb.checks.bonjour import (
+    BonjourServiceTarget,
+    build_bonjour_expected_identity,
+    check_bonjour_host_ip,
+    check_smb_instance,
+    check_smb_service_target,
+    discover_smb_records,
+    resolve_smb_service_target,
+    select_smb_instance,
+)
 from timecapsulesmb.checks.local_tools import check_required_artifacts, check_required_local_tools
 from timecapsulesmb.checks.models import CheckResult, is_fatal
 from timecapsulesmb.checks.network import check_smb_port, check_ssh_login, ssh_opts_use_proxy
@@ -94,24 +103,6 @@ def _add_probe_line_results(
         add_result(CheckResult("FAIL", fallback_fail_message))
 
 
-def _parse_bonjour_host_label(target: Optional[str]) -> Optional[str]:
-    if not target:
-        return None
-    host = target.rsplit(":", 1)[0].rstrip(".")
-    if not host:
-        return None
-    if host.endswith(".local"):
-        return host[:-len(".local")]
-    return host
-
-
-def _parse_bonjour_target_host(target: Optional[str]) -> Optional[str]:
-    if not target:
-        return None
-    host = target.rsplit(":", 1)[0].rstrip(".")
-    return host or None
-
-
 def _configured_smb_server(host_label: str) -> str:
     value = host_label.strip()
     if not value:
@@ -126,7 +117,7 @@ def _configured_smb_server(host_label: str) -> str:
     return f"{value}.local"
 
 
-def _doctor_smb_servers(values: dict[str, str], bonjour_target: Optional[str]) -> list[str]:
+def _doctor_smb_servers(values: dict[str, str], bonjour_target: BonjourServiceTarget | None) -> list[str]:
     ordered: list[str] = []
 
     def add(value: Optional[str]) -> None:
@@ -134,7 +125,7 @@ def _doctor_smb_servers(values: dict[str, str], bonjour_target: Optional[str]) -
             ordered.append(value)
 
     add(_configured_smb_server(values["TC_MDNS_HOST_LABEL"]))
-    add(_parse_bonjour_target_host(bonjour_target))
+    add(bonjour_target.hostname if bonjour_target is not None else None)
     add(extract_host(values["TC_HOST"]))
     return ordered
 
@@ -215,7 +206,7 @@ def run_doctor_checks(
     proxied_ssh = ssh_opts_use_proxy(connection.ssh_opts)
     ssh_ok = False
     bonjour_instance: Optional[str] = None
-    bonjour_target: Optional[str] = None
+    bonjour_target: BonjourServiceTarget | None = None
     bonjour_reason = "Bonjour check not run"
     active_smb_conf: Optional[str] = None
     active_smb_conf_reason = "SSH check not run"
@@ -283,15 +274,39 @@ def run_doctor_checks(
         add_result(CheckResult("SKIP", "Bonjour check skipped for SSH-proxied target; local mDNS may find a different Time Capsule"))
     elif not skip_bonjour:
         try:
-            bonjour_hints = build_bonjour_target_hints(values)
-            bonjour_results, bonjour_instance, bonjour_target = run_bonjour_checks(
-                bonjour_hints.expected_instance_name,
-                preferred_host=bonjour_hints.preferred_host,
-                preferred_ip=bonjour_hints.preferred_ip,
-            )
+            bonjour_expected = build_bonjour_expected_identity(values)
+            smb_records, discovery_error = discover_smb_records()
             bonjour_reason = ""
-            for result in bonjour_results:
-                add_result(result)
+            if discovery_error is not None:
+                bonjour_reason = discovery_error.message
+                add_result(discovery_error)
+            else:
+                selection = select_smb_instance(
+                    smb_records,
+                    expected_instance_name=bonjour_expected.instance_name,
+                    expected_host_label=bonjour_expected.host_label,
+                )
+                for result in check_smb_instance(selection):
+                    add_result(result)
+                if selection.record is not None:
+                    bonjour_instance = selection.record.name
+                    target = resolve_smb_service_target(
+                        selection.record,
+                        expected_instance_name=bonjour_expected.instance_name,
+                        expected_host_label=bonjour_expected.host_label,
+                    )
+                    target_result = check_smb_service_target(target)
+                    add_result(target_result)
+                    if target.hostname:
+                        bonjour_target = target
+                        record_ips = list(getattr(selection.record, "ipv4", []) or [])
+                        add_result(
+                            check_bonjour_host_ip(
+                                target.hostname,
+                                expected_ip=bonjour_expected.target_ip,
+                                record_ips=record_ips,
+                            )
+                        )
         except Exception as e:
             bonjour_reason = str(e)
             add_result(CheckResult("FAIL", f"Bonjour check failed: {e}"))
@@ -303,7 +318,7 @@ def run_doctor_checks(
     else:
         add_result(CheckResult("INFO", f"advertised Bonjour instance: unavailable ({bonjour_reason})"))
 
-    bonjour_host_label = _parse_bonjour_host_label(bonjour_target)
+    bonjour_host_label = bonjour_target.host_label() if bonjour_target is not None else None
     if bonjour_host_label is not None:
         add_result(CheckResult("INFO", f"advertised Bonjour host label: {bonjour_host_label}"))
     else:

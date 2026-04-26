@@ -31,6 +31,11 @@ def print_result(result: CheckResult) -> None:
 def build_doctor_error(results: list[CheckResult]) -> str | None:
     fail_lines = [f"{result.status} {result.message}" for result in results if result.status == "FAIL"]
     warn_lines = [f"{result.status} {result.message}" for result in results if result.status == "WARN"]
+    info_lines = [
+        f"{result.status} {result.message}"
+        for result in results
+        if result.status == "INFO" and result.message.startswith("discovered _smb._tcp candidates:")
+    ]
     lines: list[str] = []
     if fail_lines:
         lines.append("Doctor failures:")
@@ -40,6 +45,11 @@ def build_doctor_error(results: list[CheckResult]) -> str | None:
             lines.append("")
         lines.append("Doctor warnings:")
         lines.extend(warn_lines)
+    if info_lines:
+        if lines:
+            lines.append("")
+        lines.append("Doctor context:")
+        lines.extend(info_lines)
     return "\n".join(lines) if lines else None
 
 
