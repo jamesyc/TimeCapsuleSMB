@@ -109,10 +109,10 @@ def check_authenticated_smb_file_ops_detailed(
     if not command_exists("smbclient"):
         return [CheckResult("WARN", "SMB file-ops verification skipped: smbclient not found")]
 
-    test_dir_name = f"doctor-fileops-{uuid.uuid4().hex[:8]}"
-    upload_name = "sample.txt"
-    renamed_name = "sample-renamed.txt"
-    copy_name = "sample-copy.txt"
+    test_dir_name = f".doctor-fileops-{uuid.uuid4().hex[:8]}"
+    upload_name = ".sample.txt"
+    renamed_name = ".sample-renamed.txt"
+    copy_name = ".sample-copy.txt"
 
     def run_share_commands(remote: str, commands: list[str]) -> subprocess.CompletedProcess[str]:
         return run_local_capture(
@@ -130,10 +130,10 @@ def check_authenticated_smb_file_ops_detailed(
     with tempfile.TemporaryDirectory(prefix="tcapsule-doctor-") as tmpdir:
         tmp_root = Path(tmpdir)
         upload_path = tmp_root / upload_name
-        update_path = tmp_root / "sample-update.txt"
-        readback_path = tmp_root / "sample-readback.txt"
-        copy_source_path = tmp_root / "sample-copy-source.txt"
-        copy_readback_path = tmp_root / "sample-copy-readback.txt"
+        update_path = tmp_root / ".sample-update.txt"
+        readback_path = tmp_root / ".sample-readback.txt"
+        copy_source_path = tmp_root / ".sample-copy-source.txt"
+        copy_readback_path = tmp_root / ".sample-copy-readback.txt"
         upload_contents = "line1\nline2\nline3\n"
         updated_contents = "line1\nline2\nline3\nline4-updated\n"
         upload_path.write_text(upload_contents, encoding="utf-8")

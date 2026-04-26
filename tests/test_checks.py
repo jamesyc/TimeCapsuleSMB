@@ -1202,26 +1202,26 @@ class CheckTests(unittest.TestCase):
             self.assertEqual(args[0], "smbclient")
             self.assertEqual(args[1:3], ["-s", "/dev/null"])
             command_text = args[-1]
-            if 'get "sample.txt"' in command_text:
-                download_target = Path(command_text.split('get "sample.txt" "', 1)[1].split('"', 1)[0])
+            if 'get ".sample.txt"' in command_text:
+                download_target = Path(command_text.split('get ".sample.txt" "', 1)[1].split('"', 1)[0])
                 download_target.write_text("line1\nline2\nline3\nline4-updated\n", encoding="utf-8")
                 return subprocess.CompletedProcess(args, 0, "", "")
-            if 'get "sample-renamed.txt"' in command_text and 'get "sample-copy.txt"' in command_text:
-                renamed_target = Path(command_text.split('get "sample-renamed.txt" "', 1)[1].split('"', 1)[0])
-                copy_target = Path(command_text.split('get "sample-copy.txt" "', 1)[1].split('"', 1)[0])
+            if 'get ".sample-renamed.txt"' in command_text and 'get ".sample-copy.txt"' in command_text:
+                renamed_target = Path(command_text.split('get ".sample-renamed.txt" "', 1)[1].split('"', 1)[0])
+                copy_target = Path(command_text.split('get ".sample-copy.txt" "', 1)[1].split('"', 1)[0])
                 renamed_target.write_text("line1\nline2\nline3\nline4-updated\n", encoding="utf-8")
                 copy_target.write_text("line1\nline2\nline3\nline4-updated\n", encoding="utf-8")
                 return subprocess.CompletedProcess(args, 0, "", "")
-            if 'get "sample-renamed.txt"' in command_text:
-                download_target = Path(command_text.split('get "sample-renamed.txt" "', 1)[1].split('"', 1)[0])
+            if 'get ".sample-renamed.txt"' in command_text:
+                download_target = Path(command_text.split('get ".sample-renamed.txt" "', 1)[1].split('"', 1)[0])
                 download_target.write_text("line1\nline2\nline3\nline4-updated\n", encoding="utf-8")
                 return subprocess.CompletedProcess(args, 0, "", "")
-            if 'get "sample-copy.txt"' in command_text:
-                download_target = Path(command_text.split('get "sample-copy.txt" "', 1)[1].split('"', 1)[0])
+            if 'get ".sample-copy.txt"' in command_text:
+                download_target = Path(command_text.split('get ".sample-copy.txt" "', 1)[1].split('"', 1)[0])
                 download_target.write_text("line1\nline2\nline3\nline4-updated\n", encoding="utf-8")
                 return subprocess.CompletedProcess(args, 0, "", "")
-            if 'del "sample-copy.txt"; ls' in command_text:
-                return subprocess.CompletedProcess(args, 0, "sample-renamed.txt\n", "")
+            if 'del ".sample-copy.txt"; ls' in command_text:
+                return subprocess.CompletedProcess(args, 0, ".sample-renamed.txt\n", "")
             if command_text == "ls":
                 return subprocess.CompletedProcess(args, 0, "Public\n", "")
             return subprocess.CompletedProcess(args, 0, "", "")
@@ -1596,18 +1596,18 @@ class CheckTests(unittest.TestCase):
         def fake_run_local_capture(args, timeout=15):
             captured_args.append(args)
             command_text = args[-1]
-            if 'get "sample.txt"' in command_text:
-                download_target = Path(command_text.split('get "sample.txt" "', 1)[1].split('"', 1)[0])
+            if 'get ".sample.txt"' in command_text:
+                download_target = Path(command_text.split('get ".sample.txt" "', 1)[1].split('"', 1)[0])
                 download_target.write_text("line1\nline2\nline3\nline4-updated\n", encoding="utf-8")
                 return subprocess.CompletedProcess(args, 0, "", "")
-            if 'get "sample-renamed.txt"' in command_text and 'get "sample-copy.txt"' in command_text:
-                renamed_target = Path(command_text.split('get "sample-renamed.txt" "', 1)[1].split('"', 1)[0])
-                copy_target = Path(command_text.split('get "sample-copy.txt" "', 1)[1].split('"', 1)[0])
+            if 'get ".sample-renamed.txt"' in command_text and 'get ".sample-copy.txt"' in command_text:
+                renamed_target = Path(command_text.split('get ".sample-renamed.txt" "', 1)[1].split('"', 1)[0])
+                copy_target = Path(command_text.split('get ".sample-copy.txt" "', 1)[1].split('"', 1)[0])
                 renamed_target.write_text("line1\nline2\nline3\nline4-updated\n", encoding="utf-8")
                 copy_target.write_text("line1\nline2\nline3\nline4-updated\n", encoding="utf-8")
                 return subprocess.CompletedProcess(args, 0, "", "")
-            if 'del "sample-copy.txt"; ls' in command_text:
-                return subprocess.CompletedProcess(args, 0, "sample-renamed.txt\n", "")
+            if 'del ".sample-copy.txt"; ls' in command_text:
+                return subprocess.CompletedProcess(args, 0, ".sample-renamed.txt\n", "")
             if command_text == "ls":
                 return subprocess.CompletedProcess(args, 0, "Public\n", "")
             return subprocess.CompletedProcess(args, 0, "", "")

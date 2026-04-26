@@ -61,6 +61,9 @@ def print_followup_help() -> None:
     print("")
     print("- (If you have disk corruption issues) then try running:")
     print("    .venv/bin/tcapsule fsck")
+    print("")
+    print("- (To remove old Apple devices entries from mDNS cache) then try running:")
+    print("    sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder")
 
 
 def main(argv: Optional[list[str]] = None) -> int:
