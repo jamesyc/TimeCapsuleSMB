@@ -762,6 +762,37 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         ensure_mock.assert_called_once_with()
 
+    def test_configure_exits_before_intro_when_required_python_module_is_missing(self) -> None:
+        output = io.StringIO()
+        with mock.patch("timecapsulesmb.cli.configure.ensure_install_id"):
+            with mock.patch("timecapsulesmb.cli.configure.upsert_env_key"):
+                with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+                    with mock.patch("timecapsulesmb.cli.configure.missing_required_python_module", return_value="zeroconf"):
+                        with redirect_stdout(output):
+                            rc = configure.main([])
+
+        self.assertEqual(rc, 1)
+        text = output.getvalue()
+        self.assertIn("Failed to load zeroconf. Run `./tcapsule bootstrap` to set up the required dependencies.", text)
+        self.assertNotIn("This writes a local .env configuration file", text)
+        self.assertEqual(self.configure_finished_result(), "failure")
+        error = self.configure_finished_error()
+        self.assertIn("Failed to load zeroconf", error)
+        self.assertIn("stage=dependency_check", error)
+
+    def test_configure_dependency_preflight_reports_first_missing_module_name(self) -> None:
+        output = io.StringIO()
+        with mock.patch("timecapsulesmb.cli.configure.ensure_install_id"):
+            with mock.patch("timecapsulesmb.cli.configure.upsert_env_key"):
+                with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+                    with mock.patch("timecapsulesmb.cli.configure.missing_required_python_module", return_value="pexpect"):
+                        with redirect_stdout(output):
+                            rc = configure.main([])
+
+        self.assertEqual(rc, 1)
+        self.assertIn("Failed to load pexpect. Run `./tcapsule bootstrap` to set up the required dependencies.", output.getvalue())
+        self.assertIn("Failed to load pexpect", self.configure_finished_error())
+
     def test_configure_persists_configure_id_before_prompting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env"

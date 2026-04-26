@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import importlib
 import time
 import uuid
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.cli import runtime
@@ -15,6 +17,19 @@ if TYPE_CHECKING:
     from timecapsulesmb.device.probe import ProbedDeviceState
     from timecapsulesmb.telemetry import TelemetryClient
     from timecapsulesmb.transport.ssh import SshConnection
+
+
+def missing_required_python_module(module_names: Iterable[str]) -> str | None:
+    for module_name in module_names:
+        try:
+            importlib.import_module(module_name)
+        except Exception:
+            return module_name
+    return None
+
+
+def missing_dependency_message(module_name: str) -> str:
+    return f"Failed to load {module_name}. Run `./tcapsule bootstrap` to set up the required dependencies."
 
 
 class CommandContext:

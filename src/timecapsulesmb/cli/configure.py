@@ -19,7 +19,7 @@ from timecapsulesmb.core.config import (
     upsert_env_key,
     write_env_file,
 )
-from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.cli.context import CommandContext, missing_dependency_message, missing_required_python_module
 from timecapsulesmb.cli.runtime import probe_connection_state
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.device.compat import DeviceCompatibility, render_compatibility_message
@@ -42,6 +42,7 @@ from timecapsulesmb.cli.util import color_cyan
 
 HIDDEN_CONFIG_KEYS = {"TC_SSH_OPTS", "TC_CONFIGURE_ID"}
 NO_SAVED_VALUE_HINT_KEYS = {"TC_PASSWORD", *HIDDEN_CONFIG_KEYS}
+REQUIRED_PYTHON_MODULES = ("zeroconf", "pexpect", "ifaddr")
 
 
 @dataclass(frozen=True)
@@ -378,6 +379,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         configure_id=configure_id,
     ) as command_context:
         command_context.update_fields(configure_id=configure_id)
+        command_context.set_stage("dependency_check")
+        missing_module = missing_required_python_module(REQUIRED_PYTHON_MODULES)
+        if missing_module is not None:
+            message = missing_dependency_message(missing_module)
+            print(message)
+            command_context.set_error(message)
+            command_context.fail()
+            return 1
+
         command_context.set_stage("startup")
         print("This writes a local .env configuration file in this folder. The other tcapsule commands use that file.")
         print(f"Writing {ENV_PATH}")
