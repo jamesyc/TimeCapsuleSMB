@@ -6,7 +6,13 @@ from dataclasses import dataclass
 
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import extract_host
-from timecapsulesmb.discovery.bonjour import Discovered, SMB_SERVICE, discover, filter_service_records
+from timecapsulesmb.discovery.bonjour import (
+    BonjourResolvedService,
+    BonjourServiceInstance,
+    SMB_SERVICE,
+    browse_service_instances,
+    resolve_service_instance,
+)
 
 
 @dataclass(frozen=True)
@@ -18,10 +24,9 @@ class BonjourExpectedIdentity:
 
 @dataclass(frozen=True)
 class BonjourInstanceSelection:
-    record: Discovered | None
-    candidates: list[Discovered]
+    instance: BonjourServiceInstance | None
+    candidates: list[BonjourServiceInstance]
     expected_instance_name: str
-    expected_host_label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -65,66 +70,43 @@ def build_bonjour_expected_identity(values: dict[str, str]) -> BonjourExpectedId
     )
 
 
-def _normalize_host_name(value: str) -> str:
-    normalized = value.strip().rstrip(".").lower()
-    if normalized.endswith(".local"):
-        normalized = normalized[: -len(".local")]
-    return normalized
+def _describe_instance(instance: BonjourServiceInstance) -> str:
+    name = instance.name or "-"
+    return f"{name!r}"
 
 
-def _record_matches_expected_host_label(record: Discovered, expected_host_label: str | None) -> bool:
-    if not expected_host_label:
-        return False
-    return _normalize_host_name(record.hostname or "") == _normalize_host_name(expected_host_label)
-
-
-def _describe_record(record: Discovered) -> str:
-    host = record.hostname or "-"
-    ips = ",".join(record.ipv4 + record.ipv6) or "-"
-    name = record.name or "-"
-    return f"{name!r} @ {host} [{ips}]"
-
-
-def _candidate_summary(records: list[Discovered]) -> str:
-    if not records:
+def _candidate_summary(instances: list[BonjourServiceInstance]) -> str:
+    if not instances:
         return "none"
-    return "; ".join(_describe_record(record) for record in records)
+    return "; ".join(_describe_instance(instance) for instance in instances)
 
 
-def discover_smb_records(timeout: float = 5.0) -> tuple[list[Discovered], CheckResult | None]:
+def browse_smb_instances(timeout: float = 5.0) -> tuple[list[BonjourServiceInstance], CheckResult | None]:
     try:
-        records = discover(timeout=timeout)
+        instances = browse_service_instances(SMB_SERVICE, timeout=timeout)
     except SystemExit as e:
         return [], CheckResult("FAIL", f"Bonjour check failed: {e}")
     except Exception as e:
         return [], CheckResult("FAIL", f"Bonjour check failed: {e}")
-    return filter_service_records(records, SMB_SERVICE), None
+    return instances, None
 
 
 def select_smb_instance(
-    records: list[Discovered],
+    instances: list[BonjourServiceInstance],
     *,
     expected_instance_name: str,
-    expected_host_label: str | None = None,
 ) -> BonjourInstanceSelection:
-    matching = [record for record in records if record.name == expected_instance_name]
-    ranked = sorted(
-        matching,
-        key=lambda record: (
-            not _record_matches_expected_host_label(record, expected_host_label),
-            record.hostname or "",
-        ),
-    )
+    matching = [instance for instance in instances if instance.name == expected_instance_name]
+    ranked = sorted(matching, key=lambda instance: instance.fullname or instance.name)
     return BonjourInstanceSelection(
-        record=ranked[0] if ranked else None,
-        candidates=records,
+        instance=ranked[0] if ranked else None,
+        candidates=instances,
         expected_instance_name=expected_instance_name,
-        expected_host_label=expected_host_label,
     )
 
 
 def check_smb_instance(selection: BonjourInstanceSelection) -> list[CheckResult]:
-    if selection.record is not None:
+    if selection.instance is not None:
         return [
             CheckResult(
                 "PASS",
@@ -140,21 +122,31 @@ def check_smb_instance(selection: BonjourInstanceSelection) -> list[CheckResult]
     ]
 
 
+def resolve_smb_instance(instance: BonjourServiceInstance, timeout_ms: int = 2000) -> tuple[BonjourResolvedService | None, CheckResult | None]:
+    try:
+        record = resolve_service_instance(instance, timeout_ms=timeout_ms)
+    except SystemExit as e:
+        return None, CheckResult("FAIL", f"Bonjour check failed: {e}")
+    except Exception as e:
+        return None, CheckResult("FAIL", f"Bonjour check failed: {e}")
+    if record is None:
+        return None, CheckResult(
+            "FAIL",
+            f"discovered _smb._tcp instance {instance.name!r} but could not resolve service target",
+        )
+    return record, None
+
+
 def resolve_smb_service_target(
-    record: Discovered,
+    record: BonjourResolvedService,
     *,
     expected_instance_name: str,
-    expected_host_label: str | None = None,
 ) -> BonjourServiceTarget:
     hostname = (record.hostname or "").strip().rstrip(".")
-    if not hostname and expected_host_label:
-        hostname = expected_host_label.strip().rstrip(".")
-        if hostname and "." not in hostname:
-            hostname = f"{hostname}.local"
     return BonjourServiceTarget(
         instance_name=expected_instance_name,
         hostname=hostname or None,
-        port=445,
+        port=record.port or 445,
     )
 
 

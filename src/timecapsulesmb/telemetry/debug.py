@@ -5,7 +5,7 @@ from functools import singledispatch
 
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.probe import ProbedDeviceState, RemoteInterfaceCandidatesProbeResult
-from timecapsulesmb.discovery.bonjour import Discovered
+from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -35,7 +35,7 @@ def debug_summary(value: object) -> object:
 
 
 @debug_summary.register
-def _(value: Discovered) -> dict[str, object]:
+def _(value: BonjourResolvedService) -> dict[str, object]:
     summary: dict[str, object] = {
         "service_type": value.service_type,
         "name": value.name,

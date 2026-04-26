@@ -29,11 +29,10 @@ from timecapsulesmb.device.probe import (
     probe_remote_interface_candidates_conn,
 )
 from timecapsulesmb.discovery.bonjour import (
-    Discovered,
+    BonjourResolvedService,
     AIRPORT_SERVICE,
-    discover,
+    discover_resolved_records,
     discovered_record_root_host,
-    filter_service_records,
     record_has_service,
 )
 from timecapsulesmb.telemetry import TelemetryClient
@@ -114,9 +113,9 @@ def choose_device(records):
         return records[idx - 1]
 
 
-def discover_default_record(existing: dict[str, str]) -> Optional[Discovered]:
+def discover_default_record(existing: dict[str, str]) -> Optional[BonjourResolvedService]:
     print("Attempting to discover Time Capsules on the local network via mDNS...", flush=True)
-    records = filter_service_records(discover(timeout=5.0), AIRPORT_SERVICE)
+    records = discover_resolved_records(AIRPORT_SERVICE, timeout=5.0)
     if not records:
         print("No Time Capsules discovered. Falling back to manual SSH target entry.\n", flush=True)
         return None
@@ -245,7 +244,7 @@ def _ipv4_literal(value: str) -> str | None:
     return str(parsed)
 
 
-def interface_target_ips(values: dict[str, str], discovered_record: Discovered | None) -> tuple[str, ...]:
+def interface_target_ips(values: dict[str, str], discovered_record: BonjourResolvedService | None) -> tuple[str, ...]:
     ordered: list[str] = []
     host_ip = _ipv4_literal(extract_host(values.get("TC_HOST", "")))
     if host_ip:
@@ -291,7 +290,7 @@ def print_probed_interface_default(result: RemoteInterfaceCandidatesProbeResult,
 
 def _best_non_link_local_ipv4(
     values: dict[str, str],
-    discovered_record: Discovered | None,
+    discovered_record: BonjourResolvedService | None,
     probed_interfaces: RemoteInterfaceCandidatesProbeResult | None,
 ) -> str | None:
     host_ip = _ipv4_literal(extract_host(values.get("TC_HOST", "")))
@@ -321,7 +320,7 @@ def _best_non_link_local_ipv4(
 
 def derived_name_defaults(
     values: dict[str, str],
-    discovered_record: Discovered | None,
+    discovered_record: BonjourResolvedService | None,
     probed_interfaces: RemoteInterfaceCandidatesProbeResult | None,
 ) -> DerivedNameDefaults | None:
     source_ip = _best_non_link_local_ipv4(values, discovered_record, probed_interfaces)

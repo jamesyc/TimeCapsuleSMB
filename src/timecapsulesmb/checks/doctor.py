@@ -7,11 +7,12 @@ from typing import Optional
 
 from timecapsulesmb.checks.bonjour import (
     BonjourServiceTarget,
+    browse_smb_instances,
     build_bonjour_expected_identity,
     check_bonjour_host_ip,
     check_smb_instance,
     check_smb_service_target,
-    discover_smb_records,
+    resolve_smb_instance,
     resolve_smb_service_target,
     select_smb_instance,
 )
@@ -275,38 +276,41 @@ def run_doctor_checks(
     elif not skip_bonjour:
         try:
             bonjour_expected = build_bonjour_expected_identity(values)
-            smb_records, discovery_error = discover_smb_records()
+            smb_instances, discovery_error = browse_smb_instances()
             bonjour_reason = ""
             if discovery_error is not None:
                 bonjour_reason = discovery_error.message
                 add_result(discovery_error)
             else:
                 selection = select_smb_instance(
-                    smb_records,
+                    smb_instances,
                     expected_instance_name=bonjour_expected.instance_name,
-                    expected_host_label=bonjour_expected.host_label,
                 )
                 for result in check_smb_instance(selection):
                     add_result(result)
-                if selection.record is not None:
-                    bonjour_instance = selection.record.name
-                    target = resolve_smb_service_target(
-                        selection.record,
-                        expected_instance_name=bonjour_expected.instance_name,
-                        expected_host_label=bonjour_expected.host_label,
-                    )
-                    target_result = check_smb_service_target(target)
-                    add_result(target_result)
-                    if target.hostname:
-                        bonjour_target = target
-                        record_ips = list(getattr(selection.record, "ipv4", []) or [])
-                        add_result(
-                            check_bonjour_host_ip(
-                                target.hostname,
-                                expected_ip=bonjour_expected.target_ip,
-                                record_ips=record_ips,
-                            )
+                if selection.instance is not None:
+                    bonjour_instance = selection.instance.name
+                    resolved_record, resolve_error = resolve_smb_instance(selection.instance)
+                    if resolve_error is not None:
+                        bonjour_reason = resolve_error.message
+                        add_result(resolve_error)
+                    elif resolved_record is not None:
+                        target = resolve_smb_service_target(
+                            resolved_record,
+                            expected_instance_name=bonjour_expected.instance_name,
                         )
+                        target_result = check_smb_service_target(target)
+                        add_result(target_result)
+                        if target.hostname:
+                            bonjour_target = target
+                            record_ips = list(getattr(resolved_record, "ipv4", []) or [])
+                            add_result(
+                                check_bonjour_host_ip(
+                                    target.hostname,
+                                    expected_ip=bonjour_expected.target_ip,
+                                    record_ips=record_ips,
+                                )
+                            )
         except Exception as e:
             bonjour_reason = str(e)
             add_result(CheckResult("FAIL", f"Bonjour check failed: {e}"))

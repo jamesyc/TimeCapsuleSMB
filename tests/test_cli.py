@@ -32,7 +32,7 @@ from timecapsulesmb.device.probe import (
     RemoteInterfaceProbeResult,
 )
 from timecapsulesmb.transport.ssh import SshConnection
-from timecapsulesmb.discovery.bonjour import Discovered
+from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourServiceInstance, Discovered
 
 
 class FakeCommandContext:
@@ -634,7 +634,7 @@ class CliTests(unittest.TestCase):
 
         command_context = FakeCommandContext()
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch(
                     "timecapsulesmb.cli.configure.prompt",
                     side_effect=lambda _l, _d, _s: _d if _l == "mDNS device model hint" else next(prompt_values),
@@ -685,7 +685,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch(
                     "timecapsulesmb.cli.configure.prompt",
                     side_effect=lambda label, default, _secret: default if label == "mDNS device model hint" else next(prompt_values),
@@ -719,7 +719,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={"TC_SHARE_USE_DISK_ROOT": "true"}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch(
                     "timecapsulesmb.cli.configure.prompt",
                     side_effect=lambda label, default, _secret: default if label == "mDNS device model hint" else next(prompt_values),
@@ -749,7 +749,7 @@ class CliTests(unittest.TestCase):
         ])
         with mock.patch("timecapsulesmb.cli.configure.ensure_install_id") as ensure_mock:
             with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-                with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                     with mock.patch(
                         "timecapsulesmb.cli.configure.prompt",
                         side_effect=lambda label, default, _secret: default if label == "mDNS device model hint" else next(prompt_values),
@@ -800,7 +800,7 @@ class CliTests(unittest.TestCase):
             env_path.write_text("TC_HOST=root@10.0.0.2\n")
             with mock.patch("timecapsulesmb.cli.configure.ENV_PATH", env_path):
                 with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={"TC_HOST": "root@10.0.0.2"}):
-                    with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                    with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                         with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=KeyboardInterrupt):
                             with mock.patch("timecapsulesmb.cli.configure.TelemetryClient.from_values"):
                                 with self.assertRaises(KeyboardInterrupt):
@@ -837,7 +837,7 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.configure.ensure_install_id"):
             with mock.patch("timecapsulesmb.cli.configure.upsert_env_key"):
                 with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-                    with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                    with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                         with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=self.configure_prompt_defaults()):
                             with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
                                 with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
@@ -863,7 +863,7 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.configure.ensure_install_id"):
             with mock.patch("timecapsulesmb.cli.configure.upsert_env_key"):
                 with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-                    with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                    with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                         with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=self.configure_prompt_defaults(password="badpw")):
                             with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_auth_failed())):
                                 with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
@@ -884,7 +884,7 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.configure.ensure_install_id"):
             with mock.patch("timecapsulesmb.cli.configure.upsert_env_key"):
                 with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-                    with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                    with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                         with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=self.configure_prompt_defaults()):
                             with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd5())):
                                 with self.assertRaises(SystemExit):
@@ -911,7 +911,7 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.configure.ensure_install_id"):
             with mock.patch("timecapsulesmb.cli.configure.upsert_env_key"):
                 with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-                    with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+                    with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                         with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=self.configure_prompt_defaults(host="root@10.0.1.1")):
                             with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                                 with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates_conn", return_value=interface_probe):
@@ -963,7 +963,7 @@ class CliTests(unittest.TestCase):
             return next(prompt_values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[record]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[record]):
                 with mock.patch("timecapsulesmb.cli.configure.discovered_record_root_host", return_value="root@10.0.0.2"):
                     with mock.patch("builtins.input", side_effect=["1"]):
                         with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
@@ -1003,7 +1003,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
@@ -1051,7 +1051,7 @@ class CliTests(unittest.TestCase):
         )
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                         with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates_conn", return_value=interface_probe):
@@ -1107,7 +1107,7 @@ class CliTests(unittest.TestCase):
         )
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[record]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[record]):
                 with mock.patch("timecapsulesmb.cli.configure.discovered_record_root_host", return_value="root@AirPort-Time-Capsule.local"):
                     with mock.patch("builtins.input", side_effect=["1"]):
                         with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
@@ -1158,7 +1158,7 @@ class CliTests(unittest.TestCase):
         )
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                         with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates_conn", return_value=interface_probe):
@@ -1207,7 +1207,7 @@ class CliTests(unittest.TestCase):
         )
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                         with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates_conn", return_value=interface_probe):
@@ -1266,7 +1266,7 @@ class CliTests(unittest.TestCase):
         )
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[record]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[record]):
                 with mock.patch("timecapsulesmb.cli.configure.discovered_record_root_host", return_value="root@AirPort-Time-Capsule.local"):
                     with mock.patch("builtins.input", side_effect=["1"]):
                         with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
@@ -1316,7 +1316,7 @@ class CliTests(unittest.TestCase):
         )
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                         with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates_conn", return_value=interface_probe):
@@ -1364,7 +1364,7 @@ class CliTests(unittest.TestCase):
         )
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                         with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates_conn", return_value=interface_probe):
@@ -1424,7 +1424,7 @@ class CliTests(unittest.TestCase):
         )
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[record]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[record]):
                 with mock.patch("timecapsulesmb.cli.configure.discovered_record_root_host", return_value="root@AirPort-Time-Capsule.local"):
                     with mock.patch("builtins.input", side_effect=["1"]):
                         with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
@@ -1474,7 +1474,7 @@ class CliTests(unittest.TestCase):
         )
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                         with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates_conn", return_value=interface_probe):
@@ -1519,7 +1519,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[record]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[record]):
                 with mock.patch("builtins.input", side_effect=["q"]):
                     with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
@@ -1547,7 +1547,7 @@ class CliTests(unittest.TestCase):
             return next(prompt_values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6_unknown())):
@@ -1575,7 +1575,7 @@ class CliTests(unittest.TestCase):
             return next(prompt_values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[record]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[record]):
                 with mock.patch("builtins.input", side_effect=["q"]):
                     with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
@@ -1604,7 +1604,7 @@ class CliTests(unittest.TestCase):
             return next(prompt_values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[record]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[record]):
                 with mock.patch("builtins.input", side_effect=["q"]):
                     with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
@@ -1633,7 +1633,7 @@ class CliTests(unittest.TestCase):
             return next(prompt_values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[record]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[record]):
                 with mock.patch("builtins.input", side_effect=["q"]):
                     with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
@@ -1677,7 +1677,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[record]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[record]):
                 with mock.patch("builtins.input", side_effect=["q"]):
                     with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
@@ -1730,7 +1730,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[record]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[record]):
                 with mock.patch("builtins.input", side_effect=["q"]):
                     with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
@@ -1772,7 +1772,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd4be_acpdata_106())):
                         with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
@@ -1808,7 +1808,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd4le_acpdata_113())):
                         with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
@@ -1852,7 +1852,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[record]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[record]):
                 with mock.patch("builtins.input", side_effect=["1"]):
                     with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
@@ -1897,7 +1897,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={"TC_AIRPORT_SYAP": "999"}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[record]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[record]):
                 with mock.patch("builtins.input", side_effect=["1"]):
                     with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
@@ -1945,7 +1945,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={"TC_AIRPORT_SYAP": "116"}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[record]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[record]):
                 with mock.patch("builtins.input", side_effect=["1"]):
                     with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
@@ -1994,7 +1994,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={"TC_AIRPORT_SYAP": "113"}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[record]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[record]):
                 with mock.patch("builtins.input", side_effect=["1"]):
                     with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
@@ -2041,7 +2041,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={"TC_AIRPORT_SYAP": "109"}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[record]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[record]):
                 with mock.patch("builtins.input", side_effect=["1"]):
                     with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
@@ -2094,7 +2094,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={"TC_AIRPORT_SYAP": "998"}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[record]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[record]):
                 with mock.patch("builtins.input", side_effect=["1"]):
                     with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
@@ -2141,7 +2141,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[record]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[record]):
                 with mock.patch("builtins.input", side_effect=["q"]):
                     with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
@@ -2167,7 +2167,7 @@ class CliTests(unittest.TestCase):
         command_context = FakeCommandContext()
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[record]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[record]):
                 with mock.patch("builtins.input", side_effect=KeyboardInterrupt):
                     with mock.patch("timecapsulesmb.cli.configure.CommandContext", return_value=command_context):
                         with redirect_stdout(output):
@@ -2208,7 +2208,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={"TC_AIRPORT_SYAP": "999"}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
@@ -2246,7 +2246,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
@@ -2286,7 +2286,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
@@ -2328,7 +2328,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
@@ -2373,7 +2373,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
@@ -2416,7 +2416,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
@@ -2459,7 +2459,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
@@ -2504,7 +2504,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
@@ -2544,7 +2544,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
@@ -2585,7 +2585,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
@@ -2620,7 +2620,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("builtins.input", side_effect=lambda _prompt: next(input_values)):
                     with mock.patch("timecapsulesmb.cli.configure.getpass.getpass", side_effect=lambda _prompt: next(password_values)):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
@@ -2652,7 +2652,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={"TC_PASSWORD": "savedpw"}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("builtins.input", side_effect=lambda _prompt: next(input_values)):
                     with mock.patch("timecapsulesmb.cli.configure.getpass.getpass", side_effect=lambda _prompt: next(password_values)):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
@@ -2693,7 +2693,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", side_effect=[self.make_probe_state(self.make_probe_result_auth_failed()), self.make_probe_state(self.make_probe_result_netbsd6())]):
@@ -2735,7 +2735,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
@@ -2774,7 +2774,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_auth_failed())):
@@ -2815,7 +2815,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", side_effect=[False, True]):
@@ -2856,7 +2856,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
@@ -2898,7 +2898,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
@@ -2939,7 +2939,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
@@ -2976,7 +2976,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
@@ -3014,7 +3014,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
@@ -3057,7 +3057,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
@@ -3099,7 +3099,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
@@ -3137,7 +3137,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
@@ -3177,7 +3177,7 @@ class CliTests(unittest.TestCase):
             fake_values.update(values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
@@ -3210,7 +3210,7 @@ class CliTests(unittest.TestCase):
             return next(prompt_values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                         with mock.patch(
@@ -3258,7 +3258,7 @@ class CliTests(unittest.TestCase):
             return next(prompt_values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                         with mock.patch(
@@ -3401,7 +3401,7 @@ class CliTests(unittest.TestCase):
             return next(prompt_values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
@@ -3435,7 +3435,7 @@ class CliTests(unittest.TestCase):
             return next(prompt_values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
@@ -3469,7 +3469,7 @@ class CliTests(unittest.TestCase):
             return next(prompt_values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
                         with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
@@ -3548,7 +3548,7 @@ class CliTests(unittest.TestCase):
             return next(prompt_values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                         with mock.patch(
@@ -3819,7 +3819,7 @@ class CliTests(unittest.TestCase):
             return next(prompt_values)
 
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value=existing):
-            with mock.patch("timecapsulesmb.cli.configure.discover", return_value=[]):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6())):
                         with mock.patch(
@@ -5469,12 +5469,19 @@ class CliTests(unittest.TestCase):
             services={"_airport._tcp.local."},
             properties={"model": "AirPort Time Capsule"},
         )
-        with mock.patch("timecapsulesmb.discovery.bonjour.discover", return_value=[record]):
+        snapshot = BonjourDiscoverySnapshot(
+            instances=[
+                BonjourServiceInstance("_airport._tcp.local.", "Time Capsule", "Time Capsule._airport._tcp.local."),
+            ],
+            resolved=[record],
+        )
+        with mock.patch("timecapsulesmb.discovery.bonjour.discover_snapshot", return_value=snapshot):
             with redirect_stdout(output):
                 rc = discover.main(["--json"])
         self.assertEqual(rc, 0)
         payload = json.loads(output.getvalue())
-        self.assertEqual(payload[0]["name"], "Time Capsule")
+        self.assertEqual(payload["instances"][0]["name"], "Time Capsule")
+        self.assertEqual(payload["resolved"][0]["name"], "Time Capsule")
 
 
 if __name__ == "__main__":
