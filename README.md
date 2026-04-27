@@ -2,7 +2,7 @@
 
 Apple AirPort Time Capsules are still perfectly usable pieces of hardware, but they only support AFP and SMB1. Apple has removed SMB1 support from macOS a long time ago, and AFP support is being removed for macOS 27. This repo configures a modern Samba setup that runs directly on the Time Capsule itself. The goal is that a Time Capsule can once again show up as a normal SMB server on your network, and modern macOS can connect to it as a network share. 
 
-**NOTE THAT TIME MACHINE ON MACOS 26.4 IS CURRENTLY BROKEN**, see https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups  
+**NOTE THAT TIME MACHINE ON MACOS 26.4 (AND 15.7.5) IS CURRENTLY BROKEN**, see https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups  
 Macs running macOS 26.4 can still use the device as a standard Samba network share in Finder.
 
 This project is currently confirmed to work for NetBSD 6 based Time Capsules, and NetBSD 4 support now exists as well with some extra caveats described below. Your Time Capsule should work if it looks like this:  
