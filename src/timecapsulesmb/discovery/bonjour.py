@@ -20,9 +20,10 @@ SERVICE_TYPES = [
 
 AIRPORT_SERVICE = "_airport"
 SMB_SERVICE = "_smb"
+DEFAULT_BROWSE_TIMEOUT_SEC = 6.0
 PENDING_RESOLVE_INTERVAL_SEC = 0.5
 PENDING_RESOLVE_TIMEOUT_MS = 500
-FINAL_PENDING_RESOLVE_TIMEOUT_MS = 2000
+FINAL_PENDING_RESOLVE_TIMEOUT_MS = 3000
 
 
 @dataclass
@@ -205,7 +206,7 @@ class Collector:
         with self.lock:
             return list(self.instances.values())
 
-    def resolve_pending(self, timeout_ms: int = 2000) -> None:
+    def resolve_pending(self, timeout_ms: int = FINAL_PENDING_RESOLVE_TIMEOUT_MS) -> None:
         with self.lock:
             pending = sorted(self.pending)
 
@@ -319,7 +320,7 @@ def _open_zeroconf() -> Any:
     return Zeroconf(ip_version=IPVersion.V4Only)
 
 
-def browse_service_instances(service: str | None = None, timeout: float = 5.0) -> list[BonjourServiceInstance]:
+def browse_service_instances(service: str | None = None, timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC) -> list[BonjourServiceInstance]:
     zc = _open_zeroconf()
     try:
         collector = Collector(zc, _matching_service_types(service))
@@ -358,7 +359,7 @@ def _sort_records(records: list[BonjourResolvedService]) -> list[BonjourResolved
     return sorted(records, key=lambda record: (record.service_type or "", record.hostname or "", record.name or ""))
 
 
-def discover_snapshot(service: str | None = None, timeout: float = 5.0) -> BonjourDiscoverySnapshot:
+def discover_snapshot(service: str | None = None, timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC) -> BonjourDiscoverySnapshot:
     zc = _open_zeroconf()
     try:
         collector = Collector(zc, _matching_service_types(service))
@@ -402,11 +403,11 @@ def _records_with_unresolved_instances(snapshot: BonjourDiscoverySnapshot) -> li
     return _sort_records(records)
 
 
-def discover_resolved_records(service: str | None = None, timeout: float = 5.0) -> list[BonjourResolvedService]:
+def discover_resolved_records(service: str | None = None, timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC) -> list[BonjourResolvedService]:
     return discover_snapshot(service=service, timeout=timeout).resolved
 
 
-def discover(timeout: float = 5.0) -> list[BonjourResolvedService]:
+def discover(timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC) -> list[BonjourResolvedService]:
     return _records_with_unresolved_instances(discover_snapshot(timeout=timeout))
 
 
@@ -488,7 +489,7 @@ def service_instance_to_jsonable(instance: BonjourServiceInstance) -> dict[str, 
 
 def run_cli(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Discover Apple Time Capsules via mDNS/Bonjour")
-    parser.add_argument("--timeout", type=float, default=5.0, help="Browse time in seconds (default: 5)")
+    parser.add_argument("--timeout", type=float, default=DEFAULT_BROWSE_TIMEOUT_SEC, help="Browse time in seconds (default: 6)")
     parser.add_argument("--json", action="store_true", help="Output results as JSON")
     parser.add_argument("--select", action="store_true", help="Interactively select one and print selection")
     args = parser.parse_args(argv)

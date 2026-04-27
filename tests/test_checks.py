@@ -256,8 +256,9 @@ class CheckTests(unittest.TestCase):
 
     def test_resolve_smb_instance_returns_fail_when_service_resolution_fails(self) -> None:
         instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
-        with mock.patch("timecapsulesmb.checks.bonjour.resolve_service_instance", return_value=None):
+        with mock.patch("timecapsulesmb.checks.bonjour.resolve_service_instance", return_value=None) as resolve_mock:
             record, error = resolve_smb_instance(instance)
+        resolve_mock.assert_called_once_with(instance, timeout_ms=3000)
         self.assertIsNone(record)
         self.assertIsNotNone(error)
         assert error is not None

@@ -10,6 +10,8 @@ from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoverySnapshot,
     BonjourResolvedService,
     BonjourServiceInstance,
+    DEFAULT_BROWSE_TIMEOUT_SEC,
+    FINAL_PENDING_RESOLVE_TIMEOUT_MS,
     SMB_SERVICE,
     discover_snapshot,
     resolve_service_instance,
@@ -82,7 +84,7 @@ def _candidate_summary(instances: list[BonjourServiceInstance]) -> str:
     return "; ".join(_describe_instance(instance) for instance in instances)
 
 
-def discover_smb_services(timeout: float = 5.0) -> tuple[BonjourDiscoverySnapshot | None, CheckResult | None]:
+def discover_smb_services(timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC) -> tuple[BonjourDiscoverySnapshot | None, CheckResult | None]:
     try:
         return discover_snapshot(SMB_SERVICE, timeout=timeout), None
     except SystemExit as e:
@@ -142,7 +144,7 @@ def select_resolved_smb_record(
     return sorted(matching_name, key=lambda record: (record.hostname or "", record.fullname or ""))[0]
 
 
-def resolve_smb_instance(instance: BonjourServiceInstance, timeout_ms: int = 2000) -> tuple[BonjourResolvedService | None, CheckResult | None]:
+def resolve_smb_instance(instance: BonjourServiceInstance, timeout_ms: int = FINAL_PENDING_RESOLVE_TIMEOUT_MS) -> tuple[BonjourResolvedService | None, CheckResult | None]:
     try:
         record = resolve_service_instance(instance, timeout_ms=timeout_ms)
     except SystemExit as e:

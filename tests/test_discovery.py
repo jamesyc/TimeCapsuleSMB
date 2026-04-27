@@ -66,7 +66,7 @@ class DiscoveryTests(unittest.TestCase):
 
         fake_zeroconf_module.Zeroconf.assert_called_once_with(ip_version=fake_ip_version.V4Only)
         fake_collector.start.assert_called_once()
-        fake_collector.resolve_pending.assert_called_once_with(timeout_ms=2000)
+        fake_collector.resolve_pending.assert_called_once_with(timeout_ms=3000)
         fake_zc.close.assert_called_once()
 
     def test_discover_retries_pending_resolution_during_browse_window(self) -> None:
@@ -87,7 +87,7 @@ class DiscoveryTests(unittest.TestCase):
         fake_sleep.assert_called_once_with(0.5)
         fake_collector.resolve_pending.assert_has_calls([
             mock.call(timeout_ms=500),
-            mock.call(timeout_ms=2000),
+            mock.call(timeout_ms=3000),
         ])
         self.assertEqual(fake_collector.resolve_pending.call_count, 2)
 
@@ -223,7 +223,7 @@ class DiscoveryTests(unittest.TestCase):
         fake_zc.get_service_info.assert_not_called()
         collector.resolve_pending()
 
-        fake_zc.get_service_info.assert_called_once_with("_smb._tcp.local.", "Home._smb._tcp.local.", 2000)
+        fake_zc.get_service_info.assert_called_once_with("_smb._tcp.local.", "Home._smb._tcp.local.", 3000)
         records = collector.results()
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0].name, "Home")

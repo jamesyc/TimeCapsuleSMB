@@ -31,6 +31,7 @@ from timecapsulesmb.device.probe import (
 from timecapsulesmb.discovery.bonjour import (
     BonjourResolvedService,
     AIRPORT_SERVICE,
+    DEFAULT_BROWSE_TIMEOUT_SEC,
     discover_resolved_records,
     discovered_record_root_host,
     record_has_service,
@@ -115,7 +116,7 @@ def choose_device(records):
 
 def discover_default_record(existing: dict[str, str]) -> Optional[BonjourResolvedService]:
     print("Attempting to discover Time Capsules on the local network via mDNS...", flush=True)
-    records = discover_resolved_records(AIRPORT_SERVICE, timeout=5.0)
+    records = discover_resolved_records(AIRPORT_SERVICE, timeout=DEFAULT_BROWSE_TIMEOUT_SEC)
     if not records:
         print("No Time Capsules discovered. Falling back to manual SSH target entry.\n", flush=True)
         return None
