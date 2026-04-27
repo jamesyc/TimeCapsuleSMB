@@ -3,7 +3,6 @@ from __future__ import annotations
 import shlex
 import socket
 import subprocess
-import time
 
 
 def command_exists(name: str) -> bool:
@@ -27,22 +26,11 @@ def tcp_open(host: str, port: int, timeout: float = 2.0) -> bool:
     return False
 
 
+def find_free_local_port(host: str = "127.0.0.1") -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((host, 0))
+        return int(sock.getsockname()[1])
+
+
 def run_local_capture(cmd: list[str], timeout: int = 15) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-
-
-def capture_live_output(cmd: list[str], duration_seconds: int = 5) -> str:
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    try:
-        time.sleep(duration_seconds)
-        proc.terminate()
-        try:
-            stdout, _ = proc.communicate(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            stdout, _ = proc.communicate(timeout=3)
-        return stdout or ""
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait(timeout=3)

@@ -5,46 +5,48 @@ Apple AirPort Time Capsules are still perfectly usable pieces of hardware, but t
 **NOTE THAT TIME MACHINE ON MACOS 26.4 IS CURRENTLY BROKEN**, see https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups  
 Macs running macOS 26.4 can still use the device as a standard Samba network share in Finder.
 
-This repo configures a modern SMB3 Samba setup that runs directly on the Time Capsule itself. The goal is that a Time Capsule can once again show up as a normal SMB server on your network, and modern macOS can connect to it as a network share. This project is currently confirmed to work for NetBSD 6 based Time Capsules! Your Time Capsule should work if it looks like this:  
+This repo configures a modern SMB3 Samba setup that runs directly on the Time Capsule itself. The goal is that a Time Capsule can once again show up as a normal SMB server on your network, and modern macOS can connect to it as a network share. This project is currently confirmed to work for NetBSD 6 based Time Capsules, and NetBSD 4 support now exists as well with some extra caveats described below. Your Time Capsule should work if it looks like this:  
 <img width="256" height="192" alt="image" src="https://github.com/user-attachments/assets/5d0b044f-2137-4bb7-8d65-3d1bb251754c" />
 
 If you have an older (NetBSD 4) Time Capsule, see [the v2.0.0 beta release](https://github.com/jamesyc/TimeCapsuleSMB/releases). 
 
 ## Expectations
 
-If the setup completes successfully, your Time Capsule will boot its own Samba 4 server automatically, advertise itself over Bonjour (show up automatically in the "Network" folder on macOS), and accept authenticated SMB connections from macOS. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack. **This will disable Apple's AFP and SMB file server**, so do not expect those to be running at the same time. 
+If the setup completes successfully, your Time Capsule will run its own Samba 4 server, advertise itself over Bonjour (show up automatically in the "Network" folder on macOS), and accept authenticated SMB connections from macOS. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack. 
 
-If you are not using your old Time Capsule as a main Wifi router, and you are okay with wiping the old backup/data on it, great! This is currently working well enough for you to try it out. If you find any problems, I would appreciate it if you [file an issue here](https://github.com/jamesyc/TimeCapsuleSMB/issues); I am actively working on it, so expect improvements! However **this is not supported by a trillion dollar company**, this is built by a guy in his free time. Therefore, I honestly do *not* recommend using this if you are still using the Time Capsule as your primary router, or if you have data on it that you are not comfortable losing. I would suggest waiting 1-2 months for me to clean it up a bit more; you can click the star/watch button for this repo to get updates. **My goal is to have it be usable for the general public in 1-2 months**, before the deadline of "the macOS 27 release date", when Apple kills support for the Time Capsule.  
-Right now, this project is most suited for "people who just plug in their old Time Capsule into their newer Wifi router, so they can have easy backups of their Macbook in case it gets lost/stolen"; ideally you are the type of person who wouldn't mind having to reset the Time Capsule in case something goes wrong. I do *not* expect this to permanently break the Time Capsule if something goes wrong, but it *may* mess up your configuration/data so you would need to reset/wipe the device.
+**This will disable Apple's AFP and SMB file server**, so do not expect those to be running at the same time. NetBSD 6 devices automatically startup on boot. Older NetBSD 4 devices need a manual `tcapsule activate` after every reboot. The `deploy` script will drop managed files in `/mnt/Flash` on the Time Capsule, plus a `.samba4` folder on the root of the hard drive by default. The `uninstall` script removes those managed files and can optionally reboot the device afterward.
 
-THIS CURRENTLY DOES NOT SUPPORT older NetBSD 4 based Time Capsules. This only supports Time Capsules running NetBSD 6. Support for older Time Capsules is in progress, for more information [see this issue](https://github.com/jamesyc/TimeCapsuleSMB/issues/15). 
-
-**It is expected to get "Internal disk needs repair" because this adds files to the internal disk**; see [this issue for more information](https://github.com/jamesyc/TimeCapsuleSMB/issues/13). The `deploy` script will drop 4 files in `/mnt/Flash` on the Time Capsule, plus a `samba4` folder on the root of the hard drive. The `uninstall` script will delete these files and reboot the Time Capsule. 
+If you are not using your old Time Capsule as a main Wifi router, and you are okay with wiping the old backup/data on it, great! This is currently working well enough for you to try it out. If you find any problems, I would appreciate it if you [file an issue here](https://github.com/jamesyc/TimeCapsuleSMB/issues) for help; I am actively working on it, so expect improvements! However **this is not supported by a trillion dollar company**, this is built by a guy in his free time. Therefore, I honestly do *not* recommend using this if you are still using the Time Capsule as your primary router, or if you have data on it that you are not comfortable losing. I do *not* expect this to permanently break the Time Capsule if something goes wrong, but it *may* mess up your configuration/data so you would need to reset/wipe the device. I would suggest waiting 1-2 months for me to clean it up a bit more; you can click the star/watch button for this repo to get updates. **My goal is to have it be usable for the general public in 1-2 months**, before the deadline of "the macOS 27 release date", when Apple kills support for the Time Capsule.  
 
 The current authentication model uses `admin` as the username, and the Samba password is the same password you enter during setup when the tool asks for the Time Capsule password. Guest access is disabled. 
 
 ## Requirements
 
-You do not need to build Samba yourself. The working binaries are already saved in this repository under [bin/](bin), and the normal user workflow uses those checked-in files directly. To rebuild `smbd` by yourself, run the scripts in `build/` on a NetBSD machine.
+The working binaries are saved in this repository under [bin/](bin), and the normal user workflow uses those checked-in files directly. You do not need to build Samba yourself, but if you want to rebuild `smbd` by yourself, run the scripts in `build/` on a NetBSD machine. 
 
-Also, if you are an expert and want to DIY the install, you can copy the binary at [/bin/samba4/smbd](/bin/samba4/smbd) onto the Time Capsule and set it up yourself. 
+Also, if you are an expert and want to DIY the install, you can copy the binary at [/bin/samba4/smbd](/bin/samba4/smbd) for NetBSD 6 devices, [/bin/samba4-netbsd4le/smbd](/bin/samba4-netbsd4le/smbd) for NetBSD 4 little-endian devices, or [/bin/samba4-netbsd4be/smbd](/bin/samba4-netbsd4be/smbd) for NetBSD 4 big-endian devices onto the Time Capsule and set it up yourself.
 
 For the typical setup path, you need only:
 
-- a Mac on the same local network as the Time Capsule
+- a Mac or Linux machine on the same local network as the Time Capsule
 - the Time Capsule password
-- Python 3.9+ and Homebrew installed on your Mac.
+- Python 3.9+
+- `smbclient` installed locally for `doctor`
+
+For the smoothest first-time setup, a Mac is still the easiest path because `prep-device` can provision AirPyrt automatically when SSH must be enabled on the Time Capsule. Linux works well once SSH is already enabled.
 
 ## Quick Start
 
 Download (or run `git clone`) this repository to a folder on your Mac. From the root of this repository, the normal flow is:
 
 1. `./tcapsule bootstrap`
-2. `.venv/bin/tcapsule configure`
-3. `.venv/bin/tcapsule prep-device`
-4. `.venv/bin/tcapsule deploy`
-5. `.venv/bin/tcapsule doctor`
-6. `.venv/bin/tcapsule uninstall` if you want to remove TimeCapsuleSMB later
+2. `.venv/bin/tcapsule configure` save a config/settings file
+3. `.venv/bin/tcapsule prep-device` to set up SSH, macOS only
+4. `.venv/bin/tcapsule deploy` deploy to the Time Capsule according to the config file
+5. `.venv/bin/tcapsule doctor` check if everything is working
+6. `.venv/bin/tcapsule activate` after reboot on NetBSD 4 devices if Samba did not auto-start
+7. `.venv/bin/tcapsule fsck` if the internal disk needs repair before deploy
+8. `.venv/bin/tcapsule uninstall` if you want to remove TimeCapsuleSMB later
 
 Just delete this `TimeCapsuleSMB` folder if you want to remove it from your Mac after you're done setting up the Time Capsule. All the scripts/binaries/etc are stored in the `TimeCapsuleSMB` folder, so if you want to clean up your Mac then just deleting the folder is fine.
 
@@ -56,10 +58,12 @@ tcapsule configure
 tcapsule prep-device
 tcapsule deploy
 tcapsule doctor
+tcapsule activate
+tcapsule fsck
 tcapsule uninstall
 ```
 
-## Step 1: Prepare Your Mac
+## Step 1: Prepare Your Host
 
 Run:
 
@@ -68,6 +72,8 @@ Run:
 ```
 
 This command prepares the local Python environment in this folder. It creates the `.venv` folder, installs in there the Python dependencies needed for discovery, deployment, and verification, installs the local `tcapsule` command into that virtualenv, and optionally provisions AirPyrt support.
+
+On macOS, `bootstrap` can also offer to install `smbclient` via Homebrew and can provision AirPyrt for `prep-device`. On Linux, `bootstrap` will guide you to install `smbclient` with your distro package manager. AirPyrt auto-install is not implemented there yet, so Linux users should usually skip `prep-device` if SSH is already enabled on the Time Capsule.
 
 If this is your first time using the repo, this is the only command you should run with the repo-local launcher. After this step, use `.venv/bin/tcapsule ...` or activate `.venv`.
 
@@ -101,13 +107,15 @@ Samba does not magically use Apple’s internal password backend; unfortunately,
 
 ## Step 3: Find The Time Capsule And Enable SSH
 
-Run:
+On a Mac, run:
 
 ```bash
 .venv/bin/tcapsule prep-device
 ```
 
 This step uses the `.env` configuration you just wrote. In particular, it uses the configured `TC_HOST` and `TC_PASSWORD` values and then enables or disables SSH through AirPyrt as needed.
+
+If you are on Linux and SSH is already enabled on the Time Capsule, you should skip `prep-device` and continue directly to `deploy`.
 
 In practical terms, this script will:
 
@@ -123,7 +131,10 @@ Run:
 .venv/bin/tcapsule deploy
 ```
 
-This is the installation step. It validates the checked-in binaries, copies the payload and boot files to the Time Capsule, sets up the Samba password files, installs the boot hook, and reboots the device so the new runtime comes up cleanly.
+This is the installation step. It validates the checked-in binaries, copies the payload and boot files to the Time Capsule, and sets up the Samba password files.
+
+On NetBSD 6 devices, `deploy` then reboots the device so the new runtime comes up cleanly.
+On NetBSD 4 devices, `deploy` instead activates the new runtime immediately without a reboot. Tested older devices still need `tcapsule activate` after later reboots. Other NetBSD 4 generations may auto-start if their firmware runs `/mnt/Flash/rc.local`, but that is not yet confirmed.
 
 If you also want to enable the optional NBNS responder during deploy, run:
 
@@ -131,7 +142,7 @@ If you also want to enable the optional NBNS responder during deploy, run:
 .venv/bin/tcapsule deploy --install-nbns
 ```
 
-By default, `tcapsule deploy` reboots the Time Capsule after deployment and then waits for it to come back. If you want to skip the reboot confirmation prompt, you can run:
+By default, `tcapsule deploy` reboots NetBSD 6 devices after deployment and then waits for them to come back. If you want to skip the reboot confirmation prompt, you can run:
 
 ```bash
 .venv/bin/tcapsule deploy --yes
@@ -145,7 +156,20 @@ If you want a machine-readable deployment plan without changing the device, use:
 .venv/bin/tcapsule deploy --dry-run --json
 ```
 
-## Step 5: Verify The Result
+## Step 5: Activate It Again If Needed
+
+Run:
+
+```bash
+.venv/bin/tcapsule activate
+```
+
+This command is mainly for older NetBSD 4 devices after a reboot. It starts Samba without copying the files again.  
+For tested older NetBSD 4 hardware, this is currently needed after reboot because the firmware does not persist the `/etc` boot hook needed to auto-start Samba. 
+
+Unfortunately, you need to run `activate` after *every* reboot if your device does not start Samba automatically.
+
+## Step 6: Verify The Result
 
 Run:
 
@@ -155,12 +179,18 @@ Run:
 
 This is a non-destructive diagnostic command. `tcapsule doctor` checks:
 
-- that your `.env` is complete
+- that your `.env` is complete and valid
 - that the required local tools exist
 - that the checked-in binaries are present and match the expected checksums
 - that SSH is reachable
+- that the configured remote network interface and managed target look sane
+- what the box is currently advertising and serving for:
+  - Bonjour instance name
+  - Bonjour host label
+  - Samba NetBIOS name
+  - Samba share names
 - that SMB is reachable
-- that Bonjour `_smb._tcp` advertisement is visible
+- that Bonjour `_smb._tcp` advertisement is visible and resolves
 - that an authenticated SMB listing actually works and includes the configured share name
 - that authenticated SMB file operations also work on the share
 
@@ -170,7 +200,21 @@ If you want the results in JSON instead of human-readable text, use:
 .venv/bin/tcapsule doctor --json
 ```
 
-## Step 6: Remove It Later If Needed
+If the internal HDD becomes inconsistent and you want to repair it before another deploy, run:
+
+```bash
+.venv/bin/tcapsule fsck
+```
+
+This command:
+
+- discovers the currently mounted Time Capsule HDD volume
+- stops the managed watchdog and file-sharing daemons
+- unmounts the HDD
+- runs `fsck_hfs -fy`
+- reboots by default and waits for SSH to go down and come back
+
+## Step 7: Remove It Later If Needed
 
 Run:
 
@@ -178,7 +222,7 @@ Run:
 .venv/bin/tcapsule uninstall
 ```
 
-This removes the managed TimeCapsuleSMB payload from the internal disk, removes the boot hook files from `/mnt/Flash`, and reboots the Time Capsule so the custom Samba runtime does not come back on the next boot.
+This removes the managed TimeCapsuleSMB payload from the internal disk and removes the managed boot hook files from `/mnt/Flash`. By default it then asks before rebooting the Time Capsule so the custom Samba runtime does not come back on the next boot.
 
 If you want to skip the reboot confirmation prompt, use:
 
@@ -199,6 +243,12 @@ For machine-readable dry-run output:
 ```
 
 Uninstall success means the managed payload and boot files are gone after reboot. It does **not** require Apple SMB or AFP to be enabled afterward. Those services may be on or off depending on the device's own settings.
+
+If you want to remove the files without rebooting immediately, use:
+
+```bash
+.venv/bin/tcapsule uninstall --no-reboot
+```
 
 ## Connecting From Finder
 
@@ -239,7 +289,7 @@ Unfortunately, it was not an option to "copy one binary somewhere and call it a 
 That is the reason the repository contains both:
 
 - [bin/samba4/smbd](bin/samba4/smbd)
-- [bin/mdns/mdns-smbd-advertiser](bin/mdns/mdns-smbd-advertiser)
+- [bin/mdns/mdns-advertiser](bin/mdns/mdns-advertiser)
 
 and boot files such as:
 
@@ -330,6 +380,6 @@ The checked-in binaries are already built. If you want to rebuild them yourself,
 The main build outputs are:
 
 - [bin/samba4/smbd](bin/samba4/smbd)
-- [bin/mdns/mdns-smbd-advertiser](bin/mdns/mdns-smbd-advertiser)
+- [bin/mdns/mdns-advertiser](bin/mdns/mdns-advertiser)
 
 If you want the actual engineering details, read [DETAIL.md](DETAIL.md)

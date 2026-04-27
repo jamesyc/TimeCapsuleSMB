@@ -1,65 +1,35 @@
 from __future__ import annotations
 
-import shlex
-
-from timecapsulesmb.checks.bonjour import run_bonjour_checks
-from timecapsulesmb.checks.smb import try_authenticated_smb_listing
 from timecapsulesmb.deploy.planner import UninstallPlan
-from timecapsulesmb.transport.local import command_exists
-from timecapsulesmb.transport.ssh import run_ssh
+from timecapsulesmb.device.probe import (
+    ManagedRuntimeProbeResult,
+    probe_managed_runtime_conn,
+    probe_paths_absent_conn,
+)
+from timecapsulesmb.transport.ssh import SshConnection
 
 
-def verify_post_deploy(values: dict[str, str]) -> None:
-    samba_user = values["TC_SAMBA_USER"]
-    password = values["TC_PASSWORD"]
-    host_label = values["TC_MDNS_HOST_LABEL"]
+def verify_managed_runtime(
+    connection: SshConnection,
+    *,
+    timeout_seconds: int = 180,
+    heading: str | None = None,
+) -> bool:
+    if heading:
+        print(heading)
+    result: ManagedRuntimeProbeResult = probe_managed_runtime_conn(connection, timeout_seconds=timeout_seconds)
+    for line in result.lines:
+        if line.startswith("PASS:"):
+            print(f"  ok: {line.removeprefix('PASS:')}")
+        elif line.startswith("FAIL:"):
+            print(f"  failed: {line.removeprefix('FAIL:')}")
+        elif line:
+            print(f"  {line}")
+    return result.ready
 
-    print("Post-deploy verification:")
-
-    if command_exists("dns-sd"):
-        try:
-            _, discovered_instance, target = run_bonjour_checks(values["TC_MDNS_INSTANCE_NAME"])
-            if discovered_instance:
-                print(f"  Advertised service name: {discovered_instance}")
-            else:
-                print("  Advertised service name: not found")
-            if target:
-                print(f"  Advertised hostname: {target}")
-            else:
-                print("  Advertised hostname: not resolved")
-        except Exception as e:
-            print(f"  Bonjour verification failed: {e}")
-    else:
-        print("  Bonjour verification skipped: dns-sd not found")
-
-    if command_exists("smbutil"):
-        servers = [f"{host_label}.local"]
-        tc_host = values.get("TC_HOST", "")
-        if "@" in tc_host:
-            tc_host = tc_host.split("@", 1)[1]
-        if tc_host and tc_host not in servers:
-            servers.append(tc_host)
-        result = try_authenticated_smb_listing(samba_user, password, servers)
-        if result.status == "PASS":
-            server = result.message.removeprefix("authenticated SMB listing works for ")
-            print(f"  Authenticated SMB listing: ok ({server})")
-        else:
-            failure = result.message.removeprefix("authenticated SMB listing failed: ")
-            print(f"  Authenticated SMB listing: failed ({failure})")
-    else:
-        print("  SMB listing verification skipped: smbutil not found")
-
-
-def verify_post_uninstall(host: str, password: str, ssh_opts: str, plan: UninstallPlan) -> bool:
+def verify_post_uninstall(connection: SshConnection, plan: UninstallPlan) -> bool:
     print("Post-uninstall verification:")
-    script_lines = [
-        "missing=0",
-    ]
-    for target in plan.verify_absent_targets:
-        quoted = shlex.quote(target)
-        script_lines.append(f"if [ -e {quoted} ]; then echo PRESENT:{target}; missing=1; else echo ABSENT:{target}; fi")
-    script_lines.append("exit \"$missing\"")
-    proc = run_ssh(host, password, ssh_opts, f"/bin/sh -c {shlex.quote('; '.join(script_lines))}", check=False)
+    proc = probe_paths_absent_conn(connection, plan.verify_absent_targets)
 
     ok = proc.returncode == 0
     for line in proc.stdout.strip().splitlines():

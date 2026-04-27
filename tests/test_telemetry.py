@@ -1,0 +1,302 @@
+from __future__ import annotations
+
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+import sys
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.device.compat import DeviceCompatibility
+from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState
+from timecapsulesmb.discovery.bonjour import Discovered
+from timecapsulesmb.telemetry import MAX_SEND_ATTEMPTS, TelemetryClient
+
+
+class TelemetryTests(unittest.TestCase):
+    def test_emit_builds_schema_v3_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values(
+                    {
+                        "TC_CONFIGURE_ID": "config-id",
+                        "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+                        "TC_AIRPORT_SYAP": "119",
+                    },
+                    nbns_enabled=True,
+                    bootstrap_path=bootstrap_path,
+                )
+                with mock.patch.object(client, "_dispatch_payload_async") as dispatch_mock:
+                    client.emit("deploy_started")
+        payload = dispatch_mock.call_args.args[0]
+        self.assertEqual(payload["schema_version"], 3)
+        self.assertEqual(payload["event"], "deploy_started")
+        self.assertEqual(payload["install_id"], "test-install")
+        self.assertEqual(payload["configure_id"], "config-id")
+        self.assertEqual(payload["device_model"], "TimeCapsule8,119")
+        self.assertEqual(payload["device_syap"], "119")
+        self.assertTrue(payload["nbns_enabled"])
+        self.assertEqual(payload["host_os"], "macOS" if sys.platform == "darwin" else payload["host_os"])
+        self.assertNotIn("command_id", payload)
+
+    def test_emit_is_disabled_when_bootstrap_has_telemetry_false(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\nTELEMETRY=false\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                with mock.patch.object(client, "_dispatch_payload_async") as dispatch_mock:
+                    client.emit("doctor_started")
+        dispatch_mock.assert_not_called()
+
+    def test_send_payload_retries_once_on_transport_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                success_response = mock.MagicMock()
+                success_response.__enter__.return_value = success_response
+                success_response.__exit__.return_value = None
+                with mock.patch("urllib.request.urlopen", side_effect=[OSError("boom"), success_response]) as urlopen_mock:
+                    client._send_payload({"event": "doctor_started"})
+        self.assertEqual(urlopen_mock.call_count, MAX_SEND_ATTEMPTS)
+
+    def test_command_context_reuses_command_id_for_started_and_finished_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                with mock.patch.object(client, "_dispatch_payload_async") as dispatch_mock:
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        command = CommandContext(client, "deploy", "deploy_started", "deploy_finished")
+                        command.finish(result="success")
+        started_payload = dispatch_mock.call_args.args[0]
+        finished_payload = send_mock.call_args.args[0]
+        self.assertIn("command_id", started_payload)
+        self.assertEqual(started_payload["command_id"], finished_payload["command_id"])
+        self.assertEqual(finished_payload["event"], "deploy_finished")
+        self.assertEqual(finished_payload["result"], "success")
+
+    def test_command_context_marks_keyboard_interrupt_as_cancelled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                with mock.patch.object(client, "_dispatch_payload_async"):
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        with self.assertRaises(KeyboardInterrupt):
+                            with CommandContext(client, "doctor", "doctor_started", "doctor_finished"):
+                                raise KeyboardInterrupt
+        finished_payload = send_mock.call_args.args[0]
+        self.assertEqual(finished_payload["event"], "doctor_finished")
+        self.assertEqual(finished_payload["result"], "cancelled")
+        self.assertIn("Cancelled by user", finished_payload["error"])
+        self.assertIn("Debug context:", finished_payload["error"])
+        self.assertIn("command=doctor", finished_payload["error"])
+
+    def test_command_context_captures_system_exit_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values(
+                    {
+                        "TC_HOST": "root@192.168.1.118",
+                        "TC_SSH_OPTS": "-L 108:127.0.0.1:108",
+                        "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+                        "TC_AIRPORT_SYAP": "119",
+                    },
+                    bootstrap_path=bootstrap_path,
+                )
+                with mock.patch.object(client, "_dispatch_payload_async"):
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        with self.assertRaises(SystemExit):
+                            with CommandContext(client, "deploy", "deploy_started", "deploy_finished", values={
+                                "TC_HOST": "root@192.168.1.118",
+                                "TC_SSH_OPTS": "-L 108:127.0.0.1:108",
+                                "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+                                "TC_AIRPORT_SYAP": "119",
+                            }):
+                                raise SystemExit("Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied")
+        finished_payload = send_mock.call_args.args[0]
+        self.assertEqual(finished_payload["result"], "failure")
+        self.assertIn("Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied", finished_payload["error"])
+        self.assertIn("Debug context:", finished_payload["error"])
+        self.assertIn("ssh_opts=-L 108:127.0.0.1:108", finished_payload["error"])
+
+    def test_command_context_failure_without_error_gets_fallback_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                with mock.patch.object(client, "_dispatch_payload_async"):
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        command = CommandContext(client, "deploy", "deploy_started", "deploy_finished")
+                        command.fail()
+                        command.finish(result=command.result)
+        finished_payload = send_mock.call_args.args[0]
+        self.assertEqual(finished_payload["result"], "failure")
+        self.assertEqual(finished_payload["error"], "deploy failed without additional details.")
+
+    def test_command_context_labels_numeric_system_exit_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                with mock.patch.object(client, "_dispatch_payload_async"):
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        with self.assertRaises(SystemExit):
+                            with CommandContext(client, "configure", "configure_started", "configure_finished"):
+                                raise SystemExit(1)
+        finished_payload = send_mock.call_args.args[0]
+        self.assertIn("SystemExit: 1", finished_payload["error"])
+        self.assertNotEqual(finished_payload["error"], "1")
+
+    def test_command_context_captures_unexpected_exception_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                with mock.patch.object(client, "_dispatch_payload_async"):
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        with self.assertRaises(RuntimeError):
+                            with CommandContext(client, "deploy", "deploy_started", "deploy_finished"):
+                                raise RuntimeError("upload failed")
+        finished_payload = send_mock.call_args.args[0]
+        self.assertEqual(finished_payload["result"], "failure")
+        self.assertIn("RuntimeError: upload failed", finished_payload["error"])
+        self.assertIn("Debug context:", finished_payload["error"])
+        self.assertIn("command=deploy", finished_payload["error"])
+
+    def test_command_context_debug_context_omits_password_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                with mock.patch.object(client, "_dispatch_payload_async"):
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        with self.assertRaises(SystemExit):
+                            with CommandContext(
+                                client,
+                                "configure",
+                                "configure_started",
+                                "configure_finished",
+                                values={
+                                    "TC_HOST": "root@192.168.1.217",
+                                    "TC_PASSWORD": "secret-password",
+                                    "TC_SSH_OPTS": "-o ProxyJump=bastion",
+                                    "TC_SHARE_USE_DISK_ROOT": "true",
+                                },
+                            ) as command:
+                                command.set_stage("ssh_probe")
+                                raise SystemExit("SSH authentication failed.")
+        finished_payload = send_mock.call_args.args[0]
+        self.assertIn("stage=ssh_probe", finished_payload["error"])
+        self.assertIn("TC_HOST=root@192.168.1.217", finished_payload["error"])
+        self.assertIn("TC_SSH_OPTS=-o ProxyJump=bastion", finished_payload["error"])
+        self.assertIn("TC_SHARE_USE_DISK_ROOT=true", finished_payload["error"])
+        self.assertNotIn("TC_PASSWORD", finished_payload["error"])
+        self.assertNotIn("secret-password", finished_payload["error"])
+
+    def test_command_context_summarizes_debug_fields_when_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                with mock.patch.object(client, "_dispatch_payload_async"):
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        with self.assertRaises(SystemExit):
+                            with CommandContext(client, "configure", "configure_started", "configure_finished") as command:
+                                command.add_debug_fields(
+                                    selected_bonjour_record=Discovered(
+                                        name="AirPort Time Capsule",
+                                        hostname="AirPort-Time-Capsule.local",
+                                        service_type="_airport._tcp.local.",
+                                        ipv4=["192.168.1.72"],
+                                        properties={"syAP": "119"},
+                                    )
+                                )
+                                raise SystemExit("configure failed")
+        finished_payload = send_mock.call_args.args[0]
+        self.assertIn("selected_bonjour_record={", finished_payload["error"])
+        self.assertIn("service_type:_airport._tcp.local.", finished_payload["error"])
+        self.assertIn("hostname:AirPort-Time-Capsule.local", finished_payload["error"])
+        self.assertIn("syAP:119", finished_payload["error"])
+
+    def test_command_context_debug_context_includes_only_probe_fields_not_already_in_telemetry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                with mock.patch.object(client, "_dispatch_payload_async"):
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        with self.assertRaises(SystemExit):
+                            with CommandContext(
+                                client,
+                                "deploy",
+                                "deploy_started",
+                                "deploy_finished",
+                                values={
+                                    "TC_HOST": "root@192.168.1.217",
+                                    "TC_SSH_OPTS": "-o ProxyJump=bastion",
+                                    "TC_NET_IFACE": "bridge0",
+                                    "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+                                    "TC_AIRPORT_SYAP": "119",
+                                },
+                            ) as command:
+                                command.probe_state = ProbedDeviceState(
+                                    probe_result=ProbeResult(
+                                        ssh_port_reachable=True,
+                                        ssh_authenticated=True,
+                                        error=None,
+                                        os_name="NetBSD",
+                                        os_release="6.0",
+                                        arch="earmv4",
+                                        elf_endianness="little",
+                                    ),
+                                    compatibility=DeviceCompatibility(
+                                        os_name="NetBSD",
+                                        os_release="6.0",
+                                        arch="earmv4",
+                                        elf_endianness="little",
+                                        payload_family="netbsd6_samba4",
+                                        device_generation="gen5",
+                                        supported=True,
+                                        reason_code="supported_netbsd6",
+                                    ),
+                                )
+                                command.update_fields(device_family="netbsd6_samba4", device_os_version="NetBSD 6.0 (earmv4)")
+                                raise SystemExit("Connecting to the device failed, SSH error: timeout")
+        finished_payload = send_mock.call_args.args[0]
+        self.assertIn("probe_ssh_port_reachable=true", finished_payload["error"])
+        self.assertIn("probe_ssh_authenticated=true", finished_payload["error"])
+        self.assertNotIn("probe_os_name=", finished_payload["error"])
+        self.assertNotIn("probe_os_release=", finished_payload["error"])
+        self.assertNotIn("probe_arch=", finished_payload["error"])
+        self.assertNotIn("probe_elf_endianness=", finished_payload["error"])
+        self.assertNotIn("probe_payload_family=", finished_payload["error"])
+        self.assertNotIn("device_family=", finished_payload["error"])
+        self.assertNotIn("device_os_version=", finished_payload["error"])
+
+
+if __name__ == "__main__":
+    unittest.main()

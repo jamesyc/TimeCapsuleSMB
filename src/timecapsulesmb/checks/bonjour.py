@@ -1,70 +1,230 @@
 from __future__ import annotations
 
-import shlex
-from typing import Optional, Tuple
+import ipaddress
+import socket
+from dataclasses import dataclass
 
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.transport.local import command_exists, run_local_capture
+from timecapsulesmb.core.config import extract_host
+from timecapsulesmb.discovery.bonjour import (
+    BonjourDiscoverySnapshot,
+    BonjourResolvedService,
+    BonjourServiceInstance,
+    DEFAULT_BROWSE_TIMEOUT_SEC,
+    FINAL_PENDING_RESOLVE_TIMEOUT_MS,
+    SMB_SERVICE,
+    discover_snapshot,
+    resolve_service_instance,
+)
 
 
-def capture_dns_sd_browse(service_type: str, duration_seconds: int = 5) -> str:
-    script = (
-        f'dns-sd -B {shlex.quote(service_type)} local. & '
-        f'pid=$!; sleep {duration_seconds}; kill "$pid" >/dev/null 2>&1 || true; '
-        f'wait "$pid" >/dev/null 2>&1 || true'
+@dataclass(frozen=True)
+class BonjourExpectedIdentity:
+    instance_name: str
+    host_label: str | None
+    target_ip: str | None
+
+
+@dataclass(frozen=True)
+class BonjourInstanceSelection:
+    instance: BonjourServiceInstance | None
+    candidates: list[BonjourServiceInstance]
+    expected_instance_name: str
+
+
+@dataclass(frozen=True)
+class BonjourServiceTarget:
+    instance_name: str
+    hostname: str | None
+    port: int = 445
+
+    def authority(self) -> str | None:
+        if not self.hostname:
+            return None
+        return f"{self.hostname}:{self.port}"
+
+    def host_label(self) -> str | None:
+        if not self.hostname:
+            return None
+        host = self.hostname.strip().rstrip(".")
+        if not host:
+            return None
+        if host.endswith(".local"):
+            return host[: -len(".local")]
+        return host
+
+
+def _ip_literal(value: str) -> str | None:
+    candidate = value.strip()
+    if not candidate:
+        return None
+    try:
+        ipaddress.ip_address(candidate)
+    except ValueError:
+        return None
+    return candidate
+
+
+def build_bonjour_expected_identity(values: dict[str, str]) -> BonjourExpectedIdentity:
+    return BonjourExpectedIdentity(
+        instance_name=values["TC_MDNS_INSTANCE_NAME"],
+        host_label=values.get("TC_MDNS_HOST_LABEL") or None,
+        target_ip=_ip_literal(extract_host(values.get("TC_HOST", ""))),
     )
-    proc = run_local_capture(["/bin/sh", "-c", script], timeout=duration_seconds + 5)
-    return proc.stdout
 
 
-def capture_dns_sd_lookup(instance_name: str, service_type: str, duration_seconds: int = 5) -> str:
-    script = (
-        f'dns-sd -L {shlex.quote(instance_name)} {shlex.quote(service_type)} local. & '
-        f'pid=$!; sleep {duration_seconds}; kill "$pid" >/dev/null 2>&1 || true; '
-        f'wait "$pid" >/dev/null 2>&1 || true'
+def _describe_instance(instance: BonjourServiceInstance) -> str:
+    name = instance.name or "-"
+    return f"{name!r}"
+
+
+def _candidate_summary(instances: list[BonjourServiceInstance]) -> str:
+    if not instances:
+        return "none"
+    return "; ".join(_describe_instance(instance) for instance in instances)
+
+
+def discover_smb_services(timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC) -> tuple[BonjourDiscoverySnapshot | None, CheckResult | None]:
+    try:
+        return discover_snapshot(SMB_SERVICE, timeout=timeout), None
+    except SystemExit as e:
+        return None, CheckResult("FAIL", f"Bonjour check failed: {e}")
+    except Exception as e:
+        return None, CheckResult("FAIL", f"Bonjour check failed: {e}")
+
+
+def select_smb_instance(
+    instances: list[BonjourServiceInstance],
+    *,
+    expected_instance_name: str,
+) -> BonjourInstanceSelection:
+    matching = [instance for instance in instances if instance.name == expected_instance_name]
+    ranked = sorted(matching, key=lambda instance: instance.fullname or instance.name)
+    return BonjourInstanceSelection(
+        instance=ranked[0] if ranked else None,
+        candidates=instances,
+        expected_instance_name=expected_instance_name,
     )
-    proc = run_local_capture(["/bin/sh", "-c", script], timeout=duration_seconds + 5)
-    return proc.stdout
 
 
-def parse_browse_instance(output: str) -> Optional[str]:
-    for line in output.splitlines():
-        if " Add " in line and "_smb._tcp." in line:
-            marker = "_smb._tcp."
-            idx = line.find(marker)
-            if idx != -1:
-                return line[idx + len(marker):].strip()
-    return None
+def check_smb_instance(selection: BonjourInstanceSelection) -> list[CheckResult]:
+    if selection.instance is not None:
+        return [
+            CheckResult(
+                "PASS",
+                f"discovered _smb._tcp instance {selection.expected_instance_name!r}",
+            )
+        ]
+    return [
+        CheckResult(
+            "FAIL",
+            f"no discovered _smb._tcp instance matched configured instance {selection.expected_instance_name!r}",
+        ),
+        CheckResult("INFO", f"discovered _smb._tcp candidates: {_candidate_summary(selection.candidates)}"),
+    ]
 
 
-def parse_lookup_target(output: str) -> Optional[str]:
-    for line in output.splitlines():
-        if " can be reached at " in line:
-            return line.split(" can be reached at ", 1)[1].strip()
-    return None
+def select_resolved_smb_record(
+    records: list[BonjourResolvedService],
+    instance: BonjourServiceInstance,
+) -> BonjourResolvedService | None:
+    for record in records:
+        if record.service_type != instance.service_type:
+            continue
+        if record.fullname and instance.fullname and record.fullname == instance.fullname:
+            return record
+
+    matching_name = [
+        record
+        for record in records
+        if record.service_type == instance.service_type and record.name == instance.name
+    ]
+    if not matching_name:
+        return None
+    return sorted(matching_name, key=lambda record: (record.hostname or "", record.fullname or ""))[0]
 
 
-def run_bonjour_checks(expected_instance_name: str, *, service_type: str = "_smb._tcp") -> Tuple[list[CheckResult], Optional[str], Optional[str]]:
-    if not command_exists("dns-sd"):
-        return [CheckResult("FAIL", "missing local tool dns-sd")], None, None
+def resolve_smb_instance(instance: BonjourServiceInstance, timeout_ms: int = FINAL_PENDING_RESOLVE_TIMEOUT_MS) -> tuple[BonjourResolvedService | None, CheckResult | None]:
+    try:
+        record = resolve_service_instance(instance, timeout_ms=timeout_ms)
+    except SystemExit as e:
+        return None, CheckResult("FAIL", f"Bonjour check failed: {e}")
+    except Exception as e:
+        return None, CheckResult("FAIL", f"Bonjour check failed: {e}")
+    if record is None:
+        return None, CheckResult(
+            "FAIL",
+            f"discovered _smb._tcp instance {instance.name!r} but could not resolve service target",
+        )
+    return record, None
 
-    results: list[CheckResult] = []
-    browse_output = capture_dns_sd_browse(service_type)
-    discovered_instance = parse_browse_instance(browse_output)
-    if discovered_instance:
-        if discovered_instance == expected_instance_name:
-            results.append(CheckResult("PASS", f"discovered _smb._tcp instance {discovered_instance!r}"))
-        else:
-            results.append(CheckResult("WARN", f"discovered _smb._tcp instance {discovered_instance!r}, expected {expected_instance_name!r}"))
-    else:
-        results.append(CheckResult("FAIL", "could not discover any _smb._tcp instance"))
 
-    lookup_name = discovered_instance or expected_instance_name
-    lookup_output = capture_dns_sd_lookup(lookup_name, service_type)
-    target = parse_lookup_target(lookup_output)
-    if target:
-        results.append(CheckResult("PASS", f"resolved {lookup_name!r} to {target}"))
-    else:
-        results.append(CheckResult("FAIL", f"could not resolve {lookup_name!r}"))
+def resolve_smb_service_target(
+    record: BonjourResolvedService,
+    *,
+    expected_instance_name: str,
+) -> BonjourServiceTarget:
+    hostname = (record.hostname or "").strip().rstrip(".")
+    return BonjourServiceTarget(
+        instance_name=expected_instance_name,
+        hostname=hostname or None,
+        port=record.port or 445,
+    )
 
-    return results, discovered_instance, target
+
+def check_smb_service_target(target: BonjourServiceTarget) -> CheckResult:
+    if target.hostname:
+        return CheckResult(
+            "PASS",
+            f"resolved _smb._tcp instance {target.instance_name!r} to {target.hostname}:{target.port}",
+        )
+    return CheckResult(
+        "FAIL",
+        f"discovered _smb._tcp instance {target.instance_name!r} but could not resolve service target",
+    )
+
+
+def resolve_host_ipv4(hostname: str) -> list[str]:
+    resolved: list[str] = []
+    try:
+        infos = socket.getaddrinfo(hostname, None, socket.AF_INET, socket.SOCK_STREAM)
+    except OSError:
+        return resolved
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr:
+            continue
+        ip = sockaddr[0]
+        if ip and ip not in resolved:
+            resolved.append(ip)
+    return resolved
+
+
+def check_bonjour_host_ip(
+    hostname: str,
+    *,
+    expected_ip: str | None = None,
+    record_ips: list[str] | None = None,
+) -> CheckResult:
+    known_ips: list[str] = []
+    for ip in record_ips or []:
+        if ip and ip not in known_ips:
+            known_ips.append(ip)
+    for ip in resolve_host_ipv4(hostname):
+        if ip not in known_ips:
+            known_ips.append(ip)
+
+    if expected_ip:
+        if expected_ip in known_ips:
+            suffix = " from service record" if expected_ip in (record_ips or []) else ""
+            return CheckResult("PASS", f"resolved Bonjour host {hostname} to {expected_ip}{suffix}")
+        if known_ips:
+            return CheckResult(
+                "FAIL",
+                f"Bonjour host {hostname} resolved to {', '.join(known_ips)}, expected {expected_ip}",
+            )
+        return CheckResult("FAIL", f"could not resolve Bonjour host {hostname}")
+
+    if known_ips:
+        return CheckResult("PASS", f"resolved Bonjour host {hostname} to {', '.join(known_ips)}")
+    return CheckResult("FAIL", f"could not resolve Bonjour host {hostname}")

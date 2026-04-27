@@ -4,6 +4,8 @@ import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
+import ipaddress
+import re
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -17,6 +19,23 @@ ADISK_DEFAULT_DISK_KEY = "dk2"
 ADISK_DISK_UUID_EXAMPLE = "12345678-1234-1234-1234-123456789012"
 ADISK_DISK_TXT_MID = "=adVF=0x1093,adVN="
 ADISK_DISK_TXT_SUFFIX = ",adVU="
+VALID_AIRPORT_SYAP_CODES = {"106", "109", "113", "116", "119"}
+VALID_MDNS_DEVICE_MODELS = {
+    "TimeCapsule",
+    "TimeCapsule6,106",
+    "TimeCapsule6,109",
+    "TimeCapsule6,113",
+    "TimeCapsule6,116",
+    "TimeCapsule8,119",
+}
+AIRPORT_SYAP_TO_MODEL = {
+    "106": "TimeCapsule6,106",
+    "109": "TimeCapsule6,109",
+    "113": "TimeCapsule6,113",
+    "116": "TimeCapsule6,116",
+    "119": "TimeCapsule8,119",
+}
+MAX_SAMBA_USER_BYTES = 32
 
 DEFAULTS = {
     "TC_HOST": "root@192.168.1.101",
@@ -25,10 +44,12 @@ DEFAULTS = {
     "TC_SHARE_NAME": "Data",
     "TC_SAMBA_USER": "admin",
     "TC_NETBIOS_NAME": "TimeCapsule",
-    "TC_PAYLOAD_DIR_NAME": "samba4",
+    "TC_PAYLOAD_DIR_NAME": ".samba4",
     "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
     "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
     "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
+    "TC_AIRPORT_SYAP": "",
+    "TC_SHARE_USE_DISK_ROOT": "false",
 }
 
 REQUIRED_ENV_KEYS = [
@@ -54,7 +75,25 @@ CONFIG_FIELDS = [
     ("TC_PAYLOAD_DIR_NAME", "Persistent payload directory name", DEFAULTS["TC_PAYLOAD_DIR_NAME"], False),
     ("TC_MDNS_INSTANCE_NAME", "mDNS SMB instance name", DEFAULTS["TC_MDNS_INSTANCE_NAME"], False),
     ("TC_MDNS_HOST_LABEL", "mDNS host label", DEFAULTS["TC_MDNS_HOST_LABEL"], False),
+    ("TC_AIRPORT_SYAP", "Airport Utility syAP code", DEFAULTS["TC_AIRPORT_SYAP"], False),
     ("TC_MDNS_DEVICE_MODEL", "mDNS device model hint", DEFAULTS["TC_MDNS_DEVICE_MODEL"], False),
+]
+
+ENV_FILE_KEYS = [
+    "TC_HOST",
+    "TC_PASSWORD",
+    "TC_SSH_OPTS",
+    "TC_NET_IFACE",
+    "TC_SHARE_NAME",
+    "TC_SAMBA_USER",
+    "TC_NETBIOS_NAME",
+    "TC_PAYLOAD_DIR_NAME",
+    "TC_MDNS_INSTANCE_NAME",
+    "TC_MDNS_HOST_LABEL",
+    "TC_MDNS_DEVICE_MODEL",
+    "TC_AIRPORT_SYAP",
+    "TC_SHARE_USE_DISK_ROOT",
+    "TC_CONFIGURE_ID",
 ]
 
 CONFIG_HEADER = """# Local user/device configuration for TimeCapsuleSMB.
@@ -69,17 +108,34 @@ class AppConfig:
     def get(self, key: str, default: str = "") -> str:
         return self.values.get(key, default)
 
-    def require(self, key: str) -> str:
+    def require(self, key: str, *, messagebefore: str = "", messageafter: str = "") -> str:
         value = self.get(key)
         if not value:
-            raise SystemExit(f"Missing required setting in .env: {key}")
+            raise SystemExit(f"{messagebefore}Missing required setting in .env: {key}{messageafter}")
         return value
+
+
+@dataclass(frozen=True)
+class ConfigValidationError:
+    key: str
+    message: str
+
+    def format_for_cli(self) -> str:
+        return f"{self.key} is invalid. Run the `configure` command again.\n{self.message}"
 
 
 def parse_env_value(raw_value: str) -> str:
     value = raw_value.strip()
+    if not value:
+        return ""
     try:
-        return shlex.split(value)[0] if value else ""
+        tokens = shlex.split(value)
+        # A single parsed token means the env value was one scalar, possibly
+        # quoted. Multi-token values such as TC_SSH_OPTS must remain intact and
+        # are interpreted later by the transport layer.
+        if len(tokens) == 1:
+            return tokens[0]
+        return value
     except ValueError:
         return value.strip("'\"")
 
@@ -95,10 +151,6 @@ def parse_env_values(path: Path, *, defaults: Optional[dict[str, str]] = None) -
         key, value = line.split("=", 1)
         values[key.strip()] = parse_env_value(value)
     return values
-
-
-def load_config(path: Path = ENV_PATH) -> AppConfig:
-    return AppConfig(parse_env_values(path))
 
 
 def missing_required_keys(values: dict[str, str]) -> list[str]:
@@ -117,11 +169,12 @@ def _contains_invalid_control_character(value: str) -> bool:
     return any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value)
 
 
-def build_instance_fqdn(instance_name: str, service_type: str) -> Optional[str]:
-    value = f"{instance_name}.{service_type}"
-    if len(value.encode("utf-8")) > MAX_DNS_NAME_BYTES:
-        return None
-    return value
+def _contains_whitespace(value: str) -> bool:
+    return any(ch.isspace() for ch in value)
+
+
+def _has_only_safe_chars(value: str, pattern: str) -> bool:
+    return re.fullmatch(pattern, value) is not None
 
 
 def build_mdns_device_model_txt(value: str) -> Optional[str]:
@@ -150,37 +203,46 @@ def validate_dns_label(value: str, field_name: str) -> Optional[str]:
     return None
 
 
-def validate_dns_name(value: str, field_name: str) -> Optional[str]:
-    if not value:
-        return f"{field_name} cannot be blank."
-    if len(value.encode("utf-8")) > MAX_DNS_NAME_BYTES:
-        return f"{field_name} must be {MAX_DNS_NAME_BYTES} bytes or fewer."
-    if value.startswith("."):
-        return f"{field_name} contains an empty label."
-    stripped = value[:-1] if value.endswith(".") else value
-    if not stripped:
-        return f"{field_name} contains an empty label."
-    if _contains_invalid_control_character(value):
-        return f"{field_name} contains an invalid control character."
-    for label in stripped.split("."):
-        if not label:
-            return f"{field_name} contains an empty label."
-        if len(label.encode("utf-8")) > MAX_DNS_LABEL_BYTES:
-            return f"{field_name} contains a label longer than {MAX_DNS_LABEL_BYTES} bytes."
-    return None
-
-
-def validate_single_dns_label(value: str, field_name: str) -> Optional[str]:
-    return validate_dns_label(value, field_name)
-
-
 def validate_mdns_device_model(value: str, field_name: str) -> Optional[str]:
     if not value:
         return f"{field_name} cannot be blank."
+    if value not in VALID_MDNS_DEVICE_MODELS:
+        return f"{field_name} is not a supported Time Capsule model."
     if build_mdns_device_model_txt(value) is None:
         return f"{field_name} must be 249 bytes or fewer."
     if _contains_invalid_control_character(value):
         return f"{field_name} contains an invalid control character."
+    return None
+
+
+def validate_mdns_instance_name(value: str, field_name: str) -> Optional[str]:
+    if not value:
+        return f"{field_name} cannot be blank."
+    if len(value.encode("utf-8")) > MAX_DNS_LABEL_BYTES:
+        return f"{field_name} must be {MAX_DNS_LABEL_BYTES} bytes or fewer."
+    if "." in value:
+        return f"{field_name} must not contain dots."
+    if _contains_invalid_control_character(value):
+        return f"{field_name} contains an invalid control character."
+    return None
+
+
+def validate_mdns_host_label(value: str, field_name: str) -> Optional[str]:
+    if not value:
+        return f"{field_name} cannot be blank."
+    if len(value.encode("utf-8")) > MAX_DNS_LABEL_BYTES:
+        return f"{field_name} must be {MAX_DNS_LABEL_BYTES} bytes or fewer."
+    try:
+        ipaddress.ip_address(value)
+        return None
+    except ValueError:
+        pass
+    if "." in value:
+        return f"{field_name} must not contain dots."
+    if value.startswith("-") or value.endswith("-"):
+        return f"{field_name} must not start or end with a hyphen."
+    if not _has_only_safe_chars(value, r"[A-Za-z0-9-]+"):
+        return f"{field_name} may contain only letters, numbers, and hyphens."
     return None
 
 
@@ -198,6 +260,8 @@ def validate_adisk_share_name(value: str, field_name: str) -> Optional[str]:
         return f"{field_name} must be {max_share_bytes} bytes or fewer."
     if _contains_invalid_control_character(value):
         return f"{field_name} contains an invalid control character."
+    if any(ch in value for ch in '/\\[]:*?"<>|,='):
+        return f"{field_name} contains a character that is not safe for Samba/adisk."
     return None
 
 
@@ -208,25 +272,240 @@ def validate_netbios_name(value: str, field_name: str) -> Optional[str]:
         return f"{field_name} must be {MAX_NETBIOS_NAME_BYTES} bytes or fewer."
     if _contains_invalid_control_character(value):
         return f"{field_name} contains an invalid control character."
+    if not _has_only_safe_chars(value, r"[A-Za-z0-9_-]+"):
+        return f"{field_name} may contain only letters, numbers, underscores, and hyphens."
+    return None
+
+
+def validate_samba_user(value: str, field_name: str) -> Optional[str]:
+    if not value:
+        return f"{field_name} cannot be blank."
+    if len(value.encode("utf-8")) > MAX_SAMBA_USER_BYTES:
+        return f"{field_name} must be {MAX_SAMBA_USER_BYTES} bytes or fewer."
+    if _contains_invalid_control_character(value):
+        return f"{field_name} contains an invalid control character."
+    if _contains_whitespace(value):
+        return f"{field_name} must not contain whitespace."
+    if not _has_only_safe_chars(value, r"[A-Za-z0-9._-]+"):
+        return f"{field_name} may contain only letters, numbers, dots, underscores, and hyphens."
+    return None
+
+
+def validate_payload_dir_name(value: str, field_name: str) -> Optional[str]:
+    if not value:
+        return f"{field_name} cannot be blank."
+    if value in {".", ".."}:
+        return f"{field_name} must not be . or ..."
+    if "/" in value or "\\" in value:
+        return f"{field_name} must be a single directory name, not a path."
+    if value.startswith("-"):
+        return f"{field_name} must not start with a hyphen."
+    if _contains_invalid_control_character(value):
+        return f"{field_name} contains an invalid control character."
+    if not _has_only_safe_chars(value, r"[A-Za-z0-9._-]+"):
+        return f"{field_name} may contain only letters, numbers, dots, underscores, and hyphens."
+    return None
+
+
+def validate_net_iface(value: str, field_name: str) -> Optional[str]:
+    if not value:
+        return f"{field_name} cannot be blank."
+    if _contains_invalid_control_character(value):
+        return f"{field_name} contains an invalid control character."
+    if _contains_whitespace(value):
+        return f"{field_name} must not contain whitespace."
+    if not _has_only_safe_chars(value, r"[A-Za-z0-9._:-]+"):
+        return f"{field_name} may contain only letters, numbers, dots, underscores, colons, and hyphens."
+    return None
+
+
+def validate_ssh_target(value: str, field_name: str) -> Optional[str]:
+    if not value:
+        return f"{field_name} cannot be blank."
+    if _contains_invalid_control_character(value):
+        return f"{field_name} contains an invalid control character."
+    if _contains_whitespace(value):
+        return f"{field_name} must not contain whitespace."
+    if "@" not in value:
+        return f"{field_name} must include a username, like root@192.168.1.101."
+    user, host = value.split("@", 1)
+    if not user:
+        return f"{field_name} must include a username before @."
+    if not host:
+        return f"{field_name} must include a host after @."
+    if not _has_only_safe_chars(user, r"[A-Za-z0-9._-]+"):
+        return f"{field_name} username may contain only letters, numbers, dots, underscores, and hyphens."
+    if host.startswith("-"):
+        return f"{field_name} host must not start with a hyphen."
+    return None
+
+
+def parse_bool(value: str) -> bool:
+    return value.strip().lower() == "true"
+
+
+def validate_bool(value: str, field_name: str) -> Optional[str]:
+    if value == "":
+        return None
+    if value.strip().lower() not in {"true", "false"}:
+        return f"{field_name} must be true or false."
+    return None
+
+
+def validate_airport_syap(value: str, field_name: str) -> Optional[str]:
+    if not value:
+        return f"{field_name} cannot be blank."
+    if not value.isdigit():
+        return f"{field_name} must contain only digits."
+    if value not in VALID_AIRPORT_SYAP_CODES:
+        return "The configured syAP is invalid."
+    return None
+
+
+def infer_mdns_device_model_from_airport_syap(syap: str) -> Optional[str]:
+    return AIRPORT_SYAP_TO_MODEL.get(syap)
+
+
+def validate_mdns_device_model_matches_syap(syap: str, device_model: str) -> Optional[str]:
+    expected_model = infer_mdns_device_model_from_airport_syap(syap)
+    if expected_model is None:
+        return None
+    if device_model != expected_model:
+        return (f'TC_MDNS_DEVICE_MODEL "{device_model}" must match the '
+                f'configured syAP expected value "{expected_model}".')
     return None
 
 
 CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
+    "TC_HOST": validate_ssh_target,
+    "TC_NET_IFACE": validate_net_iface,
     "TC_SHARE_NAME": validate_adisk_share_name,
+    "TC_SAMBA_USER": validate_samba_user,
     "TC_NETBIOS_NAME": validate_netbios_name,
-    "TC_MDNS_INSTANCE_NAME": validate_dns_label,
-    "TC_MDNS_HOST_LABEL": validate_dns_label,
+    "TC_PAYLOAD_DIR_NAME": validate_payload_dir_name,
+    "TC_MDNS_INSTANCE_NAME": validate_mdns_instance_name,
+    "TC_MDNS_HOST_LABEL": validate_mdns_host_label,
+    "TC_AIRPORT_SYAP": validate_airport_syap,
     "TC_MDNS_DEVICE_MODEL": validate_mdns_device_model,
+    "TC_SHARE_USE_DISK_ROOT": validate_bool,
 }
+
+CONFIG_VALIDATION_PROFILES: dict[str, tuple[str, ...]] = {
+    "configure": (
+        "TC_NET_IFACE",
+        "TC_SHARE_NAME",
+        "TC_SAMBA_USER",
+        "TC_NETBIOS_NAME",
+        "TC_PAYLOAD_DIR_NAME",
+        "TC_MDNS_INSTANCE_NAME",
+        "TC_MDNS_HOST_LABEL",
+        "TC_MDNS_DEVICE_MODEL",
+        "TC_AIRPORT_SYAP",
+        "TC_SHARE_USE_DISK_ROOT",
+    ),
+    "deploy": (
+        "TC_HOST",
+        "TC_NET_IFACE",
+        "TC_SHARE_NAME",
+        "TC_SAMBA_USER",
+        "TC_NETBIOS_NAME",
+        "TC_PAYLOAD_DIR_NAME",
+        "TC_MDNS_INSTANCE_NAME",
+        "TC_MDNS_HOST_LABEL",
+        "TC_MDNS_DEVICE_MODEL",
+        "TC_AIRPORT_SYAP",
+        "TC_SHARE_USE_DISK_ROOT",
+    ),
+    "activate": (
+        "TC_HOST",
+        "TC_NET_IFACE",
+        "TC_SHARE_NAME",
+        "TC_SAMBA_USER",
+        "TC_NETBIOS_NAME",
+        "TC_PAYLOAD_DIR_NAME",
+        "TC_MDNS_INSTANCE_NAME",
+        "TC_MDNS_HOST_LABEL",
+        "TC_MDNS_DEVICE_MODEL",
+        "TC_AIRPORT_SYAP",
+        "TC_SHARE_USE_DISK_ROOT",
+    ),
+    "doctor": (
+        "TC_HOST",
+        "TC_NET_IFACE",
+        "TC_SHARE_NAME",
+        "TC_SAMBA_USER",
+        "TC_NETBIOS_NAME",
+        "TC_PAYLOAD_DIR_NAME",
+        "TC_MDNS_INSTANCE_NAME",
+        "TC_MDNS_HOST_LABEL",
+        "TC_MDNS_DEVICE_MODEL",
+        "TC_AIRPORT_SYAP",
+        "TC_SHARE_USE_DISK_ROOT",
+    ),
+    "uninstall": ("TC_HOST", "TC_PAYLOAD_DIR_NAME"),
+    "fsck": ("TC_HOST",),
+    "repair_xattrs": ("TC_SHARE_NAME",),
+}
+
+
+def validate_config_values(values: dict[str, str], *, profile: str) -> list[ConfigValidationError]:
+    errors: list[ConfigValidationError] = []
+    for key in CONFIG_VALIDATION_PROFILES[profile]:
+        validator = CONFIG_VALIDATORS.get(key)
+        if validator is None:
+            continue
+        error = validator(values.get(key, ""), key)
+        if error:
+            errors.append(ConfigValidationError(key, error))
+    if profile in {"deploy", "activate", "doctor"}:
+        syap_model_error = validate_mdns_device_model_matches_syap(
+            values.get("TC_AIRPORT_SYAP", ""),
+            values.get("TC_MDNS_DEVICE_MODEL", ""),
+        )
+        if syap_model_error:
+            errors.append(ConfigValidationError("TC_MDNS_DEVICE_MODEL", syap_model_error))
+    return errors
+
+
+def require_valid_config(values: dict[str, str], *, profile: str) -> None:
+    errors = validate_config_values(values, profile=profile)
+    if errors:
+        raise SystemExit(errors[0].format_for_cli())
 
 
 def render_env_text(values: dict[str, str]) -> str:
     lines = [CONFIG_HEADER.rstrip(), ""]
-    for key, _, _, _ in CONFIG_FIELDS:
-        lines.append(f"{key}={shell_quote(values[key])}")
+    for key in ENV_FILE_KEYS:
+        rendered_value = values.get(key, DEFAULTS.get(key, ""))
+        lines.append(f"{key}={shell_quote(rendered_value)}")
     lines.append("")
     return "\n".join(lines)
 
 
 def write_env_file(path: Path, values: dict[str, str]) -> None:
     path.write_text(render_env_text(values))
+
+
+def upsert_env_key(path: Path, key: str, value: str) -> None:
+    rendered = f"{key}={shell_quote(value)}"
+    try:
+        lines = path.read_text().splitlines()
+    except FileNotFoundError:
+        path.write_text(f"{CONFIG_HEADER.rstrip()}\n\n{rendered}\n")
+        return
+
+    updated = False
+    new_lines: list[str] = []
+    for line in lines:
+        if line.strip().startswith(f"{key}="):
+            if not updated:
+                new_lines.append(rendered)
+                updated = True
+            continue
+        new_lines.append(line)
+    if not updated:
+        if new_lines and new_lines[-1] != "":
+            new_lines.append("")
+        new_lines.append(rendered)
+    new_lines.append("")
+    path.write_text("\n".join(new_lines))

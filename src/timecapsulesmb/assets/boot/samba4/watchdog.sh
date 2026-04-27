@@ -3,18 +3,15 @@ set -eu
 
 PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
-RAM_ROOT=/mnt/Memory/samba4
-RAM_SBIN="$RAM_ROOT/sbin"
-RAM_ETC="$RAM_ROOT/etc"
-RAM_VAR="$RAM_ROOT/var"
-RAM_PRIVATE="$RAM_ROOT/private"
+. /mnt/Flash/common.sh
+
 WATCHDOG_LOG="$RAM_VAR/watchdog.log"
+MDNS_LOG_ENABLED=__MDNS_LOG_ENABLED__
+MDNS_LOG_FILE=__MDNS_LOG_FILE__
 SMBD_BIN="$RAM_SBIN/smbd"
 SMBD_CONF="$RAM_ETC/smb.conf"
-MDNS_BIN="$RAM_SBIN/mdns-smbd-advertiser"
-MDNS_PROC_NAME=mdns-smbd-advert
+MDNS_BIN=/mnt/Flash/mdns-advertiser
 NBNS_BIN="$RAM_SBIN/nbns-advertiser"
-NBNS_PROC_NAME=nbns-advertiser
 
 NET_IFACE=__NET_IFACE__
 SMB_SHARE_NAME=__SMB_SHARE_NAME__
@@ -22,10 +19,15 @@ SMB_NETBIOS_NAME=__SMB_NETBIOS_NAME__
 MDNS_INSTANCE_NAME=__MDNS_INSTANCE_NAME__
 MDNS_HOST_LABEL=__MDNS_HOST_LABEL__
 MDNS_DEVICE_MODEL=__MDNS_DEVICE_MODEL__
+AIRPORT_SYAP=__AIRPORT_SYAP__
 ADISK_DISK_KEY=__ADISK_DISK_KEY__
 ADISK_UUID=__ADISK_UUID__
 
-POLL_SECONDS=300
+RECOVERY_POLL_SECONDS=10
+STEADY_POLL_SECONDS=300
+INITIAL_STARTUP_DELAY_SECONDS=${1:-30}
+SNAPSHOT_BOOTSTRAP_GRACE_SECONDS=120
+WATCHDOG_START_TS=$(/bin/date +%s)
 
 log() {
     log_dir=${WATCHDOG_LOG%/*}
@@ -42,30 +44,19 @@ log() {
     mv "$tmp_log" "$WATCHDOG_LOG"
 }
 
-get_iface_ipv4() {
-    /sbin/ifconfig "$NET_IFACE" 2>/dev/null | sed -n 's/^[[:space:]]*inet[[:space:]]\([0-9.]*\).*/\1/p' | sed -n '1p'
-}
-
-get_iface_mac() {
-    /sbin/ifconfig "$NET_IFACE" 2>/dev/null \
-        | sed -n \
-            -e 's/^[[:space:]]*ether[[:space:]]\([0-9A-Fa-f:]*\).*/\1/p' \
-            -e 's/^[[:space:]]*address[[:space:]]\([0-9A-Fa-f:]*\).*/\1/p' \
-        | sed -n '1p'
-}
-
 start_smbd_if_needed() {
     if /usr/bin/pkill -0 smbd >/dev/null 2>&1; then
         return 0
     fi
 
     if [ ! -x "$SMBD_BIN" ] || [ ! -f "$SMBD_CONF" ]; then
-        log "smbd missing and runtime not ready"
+        log "watchdog recovery: smbd is not running, but runtime is not staged yet"
         return 0
     fi
 
+    rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true
     "$SMBD_BIN" -D -s "$SMBD_CONF" >/dev/null 2>&1 || true
-    log "smbd restart requested"
+    log "watchdog recovery: smbd restart requested"
 }
 
 restart_mdns() {
@@ -73,31 +64,66 @@ restart_mdns() {
         return 0
     fi
 
-    iface_ip=$(get_iface_ipv4 || true)
-    iface_mac=$(get_iface_mac || true)
+    if [ ! -f "$APPLE_MDNS_SNAPSHOT" ] && [ "$elapsed" -lt "$SNAPSHOT_BOOTSTRAP_GRACE_SECONDS" ]; then
+        log "watchdog recovery: mdns restart deferred while startup snapshot capture may still be running"
+        return 0
+    fi
+
+    iface_ip=$(get_iface_ipv4 "$NET_IFACE" || true)
+    iface_mac=$(get_iface_mac "$NET_IFACE" || true)
     if [ -z "$iface_ip" ] || [ "$iface_ip" = "0.0.0.0" ]; then
-        log "mdns restart skipped; missing $NET_IFACE IPv4"
+        log "watchdog recovery: mdns restart skipped because $NET_IFACE has no IPv4 address"
         return 0
     fi
     if [ -z "$iface_mac" ]; then
-        log "mdns restart skipped; missing $NET_IFACE MAC address"
+        log "watchdog recovery: mdns restart skipped because $NET_IFACE has no MAC address"
         return 0
     fi
 
     /usr/bin/pkill "$MDNS_PROC_NAME" >/dev/null 2>&1 || true
     sleep 1
 
-    "$MDNS_BIN" \
+    set -- "$MDNS_BIN" \
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
-        --device-model "$MDNS_DEVICE_MODEL" \
+        --device-model "$MDNS_DEVICE_MODEL"
+    if [ -f "$APPLE_MDNS_SNAPSHOT" ]; then
+        set -- "$@" --load-snapshot "$APPLE_MDNS_SNAPSHOT"
+    else
+        set -- "$@" \
+            --save-all-snapshot "$ALL_MDNS_SNAPSHOT" \
+            --save-snapshot "$APPLE_MDNS_SNAPSHOT" \
+            --load-snapshot "$APPLE_MDNS_SNAPSHOT"
+    fi
+    if derive_airport_fields "$iface_mac"; then
+        set -- "$@" \
+            --airport-wama "$AIRPORT_WAMA" \
+            --airport-rama "$AIRPORT_RAMA" \
+            --airport-ram2 "$AIRPORT_RAM2" \
+            --airport-syvs "$AIRPORT_SYVS" \
+            --airport-srcv "$AIRPORT_SRCV"
+        if [ -n "$AIRPORT_SYAP" ]; then
+            set -- "$@" --airport-syap "$AIRPORT_SYAP"
+        else
+            log "airport syAP missing; advertising _airport._tcp without syAP"
+        fi
+    else
+        log "airport clone fields incomplete; skipping _airport._tcp advertisement"
+    fi
+    set -- "$@" \
         --adisk-share "$SMB_SHARE_NAME" \
         --adisk-disk-key "$ADISK_DISK_KEY" \
         --adisk-uuid "$ADISK_UUID" \
         --adisk-sys-wama "$iface_mac" \
-        --ipv4 "$iface_ip" \
-        >/dev/null 2>&1 &
-    log "mdns restart requested"
+        --ipv4 "$iface_ip"
+    if [ "$MDNS_LOG_ENABLED" = "1" ]; then
+        trim_log_file "$MDNS_LOG_FILE" 131072
+        printf '%s watchdog: launching mdns-advertiser\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>"$MDNS_LOG_FILE"
+        "$@" >>"$MDNS_LOG_FILE" 2>&1 &
+    else
+        "$@" >/dev/null 2>&1 &
+    fi
+    log "watchdog recovery: mdns restart requested"
 }
 
 restart_nbns() {
@@ -106,16 +132,18 @@ restart_nbns() {
     fi
 
     if [ ! -x "$NBNS_BIN" ]; then
-        log "nbns restart skipped; missing runtime binary"
+        log "watchdog recovery: nbns restart skipped because runtime binary is missing"
         return 0
     fi
 
-    iface_ip=$(get_iface_ipv4 || true)
+    iface_ip=$(get_iface_ipv4 "$NET_IFACE" || true)
     if [ -z "$iface_ip" ] || [ "$iface_ip" = "0.0.0.0" ]; then
-        log "nbns restart skipped; missing $NET_IFACE IPv4"
+        log "watchdog recovery: nbns restart skipped because $NET_IFACE has no IPv4 address"
         return 0
     fi
 
+    /usr/bin/pkill wcifsnd >/dev/null 2>&1 || true
+    /usr/bin/pkill wcifsfs >/dev/null 2>&1 || true
     /usr/bin/pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true
     sleep 1
 
@@ -123,13 +151,38 @@ restart_nbns() {
         --name "$SMB_NETBIOS_NAME" \
         --ipv4 "$iface_ip" \
         >/dev/null 2>&1 &
-    log "nbns restart requested"
+    log "watchdog recovery: nbns restart requested"
+}
+
+nbns_enabled() {
+    [ -f "$RAM_PRIVATE/nbns.enabled" ]
+}
+
+all_managed_services_healthy() {
+    if ! /usr/bin/pkill -0 smbd >/dev/null 2>&1; then
+        return 1
+    fi
+
+    if ! /usr/bin/pkill -0 "$MDNS_PROC_NAME" >/dev/null 2>&1; then
+        return 1
+    fi
+
+    if nbns_enabled; then
+        if ! /usr/bin/pkill -0 "$NBNS_PROC_NAME" >/dev/null 2>&1; then
+            return 1
+        fi
+    fi
+
+    return 0
 }
 
 elapsed=0
-log "watchdog start"
+log "watchdog startup beginning; initial recovery delay ${INITIAL_STARTUP_DELAY_SECONDS}s"
+sleep "$INITIAL_STARTUP_DELAY_SECONDS"
 
 while :; do
+    now_ts=$(/bin/date +%s)
+    elapsed=$((now_ts - WATCHDOG_START_TS))
     start_smbd_if_needed
 
     if /usr/bin/pkill -0 "$MDNS_PROC_NAME" >/dev/null 2>&1; then
@@ -144,5 +197,9 @@ while :; do
         restart_nbns
     fi
 
-    sleep "$POLL_SECONDS"
+    if all_managed_services_healthy; then
+        sleep "$STEADY_POLL_SECONDS"
+    else
+        sleep "$RECOVERY_POLL_SECONDS"
+    fi
 done

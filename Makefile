@@ -1,8 +1,8 @@
 # TimeCapsuleSMB Makefile
 #
-# Prerequisites (macOS):
-#   - Homebrew: https://brew.sh
-#   - Build deps: brew install zlib bzip2 readline
+# Prerequisites:
+#   - macOS: Homebrew recommended, plus brew install zlib bzip2 readline for AirPyrt
+#   - Linux: python3 and smbclient are enough for configure/deploy/doctor if SSH is already enabled
 #
 # Quick start:
 #   1) ./tcapsule bootstrap
@@ -12,10 +12,14 @@
 # Targets:
 #   make venv                    - create local virtualenv at .venv
 #   make install                 - install Python dependencies into .venv
+#   make test                    - run C compile checks and Python unittest suite
+#   make coverage                - run Python tests with coverage and show missing lines
+#   make coverage-html           - write an HTML coverage report to htmlcov/
+#   make test-c                  - compile-check mdns/nbns helper sources
 #   make discover                - run tcapsule discover (depends on install)
 #   make bootstrap-host          - run the host bootstrap helper
 #   make prep-device             - discover the device and enable SSH if needed
-#   make airpyrt                 - clone+install AirPyrt into local .airpyrt-venv (auto-installs pyenv if needed)
+#   make airpyrt                 - clone+install AirPyrt into local .airpyrt-venv (macOS/Homebrew-oriented helper)
 #   make airpyrt-clone           - clone AirPyrt repo only
 #   make airpyrt-bootstrap       - ensure pyenv Python 2.7.18 is installed
 #   make airpyrt-venv            - create local Python 2 venv from pyenv version
@@ -24,7 +28,7 @@
 #   make airpyrt-clean           - remove the local .airpyrt-venv
 #   make airpyrt-uninstall-pyenv - uninstall the pyenv Python 2.7.18 interpreter
 
-.PHONY: venv install discover bootstrap-host prep-device setup clean \
+.PHONY: venv install test coverage coverage-html test-c discover bootstrap-host prep-device setup clean \
         airpyrt airpyrt-clone airpyrt-bootstrap airpyrt-venv airpyrt-install airpyrt-clean airpyrt-uninstall-pyenv
 
 VENVDIR := .venv
@@ -41,6 +45,21 @@ install: venv
 	$(PIP) install -r requirements.txt
 	$(PIP) install -e .
 	@echo "Optional: run 'make airpyrt' to install AirPyrt (Python 2)."
+
+test: install test-c
+	PYTHONPATH=src $(PY) -m unittest discover -s tests -v
+
+coverage: install
+	PYTHONPATH=src $(PY) -m coverage run -m unittest discover -s tests -v
+	$(PY) -m coverage report
+
+coverage-html: coverage
+	$(PY) -m coverage html
+	@echo "Open htmlcov/index.html to inspect line-by-line coverage."
+
+test-c:
+	cc -Wall -Wextra -Werror -o /tmp/mdns-advertiser-test build/mdns-advertiser.c
+	cc -Wall -Wextra -Werror -o /tmp/nbns-advertiser-test build/nbns-advertiser.c
 
 discover: install
 	$(VENVDIR)/bin/tcapsule discover
@@ -59,6 +78,8 @@ clean: airpyrt-clean
 # --- AirPyrt (acp) installation helpers ---
 # AirPyrt is Python 2.x-based. We isolate it in .airpyrt-venv using pyenv's Python 2.7.18.
 # pyenv does not need shell initialization here because we invoke the binary directly.
+# These helpers are primarily for the macOS/Homebrew path. Linux users should prefer
+# running deploy/doctor directly if SSH is already enabled on the Time Capsule.
 DEPSDIR := .deps
 AIRPYRT_DIR := $(DEPSDIR)/airpyrt-tools
 AIRPYRT_ENV := .airpyrt-venv

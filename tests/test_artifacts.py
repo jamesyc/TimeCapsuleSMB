@@ -20,8 +20,19 @@ class ArtifactTests(unittest.TestCase):
     def test_load_artifact_manifest_contains_expected_records(self) -> None:
         manifest = load_artifact_manifest()
         self.assertIn("smbd", manifest)
-        self.assertIn("mdns-smbd-advertiser", manifest)
+        self.assertIn("smbd-netbsd4le", manifest)
+        self.assertIn("smbd-netbsd4be", manifest)
+        self.assertIn("smbd-samba3-netbsd4le", manifest)
+        self.assertIn("mdns-advertiser", manifest)
+        self.assertIn("mdns-advertiser-netbsd4le", manifest)
+        self.assertIn("mdns-advertiser-netbsd4be", manifest)
         self.assertIn("nbns-advertiser", manifest)
+        self.assertIn("nbns-advertiser-netbsd4le", manifest)
+        self.assertIn("nbns-advertiser-netbsd4be", manifest)
+        self.assertNotIn("smbd-netbsd4", manifest)
+        self.assertNotIn("smbd-samba3-netbsd4", manifest)
+        self.assertNotIn("mdns-advertiser-netbsd4", manifest)
+        self.assertNotIn("nbns-advertiser-netbsd4", manifest)
 
     def test_sha256_file_matches_known_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -3,36 +3,57 @@ set -eu
 
 . "$(dirname "$0")/env.sh"
 
+dump_elf_diagnostics() {
+    label="$1"
+    path="$2"
+
+    echo "===== $label ====="
+    "$TOOLDIR/bin/$TRIPLE-readelf" -h -l "$path" | sed -n '1,120p'
+    "$TOOLDIR/bin/$TRIPLE-readelf" -S "$path" | sed -n '1,120p'
+    "$TOOLDIR/bin/$TRIPLE-readelf" -d "$path" 2>&1 | sed -n '1,80p'
+    "$TOOLDIR/bin/$TRIPLE-objdump" -p "$path" | sed -n '1,120p'
+}
+
 expect_probe_format() {
-    probe_file_output=$("$TOOLDIR/bin/nbfile" "$PROBE_BIN")
     probe_flags_output=$("$TOOLDIR/bin/$TRIPLE-objdump" -p "$PROBE_BIN")
-
-    printf '%s\n' "$probe_file_output"
-    printf '%s\n' "$probe_flags_output" | sed -n '1,120p'
-
-    if ! printf '%s\n' "$probe_file_output" | grep -F 'ELF 32-bit LSB executable' >/dev/null ||
-       ! printf '%s\n' "$probe_file_output" | grep -F 'ARM' >/dev/null ||
-       ! printf '%s\n' "$probe_file_output" | grep -F 'statically linked' >/dev/null; then
-        echo "Probe format is fundamentally wrong."
-        return 1
+    if probe_file_output=$("$TOOLDIR/bin/nbfile" "$PROBE_BIN" 2>/dev/null); then
+        :
+    else
+        probe_file_output=""
+        echo "WARNING: nbfile could not identify the probe binary; continuing with objdump-only validation."
     fi
 
-    if ! printf '%s\n' "$probe_file_output" | grep -F 'EABI4' >/dev/null ||
-       ! printf '%s\n' "$probe_file_output" | grep -F 'for NetBSD 6.0' >/dev/null ||
+    if [ -n "$probe_file_output" ]; then
+        printf '%s\n' "$probe_file_output"
+    fi
+    printf '%s\n' "$probe_flags_output" | sed -n '1,120p'
+
+    if [ -n "$probe_file_output" ]; then
+        if ! printf '%s\n' "$probe_file_output" | grep -F "ELF 32-bit $BUILD_EXPECT_ENDIAN executable" >/dev/null ||
+           ! printf '%s\n' "$probe_file_output" | grep -F 'ARM' >/dev/null ||
+           ! printf '%s\n' "$probe_file_output" | grep -F 'statically linked' >/dev/null; then
+            echo "Probe format is fundamentally wrong."
+            return 1
+        fi
+    fi
+
+    if [ -z "$probe_file_output" ] ||
+       ! printf '%s\n' "$probe_file_output" | grep -F "$BUILD_EXPECT_EABI" >/dev/null ||
+       ! printf '%s\n' "$probe_file_output" | grep -F "for $BUILD_EXPECT_OS_RELEASE" >/dev/null ||
        ! printf '%s\n' "$probe_flags_output" | grep -F 'private flags = 4000002' >/dev/null; then
-        echo "WARNING: probe does not match the original EABI4 / NetBSD 6.0 expectation."
+        echo "WARNING: probe does not match the expected $BUILD_EXPECT_EABI / $BUILD_EXPECT_OS_RELEASE format."
     fi
 }
 
 if [ ! -x "$TOOLS/bin/nbmake" ] || [ ! -d "$OBJ/destdir.evbarm" ]; then
     echo "Missing toolchain/sysroot under $OUT"
-    echo "Run build/bootstrap.sh first."
+    echo "Run $SDK_BOOTSTRAP_WRAPPER first."
     exit 1
 fi
 
 TOOLDIR="$TOOLS"
 DESTDIR="$OBJ/destdir.evbarm"
-TRIPLE="$(basename "$(ls "$TOOLDIR"/bin/*-netbsdelf-*gcc | head -n1)" | sed 's/-gcc$//')"
+TRIPLE="$(select_tool_triple)"
 SYSROOT="$DESTDIR"
 
 export TOOLDIR DESTDIR TRIPLE SYSROOT
@@ -58,19 +79,29 @@ main(void)
 EOF
 
 {
+    echo "SDK_FAMILY=$SDK_FAMILY"
+    echo "DEVICE_FAMILY=$DEVICE_FAMILY"
     echo "TOOLDIR=$TOOLDIR"
     echo "DESTDIR=$DESTDIR"
     echo "TRIPLE=$TRIPLE"
     echo "SYSROOT=$SYSROOT"
 
-    "$TOOLDIR/bin/$TRIPLE-gcc" --sysroot="$DESTDIR" \
+    "$TOOLDIR/bin/$TRIPLE-gcc" \
       -B"$DESTDIR/usr/lib" -B"$DESTDIR/usr/lib/csu" \
+      -I"$DESTDIR/usr/include" \
+      -D_NETBSD_SOURCE \
+      -D_LARGEFILE_SOURCE \
+      -D_FILE_OFFSET_BITS=64 \
+      -D_LARGE_FILES \
       -static \
+      -L"$DESTDIR/lib" \
+      -L"$DESTDIR/usr/lib" \
       -o "$PROBE_BIN" "$PROBE_SRC"
 
     expect_probe_format
+    dump_elf_diagnostics "hello probe" "$PROBE_BIN"
 
-    tc_scp "$PROBE_BIN" "$TC_HOST:/tmp/hello-clean"
+    cat "$PROBE_BIN" | tc_ssh "$TC_HOST" 'cat > /tmp/hello-clean'
     tc_ssh "$TC_HOST" \
       'chmod +x /tmp/hello-clean && /tmp/hello-clean'
 } >"$HELLO_LOG" 2>&1
