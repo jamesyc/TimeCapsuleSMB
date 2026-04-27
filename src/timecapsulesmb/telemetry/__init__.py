@@ -77,40 +77,46 @@ class TelemetryClient:
     def emit(self, event: str, *, synchronous: bool = False, **fields: object) -> None:
         if not self.enabled or self.context is None:
             return
-        payload: dict[str, object] = {
-            "schema_version": SCHEMA_VERSION,
-            "event": event,
-            "event_id": str(uuid.uuid4()),
-            "occurred_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "install_id": self.context.install_id,
-            "cli_version": self.context.cli_version,
-            "release_tag": self.context.release_tag,
-            "samba_version": self.context.samba_version,
-            "host_os": self.context.host_os,
-            "host_os_version": self.context.host_os_version,
-        }
-        if self.context.configure_id:
-            payload["configure_id"] = self.context.configure_id
-        if self.context.device_model:
-            payload["device_model"] = self.context.device_model
-        if self.context.device_syap:
-            payload["device_syap"] = self.context.device_syap
-        if self.context.nbns_enabled is not None:
-            payload["nbns_enabled"] = self.context.nbns_enabled
-        for key, value in fields.items():
-            if value is not None:
-                payload[key] = value
-        if synchronous:
-            self._send_payload(payload)
+        try:
+            payload: dict[str, object] = {
+                "schema_version": SCHEMA_VERSION,
+                "event": event,
+                "event_id": str(uuid.uuid4()),
+                "occurred_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "install_id": self.context.install_id,
+                "cli_version": self.context.cli_version,
+                "release_tag": self.context.release_tag,
+                "samba_version": self.context.samba_version,
+                "host_os": self.context.host_os,
+                "host_os_version": self.context.host_os_version,
+            }
+            if self.context.configure_id:
+                payload["configure_id"] = self.context.configure_id
+            if self.context.device_model:
+                payload["device_model"] = self.context.device_model
+            if self.context.device_syap:
+                payload["device_syap"] = self.context.device_syap
+            if self.context.nbns_enabled is not None:
+                payload["nbns_enabled"] = self.context.nbns_enabled
+            for key, value in fields.items():
+                if value is not None:
+                    payload[key] = value
+            if synchronous:
+                self._send_payload(payload)
+                return
+            self._dispatch_payload_async(payload)
+        except Exception:
             return
-        self._dispatch_payload_async(payload)
 
     def _dispatch_payload_async(self, payload: dict[str, object]) -> None:
         thread = threading.Thread(target=self._send_payload, args=(payload,), daemon=True)
         thread.start()
 
     def _send_payload(self, payload: dict[str, object]) -> None:
-        body = json.dumps(payload).encode("utf-8")
+        try:
+            body = json.dumps(payload, default=str).encode("utf-8")
+        except Exception:
+            return
         for attempt in range(MAX_SEND_ATTEMPTS):
             try:
                 request = urllib.request.Request(
@@ -130,6 +136,8 @@ class TelemetryClient:
             except (OSError, urllib.error.URLError, ValueError):
                 if attempt + 1 >= MAX_SEND_ATTEMPTS:
                     return
+            except Exception:
+                return
 
 
 def build_device_os_version(os_name: str | None, os_release: str | None, arch: str | None) -> str | None:

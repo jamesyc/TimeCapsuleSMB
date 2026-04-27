@@ -184,7 +184,11 @@ class CommandContext:
             return
         self.finished = True
         duration_sec = round(time.monotonic() - self.start_time, 3)
-        error = None if result == "success" else self.build_error()
+        try:
+            error = None if result == "success" else self.build_error()
+        except Exception as exc:
+            exc_name = type(exc).__name__
+            error = f"{self.command_name} failed, and debug context rendering also failed: {exc_name}: {exc}"
         if result != "success" and error is None:
             error = f"{self.command_name} failed without additional details."
         self.telemetry.emit(

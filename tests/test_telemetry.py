@@ -72,6 +72,15 @@ class TelemetryTests(unittest.TestCase):
                     client._send_payload({"event": "doctor_started"})
         self.assertEqual(urlopen_mock.call_count, MAX_SEND_ATTEMPTS)
 
+    def test_emit_does_not_raise_when_transport_has_unexpected_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                with mock.patch("urllib.request.urlopen", side_effect=RuntimeError("unexpected transport failure")):
+                    client.emit("deploy_finished", synchronous=True, result="failure", error="deploy failed")
+
     def test_command_context_reuses_command_id_for_started_and_finished_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bootstrap_path = Path(tmp) / ".bootstrap"
@@ -296,6 +305,23 @@ class TelemetryTests(unittest.TestCase):
         self.assertNotIn("probe_payload_family=", finished_payload["error"])
         self.assertNotIn("device_family=", finished_payload["error"])
         self.assertNotIn("device_os_version=", finished_payload["error"])
+
+    def test_command_context_still_finishes_when_debug_context_rendering_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                with mock.patch.object(client, "_dispatch_payload_async"):
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        with mock.patch("timecapsulesmb.cli.context.render_command_debug_lines", side_effect=RuntimeError("debug boom")):
+                            with self.assertRaises(RuntimeError):
+                                with CommandContext(client, "deploy", "deploy_started", "deploy_finished"):
+                                    raise RuntimeError("upload failed")
+        finished_payload = send_mock.call_args.args[0]
+        self.assertEqual(finished_payload["event"], "deploy_finished")
+        self.assertEqual(finished_payload["result"], "failure")
+        self.assertIn("debug context rendering also failed: RuntimeError: debug boom", finished_payload["error"])
 
 
 if __name__ == "__main__":
