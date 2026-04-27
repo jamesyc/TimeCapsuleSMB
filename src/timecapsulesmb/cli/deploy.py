@@ -22,7 +22,6 @@ from timecapsulesmb.deploy.executor import (
 from timecapsulesmb.deploy.planner import build_deployment_plan
 from timecapsulesmb.deploy.templates import (
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
-    SLOW_APPLE_MOUNT_WAIT_SECONDS,
     build_template_bundle,
     render_template,
     write_boot_asset,
@@ -40,6 +39,16 @@ from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUID
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
+def _non_negative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError("must be an integer") from e
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be 0 or greater")
+    return parsed
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Deploy the checked-in Samba 4 payload to a Time Capsule.")
     parser.add_argument("--no-reboot", action="store_true", help="Do not reboot after deployment")
@@ -48,7 +57,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--json", action="store_true", help="Output the dry-run deployment plan as JSON")
     parser.add_argument("--allow-unsupported", action="store_true", help="Proceed even if the detected device is not currently supported")
     parser.add_argument("--install-nbns", action="store_true", help="Enable the bundled NBNS responder on the next boot")
-    parser.add_argument("--slow", action="store_true", help="Wait longer for Apple firmware to mount the data disk before manual mount fallback")
+    parser.add_argument(
+        "--mount-wait",
+        type=_non_negative_int,
+        default=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+        metavar="SECONDS",
+        help=f"Seconds to wait for Apple firmware to mount the data disk before manual mount fallback (default: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS})",
+    )
     parser.add_argument("--debug-logging", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
@@ -92,7 +107,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         is_netbsd4 = is_netbsd4_payload_family(payload_family)
         if not args.json:
             print(f"Using {payload_family_description(payload_family)} payload...")
-        apple_mount_wait_seconds = SLOW_APPLE_MOUNT_WAIT_SECONDS if args.slow else DEFAULT_APPLE_MOUNT_WAIT_SECONDS
+        apple_mount_wait_seconds = args.mount_wait
         volume_root = discover_volume_root_conn(connection)
         share_use_disk_root = parse_bool(values.get("TC_SHARE_USE_DISK_ROOT", "false"))
         resolved_artifacts = resolve_payload_artifacts(REPO_ROOT, payload_family)

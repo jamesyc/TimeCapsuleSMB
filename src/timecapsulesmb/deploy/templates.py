@@ -8,8 +8,7 @@ from timecapsulesmb.core.config import DEFAULTS, shell_quote
 from timecapsulesmb.device.compat import PAYLOAD_FAMILY_NETBSD6, is_netbsd4_payload_family
 
 
-DEFAULT_APPLE_MOUNT_WAIT_SECONDS = 30
-SLOW_APPLE_MOUNT_WAIT_SECONDS = 90
+DEFAULT_APPLE_MOUNT_WAIT_SECONDS = 80
 
 
 @dataclass(frozen=True)

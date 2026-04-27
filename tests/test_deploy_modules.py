@@ -42,7 +42,6 @@ from timecapsulesmb.deploy.executor import (
 from timecapsulesmb.deploy.planner import build_deployment_plan, build_uninstall_plan
 from timecapsulesmb.deploy.templates import (
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
-    SLOW_APPLE_MOUNT_WAIT_SECONDS,
     build_template_bundle,
     cache_directory_replacements,
     load_boot_asset_text,
@@ -548,7 +547,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('log "data root was mounted after ${attempt}s"', wait_section)
         self.assertIn('log "data root was not mounted after ${attempt}s"', wait_section)
 
-    def test_render_start_script_slow_mode_extends_apple_mount_wait(self) -> None:
+    def test_render_start_script_custom_disk_delay_extends_apple_mount_wait(self) -> None:
         values = {
             "TC_PAYLOAD_DIR_NAME": "samba4",
             "TC_SHARE_NAME": "Data",
@@ -559,9 +558,9 @@ class DeployModuleTests(unittest.TestCase):
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values, apple_mount_wait_seconds=SLOW_APPLE_MOUNT_WAIT_SECONDS)
+        bundle = build_template_bundle(values, apple_mount_wait_seconds=123)
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn(f"APPLE_MOUNT_WAIT_SECONDS={SLOW_APPLE_MOUNT_WAIT_SECONDS}", rendered)
+        self.assertIn("APPLE_MOUNT_WAIT_SECONDS=123", rendered)
 
     def test_render_start_script_starts_final_mdns_after_smbd_process_observed(self) -> None:
         values = {

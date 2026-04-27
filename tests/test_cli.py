@@ -31,7 +31,7 @@ from timecapsulesmb.device.probe import (
     RemoteInterfaceCandidatesProbeResult,
     RemoteInterfaceProbeResult,
 )
-from timecapsulesmb.deploy.templates import DEFAULT_APPLE_MOUNT_WAIT_SECONDS, SLOW_APPLE_MOUNT_WAIT_SECONDS
+from timecapsulesmb.deploy.templates import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourServiceInstance, Discovered
 
@@ -4627,7 +4627,7 @@ class CliTests(unittest.TestCase):
         rendered_actions = [action.kind for action in actions_mock.call_args_list[0].args[1]]
         self.assertNotIn("prepare_log_dir", rendered_actions)
 
-    def test_deploy_slow_passes_extended_apple_mount_wait_to_template(self) -> None:
+    def test_deploy_mount_wait_passes_custom_mount_wait_to_template(self) -> None:
         values = self.make_valid_env()
         template_bundle = mock.Mock(
             start_script_replacements={},
@@ -4643,9 +4643,9 @@ class CliTests(unittest.TestCase):
                                 with mock.patch("timecapsulesmb.cli.deploy.build_template_bundle", return_value=template_bundle) as template_mock:
                                     with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
                                         with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
-                                            rc = deploy.main(["--yes", "--no-reboot", "--slow"])
+                                            rc = deploy.main(["--yes", "--no-reboot", "--mount-wait", "123"])
         self.assertEqual(rc, 0)
-        self.assertEqual(template_mock.call_args.kwargs["apple_mount_wait_seconds"], SLOW_APPLE_MOUNT_WAIT_SECONDS)
+        self.assertEqual(template_mock.call_args.kwargs["apple_mount_wait_seconds"], 123)
 
     def test_deploy_netbsd4_yes_runs_activation_and_skips_reboot(self) -> None:
         output = io.StringIO()
@@ -4992,7 +4992,7 @@ class CliTests(unittest.TestCase):
             ],
         )
 
-    def test_deploy_slow_dry_run_json_extends_apple_mount_wait(self) -> None:
+    def test_deploy_mount_wait_dry_run_json_uses_custom_value(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
@@ -5000,10 +5000,16 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
                         with redirect_stdout(output):
-                            rc = deploy.main(["--dry-run", "--json", "--slow"])
+                            rc = deploy.main(["--dry-run", "--json", "--mount-wait", "123"])
         self.assertEqual(rc, 0)
         payload = json.loads(output.getvalue())
-        self.assertEqual(payload["apple_mount_wait_seconds"], SLOW_APPLE_MOUNT_WAIT_SECONDS)
+        self.assertEqual(payload["apple_mount_wait_seconds"], 123)
+
+    def test_deploy_mount_wait_rejects_negative_values(self) -> None:
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                deploy.main(["--dry-run", "--mount-wait", "-1"])
+        self.assertEqual(raised.exception.code, 2)
 
     def test_deploy_dry_run_json_uses_shareroot_when_disk_root_false(self) -> None:
         output = io.StringIO()
