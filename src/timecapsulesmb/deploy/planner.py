@@ -14,6 +14,7 @@ from timecapsulesmb.deploy.commands import (
     stop_process_full_action,
     stop_process_action,
 )
+from timecapsulesmb.deploy.templates import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.device.probe import DevicePaths
 
 
@@ -50,6 +51,7 @@ class DeploymentPlan:
     activation_actions: list[RemoteAction]
     reboot_required: bool
     post_deploy_checks: list[PlannedCheck]
+    apple_mount_wait_seconds: int
 
 
 @dataclass(frozen=True)
@@ -124,6 +126,7 @@ def build_deployment_plan(
     install_nbns: bool = False,
     activate_netbsd4: bool = False,
     reboot_after_deploy: bool = True,
+    apple_mount_wait_seconds: int = DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
 ) -> DeploymentPlan:
     payload_dir = device_paths.payload_dir
     flash_targets = {
@@ -196,6 +199,7 @@ def build_deployment_plan(
         activation_actions=build_netbsd4_activation_actions() if activate_netbsd4 else [],
         reboot_required=reboot_required,
         post_deploy_checks=NETBSD4_ACTIVATION_CHECKS if activate_netbsd4 else (NETBSD6_REBOOT_DEPLOY_CHECKS if reboot_required else []),
+        apple_mount_wait_seconds=apple_mount_wait_seconds,
     )
 
 

@@ -31,6 +31,7 @@ from timecapsulesmb.device.probe import (
     RemoteInterfaceCandidatesProbeResult,
     RemoteInterfaceProbeResult,
 )
+from timecapsulesmb.deploy.templates import DEFAULT_APPLE_MOUNT_WAIT_SECONDS, SLOW_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourServiceInstance, Discovered
 
@@ -3966,6 +3967,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Dry run: deployment plan", text)
         self.assertIn("host: root@10.0.0.2", text)
         self.assertIn("volume root: /Volumes/dk2", text)
+        self.assertIn(f"Apple mount wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s", text)
         self.assertIn("generated smbpasswd", text)
         self.assertIn("SSH goes down after reboot request", text)
         self.assertIn("SSH returns after reboot", text)
@@ -4578,6 +4580,7 @@ class CliTests(unittest.TestCase):
             debug_logging=False,
             data_root="/Volumes/dk2/ShareRoot",
             share_use_disk_root=False,
+            apple_mount_wait_seconds=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
         )
 
     def test_deploy_debug_logging_renders_disk_logging_template(self) -> None:
@@ -4619,9 +4622,30 @@ class CliTests(unittest.TestCase):
             debug_logging=True,
             data_root="/Volumes/dk2/ShareRoot",
             share_use_disk_root=False,
+            apple_mount_wait_seconds=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
         )
         rendered_actions = [action.kind for action in actions_mock.call_args_list[0].args[1]]
         self.assertNotIn("prepare_log_dir", rendered_actions)
+
+    def test_deploy_slow_passes_extended_apple_mount_wait_to_template(self) -> None:
+        values = self.make_valid_env()
+        template_bundle = mock.Mock(
+            start_script_replacements={},
+            watchdog_replacements={},
+            smbconf_replacements={},
+        )
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
+                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                    with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
+                        with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
+                            with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
+                                with mock.patch("timecapsulesmb.cli.deploy.build_template_bundle", return_value=template_bundle) as template_mock:
+                                    with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
+                                        with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
+                                            rc = deploy.main(["--yes", "--no-reboot", "--slow"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(template_mock.call_args.kwargs["apple_mount_wait_seconds"], SLOW_APPLE_MOUNT_WAIT_SECONDS)
 
     def test_deploy_netbsd4_yes_runs_activation_and_skips_reboot(self) -> None:
         output = io.StringIO()
@@ -4952,6 +4976,7 @@ class CliTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["host"], "root@10.0.0.2")
         self.assertEqual(payload["volume_root"], "/Volumes/dk2")
+        self.assertEqual(payload["apple_mount_wait_seconds"], DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
         self.assertTrue(payload["nbns_path"].endswith("/bin/nbns/nbns-advertiser"))
         self.assertEqual(payload["payload_targets"]["nbns-advertiser"], f"/Volumes/dk2/{values['TC_PAYLOAD_DIR_NAME']}/nbns-advertiser")
         self.assertEqual(
@@ -4966,6 +4991,19 @@ class CliTests(unittest.TestCase):
                 "authenticated_smb_listing",
             ],
         )
+
+    def test_deploy_slow_dry_run_json_extends_apple_mount_wait(self) -> None:
+        output = io.StringIO()
+        values = self.make_valid_env()
+        with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
+                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                    with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
+                        with redirect_stdout(output):
+                            rc = deploy.main(["--dry-run", "--json", "--slow"])
+        self.assertEqual(rc, 0)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["apple_mount_wait_seconds"], SLOW_APPLE_MOUNT_WAIT_SECONDS)
 
     def test_deploy_dry_run_json_uses_shareroot_when_disk_root_false(self) -> None:
         output = io.StringIO()

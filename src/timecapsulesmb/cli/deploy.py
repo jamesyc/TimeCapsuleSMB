@@ -20,7 +20,13 @@ from timecapsulesmb.deploy.executor import (
     upload_deployment_payload,
 )
 from timecapsulesmb.deploy.planner import build_deployment_plan
-from timecapsulesmb.deploy.templates import build_template_bundle, render_template, write_boot_asset
+from timecapsulesmb.deploy.templates import (
+    DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+    SLOW_APPLE_MOUNT_WAIT_SECONDS,
+    build_template_bundle,
+    render_template,
+    write_boot_asset,
+)
 from timecapsulesmb.deploy.verify import (
     verify_managed_runtime,
 )
@@ -42,6 +48,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--json", action="store_true", help="Output the dry-run deployment plan as JSON")
     parser.add_argument("--allow-unsupported", action="store_true", help="Proceed even if the detected device is not currently supported")
     parser.add_argument("--install-nbns", action="store_true", help="Enable the bundled NBNS responder on the next boot")
+    parser.add_argument("--slow", action="store_true", help="Wait longer for Apple firmware to mount the data disk before manual mount fallback")
     parser.add_argument("--debug-logging", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
@@ -85,6 +92,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         is_netbsd4 = is_netbsd4_payload_family(payload_family)
         if not args.json:
             print(f"Using {payload_family_description(payload_family)} payload...")
+        apple_mount_wait_seconds = SLOW_APPLE_MOUNT_WAIT_SECONDS if args.slow else DEFAULT_APPLE_MOUNT_WAIT_SECONDS
         volume_root = discover_volume_root_conn(connection)
         share_use_disk_root = parse_bool(values.get("TC_SHARE_USE_DISK_ROOT", "false"))
         resolved_artifacts = resolve_payload_artifacts(REPO_ROOT, payload_family)
@@ -105,6 +113,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             install_nbns=args.install_nbns,
             activate_netbsd4=is_netbsd4,
             reboot_after_deploy=not args.no_reboot,
+            apple_mount_wait_seconds=apple_mount_wait_seconds,
         )
 
         if args.dry_run:
@@ -135,6 +144,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             debug_logging=args.debug_logging,
             data_root=device_paths.data_root,
             share_use_disk_root=share_use_disk_root,
+            apple_mount_wait_seconds=apple_mount_wait_seconds,
         )
 
         with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp:

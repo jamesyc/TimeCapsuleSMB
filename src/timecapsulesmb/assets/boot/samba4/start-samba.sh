@@ -30,6 +30,7 @@ SMBD_LOG="$RAM_VAR/log.smbd"
 MDNS_LOG_ENABLED=__MDNS_LOG_ENABLED__
 MDNS_LOG_FILE=__MDNS_LOG_FILE__
 SHARE_USE_DISK_ROOT=__SHARE_USE_DISK_ROOT__
+APPLE_MOUNT_WAIT_SECONDS=__APPLE_MOUNT_WAIT_SECONDS__
 MDNS_BIN=/mnt/Flash/mdns-advertiser
 LEGACY_PREFIX_NETBSD7=/root/tc-netbsd7
 LEGACY_PREFIX_NETBSD4=/root/tc-netbsd4
@@ -346,7 +347,7 @@ resolve_data_root_on_mounted_volume() {
 
 wait_for_existing_data_root() {
     attempt=0
-    while [ "$attempt" -lt 30 ]; do
+    while [ "$attempt" -lt "$APPLE_MOUNT_WAIT_SECONDS" ]; do
         if data_root=$(find_existing_data_root); then
             log "data root was mounted after ${attempt}s"
             echo "$data_root"
@@ -753,7 +754,7 @@ BRIDGE0_IP=${BRIDGE0_IP%%/*}
 
 start_mdns_capture
 
-log "disk discovery: waiting for Apple-mounted data volume before manual mount fallback"
+log "disk discovery: waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume before manual mount fallback"
 
 if DATA_ROOT=$(discover_preexisting_data_root); then
     :

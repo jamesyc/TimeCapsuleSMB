@@ -8,6 +8,10 @@ from timecapsulesmb.core.config import DEFAULTS, shell_quote
 from timecapsulesmb.device.compat import PAYLOAD_FAMILY_NETBSD6, is_netbsd4_payload_family
 
 
+DEFAULT_APPLE_MOUNT_WAIT_SECONDS = 30
+SLOW_APPLE_MOUNT_WAIT_SECONDS = 90
+
+
 @dataclass(frozen=True)
 class TemplateBundle:
     start_script_replacements: dict[str, str]
@@ -51,6 +55,7 @@ def build_template_bundle(
     debug_logging: bool = False,
     data_root: str | None = None,
     share_use_disk_root: bool = False,
+    apple_mount_wait_seconds: int = DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
 ) -> TemplateBundle:
     device_model = values.get("TC_MDNS_DEVICE_MODEL", DEFAULTS["TC_MDNS_DEVICE_MODEL"])
     start_cache_directory, smbconf_cache_directory = cache_directory_replacements(
@@ -85,6 +90,7 @@ def build_template_bundle(
             "__MDNS_LOG_ENABLED__": mdns_log_enabled,
             "__MDNS_LOG_FILE__": shell_quote(mdns_log_file),
             "__SHARE_USE_DISK_ROOT__": "true" if share_use_disk_root else "false",
+            "__APPLE_MOUNT_WAIT_SECONDS__": str(apple_mount_wait_seconds),
         },
         watchdog_replacements={
             "__SMB_SHARE_NAME__": shell_quote(values["TC_SHARE_NAME"]),

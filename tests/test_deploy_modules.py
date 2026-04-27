@@ -41,6 +41,8 @@ from timecapsulesmb.deploy.executor import (
 )
 from timecapsulesmb.deploy.planner import build_deployment_plan, build_uninstall_plan
 from timecapsulesmb.deploy.templates import (
+    DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+    SLOW_APPLE_MOUNT_WAIT_SECONDS,
     build_template_bundle,
     cache_directory_replacements,
     load_boot_asset_text,
@@ -426,7 +428,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('"$RAM_SBIN/nbns-advertiser" \\', rendered)
         self.assertIn("CACHE_DIRECTORY=/mnt/Memory/samba4/var", rendered)
         self.assertIn("cache directory = $CACHE_DIRECTORY", rendered)
-        self.assertLess(rendered.rindex("start_mdns_capture"), rendered.index('log "disk discovery: waiting for Apple-mounted data volume before manual mount fallback"'))
+        self.assertLess(rendered.rindex("start_mdns_capture"), rendered.index('waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume'))
         self.assertLess(rendered.rindex("start_smbd ||"), rendered.rindex("start_mdns_advertiser"))
         self.assertLess(rendered.rindex("start_mdns_advertiser"), rendered.rindex("start_nbns"))
 
@@ -510,7 +512,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('if is_volume_root_mounted "$volume_root"; then', rendered)
         self.assertIn('initialize_data_root_under_volume "$volume_root"', rendered)
         self.assertIn(': >"$marker"', rendered)
-        self.assertIn('log "disk discovery: waiting for Apple-mounted data volume before manual mount fallback"', rendered)
+        self.assertIn('log "disk discovery: waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume before manual mount fallback"', rendered)
         self.assertIn('log "no Apple-mounted data root found; falling back to manual mount"', rendered)
         self.assertIn('log "data root resolved after manual mount: $DATA_ROOT"', rendered)
         self.assertIn('log "starting nbns responder for $SMB_NETBIOS_NAME at $BRIDGE0_IP"', rendered)
@@ -533,17 +535,33 @@ class DeployModuleTests(unittest.TestCase):
         main_start = rendered.index("cleanup_old_runtime")
         main_section = rendered[main_start:]
         self.assertLess(main_section.index("prepare_locks_ramdisk"), main_section.index("prepare_ram_root"))
-        self.assertLess(main_section.index('start_mdns'), main_section.index('log "disk discovery: waiting for Apple-mounted data volume before manual mount fallback"'))
-        self.assertLess(main_section.index('log "disk discovery: waiting for Apple-mounted data volume before manual mount fallback"'), main_section.index('if DATA_ROOT=$(discover_preexisting_data_root); then'))
+        self.assertLess(main_section.index('start_mdns'), main_section.index('waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume'))
+        self.assertLess(main_section.index('waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume'), main_section.index('if DATA_ROOT=$(discover_preexisting_data_root); then'))
         self.assertLess(main_section.index('if DATA_ROOT=$(discover_preexisting_data_root); then'), main_section.index('VOLUME_ROOT=$(mount_fallback_volume) || {'))
         self.assertLess(main_section.index('log "smbd startup complete: process observed"'), main_section.rindex('start_mdns_advertiser'))
         self.assertLess(main_section.rindex('start_mdns_advertiser'), main_section.rindex('start_nbns'))
         discover_body = rendered[rendered.index("discover_preexisting_data_root()"):rendered.index("resolve_data_root_on_mounted_volume()")]
         self.assertIn("wait_for_existing_data_root", discover_body)
         wait_section = rendered[rendered.index("wait_for_existing_data_root()"):rendered.index("try_mount_candidate()")]
-        self.assertIn('while [ "$attempt" -lt 30 ]; do', wait_section)
+        self.assertIn(f"APPLE_MOUNT_WAIT_SECONDS={DEFAULT_APPLE_MOUNT_WAIT_SECONDS}", rendered)
+        self.assertIn('while [ "$attempt" -lt "$APPLE_MOUNT_WAIT_SECONDS" ]; do', wait_section)
         self.assertIn('log "data root was mounted after ${attempt}s"', wait_section)
         self.assertIn('log "data root was not mounted after ${attempt}s"', wait_section)
+
+    def test_render_start_script_slow_mode_extends_apple_mount_wait(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(values, apple_mount_wait_seconds=SLOW_APPLE_MOUNT_WAIT_SECONDS)
+        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
+        self.assertIn(f"APPLE_MOUNT_WAIT_SECONDS={SLOW_APPLE_MOUNT_WAIT_SECONDS}", rendered)
 
     def test_render_start_script_starts_final_mdns_after_smbd_process_observed(self) -> None:
         values = {
@@ -2416,6 +2434,7 @@ int main(void) {{
         plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), install_nbns=True)
         text = format_deployment_plan(plan)
         self.assertIn("volume root: /Volumes/dk2", text)
+        self.assertIn(f"Apple mount wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s", text)
         self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
         self.assertIn("pkill mdns-advertiser >/dev/null 2>&1 || true", text)
         self.assertIn("mkdir -p /Volumes/dk2/ShareRoot", text)
