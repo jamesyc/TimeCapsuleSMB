@@ -308,6 +308,8 @@ discover_preexisting_data_root() {
     # ShareRoot/Shared data-root detection and let the normal mount fallback
     # resolve the volume root.
     if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then
+        log "waiting to mount disk root"
+        sleep "$APPLE_MOUNT_WAIT_SECONDS"
         return 1
     fi
 
