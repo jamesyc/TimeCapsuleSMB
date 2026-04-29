@@ -3,12 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Protocol
 
-from timecapsulesmb.core.config import AIRPORT_SYAP_TO_MODEL
+from timecapsulesmb.core.config import AIRPORT_DEVICE_IDENTITIES, AIRPORT_SYAP_TO_MODEL
 
 
-NETBSD4LE_SYAP_CANDIDATES = ("113", "116")
-NETBSD4BE_SYAP_CANDIDATES = ("106", "109")
-NETBSD6_SYAP_CANDIDATES = ("119",)
+def _syaps_for_group(group: str) -> tuple[str, ...]:
+    return tuple(identity.syap for identity in AIRPORT_DEVICE_IDENTITIES if identity.compatibility_group == group)
+
+
+NETBSD4LE_SYAP_CANDIDATES = _syaps_for_group("netbsd4le")
+NETBSD4BE_SYAP_CANDIDATES = _syaps_for_group("netbsd4be")
+NETBSD6_SYAP_CANDIDATES = _syaps_for_group("netbsd6")
 PAYLOAD_FAMILY_NETBSD6 = "netbsd6_samba4"
 PAYLOAD_FAMILY_NETBSD4LE = "netbsd4le_samba4"
 PAYLOAD_FAMILY_NETBSD4BE = "netbsd4be_samba4"
@@ -59,10 +63,10 @@ def _narrow_candidates_from_airport_identity(
             if model == airport_model:
                 if syap in syap_candidates:
                     return (syap,), (model,), "airport_identity"
-                detail = f"ACPData model {airport_model} did not match detected device candidates: {', '.join(syap_candidates)}"
+                detail = f"AirPort identity model {airport_model} did not match detected device candidates: {', '.join(syap_candidates)}"
                 break
     elif airport_syap:
-        detail = f"ACPData syAP {airport_syap} did not match detected device candidates: {', '.join(syap_candidates)}"
+        detail = f"AirPort identity syAP {airport_syap} did not match detected device candidates: {', '.join(syap_candidates)}"
     return syap_candidates, _models_for_syaps(syap_candidates), detail
 
 
@@ -117,7 +121,7 @@ def render_compatibility_message(compat: DeviceCompatibility) -> str:
     if compat.reason_code == "unsupported_os":
         return (
             f"Unsupported device OS: {compat.os_name or 'unknown'} {compat.os_release or 'unknown'}. "
-            "This repo currently supports NetBSD 4 and NetBSD 6 Time Capsules."
+            "This repo currently supports NetBSD 4 and NetBSD 6 AirPort storage devices."
         )
     if compat.reason_code == "unsupported_netbsd6_endianness":
         return (
@@ -180,6 +184,11 @@ def classify_device_compatibility(
                 supported=False,
                 reason_code="unsupported_netbsd6_endianness",
             )
+        narrowed_syaps, narrowed_models, reason_detail = _narrow_candidates_from_airport_identity(
+            NETBSD6_SYAP_CANDIDATES,
+            airport_model,
+            airport_syap,
+        )
         return DeviceCompatibility(
             os_name=normalized_name,
             os_release=normalized_release,
@@ -187,15 +196,11 @@ def classify_device_compatibility(
             elf_endianness=normalized_endianness,
             payload_family=PAYLOAD_FAMILY_NETBSD6,
             device_generation="gen5",
-            syap_candidates=NETBSD6_SYAP_CANDIDATES,
-            model_candidates=_models_for_syaps(NETBSD6_SYAP_CANDIDATES),
+            syap_candidates=narrowed_syaps,
+            model_candidates=narrowed_models,
             supported=True,
             reason_code="supported_netbsd6",
-            reason_detail=(
-                f"ACPData model {airport_model or airport_syap} did not match detected NetBSD 6 Time Capsule candidate 119"
-                if (airport_model and airport_model != "TimeCapsule8,119") or (airport_syap and airport_syap != "119")
-                else ""
-            ),
+            reason_detail=reason_detail,
         )
     if major == "4":
         if normalized_endianness not in {"big", "little"}:

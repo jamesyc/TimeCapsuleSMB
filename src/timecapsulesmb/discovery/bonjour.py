@@ -488,7 +488,7 @@ def service_instance_to_jsonable(instance: BonjourServiceInstance) -> dict[str, 
 
 
 def run_cli(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Discover Apple Time Capsules via mDNS/Bonjour")
+    parser = argparse.ArgumentParser(description="Discover Apple AirPort storage devices via mDNS/Bonjour")
     parser.add_argument("--timeout", type=float, default=DEFAULT_BROWSE_TIMEOUT_SEC, help="Browse time in seconds (default: 6)")
     parser.add_argument("--json", action="store_true", help="Output results as JSON")
     parser.add_argument("--select", action="store_true", help="Interactively select one and print selection")

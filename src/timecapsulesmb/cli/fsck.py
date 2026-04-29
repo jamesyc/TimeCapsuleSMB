@@ -5,7 +5,7 @@ import shlex
 from typing import Optional
 
 from timecapsulesmb.cli.runtime import load_env_values, resolve_env_connection
-from timecapsulesmb.core.config import require_valid_config
+from timecapsulesmb.core.config import airport_exact_display_name, require_valid_config
 from timecapsulesmb.device.probe import discover_mounted_volume_conn, wait_for_ssh_state_conn
 from timecapsulesmb.transport.ssh import run_ssh
 
@@ -33,7 +33,7 @@ def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> s
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Run fsck_hfs on the mounted Time Capsule data disk and reboot by default.")
+    parser = argparse.ArgumentParser(description="Run fsck_hfs on the mounted device data disk and reboot by default.")
     parser.add_argument("--yes", action="store_true", help="Do not prompt before running fsck")
     parser.add_argument("--no-reboot", action="store_true", help="Run fsck only; do not reboot afterward")
     parser.add_argument("--no-wait", action="store_true", help="Do not wait for SSH to go down and come back after reboot")
@@ -43,6 +43,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     values = load_env_values()
     require_valid_config(values, profile="fsck")
+    device_name = airport_exact_display_name(values)
     connection = resolve_env_connection(values, allow_empty_password=True)
 
     mounted = discover_mounted_volume_conn(connection)
@@ -50,7 +51,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"Mounted HFS volume: {mounted.device} on {mounted.mountpoint}")
 
     if not args.yes:
-        answer = input("This will stop file sharing, unmount the disk, run fsck_hfs, and reboot the Time Capsule. Continue? [Y/n]: ").strip().lower()
+        answer = input(f"This will stop file sharing, unmount the disk, run fsck_hfs, and reboot the {device_name}. Continue? [Y/n]: ").strip().lower()
         if answer not in {"", "y", "yes"}:
             print("fsck cancelled.")
             return 0

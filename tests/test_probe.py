@@ -40,8 +40,8 @@ class ProbeTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="NetBSD\n6.0\nearmv4\n")
             if "bs=1 skip=5" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="little\n")
-            if "ACPData.bin" in remote_cmd:
-                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="TimeCapsule8,119\n")
+            if "/usr/bin/acp syAP syAM" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="syAP=0x00000077\nsyAM=TimeCapsule8,119\n")
             self.fail(f"unexpected remote command: {remote_cmd}")
 
         with mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=True):
@@ -57,6 +57,12 @@ class ProbeTests(unittest.TestCase):
             args, _kwargs = call
             self.assertEqual(args[0], connection)
             self.assertEqual(len(args), 2)
+
+    def test_extract_airport_identity_from_text_finds_airport_extreme_model(self) -> None:
+        result = probe.extract_airport_identity_from_text("prefix\x00psyAM\x00pAirPort7,120\x00suffix")
+        self.assertEqual(result.model, "AirPort7,120")
+        self.assertEqual(result.syap, "120")
+        self.assertIn("AirPort7,120", result.detail)
 
     def test_probe_remote_interface_candidates_prefers_bridge0_with_private_ipv4(self) -> None:
         ifconfig_output = """

@@ -84,7 +84,7 @@ def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
     return data
 
 
-def format_activation_plan(plan: ActivationPlan) -> str:
+def format_activation_plan(plan: ActivationPlan, *, device_name: str = "AirPort storage device") -> str:
     lines: list[str] = []
     lines.append("Dry run: NetBSD4 activation plan")
     lines.append("")
@@ -99,7 +99,7 @@ def format_activation_plan(plan: ActivationPlan) -> str:
     for check in plan.post_activation_checks:
         lines.append(f"  {check.description}")
     lines.append("")
-    lines.append("This will start the deployed Samba payload on the Time Capsule.")
+    lines.append(f"This will start the deployed Samba payload on the {device_name}.")
     lines.append(f"{NETBSD4_REBOOT_GUIDANCE}")
     return "\n".join(lines)
 

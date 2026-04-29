@@ -19,23 +19,66 @@ ADISK_DEFAULT_DISK_KEY = "dk2"
 ADISK_DISK_UUID_EXAMPLE = "12345678-1234-1234-1234-123456789012"
 ADISK_DISK_TXT_MID = "=adVF=0x1093,adVN="
 ADISK_DISK_TXT_SUFFIX = ",adVU="
-VALID_AIRPORT_SYAP_CODES = {"106", "109", "113", "116", "119"}
-VALID_MDNS_DEVICE_MODELS = {
-    "TimeCapsule",
-    "TimeCapsule6,106",
-    "TimeCapsule6,109",
-    "TimeCapsule6,113",
-    "TimeCapsule6,116",
-    "TimeCapsule8,119",
-}
-AIRPORT_SYAP_TO_MODEL = {
-    "106": "TimeCapsule6,106",
-    "109": "TimeCapsule6,109",
-    "113": "TimeCapsule6,113",
-    "116": "TimeCapsule6,116",
-    "119": "TimeCapsule8,119",
-}
 MAX_SAMBA_USER_BYTES = 32
+
+
+@dataclass(frozen=True)
+class AirportDeviceIdentity:
+    syap: str
+    mdns_model: str
+    display_name: str
+    family: str
+    compatibility_group: str
+
+
+AIRPORT_DEVICE_IDENTITIES = (
+    AirportDeviceIdentity("104", "AirPort5,104", "AirPort Extreme 1st generation", "airport_extreme", "netbsd4be"),
+    AirportDeviceIdentity("105", "AirPort5,105", "AirPort Extreme 2nd generation", "airport_extreme", "netbsd4be"),
+    AirportDeviceIdentity("106", "TimeCapsule6,106", "Time Capsule 1st generation", "time_capsule", "netbsd4be"),
+    AirportDeviceIdentity("108", "AirPort5,108", "AirPort Extreme 3rd generation", "airport_extreme", "netbsd4le"),
+    AirportDeviceIdentity("109", "TimeCapsule6,109", "Time Capsule 2nd generation", "time_capsule", "netbsd4be"),
+    AirportDeviceIdentity("113", "TimeCapsule6,113", "Time Capsule 3rd generation", "time_capsule", "netbsd4le"),
+    AirportDeviceIdentity("114", "AirPort5,114", "AirPort Extreme 4th generation", "airport_extreme", "netbsd4le"),
+    AirportDeviceIdentity("116", "TimeCapsule6,116", "Time Capsule 4th generation", "time_capsule", "netbsd4le"),
+    AirportDeviceIdentity("117", "AirPort5,117", "AirPort Extreme 5th generation", "airport_extreme", "netbsd4le"),
+    AirportDeviceIdentity("119", "TimeCapsule8,119", "Time Capsule 5th generation", "time_capsule", "netbsd6"),
+    AirportDeviceIdentity("120", "AirPort7,120", "AirPort Extreme 6th generation", "airport_extreme", "netbsd6"),
+)
+AIRPORT_IDENTITIES_BY_SYAP = {identity.syap: identity for identity in AIRPORT_DEVICE_IDENTITIES}
+AIRPORT_IDENTITIES_BY_MODEL = {identity.mdns_model: identity for identity in AIRPORT_DEVICE_IDENTITIES}
+VALID_AIRPORT_SYAP_CODES = frozenset(AIRPORT_IDENTITIES_BY_SYAP)
+VALID_MDNS_DEVICE_MODELS = frozenset(
+    {"TimeCapsule", "AirPort"} | {identity.mdns_model for identity in AIRPORT_DEVICE_IDENTITIES}
+)
+AIRPORT_SYAP_TO_MODEL = {
+    identity.syap: identity.mdns_model
+    for identity in AIRPORT_DEVICE_IDENTITIES
+}
+
+
+def airport_identity_from_values(values: dict[str, str]) -> AirportDeviceIdentity | None:
+    syap = values.get("TC_AIRPORT_SYAP", "")
+    model = values.get("TC_MDNS_DEVICE_MODEL", "")
+    return AIRPORT_IDENTITIES_BY_SYAP.get(syap) or AIRPORT_IDENTITIES_BY_MODEL.get(model)
+
+
+def airport_family_display_name(values: dict[str, str]) -> str:
+    model = values.get("TC_MDNS_DEVICE_MODEL", "")
+    identity = airport_identity_from_values(values)
+    family = identity.family if identity is not None else ""
+    if family == "time_capsule" or model == "TimeCapsule":
+        return "Time Capsule"
+    if family == "airport_extreme" or model == "AirPort":
+        return "AirPort Extreme"
+    return "AirPort storage device"
+
+
+def airport_exact_display_name(values: dict[str, str]) -> str:
+    identity = airport_identity_from_values(values)
+    if identity is not None:
+        return identity.display_name
+    return airport_family_display_name(values)
+
 
 DEFAULTS = {
     "TC_HOST": "root@192.168.1.101",
@@ -66,9 +109,9 @@ REQUIRED_ENV_KEYS = [
 ]
 
 CONFIG_FIELDS = [
-    ("TC_HOST", "Time Capsule SSH target", DEFAULTS["TC_HOST"], False),
-    ("TC_PASSWORD", "Time Capsule root password", "", True),
-    ("TC_NET_IFACE", "Network interface on the Time Capsule", DEFAULTS["TC_NET_IFACE"], False),
+    ("TC_HOST", "Device SSH target", DEFAULTS["TC_HOST"], False),
+    ("TC_PASSWORD", "Device root password", "", True),
+    ("TC_NET_IFACE", "Network interface on the device", DEFAULTS["TC_NET_IFACE"], False),
     ("TC_SHARE_NAME", "SMB share name", DEFAULTS["TC_SHARE_NAME"], False),
     ("TC_SAMBA_USER", "Samba username", DEFAULTS["TC_SAMBA_USER"], False),
     ("TC_NETBIOS_NAME", "Samba NetBIOS name", DEFAULTS["TC_NETBIOS_NAME"], False),
@@ -207,7 +250,7 @@ def validate_mdns_device_model(value: str, field_name: str) -> Optional[str]:
     if not value:
         return f"{field_name} cannot be blank."
     if value not in VALID_MDNS_DEVICE_MODELS:
-        return f"{field_name} is not a supported Time Capsule model."
+        return f"{field_name} is not a supported AirPort storage device model."
     if build_mdns_device_model_txt(value) is None:
         return f"{field_name} must be 249 bytes or fewer."
     if _contains_invalid_control_character(value):

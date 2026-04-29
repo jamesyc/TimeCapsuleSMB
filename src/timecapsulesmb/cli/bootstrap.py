@@ -151,9 +151,9 @@ def maybe_install_airpyrt(skip_airpyrt: bool) -> bool:
         return False
 
     if current_platform_label() == "Linux":
-        print("AirPyrt support is optional; it is only needed when SSH must be enabled on the Time Capsule.", flush=True)
+        print("AirPyrt support is optional; it is only needed when SSH must be enabled on the Time Capsule/AirPort Extreme device.", flush=True)
         print(red("Automatic AirPyrt setup is not implemented for Linux."), flush=True)
-        print("If SSH is already enabled on the Time Capsule, skip 'prep-device' and continue to configure/deploy.", flush=True)
+        print("If SSH is already enabled on the Time Capsule/AirPort Extreme device, skip 'prep-device' and continue to configure/deploy.", flush=True)
         print(red("If SSH is not enabled, use a Mac for 'prep-device'."), flush=True)
         return False
 
@@ -163,7 +163,7 @@ def maybe_install_airpyrt(skip_airpyrt: bool) -> bool:
         print("Later, install it manually or run 'make airpyrt'.", flush=True)
         return False
 
-    print("AirPyrt support is optional, but it is needed by 'prep-device' when SSH must be enabled on the Time Capsule.", flush=True)
+    print("AirPyrt support is optional, but it is needed by 'prep-device' when SSH must be enabled on the Time Capsule/AirPort Extreme device.", flush=True)
     print("Installing it may trigger Homebrew package installs, pyenv installation, and a local Python 2.7.18 build.", flush=True)
     if not confirm("Continue with optional AirPyrt setup?", default=True):
         print("Skipping AirPyrt setup. You can install it later with 'make airpyrt' or rerun './tcapsule bootstrap'.", flush=True)
@@ -215,7 +215,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     print("Next steps:", flush=True)
     if platform_label == "Linux" and not airpyrt_ready:
         print(f"  1. {VENVDIR / 'bin' / 'tcapsule'} configure", flush=True)
-        print(f"  2. If SSH is already enabled on the Time Capsule, continue to deploy. {red('Otherwise enable SSH manually with `prep-device` from a Mac.')}", flush=True)
+        print(f"  2. If SSH is already enabled on the Time Capsule/AirPort Extreme device, continue to deploy. {red('Otherwise enable SSH manually with `prep-device` from a Mac.')}", flush=True)
         print(f"  3. {VENVDIR / 'bin' / 'tcapsule'} deploy", flush=True)
         print(f"  4. {VENVDIR / 'bin' / 'tcapsule'} doctor", flush=True)
     else:

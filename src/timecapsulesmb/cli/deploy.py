@@ -8,7 +8,7 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import load_env_values
-from timecapsulesmb.core.config import parse_bool
+from timecapsulesmb.core.config import airport_family_display_name, parse_bool
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
@@ -50,7 +50,7 @@ def _non_negative_int(value: str) -> int:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Deploy the checked-in Samba 4 payload to a Time Capsule.")
+    parser = argparse.ArgumentParser(description="Deploy the checked-in Samba 4 payload to an AirPort storage device.")
     parser.add_argument("--no-reboot", action="store_true", help="Do not reboot after deployment")
     parser.add_argument("--yes", action="store_true", help="Do not prompt before reboot")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without making changes")
@@ -226,7 +226,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 0
 
         if not args.yes:
-            answer = input("This will reboot the Time Capsule now. Continue? [Y/n]: ").strip().lower()
+            device_name = airport_family_display_name(values)
+            answer = input(f"This will reboot the {device_name} now. Continue? [Y/n]: ").strip().lower()
             if answer not in {"", "y", "yes"}:
                 print("Deployment complete without reboot.")
                 command_context.cancel_with_error("Cancelled by user at reboot confirmation prompt.")
@@ -245,7 +246,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("Device is back online.")
             print("Waiting for managed runtime to finish starting...")
             command_context.set_stage("verify_runtime_reboot")
-            if not verify_managed_runtime(connection, timeout_seconds=180, heading="Wait for device to finish loading; it can take a few minutes for Samba to start up..."):
+            if not verify_managed_runtime(connection, timeout_seconds=240, heading="Wait for device to finish loading; it can take a few minutes for Samba to start up..."):
                 print("Managed runtime did not become ready after reboot.")
                 command_context.fail_with_error("Managed runtime did not become ready after reboot.")
                 return 1

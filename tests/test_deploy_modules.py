@@ -58,7 +58,8 @@ from timecapsulesmb.device.probe import (
     build_device_paths,
     discover_mounted_volume_conn,
     discover_volume_root_conn,
-    extract_airport_identity_from_acpdata,
+    extract_airport_identity_from_acp_output,
+    extract_airport_identity_from_text,
     probe_device_conn,
     probe_managed_runtime_conn,
     probe_managed_mdns_takeover_conn,
@@ -178,7 +179,9 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("__SMBD_LOG_FILE__", bundle.smbconf_replacements)
         self.assertIn("__SMBD_MAX_LOG_SIZE__", bundle.smbconf_replacements)
         self.assertIn("__SMBD_LOG_LEVEL_LINE__", bundle.smbconf_replacements)
+        self.assertIn("__MDNS_DEVICE_MODEL__", bundle.smbconf_replacements)
         self.assertEqual(bundle.start_script_replacements["__MDNS_DEVICE_MODEL__"], "TimeCapsule")
+        self.assertEqual(bundle.smbconf_replacements["__MDNS_DEVICE_MODEL__"], "TimeCapsule")
         self.assertEqual(bundle.start_script_replacements["__AIRPORT_SYAP__"], "119")
         self.assertEqual(bundle.start_script_replacements["__ADISK_DISK_KEY__"], "dk0")
         self.assertEqual(bundle.start_script_replacements["__ADISK_UUID__"], "''")
@@ -319,29 +322,66 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("get_airport_syvs()", content)
         self.assertIn("sed -n 's/^\\([0-9]\\)\\([0-9]\\)\\([0-9]\\).*/\\1.\\2.\\3/p'", content)
 
-    def test_extract_airport_identity_from_acpdata_finds_time_capsule_model(self) -> None:
-        result = extract_airport_identity_from_acpdata("prefix\x00psyAM\x00pTimeCapsule6,113\x00suffix")
+    def test_extract_airport_identity_from_text_finds_time_capsule_model(self) -> None:
+        result = extract_airport_identity_from_text("prefix\x00psyAM\x00pTimeCapsule6,113\x00suffix")
         self.assertEqual(result.model, "TimeCapsule6,113")
         self.assertEqual(result.syap, "113")
-        self.assertIn("found TimeCapsule6,113", result.detail)
+        self.assertIn("TimeCapsule6,113", result.detail)
 
-    def test_extract_airport_identity_from_acpdata_ignores_garbage(self) -> None:
-        result = extract_airport_identity_from_acpdata("prefix\x00not a model\x00suffix")
+    def test_extract_airport_identity_from_text_ignores_garbage(self) -> None:
+        result = extract_airport_identity_from_text("prefix\x00not a model\x00suffix")
         self.assertIsNone(result.model)
         self.assertIsNone(result.syap)
-        self.assertIn("no TimeCapsule model", result.detail)
+        self.assertIn("no supported AirPort model", result.detail)
 
-    def test_probe_remote_airport_identity_filters_acpdata_on_device(self) -> None:
-        proc = mock.Mock(stdout="TimeCapsule6,113\n", returncode=0)
+    def test_extract_airport_identity_from_text_finds_airport_extreme_model(self) -> None:
+        result = extract_airport_identity_from_text("prefix\x00psyAM\x00pAirPort7,120\x00suffix")
+        self.assertEqual(result.model, "AirPort7,120")
+        self.assertEqual(result.syap, "120")
+        self.assertIn("AirPort7,120", result.detail)
+
+    def test_extract_airport_identity_from_acp_output_parses_labeled_hex_syap_and_model(self) -> None:
+        result = extract_airport_identity_from_acp_output("syAP=0x00000077\nsyAM=TimeCapsule8,119\n")
+        self.assertEqual(result.model, "TimeCapsule8,119")
+        self.assertEqual(result.syap, "119")
+
+    def test_extract_airport_identity_from_acp_output_parses_airport_extreme_model(self) -> None:
+        result = extract_airport_identity_from_acp_output("syAP=0x00000078\nsyAM=AirPort7,120\n")
+        self.assertEqual(result.model, "AirPort7,120")
+        self.assertEqual(result.syap, "120")
+
+    def test_extract_airport_identity_from_acp_output_parses_decimal_syap(self) -> None:
+        result = extract_airport_identity_from_acp_output("syAP=113\n")
+        self.assertEqual(result.model, "TimeCapsule6,113")
+        self.assertEqual(result.syap, "113")
+
+    def test_extract_airport_identity_from_acp_output_derives_syap_from_model_without_syap(self) -> None:
+        result = extract_airport_identity_from_acp_output("syAM=TimeCapsule6,106\n")
+        self.assertEqual(result.model, "TimeCapsule6,106")
+        self.assertEqual(result.syap, "106")
+
+    def test_extract_airport_identity_from_acp_output_reports_model_syap_mismatch(self) -> None:
+        result = extract_airport_identity_from_acp_output("syAP=0x00000078\nsyAM=TimeCapsule8,119\n")
+        self.assertIsNone(result.model)
+        self.assertIsNone(result.syap)
+        self.assertIn("expects syAP 119, got 120", result.detail)
+
+    def test_extract_airport_identity_from_acp_output_reports_malformed_syap_without_model(self) -> None:
+        result = extract_airport_identity_from_acp_output("syAP=not-a-number\n")
+        self.assertIsNone(result.model)
+        self.assertIsNone(result.syap)
+        self.assertIn("not parseable", result.detail)
+
+    def test_probe_remote_airport_identity_reads_acp_identity_on_device(self) -> None:
+        proc = mock.Mock(stdout="syAP=0x00000071\nsyAM=TimeCapsule6,113\n", returncode=0)
         connection = SshConnection("host", "pw", "-o foo")
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
             result = probe_remote_airport_identity_conn(connection)
         self.assertEqual(result.model, "TimeCapsule6,113")
         self.assertEqual(result.syap, "113")
         command = run_ssh_mock.call_args.args[1]
-        self.assertIn("/usr/bin/strings /mnt/Flash/ACPData.bin", command)
-        self.assertIn("TimeCapsule[0-9],[0-9][0-9][0-9]", command)
-        self.assertNotIn("/bin/cat /mnt/Flash/ACPData.bin", command)
+        self.assertIn("/usr/bin/acp syAP syAM", command)
+        self.assertNotIn("ACPData.bin", command)
 
     def test_common_sh_helpers_take_iface_argument(self) -> None:
         content = load_boot_asset_text("common.sh")
@@ -504,6 +544,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('DATA_ROOT=$(resolve_data_root_on_mounted_volume "$VOLUME_ROOT") || {', rendered)
         self.assertIn('try_mount_candidate /dev/dk2 /Volumes/dk2', rendered)
         self.assertIn('try_mount_candidate /dev/dk3 /Volumes/dk3', rendered)
+        self.assertIn('try_mount_candidate /dev/dk1 /Volumes/dk1', rendered)
         self.assertIn('resolve_data_root_on_mounted_volume "$VOLUME_ROOT"', rendered)
         self.assertIn('/bin/df -k "$volume_root"', rendered)
         self.assertIn('df_line=$(/bin/df -k "$volume_root" 2>/dev/null | /usr/bin/tail -n +2 || true)', rendered)
@@ -656,6 +697,9 @@ class DeployModuleTests(unittest.TestCase):
         section = rendered[start:end]
         self.assertIn('if is_volume_root_mounted /Volumes/dk2 && data_root=$(find_data_root_under_volume /Volumes/dk2); then', section)
         self.assertIn('if is_volume_root_mounted /Volumes/dk3 && data_root=$(find_data_root_under_volume /Volumes/dk3); then', section)
+        self.assertIn('if is_volume_root_mounted /Volumes/dk1 && data_root=$(find_data_root_under_volume /Volumes/dk1); then', section)
+        self.assertLess(section.index("/Volumes/dk2"), section.index("/Volumes/dk3"))
+        self.assertLess(section.index("/Volumes/dk3"), section.index("/Volumes/dk1"))
         self.assertNotIn("mount_hfs", section)
 
     def test_render_start_script_initializes_share_root_only_after_confirmed_mount(self) -> None:
@@ -696,7 +740,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertLess(shared_marker, share_dir)
         self.assertLess(share_dir, shared_dir)
 
-    def test_render_start_script_checks_dk2_before_dk3_in_fallback_mount(self) -> None:
+    def test_render_start_script_checks_dk2_and_dk3_before_dk1_in_fallback_mount(self) -> None:
         values = {
             "TC_PAYLOAD_DIR_NAME": "samba4",
             "TC_SHARE_NAME": "Data",
@@ -710,6 +754,7 @@ class DeployModuleTests(unittest.TestCase):
         bundle = build_template_bundle(values)
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertLess(rendered.index("try_mount_candidate /dev/dk2 /Volumes/dk2"), rendered.index("try_mount_candidate /dev/dk3 /Volumes/dk3"))
+        self.assertLess(rendered.index("try_mount_candidate /dev/dk3 /Volumes/dk3"), rendered.index("try_mount_candidate /dev/dk1 /Volumes/dk1"))
 
     def test_render_start_script_logs_mount_fallback_transition(self) -> None:
         values = {
@@ -2268,7 +2313,7 @@ int main(void) {{
         self.assertIn('volume="/Volumes/$dev"', cmd)
         self.assertIn('if [ ! -d "$volume" ]; then\n    mkdir -p "$volume"\n    created_mountpoint=1\n  fi', cmd)
         self.assertIn('df_line=$(/bin/df -k "$volume" 2>/dev/null | /usr/bin/tail -n +2 || true)', cmd)
-        self.assertEqual(cmd.count('for dev in dk2 dk3; do'), 1)
+        self.assertEqual(cmd.count('for dev in dk2 dk3 dk1; do'), 1)
 
     def test_discover_volume_root_cleans_up_unused_mountpoint_after_failed_fallback_mount(self) -> None:
         proc = mock.Mock(stdout="/Volumes/dk2\n")

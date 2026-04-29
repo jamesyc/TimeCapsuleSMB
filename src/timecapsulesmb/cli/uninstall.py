@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.cli.runtime import load_env_values, resolve_env_connection
-from timecapsulesmb.core.config import require_valid_config
+from timecapsulesmb.core.config import airport_exact_display_name, require_valid_config
 from timecapsulesmb.deploy.dry_run import format_uninstall_plan, uninstall_plan_to_jsonable
 from timecapsulesmb.deploy.executor import remote_request_reboot, remote_uninstall_payload
 from timecapsulesmb.deploy.planner import build_uninstall_plan
@@ -15,7 +15,7 @@ from timecapsulesmb.device.probe import build_device_paths, discover_volume_root
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Remove the managed TimeCapsuleSMB payload from a Time Capsule.")
+    parser = argparse.ArgumentParser(description="Remove the managed TimeCapsuleSMB payload from the configured device.")
     parser.add_argument("--yes", action="store_true", help="Do not prompt before reboot")
     parser.add_argument("--no-reboot", action="store_true", help="Remove files but do not reboot the device")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without making changes")
@@ -30,6 +30,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     values = load_env_values()
     require_valid_config(values, profile="uninstall")
+    device_name = airport_exact_display_name(values)
     connection = resolve_env_connection(values, allow_empty_password=True)
 
     volume_root = discover_volume_root_conn(connection)
@@ -52,9 +53,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     if not args.yes:
-        answer = input("This will reboot the Time Capsule now. Continue? [Y/n]: ").strip().lower()
+        answer = input(f"This will reboot the {device_name} now. Continue? [Y/n]: ").strip().lower()
         if answer not in {"", "y", "yes"}:
-            print("Skipped reboot. The Time Capsule may need a manual reboot to fully clear running processes.")
+            print(f"Skipped reboot. The {device_name} may need a manual reboot to fully clear running processes.")
             return 0
 
     remote_request_reboot(connection)

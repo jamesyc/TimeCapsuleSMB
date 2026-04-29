@@ -111,6 +111,7 @@ def build_template_bundle(
             "__SMB_SAMBA_USER__": values["TC_SAMBA_USER"],
             "__SMB_NETBIOS_NAME__": values["TC_NETBIOS_NAME"],
             "__NET_IFACE__": values["TC_NET_IFACE"],
+            "__MDNS_DEVICE_MODEL__": device_model,
             "__CACHE_DIRECTORY__": smbconf_cache_directory,
             "__SMBD_LOG_FILE__": smbd_log_file,
             "__SMBD_MAX_LOG_SIZE__": smbd_max_log_size,
