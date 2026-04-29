@@ -355,6 +355,17 @@ class DeployModuleTests(unittest.TestCase):
         self.assertEqual(result.model, "TimeCapsule6,113")
         self.assertEqual(result.syap, "113")
 
+    def test_extract_airport_identity_from_acp_output_parses_unlabeled_numeric_syap(self) -> None:
+        result = extract_airport_identity_from_acp_output("noise\n0x00000077\n")
+        self.assertEqual(result.model, "TimeCapsule8,119")
+        self.assertEqual(result.syap, "119")
+
+    def test_extract_airport_identity_from_acp_output_ignores_punctuated_unlabeled_numeric_like_lines(self) -> None:
+        result = extract_airport_identity_from_acp_output("119:\n113/extra\n")
+        self.assertIsNone(result.model)
+        self.assertIsNone(result.syap)
+        self.assertIn("no supported AirPort identity found", result.detail)
+
     def test_extract_airport_identity_from_acp_output_derives_syap_from_model_without_syap(self) -> None:
         result = extract_airport_identity_from_acp_output("syAM=TimeCapsule6,106\n")
         self.assertEqual(result.model, "TimeCapsule6,106")
