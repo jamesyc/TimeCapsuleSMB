@@ -64,6 +64,7 @@ def build_template_bundle(
     smbd_log_file = "/mnt/Memory/samba4/var/log.smbd"
     smbd_max_log_size = "256"
     smbd_log_level_line = ""
+    smbd_disk_logging_enabled = "0"
     mdns_log_enabled = "0"
     mdns_log_file = "/mnt/Memory/samba4/var/mdns.log"
     if debug_logging:
@@ -72,6 +73,7 @@ def build_template_bundle(
         smbd_log_file = f"{data_root}/samba4-logs/log.smbd"
         smbd_max_log_size = "1048576"
         smbd_log_level_line = "\n    log level = 5 vfs:8 fruit:8"
+        smbd_disk_logging_enabled = "1"
         mdns_log_enabled = "1"
     return TemplateBundle(
         start_script_replacements={
@@ -86,6 +88,7 @@ def build_template_bundle(
             "__AIRPORT_SYAP__": shell_quote(values.get("TC_AIRPORT_SYAP", DEFAULTS["TC_AIRPORT_SYAP"])),
             "__ADISK_DISK_KEY__": shell_quote(adisk_disk_key),
             "__ADISK_UUID__": shell_quote(adisk_uuid),
+            "__SMBD_DISK_LOGGING_ENABLED__": smbd_disk_logging_enabled,
             "__MDNS_LOG_ENABLED__": mdns_log_enabled,
             "__MDNS_LOG_FILE__": shell_quote(mdns_log_file),
             "__SHARE_USE_DISK_ROOT__": "true" if share_use_disk_root else "false",
