@@ -27,6 +27,7 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin
 RAM_LOCKS="$RAM_ROOT/locks"
 RAM_LOG="$RAM_VAR/rc.local.log"
 SMBD_LOG="$RAM_VAR/log.smbd"
+SMBD_DISK_LOGGING_ENABLED=__SMBD_DISK_LOGGING_ENABLED__
 MDNS_LOG_ENABLED=__MDNS_LOG_ENABLED__
 MDNS_LOG_FILE=__MDNS_LOG_FILE__
 SHARE_USE_DISK_ROOT=__SHARE_USE_DISK_ROOT__
@@ -461,6 +462,22 @@ find_payload_nbns() {
     return 1
 }
 
+prepare_smbd_disk_logging() {
+    if [ "$SMBD_DISK_LOGGING_ENABLED" != "1" ]; then
+        return 0
+    fi
+
+    log_dir="$DATA_ROOT/samba4-logs"
+    if mkdir -p "$log_dir"; then
+        chmod 777 "$log_dir" >/dev/null 2>&1 || true
+        log "smbd debug logging directory ready: $log_dir"
+        return 0
+    fi
+
+    log "smbd debug logging directory could not be created: $log_dir"
+    return 1
+}
+
 stage_runtime() {
     payload_dir=$1
     smbd_src=$2
@@ -778,6 +795,7 @@ PAYLOAD_DIR=$(find_payload_dir "$DATA_ROOT") || {
 }
 CACHE_DIRECTORY=__CACHE_DIRECTORY__
 log "data root selected: $DATA_ROOT"
+prepare_smbd_disk_logging || true
 
 SMBD_SRC=$(find_payload_smbd "$PAYLOAD_DIR") || {
     log "payload discovery failed: missing smbd binary in $PAYLOAD_DIR"

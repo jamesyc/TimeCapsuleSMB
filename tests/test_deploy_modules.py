@@ -182,6 +182,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertEqual(bundle.start_script_replacements["__AIRPORT_SYAP__"], "119")
         self.assertEqual(bundle.start_script_replacements["__ADISK_DISK_KEY__"], "dk0")
         self.assertEqual(bundle.start_script_replacements["__ADISK_UUID__"], "''")
+        self.assertEqual(bundle.start_script_replacements["__SMBD_DISK_LOGGING_ENABLED__"], "0")
 
     def test_build_template_bundle_defaults_mdns_device_model(self) -> None:
         values = {
@@ -1082,12 +1083,54 @@ class DeployModuleTests(unittest.TestCase):
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values, debug_logging=True, data_root="/Volumes/dk2/ShareRoot")
+        bundle = build_template_bundle(values, debug_logging=True)
         rendered = render_template("smb.conf.template", bundle.smbconf_replacements)
-        self.assertIn("log file = /Volumes/dk2/ShareRoot/samba4-logs/log.smbd", rendered)
+        self.assertIn("log file = __DATA_ROOT__/samba4-logs/log.smbd", rendered)
         self.assertIn("max log size = 1048576", rendered)
         self.assertIn("log level = 5 vfs:8 fruit:8", rendered)
         self.assertIn("max log size = 1048576\n    log level = 5 vfs:8 fruit:8\n    smb ports = 445", rendered)
+
+    def test_render_start_script_prepares_smbd_disk_logging_only_when_debug_logging_enabled(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        normal_bundle = build_template_bundle(values)
+        normal_rendered = render_template("start-samba.sh", normal_bundle.start_script_replacements)
+        self.assertIn("SMBD_DISK_LOGGING_ENABLED=0", normal_rendered)
+        debug_bundle = build_template_bundle(values, debug_logging=True, data_root="/Volumes/dk2/ShareRoot")
+        debug_rendered = render_template("start-samba.sh", debug_bundle.start_script_replacements)
+
+        self.assertIn("SMBD_DISK_LOGGING_ENABLED=1", debug_rendered)
+        self.assertIn('if [ "$SMBD_DISK_LOGGING_ENABLED" != "1" ]; then', debug_rendered)
+        self.assertIn('log_dir="$DATA_ROOT/samba4-logs"', debug_rendered)
+        self.assertIn('mkdir -p "$log_dir"', debug_rendered)
+        self.assertIn('chmod 777 "$log_dir" >/dev/null 2>&1 || true', debug_rendered)
+        self.assertIn('log "smbd debug logging directory ready: $log_dir"', debug_rendered)
+
+    def test_render_start_script_prepares_smbd_disk_logging_after_data_root_before_runtime_staging(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(values, debug_logging=True, data_root="/Volumes/dk2/ShareRoot")
+        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
+        main_section = rendered[rendered.index("cleanup_old_runtime"):]
+
+        self.assertLess(main_section.index('log "data root selected: $DATA_ROOT"'), main_section.index("prepare_smbd_disk_logging || true"))
+        self.assertLess(main_section.index("prepare_smbd_disk_logging || true"), main_section.index('stage_runtime "$PAYLOAD_DIR" "$SMBD_SRC" "$NBNS_SRC"'))
 
     def test_render_smb_conf_uses_persistent_cache_directory_for_netbsd4(self) -> None:
         values = {
