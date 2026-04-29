@@ -46,6 +46,7 @@ class FakeCommandContext:
         self.result = "failure"
         self.finish_fields: dict[str, object] = {}
         self.error_lines: list[str] = []
+        self.stages: list[str] = []
         self.finish = mock.Mock()
         self.connection = connection or SshConnection("root@10.0.0.2", "pw", "-o foo")
         self.probe_state = None
@@ -96,8 +97,8 @@ class FakeCommandContext:
             if value is not None:
                 self.finish_fields[key] = value
 
-    def set_stage(self, _stage: str) -> None:
-        pass
+    def set_stage(self, stage: str) -> None:
+        self.stages.append(stage)
 
     def add_debug_fields(self, **_fields: object) -> None:
         pass
@@ -4180,6 +4181,34 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         run_ssh_mock.assert_not_called()
         self.assertIn("Skipping reboot.", output.getvalue())
+
+    def test_deploy_failure_telemetry_includes_current_stage(self) -> None:
+        output = io.StringIO()
+        values = self.make_valid_env()
+        template_bundle = mock.Mock(
+            start_script_replacements={},
+            watchdog_replacements={},
+            smbconf_replacements={},
+        )
+        with self.assertRaises(RuntimeError):
+            with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
+                with mock.patch("timecapsulesmb.cli.runtime.probe_device_conn", return_value=self.make_probe_result_netbsd6()):
+                    with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
+                        with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                            with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
+                                with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
+                                    with mock.patch("timecapsulesmb.cli.deploy.build_template_bundle", return_value=template_bundle):
+                                        with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload", side_effect=RuntimeError("upload exploded")):
+                                            with redirect_stdout(output):
+                                                deploy.main(["--yes", "--no-reboot"])
+        finished_calls = [
+            call for call in self._telemetry_client.emit.call_args_list
+            if call.args and call.args[0] == "deploy_finished"
+        ]
+        self.assertTrue(finished_calls)
+        telemetry_error = finished_calls[-1].kwargs["error"]
+        self.assertIn("RuntimeError: upload exploded", telemetry_error)
+        self.assertIn("stage=upload_payload", telemetry_error)
 
     def test_deploy_declined_reboot_returns_without_rebooting(self) -> None:
         output = io.StringIO()
