@@ -124,6 +124,15 @@ class CheckTests(unittest.TestCase):
                 return_value=mock.Mock(ready=True, detail="managed mDNS takeover active"),
             )
         )
+        self._exit_stack.enter_context(
+            mock.patch(
+                "timecapsulesmb.checks.doctor.check_bonjour_host_ip",
+                return_value=mock.Mock(
+                    status="PASS",
+                    message="resolved Bonjour host timecapsulesamba4.local to 10.0.0.2 from service record",
+                ),
+            )
+        )
 
     def tearDown(self) -> None:
         self._exit_stack.close()
@@ -1074,11 +1083,12 @@ class CheckTests(unittest.TestCase):
                         ):
                             with mock.patch("timecapsulesmb.checks.doctor.resolve_smb_instance", side_effect=AssertionError("fallback resolve should not run")):
                                 with mock.patch("timecapsulesmb.checks.bonjour.socket.getaddrinfo", return_value=addrinfo):
-                                    with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=mock.Mock(status="PASS", message="listing ok")):
-                                        with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops_detailed", return_value=[mock.Mock(status="PASS", message="file ops ok")]):
-                                            with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root_conn", return_value="/Volumes/dk2"):
-                                                with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout="")):
-                                                    results, fatal = run_doctor_checks(values, env_exists=True, repo_root=REPO_ROOT)
+                                    with mock.patch("timecapsulesmb.checks.doctor.check_bonjour_host_ip", side_effect=check_bonjour_host_ip):
+                                        with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=mock.Mock(status="PASS", message="listing ok")):
+                                            with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops_detailed", return_value=[mock.Mock(status="PASS", message="file ops ok")]):
+                                                with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                                                    with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout="")):
+                                                        results, fatal = run_doctor_checks(values, env_exists=True, repo_root=REPO_ROOT)
 
         self.assertFalse(fatal)
         pass_messages = [result.message for result in results if result.status == "PASS"]
