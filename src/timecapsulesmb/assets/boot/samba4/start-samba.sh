@@ -185,6 +185,11 @@ wait_for_bind_interfaces() {
 }
 
 find_existing_data_root() {
+    if is_volume_root_mounted /Volumes/dk1 && data_root=$(find_data_root_under_volume /Volumes/dk1); then
+        echo "$data_root"
+        return 0
+    fi
+
     if is_volume_root_mounted /Volumes/dk2 && data_root=$(find_data_root_under_volume /Volumes/dk2); then
         echo "$data_root"
         return 0
@@ -387,7 +392,12 @@ mount_fallback_volume() {
     log "no Apple-mounted data root found; falling back to manual mount"
     attempt=0
     while [ "$attempt" -lt 30 ]; do
-        log "manual mount attempt $((attempt + 1)): probing /dev/dk2 and /dev/dk3"
+        log "manual mount attempt $((attempt + 1)): probing /dev/dk1, /dev/dk2, and /dev/dk3"
+        if volume_root=$(try_mount_candidate /dev/dk1 /Volumes/dk1); then
+            echo "$volume_root"
+            return 0
+        fi
+
         if volume_root=$(try_mount_candidate /dev/dk2 /Volumes/dk2); then
             echo "$volume_root"
             return 0
