@@ -244,7 +244,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.update_fields(device_came_back_after_reboot=True)
             print("Device is back online.")
             print("Waiting for managed runtime to finish starting...")
-            command_context.set_stage("verify_runtime")
+            command_context.set_stage("verify_runtime_reboot")
             if not verify_managed_runtime(connection, timeout_seconds=180, heading="Wait for device to finish loading; it can take a few minutes for Samba to start up..."):
                 print("Managed runtime did not become ready after reboot.")
                 command_context.fail_with_error("Managed runtime did not become ready after reboot.")
