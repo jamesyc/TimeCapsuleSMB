@@ -343,7 +343,7 @@ def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 1
                 cmd,
                 connection.password,
                 timeout=timeout,
-                timeout_message=f"Timed out copying to remote path {dest} via scp",
+                timeout_message=f"Timed out copying {src.name} to remote path {dest} via scp",
             )
             if rc == 0 or not _looks_like_transient_ssh_auth_failure(stdout) or attempt == 2:
                 break
