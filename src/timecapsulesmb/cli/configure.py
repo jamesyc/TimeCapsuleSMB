@@ -165,6 +165,17 @@ def saved_value_choice(existing: dict[str, str], key: str, label: str) -> Option
     return ConfigureValueChoice(value=value, source="saved")
 
 
+def saved_syap_value_for_candidates(
+    saved_syap_choice: ConfigureValueChoice | None,
+    candidate_syaps: tuple[str, ...],
+) -> str | None:
+    if saved_syap_choice is None:
+        return None
+    if candidate_syaps and saved_syap_choice.value not in candidate_syaps:
+        return None
+    return saved_syap_choice.value
+
+
 def print_syap_prompt_help(syap_candidates: tuple[str, ...] | None = None) -> None:
     print("\nWarning: configure could not discover Airport Utility syAP from _airport._tcp.")
     print("Enter the device's syAP code so _airport._tcp can be cloned accurately.")
@@ -491,6 +502,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         for key, label, default, secret in CONFIG_FIELDS[2:]:
             if key == "TC_AIRPORT_SYAP":
                 candidate_syaps = probed_device.syap_candidates if probed_device is not None else ()
+                saved_syap_value = saved_syap_value_for_candidates(saved_syap_choice, candidate_syaps)
                 if discovered_syap_choice is not None:
                     print_automatic_value_choice(key, discovered_syap_choice)
                     values[key] = discovered_syap_choice.value
@@ -504,20 +516,19 @@ def main(argv: Optional[list[str]] = None) -> int:
                     if saved_syap_choice is not None:
                         print_saved_value_hint(saved_syap_choice.value)
                     if candidate_syaps:
-                        default_syap = saved_syap_choice.value if saved_syap_choice is not None and saved_syap_choice.value in candidate_syaps else ""
                         values[key] = prompt_config_value_from_candidates(
                             key,
                             label,
-                            default_syap,
+                            saved_syap_value or "",
                             candidate_syaps,
                             invalid_message=f"From detected connection, syAP code should be one of: {', '.join(candidate_syaps)}",
                         )
                     else:
                         values[key] = prompt_valid_config_value(key, label, saved_syap_choice.value if saved_syap_choice is not None else "")
                     continue
-                if saved_syap_choice is not None and (not candidate_syaps or saved_syap_choice.value in candidate_syaps):
+                if saved_syap_choice is not None and saved_syap_value is not None:
                     print_automatic_value_choice(key, saved_syap_choice)
-                    values[key] = saved_syap_choice.value
+                    values[key] = saved_syap_value
                     continue
                 if candidate_syaps:
                     if saved_syap_choice is not None:
