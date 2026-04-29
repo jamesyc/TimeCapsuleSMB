@@ -391,5 +391,5 @@ def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 1
         transport_error = _extract_ssh_transport_error(stdout)
         if transport_error:
             raise SshTransportError(f"Connecting to the device failed, SSH error: {transport_error}")
-        raise SystemExit(stdout or f"sshpass cat fallback upload failed for remote path {dest} with rc={proc.returncode}")
+        raise SystemExit(stdout or f"sshpass cat fallback upload failed for {src.name} to remote path {dest} with rc={proc.returncode}")
     _verify_remote_size(connection, src, dest, timeout=30)
