@@ -385,7 +385,7 @@ def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 1
             break
         time.sleep(1)
     if proc is None:
-        raise SystemExit(f"sshpass cat fallback upload failed for remote path {dest}")
+        raise SystemExit(f"sshpass cat fallback upload failed for {src.name} to remote path {dest}")
     if proc.returncode != 0:
         stdout = proc.stdout.decode("utf-8", errors="replace").strip()
         transport_error = _extract_ssh_transport_error(stdout)
