@@ -68,9 +68,7 @@ def build_template_bundle(
     mdns_log_enabled = "0"
     mdns_log_file = "/mnt/Memory/samba4/var/mdns.log"
     if debug_logging:
-        if not data_root:
-            raise ValueError("data_root is required when debug_logging is enabled")
-        smbd_log_file = f"{data_root}/samba4-logs/log.smbd"
+        smbd_log_file = "__DATA_ROOT__/samba4-logs/log.smbd"
         smbd_max_log_size = "1048576"
         smbd_log_level_line = "\n    log level = 5 vfs:8 fruit:8"
         smbd_disk_logging_enabled = "1"

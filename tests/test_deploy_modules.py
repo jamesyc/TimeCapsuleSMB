@@ -1083,9 +1083,9 @@ class DeployModuleTests(unittest.TestCase):
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values, debug_logging=True, data_root="/Volumes/dk2/ShareRoot")
+        bundle = build_template_bundle(values, debug_logging=True)
         rendered = render_template("smb.conf.template", bundle.smbconf_replacements)
-        self.assertIn("log file = /Volumes/dk2/ShareRoot/samba4-logs/log.smbd", rendered)
+        self.assertIn("log file = __DATA_ROOT__/samba4-logs/log.smbd", rendered)
         self.assertIn("max log size = 1048576", rendered)
         self.assertIn("log level = 5 vfs:8 fruit:8", rendered)
         self.assertIn("max log size = 1048576\n    log level = 5 vfs:8 fruit:8\n    smb ports = 445", rendered)
