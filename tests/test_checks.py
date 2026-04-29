@@ -1291,6 +1291,39 @@ class CheckTests(unittest.TestCase):
             ],
         )
 
+    def test_check_authenticated_smb_file_ops_detailed_reports_initial_timeout(self) -> None:
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+            with mock.patch(
+                "timecapsulesmb.checks.smb.run_local_capture",
+                side_effect=subprocess.TimeoutExpired(cmd=["smbclient"], timeout=20),
+            ):
+                results = check_authenticated_smb_file_ops_detailed("admin", "pw", "server.local", "Data")
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].status, "FAIL")
+        self.assertEqual(results[0].message, "SMB directory create timed out for admin@server.local/Data")
+
+    def test_check_authenticated_smb_file_ops_detailed_preserves_passes_before_later_timeout(self) -> None:
+        def fake_run_local_capture(args, timeout=15):
+            command_text = args[-1]
+            if 'get ".sample.txt"' in command_text:
+                raise subprocess.TimeoutExpired(cmd=args, timeout=timeout)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+            with mock.patch("timecapsulesmb.checks.smb.run_local_capture", side_effect=fake_run_local_capture):
+                results = check_authenticated_smb_file_ops_detailed("admin", "pw", "server.local", "Data")
+
+        self.assertEqual(
+            [(result.status, result.message) for result in results],
+            [
+                ("PASS", "SMB directory create works for admin@server.local/Data"),
+                ("PASS", "SMB file create works for admin@server.local/Data"),
+                ("PASS", "SMB file overwrite/edit works for admin@server.local/Data"),
+                ("FAIL", "SMB file read timed out for admin@server.local/Data"),
+            ],
+        )
+
     def test_check_authenticated_smb_listing_uses_neutral_smbclient_config(self) -> None:
         captured_args = None
 
