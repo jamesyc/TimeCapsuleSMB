@@ -104,7 +104,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(reparsed["TC_AIRPORT_SYAP"], "119")
 
     def test_validate_airport_syap_accepts_known_codes(self) -> None:
-        for value in ("106", "109", "113", "116", "119"):
+        for value in ("104", "105", "106", "108", "109", "113", "114", "116", "117", "119", "120"):
             self.assertIsNone(validate_airport_syap(value, "Airport Utility syAP code"))
 
     def test_validate_airport_syap_rejects_invalid_values(self) -> None:
@@ -114,14 +114,21 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(validate_airport_syap("", "Airport Utility syAP code"), "Airport Utility syAP code cannot be blank.")
 
     def test_airport_syap_to_model_mapping_matches_supported_models(self) -> None:
+        self.assertEqual(AIRPORT_SYAP_TO_MODEL["104"], "AirPort5,104")
+        self.assertEqual(AIRPORT_SYAP_TO_MODEL["105"], "AirPort5,105")
         self.assertEqual(AIRPORT_SYAP_TO_MODEL["106"], "TimeCapsule6,106")
+        self.assertEqual(AIRPORT_SYAP_TO_MODEL["108"], "AirPort5,108")
         self.assertEqual(AIRPORT_SYAP_TO_MODEL["109"], "TimeCapsule6,109")
         self.assertEqual(AIRPORT_SYAP_TO_MODEL["113"], "TimeCapsule6,113")
+        self.assertEqual(AIRPORT_SYAP_TO_MODEL["114"], "AirPort5,114")
         self.assertEqual(AIRPORT_SYAP_TO_MODEL["116"], "TimeCapsule6,116")
+        self.assertEqual(AIRPORT_SYAP_TO_MODEL["117"], "AirPort5,117")
         self.assertEqual(AIRPORT_SYAP_TO_MODEL["119"], "TimeCapsule8,119")
+        self.assertEqual(AIRPORT_SYAP_TO_MODEL["120"], "AirPort7,120")
 
     def test_validate_mdns_device_model_matches_syap_requires_exact_match(self) -> None:
         self.assertIsNone(validate_mdns_device_model_matches_syap("119", "TimeCapsule8,119"))
+        self.assertIsNone(validate_mdns_device_model_matches_syap("120", "AirPort7,120"))
         self.assertEqual(
             validate_mdns_device_model_matches_syap("119", "TimeCapsule"),
             'TC_MDNS_DEVICE_MODEL "TimeCapsule" must match the configured '
@@ -131,6 +138,11 @@ class ConfigTests(unittest.TestCase):
             validate_mdns_device_model_matches_syap("119", "TimeCapsule6,113"),
             'TC_MDNS_DEVICE_MODEL "TimeCapsule6,113" must match the configured '
             'syAP expected value "TimeCapsule8,119".'
+        )
+        self.assertEqual(
+            validate_mdns_device_model_matches_syap("120", "TimeCapsule8,119"),
+            'TC_MDNS_DEVICE_MODEL "TimeCapsule8,119" must match the configured '
+            'syAP expected value "AirPort7,120".'
         )
         self.assertIsNone(validate_mdns_device_model_matches_syap("", "TimeCapsule"))
 
@@ -238,17 +250,31 @@ class ConfigTests(unittest.TestCase):
         )
 
     def test_validate_mdns_device_model_accepts_supported_values(self) -> None:
-        for value in ("TimeCapsule", "TimeCapsule6,106", "TimeCapsule6,109", "TimeCapsule6,113", "TimeCapsule6,116", "TimeCapsule8,119"):
+        for value in (
+            "TimeCapsule",
+            "AirPort",
+            "AirPort5,104",
+            "AirPort5,105",
+            "TimeCapsule6,106",
+            "AirPort5,108",
+            "TimeCapsule6,109",
+            "TimeCapsule6,113",
+            "AirPort5,114",
+            "TimeCapsule6,116",
+            "AirPort5,117",
+            "TimeCapsule8,119",
+            "AirPort7,120",
+        ):
             self.assertIsNone(validate_mdns_device_model(value, "mDNS device model hint"))
 
     def test_validate_mdns_device_model_rejects_unsupported_values(self) -> None:
         self.assertEqual(
             validate_mdns_device_model("AirPortTimeCapsule", "mDNS device model hint"),
-            "mDNS device model hint is not a supported Time Capsule model.",
+            "mDNS device model hint is not a supported AirPort storage device model.",
         )
         self.assertEqual(
             validate_mdns_device_model("TimeCapsule7,117", "mDNS device model hint"),
-            "mDNS device model hint is not a supported Time Capsule model.",
+            "mDNS device model hint is not a supported AirPort storage device model.",
         )
         self.assertEqual(validate_mdns_device_model("", "mDNS device model hint"), "mDNS device model hint cannot be blank.")
 
@@ -338,33 +364,33 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(validate_payload_dir_name("-samba4", "Persistent payload directory name"), "Persistent payload directory name must not start with a hyphen.")
 
     def test_validate_net_iface_accepts_safe_values(self) -> None:
-        self.assertIsNone(validate_net_iface("bridge0", "Network interface on the Time Capsule"))
-        self.assertIsNone(validate_net_iface("bge0.100", "Network interface on the Time Capsule"))
+        self.assertIsNone(validate_net_iface("bridge0", "Network interface on the device"))
+        self.assertIsNone(validate_net_iface("bge0.100", "Network interface on the device"))
 
     def test_validate_net_iface_rejects_bad_values(self) -> None:
-        self.assertEqual(validate_net_iface("", "Network interface on the Time Capsule"), "Network interface on the Time Capsule cannot be blank.")
-        self.assertEqual(validate_net_iface("bridge 0", "Network interface on the Time Capsule"), "Network interface on the Time Capsule must not contain whitespace.")
+        self.assertEqual(validate_net_iface("", "Network interface on the device"), "Network interface on the device cannot be blank.")
+        self.assertEqual(validate_net_iface("bridge 0", "Network interface on the device"), "Network interface on the device must not contain whitespace.")
         self.assertEqual(
-            validate_net_iface("bridge0;reboot", "Network interface on the Time Capsule"),
-            "Network interface on the Time Capsule may contain only letters, numbers, dots, underscores, colons, and hyphens.",
+            validate_net_iface("bridge0;reboot", "Network interface on the device"),
+            "Network interface on the device may contain only letters, numbers, dots, underscores, colons, and hyphens.",
         )
 
     def test_validate_ssh_target_accepts_user_at_host_targets(self) -> None:
-        self.assertIsNone(validate_ssh_target("root@10.0.0.2", "Time Capsule SSH target"))
-        self.assertIsNone(validate_ssh_target("root@timecapsule.local", "Time Capsule SSH target"))
-        self.assertIsNone(validate_ssh_target("admin_user@wan.example.com", "Time Capsule SSH target"))
+        self.assertIsNone(validate_ssh_target("root@10.0.0.2", "Device SSH target"))
+        self.assertIsNone(validate_ssh_target("root@timecapsule.local", "Device SSH target"))
+        self.assertIsNone(validate_ssh_target("admin_user@wan.example.com", "Device SSH target"))
 
     def test_validate_ssh_target_rejects_bare_or_unsafe_targets(self) -> None:
         self.assertEqual(
-            validate_ssh_target("10.0.0.2", "Time Capsule SSH target"),
-            "Time Capsule SSH target must include a username, like root@192.168.1.101.",
+            validate_ssh_target("10.0.0.2", "Device SSH target"),
+            "Device SSH target must include a username, like root@192.168.1.101.",
         )
-        self.assertEqual(validate_ssh_target("@10.0.0.2", "Time Capsule SSH target"), "Time Capsule SSH target must include a username before @.")
-        self.assertEqual(validate_ssh_target("root@", "Time Capsule SSH target"), "Time Capsule SSH target must include a host after @.")
-        self.assertEqual(validate_ssh_target("root user@10.0.0.2", "Time Capsule SSH target"), "Time Capsule SSH target must not contain whitespace.")
+        self.assertEqual(validate_ssh_target("@10.0.0.2", "Device SSH target"), "Device SSH target must include a username before @.")
+        self.assertEqual(validate_ssh_target("root@", "Device SSH target"), "Device SSH target must include a host after @.")
+        self.assertEqual(validate_ssh_target("root user@10.0.0.2", "Device SSH target"), "Device SSH target must not contain whitespace.")
         self.assertEqual(
-            validate_ssh_target("root;reboot@10.0.0.2", "Time Capsule SSH target"),
-            "Time Capsule SSH target username may contain only letters, numbers, dots, underscores, and hyphens.",
+            validate_ssh_target("root;reboot@10.0.0.2", "Device SSH target"),
+            "Device SSH target username may contain only letters, numbers, dots, underscores, and hyphens.",
         )
 
     def test_validate_config_values_uses_profiles(self) -> None:

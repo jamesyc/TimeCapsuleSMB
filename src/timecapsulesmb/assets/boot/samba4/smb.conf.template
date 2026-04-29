@@ -29,7 +29,7 @@
     deadtime = 60
     reset on zero vc = yes
     fruit:aapl = yes
-    fruit:model = TimeCapsule8,119
+    fruit:model = __MDNS_DEVICE_MODEL__
     fruit:advertise_fullsync = true
     fruit:nfs_aces = no
     fruit:veto_appledouble = yes

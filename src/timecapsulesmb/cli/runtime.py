@@ -43,7 +43,7 @@ def resolve_ssh_credentials(
     password = config.get("TC_PASSWORD")
     if not password and not allow_empty_password:
         import getpass
-        password = getpass.getpass("Time Capsule root password: ")
+        password = getpass.getpass("Device root password: ")
     return host, password
 
 

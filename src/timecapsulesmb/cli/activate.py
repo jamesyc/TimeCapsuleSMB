@@ -5,6 +5,7 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import load_env_values
+from timecapsulesmb.core.config import airport_exact_display_name
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.dry_run import format_activation_plan
 from timecapsulesmb.deploy.executor import run_remote_actions
@@ -17,7 +18,7 @@ from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUID
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Manually activate an already-deployed NetBSD4 Time Capsule payload.")
+    parser = argparse.ArgumentParser(description="Manually activate an already-deployed NetBSD4 AirPort storage device payload.")
     parser.add_argument("--yes", action="store_true", help="Do not prompt before restarting the deployed Samba services")
     parser.add_argument("--dry-run", action="store_true", help="Print activation actions without making changes")
     args = parser.parse_args(argv)
@@ -34,17 +35,18 @@ def main(argv: Optional[list[str]] = None) -> int:
             raise SystemExit(compatibility_message)
         print(compatibility_message)
         if not is_netbsd4_payload_family(compatibility.payload_family):
-            raise SystemExit("activate is only supported for NetBSD4 Time Capsules; use deploy for persistent NetBSD6 installs.")
+            raise SystemExit("activate is only supported for NetBSD4 AirPort storage devices; use deploy for persistent NetBSD6 installs.")
 
         plan = build_netbsd4_activation_plan()
+        device_name = airport_exact_display_name(values)
 
         if args.dry_run:
-            print(format_activation_plan(plan))
+            print(format_activation_plan(plan, device_name=device_name))
             command_context.succeed()
             return 0
 
         if not args.yes:
-            print("This will start the deployed Samba payload on the Time Capsule.")
+            print(f"This will start the deployed Samba payload on the {device_name}.")
             print(color_red(NETBSD4_REBOOT_GUIDANCE))
             answer = input("Continue with NetBSD4 activation? [y/N]: ").strip().lower()
             if answer not in {"y", "yes"}:

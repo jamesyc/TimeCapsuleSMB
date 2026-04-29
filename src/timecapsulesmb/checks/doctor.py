@@ -273,7 +273,7 @@ def run_doctor_checks(
 
     if proxied_ssh and not skip_bonjour:
         bonjour_reason = "Bonjour check skipped for SSH-proxied target"
-        add_result(CheckResult("SKIP", "Bonjour check skipped for SSH-proxied target; local mDNS may find a different Time Capsule"))
+        add_result(CheckResult("SKIP", "Bonjour check skipped for SSH-proxied target; local mDNS may find a different AirPort device"))
     elif not skip_bonjour:
         try:
             bonjour_expected = build_bonjour_expected_identity(values)

@@ -8,10 +8,12 @@ from dataclasses import dataclass
 from typing import Optional
 
 from timecapsulesmb.core.config import (
+    AIRPORT_DEVICE_IDENTITIES,
     CONFIG_VALIDATORS,
     CONFIG_FIELDS,
     DEFAULTS,
     ENV_PATH,
+    airport_identity_from_values,
     extract_host,
     infer_mdns_device_model_from_airport_syap,
     parse_env_values,
@@ -115,15 +117,15 @@ def choose_device(records):
 
 
 def discover_default_record(existing: dict[str, str]) -> Optional[BonjourResolvedService]:
-    print("Attempting to discover Time Capsules on the local network via mDNS...", flush=True)
+    print("Attempting to discover Time Capsule/Airport Extreme devices on the local network via mDNS...", flush=True)
     records = discover_resolved_records(AIRPORT_SERVICE, timeout=DEFAULT_BROWSE_TIMEOUT_SEC)
     if not records:
-        print("No Time Capsules discovered. Falling back to manual SSH target entry.\n", flush=True)
+        print("No Time Capsule/Airport Extreme devices discovered. Falling back to manual SSH target entry.\n", flush=True)
         return None
     list_devices(records)
     selected = choose_device(records)
     if selected is None:
-        existing_target = valid_existing_config_value(existing, "TC_HOST", "Time Capsule SSH target") or DEFAULTS["TC_HOST"]
+        existing_target = valid_existing_config_value(existing, "TC_HOST", "Device SSH target") or DEFAULTS["TC_HOST"]
         print(f"Discovery skipped. Falling back to {existing_target}.\n", flush=True)
         return None
 
@@ -137,11 +139,11 @@ def prompt_host_and_password(existing: dict[str, str], values: dict[str, str], d
     host_default = values.get("TC_HOST") or discovered_host or valid_existing_config_value(
         existing,
         "TC_HOST",
-        "Time Capsule SSH target",
+        "Device SSH target",
     ) or DEFAULTS["TC_HOST"]
     password_default = values.get("TC_PASSWORD", existing.get("TC_PASSWORD", ""))
-    values["TC_HOST"] = prompt_valid_config_value("TC_HOST", "Time Capsule SSH target", host_default)
-    values["TC_PASSWORD"] = prompt("Time Capsule root password", password_default, True)
+    values["TC_HOST"] = prompt_valid_config_value("TC_HOST", "Device SSH target", host_default)
+    values["TC_PASSWORD"] = prompt("Device root password", password_default, True)
 
 
 def validated_value_or_empty(key: str, value: str, label: str) -> str:
@@ -164,17 +166,36 @@ def saved_value_choice(existing: dict[str, str], key: str, label: str) -> Option
     return ConfigureValueChoice(value=value, source="saved")
 
 
-def print_syap_prompt_help() -> None:
+def saved_syap_value_for_candidates(
+    saved_syap_choice: ConfigureValueChoice | None,
+    candidate_syaps: tuple[str, ...],
+) -> str | None:
+    if saved_syap_choice is None:
+        return None
+    if candidate_syaps and saved_syap_choice.value not in candidate_syaps:
+        return None
+    return saved_syap_choice.value
+
+
+def apply_device_storage_defaults(values: dict[str, str]) -> None:
+    identity = airport_identity_from_values(values)
+    if identity is not None and identity.family == "airport_extreme":
+        values["TC_SHARE_USE_DISK_ROOT"] = "true"
+
+
+def print_syap_prompt_help(syap_candidates: tuple[str, ...] | None = None) -> None:
     print("\nWarning: configure could not discover Airport Utility syAP from _airport._tcp.")
     print("Enter the device's syAP code so _airport._tcp can be cloned accurately.")
     print("")
-    print("Generation                Model identifier    syAP")
-    print("------------------------  ------------------  ----")
-    print("1st gen (early 2008)      TimeCapsule6,106    106")
-    print("2nd gen (early 2009)      TimeCapsule6,109    109")
-    print("3rd gen (late 2009)       TimeCapsule6,113    113")
-    print("4th gen (mid 2011)        TimeCapsule6,116    116")
-    print("5th gen (mid 2013)        TimeCapsule8,119    119")
+    print("Device                           Model identifier    syAP")
+    print("-------------------------------  ------------------  ----")
+    identities = AIRPORT_DEVICE_IDENTITIES
+    if syap_candidates is not None:
+        allowed = set(syap_candidates)
+        identities = tuple(identity for identity in identities if identity.syap in allowed)
+    for identity in identities:
+        print(f"{identity.display_name:<31}  {identity.mdns_model:<18}  {identity.syap}")
+    print("")
 
 
 def prompt_valid_config_value(key: str, label: str, current: str, secret: bool = False) -> str:
@@ -437,7 +458,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 probed_interfaces = probe_remote_interface_candidates_conn(connection)
                 command_context.add_debug_fields(interface_candidates=probed_interfaces)
                 break
-            print("\nThe provided Time Capsule SSH target and password did not work.")
+            print("\nThe provided AirPort SSH target and password did not work.")
             if confirm("Save this information still?", True):
                 command_context.add_debug_fields(configure_saved_without_ssh_authentication=True)
                 break
@@ -487,6 +508,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         for key, label, default, secret in CONFIG_FIELDS[2:]:
             if key == "TC_AIRPORT_SYAP":
+                candidate_syaps = probed_device.syap_candidates if probed_device is not None else ()
+                saved_syap_value = saved_syap_value_for_candidates(saved_syap_choice, candidate_syaps)
                 if discovered_syap_choice is not None:
                     print_automatic_value_choice(key, discovered_syap_choice)
                     values[key] = discovered_syap_choice.value
@@ -496,23 +519,34 @@ def main(argv: Optional[list[str]] = None) -> int:
                     values[key] = inferred_syap_choice.value
                     continue
                 if discovered_airport_identity:
-                    print_syap_prompt_help()
+                    print_syap_prompt_help(candidate_syaps or None)
                     if saved_syap_choice is not None:
                         print_saved_value_hint(saved_syap_choice.value)
-                    values[key] = prompt_valid_config_value(key, label, saved_syap_choice.value if saved_syap_choice is not None else "")
+                    if candidate_syaps:
+                        values[key] = prompt_config_value_from_candidates(
+                            key,
+                            label,
+                            saved_syap_value or "",
+                            candidate_syaps,
+                            invalid_message=f"From detected connection, syAP code should be one of: {', '.join(candidate_syaps)}",
+                        )
+                    else:
+                        values[key] = prompt_valid_config_value(key, label, saved_syap_choice.value if saved_syap_choice is not None else "")
                     continue
-                if saved_syap_choice is not None:
+                if saved_syap_choice is not None and saved_syap_value is not None:
                     print_automatic_value_choice(key, saved_syap_choice)
-                    values[key] = saved_syap_choice.value
+                    values[key] = saved_syap_value
                     continue
-                if probed_device and probed_device.syap_candidates:
-                    print_syap_prompt_help()
+                if candidate_syaps:
+                    if saved_syap_choice is not None:
+                        print_saved_value_hint(saved_syap_choice.value)
+                    print_syap_prompt_help(candidate_syaps)
                     values[key] = prompt_config_value_from_candidates(
                         key,
                         label,
                         "",
-                        probed_device.syap_candidates,
-                        invalid_message=f"From detected connection, syAP code should be one of: {', '.join(probed_device.syap_candidates)}",
+                        candidate_syaps,
+                        invalid_message=f"From detected connection, syAP code should be one of: {', '.join(candidate_syaps)}",
                     )
                     continue
                 print_syap_prompt_help()
@@ -612,6 +646,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 continue
             values[key] = prompt_config_value(existing, key, label, default, secret=secret)
 
+        apply_device_storage_defaults(values)
         values["TC_CONFIGURE_ID"] = configure_id
         command_context.set_stage("write_env")
         write_env_file(ENV_PATH, values)
@@ -625,7 +660,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("- Prep your device to enable SSH on it, run:")
         print("    .venv/bin/tcapsule prep-device")
         print("")
-        print("- Deploy this configuration to your Time Capsule, run:")
+        print("- Deploy this configuration to your Time Capsule/Airport Extreme device, run:")
         print("    .venv/bin/tcapsule deploy")
         command_context.succeed()
         return 0

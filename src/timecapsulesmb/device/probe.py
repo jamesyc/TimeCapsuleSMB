@@ -3,6 +3,7 @@ from __future__ import annotations
 import shlex
 import subprocess
 import time
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -11,7 +12,7 @@ from typing import TYPE_CHECKING
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, ssh_opts_use_proxy
-from timecapsulesmb.core.config import AIRPORT_SYAP_TO_MODEL
+from timecapsulesmb.core.config import AIRPORT_IDENTITIES_BY_MODEL, AIRPORT_IDENTITIES_BY_SYAP
 
 if TYPE_CHECKING:
     from timecapsulesmb.device.compat import DeviceCompatibility
@@ -189,6 +190,50 @@ class MountedVolume:
     mountpoint: str
 
 
+DISK_NAME_CANDIDATES_SH = r'''
+append_candidate() {
+  candidate=$1
+  case " $candidates " in
+    *" $candidate "*)
+      ;;
+    *)
+      candidates="$candidates $candidate"
+      ;;
+  esac
+}
+
+disk_name_candidates() {
+  candidates=""
+  dmesg_disk_lines=$(/sbin/dmesg 2>/dev/null | /usr/bin/sed -n '/^dk[0-9][0-9]* at /p' || true)
+  metadata_wedges=""
+  for dev in $(echo "$dmesg_disk_lines" | /usr/bin/sed -n 's/^\(dk[0-9][0-9]*\) at .*: APconfig$/\1/p;s/^\(dk[0-9][0-9]*\) at .*: APswap$/\1/p'); do
+    metadata_wedges="$metadata_wedges $dev"
+  done
+
+  for dev in $(echo "$dmesg_disk_lines" | /usr/bin/sed -n 's/^\(dk[0-9][0-9]*\) at .*: APdata$/\1/p'); do
+    append_candidate "$dev"
+  done
+  for dev in $(/sbin/sysctl -n hw.disknames 2>/dev/null); do
+    case "$dev" in
+      dk[0-9]*)
+        case " $metadata_wedges " in
+          *" $dev "*)
+            ;;
+          *)
+            append_candidate "$dev"
+            ;;
+        esac
+        ;;
+    esac
+  done
+  if [ -z "$candidates" ]; then
+    candidates=" dk2 dk3"
+  fi
+  echo "$candidates"
+}
+'''
+
+
 @dataclass(frozen=True)
 class ProbeResult:
     ssh_port_reachable: bool
@@ -363,35 +408,102 @@ esac
     return "unknown"
 
 
-def extract_airport_identity_from_acpdata(text: str) -> AirportIdentityProbeResult:
-    for syap, model in AIRPORT_SYAP_TO_MODEL.items():
+def extract_airport_identity_from_text(text: str) -> AirportIdentityProbeResult:
+    for model, identity in AIRPORT_IDENTITIES_BY_MODEL.items():
         if model in text:
-            return AirportIdentityProbeResult(model=model, syap=syap, detail=f"found {model} in ACPData")
-    return AirportIdentityProbeResult(model=None, syap=None, detail="no TimeCapsule model found in ACPData")
+            return AirportIdentityProbeResult(model=model, syap=identity.syap, detail=f"found AirPort model {model}")
+    return AirportIdentityProbeResult(model=None, syap=None, detail="no supported AirPort model found")
+
+
+def _parse_airport_syap_value(value: str) -> str | None:
+    stripped = value.strip()
+    if not stripped:
+        return None
+    try:
+        syap = int(stripped, 0)
+    except ValueError:
+        return None
+    return str(syap)
+
+
+def _extract_airport_syap_from_acp_output(text: str) -> tuple[str | None, str | None]:
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = re.match(r"^syAP\s*=\s*(\S+)", line)
+        if match:
+            parsed = _parse_airport_syap_value(match.group(1))
+            if parsed is None:
+                return None, f"AirPort identity syAP was not parseable: {match.group(1)}"
+            return parsed, None
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or any(char.isalpha() for char in line.replace("x", "").replace("X", "")):
+            continue
+        parsed = _parse_airport_syap_value(line)
+        if parsed is not None:
+            return parsed, None
+
+    return None, None
+
+
+def extract_airport_identity_from_acp_output(text: str) -> AirportIdentityProbeResult:
+    model_result = extract_airport_identity_from_text(text)
+    syap, syap_error = _extract_airport_syap_from_acp_output(text)
+    if syap_error is not None and model_result.model is None:
+        return AirportIdentityProbeResult(model=None, syap=None, detail=syap_error)
+
+    if model_result.model is not None:
+        expected_syap = model_result.syap
+        if syap is not None and syap != expected_syap:
+            return AirportIdentityProbeResult(
+                model=None,
+                syap=None,
+                detail=f"AirPort identity mismatch: syAM {model_result.model} expects syAP {expected_syap}, got {syap}",
+            )
+        if syap_error is not None:
+            return AirportIdentityProbeResult(
+                model=model_result.model,
+                syap=model_result.syap,
+                detail=f"{model_result.detail}; {syap_error}",
+            )
+        return model_result
+
+    if syap is not None:
+        identity = AIRPORT_IDENTITIES_BY_SYAP.get(syap)
+        if identity is None:
+            return AirportIdentityProbeResult(model=None, syap=None, detail=f"unsupported AirPort syAP {syap}")
+        return AirportIdentityProbeResult(
+            model=identity.mdns_model,
+            syap=identity.syap,
+            detail=f"found AirPort syAP {identity.syap}",
+        )
+
+    if syap_error is not None:
+        return AirportIdentityProbeResult(model=None, syap=None, detail=syap_error)
+    return AirportIdentityProbeResult(model=None, syap=None, detail="no supported AirPort identity found")
 
 
 def probe_remote_airport_identity_conn(connection: SshConnection) -> AirportIdentityProbeResult:
     script = r"""
-if [ ! -f /mnt/Flash/ACPData.bin ]; then
+if [ ! -x /usr/bin/acp ]; then
   exit 0
 fi
-if [ -x /usr/bin/strings ]; then
-  /usr/bin/strings /mnt/Flash/ACPData.bin 2>/dev/null
-else
-  /usr/bin/sed -n 's/.*\(TimeCapsule[0-9],[0-9][0-9][0-9]\).*/\1/p' /mnt/Flash/ACPData.bin 2>/dev/null
-fi | /usr/bin/sed -n 's/.*\(TimeCapsule[0-9],[0-9][0-9][0-9]\).*/\1/p' | /usr/bin/sed -n '1p'
+/usr/bin/acp syAP syAM 2>/dev/null
 """
     proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=30)
     if proc.returncode != 0:
-        return AirportIdentityProbeResult(model=None, syap=None, detail=f"could not read ACPData: rc={proc.returncode}")
+        return AirportIdentityProbeResult(model=None, syap=None, detail=f"could not read AirPort identity: rc={proc.returncode}")
     if not proc.stdout:
-        return AirportIdentityProbeResult(model=None, syap=None, detail="ACPData missing or empty")
-    return extract_airport_identity_from_acpdata(proc.stdout)
+        return AirportIdentityProbeResult(model=None, syap=None, detail="AirPort identity unavailable: /usr/bin/acp missing or empty output")
+    return extract_airport_identity_from_acp_output(proc.stdout)
 
 
 def discover_mounted_volume_conn(connection: SshConnection) -> MountedVolume:
-    script = r'''
-for dev in dk2 dk3; do
+    script = DISK_NAME_CANDIDATES_SH + r'''
+for dev in $(disk_name_candidates); do
   volume="/Volumes/$dev"
   if [ ! -d "$volume" ]; then
     continue
@@ -412,7 +524,7 @@ exit 1
     lines = proc.stdout.strip().splitlines()
     result = lines[-1].strip() if lines else ""
     if proc.returncode != 0 or not result:
-        raise SystemExit("Failed to discover a mounted Time Capsule HFS data volume on the device.")
+        raise SystemExit("Failed to discover a mounted AirPort HFS data volume on the device.")
     device, mountpoint = result.split(" ", 1)
     return MountedVolume(device=device, mountpoint=mountpoint)
 
@@ -760,8 +872,8 @@ def discover_volume_root_conn(connection: SshConnection) -> str:
     except SystemExit:
         pass
 
-    script = r'''
-for dev in dk2 dk3; do
+    script = DISK_NAME_CANDIDATES_SH + r'''
+for dev in $(disk_name_candidates); do
   if [ ! -b "/dev/$dev" ]; then
     continue
   fi
@@ -802,7 +914,7 @@ exit 1
     lines = proc.stdout.strip().splitlines()
     volume = lines[-1].strip() if lines else ""
     if not volume:
-        raise SystemExit("Failed to discover a Time Capsule volume root on the device.")
+        raise SystemExit("Failed to discover an AirPort volume root on the device.")
     return volume
 
 

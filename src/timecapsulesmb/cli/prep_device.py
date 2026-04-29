@@ -49,7 +49,7 @@ def wait_for_device_up(
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Use the configured Time Capsule target from .env to enable or disable SSH via AirPyrt.")
+    parser = argparse.ArgumentParser(description="Use the configured device target from .env to enable or disable SSH via AirPyrt.")
     parser.parse_args(argv)
 
     values = parse_env_values(ENV_PATH, defaults={})

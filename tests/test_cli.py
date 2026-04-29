@@ -21,7 +21,7 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.cli import activate, bootstrap, configure, deploy, discover, doctor, fsck, prep_device, uninstall
 from timecapsulesmb.cli.main import main
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.core.config import DEFAULTS
+from timecapsulesmb.core.config import DEFAULTS, airport_exact_display_name, airport_family_display_name
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
 from timecapsulesmb.device.probe import (
     MountedVolume,
@@ -230,6 +230,19 @@ class CliTests(unittest.TestCase):
             os_release="6.0",
             arch="earmv4",
             elf_endianness="little",
+            airport_model="TimeCapsule8,119",
+            airport_syap="119",
+        )
+
+    def make_probe_result_netbsd6_no_identity(self) -> ProbeResult:
+        return ProbeResult(
+            ssh_port_reachable=True,
+            ssh_authenticated=True,
+            error=None,
+            os_name="NetBSD",
+            os_release="6.0",
+            arch="earmv4",
+            elf_endianness="little",
         )
 
     def make_probe_result_netbsd6_unknown(self) -> ProbeResult:
@@ -265,7 +278,7 @@ class CliTests(unittest.TestCase):
             elf_endianness="little",
         )
 
-    def make_probe_result_netbsd4le_acpdata_113(self) -> ProbeResult:
+    def make_probe_result_netbsd4le_airport_identity_113(self) -> ProbeResult:
         return ProbeResult(
             ssh_port_reachable=True,
             ssh_authenticated=True,
@@ -289,7 +302,7 @@ class CliTests(unittest.TestCase):
             elf_endianness="big",
         )
 
-    def make_probe_result_netbsd4be_acpdata_106(self) -> ProbeResult:
+    def make_probe_result_netbsd4be_airport_identity_106(self) -> ProbeResult:
         return ProbeResult(
             ssh_port_reachable=True,
             ssh_authenticated=True,
@@ -342,9 +355,9 @@ class CliTests(unittest.TestCase):
 
     def configure_prompt_defaults(self, *, host: str = "root@10.0.0.2", password: str = "pw"):
         def fake_prompt(label, default, _secret):
-            if label == "Time Capsule SSH target":
+            if label == "Device SSH target":
                 return host
-            if label == "Time Capsule root password":
+            if label == "Device root password":
                 return password
             if label == "Airport Utility syAP code":
                 return "119"
@@ -430,7 +443,7 @@ class CliTests(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("Detected host platform: Linux", text)
         self.assertNotIn("  2. /Users", text)
-        self.assertIn("  2. If SSH is already enabled on the Time Capsule, continue to deploy. ", text)
+        self.assertIn("  2. If SSH is already enabled on the Time Capsule/AirPort Extreme device, continue to deploy. ", text)
         self.assertIn("\033[31mOtherwise enable SSH manually with `prep-device` from a Mac.\033[0m", text)
         self.assertIn("  3. ", text)
         self.assertIn("  4. ", text)
@@ -665,7 +678,7 @@ class CliTests(unittest.TestCase):
         self.assertIn(f"Review the .env file configuration: wrote {configure.ENV_PATH}", text)
         self.assertIn("- Prep your device to enable SSH on it, run:", text)
         self.assertIn("    .venv/bin/tcapsule prep-device", text)
-        self.assertIn("- Deploy this configuration to your Time Capsule, run:", text)
+        self.assertIn("- Deploy this configuration to your Time Capsule/Airport Extreme device, run:", text)
         self.assertIn("    .venv/bin/tcapsule deploy", text)
 
     def test_configure_hidden_share_use_disk_root_arg_writes_true(self) -> None:
@@ -700,6 +713,44 @@ class CliTests(unittest.TestCase):
                                     with redirect_stdout(output):
                                         rc = configure.main(["--share-use-disk-root"])
         self.assertEqual(rc, 0)
+        self.assertEqual(fake_values["TC_SHARE_USE_DISK_ROOT"], "true")
+
+    def test_configure_airport_extreme_sets_share_use_disk_root_true(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+
+        def fake_prompt(label, default, _secret):
+            if label == "Device root password":
+                return "rootpw"
+            if label == "Airport Utility syAP code":
+                return "120"
+            if label == "mDNS device model hint":
+                raise AssertionError("mDNS device model should be derived from the final syAP")
+            return default
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        interface_probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("192.168.1.217",), up=True, active=True, loopback=False),
+            ),
+            preferred_iface="bridge0",
+            detail="preferred interface bridge0",
+        )
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6_no_identity())):
+                        with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates_conn", return_value=interface_probe):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(fake_values["TC_AIRPORT_SYAP"], "120")
+        self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "AirPort7,120")
         self.assertEqual(fake_values["TC_SHARE_USE_DISK_ROOT"], "true")
 
     def test_configure_plain_rerun_preserves_existing_share_use_disk_root_true(self) -> None:
@@ -959,7 +1010,7 @@ class CliTests(unittest.TestCase):
         ])
 
         def fake_prompt(label, default, _secret):
-            if label == "Time Capsule SSH target":
+            if label == "Device SSH target":
                 return default
             if label == "mDNS device model hint":
                 return default
@@ -996,7 +1047,7 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, default, _secret):
             seen_defaults[label] = default
-            if label == "Time Capsule SSH target":
+            if label == "Device SSH target":
                 return "root@10.0.0.2"
             if label == "mDNS device model hint":
                 return default
@@ -1035,7 +1086,7 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, default, _secret):
             seen_defaults[label] = default
-            if label == "Network interface on the Time Capsule":
+            if label == "Network interface on the device":
                 return default
             if label in {"Airport Utility syAP code", "mDNS device model hint"}:
                 raise AssertionError(f"{label} should be auto-filled for NetBSD 6 little-endian")
@@ -1062,7 +1113,7 @@ class CliTests(unittest.TestCase):
                                 with redirect_stdout(output):
                                     rc = configure.main([])
         self.assertEqual(rc, 0)
-        self.assertEqual(seen_defaults["Network interface on the Time Capsule"], "bcmeth1")
+        self.assertEqual(seen_defaults["Network interface on the device"], "bcmeth1")
         self.assertEqual(fake_values["TC_NET_IFACE"], "bcmeth1")
         self.assertIn("Found network interfaces with IPv4 on the device:", output.getvalue())
         self.assertIn("bcmeth1: 10.0.1.1 (suggested)", output.getvalue())
@@ -1091,7 +1142,7 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, default, _secret):
             seen_defaults[label] = default
-            if label in {"Time Capsule SSH target", "Network interface on the Time Capsule"}:
+            if label in {"Device SSH target", "Network interface on the device"}:
                 return default
             if label in {"Airport Utility syAP code", "mDNS device model hint"}:
                 raise AssertionError(f"{label} should be auto-filled")
@@ -1120,7 +1171,7 @@ class CliTests(unittest.TestCase):
                                         with redirect_stdout(output):
                                             rc = configure.main([])
         self.assertEqual(rc, 0)
-        self.assertEqual(seen_defaults["Network interface on the Time Capsule"], "bcmeth1")
+        self.assertEqual(seen_defaults["Network interface on the device"], "bcmeth1")
         self.assertEqual(fake_values["TC_NET_IFACE"], "bcmeth1")
         self.assertIn("bcmeth1: 10.0.1.1 (suggested)", output.getvalue())
 
@@ -1142,7 +1193,7 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, default, _secret):
             seen_defaults[label] = default
-            if label == "Network interface on the Time Capsule":
+            if label == "Network interface on the device":
                 return default
             if label in {"Airport Utility syAP code", "mDNS device model hint"}:
                 raise AssertionError(f"{label} should be auto-filled for NetBSD 6 little-endian")
@@ -1169,7 +1220,7 @@ class CliTests(unittest.TestCase):
                                 with redirect_stdout(output):
                                     rc = configure.main([])
         self.assertEqual(rc, 0)
-        self.assertEqual(seen_defaults["Network interface on the Time Capsule"], "bcmeth1")
+        self.assertEqual(seen_defaults["Network interface on the device"], "bcmeth1")
         self.assertEqual(fake_values["TC_NET_IFACE"], "bcmeth1")
         self.assertIn("Found saved value: bcmeth1", output.getvalue())
 
@@ -1191,7 +1242,7 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, default, _secret):
             seen_defaults[label] = default
-            if label == "Network interface on the Time Capsule":
+            if label == "Network interface on the device":
                 return default
             if label in {"Airport Utility syAP code", "mDNS device model hint"}:
                 raise AssertionError(f"{label} should be auto-filled for NetBSD 6 little-endian")
@@ -1218,7 +1269,7 @@ class CliTests(unittest.TestCase):
                                 with redirect_stdout(output):
                                     rc = configure.main([])
         self.assertEqual(rc, 0)
-        self.assertEqual(seen_defaults["Network interface on the Time Capsule"], "bcmeth1")
+        self.assertEqual(seen_defaults["Network interface on the device"], "bcmeth1")
         self.assertEqual(fake_values["TC_NET_IFACE"], "bcmeth1")
         self.assertIn("bcmeth1: 10.0.1.1 (suggested)", output.getvalue())
         self.assertIn("Found saved value: bridge0", output.getvalue())
@@ -1246,11 +1297,11 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, default, _secret):
             seen_defaults[label] = default
-            if label == "Time Capsule SSH target":
+            if label == "Device SSH target":
                 return "root@169.254.44.9"
-            if label == "Time Capsule root password":
+            if label == "Device root password":
                 return "rootpw"
-            if label == "Network interface on the Time Capsule":
+            if label == "Network interface on the device":
                 return default
             if label in {"Airport Utility syAP code", "mDNS device model hint"}:
                 raise AssertionError(f"{label} should be auto-filled")
@@ -1279,7 +1330,7 @@ class CliTests(unittest.TestCase):
                                         with redirect_stdout(output):
                                             rc = configure.main([])
         self.assertEqual(rc, 0)
-        self.assertEqual(seen_defaults["Network interface on the Time Capsule"], "bridge0")
+        self.assertEqual(seen_defaults["Network interface on the device"], "bridge0")
         self.assertEqual(fake_values["TC_NET_IFACE"], "bridge0")
         self.assertIn("bridge0: 192.168.1.217 (suggested)", output.getvalue())
 
@@ -1300,7 +1351,7 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, default, _secret):
             seen_defaults[label] = default
-            if label == "Network interface on the Time Capsule":
+            if label == "Network interface on the device":
                 return default
             if label in {"Airport Utility syAP code", "mDNS device model hint"}:
                 raise AssertionError(f"{label} should be auto-filled")
@@ -1327,7 +1378,7 @@ class CliTests(unittest.TestCase):
                                 with redirect_stdout(output):
                                     rc = configure.main([])
         self.assertEqual(rc, 0)
-        self.assertEqual(seen_defaults["Network interface on the Time Capsule"], "bcmeth1")
+        self.assertEqual(seen_defaults["Network interface on the device"], "bcmeth1")
         self.assertEqual(fake_values["TC_NET_IFACE"], "bcmeth1")
         self.assertIn("bcmeth1: 169.254.44.9 (suggested)", output.getvalue())
 
@@ -1348,7 +1399,7 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, default, _secret):
             seen_defaults[label] = default
-            if label == "Network interface on the Time Capsule":
+            if label == "Network interface on the device":
                 return default
             if label in {"Airport Utility syAP code", "mDNS device model hint"}:
                 raise AssertionError(f"{label} should be auto-filled")
@@ -1375,7 +1426,7 @@ class CliTests(unittest.TestCase):
                                 with redirect_stdout(output):
                                     rc = configure.main([])
         self.assertEqual(rc, 0)
-        self.assertEqual(seen_defaults["Network interface on the Time Capsule"], "bridge0")
+        self.assertEqual(seen_defaults["Network interface on the device"], "bridge0")
         self.assertEqual(fake_values["TC_NET_IFACE"], "bridge0")
         text = output.getvalue()
         self.assertIn("Found network interfaces with IPv4 on the device:", text)
@@ -1404,11 +1455,11 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, default, _secret):
             seen_defaults[label] = default
-            if label == "Time Capsule SSH target":
+            if label == "Device SSH target":
                 return "root@10.0.1.1"
-            if label == "Time Capsule root password":
+            if label == "Device root password":
                 return "rootpw"
-            if label == "Network interface on the Time Capsule":
+            if label == "Network interface on the device":
                 return default
             if label in {"Airport Utility syAP code", "mDNS device model hint"}:
                 raise AssertionError(f"{label} should be auto-filled")
@@ -1437,7 +1488,7 @@ class CliTests(unittest.TestCase):
                                         with redirect_stdout(output):
                                             rc = configure.main([])
         self.assertEqual(rc, 0)
-        self.assertEqual(seen_defaults["Network interface on the Time Capsule"], "bcmeth1")
+        self.assertEqual(seen_defaults["Network interface on the device"], "bcmeth1")
         self.assertEqual(fake_values["TC_NET_IFACE"], "bcmeth1")
         self.assertIn("bcmeth1: 10.0.1.1 (suggested)", output.getvalue())
 
@@ -1458,7 +1509,7 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, default, _secret):
             seen_defaults[label] = default
-            if label == "Network interface on the Time Capsule":
+            if label == "Network interface on the device":
                 return default
             if label in {"Airport Utility syAP code", "mDNS device model hint"}:
                 raise AssertionError(f"{label} should be auto-filled")
@@ -1485,7 +1536,7 @@ class CliTests(unittest.TestCase):
                                 with redirect_stdout(output):
                                     rc = configure.main([])
         self.assertEqual(rc, 0)
-        self.assertEqual(seen_defaults["Network interface on the Time Capsule"], "bridge0")
+        self.assertEqual(seen_defaults["Network interface on the device"], "bridge0")
         self.assertEqual(fake_values["TC_NET_IFACE"], "bridge0")
         self.assertNotIn("Using probed default for TC_NET_IFACE", output.getvalue())
 
@@ -1545,7 +1596,7 @@ class CliTests(unittest.TestCase):
         ])
 
         def fake_prompt(label, default, _secret):
-            if label == "Time Capsule SSH target":
+            if label == "Device SSH target":
                 return "root@10.0.0.2"
             return next(prompt_values)
 
@@ -1692,10 +1743,13 @@ class CliTests(unittest.TestCase):
         self.assertEqual(fake_values["TC_AIRPORT_SYAP"], "113")
         self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,113")
         text = output.getvalue()
-        self.assertIn("Generation                Model identifier    syAP", text)
-        self.assertIn("3rd gen (late 2009)       TimeCapsule6,113    113", text)
-        self.assertIn("4th gen (mid 2011)        TimeCapsule6,116    116", text)
-        self.assertIn("From detected connection, syAP code should be one of: 113, 116", text)
+        self.assertIn("Device                           Model identifier    syAP", text)
+        self.assertIn("AirPort Extreme 3rd generation   AirPort5,108        108", text)
+        self.assertIn("Time Capsule 3rd generation      TimeCapsule6,113    113", text)
+        self.assertIn("AirPort Extreme 4th generation   AirPort5,114        114", text)
+        self.assertIn("Time Capsule 4th generation      TimeCapsule6,116    116", text)
+        self.assertIn("AirPort Extreme 5th generation   AirPort5,117        117", text)
+        self.assertIn("From detected connection, syAP code should be one of: 108, 113, 114, 116, 117", text)
 
     def test_configure_probed_netbsd4be_shows_syap_table_and_restricts_candidates(self) -> None:
         output = io.StringIO()
@@ -1746,12 +1800,14 @@ class CliTests(unittest.TestCase):
         self.assertEqual(fake_values["TC_AIRPORT_SYAP"], "106")
         self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,106")
         text = output.getvalue()
-        self.assertIn("Generation                Model identifier    syAP", text)
-        self.assertIn("1st gen (early 2008)      TimeCapsule6,106    106", text)
-        self.assertIn("2nd gen (early 2009)      TimeCapsule6,109    109", text)
-        self.assertIn("From detected connection, syAP code should be one of: 106, 109", text)
+        self.assertIn("Device                           Model identifier    syAP", text)
+        self.assertIn("AirPort Extreme 1st generation   AirPort5,104        104", text)
+        self.assertIn("AirPort Extreme 2nd generation   AirPort5,105        105", text)
+        self.assertIn("Time Capsule 1st generation      TimeCapsule6,106    106", text)
+        self.assertIn("Time Capsule 2nd generation      TimeCapsule6,109    109", text)
+        self.assertIn("From detected connection, syAP code should be one of: 104, 105, 106, 109", text)
 
-    def test_configure_probed_netbsd4be_acpdata_identity_autofills_generation(self) -> None:
+    def test_configure_probed_netbsd4be_airport_identity_identity_autofills_generation(self) -> None:
         output = io.StringIO()
         fake_values = {}
         prompt_values = iter([
@@ -1768,7 +1824,7 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, _default, _secret):
             if label in {"Airport Utility syAP code", "mDNS device model hint"}:
-                raise AssertionError(f"{label} should be autofilled from ACPData identity")
+                raise AssertionError(f"{label} should be autofilled from AirPort identity")
             return next(prompt_values)
 
         def fake_write_env_file(_path, values):
@@ -1777,7 +1833,7 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
             with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
-                    with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd4be_acpdata_106())):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd4be_airport_identity_106())):
                         with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
                             with redirect_stdout(output):
                                 rc = configure.main([])
@@ -1787,7 +1843,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Using probed TC_AIRPORT_SYAP: 106", output.getvalue())
         self.assertIn("Using probed TC_MDNS_DEVICE_MODEL: TimeCapsule6,106", output.getvalue())
 
-    def test_configure_probed_netbsd4le_acpdata_identity_autofills_generation(self) -> None:
+    def test_configure_probed_netbsd4le_airport_identity_identity_autofills_generation(self) -> None:
         output = io.StringIO()
         fake_values = {}
         prompt_values = iter([
@@ -1804,7 +1860,7 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, _default, _secret):
             if label in {"Airport Utility syAP code", "mDNS device model hint"}:
-                raise AssertionError(f"{label} should be autofilled from ACPData identity")
+                raise AssertionError(f"{label} should be autofilled from AirPort identity")
             return next(prompt_values)
 
         def fake_write_env_file(_path, values):
@@ -1813,7 +1869,7 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
             with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
-                    with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd4le_acpdata_113())):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd4le_airport_identity_113())):
                         with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
                             with redirect_stdout(output):
                                 rc = configure.main([])
@@ -1845,7 +1901,7 @@ class CliTests(unittest.TestCase):
         ])
 
         def fake_prompt(label, default, _secret):
-            if label == "Time Capsule SSH target":
+            if label == "Device SSH target":
                 return default
             if label == "mDNS device model hint":
                 return default
@@ -1892,7 +1948,7 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, default, _secret):
             seen_labels.append(label)
-            if label == "Time Capsule SSH target":
+            if label == "Device SSH target":
                 return default
             return next(prompt_values)
 
@@ -1938,7 +1994,7 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, default, _secret):
             seen_defaults[label] = default
-            if label == "Time Capsule SSH target":
+            if label == "Device SSH target":
                 return default
             if label == "Airport Utility syAP code":
                 return default
@@ -1987,7 +2043,7 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, default, _secret):
             seen_labels.append(label)
-            if label == "Time Capsule SSH target":
+            if label == "Device SSH target":
                 return default
             if label in {"Airport Utility syAP code", "mDNS device model hint"}:
                 raise AssertionError(f"{label} should be auto-filled from probe")
@@ -2009,6 +2065,47 @@ class CliTests(unittest.TestCase):
         self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
         self.assertNotIn("Airport Utility syAP code", seen_labels)
         self.assertIn("Using probed TC_AIRPORT_SYAP: 119", output.getvalue())
+
+    def test_configure_rejects_saved_syap_outside_probed_candidates(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+        syap_answers = iter(["113", "120"])
+
+        def fake_prompt(label, default, _secret):
+            if label == "Device root password":
+                return "rootpw"
+            if label == "Airport Utility syAP code":
+                return next(syap_answers)
+            if label == "mDNS device model hint":
+                raise AssertionError("mDNS device model should be derived from the final syAP")
+            return default
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        interface_probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("192.168.1.217",), up=True, active=True, loopback=False),
+            ),
+            preferred_iface="bridge0",
+            detail="preferred interface bridge0",
+        )
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={"TC_AIRPORT_SYAP": "113"}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6_no_identity())):
+                        with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates_conn", return_value=interface_probe):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(fake_values["TC_AIRPORT_SYAP"], "120")
+        self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "AirPort7,120")
+        text = output.getvalue()
+        self.assertIn("Found saved value: 113", text)
+        self.assertIn("From detected connection, syAP code should be one of: 119, 120", text)
 
     def test_configure_discovered_invalid_syap_prompts_with_valid_existing_syap_default(self) -> None:
         output = io.StringIO()
@@ -2034,7 +2131,7 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, default, _secret):
             seen_defaults[label] = default
-            if label == "Time Capsule SSH target":
+            if label == "Device SSH target":
                 return default
             if label == "Airport Utility syAP code":
                 return default
@@ -2084,7 +2181,7 @@ class CliTests(unittest.TestCase):
         ])
 
         def fake_prompt(label, default, _secret):
-            if label == "Time Capsule SSH target":
+            if label == "Device SSH target":
                 return default
             if label == "Airport Utility syAP code":
                 syap_defaults.append(default)
@@ -2134,7 +2231,7 @@ class CliTests(unittest.TestCase):
         ])
 
         def fake_prompt(label, default, _secret):
-            if label == "Time Capsule SSH target":
+            if label == "Device SSH target":
                 return default
             if label == "mDNS device model hint":
                 return default
@@ -2323,7 +2420,7 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, default, _secret):
             seen_defaults[label] = default
-            if label == "Time Capsule SSH target":
+            if label == "Device SSH target":
                 return "root@10.0.0.2"
             return next(prompt_values)
 
@@ -2366,7 +2463,7 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, default, _secret):
             seen_defaults[label] = default
-            if label == "Time Capsule SSH target":
+            if label == "Device SSH target":
                 return "root@10.0.0.2"
             if label == "mDNS device model hint":
                 return default
@@ -2633,7 +2730,7 @@ class CliTests(unittest.TestCase):
                                         rc = configure.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_PASSWORD"], "goodpw")
-        self.assertIn("Time Capsule root password cannot be blank", output.getvalue())
+        self.assertIn("Device root password cannot be blank", output.getvalue())
 
     def test_configure_does_not_print_found_saved_value_for_password(self) -> None:
         output = io.StringIO()
@@ -2728,7 +2825,7 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, default, _secret):
             nonlocal password_prompts
-            if label == "Time Capsule root password":
+            if label == "Device root password":
                 password_prompts += 1
             if label == "mDNS device model hint":
                 return default
@@ -2748,7 +2845,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_HOST"], "root@10.0.0.2")
         self.assertEqual(password_prompts, 1)
-        self.assertIn("Time Capsule SSH target must include a username", output.getvalue())
+        self.assertIn("Device SSH target must include a username", output.getvalue())
 
     def test_configure_can_save_even_when_validation_fails(self) -> None:
         output = io.StringIO()
@@ -4217,6 +4314,7 @@ class CliTests(unittest.TestCase):
 
     def test_deploy_declined_reboot_returns_without_rebooting(self) -> None:
         output = io.StringIO()
+        prompt_text = []
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
@@ -4231,6 +4329,11 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
+
+        def fake_input(prompt: str) -> str:
+            prompt_text.append(prompt)
+            return "n"
+
         with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
                 with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
@@ -4242,13 +4345,58 @@ class CliTests(unittest.TestCase):
                             ):
                                 with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
-                                        with mock.patch("builtins.input", return_value="n"):
+                                        with mock.patch("builtins.input", side_effect=fake_input):
                                             with mock.patch("timecapsulesmb.cli.deploy.remote_request_reboot") as run_ssh_mock:
                                                 with redirect_stdout(output):
                                                     rc = deploy.main([])
         self.assertEqual(rc, 0)
         run_ssh_mock.assert_not_called()
+        self.assertEqual(prompt_text, ["This will reboot the Time Capsule now. Continue? [Y/n]: "])
         self.assertIn("Deployment complete without reboot.", output.getvalue())
+
+    def test_deploy_reboot_prompt_names_airport_extreme_from_configured_identity(self) -> None:
+        self.assertEqual(
+            airport_family_display_name(
+                {
+                    "TC_AIRPORT_SYAP": "120",
+                    "TC_MDNS_DEVICE_MODEL": "AirPort7,120",
+                }
+            ),
+            "AirPort Extreme",
+        )
+
+    def test_deploy_reboot_prompt_names_time_capsule_from_configured_identity(self) -> None:
+        self.assertEqual(
+            airport_family_display_name(
+                {
+                    "TC_AIRPORT_SYAP": "119",
+                    "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+                }
+            ),
+            "Time Capsule",
+        )
+
+    def test_deploy_reboot_prompt_uses_generic_name_without_known_identity(self) -> None:
+        self.assertEqual(
+            airport_family_display_name(
+                {
+                    "TC_AIRPORT_SYAP": "",
+                    "TC_MDNS_DEVICE_MODEL": "",
+                }
+            ),
+            "AirPort storage device",
+        )
+
+    def test_exact_device_display_name_uses_configured_identity(self) -> None:
+        self.assertEqual(
+            airport_exact_display_name(
+                {
+                    "TC_AIRPORT_SYAP": "120",
+                    "TC_MDNS_DEVICE_MODEL": "AirPort7,120",
+                }
+            ),
+            "AirPort Extreme 6th generation",
+        )
 
     def test_deploy_reboot_timeout_returns_failure(self) -> None:
         output = io.StringIO()
@@ -4332,6 +4480,7 @@ class CliTests(unittest.TestCase):
             verify_runtime_mock.call_args.kwargs["heading"],
             "Wait for device to finish loading; it can take a few minutes for Samba to start up...",
         )
+        self.assertEqual(verify_runtime_mock.call_args.kwargs["timeout_seconds"], 240)
 
     def test_deploy_returns_failure_when_managed_smbd_never_becomes_ready(self) -> None:
         output = io.StringIO()
@@ -4368,6 +4517,7 @@ class CliTests(unittest.TestCase):
                                                             rc = deploy.main([])
         self.assertEqual(rc, 1)
         self.assertEqual(verify_runtime_mock.call_args.args[0].host, "root@10.0.0.2")
+        self.assertEqual(verify_runtime_mock.call_args.kwargs["timeout_seconds"], 240)
         self.assertIn("Managed runtime did not become ready after reboot.", output.getvalue())
 
     def test_deploy_returns_failure_when_managed_mdns_never_becomes_ready(self) -> None:
@@ -4405,6 +4555,7 @@ class CliTests(unittest.TestCase):
                                                             rc = deploy.main([])
         self.assertEqual(rc, 1)
         self.assertEqual(verify_runtime_mock.call_args.args[0].host, "root@10.0.0.2")
+        self.assertEqual(verify_runtime_mock.call_args.kwargs["timeout_seconds"], 240)
         self.assertIn("Managed runtime did not become ready after reboot.", output.getvalue())
 
     def test_deploy_install_nbns_touches_marker(self) -> None:
@@ -5173,7 +5324,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("managed smbd parent process is running", text)
         self.assertIn("smbd is bound to TCP 445", text)
         self.assertIn("mdns-advertiser is bound to UDP 5353", text)
-        self.assertIn("This will start the deployed Samba payload on the Time Capsule.", text)
+        self.assertIn("This will start the deployed Samba payload on the Time Capsule 5th generation.", text)
         self.assertIn("NetBSD 4 devices cannot auto-run Samba after a reboot.", text)
 
     def test_activate_ensures_install_id_before_telemetry(self) -> None:
@@ -5228,7 +5379,9 @@ class CliTests(unittest.TestCase):
                                 rc = activate.main([])
         self.assertEqual(rc, 0)
         actions_mock.assert_not_called()
-        self.assertIn("Activation cancelled.", output.getvalue())
+        text = output.getvalue()
+        self.assertIn("This will start the deployed Samba payload on the Time Capsule 5th generation.", text)
+        self.assertIn("Activation cancelled.", text)
         command_context.finish.assert_called_once()
         self.assertEqual(command_context.finish.call_args.kwargs["result"], "cancelled")
         self.assertIn("Cancelled by user at NetBSD4 activation confirmation prompt.", command_context.finish.call_args.kwargs["error"])
@@ -5438,22 +5591,31 @@ class CliTests(unittest.TestCase):
 
     def test_uninstall_declined_reboot_skips_reboot_and_returns_success(self) -> None:
         output = io.StringIO()
+        prompt_text = []
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
             "TC_SSH_OPTS": "-o foo",
             "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_AIRPORT_SYAP": "120",
+            "TC_MDNS_DEVICE_MODEL": "AirPort7,120",
         }
+
+        def fake_input(prompt: str) -> str:
+            prompt_text.append(prompt)
+            return "n"
+
         with mock.patch("timecapsulesmb.cli.uninstall.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root_conn", return_value="/Volumes/dk2"):
                 with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"):
-                    with mock.patch("builtins.input", return_value="n"):
+                    with mock.patch("builtins.input", side_effect=fake_input):
                         with mock.patch("timecapsulesmb.cli.uninstall.remote_request_reboot") as run_ssh_mock:
                             with redirect_stdout(output):
                                 rc = uninstall.main([])
         self.assertEqual(rc, 0)
         run_ssh_mock.assert_not_called()
-        self.assertIn("Skipped reboot.", output.getvalue())
+        self.assertEqual(prompt_text, ["This will reboot the AirPort Extreme 6th generation now. Continue? [Y/n]: "])
+        self.assertIn("Skipped reboot. The AirPort Extreme 6th generation may need a manual reboot", output.getvalue())
 
     def test_fsck_yes_reboots_and_waits_by_default(self) -> None:
         output = io.StringIO()
@@ -5540,20 +5702,32 @@ class CliTests(unittest.TestCase):
 
     def test_fsck_prompt_decline_cancels_before_remote_actions(self) -> None:
         output = io.StringIO()
+        prompt_text = []
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
             "TC_SSH_OPTS": "-o foo",
+            "TC_AIRPORT_SYAP": "120",
+            "TC_MDNS_DEVICE_MODEL": "AirPort7,120",
         }
         mounted = MountedVolume(device="/dev/dk2", mountpoint="/Volumes/dk2")
+
+        def fake_input(prompt: str) -> str:
+            prompt_text.append(prompt)
+            return "n"
+
         with mock.patch("timecapsulesmb.cli.fsck.load_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume_conn", return_value=mounted):
-                with mock.patch("builtins.input", return_value="n"):
+                with mock.patch("builtins.input", side_effect=fake_input):
                     with mock.patch("timecapsulesmb.cli.fsck.run_ssh") as run_ssh_mock:
                         with redirect_stdout(output):
                             rc = fsck.main([])
         self.assertEqual(rc, 0)
         run_ssh_mock.assert_not_called()
+        self.assertEqual(
+            prompt_text,
+            ["This will stop file sharing, unmount the disk, run fsck_hfs, and reboot the AirPort Extreme 6th generation. Continue? [Y/n]: "],
+        )
         self.assertIn("fsck cancelled.", output.getvalue())
 
     def test_discover_json_outputs_records(self) -> None:
