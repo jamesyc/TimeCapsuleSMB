@@ -556,7 +556,7 @@ class SSHTransportTests(unittest.TestCase):
                         ssh_transport.run_scp(connection, src, "/tmp/test-upload", timeout=10)
         self.assertEqual(
             str(exc.exception),
-            "Timed out copying to remote path /tmp/test-upload via scp",
+            f"Timed out copying {src.name} to remote path /tmp/test-upload via scp",
         )
 
     def test_run_scp_cat_fallback_timeout_reports_remote_destination(self) -> None:
