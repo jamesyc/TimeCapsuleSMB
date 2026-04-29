@@ -205,7 +205,10 @@ append_candidate() {
 disk_name_candidates() {
   candidates=""
   dmesg_disk_lines=$(/sbin/dmesg 2>/dev/null | /usr/bin/sed -n '/^dk[0-9][0-9]* at /p' || true)
-  metadata_wedges=$(echo "$dmesg_disk_lines" | /usr/bin/sed -n 's/^\(dk[0-9][0-9]*\) at .*: APconfig$/\1/p;s/^\(dk[0-9][0-9]*\) at .*: APswap$/\1/p')
+  metadata_wedges=""
+  for dev in $(echo "$dmesg_disk_lines" | /usr/bin/sed -n 's/^\(dk[0-9][0-9]*\) at .*: APconfig$/\1/p;s/^\(dk[0-9][0-9]*\) at .*: APswap$/\1/p'); do
+    metadata_wedges="$metadata_wedges $dev"
+  done
 
   for dev in $(echo "$dmesg_disk_lines" | /usr/bin/sed -n 's/^\(dk[0-9][0-9]*\) at .*: APdata$/\1/p'); do
     append_candidate "$dev"
