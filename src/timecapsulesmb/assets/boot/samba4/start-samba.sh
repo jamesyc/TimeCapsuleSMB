@@ -52,6 +52,8 @@ ADISK_DISK_KEY=__ADISK_DISK_KEY__
 ADISK_UUID=__ADISK_UUID__
 MDNS_CAPTURE_PID=
 APPLE_MDNS_SNAPSHOT_START=$(/bin/ls -lnT "$APPLE_MDNS_SNAPSHOT" 2>/dev/null || true)
+VOLUME_ROOT_CANDIDATES="/Volumes/dk2 /Volumes/dk3 /Volumes/dk1"
+MOUNT_CANDIDATES="/dev/dk2:/Volumes/dk2 /dev/dk3:/Volumes/dk3 /dev/dk1:/Volumes/dk1"
 
 log() {
     log_dir=${RAM_LOG%/*}
@@ -185,20 +187,23 @@ wait_for_bind_interfaces() {
 }
 
 find_existing_data_root() {
-    if is_volume_root_mounted /Volumes/dk2 && data_root=$(find_data_root_under_volume /Volumes/dk2); then
-        echo "$data_root"
-        return 0
-    fi
+    for volume_root in $VOLUME_ROOT_CANDIDATES; do
+        if is_volume_root_mounted "$volume_root" && data_root=$(find_data_root_under_volume "$volume_root"); then
+            echo "$data_root"
+            return 0
+        fi
+    done
 
-    if is_volume_root_mounted /Volumes/dk3 && data_root=$(find_data_root_under_volume /Volumes/dk3); then
-        echo "$data_root"
-        return 0
-    fi
+    return 1
+}
 
-    if is_volume_root_mounted /Volumes/dk1 && data_root=$(find_data_root_under_volume /Volumes/dk1); then
-        echo "$data_root"
-        return 0
-    fi
+find_existing_volume_root() {
+    for volume_root in $VOLUME_ROOT_CANDIDATES; do
+        if is_volume_root_mounted "$volume_root"; then
+            echo "$volume_root"
+            return 0
+        fi
+    done
 
     return 1
 }
@@ -310,16 +315,16 @@ mount_device_if_possible() {
 }
 
 discover_preexisting_data_root() {
-    # Disk-root share mode serves the mounted volume root, so skip Apple's
-    # ShareRoot/Shared data-root detection and let the normal mount fallback
-    # resolve the volume root.
     if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then
-        log "waiting to mount disk root"
-        sleep "$APPLE_MOUNT_WAIT_SECONDS"
+        if volume_root=$(wait_for_existing_mount_target "disk root" find_existing_volume_root); then
+            log "found Apple-mounted disk root: $volume_root"
+            echo "$volume_root"
+            return 0
+        fi
         return 1
     fi
 
-    if data_root=$(wait_for_existing_data_root); then
+    if data_root=$(wait_for_existing_mount_target "data root" find_existing_data_root); then
         log "found Apple-mounted data root: $data_root"
         echo "$data_root"
         return 0
@@ -353,18 +358,20 @@ resolve_data_root_on_mounted_volume() {
     return 1
 }
 
-wait_for_existing_data_root() {
+wait_for_existing_mount_target() {
+    target_name=$1
+    finder=$2
     attempt=0
     while [ "$attempt" -lt "$APPLE_MOUNT_WAIT_SECONDS" ]; do
-        if data_root=$(find_existing_data_root); then
-            log "data root was mounted after ${attempt}s"
-            echo "$data_root"
+        if target=$($finder); then
+            log "$target_name was mounted after ${attempt}s"
+            echo "$target"
             return 0
         fi
         attempt=$((attempt + 1))
         sleep 1
     done
-    log "data root was not mounted after ${attempt}s"
+    log "$target_name was not mounted after ${attempt}s"
     return 1
 }
 
@@ -389,24 +396,18 @@ try_mount_candidate() {
 }
 
 mount_fallback_volume() {
-    log "no Apple-mounted data root found; falling back to manual mount"
+    log "no Apple-mounted usable volume found; falling back to manual mount"
     attempt=0
     while [ "$attempt" -lt 30 ]; do
         log "manual mount attempt $((attempt + 1)): probing /dev/dk2, /dev/dk3, and /dev/dk1"
-        if volume_root=$(try_mount_candidate /dev/dk2 /Volumes/dk2); then
-            echo "$volume_root"
-            return 0
-        fi
-
-        if volume_root=$(try_mount_candidate /dev/dk3 /Volumes/dk3); then
-            echo "$volume_root"
-            return 0
-        fi
-
-        if volume_root=$(try_mount_candidate /dev/dk1 /Volumes/dk1); then
-            echo "$volume_root"
-            return 0
-        fi
+        for mount_candidate in $MOUNT_CANDIDATES; do
+            dev_path=${mount_candidate%%:*}
+            volume_root=${mount_candidate#*:}
+            if mounted_root=$(try_mount_candidate "$dev_path" "$volume_root"); then
+                echo "$mounted_root"
+                return 0
+            fi
+        done
 
         attempt=$((attempt + 1))
         sleep 1
