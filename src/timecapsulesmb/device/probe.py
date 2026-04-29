@@ -202,23 +202,24 @@ append_candidate() {
   esac
 }
 
-is_metadata_wedge() {
-  dev=$1
-  metadata_line=$(/sbin/dmesg 2>/dev/null | /usr/bin/sed -n "/^$dev at .*: APconfig$/p;/^$dev at .*: APswap$/p" | /usr/bin/tail -n 1)
-  [ -n "$metadata_line" ]
-}
-
 disk_name_candidates() {
   candidates=""
-  for dev in $(/sbin/dmesg 2>/dev/null | /usr/bin/sed -n 's/^\(dk[0-9][0-9]*\) at .*: APdata$/\1/p'); do
+  dmesg_disk_lines=$(/sbin/dmesg 2>/dev/null | /usr/bin/sed -n '/^dk[0-9][0-9]* at /p' || true)
+  metadata_wedges=$(echo "$dmesg_disk_lines" | /usr/bin/sed -n 's/^\(dk[0-9][0-9]*\) at .*: APconfig$/\1/p;s/^\(dk[0-9][0-9]*\) at .*: APswap$/\1/p')
+
+  for dev in $(echo "$dmesg_disk_lines" | /usr/bin/sed -n 's/^\(dk[0-9][0-9]*\) at .*: APdata$/\1/p'); do
     append_candidate "$dev"
   done
   for dev in $(/sbin/sysctl -n hw.disknames 2>/dev/null); do
     case "$dev" in
       dk[0-9]*)
-        if ! is_metadata_wedge "$dev"; then
-          append_candidate "$dev"
-        fi
+        case " $metadata_wedges " in
+          *" $dev "*)
+            ;;
+          *)
+            append_candidate "$dev"
+            ;;
+        esac
         ;;
     esac
   done

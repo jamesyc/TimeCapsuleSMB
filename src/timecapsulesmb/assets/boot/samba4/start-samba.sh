@@ -195,25 +195,25 @@ append_disk_candidate() {
     esac
 }
 
-is_metadata_wedge() {
-    dev=$1
-    metadata_line=$(/sbin/dmesg 2>/dev/null | /usr/bin/sed -n "/^$dev at .*: APconfig$/p;/^$dev at .*: APswap$/p" | /usr/bin/tail -n 1)
-    [ -n "$metadata_line" ]
-}
-
 disk_name_candidates() {
     DISK_CANDIDATES=""
+    dmesg_disk_lines=$(/sbin/dmesg 2>/dev/null | /usr/bin/sed -n '/^dk[0-9][0-9]* at /p' || true)
+    metadata_wedges=$(echo "$dmesg_disk_lines" | /usr/bin/sed -n 's/^\(dk[0-9][0-9]*\) at .*: APconfig$/\1/p;s/^\(dk[0-9][0-9]*\) at .*: APswap$/\1/p')
 
-    for dev in $(/sbin/dmesg 2>/dev/null | /usr/bin/sed -n 's/^\(dk[0-9][0-9]*\) at .*: APdata$/\1/p'); do
+    for dev in $(echo "$dmesg_disk_lines" | /usr/bin/sed -n 's/^\(dk[0-9][0-9]*\) at .*: APdata$/\1/p'); do
         append_disk_candidate "$dev"
     done
 
     for dev in $(/sbin/sysctl -n hw.disknames 2>/dev/null); do
         case "$dev" in
             dk[0-9]*)
-                if ! is_metadata_wedge "$dev"; then
-                    append_disk_candidate "$dev"
-                fi
+                case " $metadata_wedges " in
+                    *" $dev "*)
+                        ;;
+                    *)
+                        append_disk_candidate "$dev"
+                        ;;
+                esac
                 ;;
         esac
     done
@@ -227,7 +227,7 @@ disk_name_candidates() {
 
 volume_root_candidates() {
     roots=""
-    for dev in $(disk_name_candidates); do
+    for dev in "$@"; do
         roots="$roots /Volumes/$dev"
     done
     echo "$roots"
@@ -235,13 +235,15 @@ volume_root_candidates() {
 
 mount_candidates() {
     candidates=""
-    for dev in $(disk_name_candidates); do
+    for dev in "$@"; do
         candidates="$candidates /dev/$dev:/Volumes/$dev"
     done
     echo "$candidates"
 }
 
 log_disk_discovery_state() {
+    disk_candidates=$1
+
     disk_names=$(/sbin/sysctl -n hw.disknames 2>/dev/null || true)
     if [ -n "$disk_names" ]; then
         log "disk discovery: hw.disknames=$disk_names"
@@ -262,16 +264,16 @@ log_disk_discovery_state() {
         log "disk discovery: no wd/sd/ld/dk dmesg lines available"
     fi
 
-    disk_candidates=$(disk_name_candidates)
-    volume_candidates=$(volume_root_candidates)
-    mount_candidate_list=$(mount_candidates)
+    volume_candidates=$(volume_root_candidates $disk_candidates)
+    mount_candidate_list=$(mount_candidates $disk_candidates)
     log "disk discovery: disk candidates:${disk_candidates:- none}"
     log "disk discovery: volume root candidates:${volume_candidates:- none}"
     log "disk discovery: mount candidates:${mount_candidate_list:- none}"
 }
 
 find_existing_data_root() {
-    for volume_root in $(volume_root_candidates); do
+    disk_candidates=$1
+    for volume_root in $(volume_root_candidates $disk_candidates); do
         if is_volume_root_mounted "$volume_root" && data_root=$(find_data_root_under_volume "$volume_root"); then
             echo "$data_root"
             return 0
@@ -282,7 +284,8 @@ find_existing_data_root() {
 }
 
 find_existing_volume_root() {
-    for volume_root in $(volume_root_candidates); do
+    disk_candidates=$1
+    for volume_root in $(volume_root_candidates $disk_candidates); do
         if is_volume_root_mounted "$volume_root"; then
             echo "$volume_root"
             return 0
@@ -399,8 +402,10 @@ mount_device_if_possible() {
 }
 
 discover_preexisting_data_root() {
+    disk_candidates=$1
+
     if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then
-        if volume_root=$(wait_for_existing_mount_target "disk root" find_existing_volume_root); then
+        if volume_root=$(wait_for_existing_mount_target "disk root" find_existing_volume_root "$disk_candidates"); then
             log "found Apple-mounted disk root: $volume_root"
             echo "$volume_root"
             return 0
@@ -408,7 +413,7 @@ discover_preexisting_data_root() {
         return 1
     fi
 
-    if data_root=$(wait_for_existing_mount_target "data root" find_existing_data_root); then
+    if data_root=$(wait_for_existing_mount_target "data root" find_existing_data_root "$disk_candidates"); then
         log "found Apple-mounted data root: $data_root"
         echo "$data_root"
         return 0
@@ -445,9 +450,10 @@ resolve_data_root_on_mounted_volume() {
 wait_for_existing_mount_target() {
     target_name=$1
     finder=$2
+    finder_arg=$3
     attempt=0
     while [ "$attempt" -lt "$APPLE_MOUNT_WAIT_SECONDS" ]; do
-        if target=$($finder); then
+        if target=$($finder "$finder_arg"); then
             log "$target_name was mounted after ${attempt}s"
             echo "$target"
             return 0
@@ -480,11 +486,13 @@ try_mount_candidate() {
 }
 
 mount_fallback_volume() {
+    disk_candidates=$1
+
     log "no Apple-mounted usable volume found; falling back to manual mount"
     attempt=0
     while [ "$attempt" -lt 30 ]; do
         log "manual mount attempt $((attempt + 1)): probing discovered HFS disk wedges"
-        for mount_candidate in $(mount_candidates); do
+        for mount_candidate in $(mount_candidates $disk_candidates); do
             dev_path=${mount_candidate%%:*}
             volume_root=${mount_candidate#*:}
             if mounted_root=$(try_mount_candidate "$dev_path" "$volume_root"); then
@@ -880,16 +888,17 @@ BIND_INTERFACES=$(wait_for_bind_interfaces) || {
 BRIDGE0_IP=${BIND_INTERFACES#127.0.0.1/8 }
 BRIDGE0_IP=${BRIDGE0_IP%%/*}
 prepare_local_hostname_resolution
-log_disk_discovery_state
+DISK_CANDIDATES=$(disk_name_candidates)
+log_disk_discovery_state "$DISK_CANDIDATES"
 
 start_mdns_capture
 
 log "disk discovery: waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume before manual mount fallback"
 
-if DATA_ROOT=$(discover_preexisting_data_root); then
+if DATA_ROOT=$(discover_preexisting_data_root "$DISK_CANDIDATES"); then
     :
 else
-    VOLUME_ROOT=$(mount_fallback_volume) || {
+    VOLUME_ROOT=$(mount_fallback_volume "$DISK_CANDIDATES") || {
         log "disk discovery failed: no fallback data volume mounted"
         exit 1
     }
