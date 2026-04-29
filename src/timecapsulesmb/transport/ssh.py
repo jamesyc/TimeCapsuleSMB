@@ -281,7 +281,10 @@ def ssh_local_forward(
                 transport_error = _extract_ssh_transport_error("".join(output))
                 if transport_error:
                     raise SshTransportError(f"Connecting to the device failed, SSH error: {transport_error}")
-                raise SystemExit("Timed out waiting for ssh tunnel to become ready.")
+                raise SystemExit(
+                    "Timed out waiting for ssh tunnel to become ready: "
+                    f"127.0.0.1:{local_port} -> {remote_host}:{remote_port} via {connection.host}"
+                )
         yield
     finally:
         try:
@@ -326,7 +329,7 @@ def _verify_remote_size(connection: SshConnection, src: Path, dest: str, *, time
         if attempt < 2:
             time.sleep(1)
     raise SystemExit(
-        f"upload verification failed for {dest}: expected {expected_size} bytes, "
+        f"upload verification failed for {src.name} -> {dest}: expected {expected_size} bytes, "
         f"got {actual_size if actual_size is not None else 'unknown'} bytes"
     )
 
@@ -340,7 +343,7 @@ def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 1
                 cmd,
                 connection.password,
                 timeout=timeout,
-                timeout_message=f"Timed out copying {src} to {dest}",
+                timeout_message=f"Timed out copying to remote path {dest} via scp",
             )
             if rc == 0 or not _looks_like_transient_ssh_auth_failure(stdout) or attempt == 2:
                 break
@@ -349,7 +352,7 @@ def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 1
             transport_error = _extract_ssh_transport_error(stdout)
             if transport_error:
                 raise SshTransportError(f"Connecting to the device failed, SSH error: {transport_error}")
-            raise SystemExit(stdout.strip() or f"scp failed with rc={rc}")
+            raise SystemExit(stdout.strip() or f"scp failed copying to remote path {dest} with rc={rc}")
         _verify_remote_size(connection, src, dest, timeout=30)
         return
 
@@ -376,17 +379,17 @@ def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 1
                 check=False,
             )
         except subprocess.TimeoutExpired as e:
-            raise SystemExit(f"Timed out copying {src} to {dest}") from e
+            raise SystemExit(f"Timed out copying to remote path {dest} via sshpass cat fallback") from e
         stdout = proc.stdout.decode("utf-8", errors="replace").strip()
         if proc.returncode == 0 or not _looks_like_transient_ssh_auth_failure(stdout) or attempt == 2:
             break
         time.sleep(1)
     if proc is None:
-        raise SystemExit(f"ssh cat upload failed for {dest}")
+        raise SystemExit(f"sshpass cat fallback upload failed for remote path {dest}")
     if proc.returncode != 0:
         stdout = proc.stdout.decode("utf-8", errors="replace").strip()
         transport_error = _extract_ssh_transport_error(stdout)
         if transport_error:
             raise SshTransportError(f"Connecting to the device failed, SSH error: {transport_error}")
-        raise SystemExit(stdout or f"ssh cat upload failed with rc={proc.returncode}")
+        raise SystemExit(stdout or f"sshpass cat fallback upload failed for remote path {dest} with rc={proc.returncode}")
     _verify_remote_size(connection, src, dest, timeout=30)
