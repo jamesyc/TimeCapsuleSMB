@@ -1039,6 +1039,35 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('if wait_for_process "$MDNS_PROC_NAME" 100; then', rendered)
         self.assertIn('log "smbd startup complete: process observed"', rendered)
 
+    def test_render_start_script_prepares_local_hostname_resolution_after_network_detection(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(values)
+        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
+        helper_start = rendered.index("prepare_local_hostname_resolution()")
+        helper_end = rendered.index("start_smbd()")
+        helper_section = rendered[helper_start:helper_end]
+        self.assertIn('device_hostname=$(/bin/hostname 2>/dev/null || true)', helper_section)
+        self.assertIn("printf '127.0.0.1\\t%s %s.local\\n'", helper_section)
+        self.assertNotIn("grep", helper_section)
+        self.assertNotIn("awk", helper_section)
+
+        network_detection = rendered.index("BRIDGE0_IP=${BRIDGE0_IP%%/*}")
+        hostname_call = rendered.index("\nprepare_local_hostname_resolution\n", network_detection)
+        mdns_capture = rendered.index("\nstart_mdns_capture\n", network_detection)
+        smbd_start = rendered.index("\nstart_smbd ||", network_detection)
+        self.assertLess(network_detection, hostname_call)
+        self.assertLess(hostname_call, mdns_capture)
+        self.assertLess(hostname_call, smbd_start)
+
     def test_common_script_has_no_smbd_daemon_ready_helpers(self) -> None:
         common = (REPO_ROOT / "src/timecapsulesmb/assets/boot/samba4/common.sh").read_text()
         self.assertNotIn("get_smbd_log_path_from_config()", common)
