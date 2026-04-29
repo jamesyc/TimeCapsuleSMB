@@ -18,6 +18,9 @@ from timecapsulesmb.deploy.planner import DeploymentPlan, UninstallPlan
 from timecapsulesmb.transport.ssh import SshConnection, run_scp, run_ssh
 
 
+DETACHED_REBOOT_COMMAND = "/bin/sh -c '(/bin/sleep 1; /sbin/reboot) >/dev/null 2>&1 &'"
+
+
 def remote_prepare_dirs(connection: SshConnection, payload_dir: str) -> None:
     run_ssh(connection, render_remote_action(prepare_dirs_action(payload_dir)))
 
@@ -92,6 +95,10 @@ def remote_enable_nbns(connection: SshConnection, private_dir: str) -> None:
 def run_remote_actions(connection: SshConnection, actions) -> None:
     for command in render_remote_actions(list(actions)):
         run_ssh(connection, command)
+
+
+def remote_request_reboot(connection: SshConnection) -> None:
+    run_ssh(connection, DETACHED_REBOOT_COMMAND, check=False, timeout=10)
 
 
 def remote_uninstall_payload(connection: SshConnection, plan: UninstallPlan) -> None:
