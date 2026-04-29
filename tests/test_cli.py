@@ -715,6 +715,44 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_SHARE_USE_DISK_ROOT"], "true")
 
+    def test_configure_airport_extreme_sets_share_use_disk_root_true(self) -> None:
+        output = io.StringIO()
+        fake_values = {}
+
+        def fake_prompt(label, default, _secret):
+            if label == "Device root password":
+                return "rootpw"
+            if label == "Airport Utility syAP code":
+                return "120"
+            if label == "mDNS device model hint":
+                raise AssertionError("mDNS device model should be derived from the final syAP")
+            return default
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        interface_probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("192.168.1.217",), up=True, active=True, loopback=False),
+            ),
+            preferred_iface="bridge0",
+            detail="preferred interface bridge0",
+        )
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6_no_identity())):
+                        with mock.patch("timecapsulesmb.cli.configure.probe_remote_interface_candidates_conn", return_value=interface_probe):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                                with redirect_stdout(output):
+                                    rc = configure.main([])
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(fake_values["TC_AIRPORT_SYAP"], "120")
+        self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "AirPort7,120")
+        self.assertEqual(fake_values["TC_SHARE_USE_DISK_ROOT"], "true")
+
     def test_configure_plain_rerun_preserves_existing_share_use_disk_root_true(self) -> None:
         output = io.StringIO()
         fake_values = {}

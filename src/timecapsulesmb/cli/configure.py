@@ -13,6 +13,7 @@ from timecapsulesmb.core.config import (
     CONFIG_FIELDS,
     DEFAULTS,
     ENV_PATH,
+    airport_identity_from_values,
     extract_host,
     infer_mdns_device_model_from_airport_syap,
     parse_env_values,
@@ -174,6 +175,12 @@ def saved_syap_value_for_candidates(
     if candidate_syaps and saved_syap_choice.value not in candidate_syaps:
         return None
     return saved_syap_choice.value
+
+
+def apply_device_storage_defaults(values: dict[str, str]) -> None:
+    identity = airport_identity_from_values(values)
+    if identity is not None and identity.family == "airport_extreme":
+        values["TC_SHARE_USE_DISK_ROOT"] = "true"
 
 
 def print_syap_prompt_help(syap_candidates: tuple[str, ...] | None = None) -> None:
@@ -639,6 +646,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 continue
             values[key] = prompt_config_value(existing, key, label, default, secret=secret)
 
+        apply_device_storage_defaults(values)
         values["TC_CONFIGURE_ID"] = configure_id
         command_context.set_stage("write_env")
         write_env_file(ENV_PATH, values)
