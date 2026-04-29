@@ -352,7 +352,7 @@ def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 1
             transport_error = _extract_ssh_transport_error(stdout)
             if transport_error:
                 raise SshTransportError(f"Connecting to the device failed, SSH error: {transport_error}")
-            raise SystemExit(stdout.strip() or f"scp failed copying to remote path {dest} with rc={rc}")
+            raise SystemExit(stdout.strip() or f"scp failed copying {src.name} to remote path {dest} with rc={rc}")
         _verify_remote_size(connection, src, dest, timeout=30)
         return
 
