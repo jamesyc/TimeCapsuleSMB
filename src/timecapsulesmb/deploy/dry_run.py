@@ -4,7 +4,25 @@ from dataclasses import asdict
 
 from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE
 from timecapsulesmb.deploy.commands import render_remote_actions
+from timecapsulesmb.deploy.executor import DETACHED_REBOOT_COMMAND
 from timecapsulesmb.deploy.planner import ActivationPlan, DeploymentPlan, UninstallPlan
+
+
+def _append_reboot_request(lines: list[str], reboot_required: bool) -> None:
+    if not reboot_required:
+        return
+    lines.append(f"  request: {DETACHED_REBOOT_COMMAND}")
+    lines.append("  follow-up: wait for SSH down, then SSH up")
+
+
+def _add_reboot_request_json(data: dict[str, object], reboot_required: bool) -> None:
+    if not reboot_required:
+        return
+    data["reboot_request"] = {
+        "mode": "detached_ssh",
+        "command": DETACHED_REBOOT_COMMAND,
+        "follow_up": ["wait_for_ssh_down", "wait_for_ssh_up"],
+    }
 
 
 def format_deployment_plan(plan: DeploymentPlan) -> str:
@@ -42,6 +60,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
         lines.append("")
     lines.append("Reboot:")
     lines.append(f"  {'yes' if plan.reboot_required else 'no'}")
+    _append_reboot_request(lines, plan.reboot_required)
     if plan.activation_actions:
         lines.append("  Deploy will activate Samba immediately without rebooting.")
         lines.append(f"  {NETBSD4_REBOOT_GUIDANCE}")
@@ -61,6 +80,7 @@ def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
     data["smbd_path"] = str(plan.smbd_path)
     data["mdns_path"] = str(plan.mdns_path)
     data["nbns_path"] = str(plan.nbns_path)
+    _add_reboot_request_json(data, plan.reboot_required)
     return data
 
 
@@ -99,6 +119,7 @@ def format_uninstall_plan(plan: UninstallPlan) -> str:
     lines.append("")
     lines.append("Reboot:")
     lines.append(f"  {'yes' if plan.reboot_required else 'no'}")
+    _append_reboot_request(lines, plan.reboot_required)
     lines.append("")
     lines.append("Post-uninstall checks:")
     if plan.post_uninstall_checks:
@@ -111,4 +132,5 @@ def format_uninstall_plan(plan: UninstallPlan) -> str:
 
 def uninstall_plan_to_jsonable(plan: UninstallPlan) -> dict[str, object]:
     data = asdict(plan)
+    _add_reboot_request_json(data, plan.reboot_required)
     return data
