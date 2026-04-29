@@ -569,6 +569,20 @@ stage_runtime() {
 EOF
 }
 
+prepare_local_hostname_resolution() {
+    device_hostname=$(/bin/hostname 2>/dev/null || true)
+    if [ -z "$device_hostname" ]; then
+        log "local hostname resolution skipped; hostname unavailable"
+        return 0
+    fi
+
+    if printf '127.0.0.1\t%s %s.local\n' "$device_hostname" "$device_hostname" >>/etc/hosts; then
+        log "local hostname resolution prepared for $device_hostname"
+    else
+        log "local hostname resolution could not update /etc/hosts"
+    fi
+}
+
 start_smbd() {
     log "starting smbd from $RAM_SBIN/smbd with config $RAM_ETC/smb.conf"
     "$RAM_SBIN/smbd" -D -s "$RAM_ETC/smb.conf"
@@ -770,6 +784,7 @@ BIND_INTERFACES=$(wait_for_bind_interfaces) || {
 }
 BRIDGE0_IP=${BIND_INTERFACES#127.0.0.1/8 }
 BRIDGE0_IP=${BRIDGE0_IP%%/*}
+prepare_local_hostname_resolution
 
 start_mdns_capture
 
