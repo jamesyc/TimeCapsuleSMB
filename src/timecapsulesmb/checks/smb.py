@@ -141,44 +141,66 @@ def check_authenticated_smb_file_ops_detailed(
 
         remote = f"//{server}/{share_name}"
         results: list[CheckResult] = []
+        target = f"{username}@{server}/{share_name}"
 
-        proc = run_share_commands(remote, [f'mkdir "{test_dir_name}"'])
+        def run_step(timeout_prefix: str, commands: list[str]) -> tuple[subprocess.CompletedProcess[str] | None, list[CheckResult] | None]:
+            try:
+                return run_share_commands(remote, commands), None
+            except subprocess.TimeoutExpired:
+                return None, results + [CheckResult("FAIL", f"{timeout_prefix} timed out for {target}")]
+
+        proc, timeout_results = run_step("SMB directory create", [f'mkdir "{test_dir_name}"'])
+        if timeout_results is not None:
+            return timeout_results
+        assert proc is not None
         if proc.returncode != 0:
             return [CheckResult("FAIL", f"SMB directory create failed: {((proc.stderr or proc.stdout).strip().splitlines() or [f'failed with rc={proc.returncode}'])[-1]}")]
-        results.append(CheckResult("PASS", f"SMB directory create works for {username}@{server}/{share_name}"))
+        results.append(CheckResult("PASS", f"SMB directory create works for {target}"))
 
-        proc = run_share_commands(remote, [f'cd "{test_dir_name}"', f'put "{upload_path}" "{upload_name}"'])
+        proc, timeout_results = run_step("SMB file create", [f'cd "{test_dir_name}"', f'put "{upload_path}" "{upload_name}"'])
+        if timeout_results is not None:
+            return timeout_results
+        assert proc is not None
         if proc.returncode != 0:
             return fail_result("SMB file create failed", proc)
-        results.append(CheckResult("PASS", f"SMB file create works for {username}@{server}/{share_name}"))
+        results.append(CheckResult("PASS", f"SMB file create works for {target}"))
 
-        proc = run_share_commands(remote, [f'cd "{test_dir_name}"', f'put "{update_path}" "{upload_name}"'])
+        proc, timeout_results = run_step("SMB file overwrite/edit", [f'cd "{test_dir_name}"', f'put "{update_path}" "{upload_name}"'])
+        if timeout_results is not None:
+            return timeout_results
+        assert proc is not None
         if proc.returncode != 0:
             return fail_result("SMB file overwrite/edit failed", proc)
-        results.append(CheckResult("PASS", f"SMB file overwrite/edit works for {username}@{server}/{share_name}"))
+        results.append(CheckResult("PASS", f"SMB file overwrite/edit works for {target}"))
 
-        proc = run_share_commands(
-            remote,
+        proc, timeout_results = run_step(
+            "SMB file read",
             [f'cd "{test_dir_name}"', f'get "{upload_name}" "{readback_path}"'],
         )
+        if timeout_results is not None:
+            return timeout_results
+        assert proc is not None
         if proc.returncode != 0:
             return fail_result("SMB file read failed", proc)
         if not readback_path.exists():
             return results + [CheckResult("FAIL", "SMB file read failed: downloaded file missing after get")]
         if readback_path.read_text(encoding="utf-8") != updated_contents:
             return results + [CheckResult("FAIL", "SMB file read failed: downloaded contents did not match overwritten contents")]
-        results.append(CheckResult("PASS", f"SMB file read works for {username}@{server}/{share_name}"))
+        results.append(CheckResult("PASS", f"SMB file read works for {target}"))
 
-        proc = run_share_commands(
-            remote,
+        proc, timeout_results = run_step(
+            "SMB file rename",
             [f'cd "{test_dir_name}"', f'rename "{upload_name}" "{renamed_name}"'],
         )
+        if timeout_results is not None:
+            return timeout_results
+        assert proc is not None
         if proc.returncode != 0:
             return fail_result("SMB file rename failed", proc)
-        results.append(CheckResult("PASS", f"SMB file rename works for {username}@{server}/{share_name}"))
+        results.append(CheckResult("PASS", f"SMB file rename works for {target}"))
 
-        proc = run_share_commands(
-            remote,
+        proc, timeout_results = run_step(
+            "SMB file copy",
             [
                 f'cd "{test_dir_name}"',
                 f'get "{renamed_name}" "{copy_source_path}"',
@@ -186,39 +208,51 @@ def check_authenticated_smb_file_ops_detailed(
                 f'get "{copy_name}" "{copy_readback_path}"',
             ],
         )
+        if timeout_results is not None:
+            return timeout_results
+        assert proc is not None
         if proc.returncode != 0:
             return fail_result("SMB file copy failed", proc)
         if not copy_readback_path.exists():
             return results + [CheckResult("FAIL", "SMB file copy failed: copied file missing after get")]
         if copy_readback_path.read_text(encoding="utf-8") != updated_contents:
             return results + [CheckResult("FAIL", "SMB file copy failed: copied file contents did not match source")]
-        results.append(CheckResult("PASS", f"SMB file copy works for {username}@{server}/{share_name}"))
+        results.append(CheckResult("PASS", f"SMB file copy works for {target}"))
 
-        proc = run_share_commands(remote, [f'cd "{test_dir_name}"', f'del "{copy_name}"', "ls"])
+        proc, timeout_results = run_step("SMB file delete", [f'cd "{test_dir_name}"', f'del "{copy_name}"', "ls"])
+        if timeout_results is not None:
+            return timeout_results
+        assert proc is not None
         if proc.returncode != 0:
             return fail_result("SMB file delete failed", proc)
         ls_after_delete = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
         if any(copy_name in line for line in ls_after_delete):
             return results + [CheckResult("FAIL", f"SMB file delete failed: ls output still contained {copy_name!r}")]
-        results.append(CheckResult("PASS", f"SMB file delete works for {username}@{server}/{share_name}"))
+        results.append(CheckResult("PASS", f"SMB file delete works for {target}"))
 
         if not any(renamed_name in line for line in ls_after_delete):
             return results + [CheckResult("FAIL", f"SMB directory ls list failed: ls output did not contain {renamed_name!r}")]
-        results.append(CheckResult("PASS", f"SMB directory ls list works for {username}@{server}/{share_name}"))
+        results.append(CheckResult("PASS", f"SMB directory ls list works for {target}"))
 
-        proc = run_share_commands(
-            remote,
+        proc, timeout_results = run_step(
+            "SMB directory delete",
             [f'cd "{test_dir_name}"', f'del "{renamed_name}"', 'cd ".."', f'rmdir "{test_dir_name}"'],
         )
+        if timeout_results is not None:
+            return timeout_results
+        assert proc is not None
         if proc.returncode != 0:
             return fail_result("SMB directory delete failed", proc)
-        results.append(CheckResult("PASS", f"SMB directory delete works for {username}@{server}/{share_name}"))
+        results.append(CheckResult("PASS", f"SMB directory delete works for {target}"))
 
-        proc = run_share_commands(remote, ["ls"])
+        proc, timeout_results = run_step("SMB final cleanup check", ["ls"])
+        if timeout_results is not None:
+            return timeout_results
+        assert proc is not None
         if proc.returncode != 0:
             return fail_result("SMB final cleanup check failed", proc)
         final_ls = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
         if any(test_dir_name in line for line in final_ls):
             return results + [CheckResult("FAIL", f"SMB final cleanup check failed: share still contained {test_dir_name!r}")]
-        results.append(CheckResult("PASS", f"SMB final cleanup check passed for {username}@{server}/{share_name}"))
+        results.append(CheckResult("PASS", f"SMB final cleanup check passed for {target}"))
         return results

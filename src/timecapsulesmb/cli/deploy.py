@@ -82,15 +82,18 @@ def main(argv: Optional[list[str]] = None) -> int:
             reboot_was_attempted=False,
             device_came_back_after_reboot=False,
         )
+        command_context.set_stage("resolve_managed_target")
         target = command_context.resolve_validated_managed_target(profile="deploy", include_probe=True)
         connection = target.connection
         host = connection.host
         smb_password = connection.password
 
+        command_context.set_stage("validate_artifacts")
         artifact_results = validate_artifacts(REPO_ROOT)
         failures = [message for _, ok, message in artifact_results if not ok]
         if failures:
             raise SystemExit("; ".join(failures))
+        command_context.set_stage("check_compatibility")
         compatibility = command_context.require_compatibility()
         compatibility_message = render_compatibility_message(compatibility)
         if not compatibility.supported:
@@ -108,6 +111,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not args.json:
             print(f"Using {payload_family_description(payload_family)} payload...")
         apple_mount_wait_seconds = args.mount_wait
+        command_context.set_stage("discover_volume_root")
         volume_root = discover_volume_root_conn(connection)
         share_use_disk_root = parse_bool(values.get("TC_SHARE_USE_DISK_ROOT", "false"))
         resolved_artifacts = resolve_payload_artifacts(REPO_ROOT, payload_family)
@@ -119,6 +123,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             values["TC_PAYLOAD_DIR_NAME"],
             share_use_disk_root=share_use_disk_root,
         )
+        command_context.set_stage("build_deployment_plan")
         plan = build_deployment_plan(
             host,
             device_paths,
@@ -149,8 +154,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.cancel_with_error("Cancelled by user at NetBSD4 deploy confirmation prompt.")
                 return 0
 
+        command_context.set_stage("pre_upload_actions")
         run_remote_actions(connection, plan.pre_upload_actions)
+        command_context.set_stage("ensure_adisk_uuid")
         adisk_uuid = remote_ensure_adisk_uuid(connection, plan.private_dir)
+        command_context.set_stage("render_templates")
         template_bundle = build_template_bundle(
             values,
             adisk_disk_key=plan.disk_key,
@@ -177,6 +185,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             rendered_watchdog.write_text(render_template("watchdog.sh", template_bundle.watchdog_replacements))
             rendered_smbconf.write_text(render_template("smb.conf.template", template_bundle.smbconf_replacements))
 
+            command_context.set_stage("upload_payload")
             upload_deployment_payload(
                 plan,
                 connection=connection,
@@ -188,7 +197,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 rendered_smbconf=rendered_smbconf,
             )
 
+        command_context.set_stage("install_auth_files")
         remote_install_auth_files(connection, plan.private_dir, values["TC_SAMBA_USER"], smb_password)
+        command_context.set_stage("post_auth_actions")
         run_remote_actions(connection, plan.post_auth_actions)
 
         print(f"Deployed Samba payload to {plan.payload_dir}")
@@ -196,7 +207,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if is_netbsd4:
             print("Activating NetBSD4 payload without reboot.")
+            command_context.set_stage("netbsd4_activation")
             run_remote_actions(connection, plan.activation_actions)
+            command_context.set_stage("verify_runtime_activation")
             if not verify_managed_runtime(connection, timeout_seconds=180, heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up..."):
                 print("NetBSD4 activation failed.")
                 command_context.fail_with_error("NetBSD4 activation failed.")
@@ -219,15 +232,19 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.cancel_with_error("Cancelled by user at reboot confirmation prompt.")
                 return 0
 
+        command_context.set_stage("reboot")
         run_ssh(connection, "/sbin/reboot", check=False)
         command_context.update_fields(reboot_was_attempted=True)
         print("Reboot requested. Waiting for the device to go down...")
+        command_context.set_stage("wait_for_reboot_down")
         wait_for_ssh_state_conn(connection, expected_up=False, timeout_seconds=60)
         print("Waiting for the device to come back up...")
+        command_context.set_stage("wait_for_reboot_up")
         if wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=240):
             command_context.update_fields(device_came_back_after_reboot=True)
             print("Device is back online.")
             print("Waiting for managed runtime to finish starting...")
+            command_context.set_stage("verify_runtime_reboot")
             if not verify_managed_runtime(connection, timeout_seconds=180, heading="Wait for device to finish loading; it can take a few minutes for Samba to start up..."):
                 print("Managed runtime did not become ready after reboot.")
                 command_context.fail_with_error("Managed runtime did not become ready after reboot.")

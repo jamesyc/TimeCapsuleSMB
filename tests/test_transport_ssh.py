@@ -184,6 +184,30 @@ class SSHTransportTests(unittest.TestCase):
                     )
         self.assertEqual(str(exc.exception), "ssh command failed with rc=7")
 
+    def test_run_ssh_timeout_error_includes_remote_command_summary(self) -> None:
+        def fake_spawn(_cmd, _password, *, timeout, timeout_message):
+            raise SystemExit(timeout_message)
+
+        remote_cmd = "/bin/sh -c 'echo one\necho two'"
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+            with mock.patch("timecapsulesmb.transport.ssh._spawn_with_password", side_effect=fake_spawn):
+                with self.assertRaises(SystemExit) as exc:
+                    ssh_transport.run_ssh(
+                        ssh_transport.SshConnection("root@192.168.1.118", "secret-password", "-o StrictHostKeyChecking=no"),
+                        remote_cmd,
+                        check=False,
+                        timeout=10,
+                    )
+        self.assertEqual(
+            str(exc.exception),
+            "Timed out waiting for ssh command to finish: /bin/sh -c 'echo one echo two'",
+        )
+
+    def test_summarize_remote_command_truncates_long_commands(self) -> None:
+        summary = ssh_transport._summarize_remote_command("x" * (ssh_transport.REMOTE_COMMAND_SUMMARY_LIMIT + 20))
+        self.assertEqual(len(summary), ssh_transport.REMOTE_COMMAND_SUMMARY_LIMIT)
+        self.assertTrue(summary.endswith("..."))
+
     def test_extract_ssh_transport_error_detects_forward_bind_failure(self) -> None:
         output = (
             "bind [127.0.0.1]:108: Permission denied\n"
@@ -421,6 +445,34 @@ class SSHTransportTests(unittest.TestCase):
         self.assertIn("bind [127.0.0.1]:10445: Permission denied", str(exc.exception))
         fake_child.close.assert_called_once_with(force=True)
 
+    def test_ssh_local_forward_timeout_reports_tunnel_target(self) -> None:
+        try:
+            import pexpect  # noqa: F401
+        except Exception:
+            self.skipTest("pexpect not available")
+        fake_child = mock.Mock()
+        fake_child.expect.side_effect = [3]
+        fake_child.before = ""
+        fake_child.isalive.return_value = False
+        with mock.patch("pexpect.spawn", return_value=fake_child):
+            with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+                with mock.patch("timecapsulesmb.transport.ssh.tcp_open", return_value=False):
+                    with mock.patch("timecapsulesmb.transport.ssh.time.time", side_effect=[100.0, 106.0]):
+                        with self.assertRaises(SystemExit) as exc:
+                            with ssh_transport.ssh_local_forward(
+                                ssh_transport.SshConnection("root@192.168.1.118", "pw", ""),
+                                local_port=10445,
+                                remote_host="10.0.1.1",
+                                remote_port=445,
+                                ready_timeout=5,
+                            ):
+                                pass
+        self.assertEqual(
+            str(exc.exception),
+            "Timed out waiting for ssh tunnel to become ready: 127.0.0.1:10445 -> 10.0.1.1:445 via root@192.168.1.118",
+        )
+        fake_child.close.assert_called_once_with(force=True)
+
     def test_verify_remote_size_retries_transient_failure(self) -> None:
         with NamedTemporaryFile() as tmp:
             src = Path(tmp.name)
@@ -443,6 +495,27 @@ class SSHTransportTests(unittest.TestCase):
                     )
         self.assertEqual(run_ssh_mock.call_count, 2)
         sleep_mock.assert_called_once_with(1)
+
+    def test_verify_remote_size_failure_reports_source_and_destination(self) -> None:
+        with NamedTemporaryFile() as tmp:
+            src = Path(tmp.name)
+            src.write_bytes(b"hello")
+            with mock.patch(
+                "timecapsulesmb.transport.ssh.run_ssh",
+                return_value=subprocess.CompletedProcess(["ssh"], 0, stdout="3\n", stderr=""),
+            ):
+                with mock.patch("timecapsulesmb.transport.ssh.time.sleep"):
+                    with self.assertRaises(SystemExit) as exc:
+                        ssh_transport._verify_remote_size(
+                            ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no"),
+                            src,
+                            "/tmp/test-upload",
+                            timeout=30,
+                        )
+        self.assertEqual(
+            str(exc.exception),
+            f"upload verification failed for {src.name} -> /tmp/test-upload: expected 5 bytes, got 3 bytes",
+        )
 
     def test_run_scp_cat_fallback_retries_transient_permission_denied(self) -> None:
         with NamedTemporaryFile() as tmp:
@@ -467,6 +540,39 @@ class SSHTransportTests(unittest.TestCase):
                                 )
         self.assertEqual(subprocess_run_mock.call_count, 2)
         sleep_mock.assert_called_once_with(1)
+
+    def test_run_scp_scp_timeout_reports_remote_destination(self) -> None:
+        with NamedTemporaryFile() as tmp:
+            src = Path(tmp.name)
+            src.write_bytes(b"hello")
+            connection = ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no", remote_has_scp=True)
+
+            def fake_spawn(_cmd, _password, *, timeout, timeout_message):
+                raise SystemExit(timeout_message)
+
+            with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+                with mock.patch("timecapsulesmb.transport.ssh._spawn_with_password", side_effect=fake_spawn):
+                    with self.assertRaises(SystemExit) as exc:
+                        ssh_transport.run_scp(connection, src, "/tmp/test-upload", timeout=10)
+        self.assertEqual(
+            str(exc.exception),
+            f"Timed out copying {src.name} to remote path /tmp/test-upload via scp",
+        )
+
+    def test_run_scp_cat_fallback_timeout_reports_remote_destination(self) -> None:
+        with NamedTemporaryFile() as tmp:
+            src = Path(tmp.name)
+            src.write_bytes(b"hello")
+            connection = ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no", remote_has_scp=False)
+            with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+                with mock.patch("timecapsulesmb.transport.ssh.shutil.which", return_value="/opt/homebrew/bin/sshpass"):
+                    with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=subprocess.TimeoutExpired(["sshpass"], 10)):
+                        with self.assertRaises(SystemExit) as exc:
+                            ssh_transport.run_scp(connection, src, "/tmp/test-upload", timeout=10)
+        self.assertEqual(
+            str(exc.exception),
+            f"Timed out copying {src.name} to remote path /tmp/test-upload via sshpass cat fallback",
+        )
 
     def test_run_scp_caches_remote_scp_capability(self) -> None:
         with NamedTemporaryFile() as tmp:
