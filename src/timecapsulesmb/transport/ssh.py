@@ -51,6 +51,14 @@ SSH_CLIENT_NOISE_PATTERNS = (
 )
 
 SSH_AUTHENTICITY_PROMPT = r"Are you sure you want to continue connecting \(yes/no/\[fingerprint\]\)\?"
+REMOTE_COMMAND_SUMMARY_LIMIT = 500
+
+
+def _summarize_remote_command(remote_cmd: str) -> str:
+    summary = " ".join(remote_cmd.split())
+    if len(summary) <= REMOTE_COMMAND_SUMMARY_LIMIT:
+        return summary
+    return summary[: REMOTE_COMMAND_SUMMARY_LIMIT - 3] + "..."
 
 
 def ssh_opts_use_proxy(ssh_opts: str) -> bool:
@@ -194,6 +202,10 @@ def _normalize_ssh_tokens(ssh_opts: str) -> list[str]:
 
 def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
     cmd = ["ssh", *_normalize_ssh_tokens(connection.ssh_opts), connection.host, remote_cmd]
+    timeout_message = (
+        "Timed out waiting for ssh command to finish: "
+        f"{_summarize_remote_command(remote_cmd)}"
+    )
     rc = 1
     stdout = ""
     for attempt in range(3):
@@ -201,7 +213,7 @@ def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, t
             cmd,
             connection.password,
             timeout=timeout,
-            timeout_message="Timed out waiting for ssh command to finish.",
+            timeout_message=timeout_message,
         )
         if rc == 0 or not _looks_like_transient_ssh_auth_failure(stdout) or attempt == 2:
             break

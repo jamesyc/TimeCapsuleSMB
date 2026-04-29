@@ -184,6 +184,30 @@ class SSHTransportTests(unittest.TestCase):
                     )
         self.assertEqual(str(exc.exception), "ssh command failed with rc=7")
 
+    def test_run_ssh_timeout_error_includes_remote_command_summary(self) -> None:
+        def fake_spawn(_cmd, _password, *, timeout, timeout_message):
+            raise SystemExit(timeout_message)
+
+        remote_cmd = "/bin/sh -c 'echo one\necho two'"
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+            with mock.patch("timecapsulesmb.transport.ssh._spawn_with_password", side_effect=fake_spawn):
+                with self.assertRaises(SystemExit) as exc:
+                    ssh_transport.run_ssh(
+                        ssh_transport.SshConnection("root@192.168.1.118", "secret-password", "-o StrictHostKeyChecking=no"),
+                        remote_cmd,
+                        check=False,
+                        timeout=10,
+                    )
+        self.assertEqual(
+            str(exc.exception),
+            "Timed out waiting for ssh command to finish: /bin/sh -c 'echo one echo two'",
+        )
+
+    def test_summarize_remote_command_truncates_long_commands(self) -> None:
+        summary = ssh_transport._summarize_remote_command("x" * (ssh_transport.REMOTE_COMMAND_SUMMARY_LIMIT + 20))
+        self.assertEqual(len(summary), ssh_transport.REMOTE_COMMAND_SUMMARY_LIMIT)
+        self.assertTrue(summary.endswith("..."))
+
     def test_extract_ssh_transport_error_detects_forward_bind_failure(self) -> None:
         output = (
             "bind [127.0.0.1]:108: Permission denied\n"
