@@ -542,8 +542,20 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('if DATA_ROOT=$(discover_preexisting_data_root); then', rendered)
         self.assertIn('VOLUME_ROOT=$(mount_fallback_volume) || {', rendered)
         self.assertIn('DATA_ROOT=$(resolve_data_root_on_mounted_volume "$VOLUME_ROOT") || {', rendered)
-        self.assertIn('MOUNT_CANDIDATES="/dev/dk2:/Volumes/dk2 /dev/dk3:/Volumes/dk3 /dev/dk1:/Volumes/dk1"', rendered)
-        self.assertIn('for mount_candidate in $MOUNT_CANDIDATES; do', rendered)
+        self.assertIn("disk_name_candidates()", rendered)
+        self.assertIn("volume_root_candidates()", rendered)
+        self.assertIn("mount_candidates()", rendered)
+        self.assertIn("APdata", rendered)
+        self.assertIn("APconfig", rendered)
+        self.assertIn("APswap", rendered)
+        self.assertIn("/sbin/sysctl -n hw.disknames", rendered)
+        self.assertIn("log_disk_discovery_state()", rendered)
+        self.assertIn('log "disk discovery: hw.disknames=$disk_names"', rendered)
+        self.assertIn('log "disk discovery: dmesg: $disk_line"', rendered)
+        self.assertIn('log "disk discovery: disk candidates:${disk_candidates:- none}"', rendered)
+        self.assertIn('log "disk discovery: volume root candidates:${volume_candidates:- none}"', rendered)
+        self.assertIn('log "disk discovery: mount candidates:${mount_candidate_list:- none}"', rendered)
+        self.assertIn('for mount_candidate in $(mount_candidates); do', rendered)
         self.assertIn('try_mount_candidate "$dev_path" "$volume_root"', rendered)
         self.assertIn('resolve_data_root_on_mounted_volume "$VOLUME_ROOT"', rendered)
         self.assertIn('/bin/df -k "$volume_root"', rendered)
@@ -576,6 +588,7 @@ class DeployModuleTests(unittest.TestCase):
         main_start = rendered.index("cleanup_old_runtime")
         main_section = rendered[main_start:]
         self.assertLess(main_section.index("prepare_locks_ramdisk"), main_section.index("prepare_ram_root"))
+        self.assertLess(main_section.index("log_disk_discovery_state"), main_section.index("start_mdns_capture"))
         self.assertLess(main_section.index('start_mdns'), main_section.index('waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume'))
         self.assertLess(main_section.index('waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume'), main_section.index('if DATA_ROOT=$(discover_preexisting_data_root); then'))
         self.assertLess(main_section.index('if DATA_ROOT=$(discover_preexisting_data_root); then'), main_section.index('VOLUME_ROOT=$(mount_fallback_volume) || {'))
@@ -700,10 +713,10 @@ class DeployModuleTests(unittest.TestCase):
         start = rendered.index("find_existing_data_root() {")
         end = rendered.index("\nfind_existing_volume_root() {")
         section = rendered[start:end]
-        self.assertIn('for volume_root in $VOLUME_ROOT_CANDIDATES; do', section)
+        self.assertIn('for volume_root in $(volume_root_candidates); do', section)
         self.assertIn('is_volume_root_mounted "$volume_root"', section)
         self.assertIn('data_root=$(find_data_root_under_volume "$volume_root")', section)
-        self.assertIn('VOLUME_ROOT_CANDIDATES="/Volumes/dk2 /Volumes/dk3 /Volumes/dk1"', rendered)
+        self.assertNotIn("VOLUME_ROOT_CANDIDATES=", rendered)
         self.assertNotIn("mount_hfs", section)
 
     def test_render_start_script_initializes_share_root_only_after_confirmed_mount(self) -> None:
@@ -744,7 +757,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertLess(shared_marker, share_dir)
         self.assertLess(share_dir, shared_dir)
 
-    def test_render_start_script_checks_dk2_and_dk3_before_dk1_in_fallback_mount(self) -> None:
+    def test_render_start_script_discovers_mount_candidates_from_remote_disk_names(self) -> None:
         values = {
             "TC_PAYLOAD_DIR_NAME": "samba4",
             "TC_SHARE_NAME": "Data",
@@ -757,9 +770,9 @@ class DeployModuleTests(unittest.TestCase):
         }
         bundle = build_template_bundle(values)
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn('MOUNT_CANDIDATES="/dev/dk2:/Volumes/dk2 /dev/dk3:/Volumes/dk3 /dev/dk1:/Volumes/dk1"', rendered)
         mount_start = rendered.index("mount_fallback_volume()")
         mount_section = rendered[mount_start:rendered.index("\nfind_payload_dir()")]
+        self.assertIn('for mount_candidate in $(mount_candidates); do', mount_section)
         self.assertIn('dev_path=${mount_candidate%%:*}', mount_section)
         self.assertIn('volume_root=${mount_candidate#*:}', mount_section)
         self.assertIn('try_mount_candidate "$dev_path" "$volume_root"', mount_section)
@@ -2324,7 +2337,12 @@ int main(void) {{
         self.assertIn('volume="/Volumes/$dev"', cmd)
         self.assertIn('if [ ! -d "$volume" ]; then\n    mkdir -p "$volume"\n    created_mountpoint=1\n  fi', cmd)
         self.assertIn('df_line=$(/bin/df -k "$volume" 2>/dev/null | /usr/bin/tail -n +2 || true)', cmd)
-        self.assertEqual(cmd.count('for dev in dk2 dk3 dk1; do'), 1)
+        self.assertIn("disk_name_candidates()", cmd)
+        self.assertIn("APdata", cmd)
+        self.assertIn("APconfig", cmd)
+        self.assertIn("APswap", cmd)
+        self.assertIn("/sbin/sysctl -n hw.disknames", cmd)
+        self.assertIn("for dev in $(disk_name_candidates); do", cmd)
 
     def test_discover_volume_root_cleans_up_unused_mountpoint_after_failed_fallback_mount(self) -> None:
         proc = mock.Mock(stdout="/Volumes/dk2\n")

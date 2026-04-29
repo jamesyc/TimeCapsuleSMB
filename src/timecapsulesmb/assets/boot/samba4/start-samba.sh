@@ -52,8 +52,6 @@ ADISK_DISK_KEY=__ADISK_DISK_KEY__
 ADISK_UUID=__ADISK_UUID__
 MDNS_CAPTURE_PID=
 APPLE_MDNS_SNAPSHOT_START=$(/bin/ls -lnT "$APPLE_MDNS_SNAPSHOT" 2>/dev/null || true)
-VOLUME_ROOT_CANDIDATES="/Volumes/dk2 /Volumes/dk3 /Volumes/dk1"
-MOUNT_CANDIDATES="/dev/dk2:/Volumes/dk2 /dev/dk3:/Volumes/dk3 /dev/dk1:/Volumes/dk1"
 
 log() {
     log_dir=${RAM_LOG%/*}
@@ -186,8 +184,94 @@ wait_for_bind_interfaces() {
     return 1
 }
 
+append_disk_candidate() {
+    candidate=$1
+    case " $DISK_CANDIDATES " in
+        *" $candidate "*)
+            ;;
+        *)
+            DISK_CANDIDATES="$DISK_CANDIDATES $candidate"
+            ;;
+    esac
+}
+
+is_metadata_wedge() {
+    dev=$1
+    metadata_line=$(/sbin/dmesg 2>/dev/null | /usr/bin/sed -n "/^$dev at .*: APconfig$/p;/^$dev at .*: APswap$/p" | /usr/bin/tail -n 1)
+    [ -n "$metadata_line" ]
+}
+
+disk_name_candidates() {
+    DISK_CANDIDATES=""
+
+    for dev in $(/sbin/dmesg 2>/dev/null | /usr/bin/sed -n 's/^\(dk[0-9][0-9]*\) at .*: APdata$/\1/p'); do
+        append_disk_candidate "$dev"
+    done
+
+    for dev in $(/sbin/sysctl -n hw.disknames 2>/dev/null); do
+        case "$dev" in
+            dk[0-9]*)
+                if ! is_metadata_wedge "$dev"; then
+                    append_disk_candidate "$dev"
+                fi
+                ;;
+        esac
+    done
+
+    if [ -z "$DISK_CANDIDATES" ]; then
+        DISK_CANDIDATES=" dk2 dk3"
+    fi
+
+    echo "$DISK_CANDIDATES"
+}
+
+volume_root_candidates() {
+    roots=""
+    for dev in $(disk_name_candidates); do
+        roots="$roots /Volumes/$dev"
+    done
+    echo "$roots"
+}
+
+mount_candidates() {
+    candidates=""
+    for dev in $(disk_name_candidates); do
+        candidates="$candidates /dev/$dev:/Volumes/$dev"
+    done
+    echo "$candidates"
+}
+
+log_disk_discovery_state() {
+    disk_names=$(/sbin/sysctl -n hw.disknames 2>/dev/null || true)
+    if [ -n "$disk_names" ]; then
+        log "disk discovery: hw.disknames=$disk_names"
+    else
+        log "disk discovery: hw.disknames unavailable"
+    fi
+
+    disk_lines=$(/sbin/dmesg 2>/dev/null | /usr/bin/sed -n '/^wd[0-9]/p;/^sd[0-9]/p;/^ld[0-9]/p;/^dk[0-9]/p' || true)
+    if [ -n "$disk_lines" ]; then
+        old_ifs=$IFS
+        IFS='
+'
+        for disk_line in $disk_lines; do
+            log "disk discovery: dmesg: $disk_line"
+        done
+        IFS=$old_ifs
+    else
+        log "disk discovery: no wd/sd/ld/dk dmesg lines available"
+    fi
+
+    disk_candidates=$(disk_name_candidates)
+    volume_candidates=$(volume_root_candidates)
+    mount_candidate_list=$(mount_candidates)
+    log "disk discovery: disk candidates:${disk_candidates:- none}"
+    log "disk discovery: volume root candidates:${volume_candidates:- none}"
+    log "disk discovery: mount candidates:${mount_candidate_list:- none}"
+}
+
 find_existing_data_root() {
-    for volume_root in $VOLUME_ROOT_CANDIDATES; do
+    for volume_root in $(volume_root_candidates); do
         if is_volume_root_mounted "$volume_root" && data_root=$(find_data_root_under_volume "$volume_root"); then
             echo "$data_root"
             return 0
@@ -198,7 +282,7 @@ find_existing_data_root() {
 }
 
 find_existing_volume_root() {
-    for volume_root in $VOLUME_ROOT_CANDIDATES; do
+    for volume_root in $(volume_root_candidates); do
         if is_volume_root_mounted "$volume_root"; then
             echo "$volume_root"
             return 0
@@ -399,8 +483,8 @@ mount_fallback_volume() {
     log "no Apple-mounted usable volume found; falling back to manual mount"
     attempt=0
     while [ "$attempt" -lt 30 ]; do
-        log "manual mount attempt $((attempt + 1)): probing /dev/dk2, /dev/dk3, and /dev/dk1"
-        for mount_candidate in $MOUNT_CANDIDATES; do
+        log "manual mount attempt $((attempt + 1)): probing discovered HFS disk wedges"
+        for mount_candidate in $(mount_candidates); do
             dev_path=${mount_candidate%%:*}
             volume_root=${mount_candidate#*:}
             if mounted_root=$(try_mount_candidate "$dev_path" "$volume_root"); then
@@ -796,6 +880,7 @@ BIND_INTERFACES=$(wait_for_bind_interfaces) || {
 BRIDGE0_IP=${BIND_INTERFACES#127.0.0.1/8 }
 BRIDGE0_IP=${BRIDGE0_IP%%/*}
 prepare_local_hostname_resolution
+log_disk_discovery_state
 
 start_mdns_capture
 

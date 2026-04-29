@@ -190,6 +190,46 @@ class MountedVolume:
     mountpoint: str
 
 
+DISK_NAME_CANDIDATES_SH = r'''
+append_candidate() {
+  candidate=$1
+  case " $candidates " in
+    *" $candidate "*)
+      ;;
+    *)
+      candidates="$candidates $candidate"
+      ;;
+  esac
+}
+
+is_metadata_wedge() {
+  dev=$1
+  metadata_line=$(/sbin/dmesg 2>/dev/null | /usr/bin/sed -n "/^$dev at .*: APconfig$/p;/^$dev at .*: APswap$/p" | /usr/bin/tail -n 1)
+  [ -n "$metadata_line" ]
+}
+
+disk_name_candidates() {
+  candidates=""
+  for dev in $(/sbin/dmesg 2>/dev/null | /usr/bin/sed -n 's/^\(dk[0-9][0-9]*\) at .*: APdata$/\1/p'); do
+    append_candidate "$dev"
+  done
+  for dev in $(/sbin/sysctl -n hw.disknames 2>/dev/null); do
+    case "$dev" in
+      dk[0-9]*)
+        if ! is_metadata_wedge "$dev"; then
+          append_candidate "$dev"
+        fi
+        ;;
+    esac
+  done
+  if [ -z "$candidates" ]; then
+    candidates=" dk2 dk3"
+  fi
+  echo "$candidates"
+}
+'''
+
+
 @dataclass(frozen=True)
 class ProbeResult:
     ssh_port_reachable: bool
@@ -458,8 +498,8 @@ fi
 
 
 def discover_mounted_volume_conn(connection: SshConnection) -> MountedVolume:
-    script = r'''
-for dev in dk2 dk3 dk1; do
+    script = DISK_NAME_CANDIDATES_SH + r'''
+for dev in $(disk_name_candidates); do
   volume="/Volumes/$dev"
   if [ ! -d "$volume" ]; then
     continue
@@ -828,8 +868,8 @@ def discover_volume_root_conn(connection: SshConnection) -> str:
     except SystemExit:
         pass
 
-    script = r'''
-for dev in dk2 dk3 dk1; do
+    script = DISK_NAME_CANDIDATES_SH + r'''
+for dev in $(disk_name_candidates); do
   if [ ! -b "/dev/$dev" ]; then
     continue
   fi
