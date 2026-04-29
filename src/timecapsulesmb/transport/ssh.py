@@ -379,7 +379,7 @@ def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 1
                 check=False,
             )
         except subprocess.TimeoutExpired as e:
-            raise SystemExit(f"Timed out copying to remote path {dest} via sshpass cat fallback") from e
+            raise SystemExit(f"Timed out copying {src.name} to remote path {dest} via sshpass cat fallback") from e
         stdout = proc.stdout.decode("utf-8", errors="replace").strip()
         if proc.returncode == 0 or not _looks_like_transient_ssh_auth_failure(stdout) or attempt == 2:
             break
