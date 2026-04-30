@@ -2,15 +2,15 @@
   "artifacts": {
     "mdns-advertiser": {
       "path": "bin/mdns/mdns-advertiser",
-      "sha256": "2eb05a9ec4e485582c360c533340f0774018cd6ca58841c2c83425c134777d4c"
+      "sha256": "40dad19584fb5b0134dc5e3a1b28cb01b4ec7efe24af1fb27d84a8b1064c88ae"
     },
     "mdns-advertiser-netbsd4le": {
       "path": "bin/mdns-netbsd4le/mdns-advertiser",
-      "sha256": "1e1379dc374f73c6b815644ce21c09e7c0431da63bc131ba62879497241c1ee5"
+      "sha256": "9f15452700c63c4d4754dc454e0561446ed4c1c0ae92beb71598ea71d94d5459"
     },
     "mdns-advertiser-netbsd4be": {
       "path": "bin/mdns-netbsd4be/mdns-advertiser",
-      "sha256": "1849706e1398dff55ccf59d0cee24d7a94a938fb4a2b509f3e6d88cf498aae12"
+      "sha256": "316c29fe1603b20e43a2548812e3704497f83b59871938d64238622fede13dbe"
     },
     "nbns-advertiser": {
       "path": "bin/nbns/nbns-advertiser",

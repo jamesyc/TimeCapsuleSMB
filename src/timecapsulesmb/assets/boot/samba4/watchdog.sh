@@ -21,6 +21,7 @@ MDNS_HOST_LABEL=__MDNS_HOST_LABEL__
 MDNS_DEVICE_MODEL=__MDNS_DEVICE_MODEL__
 AIRPORT_SYAP=__AIRPORT_SYAP__
 ADISK_DISK_KEY=__ADISK_DISK_KEY__
+ADISK_DISK_ADVF=0x82
 ADISK_UUID=__ADISK_UUID__
 
 RECOVERY_POLL_SECONDS=10
@@ -113,6 +114,7 @@ restart_mdns() {
     set -- "$@" \
         --adisk-share "$SMB_SHARE_NAME" \
         --adisk-disk-key "$ADISK_DISK_KEY" \
+        --adisk-disk-advf "$ADISK_DISK_ADVF" \
         --adisk-uuid "$ADISK_UUID" \
         --adisk-sys-wama "$iface_mac" \
         --ipv4 "$iface_ip"

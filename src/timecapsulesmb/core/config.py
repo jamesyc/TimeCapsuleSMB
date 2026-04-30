@@ -16,8 +16,10 @@ MAX_DNS_TXT_BYTES = 255
 MAX_NETBIOS_NAME_BYTES = 15
 MODEL_TXT_PREFIX = "model="
 ADISK_DEFAULT_DISK_KEY = "dk2"
+ADISK_MANAGED_DISK_ADVF = "0x82"
 ADISK_DISK_UUID_EXAMPLE = "12345678-1234-1234-1234-123456789012"
-ADISK_DISK_TXT_MID = "=adVF=0x1093,adVN="
+ADISK_DISK_TXT_ADVF_PREFIX = "=adVF="
+ADISK_DISK_TXT_ADVN_MID = ",adVN="
 ADISK_DISK_TXT_SUFFIX = ",adVU="
 MAX_SAMBA_USER_BYTES = 32
 
@@ -228,7 +230,11 @@ def build_mdns_device_model_txt(value: str) -> Optional[str]:
 
 
 def build_adisk_share_txt(value: str) -> Optional[str]:
-    txt = f"{ADISK_DEFAULT_DISK_KEY}{ADISK_DISK_TXT_MID}{value}{ADISK_DISK_TXT_SUFFIX}{ADISK_DISK_UUID_EXAMPLE}"
+    txt = (
+        f"{ADISK_DEFAULT_DISK_KEY}{ADISK_DISK_TXT_ADVF_PREFIX}{ADISK_MANAGED_DISK_ADVF}"
+        f"{ADISK_DISK_TXT_ADVN_MID}{value}"
+        f"{ADISK_DISK_TXT_SUFFIX}{ADISK_DISK_UUID_EXAMPLE}"
+    )
     if len(txt.encode("utf-8")) > MAX_DNS_TXT_BYTES:
         return None
     return txt
@@ -296,7 +302,9 @@ def validate_adisk_share_name(value: str, field_name: str) -> Optional[str]:
         max_share_bytes = (
             MAX_DNS_TXT_BYTES
             - len(ADISK_DEFAULT_DISK_KEY.encode("utf-8"))
-            - len(ADISK_DISK_TXT_MID.encode("utf-8"))
+            - len(ADISK_DISK_TXT_ADVF_PREFIX.encode("utf-8"))
+            - len(ADISK_MANAGED_DISK_ADVF.encode("utf-8"))
+            - len(ADISK_DISK_TXT_ADVN_MID.encode("utf-8"))
             - len(ADISK_DISK_TXT_SUFFIX.encode("utf-8"))
             - len(ADISK_DISK_UUID_EXAMPLE.encode("utf-8"))
         )
