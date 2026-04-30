@@ -59,7 +59,7 @@ def print_followup_help() -> None:
     print("- (If you have xattr issues, or macOS Error -50) then try running:")
     print("    .venv/bin/tcapsule repair-xattrs")
     print("")
-    print("- (If you have disk corruption issues) then try running:")
+    print("- (If you have disk corruption issues, or error 22) then try running:")
     print("    .venv/bin/tcapsule fsck")
     print("")
     print("- (To remove old Apple devices entries from mDNS cache) then try running:")
