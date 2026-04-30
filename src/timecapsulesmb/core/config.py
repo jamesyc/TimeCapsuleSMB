@@ -277,7 +277,7 @@ def validate_mdns_host_label(value: str, field_name: str) -> Optional[str]:
         return f"{field_name} must be {MAX_DNS_LABEL_BYTES} bytes or fewer."
     try:
         ipaddress.ip_address(value)
-        return None
+        return f"{field_name} must be a single DNS label, not an IP address."
     except ValueError:
         pass
     if "." in value:
