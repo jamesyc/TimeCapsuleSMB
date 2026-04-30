@@ -24,6 +24,7 @@ from timecapsulesmb.discovery.bonjour import (
     ServiceObservation,
     browse_service_instances,
     discover,
+    discover_snapshot_detailed,
     discover_resolved_records,
     discovered_record_root_host,
     resolve_service_instance,
@@ -80,7 +81,7 @@ class DiscoveryTests(unittest.TestCase):
 
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
             with mock.patch("timecapsulesmb.discovery.bonjour.Collector", return_value=fake_collector):
-                with mock.patch("timecapsulesmb.discovery.bonjour.time.monotonic", side_effect=[0.0, 0.0, 0.6]):
+                with mock.patch("timecapsulesmb.discovery.bonjour.time.monotonic", side_effect=[0.0, 0.0, 0.6, 0.6]):
                     with mock.patch("timecapsulesmb.discovery.bonjour.time.sleep") as fake_sleep:
                         discover_resolved_records(timeout=0.5)
 
@@ -90,6 +91,43 @@ class DiscoveryTests(unittest.TestCase):
             mock.call(timeout_ms=3000),
         ])
         self.assertEqual(fake_collector.resolve_pending.call_count, 2)
+
+    def test_discover_snapshot_detailed_returns_bounded_discovery_counters(self) -> None:
+        fake_zc = mock.Mock()
+        instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
+        record = BonjourResolvedService("Home", "home.local", "_smb._tcp.local.", port=445, ipv4=["10.0.1.1"])
+        fake_collector = mock.Mock()
+        fake_collector.results.return_value = [record]
+        fake_collector.service_instances.return_value = [instance]
+        fake_collector.pending_count.return_value = 1
+        fake_collector.service_added_count = 2
+        fake_collector.service_updated_count = 1
+        fake_collector.resolve_attempt_count = 3
+        fake_collector.resolve_success_count = 1
+        fake_collector.resolve_error_count = 1
+        fake_ip_version = mock.Mock()
+        fake_ip_version.V4Only = object()
+        fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
+
+        with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
+            with mock.patch("timecapsulesmb.discovery.bonjour.Collector", return_value=fake_collector):
+                with mock.patch("timecapsulesmb.discovery.bonjour.time.monotonic", side_effect=[10.0, 10.0, 16.125]):
+                    snapshot, diagnostics = discover_snapshot_detailed(SMB_SERVICE, timeout=0)
+
+        self.assertEqual(snapshot.instances, [instance])
+        self.assertEqual(snapshot.resolved, [record])
+        self.assertEqual(diagnostics.service, "_smb")
+        self.assertEqual(diagnostics.service_types, ["_smb._tcp.local."])
+        self.assertEqual(diagnostics.ip_version, "V4Only")
+        self.assertEqual(diagnostics.elapsed_sec, 6.125)
+        self.assertEqual(diagnostics.instance_count, 1)
+        self.assertEqual(diagnostics.resolved_count, 1)
+        self.assertEqual(diagnostics.pending_count, 1)
+        self.assertEqual(diagnostics.service_added_count, 2)
+        self.assertEqual(diagnostics.service_updated_count, 1)
+        self.assertEqual(diagnostics.resolve_attempt_count, 3)
+        self.assertEqual(diagnostics.resolve_success_count, 1)
+        self.assertEqual(diagnostics.resolve_error_count, 1)
 
     def test_discover_includes_unresolved_browse_instances(self) -> None:
         fake_zc = mock.Mock()
@@ -257,6 +295,9 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(records[0].name, "Kitchen")
         self.assertEqual(records[0].ipv4, ["10.0.1.99"])
         self.assertEqual(collector.pending, {("_smb._tcp.local.", "Home._smb._tcp.local.")})
+        self.assertEqual(collector.resolve_attempt_count, 2)
+        self.assertEqual(collector.resolve_success_count, 1)
+        self.assertEqual(collector.resolve_error_count, 1)
 
     def test_collector_keeps_unresolved_pending_record_for_later_retry(self) -> None:
         class FakeInfo:
@@ -274,6 +315,9 @@ class DiscoveryTests(unittest.TestCase):
 
         self.assertEqual(collector.results(), [])
         self.assertEqual(collector.pending, {("_smb._tcp.local.", "Home._smb._tcp.local.")})
+        self.assertEqual(collector.resolve_attempt_count, 1)
+        self.assertEqual(collector.resolve_success_count, 0)
+        self.assertEqual(collector.resolve_error_count, 0)
 
         fake_zc.get_service_info.return_value = FakeInfo()
         collector.resolve_pending(timeout_ms=500)
@@ -283,6 +327,9 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(records[0].name, "Home")
         self.assertEqual(records[0].ipv4, ["10.0.1.1"])
         self.assertEqual(collector.pending, set())
+        self.assertEqual(collector.resolve_attempt_count, 2)
+        self.assertEqual(collector.resolve_success_count, 1)
+        self.assertEqual(collector.resolve_error_count, 0)
 
     def test_filter_service_records_returns_only_matching_service(self) -> None:
         airport = Discovered(

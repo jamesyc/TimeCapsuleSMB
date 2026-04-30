@@ -22,6 +22,7 @@ from timecapsulesmb.checks.bonjour import (
     check_smb_instance,
     check_smb_service_target,
     discover_smb_services,
+    discover_smb_services_detailed,
     resolve_smb_instance,
     resolve_smb_service_target,
     select_resolved_smb_record,
@@ -38,7 +39,12 @@ from timecapsulesmb.checks.smb import (
 )
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.probe import RemoteInterfaceProbeResult
-from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
+from timecapsulesmb.discovery.bonjour import (
+    BonjourDiscoveryDiagnostics,
+    BonjourDiscoverySnapshot,
+    BonjourResolvedService,
+    BonjourServiceInstance,
+)
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -61,10 +67,27 @@ class CheckTests(unittest.TestCase):
             instances=[default_bonjour_instance],
             resolved=[default_bonjour_record],
         )
+        default_bonjour_diagnostics = BonjourDiscoveryDiagnostics(
+            service="_smb",
+            service_types=["_smb._tcp.local."],
+            timeout_sec=6.0,
+            elapsed_sec=6.0,
+            ip_version="V4Only",
+            instance_count=1,
+            resolved_count=1,
+            pending_count=0,
+            service_added_count=1,
+            service_updated_count=0,
+            resolve_attempt_count=1,
+            resolve_success_count=1,
+            resolve_error_count=0,
+            instances=[default_bonjour_instance],
+            resolved=[default_bonjour_record],
+        )
         self._exit_stack.enter_context(
             mock.patch(
-                "timecapsulesmb.checks.doctor.discover_smb_services",
-                return_value=(default_bonjour_snapshot, None),
+                "timecapsulesmb.checks.doctor.discover_smb_services_detailed",
+                return_value=(default_bonjour_snapshot, None, default_bonjour_diagnostics),
             )
         )
         self._exit_stack.enter_context(
@@ -166,6 +189,147 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(identity.host_label, "home")
         self.assertIsNone(identity.target_ip)
 
+    def test_run_doctor_checks_adds_bonjour_debug_on_instance_mismatch(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "Home",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Home",
+            "TC_MDNS_HOST_LABEL": "home",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+            "TC_AIRPORT_SYAP": "119",
+        }
+        diagnostics = BonjourDiscoveryDiagnostics(
+            service="_smb",
+            service_types=["_smb._tcp.local."],
+            timeout_sec=6.0,
+            elapsed_sec=6.0,
+            ip_version="V4Only",
+            instance_count=0,
+            resolved_count=0,
+            pending_count=0,
+            service_added_count=0,
+            service_updated_count=0,
+            resolve_attempt_count=0,
+            resolve_success_count=0,
+            resolve_error_count=0,
+        )
+        debug_fields: dict[str, object] = {}
+        native_diagnostics = {"status": "ok"}
+
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
+                    with mock.patch(
+                        "timecapsulesmb.checks.doctor.discover_smb_services_detailed",
+                        return_value=(BonjourDiscoverySnapshot([], []), None, diagnostics),
+                    ):
+                        with mock.patch("timecapsulesmb.checks.doctor.browse_native_dns_sd", return_value=native_diagnostics) as native_mock:
+                            results, fatal = run_doctor_checks(
+                                values,
+                                env_exists=True,
+                                repo_root=REPO_ROOT,
+                                skip_ssh=True,
+                                skip_smb=True,
+                                debug_fields=debug_fields,
+                            )
+
+        self.assertTrue(fatal)
+        self.assertTrue(any(result.status == "FAIL" and "no discovered _smb._tcp" in result.message for result in results))
+        self.assertEqual(debug_fields["bonjour_expected"], {"instance_name": "Home", "host_label": "home", "target_ip": "10.0.0.2"})
+        self.assertIs(debug_fields["bonjour_zeroconf"], diagnostics)
+        self.assertIs(debug_fields["bonjour_native_dns_sd"], native_diagnostics)
+        native_mock.assert_called_once_with()
+
+    def test_run_doctor_checks_does_not_run_native_dns_sd_when_bonjour_matches(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "Home",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+            "TC_AIRPORT_SYAP": "119",
+        }
+        debug_fields: dict[str, object] = {}
+
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
+                    with mock.patch("timecapsulesmb.checks.doctor.browse_native_dns_sd", side_effect=AssertionError("native dns-sd should not run")):
+                        results, fatal = run_doctor_checks(
+                            values,
+                            env_exists=True,
+                            repo_root=REPO_ROOT,
+                            skip_ssh=True,
+                            skip_smb=True,
+                            debug_fields=debug_fields,
+                        )
+
+        self.assertFalse(fatal)
+        self.assertEqual(debug_fields, {})
+        self.assertTrue(any(result.status == "PASS" and "discovered _smb._tcp" in result.message for result in results))
+
+    def test_run_doctor_checks_keeps_original_result_when_native_dns_sd_diagnostic_fails(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "Home",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Home",
+            "TC_MDNS_HOST_LABEL": "home",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+            "TC_AIRPORT_SYAP": "119",
+        }
+        diagnostics = BonjourDiscoveryDiagnostics(
+            service="_smb",
+            service_types=["_smb._tcp.local."],
+            timeout_sec=6.0,
+            elapsed_sec=6.0,
+            ip_version="V4Only",
+            instance_count=0,
+            resolved_count=0,
+            pending_count=0,
+            service_added_count=0,
+            service_updated_count=0,
+            resolve_attempt_count=0,
+            resolve_success_count=0,
+            resolve_error_count=0,
+        )
+        debug_fields: dict[str, object] = {}
+
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
+                    with mock.patch(
+                        "timecapsulesmb.checks.doctor.discover_smb_services_detailed",
+                        return_value=(BonjourDiscoverySnapshot([], []), None, diagnostics),
+                    ):
+                        with mock.patch("timecapsulesmb.checks.doctor.browse_native_dns_sd", side_effect=RuntimeError("dns-sd broke")):
+                            results, fatal = run_doctor_checks(
+                                values,
+                                env_exists=True,
+                                repo_root=REPO_ROOT,
+                                skip_ssh=True,
+                                skip_smb=True,
+                                debug_fields=debug_fields,
+                            )
+
+        self.assertTrue(fatal)
+        self.assertTrue(any(result.status == "FAIL" and "no discovered _smb._tcp" in result.message for result in results))
+        self.assertEqual(debug_fields["bonjour_native_dns_sd_error"], "RuntimeError: dns-sd broke")
+
     def test_run_doctor_checks_marks_missing_env_as_fatal(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
@@ -214,6 +378,37 @@ class CheckTests(unittest.TestCase):
         discover_mock.assert_called_once_with("_smb", timeout=3.5)
         self.assertIs(result, snapshot)
         self.assertIsNone(error)
+
+    def test_discover_smb_services_detailed_returns_snapshot_and_diagnostics(self) -> None:
+        snapshot = BonjourDiscoverySnapshot(
+            instances=[BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")],
+            resolved=[BonjourResolvedService("Home", "home.local", "_smb._tcp.local.", fullname="Home._smb._tcp.local.")],
+        )
+        diagnostics = BonjourDiscoveryDiagnostics(
+            service="_smb",
+            service_types=["_smb._tcp.local."],
+            timeout_sec=6.0,
+            elapsed_sec=6.0,
+            ip_version="V4Only",
+            instance_count=1,
+            resolved_count=1,
+            pending_count=0,
+            service_added_count=1,
+            service_updated_count=0,
+            resolve_attempt_count=1,
+            resolve_success_count=1,
+            resolve_error_count=0,
+            instances=list(snapshot.instances),
+            resolved=list(snapshot.resolved),
+        )
+
+        with mock.patch("timecapsulesmb.checks.bonjour.discover_snapshot_detailed", return_value=(snapshot, diagnostics)) as discover_mock:
+            result, error, result_diagnostics = discover_smb_services_detailed(timeout=3.5)
+
+        discover_mock.assert_called_once_with("_smb", timeout=3.5)
+        self.assertIs(result, snapshot)
+        self.assertIsNone(error)
+        self.assertIs(result_diagnostics, diagnostics)
 
     def test_discover_smb_services_returns_fail_when_discovery_backend_exits(self) -> None:
         with mock.patch("timecapsulesmb.checks.bonjour.discover_snapshot", side_effect=SystemExit("zeroconf missing")):
@@ -1041,8 +1236,8 @@ class CheckTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.checks.doctor.check_ssh_login", return_value=mock.Mock(status="PASS", message="ssh ok")):
                     with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
                         with mock.patch(
-                            "timecapsulesmb.checks.doctor.discover_smb_services",
-                            return_value=(BonjourDiscoverySnapshot([bonjour_instance], [bonjour_record]), None),
+                            "timecapsulesmb.checks.doctor.discover_smb_services_detailed",
+                            return_value=(BonjourDiscoverySnapshot([bonjour_instance], [bonjour_record]), None, None),
                         ):
                             with mock.patch("timecapsulesmb.checks.doctor.resolve_smb_instance", return_value=(bonjour_record, None)):
                                 with mock.patch("timecapsulesmb.checks.bonjour.socket.getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("10.0.0.2", 0))]):
@@ -1081,8 +1276,8 @@ class CheckTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.checks.doctor.check_ssh_login", return_value=mock.Mock(status="PASS", message="ssh ok")):
                     with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
                         with mock.patch(
-                            "timecapsulesmb.checks.doctor.discover_smb_services",
-                            return_value=(BonjourDiscoverySnapshot([bonjour_instance], [bonjour_record]), None),
+                            "timecapsulesmb.checks.doctor.discover_smb_services_detailed",
+                            return_value=(BonjourDiscoverySnapshot([bonjour_instance], [bonjour_record]), None, None),
                         ):
                             with mock.patch("timecapsulesmb.checks.doctor.resolve_smb_instance", side_effect=AssertionError("fallback resolve should not run")):
                                 with mock.patch("timecapsulesmb.checks.bonjour.socket.getaddrinfo", return_value=addrinfo):

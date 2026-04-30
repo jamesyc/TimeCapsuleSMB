@@ -61,7 +61,7 @@ class CommandContext:
         self.connection: SshConnection | None = None
         self.probe_state: ProbedDeviceState | None = None
         self.compatibility: DeviceCompatibility | None = None
-        self.telemetry.emit(started_event, command_id=self.command_id, **fields)
+        self._emit_telemetry(started_event, command_id=self.command_id, **fields)
 
     def __enter__(self) -> "CommandContext":
         return self
@@ -134,6 +134,12 @@ class CommandContext:
             ),
         ])
 
+    def _emit_telemetry(self, event: str, **fields: object) -> None:
+        try:
+            self.telemetry.emit(event, **fields)
+        except Exception:
+            pass
+
     def resolve_env_connection(
         self,
         *,
@@ -187,7 +193,7 @@ class CommandContext:
         error = None if result == "success" else self.build_error()
         if result != "success" and error is None:
             error = f"{self.command_name} failed without additional details."
-        self.telemetry.emit(
+        self._emit_telemetry(
             self.finished_event,
             synchronous=True,
             command_id=self.command_id,

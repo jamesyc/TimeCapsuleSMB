@@ -3974,6 +3974,22 @@ class CliTests(unittest.TestCase):
         self.assertIn("Doctor context:", telemetry_error)
         self.assertIn("discovered _smb._tcp candidates: 'Kitchen' @ kitchen.local [10.0.1.99]", telemetry_error)
 
+    def test_doctor_failure_telemetry_includes_debug_fields_from_checks(self) -> None:
+        output = io.StringIO()
+        results = [doctor.CheckResult("FAIL", "no discovered _smb._tcp instance matched configured instance 'Home'")]
+
+        def fake_run_doctor_checks(*_args, **kwargs):
+            kwargs["debug_fields"]["bonjour_zeroconf"] = {"instance_count": 0, "ip_version": "V4Only"}
+            return results, True
+
+        with mock.patch("timecapsulesmb.cli.doctor.load_env_values", return_value={}):
+            with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
+                with redirect_stdout(output):
+                    rc = doctor.main([])
+        self.assertEqual(rc, 1)
+        telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
+        self.assertIn("bonjour_zeroconf={instance_count:0,ip_version:V4Only}", telemetry_error)
+
     def test_doctor_includes_soft_preinspection_error_in_failure_telemetry(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()

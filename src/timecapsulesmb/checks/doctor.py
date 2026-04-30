@@ -11,7 +11,7 @@ from timecapsulesmb.checks.bonjour import (
     check_bonjour_host_ip,
     check_smb_instance,
     check_smb_service_target,
-    discover_smb_services,
+    discover_smb_services_detailed,
     resolve_smb_instance,
     resolve_smb_service_target,
     select_resolved_smb_record,
@@ -40,6 +40,7 @@ from timecapsulesmb.device.probe import (
     read_active_smb_conf_conn,
     read_interface_ipv4_conn,
 )
+from timecapsulesmb.discovery.native_dns_sd import browse_native_dns_sd
 from timecapsulesmb.transport.local import find_free_local_port
 from timecapsulesmb.transport.local import command_exists
 from timecapsulesmb.transport.ssh import SshConnection, ssh_local_forward
@@ -158,6 +159,7 @@ def run_doctor_checks(
     skip_bonjour: bool = False,
     skip_smb: bool = False,
     on_result: Optional[Callable[[CheckResult], None]] = None,
+    debug_fields: dict[str, object] | None = None,
 ) -> tuple[list[CheckResult], bool]:
     results: list[CheckResult] = []
     env_valid = False
@@ -210,6 +212,9 @@ def run_doctor_checks(
     bonjour_instance: Optional[str] = None
     bonjour_target: BonjourServiceTarget | None = None
     bonjour_reason = "Bonjour check not run"
+    bonjour_debug_needed = False
+    bonjour_expected_debug: dict[str, str | None] | None = None
+    bonjour_zeroconf_debug: object | None = None
     active_smb_conf: Optional[str] = None
     active_smb_conf_reason = "SSH check not run"
 
@@ -277,10 +282,16 @@ def run_doctor_checks(
     elif not skip_bonjour:
         try:
             bonjour_expected = build_bonjour_expected_identity(values)
-            smb_snapshot, discovery_error = discover_smb_services()
+            bonjour_expected_debug = {
+                "instance_name": bonjour_expected.instance_name,
+                "host_label": bonjour_expected.host_label,
+                "target_ip": bonjour_expected.target_ip,
+            }
+            smb_snapshot, discovery_error, bonjour_zeroconf_debug = discover_smb_services_detailed()
             bonjour_reason = ""
             if discovery_error is not None:
                 bonjour_reason = discovery_error.message
+                bonjour_debug_needed = True
                 add_result(discovery_error)
             else:
                 assert smb_snapshot is not None
@@ -298,6 +309,7 @@ def run_doctor_checks(
                         resolved_record, resolve_error = resolve_smb_instance(selection.instance)
                     if resolve_error is not None:
                         bonjour_reason = resolve_error.message
+                        bonjour_debug_needed = True
                         add_result(resolve_error)
                     elif resolved_record is not None:
                         target = resolve_smb_service_target(
@@ -305,6 +317,8 @@ def run_doctor_checks(
                             expected_instance_name=bonjour_expected.instance_name,
                         )
                         target_result = check_smb_service_target(target)
+                        if target_result.status == "FAIL":
+                            bonjour_debug_needed = True
                         add_result(target_result)
                         if target.hostname:
                             bonjour_target = target
@@ -316,11 +330,27 @@ def run_doctor_checks(
                                     record_ips=record_ips,
                                 )
                             )
+                else:
+                    bonjour_debug_needed = True
         except Exception as e:
             bonjour_reason = str(e)
+            bonjour_debug_needed = True
             add_result(CheckResult("FAIL", f"Bonjour check failed: {e}"))
     else:
         bonjour_reason = "Bonjour check skipped"
+
+    if bonjour_debug_needed and debug_fields is not None:
+        if bonjour_expected_debug is not None:
+            debug_fields["bonjour_expected"] = bonjour_expected_debug
+        if bonjour_zeroconf_debug is not None:
+            debug_fields["bonjour_zeroconf"] = bonjour_zeroconf_debug
+        try:
+            native_dns_sd = browse_native_dns_sd()
+        except Exception as e:
+            debug_fields["bonjour_native_dns_sd_error"] = f"{type(e).__name__}: {e}"
+        else:
+            if native_dns_sd is not None:
+                debug_fields["bonjour_native_dns_sd"] = native_dns_sd
 
     if bonjour_instance is not None:
         add_result(CheckResult("INFO", f"advertised Bonjour instance: {bonjour_instance}"))

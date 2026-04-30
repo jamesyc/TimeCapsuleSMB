@@ -63,6 +63,25 @@ class BonjourDiscoverySnapshot:
     resolved: list[BonjourResolvedService]
 
 
+@dataclass
+class BonjourDiscoveryDiagnostics:
+    service: str | None
+    service_types: list[str]
+    timeout_sec: float
+    elapsed_sec: float
+    ip_version: str
+    instance_count: int
+    resolved_count: int
+    pending_count: int
+    service_added_count: int
+    service_updated_count: int
+    resolve_attempt_count: int
+    resolve_success_count: int
+    resolve_error_count: int
+    instances: list[BonjourServiceInstance] = field(default_factory=list)
+    resolved: list[BonjourResolvedService] = field(default_factory=list)
+
+
 Discovered = BonjourResolvedService
 
 
@@ -181,6 +200,11 @@ class Collector:
         self.observations: dict[tuple[str, str, str], ServiceObservation] = {}
         self.pending: set[tuple[str, str]] = set()
         self._browsers: list[Any] = []
+        self.service_added_count = 0
+        self.service_updated_count = 0
+        self.resolve_attempt_count = 0
+        self.resolve_success_count = 0
+        self.resolve_error_count = 0
 
     def start(self) -> None:
         from zeroconf import ServiceBrowser
@@ -199,6 +223,10 @@ class Collector:
                 fullname=name,
             )
             with self.lock:
+                if state_change is ServiceStateChange.Added:
+                    self.service_added_count += 1
+                else:
+                    self.service_updated_count += 1
                 self.instances[(service_type, name)] = instance
                 self.pending.add((service_type, name))
 
@@ -212,10 +240,13 @@ class Collector:
 
         for service_type, name in pending:
             try:
+                self.resolve_attempt_count += 1
                 info = self.zc.get_service_info(service_type, name, timeout_ms)
             except Exception:
+                self.resolve_error_count += 1
                 info = None
             if info:
+                self.resolve_success_count += 1
                 self.add_info(service_type, info)
                 with self.lock:
                     self.pending.discard((service_type, name))
@@ -270,6 +301,10 @@ class Collector:
                 )
                 for observation in self.observations.values()
             ]
+
+    def pending_count(self) -> int:
+        with self.lock:
+            return len(self.pending)
 
 
 def resolved_service_from_info(stype: str, info: Any) -> BonjourResolvedService:
@@ -359,12 +394,31 @@ def _sort_records(records: list[BonjourResolvedService]) -> list[BonjourResolved
     return sorted(records, key=lambda record: (record.service_type or "", record.hostname or "", record.name or ""))
 
 
-def discover_snapshot(service: str | None = None, timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC) -> BonjourDiscoverySnapshot:
+def _collector_int(collector: Collector, attr: str) -> int:
+    value = getattr(collector, attr, 0)
+    return value if isinstance(value, int) else 0
+
+
+def _collector_pending_count(collector: Collector) -> int:
+    pending_count = getattr(collector, "pending_count", None)
+    if callable(pending_count):
+        value = pending_count()
+        return value if isinstance(value, int) else 0
+    pending = getattr(collector, "pending", None)
+    return len(pending) if isinstance(pending, set) else 0
+
+
+def discover_snapshot_detailed(
+    service: str | None = None,
+    timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC,
+) -> tuple[BonjourDiscoverySnapshot, BonjourDiscoveryDiagnostics]:
+    service_types = _matching_service_types(service)
+    start = time.monotonic()
     zc = _open_zeroconf()
     try:
-        collector = Collector(zc, _matching_service_types(service))
+        collector = Collector(zc, service_types)
         collector.start()
-        deadline = time.monotonic() + max(0.0, timeout)
+        deadline = start + max(0.0, timeout)
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -380,10 +434,35 @@ def discover_snapshot(service: str | None = None, timeout: float = DEFAULT_BROWS
         except Exception:
             pass
 
-    return BonjourDiscoverySnapshot(
-        instances=_sort_instances(instances),
-        resolved=_sort_records(records),
+    sorted_instances = _sort_instances(instances)
+    sorted_records = _sort_records(records)
+    snapshot = BonjourDiscoverySnapshot(
+        instances=sorted_instances,
+        resolved=sorted_records,
     )
+    diagnostics = BonjourDiscoveryDiagnostics(
+        service=service,
+        service_types=list(service_types),
+        timeout_sec=timeout,
+        elapsed_sec=round(time.monotonic() - start, 3),
+        ip_version="V4Only",
+        instance_count=len(sorted_instances),
+        resolved_count=len(sorted_records),
+        pending_count=_collector_pending_count(collector),
+        service_added_count=_collector_int(collector, "service_added_count"),
+        service_updated_count=_collector_int(collector, "service_updated_count"),
+        resolve_attempt_count=_collector_int(collector, "resolve_attempt_count"),
+        resolve_success_count=_collector_int(collector, "resolve_success_count"),
+        resolve_error_count=_collector_int(collector, "resolve_error_count"),
+        instances=sorted_instances,
+        resolved=sorted_records,
+    )
+    return snapshot, diagnostics
+
+
+def discover_snapshot(service: str | None = None, timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC) -> BonjourDiscoverySnapshot:
+    snapshot, _diagnostics = discover_snapshot_detailed(service=service, timeout=timeout)
+    return snapshot
 
 
 def _records_with_unresolved_instances(snapshot: BonjourDiscoverySnapshot) -> list[BonjourResolvedService]:

@@ -105,6 +105,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             except SystemExit as exc:
                 command_context.preflight_error = f"doctor pre-inspection failed: {system_exit_message(exc)}"
 
+        doctor_debug: dict[str, object] = {}
         results, fatal = run_doctor_checks(
             values,
             env_exists=ENV_PATH.exists(),
@@ -114,7 +115,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             skip_bonjour=args.skip_bonjour,
             skip_smb=args.skip_smb,
             on_result=None if args.json else print_result,
+            debug_fields=doctor_debug,
         )
+        command_context.add_debug_fields(**doctor_debug)
 
         if args.json:
             print(json.dumps({

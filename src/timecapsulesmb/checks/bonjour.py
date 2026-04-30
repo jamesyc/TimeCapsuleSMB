@@ -8,12 +8,14 @@ from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import extract_host
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoverySnapshot,
+    BonjourDiscoveryDiagnostics,
     BonjourResolvedService,
     BonjourServiceInstance,
     DEFAULT_BROWSE_TIMEOUT_SEC,
     FINAL_PENDING_RESOLVE_TIMEOUT_MS,
     SMB_SERVICE,
     discover_snapshot,
+    discover_snapshot_detailed,
     resolve_service_instance,
 )
 
@@ -91,6 +93,18 @@ def discover_smb_services(timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC) -> tuple[
         return None, CheckResult("FAIL", f"Bonjour check failed: {e}")
     except Exception as e:
         return None, CheckResult("FAIL", f"Bonjour check failed: {e}")
+
+
+def discover_smb_services_detailed(
+    timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC,
+) -> tuple[BonjourDiscoverySnapshot | None, CheckResult | None, BonjourDiscoveryDiagnostics | None]:
+    try:
+        snapshot, diagnostics = discover_snapshot_detailed(SMB_SERVICE, timeout=timeout)
+        return snapshot, None, diagnostics
+    except SystemExit as e:
+        return None, CheckResult("FAIL", f"Bonjour check failed: {e}"), None
+    except Exception as e:
+        return None, CheckResult("FAIL", f"Bonjour check failed: {e}"), None
 
 
 def select_smb_instance(

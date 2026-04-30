@@ -17,7 +17,18 @@ from timecapsulesmb.device.probe import (
     RemoteInterfaceCandidate,
     RemoteInterfaceCandidatesProbeResult,
 )
-from timecapsulesmb.discovery.bonjour import Discovered
+from timecapsulesmb.discovery.bonjour import (
+    BonjourDiscoveryDiagnostics,
+    BonjourDiscoverySnapshot,
+    BonjourResolvedService,
+    BonjourServiceInstance,
+    Discovered,
+)
+from timecapsulesmb.discovery.native_dns_sd import (
+    NativeDnsSdBrowseResult,
+    NativeDnsSdDiagnostics,
+    NativeDnsSdServiceEvent,
+)
 from timecapsulesmb.telemetry.debug import (
     DEBUG_FIELD_BLACKLIST,
     DEBUG_VALUE_BLACKLIST,
@@ -51,6 +62,95 @@ class TelemetryDebugTests(unittest.TestCase):
                 "model": "TimeCapsule8,119",
             },
         )
+
+    def test_debug_summary_for_bonjour_snapshot_is_compact_but_keeps_many_candidates(self) -> None:
+        instances = [
+            BonjourServiceInstance("_smb._tcp.local.", f"Home {idx}", f"Home {idx}._smb._tcp.local.")
+            for idx in range(55)
+        ]
+        resolved = [
+            BonjourResolvedService(
+                name=f"Home {idx}",
+                hostname=f"home-{idx}.local",
+                service_type="_smb._tcp.local.",
+                port=445,
+                ipv4=[f"10.0.0.{idx}"],
+                fullname=f"Home {idx}._smb._tcp.local.",
+            )
+            for idx in range(55)
+        ]
+        summary = debug_summary(BonjourDiscoverySnapshot(instances=instances, resolved=resolved))
+
+        self.assertEqual(summary["instance_count"], 55)
+        self.assertEqual(summary["resolved_count"], 55)
+        self.assertEqual(len(summary["instances"]), 50)
+        self.assertEqual(len(summary["resolved"]), 50)
+        self.assertEqual(summary["instances"][0]["name"], "Home 0")
+        self.assertEqual(summary["resolved"][0]["hostname"], "home-0.local")
+
+    def test_debug_summary_for_bonjour_diagnostics_keeps_counts_and_samples(self) -> None:
+        instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
+        diagnostics = BonjourDiscoveryDiagnostics(
+            service="_smb",
+            service_types=["_smb._tcp.local."],
+            timeout_sec=6.0,
+            elapsed_sec=6.125,
+            ip_version="V4Only",
+            instance_count=1,
+            resolved_count=0,
+            pending_count=1,
+            service_added_count=1,
+            service_updated_count=0,
+            resolve_attempt_count=2,
+            resolve_success_count=0,
+            resolve_error_count=1,
+            instances=[instance],
+            resolved=[],
+        )
+
+        summary = debug_summary(diagnostics)
+
+        self.assertEqual(summary["service"], "_smb")
+        self.assertEqual(summary["ip_version"], "V4Only")
+        self.assertEqual(summary["pending_count"], 1)
+        self.assertEqual(summary["resolve_error_count"], 1)
+        self.assertEqual(summary["instances"][0]["fullname"], "Home._smb._tcp.local.")
+
+    def test_debug_summary_for_native_dns_sd_diagnostics_is_bounded(self) -> None:
+        events = [
+            NativeDnsSdServiceEvent(
+                service_type="_smb._tcp",
+                action="Add",
+                interface_index=idx,
+                flags="3",
+                domain="local.",
+                name=f"Device {idx}",
+            )
+            for idx in range(55)
+        ]
+        diagnostics = NativeDnsSdDiagnostics(
+            timeout_sec=6.0,
+            elapsed_sec=6.1,
+            status="ok",
+            browses=[
+                NativeDnsSdBrowseResult(
+                    service_type="_smb._tcp",
+                    events=events,
+                    parse_error_count=2,
+                    stderr="",
+                    exit_code=-15,
+                    terminated_after_timeout=True,
+                )
+            ],
+        )
+
+        summary = debug_summary(diagnostics)
+
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["browses"][0]["event_count"], 55)
+        self.assertEqual(summary["browses"][0]["parse_error_count"], 2)
+        self.assertEqual(len(summary["browses"][0]["events"]), 50)
+        self.assertEqual(summary["browses"][0]["events"][0]["name"], "Device 0")
 
     def test_debug_summary_for_interface_candidates_is_compact(self) -> None:
         result = RemoteInterfaceCandidatesProbeResult(

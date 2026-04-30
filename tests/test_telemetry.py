@@ -89,6 +89,26 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(finished_payload["event"], "deploy_finished")
         self.assertEqual(finished_payload["result"], "success")
 
+    def test_command_context_ignores_started_telemetry_exception(self) -> None:
+        telemetry = mock.Mock()
+        telemetry.emit.side_effect = RuntimeError("telemetry unavailable")
+
+        command = CommandContext(telemetry, "doctor", "doctor_started", "doctor_finished")
+        command.succeed()
+
+        self.assertEqual(command.result, "success")
+        telemetry.emit.assert_called_once()
+
+    def test_command_context_ignores_finished_telemetry_exception(self) -> None:
+        telemetry = mock.Mock()
+        telemetry.emit.side_effect = [None, RuntimeError("telemetry unavailable")]
+
+        with CommandContext(telemetry, "doctor", "doctor_started", "doctor_finished") as command:
+            command.succeed()
+
+        self.assertEqual(command.result, "success")
+        self.assertEqual(telemetry.emit.call_count, 2)
+
     def test_command_context_marks_keyboard_interrupt_as_cancelled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bootstrap_path = Path(tmp) / ".bootstrap"
