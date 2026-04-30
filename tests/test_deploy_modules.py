@@ -475,8 +475,10 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('--airport-srcv "$AIRPORT_SRCV"', rendered)
         self.assertIn('airport clone fields incomplete; skipping _airport._tcp advertisement', rendered)
         self.assertIn('ADISK_DISK_KEY=dk0', rendered)
+        self.assertIn('ADISK_DISK_ADVF=0x82', rendered)
         self.assertIn("ADISK_UUID=''", rendered)
         self.assertIn('--adisk-disk-key "$ADISK_DISK_KEY"', rendered)
+        self.assertIn('--adisk-disk-advf "$ADISK_DISK_ADVF"', rendered)
         self.assertIn('--adisk-uuid "$ADISK_UUID"', rendered)
         self.assertIn('--adisk-sys-wama "$iface_mac"', rendered)
         self.assertIn('MDNS_CAPTURE_PID=', rendered)
@@ -1420,8 +1422,10 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('airport syAP missing; advertising _airport._tcp without syAP', rendered)
         self.assertIn('airport clone fields incomplete; skipping _airport._tcp advertisement', rendered)
         self.assertIn('ADISK_DISK_KEY=dk0', rendered)
+        self.assertIn('ADISK_DISK_ADVF=0x82', rendered)
         self.assertIn("ADISK_UUID=''", rendered)
         self.assertIn('--adisk-disk-key "$ADISK_DISK_KEY"', rendered)
+        self.assertIn('--adisk-disk-advf "$ADISK_DISK_ADVF"', rendered)
         self.assertIn('--load-snapshot "$APPLE_MDNS_SNAPSHOT"', rendered)
         self.assertIn('SNAPSHOT_BOOTSTRAP_GRACE_SECONDS=120', rendered)
         self.assertIn('watchdog recovery: mdns restart deferred while startup snapshot capture may still be running', rendered)
@@ -1550,6 +1554,54 @@ int main(void) {{
             run = subprocess.run([str(bin_path)], capture_output=True, text=True, check=False)
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertEqual(run.stdout.strip(), "sys=waMA=80:EA:96:E6:58:68,adVF=0x1010")
+
+    def test_mdns_advertiser_adisk_disk_txt_defaults_to_cloned_advf(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <stdio.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+int main(void) {{
+    char out[256];
+    if (build_adisk_disk_txt(out, sizeof(out), "dk2", "Data", "12345678-1234-1234-1234-123456789012", ADISK_DEFAULT_DISK_ADVF) != 0) {{
+        return 1;
+    }}
+    puts(out);
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_adisk_disk_txt_default_advf")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(
+            run.stdout.strip(),
+            "dk2=adVF=0x1093,adVN=Data,adVU=12345678-1234-1234-1234-123456789012",
+        )
+
+    def test_mdns_advertiser_adisk_disk_txt_accepts_time_machine_smb_advf(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <stdio.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+int main(void) {{
+    char out[256];
+    if (build_adisk_disk_txt(out, sizeof(out), "dk2", "Data", "12345678-1234-1234-1234-123456789012", "0x82") != 0) {{
+        return 1;
+    }}
+    puts(out);
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_adisk_disk_txt_time_machine_advf")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(
+            run.stdout.strip(),
+            "dk2=adVF=0x82,adVN=Data,adVU=12345678-1234-1234-1234-123456789012",
+        )
 
     def test_mdns_advertiser_normalizes_airport_mac_fields_to_apple_style(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
@@ -2206,6 +2258,7 @@ int main(void) {{
     snprintf(cfg.adisk_share_name, sizeof(cfg.adisk_share_name), "%s", "Data");
     snprintf(cfg.adisk_disk_key, sizeof(cfg.adisk_disk_key), "%s", "dk2");
     snprintf(cfg.adisk_uuid, sizeof(cfg.adisk_uuid), "%s", "c4f673b8-c422-4da7-92a1-54bffe406af2");
+    snprintf(cfg.adisk_disk_advf, sizeof(cfg.adisk_disk_advf), "%s", "0x82");
     snprintf(cfg.adisk_sys_wama, sizeof(cfg.adisk_sys_wama), "%s", "80:EA:96:E6:58:68");
     cfg.port = 445;
     cfg.adisk_port = 9;

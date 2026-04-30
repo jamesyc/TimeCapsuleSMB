@@ -3167,7 +3167,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_SHARE_NAME"], "Data")
         self.assertEqual(share_defaults, ["Data", "Data"])
-        self.assertIn("SMB share name must be 192 bytes or fewer.", output.getvalue())
+        self.assertIn("SMB share name must be 194 bytes or fewer.", output.getvalue())
         self.assertNotIn("Found saved value:", output.getvalue())
 
     def test_configure_invalid_existing_share_name_falls_back_to_default_prompt(self) -> None:

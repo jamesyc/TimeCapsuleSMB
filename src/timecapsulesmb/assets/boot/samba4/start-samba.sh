@@ -49,6 +49,7 @@ MDNS_HOST_LABEL=__MDNS_HOST_LABEL__
 MDNS_DEVICE_MODEL=__MDNS_DEVICE_MODEL__
 AIRPORT_SYAP=__AIRPORT_SYAP__
 ADISK_DISK_KEY=__ADISK_DISK_KEY__
+ADISK_DISK_ADVF=0x82
 ADISK_UUID=__ADISK_UUID__
 MDNS_CAPTURE_PID=
 APPLE_MDNS_SNAPSHOT_START=$(/bin/ls -lnT "$APPLE_MDNS_SNAPSHOT" 2>/dev/null || true)
@@ -822,6 +823,7 @@ start_mdns_advertiser() {
     set -- "$@" \
         --adisk-share "$SMB_SHARE_NAME" \
         --adisk-disk-key "$ADISK_DISK_KEY" \
+        --adisk-disk-advf "$ADISK_DISK_ADVF" \
         --adisk-uuid "$ADISK_UUID" \
         --adisk-sys-wama "$iface_mac" \
         --ipv4 "$BRIDGE0_IP"
