@@ -31,11 +31,13 @@ from timecapsulesmb.deploy.commands import (
 )
 from timecapsulesmb.deploy.dry_run import format_deployment_plan
 from timecapsulesmb.deploy.executor import (
+    DETACHED_REBOOT_COMMAND,
     remote_enable_nbns,
     remote_ensure_adisk_uuid,
     remote_initialize_data_root,
     remote_install_permissions,
     remote_prepare_dirs,
+    remote_request_reboot,
     remote_uninstall_payload,
     upload_deployment_payload,
 )
@@ -158,6 +160,17 @@ class DeployModuleTests(unittest.TestCase):
         smbpasswd_text, username_map = render_smbpasswd("admin", "password")
         self.assertTrue(smbpasswd_text.startswith("root:0:"))
         self.assertEqual(username_map, "!root = root\nroot = *\n")
+
+    def test_remote_request_reboot_uses_short_fire_and_forget_ssh_call(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
+            remote_request_reboot(connection)
+        run_ssh_mock.assert_called_once_with(
+            connection,
+            DETACHED_REBOOT_COMMAND,
+            check=False,
+            timeout=10,
+        )
 
     def test_build_template_bundle_contains_expected_keys(self) -> None:
         values = {
