@@ -18,7 +18,7 @@ from timecapsulesmb.deploy.planner import DeploymentPlan, UninstallPlan
 from timecapsulesmb.transport.ssh import SshConnection, run_scp, run_ssh
 
 
-DETACHED_REBOOT_COMMAND = "/bin/sh -c '(/bin/sleep 1; /sbin/reboot) >/dev/null 2>&1 &'"
+DETACHED_REBOOT_COMMAND = "/bin/sh -c 'exec </dev/null >/dev/null 2>&1; (/bin/sleep 1; /sbin/reboot) & exit 0'"
 
 
 def remote_prepare_dirs(connection: SshConnection, payload_dir: str) -> None:

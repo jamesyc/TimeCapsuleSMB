@@ -31,11 +31,13 @@ from timecapsulesmb.deploy.commands import (
 )
 from timecapsulesmb.deploy.dry_run import format_deployment_plan
 from timecapsulesmb.deploy.executor import (
+    DETACHED_REBOOT_COMMAND,
     remote_enable_nbns,
     remote_ensure_adisk_uuid,
     remote_initialize_data_root,
     remote_install_permissions,
     remote_prepare_dirs,
+    remote_request_reboot,
     remote_uninstall_payload,
     upload_deployment_payload,
 )
@@ -158,6 +160,17 @@ class DeployModuleTests(unittest.TestCase):
         smbpasswd_text, username_map = render_smbpasswd("admin", "password")
         self.assertTrue(smbpasswd_text.startswith("root:0:"))
         self.assertEqual(username_map, "!root = root\nroot = *\n")
+
+    def test_remote_request_reboot_uses_short_fire_and_forget_ssh_call(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
+            remote_request_reboot(connection)
+        run_ssh_mock.assert_called_once_with(
+            connection,
+            DETACHED_REBOOT_COMMAND,
+            check=False,
+            timeout=10,
+        )
 
     def test_build_template_bundle_contains_expected_keys(self) -> None:
         values = {
@@ -354,6 +367,17 @@ class DeployModuleTests(unittest.TestCase):
         result = extract_airport_identity_from_acp_output("syAP=113\n")
         self.assertEqual(result.model, "TimeCapsule6,113")
         self.assertEqual(result.syap, "113")
+
+    def test_extract_airport_identity_from_acp_output_parses_unlabeled_numeric_syap(self) -> None:
+        result = extract_airport_identity_from_acp_output("noise\n0x00000077\n")
+        self.assertEqual(result.model, "TimeCapsule8,119")
+        self.assertEqual(result.syap, "119")
+
+    def test_extract_airport_identity_from_acp_output_ignores_punctuated_unlabeled_numeric_like_lines(self) -> None:
+        result = extract_airport_identity_from_acp_output("119:\n113/extra\n")
+        self.assertIsNone(result.model)
+        self.assertIsNone(result.syap)
+        self.assertIn("no supported AirPort identity found", result.detail)
 
     def test_extract_airport_identity_from_acp_output_derives_syap_from_model_without_syap(self) -> None:
         result = extract_airport_identity_from_acp_output("syAM=TimeCapsule6,106\n")
@@ -2377,7 +2401,7 @@ int main(void) {{
                 with mock.patch("timecapsulesmb.device.probe._probe_remote_elf_endianness_conn", return_value="big"):
                     with mock.patch("timecapsulesmb.device.probe.probe_remote_airport_identity_conn", return_value=mock.Mock(model=None, syap=None)):
                         result = probe_device_conn(
-                            SshConnection("root@192.168.1.118", "pw", "-o ProxyCommand=ssh\\ -W\\ %h:%p\\ bastion")
+                            SshConnection("root@192.168.1.118", "pw", "-o proxycommand=ssh\\ -W\\ %h:%p\\ bastion")
                         )
         self.assertTrue(result.ssh_port_reachable)
         self.assertTrue(result.ssh_authenticated)

@@ -68,15 +68,16 @@ def ssh_opts_use_proxy(ssh_opts: str) -> bool:
         tokens = ssh_opts.split()
 
     for token in tokens:
+        lowered = token.lower()
         if token == "-J":
             return True
         if token.startswith("-J"):
             return True
-        if token in {"ProxyCommand", "ProxyJump"}:
+        if lowered in {"proxycommand", "proxyjump"}:
             return True
-        if token.startswith("ProxyCommand=") or token.startswith("ProxyJump="):
+        if lowered.startswith("proxycommand=") or lowered.startswith("proxyjump="):
             return True
-        if token.startswith("-oProxyCommand=") or token.startswith("-oProxyJump="):
+        if lowered.startswith("-oproxycommand=") or lowered.startswith("-oproxyjump="):
             return True
 
     return False

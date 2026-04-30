@@ -290,7 +290,6 @@ class ConfigTests(unittest.TestCase):
     def test_validate_mdns_host_label_accepts_dns_safe_values(self) -> None:
         self.assertIsNone(validate_mdns_host_label("timecapsulesamba4", "mDNS host label"))
         self.assertIsNone(validate_mdns_host_label("time-capsule-4", "mDNS host label"))
-        self.assertIsNone(validate_mdns_host_label("10.0.1.99", "mDNS host label"))
 
     def test_validate_mdns_host_label_rejects_spaces_and_bad_values(self) -> None:
         self.assertEqual(
@@ -298,6 +297,14 @@ class ConfigTests(unittest.TestCase):
             "mDNS host label may contain only letters, numbers, and hyphens.",
         )
         self.assertEqual(validate_mdns_host_label("time.capsule", "mDNS host label"), "mDNS host label must not contain dots.")
+        self.assertEqual(
+            validate_mdns_host_label("10.0.1.99", "mDNS host label"),
+            "mDNS host label must be a single DNS label, not an IP address.",
+        )
+        self.assertEqual(
+            validate_mdns_host_label("fe80::1", "mDNS host label"),
+            "mDNS host label must be a single DNS label, not an IP address.",
+        )
         self.assertEqual(validate_mdns_host_label("-timecapsule", "mDNS host label"), "mDNS host label must not start or end with a hyphen.")
         self.assertEqual(validate_mdns_host_label("timecapsule-", "mDNS host label"), "mDNS host label must not start or end with a hyphen.")
 

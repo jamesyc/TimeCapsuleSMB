@@ -742,10 +742,13 @@ class CheckTests(unittest.TestCase):
 
     def test_ssh_opts_use_proxy_detects_proxycommand_and_proxyjump(self) -> None:
         self.assertTrue(ssh_opts_use_proxy("-o ProxyCommand=ssh\\ -W\\ %h:%p\\ bastion"))
+        self.assertTrue(ssh_opts_use_proxy("-o proxycommand=ssh\\ -W\\ %h:%p\\ bastion"))
         self.assertTrue(ssh_opts_use_proxy("-J bastion.example.com"))
         self.assertTrue(ssh_opts_use_proxy("-Jbastion.example.com"))
         self.assertTrue(ssh_opts_use_proxy("-o ProxyJump=bastion.example.com"))
+        self.assertTrue(ssh_opts_use_proxy("-o proxyjump=bastion.example.com"))
         self.assertTrue(ssh_opts_use_proxy("-oProxyCommand=ssh\\ -W\\ %h:%p\\ bastion"))
+        self.assertTrue(ssh_opts_use_proxy("-oproxycommand=ssh\\ -W\\ %h:%p\\ bastion"))
         self.assertFalse(ssh_opts_use_proxy("-o HostKeyAlgorithms=+ssh-rsa"))
 
     def test_check_ssh_login_uses_configured_ssh_transport(self) -> None:
@@ -1136,7 +1139,7 @@ class CheckTests(unittest.TestCase):
             expected_share_name="Data",
         )
 
-    def test_run_doctor_checks_uses_ip_mdns_host_label_without_appending_local(self) -> None:
+    def test_run_doctor_checks_rejects_ip_mdns_host_label_before_smb_checks(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
@@ -1152,33 +1155,14 @@ class CheckTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
             with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
-                with mock.patch("timecapsulesmb.checks.doctor.check_ssh_login", return_value=mock.Mock(status="PASS", message="ssh ok")):
-                    with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
-                        with mock.patch(
-                            "timecapsulesmb.checks.doctor.discover_smb_services",
-                            return_value=(BonjourDiscoverySnapshot([], []), None),
-                        ):
-                            with mock.patch("timecapsulesmb.checks.doctor.check_smb_instance", return_value=[]):
-                                with mock.patch(
-                                    "timecapsulesmb.checks.doctor.check_authenticated_smb_listing",
-                                    return_value=mock.Mock(
-                                        status="PASS",
-                                        message="authenticated SMB listing works for admin@10.0.1.99",
-                                    ),
-                                ) as listing_mock:
-                                    with mock.patch(
-                                        "timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops_detailed",
-                                        return_value=[mock.Mock(status="PASS", message="file ops ok")],
-                                    ):
-                                        with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root_conn", return_value="/Volumes/dk2"):
-                                            with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout="")):
-                                                run_doctor_checks(values, env_exists=True, repo_root=REPO_ROOT)
-        listing_mock.assert_called_once_with(
-            "admin",
-            "pw",
-            ["10.0.1.99", "10.0.0.2"],
-            expected_share_name="Data",
+                with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing") as listing_mock:
+                    results, fatal = run_doctor_checks(values, env_exists=True, repo_root=REPO_ROOT)
+        self.assertTrue(fatal)
+        self.assertIn(
+            "TC_MDNS_HOST_LABEL must be a single DNS label, not an IP address.",
+            results[0].message,
         )
+        listing_mock.assert_not_called()
 
     def test_check_authenticated_smb_listing_requires_expected_share(self) -> None:
         proc = subprocess.CompletedProcess(["smbclient"], 0, "Public\n", "")

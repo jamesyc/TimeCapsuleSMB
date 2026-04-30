@@ -417,7 +417,7 @@ def extract_airport_identity_from_text(text: str) -> AirportIdentityProbeResult:
 
 def _parse_airport_syap_value(value: str) -> str | None:
     stripped = value.strip()
-    if not stripped:
+    if not re.fullmatch(r"(?:0[xX][0-9A-Fa-f]+|[0-9]+)", stripped):
         return None
     try:
         syap = int(stripped, 0)
@@ -440,7 +440,7 @@ def _extract_airport_syap_from_acp_output(text: str) -> tuple[str | None, str | 
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
-        if not line or any(char.isalpha() for char in line.replace("x", "").replace("X", "")):
+        if not re.fullmatch(r"(?:0[xX][0-9A-Fa-f]+|[0-9]+)", line):
             continue
         parsed = _parse_airport_syap_value(line)
         if parsed is not None:
