@@ -2401,7 +2401,7 @@ int main(void) {{
                 with mock.patch("timecapsulesmb.device.probe._probe_remote_elf_endianness_conn", return_value="big"):
                     with mock.patch("timecapsulesmb.device.probe.probe_remote_airport_identity_conn", return_value=mock.Mock(model=None, syap=None)):
                         result = probe_device_conn(
-                            SshConnection("root@192.168.1.118", "pw", "-o ProxyCommand=ssh\\ -W\\ %h:%p\\ bastion")
+                            SshConnection("root@192.168.1.118", "pw", "-o proxycommand=ssh\\ -W\\ %h:%p\\ bastion")
                         )
         self.assertTrue(result.ssh_port_reachable)
         self.assertTrue(result.ssh_authenticated)

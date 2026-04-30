@@ -742,10 +742,13 @@ class CheckTests(unittest.TestCase):
 
     def test_ssh_opts_use_proxy_detects_proxycommand_and_proxyjump(self) -> None:
         self.assertTrue(ssh_opts_use_proxy("-o ProxyCommand=ssh\\ -W\\ %h:%p\\ bastion"))
+        self.assertTrue(ssh_opts_use_proxy("-o proxycommand=ssh\\ -W\\ %h:%p\\ bastion"))
         self.assertTrue(ssh_opts_use_proxy("-J bastion.example.com"))
         self.assertTrue(ssh_opts_use_proxy("-Jbastion.example.com"))
         self.assertTrue(ssh_opts_use_proxy("-o ProxyJump=bastion.example.com"))
+        self.assertTrue(ssh_opts_use_proxy("-o proxyjump=bastion.example.com"))
         self.assertTrue(ssh_opts_use_proxy("-oProxyCommand=ssh\\ -W\\ %h:%p\\ bastion"))
+        self.assertTrue(ssh_opts_use_proxy("-oproxycommand=ssh\\ -W\\ %h:%p\\ bastion"))
         self.assertFalse(ssh_opts_use_proxy("-o HostKeyAlgorithms=+ssh-rsa"))
 
     def test_check_ssh_login_uses_configured_ssh_transport(self) -> None:
