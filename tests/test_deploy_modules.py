@@ -1553,7 +1553,7 @@ int main(void) {{
             self.assertEqual(proc.returncode, 0, proc.stderr)
             run = subprocess.run([str(bin_path)], capture_output=True, text=True, check=False)
             self.assertEqual(run.returncode, 0, run.stderr)
-            self.assertEqual(run.stdout.strip(), "sys=waMA=80:EA:96:E6:58:68,adVF=0x1010")
+            self.assertEqual(run.stdout.strip(), "sys=waMA=80:EA:96:E6:58:68,adVF=0x1100")
 
     def test_mdns_advertiser_adisk_disk_txt_defaults_to_cloned_advf(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()

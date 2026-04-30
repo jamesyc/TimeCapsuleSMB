@@ -25,7 +25,7 @@
 #define ANNOUNCE_INTERVAL 30
 #define MODEL_TXT_PREFIX "model="
 #define ADISK_DEFAULT_DISK_KEY "dk0"
-#define ADISK_SYS_ADVF "0x1010"
+#define ADISK_SYS_ADVF "0x1100"
 #define ADISK_DEFAULT_DISK_ADVF "0x1093"
 #define ADISK_DISK_UUID_LEN 36
 #define AIRPORT_SERVICE_TYPE "_airport._tcp.local."
