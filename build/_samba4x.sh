@@ -2,6 +2,7 @@
 set -eu
 
 . "$(dirname "$0")/env.sh"
+. "$(dirname "$0")/_patch_helpers.sh"
 
 TOOLDIR="$TOOLS"
 DESTDIR="$OBJ/destdir.evbarm"
@@ -124,11 +125,43 @@ set_waf_cache_value() {
     cache_file="$1"
     name="$2"
     value="$3"
+    desc="Samba 4.x waf cache $name"
 
+    if grep -Fqx "$name = $value" "$cache_file"; then
+        return 0
+    fi
     if grep -q "^$name = " "$cache_file"; then
-        perl -0pi -e "s|^$name = .*\$|$name = $value|m" "$cache_file"
+        patch_perl "$desc" "s|^$name = .*\$|$name = $value|m" "$cache_file"
     else
         printf '%s = %s\n' "$name" "$value" >>"$cache_file"
+    fi
+    patch_require_fixed "$desc" "$name = $value" "$cache_file"
+}
+
+remove_waf_cache_fixed_text() {
+    cache_file="$1"
+    text="$2"
+    expr="$3"
+    desc="$4"
+
+    if grep -F -q "$text" "$cache_file"; then
+        patch_perl "$desc" "$expr" "$cache_file"
+    fi
+    if grep -F -q "$text" "$cache_file"; then
+        patch_fail "$desc: forbidden cache text still present in $cache_file"
+    fi
+}
+
+undef_config_symbol() {
+    config_header="$1"
+    symbol="$2"
+    desc="Samba 4.x config header undef $symbol"
+
+    if grep -E -q "^#define[[:space:]]+$symbol([[:space:]]|$)" "$config_header"; then
+        patch_perl "$desc" "s|^#define[ \t]+$symbol([ \t]+[^\n]*)?$|/* #undef $symbol */|m" "$config_header"
+    fi
+    if grep -E -q "^#define[[:space:]]+$symbol([[:space:]]|$)" "$config_header"; then
+        patch_fail "$desc: define still present in $config_header"
     fi
 }
 
@@ -370,10 +403,26 @@ build_samba4x_gnutls() {
     archive="$(download_samba4x_archive "$SAMBA4X_GNUTLS_URL" "gnutls-$SAMBA4X_GNUTLS_VERSION.tar.xz")"
     extract_samba4x_archive "$archive" "gnutls-$SAMBA4X_GNUTLS_VERSION"
     cd "$SAMBA4X_BUILD/gnutls-$SAMBA4X_GNUTLS_VERSION"
-    perl -0pi -e 's/#include <byteswap\.h>/#include <sys\/bswap.h>\n#ifndef bswap_16\n#define bswap_16 bswap16\n#endif\n#ifndef bswap_32\n#define bswap_32 bswap32\n#endif\n#ifndef bswap_64\n#define bswap_64 bswap64\n#endif/' lib/num.h
+    # GnuTLS assumes glibc-style <byteswap.h>. NetBSD 6/7 and NetBSD4 expose
+    # the target helpers through <sys/bswap.h> with bswap16/32/64 names.
+    patch_perl "GnuTLS NetBSD bswap include patch" \
+        's/#include <byteswap\.h>/#include <sys\/bswap.h>\n#ifndef bswap_16\n#define bswap_16 bswap16\n#endif\n#ifndef bswap_32\n#define bswap_32 bswap32\n#endif\n#ifndef bswap_64\n#define bswap_64 bswap64\n#endif/' \
+        lib/num.h
+    patch_require_fixed "GnuTLS NetBSD bswap include patch" "#define bswap_16 bswap16" lib/num.h
     if [ "$SDK_FAMILY" = "netbsd4" ]; then
-        perl -0pi -e 's/static _Thread_local unsigned rnd_initialized = 0;/static unsigned rnd_initialized = 0;/' lib/random.c
-        perl -0pi -e 's/static _Thread_local gnutls_fips_mode_t _tfips_mode = -1;/static gnutls_fips_mode_t _tfips_mode = -1;/; s/static _Thread_local gnutls_fips140_context_t _tfips_context = NULL;/static gnutls_fips140_context_t _tfips_context = NULL;/' lib/fips.c
+        # The NetBSD4 lane builds a no-pthread appliance binary. GnuTLS still
+        # uses C11 thread-local declarations in a few single-process globals,
+        # so make them ordinary statics for this lane only. NetBSD 6/7 keep the
+        # upstream declarations.
+        patch_perl "GnuTLS NetBSD4 random TLS patch" \
+            's/static _Thread_local unsigned rnd_initialized = 0;/static unsigned rnd_initialized = 0;/' \
+            lib/random.c
+        patch_require_fixed "GnuTLS NetBSD4 random TLS patch" "static unsigned rnd_initialized = 0;" lib/random.c
+        patch_perl "GnuTLS NetBSD4 FIPS TLS patch" \
+            's/static _Thread_local gnutls_fips_mode_t _tfips_mode = -1;/static gnutls_fips_mode_t _tfips_mode = -1;/; s/static _Thread_local gnutls_fips140_context_t _tfips_context = NULL;/static gnutls_fips140_context_t _tfips_context = NULL;/' \
+            lib/fips.c
+        patch_require_fixed "GnuTLS NetBSD4 FIPS TLS patch" "static gnutls_fips_mode_t _tfips_mode = -1;" lib/fips.c
+        patch_require_fixed "GnuTLS NetBSD4 FIPS TLS patch" "static gnutls_fips140_context_t _tfips_context = NULL;" lib/fips.c
     fi
     env PKG_CONFIG_PATH="$SAMBA4X_DEPS/lib/pkgconfig" \
         PKG_CONFIG_LIBDIR="$SAMBA4X_DEPS/lib/pkgconfig" \
@@ -557,11 +606,15 @@ SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_
 
     for cache_file in "$SAMBA4X_SRC_DIR"/bin/c4che/*.py; do
         [ -f "$cache_file" ] || continue
+        # Waf configure runs on the VM while targeting the Time Capsule. Keep
+        # these generated cache values deterministic and target-safe: NetBSD
+        # 6/7 need static smbd link flags, while NetBSD4 also needs pthread and
+        # stack-protector detections scrubbed after configure.
         set_waf_cache_value "$cache_file" "HOST_CFLAGS" "'$HOST_CFLAGS'"
         set_waf_cache_value "$cache_file" "HOST_CPPFLAGS" "'$HOST_CPPFLAGS'"
-        perl -0pi -e 's/^ENABLE_PIE = True$/ENABLE_PIE = False/m' "$cache_file"
-        perl -0pi -e 's/^HAVE_POSIX_FALLOCATE = .*$/HAVE_POSIX_FALLOCATE = ()/m' "$cache_file"
-        perl -0pi -e 's/^_POSIX_FALLOCATE_CAPABLE_LIBC = .*$/_POSIX_FALLOCATE_CAPABLE_LIBC = ()/m' "$cache_file"
+        set_waf_cache_value "$cache_file" "ENABLE_PIE" "False"
+        set_waf_cache_value "$cache_file" "HAVE_POSIX_FALLOCATE" "()"
+        set_waf_cache_value "$cache_file" "_POSIX_FALLOCATE_CAPABLE_LIBC" "()"
         set_waf_cache_value "$cache_file" "LDFLAGS" "[$SAMBA4X_SHARED_LDFLAGS_LIST]"
         set_waf_cache_value "$cache_file" "SMBD_STATIC_LINKFLAGS" "[$SAMBA4X_FINAL_LINKFLAGS]"
         set_waf_cache_value "$cache_file" "SMBD_STATIC_LDFLAGS" "[$SAMBA4X_FINAL_LDFLAGS_LIST]"
@@ -569,33 +622,39 @@ SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_
         set_waf_cache_value "$cache_file" "SMBD_STATIC_SHLIB_MARKER" "''"
         set_waf_cache_value "$cache_file" "SMBD_STATIC_FULLSTATIC_MARKER" "'-static'"
         if [ "$NO_PTHREADS" = "1" ]; then
-            perl -0pi -e 's/^HAVE_PTHREAD = .*$/HAVE_PTHREAD = ()/m' "$cache_file"
-            perl -0pi -e 's/^HAVE_PTHREAD_CREATE = .*$/HAVE_PTHREAD_CREATE = ()/m' "$cache_file"
-            perl -0pi -e 's/^HAVE_PTHREAD_ATTR_INIT = .*$/HAVE_PTHREAD_ATTR_INIT = ()/m' "$cache_file"
-            perl -0pi -e 's/^HAVE_LIBPTHREAD = .*$/HAVE_LIBPTHREAD = ()/m' "$cache_file"
-            perl -0pi -e 's/^WITH_PTHREADPOOL = .*$/WITH_PTHREADPOOL = ()/m' "$cache_file"
-            perl -0pi -e "s/^LIB_pthread = \\['pthread'\\]$/LIB_pthread = []/m" "$cache_file"
-            perl -0pi -e "s/^LIB_PTHREAD = 'pthread'$/LIB_PTHREAD = ''/m" "$cache_file"
-            perl -0pi -e "s/'pthread': 'SYSLIB'/'pthread': 'EMPTY'/g" "$cache_file"
-            perl -0pi -e "s/'-lpthread',\\s*//g; s/'-pthread',\\s*//g; s/\\s*'\\-pthread'\\s*//g" "$cache_file"
-            perl -0pi -e "s/'-D_REENTRANT',\\s*//g; s/'-D_POSIX_PTHREAD_SEMANTICS',\\s*//g" "$cache_file"
-            perl -0pi -e 's/^replace_add_global_pthread = True$/replace_add_global_pthread = False/m' "$cache_file"
-            perl -0pi -e "s/'HAVE_PTHREAD': '1'/'HAVE_PTHREAD': ()/g" "$cache_file"
-            perl -0pi -e "s/'HAVE_PTHREAD_CREATE': 1/'HAVE_PTHREAD_CREATE': ()/g" "$cache_file"
-            perl -0pi -e "s/'HAVE_PTHREAD_ATTR_INIT': 1/'HAVE_PTHREAD_ATTR_INIT': ()/g" "$cache_file"
-            perl -0pi -e "s/'HAVE_LIBPTHREAD': 1/'HAVE_LIBPTHREAD': ()/g" "$cache_file"
-            perl -0pi -e "s/'WITH_PTHREADPOOL': '1'/'WITH_PTHREADPOOL': ()/g" "$cache_file"
+            # The appliance smbd is built as a small static single-process
+            # server. Remove pthread results from waf's cache so NetBSD4 does
+            # not link unavailable APIs; NetBSD6/7 use the same no-pthread
+            # configuration unless NO_PTHREADS is overridden.
+            set_waf_cache_value "$cache_file" "HAVE_PTHREAD" "()"
+            set_waf_cache_value "$cache_file" "HAVE_PTHREAD_CREATE" "()"
+            set_waf_cache_value "$cache_file" "HAVE_PTHREAD_ATTR_INIT" "()"
+            set_waf_cache_value "$cache_file" "HAVE_LIBPTHREAD" "()"
+            set_waf_cache_value "$cache_file" "WITH_PTHREADPOOL" "()"
+            set_waf_cache_value "$cache_file" "LIB_pthread" "[]"
+            set_waf_cache_value "$cache_file" "LIB_PTHREAD" "''"
+            set_waf_cache_value "$cache_file" "replace_add_global_pthread" "False"
+            remove_waf_cache_fixed_text "$cache_file" "'pthread': 'SYSLIB'" "s/'pthread': 'SYSLIB'/'pthread': 'EMPTY'/g" "Samba 4.x waf cache pthread syslib removal"
+            remove_waf_cache_fixed_text "$cache_file" "'-lpthread'" "s/'-lpthread',\\s*//g; s/\\s*'\\-lpthread'\\s*//g" "Samba 4.x waf cache -lpthread removal"
+            remove_waf_cache_fixed_text "$cache_file" "'-pthread'" "s/'-pthread',\\s*//g; s/\\s*'\\-pthread'\\s*//g" "Samba 4.x waf cache -pthread removal"
+            remove_waf_cache_fixed_text "$cache_file" "'-D_REENTRANT'" "s/'-D_REENTRANT',\\s*//g; s/\\s*'\\-D_REENTRANT'\\s*//g" "Samba 4.x waf cache reentrant define removal"
+            remove_waf_cache_fixed_text "$cache_file" "'-D_POSIX_PTHREAD_SEMANTICS'" "s/'-D_POSIX_PTHREAD_SEMANTICS',\\s*//g; s/\\s*'\\-D_POSIX_PTHREAD_SEMANTICS'\\s*//g" "Samba 4.x waf cache pthread semantics define removal"
+            remove_waf_cache_fixed_text "$cache_file" "'HAVE_PTHREAD': '1'" "s/'HAVE_PTHREAD': '1'/'HAVE_PTHREAD': ()/g" "Samba 4.x waf cache HAVE_PTHREAD dict removal"
+            remove_waf_cache_fixed_text "$cache_file" "'HAVE_PTHREAD_CREATE': 1" "s/'HAVE_PTHREAD_CREATE': 1/'HAVE_PTHREAD_CREATE': ()/g" "Samba 4.x waf cache HAVE_PTHREAD_CREATE dict removal"
+            remove_waf_cache_fixed_text "$cache_file" "'HAVE_PTHREAD_ATTR_INIT': 1" "s/'HAVE_PTHREAD_ATTR_INIT': 1/'HAVE_PTHREAD_ATTR_INIT': ()/g" "Samba 4.x waf cache HAVE_PTHREAD_ATTR_INIT dict removal"
+            remove_waf_cache_fixed_text "$cache_file" "'HAVE_LIBPTHREAD': 1" "s/'HAVE_LIBPTHREAD': 1/'HAVE_LIBPTHREAD': ()/g" "Samba 4.x waf cache HAVE_LIBPTHREAD dict removal"
+            remove_waf_cache_fixed_text "$cache_file" "'WITH_PTHREADPOOL': '1'" "s/'WITH_PTHREADPOOL': '1'/'WITH_PTHREADPOOL': ()/g" "Samba 4.x waf cache WITH_PTHREADPOOL dict removal"
         fi
         if [ "$SDK_FAMILY" = "netbsd4" ]; then
-            perl -0pi -e "s/'-fstack-protector',\\s*//g; s/\\s*'\\-fstack-protector'\\s*//g" "$cache_file"
+            # NetBSD4's old static libc/toolchain combination does not support
+            # the stack protector runtime expected by newer Samba configure
+            # probes. NetBSD6/7 keep the normal detection.
+            remove_waf_cache_fixed_text "$cache_file" "'-fstack-protector'" "s/'-fstack-protector',\\s*//g; s/\\s*'\\-fstack-protector'\\s*//g" "Samba 4.x waf cache NetBSD4 stack protector removal"
         fi
-        perl -0pi -e 's/^HAVE_BACKTRACE = .*$/HAVE_BACKTRACE = ()/m' "$cache_file"
-        perl -0pi -e 's/^HAVE_BACKTRACE_SYMBOLS = .*$/HAVE_BACKTRACE_SYMBOLS = ()/m' "$cache_file"
-        perl -0pi -e 's/^HAVE_EXECINFO_H = .*$/HAVE_EXECINFO_H = ()/m' "$cache_file"
-        if ! grep -q '^FULLSTATIC = ' "$cache_file"; then
-            perl -0pi -e 's/^(FULLSTATIC_MARKER = .*)$/$1\nFULLSTATIC = True/m' "$cache_file"
-        fi
-        grep -q '^FULLSTATIC = ' "$cache_file" || printf 'FULLSTATIC = True\n' >>"$cache_file"
+        set_waf_cache_value "$cache_file" "HAVE_BACKTRACE" "()"
+        set_waf_cache_value "$cache_file" "HAVE_BACKTRACE_SYMBOLS" "()"
+        set_waf_cache_value "$cache_file" "HAVE_EXECINFO_H" "()"
+        set_waf_cache_value "$cache_file" "FULLSTATIC" "True"
     done
 
     for config_header in \
@@ -604,19 +663,21 @@ SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_
         "$SAMBA4X_SRC_DIR/bin/default/source4/include/config.h"
     do
         [ -f "$config_header" ] || continue
-        perl -0pi -e 's/^#define HAVE_POSIX_FALLOCATE 1$/\/\* #undef HAVE_POSIX_FALLOCATE \*\//m' "$config_header"
-        perl -0pi -e 's/^#define _POSIX_FALLOCATE_CAPABLE_LIBC 1$/\/\* #undef _POSIX_FALLOCATE_CAPABLE_LIBC \*\//m' "$config_header"
+        # The generated config headers mirror waf's cache. Keep them in sync
+        # so both NetBSD4 and NetBSD6/7 compile the same static appliance path
+        # instead of accidentally re-enabling VM-host detections.
+        undef_config_symbol "$config_header" "HAVE_POSIX_FALLOCATE"
+        undef_config_symbol "$config_header" "_POSIX_FALLOCATE_CAPABLE_LIBC"
         if [ "$NO_PTHREADS" = "1" ]; then
-            perl -0pi -e 's/^#define HAVE_PTHREAD 1$/\/\* #undef HAVE_PTHREAD \*\//m' "$config_header"
-            perl -0pi -e 's/^#define HAVE_PTHREAD_CREATE 1$/\/\* #undef HAVE_PTHREAD_CREATE \*\//m' "$config_header"
-            perl -0pi -e 's/^#define HAVE_PTHREAD_ATTR_INIT 1$/\/\* #undef HAVE_PTHREAD_ATTR_INIT \*\//m' "$config_header"
-            perl -0pi -e 's/^#define HAVE_LIBPTHREAD 1$/\/\* #undef HAVE_LIBPTHREAD \*\//m' "$config_header"
-            perl -0pi -e 's/^#define WITH_PTHREADPOOL "1"$/\/\* #undef WITH_PTHREADPOOL \*\//m' "$config_header"
-            perl -0pi -e 's/^#define WITH_PTHREADPOOL 1$/\/\* #undef WITH_PTHREADPOOL \*\//m' "$config_header"
+            undef_config_symbol "$config_header" "HAVE_PTHREAD"
+            undef_config_symbol "$config_header" "HAVE_PTHREAD_CREATE"
+            undef_config_symbol "$config_header" "HAVE_PTHREAD_ATTR_INIT"
+            undef_config_symbol "$config_header" "HAVE_LIBPTHREAD"
+            undef_config_symbol "$config_header" "WITH_PTHREADPOOL"
         fi
-        perl -0pi -e 's/^#define HAVE_EXECINFO_H 1$/\/\* #undef HAVE_EXECINFO_H \*\//m' "$config_header"
-        perl -0pi -e 's/^#define HAVE_BACKTRACE 1$/\/\* #undef HAVE_BACKTRACE \*\//m' "$config_header"
-        perl -0pi -e 's/^#define HAVE_BACKTRACE_SYMBOLS 1$/\/\* #undef HAVE_BACKTRACE_SYMBOLS \*\//m' "$config_header"
+        undef_config_symbol "$config_header" "HAVE_EXECINFO_H"
+        undef_config_symbol "$config_header" "HAVE_BACKTRACE"
+        undef_config_symbol "$config_header" "HAVE_BACKTRACE_SYMBOLS"
     done
 
     if [ "$SDK_FAMILY" = "netbsd4" ] && [ "$SAMBA4X_NETBSD4_GC_SECTIONS" = "1" ]; then

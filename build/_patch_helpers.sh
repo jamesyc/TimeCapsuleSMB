@@ -88,3 +88,21 @@ patch_require_fixed() {
         patch_fail "$desc: expected text not found in $target"
     fi
 }
+
+patch_apply_checked() {
+    desc="$1"
+    patch_file="$2"
+    workdir="$3"
+
+    if [ ! -f "$patch_file" ]; then
+        patch_fail "$desc: missing patch file $patch_file"
+    fi
+    if [ ! -d "$workdir" ]; then
+        patch_fail "$desc: missing workdir $workdir"
+    fi
+
+    git -C "$workdir" apply --check "$patch_file" ||
+        patch_fail "$desc: patch does not apply cleanly"
+    git -C "$workdir" apply "$patch_file" ||
+        patch_fail "$desc: patch apply failed"
+}
