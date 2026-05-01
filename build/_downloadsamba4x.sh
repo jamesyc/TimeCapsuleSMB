@@ -99,6 +99,12 @@ mkdir -p "$OUT" "$SAMBA4X_WORK"
     patch_apply_checked "Samba 4.x smbd early version cleanup patch" \
         "$PATCH_DIR/0003-smbd-version-no-dangling-frame.patch" \
         "$SAMBA4X_SRC_DIR"
+    # tdb_open_ex() sets FD_CLOEXEC after the initial open, but tdb_reopen()
+    # replaces the fd and used to lose that flag. Keep reopened TDB handles out
+    # of helper execs on every target; this is not NetBSD4-specific.
+    patch_apply_checked "Samba 4.x TDB reopen close-on-exec patch" \
+        "$PATCH_DIR/0004-tdb-reopen-cloexec.patch" \
+        "$SAMBA4X_SRC_DIR"
     # Samba 4.24's bundled Heimdal headers can expose the same integer typedefs
     # through multiple include paths in this reduced static build. Guard them
     # explicitly; this is harmless on NetBSD 6/7 and required for the NetBSD4

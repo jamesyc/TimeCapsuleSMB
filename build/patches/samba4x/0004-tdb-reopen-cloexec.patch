@@ -1,0 +1,29 @@
+diff --git a/lib/tdb/common/open.c b/lib/tdb/common/open.c
+index 6580d0d..19ffcc4 100644
+--- a/lib/tdb/common/open.c
++++ b/lib/tdb/common/open.c
+@@ -854,6 +854,7 @@ static int tdb_reopen_internal(struct tdb_context *tdb, bool active_lock)
+ #if !defined(LIBREPLACE_PREAD_NOT_REPLACED) || \
+ 	!defined(LIBREPLACE_PWRITE_NOT_REPLACED)
+ 	struct stat st;
++	int v;
+ #endif
+ 
+ 	if (tdb->flags & TDB_INTERNAL) {
+@@ -884,6 +885,16 @@ static int tdb_reopen_internal(struct tdb_context *tdb, bool active_lock)
+ 		TDB_LOG((tdb, TDB_DEBUG_FATAL, "tdb_reopen: open failed (%s)\n", strerror(errno)));
+ 		goto fail;
+ 	}
++	/*
++	 * tdb_open_ex() marks the initial fd close-on-exec. Reopen replaces
++	 * that fd, so restore the flag here instead of letting helper execs
++	 * inherit reopened database handles.
++	 */
++	v = fcntl(tdb->fd, F_GETFD, 0);
++	if (v != -1) {
++		fcntl(tdb->fd, F_SETFD, v | FD_CLOEXEC);
++	}
++
+ 	/*
+ 	 * We only use st.st_dev and st.st_ino from the raw fstat()
+ 	 * call, everything else needs to use tdb_fstat() in order
