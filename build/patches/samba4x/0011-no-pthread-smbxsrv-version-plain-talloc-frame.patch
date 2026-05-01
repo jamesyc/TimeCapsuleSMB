@@ -1,0 +1,42 @@
+diff --git a/source3/smbd/smbXsrv_version.c b/source3/smbd/smbXsrv_version.c
+--- a/source3/smbd/smbXsrv_version.c
++++ b/source3/smbd/smbXsrv_version.c
+@@ -70,9 +70,22 @@ NTSTATUS smbXsrv_version_global_init(const struct server_id *server_id)
+ 		return NT_STATUS_OK;
+ 	}
+ 
++#ifdef HAVE_PTHREAD
+ 	frame = talloc_stackframe();
++#else
++	/*
++	 * The static Time Capsule build has no pthread TLS and uses Samba's
++	 * process-global talloc stack. This startup helper keeps a database
++	 * context alive after return, so avoid adding another temporary stack
++	 * frame while opening/updating smbXsrv_version_global.tdb.
++	 */
++	frame = talloc_new(NULL);
++#endif
++	if (frame == NULL) {
++		return NT_STATUS_NO_MEMORY;
++	}
+ 
+-	global_path = lock_path(talloc_tos(), "smbXsrv_version_global.tdb");
++	global_path = lock_path(frame, "smbXsrv_version_global.tdb");
+ 	if (global_path == NULL) {
+ 		TALLOC_FREE(frame);
+ 		return NT_STATUS_NO_MEMORY;
+@@ -263,6 +276,14 @@ NTSTATUS smbXsrv_version_global_init(const struct server_id *server_id)
+ 	smbXsrv_version_global_db_ctx = db_ctx;
+ 	smbXsrv_version_global_current_version = global_blob.version;
+ 
++#ifdef HAVE_PTHREAD
+ 	TALLOC_FREE(frame);
++#else
++	/*
++	 * Keep this one-shot startup frame alive in no-pthread builds. Freeing it
++	 * trips Samba's process-global talloc stack handling on these static
++	 * NetBSD appliance builds before smbd finishes binding TCP/445.
++	 */
++#endif
+ 	return NT_STATUS_OK;
+ }

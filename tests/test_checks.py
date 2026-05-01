@@ -508,7 +508,7 @@ class CheckTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
             with mock.patch(
                 "timecapsulesmb.checks.smb.run_local_capture",
-                side_effect=subprocess.TimeoutExpired(cmd=["smbclient"], timeout=12),
+                side_effect=subprocess.TimeoutExpired(cmd=["smbclient"], timeout=30),
             ):
                 result = try_authenticated_smb_listing("admin", "pw", ["server.local"])
         self.assertEqual(result.status, "FAIL")
@@ -1334,6 +1334,99 @@ class CheckTests(unittest.TestCase):
             expected_share_name="Data",
         )
 
+    def test_run_doctor_checks_keeps_proxied_listing_missing_share_fatal_but_still_runs_file_ops(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o ProxyJump=bastion",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+            "TC_AIRPORT_SYAP": "119",
+        }
+        tunnel = mock.MagicMock()
+        tunnel.__enter__.return_value = None
+        tunnel.__exit__.return_value = None
+        listing_result = mock.Mock(
+            status="FAIL",
+            message="authenticated SMB listing did not include expected share 'Data' on 127.0.0.1",
+        )
+        file_ops_result = mock.Mock(status="PASS", message="file ops ok")
+
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.find_free_local_port", return_value=1445):
+                    with mock.patch("timecapsulesmb.checks.doctor.ssh_local_forward", return_value=tunnel) as tunnel_mock:
+                        with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=listing_result) as listing_mock:
+                            with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops_detailed", return_value=[file_ops_result]) as file_ops_mock:
+                                results, fatal = run_doctor_checks(
+                                    values,
+                                    env_exists=True,
+                                    repo_root=REPO_ROOT,
+                                    skip_ssh=True,
+                                    skip_bonjour=True,
+                                )
+
+        self.assertTrue(fatal)
+        tunnel_mock.assert_called_once()
+        listing_mock.assert_called_once_with(
+            "admin",
+            "pw",
+            "127.0.0.1",
+            expected_share_name="Data",
+            port=1445,
+        )
+        file_ops_mock.assert_called_once_with("admin", "pw", "127.0.0.1", "Data", port=1445)
+        fail_messages = [result.message for result in results if result.status == "FAIL"]
+        self.assertIn(
+            "authenticated SMB listing did not include expected share 'Data' on 127.0.0.1",
+            fail_messages,
+        )
+        self.assertIn("file ops ok", [result.message for result in results if result.status == "PASS"])
+        self.assertFalse(any("continuing with direct share file-ops verification" in result.message for result in results))
+
+    def test_run_doctor_checks_keeps_unrelated_proxied_listing_failure_fatal(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o ProxyJump=bastion",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+            "TC_AIRPORT_SYAP": "119",
+        }
+        tunnel = mock.MagicMock()
+        tunnel.__enter__.return_value = None
+        tunnel.__exit__.return_value = None
+        listing_result = mock.Mock(status="FAIL", message="missing local tool smbclient")
+
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.find_free_local_port", return_value=1445):
+                    with mock.patch("timecapsulesmb.checks.doctor.ssh_local_forward", return_value=tunnel):
+                        with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=listing_result):
+                            with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops_detailed", return_value=[]):
+                                results, fatal = run_doctor_checks(
+                                    values,
+                                    env_exists=True,
+                                    repo_root=REPO_ROOT,
+                                    skip_ssh=True,
+                                    skip_bonjour=True,
+                                )
+
+        self.assertTrue(fatal)
+        self.assertTrue(any(result.status == "FAIL" and result.message == "missing local tool smbclient" for result in results))
+
     def test_run_doctor_checks_rejects_ip_mdns_host_label_before_smb_checks(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
@@ -1391,7 +1484,7 @@ class CheckTests(unittest.TestCase):
             with mock.patch(
                 "timecapsulesmb.checks.smb.run_local_capture",
                 side_effect=[
-                    subprocess.TimeoutExpired(cmd=["smbclient"], timeout=12),
+                    subprocess.TimeoutExpired(cmd=["smbclient"], timeout=30),
                     proc,
                 ],
             ):
@@ -1544,7 +1637,7 @@ class CheckTests(unittest.TestCase):
     def test_try_authenticated_smb_listing_forwards_custom_port(self) -> None:
         captured_args = None
 
-        def fake_run_local_capture(args, timeout=12):
+        def fake_run_local_capture(args, timeout=30):
             nonlocal captured_args
             captured_args = args
             return subprocess.CompletedProcess(args, 0, "Data\n", "")

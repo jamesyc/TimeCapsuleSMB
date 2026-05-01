@@ -1,0 +1,24 @@
+diff --git a/source3/smbd/smb2_query_directory.c b/source3/smbd/smb2_query_directory.c
+--- a/source3/smbd/smb2_query_directory.c
++++ b/source3/smbd/smb2_query_directory.c
+@@ -283,6 +283,20 @@ static struct tevent_req *smbd_smb2_query_directory_send(TALLOC_CTX *mem_ctx,
+ 	}
+ 
+ 	if (!fsp->fsp_flags.is_directory) {
++		/*
++		 * On the NetBSD4 big-endian Time Capsule build we can reach
++		 * SMB2 QUERY_DIRECTORY with a directory handle whose cached
++		 * is_directory flag has been lost. Trust stat when it still
++		 * says directory; otherwise let the later directory open and
++		 * enumeration path decide instead of failing on the stale flag.
++		 */
++		if (fsp->fsp_name != NULL &&
++		    S_ISDIR(fsp->fsp_name->st.st_ex_mode))
++		{
++			fsp->fsp_flags.is_directory = true;
++		}
++	}
++	if (!fsp->fsp_flags.is_directory) {
+ 		tevent_req_nterror(req, NT_STATUS_NOT_SUPPORTED);
+ 		return tevent_req_post(req, ev);
+ 	}

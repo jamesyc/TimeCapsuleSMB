@@ -1,0 +1,31 @@
+diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
+--- a/source3/modules/vfs_default.c
++++ b/source3/modules/vfs_default.c
+@@ -591,7 +591,26 @@ static DIR *vfswrap_fdopendir(vfs_handle_struct *handle,
+ 	DIR *result;
+ 
+ 	START_PROFILE_X(SNUM(handle->conn), syscall_fdopendir);
++#ifdef TC_SAMBA4X_NETBSD4_COMPAT
++	/*
++	 * NetBSD4's libc does not provide fdopendir(), and Samba's replace
++	 * fallback reports that as NT_STATUS_NOT_SUPPORTED during SMB2
++	 * QUERY_DIRECTORY. The default VFS still has Samba's tracked pathname
++	 * for the directory handle, so use the older path-based opendir().
++	 *
++	 * opendir() owns a separate directory fd; the original fsp fd remains
++	 * owned by Samba's files_struct lifecycle.
++	 */
++	if (fsp->fsp_name == NULL || fsp->fsp_name->base_name == NULL) {
++		errno = EINVAL;
++		result = NULL;
++	} else {
++		result = opendir(fsp->fsp_name->base_name);
++	}
++#else
+ 	result = sys_fdopendir(fsp_get_io_fd(fsp));
++#endif
+ 	END_PROFILE_X(syscall_fdopendir);
++
+ 	return result;
+ }
+ 

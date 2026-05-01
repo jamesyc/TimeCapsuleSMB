@@ -1,0 +1,45 @@
+diff --git a/source3/printing/queue_process.c b/source3/printing/queue_process.c
+index b7b3c473fc5..419267bf452 100644
+--- a/source3/printing/queue_process.c
++++ b/source3/printing/queue_process.c
+@@ -21,7 +21,28 @@
+ */
+ 
+ #include "includes.h"
++#ifdef HAVE_POSIX_SPAWN
+ #include <spawn.h>
++#else
++/*
++ * NetBSD4 has no spawn.h/posix_spawn(). The Time Capsule appliance config does
++ * not use printing, but this file still compiles into the static smbd build.
++ * Keep the existing helper-start shape with a minimal fork/exec fallback
++ * instead of removing queue_process.c from the build.
++ */
++static int samba_bgqd_fork_exec(const char *path, char *const argv[], char *const envp[], pid_t *pid)
++{
++	*pid = fork();
++	if (*pid == -1) {
++		return -1;
++	}
++	if (*pid == 0) {
++		execve(path, argv, envp);
++		_exit(127);
++	}
++	return 0;
++}
++#endif
+ #include "smbd/globals.h"
+ #include "include/messages.h"
+ #include "lib/util/util_process.h"
+@@ -393,7 +410,11 @@ pid_t start_background_queue(struct tevent_context *ev,
+ 		goto nomem;
+ 	}
+ 
++#ifdef HAVE_POSIX_SPAWN
+ 	ret = posix_spawn(&pid, argv[0], NULL, NULL, argv, environ);
++#else
++	ret = samba_bgqd_fork_exec(argv[0], argv, environ, &pid);
++#endif
+ 	if (ret == -1) {
+ 		goto fail;
+ 	}

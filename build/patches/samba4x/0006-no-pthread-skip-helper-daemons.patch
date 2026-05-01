@@ -1,0 +1,42 @@
+diff --git a/source3/smbd/server.c b/source3/smbd/server.c
+--- a/source3/smbd/server.c
++++ b/source3/smbd/server.c
+@@ -657,6 +670,19 @@ static bool cleanupd_init(struct messaging_context *msg, bool interactive,
+ 	char c;
+ 	int up_pipe[2];
+ 
++#ifndef HAVE_PTHREAD
++	/*
++	 * The same no-pthread appliance build cannot start Samba 4.24's
++	 * cleanupd helper. Returning a disconnected id keeps later cleanup
++	 * notification sends from targeting pid 0. The parent can still accept
++	 * SMB clients; the tradeoff is less eager cleanup of per-child state on
++	 * this constrained appliance path.
++	 */
++	DBG_NOTICE("Skipping cleanupd in no-pthread Time Capsule build\n");
++	server_id_set_disconnected(ppid);
++	return true;
++#endif
++
+ 	if (interactive) {
+ 		req = smbd_cleanupd_send(msg, ev, msg, parent_id.pid);
+ 		*ppid = messaging_server_id(msg);
+@@ -2439,9 +2465,18 @@ static bool cleanupd_init(struct messaging_context *msg, bool interactive,
+ 		exit_daemon("Samba cannot init the cleanupd", EACCES);
+ 	}
+ 
++#ifndef HAVE_PTHREAD
++	/*
++	 * background_job_send() creates another long-lived helper loop. Skip the
++	 * periodic messaging-datagram wipe in no-pthread appliance builds; stale
++	 * datagram sockets are less harmful than preventing smbd from binding.
++	 */
++	DBG_NOTICE("Skipping messaging dgm cleanup in no-pthread Time Capsule build\n");
++#else
+ 	if (!messaging_parent_dgm_cleanup_init(msg_ctx)) {
+ 		exit(1);
+ 	}
++#endif
+ 
+ 	if (!smbd_scavenger_init(NULL, msg_ctx, ev_ctx)) {
+ 		exit_daemon("Samba cannot init scavenging", EACCES);

@@ -1,0 +1,20 @@
+diff --git a/source3/rpc_server/wscript_build b/source3/rpc_server/wscript_build
+index 8a8d8f7b0f0..cb21ddcbb03 100644
+--- a/source3/rpc_server/wscript_build
++++ b/source3/rpc_server/wscript_build
+@@ -120,8 +120,14 @@ bld.SAMBA3_SUBSYSTEM('RPC_CONFIG',
+                     source='rpc_config.c',
+                     deps='talloc')
+ 
++# The Time Capsule build links rpcd_classic as a static nonshared helper.
++# rpcd_classic also depends on smbd_base, and smbd_base already includes
++# rpc_ncacn_np.c for smbd's named-pipe path. Keep RPC_NCACN_NP as the policy
++# handle provider needed by the RPC services, but do not pull rpc_ncacn_np.c
++# into the helper target a second time or waf rejects it before linking due
++# duplicate source ownership.
+ bld.SAMBA3_SUBSYSTEM('RPC_NCACN_NP',
+-                    source='rpc_ncacn_np.c rpc_handles.c',
++                    source='rpc_handles.c',
+                     deps='auth common_auth npa_tstream')
+ 
+ bld.SAMBA3_LIBRARY('RPC_SERVER_LOOP',

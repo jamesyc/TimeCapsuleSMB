@@ -49,10 +49,10 @@ mkdir -p "$OUT" "$SAMBA4X_WORK"
     patch_perl_any "Samba 4.x hostcc env helper patch" \
         "s/os\\.environ\\['PYTHONUNBUFFERED'\\] = '1'\\n/os.environ['PYTHONUNBUFFERED'] = '1'\\n\\ndef APPLY_HOSTCC_ENV\\(bld, taskgen\\):\\n    if not getattr\\(taskgen, 'samba_use_hostcc', False\\):\\n        return\\n    if not bld.env.HOSTCC:\\n        return\\n    taskgen.env = taskgen.env.derive\\(\\)\\n    hostcc = TO_LIST\\(bld.env.HOSTCC\\)\\n    gccdeps_cflags = \\[flag for flag in TO_LIST\\(bld.env.CFLAGS\\) if flag in \\('-MD', '-MMD'\\)\\]\\n    host_cflags = TO_LIST\\(bld.env.HOST_CFLAGS\\) + gccdeps_cflags\\n    taskgen.env.CC = hostcc\\n    taskgen.env.LINK_CC = hostcc\\n    taskgen.env.CFLAGS = host_cflags\\n    taskgen.env.CPPFLAGS = TO_LIST\\(bld.env.HOST_CPPFLAGS\\)\\n    taskgen.env.LDFLAGS = []\\n    taskgen.env.LINKFLAGS = []\\n    taskgen.env.STLIB_MARKER = []\\n    taskgen.env.SHLIB_MARKER = []\\n    taskgen.env.FULLSTATIC_MARKER = []\\n    taskgen.env.EXTRA_CFLAGS = host_cflags\\n    taskgen.env.EXTRA_LDFLAGS = []\\n\\n/" \
         "$SAMBA4X_SRC_DIR/buildtools/wafsamba/wafsamba.py"
-    patch_perl_any "Samba 4.x smbd static env helper patch" \
-        "s/\\ndef SAMBA_BINARY/\\ndef APPLY_SMBD_STATIC_ENV\\(bld, taskgen\\):\\n    if getattr\\(taskgen, 'target', None\\) != 'smbd\\/smbd':\\n        return\\n    static_linkflags = TO_LIST\\(getattr\\(bld.env, 'SMBD_STATIC_LINKFLAGS', []\\)\\)\\n    static_ldflags = TO_LIST\\(getattr\\(bld.env, 'SMBD_STATIC_LDFLAGS', []\\)\\)\\n    if not static_linkflags and not static_ldflags:\\n        return\\n    taskgen.env = taskgen.env.derive\\(\\)\\n    taskgen.env.LINKFLAGS = static_linkflags\\n    taskgen.env.LDFLAGS = static_ldflags\\n    taskgen.env.LIBPATH = TO_LIST\\(getattr\\(bld.env, 'SMBD_STATIC_LIBPATH', []\\)\\)\\n    taskgen.env.SHLIB_MARKER = getattr\\(bld.env, 'SMBD_STATIC_SHLIB_MARKER', ''\\)\\n    taskgen.env.FULLSTATIC_MARKER = getattr\\(bld.env, 'SMBD_STATIC_FULLSTATIC_MARKER', '-static'\\)\\n\\ndef SAMBA_BINARY/" \
+    patch_perl_any "Samba 4.x static service binary env helper patch" \
+        "s/\\ndef SAMBA_BINARY/\\ndef APPLY_SMBD_STATIC_ENV\\(bld, taskgen\\):\\n    # Time Capsule deploys a tiny static Samba runtime. smbd is the main\\n    # daemon, while samba-dcerpcd and rpcd_classic are required by Samba\\n    # 4.24's srvsvc named-pipe path used by smbclient -L and doctor.\\n    if getattr\\(taskgen, 'target', None\\) not in \\('smbd\\/smbd', 'samba-dcerpcd', 'rpcd_classic'\\):\\n        return\\n    static_linkflags = TO_LIST\\(getattr\\(bld.env, 'SMBD_STATIC_LINKFLAGS', []\\)\\)\\n    static_ldflags = TO_LIST\\(getattr\\(bld.env, 'SMBD_STATIC_LDFLAGS', []\\)\\)\\n    if not static_linkflags and not static_ldflags:\\n        return\\n    taskgen.env = taskgen.env.derive\\(\\)\\n    taskgen.env.LINKFLAGS = static_linkflags\\n    taskgen.env.LDFLAGS = static_ldflags\\n    taskgen.env.LIBPATH = TO_LIST\\(getattr\\(bld.env, 'SMBD_STATIC_LIBPATH', []\\)\\)\\n    taskgen.env.SHLIB_MARKER = getattr\\(bld.env, 'SMBD_STATIC_SHLIB_MARKER', ''\\)\\n    taskgen.env.FULLSTATIC_MARKER = getattr\\(bld.env, 'SMBD_STATIC_FULLSTATIC_MARKER', '-static'\\)\\n\\ndef SAMBA_BINARY/" \
         "$SAMBA4X_SRC_DIR/buildtools/wafsamba/wafsamba.py"
-    patch_require_fixed "Samba 4.x smbd static env helper patch" "def APPLY_SMBD_STATIC_ENV(bld, taskgen):" \
+    patch_require_fixed "Samba 4.x static service binary env helper patch" "if getattr(taskgen, 'target', None) not in ('smbd/smbd', 'samba-dcerpcd', 'rpcd_classic'):" \
         "$SAMBA4X_SRC_DIR/buildtools/wafsamba/wafsamba.py"
     patch_perl_any "Samba 4.x hostcc binary task patch" \
         "s/samba_ldflags  = pie_ldflags\\n        \\)/samba_ldflags  = pie_ldflags,\\n        samba_use_hostcc = use_hostcc\\n        \\)\\n    APPLY_HOSTCC_ENV\\(bld, t\\)/" \
@@ -83,14 +83,61 @@ mkdir -p "$OUT" "$SAMBA4X_WORK"
     patch_require_fixed "Samba 4.x no-pthread TLS configure patch" "continuing; pthread is removed after configure" \
         "$SAMBA4X_SRC_DIR/lib/replace/wscript"
 
-    # NetBSD 6/7 use native modern filesystem syscalls. NetBSD4 needs a
-    # conservative compatibility layer plus path-aware source3 VFS fallbacks so
-    # ordinary SMB and Time Machine operations do not collapse to ENOSYS.
+    # rpcd_classic is now shipped as a static helper for SMB share enumeration.
+    # Its target also pulls in smbd_base, so remove duplicate ncacn_np ownership
+    # from the intermediate RPC helper libraries before waf's rule checker runs.
+    patch_apply_checked "Samba 4.x static RPC helper duplicate ncacn_np patch" \
+        "$PATCH_DIR/0020-static-rpc-helper-avoid-ncacn-duplicate.patch" \
+        "$SAMBA4X_SRC_DIR"
+    # The appliance only needs the classic helper for SMB share enumeration and
+    # workstation metadata. Avoid service-control/eventlog endpoints: svcctl
+    # initializes winreg and cascades into extra RPC helpers that are too heavy
+    # for the no-pthread Time Capsule runtime.
+    patch_apply_checked "Samba 4.x minimal classic RPC helper patch" \
+        "$PATCH_DIR/0022-static-rpc-classic-minimal-interfaces.patch" \
+        "$SAMBA4X_SRC_DIR"
+    # samba-dcerpcd asks each rpcd_* helper to list its interfaces before it can
+    # create named-pipe sockets. In no-pthread static builds, rpcd_classic
+    # aborts while reading optional per-helper worker-count settings, so keep
+    # the rpc_worker_main() defaults for that probe path.
+    patch_apply_checked "Samba 4.x no-pthread RPC worker list defaults patch" \
+        "$PATCH_DIR/0023-no-pthread-rpc-worker-list-defaults.patch" \
+        "$SAMBA4X_SRC_DIR"
+    # The build-tree dynconfig override points SAMBA_LIBEXECDIR at the VM
+    # checkout's bin/ directory. We ship the build-tree binary directly to the
+    # Time Capsule, so preserve the configured install libexec path instead.
+    patch_apply_checked "Samba 4.x installed libexec dynconfig patch" \
+        "$PATCH_DIR/0021-installed-libexec-dynconfig.patch" \
+        "$SAMBA4X_SRC_DIR"
+
+    # NetBSD4 needs libc symbol shims, and all Time Capsule runtimes need
+    # path-aware source3 VFS fallbacks. The NetBSD7 SDK can expose *at/openat2
+    # APIs that are missing or incomplete on the older on-device kernels.
     patch_apply_checked "Samba 4.x NetBSD4 replace compatibility patch" \
         "$PATCH_DIR/0001-netbsd4-replace-compat.patch" \
         "$SAMBA4X_SRC_DIR"
-    patch_apply_checked "Samba 4.x NetBSD4 source3 VFS at-path fallback patch" \
+    patch_apply_checked "Samba 4.x NetBSD source3 VFS at-path fallback patch" \
         "$PATCH_DIR/0002-netbsd4-vfs-at-path-fallbacks.patch" \
+        "$SAMBA4X_SRC_DIR"
+    # NetBSD 6/7 also lack Linux openat2() semantics. Samba's default VFS can
+    # request those constraints while connecting the share root, where returning
+    # ENOSYS is not retried. Disable the unsupported constraints and continue
+    # through the ordinary openat() fallback in the same call.
+    patch_apply_checked "Samba 4.x NetBSD openat2 ENOSYS fallback patch" \
+        "$PATCH_DIR/0017-netbsd-openat2-enosys-fallback.patch" \
+        "$SAMBA4X_SRC_DIR"
+    # The NetBSD4 big-endian runtime can reach SMB2 QUERY_DIRECTORY with a
+    # directory handle whose stat mode is still a directory but whose cached
+    # is_directory flag is false. Restore the flag from stat before rejecting
+    # the query so SMB2 directory listings work on that target.
+    patch_apply_checked "Samba 4.x SMB2 query directory stat fallback patch" \
+        "$PATCH_DIR/0018-smb2-query-directory-stat-directory-fallback.patch" \
+        "$SAMBA4X_SRC_DIR"
+    # NetBSD4 lacks fdopendir(), and Samba's generic replace fallback reports
+    # that as NOT_SUPPORTED during SMB2 directory enumeration. Use the default
+    # VFS layer's tracked pathname for directory streams on appliance builds.
+    patch_apply_checked "Samba 4.x NetBSD VFS fdopendir path fallback patch" \
+        "$PATCH_DIR/0019-netbsd-vfs-fdopendir-path-fallback.patch" \
         "$SAMBA4X_SRC_DIR"
 
     # smbd -V exits through Samba's shared popt callback before server.c can
@@ -104,6 +151,79 @@ mkdir -p "$OUT" "$SAMBA4X_WORK"
     # of helper execs on every target; this is not NetBSD4-specific.
     patch_apply_checked "Samba 4.x TDB reopen close-on-exec patch" \
         "$PATCH_DIR/0004-tdb-reopen-cloexec.patch" \
+        "$SAMBA4X_SRC_DIR"
+    # The no-pthread static appliance build aborts while registering Samba's
+    # MSG_REQ_POOL_USAGE diagnostic filtered reader during smbd startup. That
+    # hook only supports smbcontrol memory reports, so skip it for the appliance.
+    patch_apply_checked "Samba 4.x no-pthread pool usage diagnostic skip patch" \
+        "$PATCH_DIR/0005-no-pthread-skip-pool-usage.patch" \
+        "$SAMBA4X_SRC_DIR"
+    # cleanupd is an auxiliary smbd helper loop that aborts in the static
+    # no-pthread appliance build before TCP/445 can bind. Keep notifyd enabled:
+    # SMB tree connects with the default "change notify = yes" require the
+    # notify-daemon registration.
+    patch_apply_checked "Samba 4.x no-pthread helper daemon skip patch" \
+        "$PATCH_DIR/0006-no-pthread-skip-helper-daemons.patch" \
+        "$SAMBA4X_SRC_DIR"
+    # The static appliance build has no winbindd. Keep in-process Unix SID and
+    # legacy local mappings, but do not ask libwbclient to resolve the remaining
+    # Windows SIDs during startup token construction.
+    patch_apply_checked "Samba 4.x no-pthread local SID mapping patch" \
+        "$PATCH_DIR/0007-no-pthread-local-sid-to-unixids.patch" \
+        "$SAMBA4X_SRC_DIR"
+    # Some Samba filtered messaging readers still use direct abort() for event
+    # context bookkeeping assertions. In the static no-pthread appliance build,
+    # recover from stale registrations instead of killing smbd during startup or
+    # helper teardown.
+    patch_apply_checked "Samba 4.x no-pthread messaging event context recovery patch" \
+        "$PATCH_DIR/0008-no-pthread-messaging-event-context-recovery.patch" \
+        "$SAMBA4X_SRC_DIR"
+    # Samba's datagram messaging layer normally creates a pthreadpool-backed
+    # queue for the rare case where a Unix datagram socket is full. The static
+    # no-pthread appliance build must stay on the direct nonblocking path:
+    # pthreadpool_tevent registers atfork/assert code that aborts notifyd and
+    # client children on NetBSD Time Capsules.
+    patch_apply_checked "Samba 4.x no-pthread messaging datagram direct-send patch" \
+        "$PATCH_DIR/0009-no-pthread-messaging-dgm-no-pthreadpool.patch" \
+        "$SAMBA4X_SRC_DIR"
+    # Keep change notify available on the no-pthread appliance build, but run
+    # notifyd's long-lived request on the smbd parent event loop. Forking a
+    # separate notifyd helper still hits raw abort paths on these NetBSD targets.
+    patch_apply_checked "Samba 4.x no-pthread in-parent notifyd patch" \
+        "$PATCH_DIR/0010-no-pthread-notifyd-in-parent.patch" \
+        "$SAMBA4X_SRC_DIR"
+    # smbXsrv_version_global_init keeps a global db context after returning.
+    # On the no-pthread static build, using a nested process-global talloc stack
+    # frame in that startup helper aborts while smbd is still initializing.
+    patch_apply_checked "Samba 4.x no-pthread smbXsrv version plain talloc frame patch" \
+        "$PATCH_DIR/0011-no-pthread-smbxsrv-version-plain-talloc-frame.patch" \
+        "$SAMBA4X_SRC_DIR"
+    # The client/session SMBX global databases are normally wrapped by
+    # db_open_watched(), which uses messaging filtered readers for invalidation.
+    # On the no-pthread appliance build, those messaging paths can raw-abort
+    # during startup. Keep the underlying locked TDBs and skip only the watched
+    # cache wrapper for this single-node file server.
+    patch_apply_checked "Samba 4.x no-pthread SMBX global DB watched wrapper skip patch" \
+        "$PATCH_DIR/0012-no-pthread-smbxsrv-unwatched-global-dbs.patch" \
+        "$SAMBA4X_SRC_DIR"
+    # notifyd is a long-lived request hosted by the event loop. In no-pthread
+    # appliance builds, parent it like notifydd does so tevent request creation
+    # does not abort while smbd is still starting up.
+    patch_apply_checked "Samba 4.x no-pthread notifyd event context owner patch" \
+        "$PATCH_DIR/0014-no-pthread-notifyd-event-context-owner.patch" \
+        "$SAMBA4X_SRC_DIR"
+    # tevent's pooled request allocator is an optimization. In the no-pthread
+    # static appliance build it aborts while notifyd creates its startup request
+    # on NetBSD Time Capsules, so use ordinary talloc children for tevent
+    # requests in that build.
+    patch_apply_checked "Samba 4.x no-pthread tevent request plain talloc patch" \
+        "$PATCH_DIR/0015-no-pthread-tevent-req-plain-talloc.patch" \
+        "$SAMBA4X_SRC_DIR"
+    # tevent's call-depth hooks are thread-local diagnostics. The static
+    # no-pthread appliance build can abort while invoking that TLS callback
+    # during notifyd startup, so make the tracking hook a no-op there.
+    patch_apply_checked "Samba 4.x no-pthread tevent call-depth noop patch" \
+        "$PATCH_DIR/0016-no-pthread-tevent-call-depth-noop.patch" \
         "$SAMBA4X_SRC_DIR"
     # Samba 4.24's bundled Heimdal headers can expose the same integer typedefs
     # through multiple include paths in this reduced static build. Guard them
@@ -173,10 +293,16 @@ mkdir -p "$OUT" "$SAMBA4X_WORK"
         "$SAMBA4X_SRC_DIR/source3/rpc_client/local_np.c"
     patch_require_fixed "Samba 4.x local named pipe no-posix-spawn fallback patch" "samba_fork_exec" \
         "$SAMBA4X_SRC_DIR/source3/rpc_client/local_np.c"
+    # NetBSD4 has no spawn.h/posix_spawn(). Printing is not enabled in the
+    # appliance config, but queue_process.c still compiles into the static smbd
+    # target. Keep it buildable with the same fork/exec helper shape used by
+    # local_np.c, while NetBSD 6/7 continue to use native posix_spawn().
+    patch_apply_checked "Samba 4.x NetBSD4 print queue no-posix-spawn fallback patch" \
+        "$PATCH_DIR/0024-netbsd4-print-queue-no-posix-spawn.patch" \
+        "$SAMBA4X_SRC_DIR"
     # Our appliance build removes pthread support after configure. Make any
     # remaining __thread uses compile as process-global storage for that
-    # no-pthread mode; this matters most on NetBSD4, while NetBSD 6/7 follow
-    # the same single-process static smbd configuration unless overridden.
+    # no-pthread mode on both NetBSD4 and NetBSD6/7.
     patch_perl_any "Samba 4.x no-thread keyword fallback patch" \
         "s/#define HAVE___THREAD/#define __thread\\n#define HAVE___THREAD/" \
         "$SAMBA4X_SRC_DIR/lib/replace/replace.h"

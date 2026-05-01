@@ -297,11 +297,19 @@ class ManagedMdnsTakeoverProbeResult:
 
 
 @dataclass(frozen=True)
+class ManagedRpcProbeResult:
+    ready: bool
+    detail: str
+    lines: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ManagedRuntimeProbeResult:
     ready: bool
     detail: str
     smbd: ManagedSmbdProbeResult
     mdns: ManagedMdnsTakeoverProbeResult
+    rpc: ManagedRpcProbeResult | None = None
     lines: tuple[str, ...] = ()
 
 
@@ -778,6 +786,61 @@ exit "$status"
         detail=_probe_detail(lines, "managed mDNS takeover not active"),
         lines=lines,
     )
+
+
+def probe_managed_rpc_conn(connection: SshConnection, *, timeout_seconds: int = 20) -> ManagedRpcProbeResult:
+    status_script = r'''
+helper=/mnt/Memory/samba4/libexec/samba/samba-dcerpcd
+socket=/mnt/Memory/samba4/var/run/ncalrpc/np/srvsvc
+if [ ! -x "$helper" ]; then
+    echo "PASS:Samba RPC helper not staged; skipping named-pipe readiness"
+    exit 0
+fi
+if /bin/ls "$socket" >/dev/null 2>&1; then
+    echo "PASS:Samba RPC srvsvc named-pipe socket present"
+    exit 0
+fi
+echo "FAIL:Samba RPC srvsvc named-pipe socket missing; helper launch needed"
+exit 1
+'''
+    proc = run_ssh(
+        connection,
+        f"/bin/sh -c {shlex.quote(status_script)}",
+        check=False,
+        timeout=timeout_seconds,
+    )
+    lines = _probe_lines(proc.stdout)
+    if proc.returncode == 0:
+        return ManagedRpcProbeResult(ready=True, detail=_probe_detail(lines, "managed Samba RPC ready"), lines=lines)
+
+    if any("helper launch needed" in line for line in lines):
+        # Samba 4.24 uses samba-dcerpcd/rpcd_classic for srvsvc, which
+        # smbclient -L needs for share enumeration. Launch the helper from the
+        # host-side readiness loop, detached like the reboot command, so this
+        # SSH command can return and the outer poller can observe the socket on
+        # a later pass.
+        launch_script = (
+            "exec </dev/null >/mnt/Memory/samba4/var/log.samba-dcerpcd-startup 2>&1; "
+            "/mnt/Memory/samba4/libexec/samba/samba-dcerpcd "
+            "--configfile=/mnt/Memory/samba4/etc/smb.conf "
+            "--libexec-rpcds "
+            "--np-helper "
+            "--debuglevel=1 "
+            "--log-basename=/mnt/Memory/samba4/var "
+            "& exit 0"
+        )
+        try:
+            run_ssh(
+                connection,
+                f"/bin/sh -c {shlex.quote(launch_script)}",
+                check=False,
+                timeout=10,
+            )
+            lines = lines + ("FAIL:Samba RPC srvsvc named-pipe socket missing; helper launch requested",)
+        except SystemExit as exc:
+            lines = lines + (f"FAIL:Samba RPC helper launch did not detach: {system_exit_message(exc)}",)
+
+    return ManagedRpcProbeResult(ready=False, detail=_probe_detail(lines, "managed Samba RPC not ready"), lines=lines)
 
 
 def probe_managed_runtime_conn(

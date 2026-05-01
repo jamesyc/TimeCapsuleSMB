@@ -1,0 +1,24 @@
+diff --git a/source3/smbd/server.c b/source3/smbd/server.c
+--- a/source3/smbd/server.c
++++ b/source3/smbd/server.c
+@@ -443,8 +443,20 @@ static struct tevent_req *notifyd_req(struct messaging_context *msg_ctx,
+ 		ctdbd_conn = messaging_ctdb_connection();
+ 	}
+ 
++#ifdef HAVE_PTHREAD
+ 	req = notifyd_send(msg_ctx, ev, msg_ctx, ctdbd_conn,
+ 			   sys_notify_watch, sys_notify_ctx);
++#else
++	/*
++	 * The no-pthread static appliance build keeps notifyd in the smbd
++	 * parent process. Its lifetime is the parent event loop, matching the
++	 * standalone notifydd caller, so parent the long-lived request to ev
++	 * instead of msg_ctx. On NetBSD Time Capsules, the msg_ctx-owned request
++	 * path aborts inside tevent_req_create() during startup.
++	 */
++	req = notifyd_send(ev, ev, msg_ctx, ctdbd_conn,
++			   sys_notify_watch, sys_notify_ctx);
++#endif
+ 	if (req == NULL) {
+ 		TALLOC_FREE(sys_notify_ctx);
+ 		return NULL;

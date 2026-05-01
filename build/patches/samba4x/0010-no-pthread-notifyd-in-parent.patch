@@ -1,0 +1,26 @@
+diff --git a/source3/smbd/server.c b/source3/smbd/server.c
+--- a/source3/smbd/server.c
++++ b/source3/smbd/server.c
+@@ -473,6 +473,22 @@ static bool smbd_notifyd_init(struct messaging_context *msg, bool interactive,
+ 		return (req != NULL);
+ 	}
+ 
++#ifndef HAVE_PTHREAD
++	/*
++	 * The Time Capsule appliance build runs smbd without pthreads. Keep
++	 * notifyd semantics, but host the long-lived notify request in the smbd
++	 * parent event loop instead of forking a notifyd helper that aborts on
++	 * the no-pthread NetBSD targets.
++	 */
++	req = notifyd_req(msg, ev);
++	if (req == NULL) {
++		return false;
++	}
++	*ppid = messaging_server_id(msg);
++	DBG_NOTICE("Running notifyd in smbd parent for no-pthread build\n");
++	return true;
++#endif
++
+ 	pid = fork();
+ 	if (pid == -1) {
+ 		DEBUG(1, ("%s: fork failed: %s\n", __func__,

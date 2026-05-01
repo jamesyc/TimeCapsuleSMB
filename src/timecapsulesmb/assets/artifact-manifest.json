@@ -26,19 +26,43 @@
     },
     "smbd": {
       "path": "bin/samba4/smbd",
-      "sha256": "5f6d47bc3ee614055792f870ee12faf9e038f955a36583194e1d8acd9dd097ac"
+      "sha256": "4961f5a08d950da14fef74ed0d2ba45c4f9b43a1c2eb4a323a51fab5806c0c3b"
+    },
+    "samba-dcerpcd": {
+      "path": "bin/samba4/samba-dcerpcd",
+      "sha256": "aed7f89420359bd6647372210ca7b28764cc4b910ba95ebf8319a4cd24fc95f5"
+    },
+    "rpcd_classic": {
+      "path": "bin/samba4/rpcd_classic",
+      "sha256": "dc0b825f7481554b94fe104ae8082a80b8567fb6cbf57defe0707e384c66d81c"
     },
     "smbd-netbsd4le": {
       "path": "bin/samba4-netbsd4le/smbd",
-      "sha256": "fb2c608ece16488ba2d6086808b573b0b443d400e94192ebd51494c6fc5d10a3"
+      "sha256": "9dfce85498c03153a7a5d37e90a5c47fa7166ca5d7d3cb7e4eb3bb10abc5808b"
     },
     "smbd-netbsd4be": {
       "path": "bin/samba4-netbsd4be/smbd",
-      "sha256": "b14be1955eb270c9d3826975060531e000d3db2c2326d7efe2f0263252f44cd3"
+      "sha256": "d9c70c730f31605b1a5f9158568aab151a88289a5534081e7d71423ae53f01c1"
     },
     "smbd-samba3-netbsd4le": {
       "path": "bin/samba3-netbsd4le/smbd",
       "sha256": "5a2a88ebc868adfe606e1583394478f97c2ab3c36c084631a18b2e0b741c45e8"
+    },
+    "samba-dcerpcd-netbsd4le": {
+      "path": "bin/samba4-netbsd4le/samba-dcerpcd",
+      "sha256": "b146b4424affd2cc77582a5683c9bf5ad845b81444ab64e7655441ab2c1279fa"
+    },
+    "rpcd_classic-netbsd4le": {
+      "path": "bin/samba4-netbsd4le/rpcd_classic",
+      "sha256": "245ccf8659747e82049bf148d62acbda8a2a5383a1bfa8908bb73286a3ce3af6"
+    },
+    "samba-dcerpcd-netbsd4be": {
+      "path": "bin/samba4-netbsd4be/samba-dcerpcd",
+      "sha256": "e009b606fd5704d15e70dad34077e2b7ea713b4dd48d0c554d46a4a7042c7c10"
+    },
+    "rpcd_classic-netbsd4be": {
+      "path": "bin/samba4-netbsd4be/rpcd_classic",
+      "sha256": "0a0760452372cd682142f23e1f56fbed403fe31e44ffa70df4693a413602e571"
     }
   }
 }

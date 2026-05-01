@@ -434,13 +434,15 @@ def run_doctor_checks(
             smb_server = listing_result.message.removeprefix(
                 f"authenticated SMB listing works for {values['TC_SAMBA_USER']}@"
             )
-            for result in check_authenticated_smb_file_ops_detailed(
-                values["TC_SAMBA_USER"],
-                smb_password,
-                smb_server,
-                values["TC_SHARE_NAME"],
-            ):
-                add_result(result)
+        else:
+            smb_server = extract_host(values["TC_HOST"])
+        for result in check_authenticated_smb_file_ops_detailed(
+            values["TC_SAMBA_USER"],
+            smb_password,
+            smb_server,
+            values["TC_SHARE_NAME"],
+        ):
+            add_result(result)
 
     fatal = any(is_fatal(result) for result in results)
     return results, fatal

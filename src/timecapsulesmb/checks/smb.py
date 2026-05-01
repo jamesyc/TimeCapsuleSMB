@@ -75,7 +75,7 @@ def try_authenticated_smb_listing(
     *,
     expected_share_name: Optional[str] = None,
     port: Optional[int] = None,
-    timeout: int = 12,
+    timeout: int = 30,
 ) -> CheckResult:
     if not command_exists("smbclient"):
         return CheckResult("WARN", "SMB listing verification skipped: smbclient not found")

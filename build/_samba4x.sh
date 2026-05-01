@@ -389,10 +389,7 @@ rewrite_samba4x_gnutls_pc() {
 }
 
 build_samba4x_gnutls() {
-    gnutls_stamp_suffix="system-nettle-oaep"
-    if [ "$SDK_FAMILY" = "netbsd4" ]; then
-        gnutls_stamp_suffix="$gnutls_stamp_suffix-no-thread-local"
-    fi
+    gnutls_stamp_suffix="system-nettle-oaep-no-thread-local"
     stamp="$SAMBA4X_DEPS/.stamp-gnutls-$SAMBA4X_GNUTLS_VERSION-$gnutls_stamp_suffix"
     if [ -f "$stamp" ] && [ -f "$SAMBA4X_DEPS/lib/libgnutls.a" ]; then
         echo "GnuTLS $SAMBA4X_GNUTLS_VERSION already built."
@@ -409,21 +406,21 @@ build_samba4x_gnutls() {
         's/#include <byteswap\.h>/#include <sys\/bswap.h>\n#ifndef bswap_16\n#define bswap_16 bswap16\n#endif\n#ifndef bswap_32\n#define bswap_32 bswap32\n#endif\n#ifndef bswap_64\n#define bswap_64 bswap64\n#endif/' \
         lib/num.h
     patch_require_fixed "GnuTLS NetBSD bswap include patch" "#define bswap_16 bswap16" lib/num.h
-    if [ "$SDK_FAMILY" = "netbsd4" ]; then
-        # The NetBSD4 lane builds a no-pthread appliance binary. GnuTLS still
-        # uses C11 thread-local declarations in a few single-process globals,
-        # so make them ordinary statics for this lane only. NetBSD 6/7 keep the
-        # upstream declarations.
-        patch_perl "GnuTLS NetBSD4 random TLS patch" \
-            's/static _Thread_local unsigned rnd_initialized = 0;/static unsigned rnd_initialized = 0;/' \
-            lib/random.c
-        patch_require_fixed "GnuTLS NetBSD4 random TLS patch" "static unsigned rnd_initialized = 0;" lib/random.c
-        patch_perl "GnuTLS NetBSD4 FIPS TLS patch" \
-            's/static _Thread_local gnutls_fips_mode_t _tfips_mode = -1;/static gnutls_fips_mode_t _tfips_mode = -1;/; s/static _Thread_local gnutls_fips140_context_t _tfips_context = NULL;/static gnutls_fips140_context_t _tfips_context = NULL;/' \
-            lib/fips.c
-        patch_require_fixed "GnuTLS NetBSD4 FIPS TLS patch" "static gnutls_fips_mode_t _tfips_mode = -1;" lib/fips.c
-        patch_require_fixed "GnuTLS NetBSD4 FIPS TLS patch" "static gnutls_fips140_context_t _tfips_context = NULL;" lib/fips.c
-    fi
+    # All Time Capsule Samba4X lanes are static no-pthread appliance builds.
+    # GnuTLS keeps PRNG and FIPS state in C11 thread-local globals by default;
+    # on these old NetBSD targets that pulls in runtime TLS behavior that is not
+    # needed for a single-threaded smbd and can abort when the first real random
+    # buffer is requested during session setup. Make those globals ordinary
+    # statics for every no-pthread lane so NetBSD6/7 and NetBSD4 behave the same.
+    patch_perl "GnuTLS no-pthread random TLS patch" \
+        's/static _Thread_local unsigned rnd_initialized = 0;/static unsigned rnd_initialized = 0;/' \
+        lib/random.c
+    patch_require_fixed "GnuTLS no-pthread random TLS patch" "static unsigned rnd_initialized = 0;" lib/random.c
+    patch_perl "GnuTLS no-pthread FIPS TLS patch" \
+        's/static _Thread_local gnutls_fips_mode_t _tfips_mode = -1;/static gnutls_fips_mode_t _tfips_mode = -1;/; s/static _Thread_local gnutls_fips140_context_t _tfips_context = NULL;/static gnutls_fips140_context_t _tfips_context = NULL;/' \
+        lib/fips.c
+    patch_require_fixed "GnuTLS no-pthread FIPS TLS patch" "static gnutls_fips_mode_t _tfips_mode = -1;" lib/fips.c
+    patch_require_fixed "GnuTLS no-pthread FIPS TLS patch" "static gnutls_fips140_context_t _tfips_context = NULL;" lib/fips.c
     env PKG_CONFIG_PATH="$SAMBA4X_DEPS/lib/pkgconfig" \
         PKG_CONFIG_LIBDIR="$SAMBA4X_DEPS/lib/pkgconfig" \
         PKG_CONFIG_SYSROOT_DIR= \
@@ -487,9 +484,9 @@ if [ "$SDK_FAMILY" = "netbsd4" ]; then
     export CXX="$TOOLDIR/bin/$TRIPLE-g++"
     export CPP="$TOOLDIR/bin/$TRIPLE-cpp"
     export LD="$TOOLDIR/bin/$TRIPLE-ld"
-    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -fcommon -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu -isystem $SAMBA4X_DEPS/include -isystem $DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_NETBSD4_COMPAT=1"
+    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -fcommon -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu -isystem $SAMBA4X_DEPS/include -isystem $DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_NETBSD4_COMPAT=1 -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1"
     export CXXFLAGS="$CFLAGS"
-    export CPPFLAGS="-isystem $SAMBA4X_DEPS/include -isystem $DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_NETBSD4_COMPAT=1"
+    export CPPFLAGS="-isystem $SAMBA4X_DEPS/include -isystem $DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_NETBSD4_COMPAT=1 -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1"
     SAMBA4X_NETBSD4_BASE_LDFLAGS="-Wl,-Bstatic -static -L$SAMBA4X_DEPS/lib -L$DESTDIR/lib -L$DESTDIR/usr/lib -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu"
     SAMBA4X_SHARED_LDFLAGS_LIST="'-L$SAMBA4X_DEPS/lib', '-L$DESTDIR/lib', '-L$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib/csu'"
     SAMBA4X_NETBSD4_FINAL_LDFLAGS="$SAMBA4X_NETBSD4_BASE_LDFLAGS"
@@ -505,9 +502,9 @@ else
     export CXX="$TOOLDIR/bin/$TRIPLE-g++ --sysroot=$SYSROOT"
     export CPP="$TOOLDIR/bin/$TRIPLE-cpp --sysroot=$SYSROOT"
     export LD="$TOOLDIR/bin/$TRIPLE-ld --sysroot=$SYSROOT"
-    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -fcommon -I$SAMBA4X_DEPS/include"
+    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -fcommon -I$SAMBA4X_DEPS/include -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1"
     export CXXFLAGS="$CFLAGS"
-    export CPPFLAGS="-I$SAMBA4X_DEPS/include -I$SYSROOT/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES"
+    export CPPFLAGS="-I$SAMBA4X_DEPS/include -I$SYSROOT/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1"
     SAMBA4X_SHARED_LDFLAGS_LIST="'-L$SAMBA4X_DEPS/lib', '-L$SYSROOT/lib', '-L$SYSROOT/usr/lib'"
     SAMBA4X_FINAL_LDFLAGS_LIST="'-Wl,-Bstatic', '-static', '-Wl,--gc-sections', '-Wl,-Map=$MAP_FILE', '-L$SAMBA4X_DEPS/lib', '-L$SYSROOT/lib', '-L$SYSROOT/usr/lib'"
     SAMBA4X_FINAL_LINKFLAGS="$SAMBA4X_FINAL_LDFLAGS_LIST"
@@ -593,7 +590,7 @@ SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_
       --without-winbind \
       --without-utmp \
       --without-syslog \
-      --nonshared-binary=smbd/smbd"
+      --nonshared-binary=smbd/smbd,samba-dcerpcd,rpcd_classic"
 
     if [ -n "$SAMBA4X_STATIC_MODULES" ]; then
         CONFIGURE_ARGS="$CONFIGURE_ARGS --with-static-modules=$SAMBA4X_STATIC_MODULES"
@@ -607,9 +604,10 @@ SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_
     for cache_file in "$SAMBA4X_SRC_DIR"/bin/c4che/*.py; do
         [ -f "$cache_file" ] || continue
         # Waf configure runs on the VM while targeting the Time Capsule. Keep
-        # these generated cache values deterministic and target-safe: NetBSD
-        # 6/7 need static smbd link flags, while NetBSD4 also needs pthread and
-        # stack-protector detections scrubbed after configure.
+        # these generated cache values deterministic and target-safe: smbd and
+        # the RPC helper binaries need the same static link path, while NetBSD4
+        # also needs pthread and stack-protector detections scrubbed after
+        # configure.
         set_waf_cache_value "$cache_file" "HOST_CFLAGS" "'$HOST_CFLAGS'"
         set_waf_cache_value "$cache_file" "HOST_CPPFLAGS" "'$HOST_CPPFLAGS'"
         set_waf_cache_value "$cache_file" "ENABLE_PIE" "False"
@@ -623,9 +621,8 @@ SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_
         set_waf_cache_value "$cache_file" "SMBD_STATIC_FULLSTATIC_MARKER" "'-static'"
         if [ "$NO_PTHREADS" = "1" ]; then
             # The appliance smbd is built as a small static single-process
-            # server. Remove pthread results from waf's cache so NetBSD4 does
-            # not link unavailable APIs; NetBSD6/7 use the same no-pthread
-            # configuration unless NO_PTHREADS is overridden.
+            # server. Remove pthread results from waf's cache so neither
+            # NetBSD4 nor NetBSD6/7 link unavailable APIs.
             set_waf_cache_value "$cache_file" "HAVE_PTHREAD" "()"
             set_waf_cache_value "$cache_file" "HAVE_PTHREAD_CREATE" "()"
             set_waf_cache_value "$cache_file" "HAVE_PTHREAD_ATTR_INIT" "()"
@@ -654,6 +651,12 @@ SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_
         set_waf_cache_value "$cache_file" "HAVE_BACKTRACE" "()"
         set_waf_cache_value "$cache_file" "HAVE_BACKTRACE_SYMBOLS" "()"
         set_waf_cache_value "$cache_file" "HAVE_EXECINFO_H" "()"
+        # The Time Capsule static appliance binary runs on old NetBSD libc.
+        # Samba only uses process titles for ps/debug labels, while NetBSD's
+        # libc setproctitle path aborts in smbd helper children during startup.
+        # Force lib/replace's no-op fallback so notifyd/cleanupd can start.
+        set_waf_cache_value "$cache_file" "HAVE_SETPROCTITLE" "()"
+        set_waf_cache_value "$cache_file" "HAVE_SETPROCTITLE_INIT" "()"
         set_waf_cache_value "$cache_file" "FULLSTATIC" "True"
     done
 
@@ -678,6 +681,10 @@ SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_
         undef_config_symbol "$config_header" "HAVE_EXECINFO_H"
         undef_config_symbol "$config_header" "HAVE_BACKTRACE"
         undef_config_symbol "$config_header" "HAVE_BACKTRACE_SYMBOLS"
+        # Keep config.h aligned with the waf cache override above. This trades
+        # cosmetic process titles for reliable startup on NetBSD4 and 6/7.
+        undef_config_symbol "$config_header" "HAVE_SETPROCTITLE"
+        undef_config_symbol "$config_header" "HAVE_SETPROCTITLE_INIT"
     done
 
     if [ "$SDK_FAMILY" = "netbsd4" ] && [ "$SAMBA4X_NETBSD4_GC_SECTIONS" = "1" ]; then
@@ -685,32 +692,54 @@ SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_
         echo "Final NetBSD4 build LDFLAGS=$LDFLAGS"
     fi
 
-    PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf -v -j"$SAMBA4X_JOBS" build --targets=smbd/smbd
+    PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf -v -j"$SAMBA4X_JOBS" build --targets=smbd/smbd,samba-dcerpcd,rpcd_classic
 
-    SAMBA4X_SMBD="$(find "$SAMBA4X_SRC_DIR/bin" -path '*/source3/smbd/smbd' | head -n1)"
-    if [ -z "$SAMBA4X_SMBD" ] || [ ! -f "$SAMBA4X_SMBD" ]; then
-        echo "Unable to locate built Samba 4.x smbd under $SAMBA4X_SRC_DIR/bin"
-        exit 1
-    fi
+    stage_samba4x_binary() {
+        label=$1
+        source_glob=$2
+        stage_path=$3
+        stripped_path=$4
 
-    SAMBA4X_FILE_OUTPUT="$("$TOOLDIR/bin/nbfile" "$SAMBA4X_SMBD" 2>&1 || true)"
-    echo "$SAMBA4X_FILE_OUTPUT"
-    if "$TOOLDIR/bin/$TRIPLE-objdump" -p "$SAMBA4X_SMBD" | grep -Eq '^[[:space:]]+(INTERP|DYNAMIC)'; then
-        echo "Samba 4.x smbd has dynamic ELF headers; refusing to stage it."
-        exit 1
-    fi
-    dump_elf_notes "built smbd" "$SAMBA4X_SMBD"
-    validate_netbsd4_notes "$SAMBA4X_SMBD"
+        built_path="$(find "$SAMBA4X_SRC_DIR/bin" -path "$source_glob" | head -n1)"
+        if [ -z "$built_path" ] || [ ! -f "$built_path" ]; then
+            echo "Unable to locate built Samba 4.x $label under $SAMBA4X_SRC_DIR/bin"
+            exit 1
+        fi
 
-    mkdir -p "$SAMBA4X_STAGE/sbin"
-    cp "$SAMBA4X_SMBD" "$SAMBA4X_STAGE/sbin/smbd"
-    cp "$SAMBA4X_SMBD" "$SAMBA4X_STAGE/sbin/smbd.stripped"
-    "$STRIP" --strip-unneeded "$SAMBA4X_STAGE/sbin/smbd.stripped"
-    validate_netbsd4_notes "$SAMBA4X_STAGE/sbin/smbd.stripped"
-    dump_elf_notes "staged stripped smbd" "$SAMBA4X_STAGE/sbin/smbd.stripped"
+        "$TOOLDIR/bin/nbfile" "$built_path" 2>&1 || true
+        if "$TOOLDIR/bin/$TRIPLE-objdump" -p "$built_path" | grep -Eq '^[[:space:]]+(INTERP|DYNAMIC)'; then
+            echo "Samba 4.x $label has dynamic ELF headers; refusing to stage it."
+            exit 1
+        fi
+        dump_elf_notes "built $label" "$built_path"
+        validate_netbsd4_notes "$built_path"
+
+        mkdir -p "$(dirname "$stage_path")"
+        cp "$built_path" "$stage_path"
+        cp "$built_path" "$stripped_path"
+        "$STRIP" --strip-unneeded "$stripped_path"
+        validate_netbsd4_notes "$stripped_path"
+        dump_elf_notes "staged stripped $label" "$stripped_path"
+    }
+
+    # smbd alone can serve direct tree connects, but Samba 4.24's srvsvc named
+    # pipe path starts samba-dcerpcd, which in turn execs rpcd_classic. The
+    # patched helper exposes only the lightweight file-server RPC endpoints that
+    # this appliance needs for share enumeration.
+    stage_samba4x_binary "smbd" '*/source3/smbd/smbd' \
+        "$SAMBA4X_STAGE/sbin/smbd" \
+        "$SAMBA4X_STAGE/sbin/smbd.stripped"
+    stage_samba4x_binary "samba-dcerpcd" '*/source3/rpc_server/samba-dcerpcd' \
+        "$SAMBA4X_STAGE/libexec/samba-dcerpcd" \
+        "$SAMBA4X_STAGE/libexec/samba-dcerpcd.stripped"
+    stage_samba4x_binary "rpcd_classic" '*/source3/rpc_server/rpcd_classic' \
+        "$SAMBA4X_STAGE/libexec/rpcd_classic" \
+        "$SAMBA4X_STAGE/libexec/rpcd_classic.stripped"
 } >"$SAMBA4X_LOG" 2>&1
 
 printf 'Samba 4.x build complete.\n'
 printf 'Log: %s\n' "$SAMBA4X_LOG"
 printf 'Regular binary: %s\n' "$SAMBA4X_STAGE/sbin/smbd"
 printf 'Stripped binary: %s\n' "$SAMBA4X_STAGE/sbin/smbd.stripped"
+printf 'Stripped RPC supervisor: %s\n' "$SAMBA4X_STAGE/libexec/samba-dcerpcd.stripped"
+printf 'Stripped classic RPC helper: %s\n' "$SAMBA4X_STAGE/libexec/rpcd_classic.stripped"

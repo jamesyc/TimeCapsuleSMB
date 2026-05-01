@@ -1,0 +1,40 @@
+diff --git a/lib/tevent/tevent_req.c b/lib/tevent/tevent_req.c
+--- a/lib/tevent/tevent_req.c
++++ b/lib/tevent/tevent_req.c
+@@ -95,9 +95,19 @@ struct tevent_req *__tevent_req_create(TALLOC_CTX *mem_ctx,
+ 		return NULL;
+ 	}
+ 
++#ifdef HAVE_PTHREAD
+ 	req = talloc_pooled_object(
+ 		mem_ctx, struct tevent_req, 2,
+ 		sizeof(struct tevent_immediate) + data_size);
++#else
++	/*
++	 * The Time Capsule smbd build is static and has pthread support removed
++	 * after configure. Avoid tevent's pooled request allocation in that mode:
++	 * notifyd's first long-lived request aborts in the pool path on these old
++	 * NetBSD targets, while ordinary talloc children are sufficient here.
++	 */
++	req = talloc_zero(mem_ctx, struct tevent_req);
++#endif
+ 	if (req == NULL) {
+ 		return NULL;
+ 	}
+@@ -114,10 +124,13 @@ struct tevent_req *__tevent_req_create(TALLOC_CTX *mem_ctx,
+ 	data = talloc_zero_size(req, data_size);
+ 
+ 	/*
+-	 * No need to check for req->internal.trigger!=NULL or
+-	 * data!=NULL, this can't fail: talloc_pooled_object has
+-	 * already allocated sufficient memory.
++	 * The pooled pthread path has already allocated enough memory, but the
++	 * no-pthread appliance fallback above uses ordinary talloc children.
+ 	 */
++	if (req->internal.trigger == NULL || data == NULL) {
++		TALLOC_FREE(req);
++		return NULL;
++	}
+ 
+ 	talloc_set_name_const(data, type);
+ 

@@ -1,0 +1,43 @@
+diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
+--- a/source3/modules/vfs_default.c
++++ b/source3/modules/vfs_default.c
+@@ -837,25 +837,23 @@ static int vfswrap_openat(vfs_handle_struct *handle,
+ 				 smb_fname->base_name,
+ 				 &linux_how,
+ 				 sizeof(linux_how));
+-		if (result == -1) {
+-			if (errno == ENOSYS) {
+-				/*
+-				 * The kernel doesn't support
+-				 * openat2(), so indicate to
+-				 * the callers that
+-				 * VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS
+-				 * or VFS_OPEN_HOW_RESOLVE_NO_XDEV
+-				 * would just be a waste of time.
+-				 */
+-				fsp->conn->open_how_resolve &=
+-					~VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS;
+-				fsp->conn->open_how_resolve &=
+-					~VFS_OPEN_HOW_RESOLVE_NO_XDEV;
+-			}
++		if (result != -1) {
++			goto done;
++		}
++		if (errno != ENOSYS) {
+ 			goto out;
+ 		}
+ 
+-		goto done;
++		/*
++		 * NetBSD has no openat2() equivalent for these constraints.
++		 * Disable them for future opens and immediately continue to
++		 * the ordinary openat() fallback. Some smbd paths, including
++		 * share root connection, do not retry after an ENOSYS return.
++		 */
++		fsp->conn->open_how_resolve &=
++			~VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS;
++		fsp->conn->open_how_resolve &=
++			~VFS_OPEN_HOW_RESOLVE_NO_XDEV;
+ 	}
+ 
+ 	if (fsp->fsp_flags.is_pathref && !have_opath) {

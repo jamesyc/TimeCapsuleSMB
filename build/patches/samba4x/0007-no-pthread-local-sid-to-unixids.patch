@@ -1,0 +1,32 @@
+diff --git a/source3/passdb/lookup_sid.c b/source3/passdb/lookup_sid.c
+index 0204a87..a32564d 100644
+--- a/source3/passdb/lookup_sid.c
++++ b/source3/passdb/lookup_sid.c
+@@ -1445,6 +1445,19 @@ bool sids_to_unixids(const struct dom_sid *sids, uint32_t num_sids,
+ 	 * via wbcSidsToUnixIds().
+ 	 */
+ 
++#ifndef HAVE_PTHREAD
++	/*
++	 * Time Capsule targets run smbd as a static no-pthread appliance
++	 * binary and do not launch winbindd. Calling into libwbclient for the
++	 * remaining Windows SIDs can abort during parent startup while building
++	 * the guest token. The first pass above already handles Unix Users and
++	 * Unix Groups SIDs; the legacy pass below still handles local mappings.
++	 * Any unresolved Windows SIDs remain ID_TYPE_NOT_SPECIFIED, which
++	 * create_local_token() already ignores when building supplementary Unix
++	 * gids.
++	 */
++	DEBUG(5, ("Skipping wbcSidsToUnixIds in no-pthread Time Capsule build\n"));
++#else
+ 	wbc_ids_size = num_not_cached;
+ 	wbc_ids = talloc_array(talloc_tos(), struct wbcUnixId, wbc_ids_size);
+ 	if (wbc_ids == NULL) {
+@@ -1507,6 +1520,7 @@ bool sids_to_unixids(const struct dom_sid *sids, uint32_t num_sids,
+ 		}
+ 		num_not_cached += 1;
+ 	}
++#endif
+ 
+ 	/*
+ 	 * Third and final time through the SID array,

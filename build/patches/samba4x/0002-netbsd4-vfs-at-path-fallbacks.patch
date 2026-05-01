@@ -6,11 +6,11 @@ index 480886d..467e3db 100644
  	return NT_STATUS_OK;
  }
  
-+#ifdef TC_SAMBA4X_NETBSD4_COMPAT
-+static char *tc_netbsd4_at_path(TALLOC_CTX *mem_ctx,
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
++static char *tc_netbsd_at_path(TALLOC_CTX *mem_ctx,
 +				const struct files_struct *dirfsp,
 +				const struct smb_filename *smb_fname);
-+static int tc_netbsd4_validate_opened_directory(files_struct *fsp, int fd);
++static int tc_netbsd_validate_opened_directory(files_struct *fsp, int fd);
 +#endif
 +
  static NTSTATUS vfswrap_create_dfs_pathat(struct vfs_handle_struct *handle,
@@ -20,9 +20,9 @@ index 480886d..467e3db 100644
  		goto out;
  	}
  
-+#ifdef TC_SAMBA4X_NETBSD4_COMPAT
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
 +	{
-+		char *path = tc_netbsd4_at_path(frame, dirfsp, smb_fname);
++		char *path = tc_netbsd_at_path(frame, dirfsp, smb_fname);
 +		if (path == NULL) {
 +			status = map_nt_error_from_unix(errno);
 +			goto out;
@@ -41,9 +41,9 @@ index 480886d..467e3db 100644
  		}
  	}
  
-+#ifdef TC_SAMBA4X_NETBSD4_COMPAT
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
 +	{
-+		char *path = tc_netbsd4_at_path(mem_ctx, dirfsp, smb_fname);
++		char *path = tc_netbsd_at_path(mem_ctx, dirfsp, smb_fname);
 +		if (path == NULL) {
 +			status = map_nt_error_from_unix(errno);
 +			goto err;
@@ -64,9 +64,9 @@ index 480886d..467e3db 100644
  		goto err;
  	}
  
-+#ifdef TC_SAMBA4X_NETBSD4_COMPAT
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
 +	{
-+		char *path = tc_netbsd4_at_path(mem_ctx, dirfsp, smb_fname);
++		char *path = tc_netbsd_at_path(mem_ctx, dirfsp, smb_fname);
 +		if (path == NULL) {
 +			status = map_nt_error_from_unix(errno);
 +			goto err;
@@ -90,18 +90,18 @@ index 480886d..467e3db 100644
  	END_PROFILE_X(syscall_rewinddir);
  }
  
-+#ifdef TC_SAMBA4X_NETBSD4_COMPAT
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
 +/*
-+ * NetBSD4 lacks the *at syscall family that Samba 4.24's new source3 VFS
-+ * expects. NetBSD 6/7 builds do not compile these branches and keep using the
-+ * native *at syscalls.
++ * Time Capsule runtimes are older than the NetBSD SDKs used to build Samba,
++ * so source3 can see *at/openat2 support at compile time that is missing or
++ * incomplete on-device. Use path-aware fallbacks for every appliance target.
 + *
 + * Do not emulate relative dirfd operations in lib/replace: a raw fd is not
 + * enough to reconstruct a share-relative path safely. The default VFS layer
 + * still has both dirfsp and smb_filename, so it can use Samba's own
 + * full_path_from_dirfsp_at_basename() helper and call older NetBSD syscalls.
 + */
-+static char *tc_netbsd4_at_path(TALLOC_CTX *mem_ctx,
++static char *tc_netbsd_at_path(TALLOC_CTX *mem_ctx,
 +				const struct files_struct *dirfsp,
 +				const struct smb_filename *smb_fname)
 +{
@@ -124,7 +124,7 @@ index 480886d..467e3db 100644
 +	return path;
 +}
 +
-+static int tc_netbsd4_validate_opened_directory(files_struct *fsp, int fd)
++static int tc_netbsd_validate_opened_directory(files_struct *fsp, int fd)
 +{
 +	SMB_STRUCT_STAT sbuf;
 +	int ret;
@@ -158,10 +158,10 @@ index 480886d..467e3db 100644
  
  	START_PROFILE_X(SNUM(handle->conn), syscall_mkdirat);
  
-+#ifdef TC_SAMBA4X_NETBSD4_COMPAT
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
 +	{
 +		TALLOC_CTX *frame = talloc_stackframe();
-+		char *path = tc_netbsd4_at_path(frame, dirfsp, smb_fname);
++		char *path = tc_netbsd_at_path(frame, dirfsp, smb_fname);
 +		if (path == NULL) {
 +			result = -1;
 +		} else {
@@ -175,26 +175,25 @@ index 480886d..467e3db 100644
  
  	END_PROFILE_X(syscall_mkdirat);
  	return result;
-@@ -663,6 +781,41 @@ static int vfswrap_openat(vfs_handle_struct *handle,
+@@ -663,6 +781,40 @@ static int vfswrap_openat(vfs_handle_struct *handle,
  	}
  #endif
  
-+#ifdef TC_SAMBA4X_NETBSD4_COMPAT
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
 +	if (how->resolve & VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS ||
 +	    how->resolve & VFS_OPEN_HOW_RESOLVE_NO_XDEV)
 +	{
 +		/*
-+		 * NetBSD4 has no openat2() equivalent for these constraints.
-+		 * Match Samba's existing ENOSYS path so upper layers stop
-+		 * requesting them and retry with the normal open path.
++		 * These NetBSD appliance runtimes have no openat2() equivalent
++		 * for these constraints.
++		 * Disable them for future opens and immediately use the normal
++		 * path-based open fallback. Some smbd paths, including share
++		 * root connection, do not retry after an ENOSYS return here.
 +		 */
 +		fsp->conn->open_how_resolve &=
 +			~VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS;
 +		fsp->conn->open_how_resolve &=
 +			~VFS_OPEN_HOW_RESOLVE_NO_XDEV;
-+		errno = ENOSYS;
-+		result = -1;
-+		goto out;
 +	}
 +
 +	if (fsp->fsp_flags.is_pathref) {
@@ -204,12 +203,12 @@ index 480886d..467e3db 100644
 +
 +	{
 +		TALLOC_CTX *frame = talloc_stackframe();
-+		char *path = tc_netbsd4_at_path(frame, dirfsp, smb_fname);
++		char *path = tc_netbsd_at_path(frame, dirfsp, smb_fname);
 +		if (path == NULL) {
 +			result = -1;
 +		} else {
 +			result = open(path, flags, mode);
-+			result = tc_netbsd4_validate_opened_directory(fsp, result);
++			result = tc_netbsd_validate_opened_directory(fsp, result);
 +		}
 +		TALLOC_FREE(frame);
 +	}
@@ -229,7 +228,7 @@ index 480886d..467e3db 100644
  		flags |= RENAME_NOREPLACE;
  	}
  
-+#ifdef TC_SAMBA4X_NETBSD4_COMPAT
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
 +	if (flags != 0) {
 +		/*
 +		 * Samba's create-directory path expects EINVAL when
@@ -240,8 +239,8 @@ index 480886d..467e3db 100644
 +		result = -1;
 +	} else {
 +		TALLOC_CTX *frame = talloc_stackframe();
-+		char *src = tc_netbsd4_at_path(frame, src_dirfsp, smb_fname_src);
-+		char *dst = tc_netbsd4_at_path(frame, dst_dirfsp, smb_fname_dst);
++		char *src = tc_netbsd_at_path(frame, src_dirfsp, smb_fname_src);
++		char *dst = tc_netbsd_at_path(frame, dst_dirfsp, smb_fname_dst);
 +		if (src == NULL || dst == NULL) {
 +			result = -1;
 +		} else {
@@ -263,10 +262,10 @@ index 480886d..467e3db 100644
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
-+#ifdef TC_SAMBA4X_NETBSD4_COMPAT
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
 +	{
 +		TALLOC_CTX *frame = talloc_stackframe();
-+		char *path = tc_netbsd4_at_path(frame, dirfsp, smb_fname);
++		char *path = tc_netbsd_at_path(frame, dirfsp, smb_fname);
 +		if (path == NULL) {
 +			result = -1;
 +		} else if ((flags & ~AT_SYMLINK_NOFOLLOW) != 0) {
@@ -300,10 +299,10 @@ index 480886d..467e3db 100644
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
-+#ifdef TC_SAMBA4X_NETBSD4_COMPAT
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
 +	{
 +		TALLOC_CTX *frame = talloc_stackframe();
-+		char *path = tc_netbsd4_at_path(frame, dirfsp, smb_fname);
++		char *path = tc_netbsd_at_path(frame, dirfsp, smb_fname);
 +		if (path == NULL) {
 +			result = -1;
 +		} else if ((flags & AT_REMOVEDIR) != 0) {
@@ -325,10 +324,10 @@ index 480886d..467e3db 100644
  
  	SMB_ASSERT(!is_named_stream(new_smb_fname));
  
-+#ifdef TC_SAMBA4X_NETBSD4_COMPAT
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
 +	{
 +		TALLOC_CTX *frame = talloc_stackframe();
-+		char *path = tc_netbsd4_at_path(frame, dirfsp, new_smb_fname);
++		char *path = tc_netbsd_at_path(frame, dirfsp, new_smb_fname);
 +		if (path == NULL) {
 +			result = -1;
 +		} else {
@@ -348,10 +347,10 @@ index 480886d..467e3db 100644
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
-+#ifdef TC_SAMBA4X_NETBSD4_COMPAT
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
 +	{
 +		TALLOC_CTX *frame = talloc_stackframe();
-+		char *path = tc_netbsd4_at_path(frame, dirfsp, smb_fname);
++		char *path = tc_netbsd_at_path(frame, dirfsp, smb_fname);
 +		if (path == NULL) {
 +			result = -1;
 +		} else {
@@ -372,14 +371,14 @@ index 480886d..467e3db 100644
  	SMB_ASSERT(!is_named_stream(old_smb_fname));
  	SMB_ASSERT(!is_named_stream(new_smb_fname));
  
-+#ifdef TC_SAMBA4X_NETBSD4_COMPAT
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
 +	if (flags != 0) {
 +		errno = ENOSYS;
 +		result = -1;
 +	} else {
 +		TALLOC_CTX *frame = talloc_stackframe();
-+		char *oldpath = tc_netbsd4_at_path(frame, src_dirfsp, old_smb_fname);
-+		char *newpath = tc_netbsd4_at_path(frame, dst_dirfsp, new_smb_fname);
++		char *oldpath = tc_netbsd_at_path(frame, src_dirfsp, old_smb_fname);
++		char *newpath = tc_netbsd_at_path(frame, dst_dirfsp, new_smb_fname);
 +		if (oldpath == NULL || newpath == NULL) {
 +			result = -1;
 +		} else {
@@ -401,10 +400,10 @@ index 480886d..467e3db 100644
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
-+#ifdef TC_SAMBA4X_NETBSD4_COMPAT
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
 +	{
 +		TALLOC_CTX *frame = talloc_stackframe();
-+		char *path = tc_netbsd4_at_path(frame, dirfsp, smb_fname);
++		char *path = tc_netbsd_at_path(frame, dirfsp, smb_fname);
 +		if (path == NULL) {
 +			result = -1;
 +		} else {
