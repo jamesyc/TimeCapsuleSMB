@@ -8,7 +8,9 @@ from timecapsulesmb.device.probe import ProbedDeviceState, RemoteInterfaceCandid
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoveryDiagnostics,
     BonjourDiscoverySnapshot,
+    BonjourPtrRecordObservation,
     BonjourResolvedService,
+    BonjourServiceEvent,
     BonjourServiceInstance,
 )
 from timecapsulesmb.discovery.native_dns_sd import (
@@ -79,9 +81,41 @@ def _(value: BonjourResolvedService) -> dict[str, object]:
     return summary
 
 
+def _bonjour_service_event_summary(value: BonjourServiceEvent) -> dict[str, object]:
+    return {
+        "service_type": _truncate_debug_text(value.service_type),
+        "state": _truncate_debug_text(value.state),
+        "name": _truncate_debug_text(value.name),
+        "fullname": _truncate_debug_text(value.fullname),
+        "elapsed_sec": value.elapsed_sec,
+    }
+
+
+def _bonjour_ptr_record_summary(value: BonjourPtrRecordObservation) -> dict[str, object]:
+    return {
+        "service_type": _truncate_debug_text(value.service_type),
+        "alias": _truncate_debug_text(value.alias),
+        "alias_name": _truncate_debug_text(value.alias_name),
+        "ttl": value.ttl,
+        "expired": value.expired,
+        "old_record_present": value.old_record_present,
+        "elapsed_sec": value.elapsed_sec,
+    }
+
+
 @debug_summary.register
 def _(value: BonjourServiceInstance) -> dict[str, object]:
     return _bonjour_instance_summary(value)
+
+
+@debug_summary.register
+def _(value: BonjourServiceEvent) -> dict[str, object]:
+    return _bonjour_service_event_summary(value)
+
+
+@debug_summary.register
+def _(value: BonjourPtrRecordObservation) -> dict[str, object]:
+    return _bonjour_ptr_record_summary(value)
 
 
 @debug_summary.register
@@ -96,12 +130,15 @@ def _(value: BonjourDiscoverySnapshot) -> dict[str, object]:
 
 @debug_summary.register
 def _(value: BonjourDiscoveryDiagnostics) -> dict[str, object]:
-    return {
+    summary: dict[str, object] = {
         "service": value.service,
         "service_types": list(value.service_types),
         "timeout_sec": value.timeout_sec,
         "elapsed_sec": value.elapsed_sec,
         "ip_version": value.ip_version,
+        "zeroconf_version": value.zeroconf_version,
+        "zeroconf_interfaces": value.zeroconf_interfaces,
+        "zeroconf_apple_p2p": value.zeroconf_apple_p2p,
         "instance_count": value.instance_count,
         "resolved_count": value.resolved_count,
         "pending_count": value.pending_count,
@@ -110,9 +147,16 @@ def _(value: BonjourDiscoveryDiagnostics) -> dict[str, object]:
         "resolve_attempt_count": value.resolve_attempt_count,
         "resolve_success_count": value.resolve_success_count,
         "resolve_error_count": value.resolve_error_count,
+        "service_event_count": len(value.service_events),
+        "ptr_record_count": len(value.ptr_records),
         "instances": [_bonjour_instance_summary(instance) for instance in _debug_limited(value.instances)],
         "resolved": [_bonjour_record_summary(record) for record in _debug_limited(value.resolved)],
+        "service_events": [_bonjour_service_event_summary(event) for event in _debug_limited(value.service_events)],
+        "ptr_records": [_bonjour_ptr_record_summary(record) for record in _debug_limited(value.ptr_records)],
     }
+    if value.ptr_record_error:
+        summary["ptr_record_error"] = _truncate_debug_text(value.ptr_record_error, MAX_DEBUG_ERROR_TEXT)
+    return summary
 
 
 def _native_dns_sd_event_summary(value: NativeDnsSdServiceEvent) -> dict[str, object]:

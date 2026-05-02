@@ -4,9 +4,10 @@ import ipaddress
 import socket
 import threading
 import time
-from dataclasses import asdict, dataclass, field
-from typing import Any
 from collections.abc import Sequence
+from dataclasses import asdict, dataclass, field
+from importlib.metadata import PackageNotFoundError, version
+from typing import Any
 
 
 SERVICE_TYPES = [
@@ -22,6 +23,7 @@ DEFAULT_BROWSE_TIMEOUT_SEC = 6.0
 PENDING_RESOLVE_INTERVAL_SEC = 0.5
 PENDING_RESOLVE_TIMEOUT_MS = 500
 FINAL_PENDING_RESOLVE_TIMEOUT_MS = 3000
+MAX_DIAGNOSTIC_OBSERVATIONS = 100
 
 
 @dataclass
@@ -62,6 +64,26 @@ class BonjourDiscoverySnapshot:
 
 
 @dataclass
+class BonjourServiceEvent:
+    service_type: str
+    state: str
+    name: str
+    fullname: str
+    elapsed_sec: float
+
+
+@dataclass
+class BonjourPtrRecordObservation:
+    service_type: str
+    alias: str
+    alias_name: str
+    ttl: int
+    expired: bool
+    old_record_present: bool
+    elapsed_sec: float
+
+
+@dataclass
 class BonjourDiscoveryDiagnostics:
     service: str | None
     service_types: list[str]
@@ -76,8 +98,14 @@ class BonjourDiscoveryDiagnostics:
     resolve_attempt_count: int
     resolve_success_count: int
     resolve_error_count: int
+    zeroconf_version: str = ""
+    zeroconf_interfaces: str = "All"
+    zeroconf_apple_p2p: bool = False
     instances: list[BonjourServiceInstance] = field(default_factory=list)
     resolved: list[BonjourResolvedService] = field(default_factory=list)
+    service_events: list[BonjourServiceEvent] = field(default_factory=list)
+    ptr_records: list[BonjourPtrRecordObservation] = field(default_factory=list)
+    ptr_record_error: str | None = None
 
 
 Discovered = BonjourResolvedService
@@ -189,14 +217,47 @@ def _matching_service_types(service: str | None = None) -> list[str]:
     return [candidate]
 
 
+def _append_bounded(values: list[Any], value: Any, limit: int = MAX_DIAGNOSTIC_OBSERVATIONS) -> None:
+    if len(values) < limit:
+        values.append(value)
+
+
+def _elapsed_since(start_time: float) -> float:
+    return round(max(0.0, time.monotonic() - start_time), 3)
+
+
+def _state_change_name(state_change: Any) -> str:
+    name = getattr(state_change, "name", None)
+    if isinstance(name, str) and name:
+        return name
+    text = str(state_change)
+    return text.rsplit(".", 1)[-1] if text else ""
+
+
+def _installed_zeroconf_version() -> str:
+    try:
+        return version("zeroconf")
+    except PackageNotFoundError:
+        pass
+    try:
+        import zeroconf
+
+        value = getattr(zeroconf, "__version__", "")
+    except Exception:
+        return ""
+    return value if isinstance(value, str) else ""
+
+
 class Collector:
-    def __init__(self, zc: Any, services: list[str]):
+    def __init__(self, zc: Any, services: list[str], *, start_time: float | None = None):
         self.zc = zc
         self.services = services
+        self.start_time = time.monotonic() if start_time is None else start_time
         self.lock = threading.Lock()
         self.instances: dict[tuple[str, str], BonjourServiceInstance] = {}
         self.observations: dict[tuple[str, str, str], ServiceObservation] = {}
         self.pending: set[tuple[str, str]] = set()
+        self.events: list[BonjourServiceEvent] = []
         self._browsers: list[Any] = []
         self.service_added_count = 0
         self.service_updated_count = 0
@@ -213,6 +274,16 @@ class Collector:
 
     def _on_service_state_change(self, *, zeroconf: Any, service_type: str, name: str, state_change: Any) -> None:
         from zeroconf import ServiceStateChange
+
+        event = BonjourServiceEvent(
+            service_type=service_type,
+            state=_state_change_name(state_change),
+            name=_display_name(name, service_type),
+            fullname=name,
+            elapsed_sec=_elapsed_since(self.start_time),
+        )
+        with self.lock:
+            _append_bounded(self.events, event)
 
         if state_change is ServiceStateChange.Added or state_change is ServiceStateChange.Updated:
             instance = BonjourServiceInstance(
@@ -231,6 +302,10 @@ class Collector:
     def service_instances(self) -> list[BonjourServiceInstance]:
         with self.lock:
             return list(self.instances.values())
+
+    def service_events(self) -> list[BonjourServiceEvent]:
+        with self.lock:
+            return list(self.events)
 
     def resolve_pending(self, timeout_ms: int = FINAL_PENDING_RESOLVE_TIMEOUT_MS) -> None:
         with self.lock:
@@ -303,6 +378,88 @@ class Collector:
     def pending_count(self) -> int:
         with self.lock:
             return len(self.pending)
+
+
+class PtrRecordObserver:
+    def __init__(self, services: list[str], *, start_time: float):
+        self.services = set(services)
+        self.start_time = start_time
+        self.lock = threading.Lock()
+        self.records: list[BonjourPtrRecordObservation] = []
+        self.error: str | None = None
+        self._registered = False
+
+    def start(self, zc: Any) -> None:
+        try:
+            from zeroconf import DNSQuestion
+            from zeroconf.const import _CLASS_IN, _TYPE_PTR
+
+            questions = [
+                DNSQuestion(service_type, _TYPE_PTR, _CLASS_IN)
+                for service_type in sorted(self.services)
+            ]
+            zc.add_listener(self, questions)
+            self._registered = True
+        except Exception as e:
+            self.error = f"{type(e).__name__}: {e}"
+
+    def stop(self, zc: Any) -> None:
+        if not self._registered:
+            return
+        try:
+            zc.remove_listener(self)
+        except Exception:
+            pass
+
+    def async_update_records(self, zc: Any, now: float, records: list[Any]) -> None:
+        for update in records:
+            record = getattr(update, "new", update)
+            if record is None:
+                continue
+            if getattr(record, "type", None) != 12:
+                continue
+            service_type = str(getattr(record, "name", "") or "")
+            if service_type not in self.services:
+                continue
+            alias = str(getattr(record, "alias", "") or "")
+            old_record = getattr(update, "old", None)
+            observation = BonjourPtrRecordObservation(
+                service_type=service_type,
+                alias=alias,
+                alias_name=_display_name(alias, service_type),
+                ttl=int(getattr(record, "ttl", 0) or 0),
+                expired=_record_is_expired(record, now),
+                old_record_present=old_record is not None,
+                elapsed_sec=_elapsed_since(self.start_time),
+            )
+            with self.lock:
+                _append_bounded(self.records, observation)
+
+    def async_update_records_complete(self) -> None:
+        return
+
+    def update_record(self, zc: Any, now: float, *records: Any) -> None:
+        if records:
+            self.async_update_records(zc, now, [records[-1]])
+
+    def observations(self) -> list[BonjourPtrRecordObservation]:
+        with self.lock:
+            return list(self.records)
+
+
+def _record_is_expired(record: Any, now: float) -> bool:
+    is_expired = getattr(record, "is_expired", None)
+    if callable(is_expired):
+        try:
+            return bool(is_expired(now))
+        except TypeError:
+            try:
+                return bool(is_expired())
+            except Exception:
+                pass
+        except Exception:
+            pass
+    return int(getattr(record, "ttl", 0) or 0) <= 0
 
 
 def resolved_service_from_info(stype: str, info: Any) -> BonjourResolvedService:
@@ -406,6 +563,18 @@ def _collector_pending_count(collector: Collector) -> int:
     return len(pending) if isinstance(pending, set) else 0
 
 
+def _collector_service_events(collector: Collector) -> list[BonjourServiceEvent]:
+    service_events = getattr(collector, "service_events", None)
+    if callable(service_events):
+        try:
+            value = service_events()
+        except Exception:
+            return []
+        return list(value) if isinstance(value, list) else []
+    events = getattr(collector, "events", None)
+    return list(events) if isinstance(events, list) else []
+
+
 def discover_snapshot_detailed(
     service: str | None = None,
     timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC,
@@ -413,8 +582,11 @@ def discover_snapshot_detailed(
     service_types = _matching_service_types(service)
     start = time.monotonic()
     zc = _open_zeroconf()
+    ptr_observer: PtrRecordObserver | None = None
     try:
-        collector = Collector(zc, service_types)
+        collector = Collector(zc, service_types, start_time=start)
+        ptr_observer = PtrRecordObserver(service_types, start_time=start)
+        ptr_observer.start(zc)
         collector.start()
         deadline = start + max(0.0, timeout)
         while True:
@@ -426,7 +598,12 @@ def discover_snapshot_detailed(
         collector.resolve_pending(timeout_ms=FINAL_PENDING_RESOLVE_TIMEOUT_MS)
         records = collector.results()
         instances = collector.service_instances()
+        service_events = _collector_service_events(collector)
+        ptr_records = ptr_observer.observations()
+        ptr_record_error = ptr_observer.error
     finally:
+        if ptr_observer is not None:
+            ptr_observer.stop(zc)
         try:
             zc.close()
         except Exception:
@@ -452,8 +629,14 @@ def discover_snapshot_detailed(
         resolve_attempt_count=_collector_int(collector, "resolve_attempt_count"),
         resolve_success_count=_collector_int(collector, "resolve_success_count"),
         resolve_error_count=_collector_int(collector, "resolve_error_count"),
+        zeroconf_version=_installed_zeroconf_version(),
+        zeroconf_interfaces="All",
+        zeroconf_apple_p2p=False,
         instances=sorted_instances,
         resolved=sorted_records,
+        service_events=service_events,
+        ptr_records=ptr_records,
+        ptr_record_error=ptr_record_error,
     )
     return snapshot, diagnostics
 
