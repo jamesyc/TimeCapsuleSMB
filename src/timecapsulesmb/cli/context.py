@@ -14,7 +14,7 @@ from timecapsulesmb.telemetry.debug import debug_summary, render_debug_mapping
 if TYPE_CHECKING:
     from timecapsulesmb.cli.runtime import ManagedTargetState
     from timecapsulesmb.device.compat import DeviceCompatibility
-    from timecapsulesmb.device.probe import ProbedDeviceState
+    from timecapsulesmb.device.probe import ProbedDeviceState, RemoteInterfaceProbeResult
     from timecapsulesmb.telemetry import TelemetryClient
     from timecapsulesmb.transport.ssh import SshConnection
 
@@ -122,6 +122,7 @@ class CommandContext:
         self.debug_stage: str | None = None
         self.debug_fields: dict[str, object] = {}
         self.connection: SshConnection | None = None
+        self.interface_probe: RemoteInterfaceProbeResult | None = None
         self.probe_state: ProbedDeviceState | None = None
         self.compatibility: DeviceCompatibility | None = None
         self._emit_telemetry(started_event, command_id=self.command_id, **fields)
@@ -218,6 +219,28 @@ class CommandContext:
         )
         return self.connection
 
+    def _apply_managed_target_state(self, target: ManagedTargetState) -> ManagedTargetState:
+        self.connection = target.connection
+        self.interface_probe = target.interface_probe
+        if target.probe_state is not None:
+            self.probe_state = target.probe_state
+            self.compatibility = target.probe_state.compatibility
+            if self.compatibility is not None:
+                self.update_fields(
+                    device_os_version=build_device_os_version(
+                        self.compatibility.os_name,
+                        self.compatibility.os_release,
+                        self.compatibility.arch,
+                    ),
+                    device_family=self.compatibility.payload_family,
+                )
+        return target
+
+    def inspect_managed_connection(self, *, iface: str, include_probe: bool = False) -> ManagedTargetState:
+        connection = self.connection if self.connection is not None else self.resolve_env_connection()
+        target = runtime.inspect_managed_connection(connection, iface, include_probe=include_probe)
+        return self._apply_managed_target_state(target)
+
     def resolve_validated_managed_target(self, *, profile: str, include_probe: bool = False) -> ManagedTargetState:
         if self.values is None:
             raise RuntimeError("CommandContext values are not set.")
@@ -227,11 +250,7 @@ class CommandContext:
             profile=profile,
             include_probe=include_probe,
         )
-        self.connection = target.connection
-        if target.probe_state is not None:
-            self.probe_state = target.probe_state
-            self.compatibility = target.probe_state.compatibility
-        return target
+        return self._apply_managed_target_state(target)
 
     def require_compatibility(self) -> DeviceCompatibility:
         if self.connection is None:

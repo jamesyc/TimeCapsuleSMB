@@ -18,7 +18,7 @@ class TemplateBundle:
     smbconf_replacements: dict[str, str]
 
 
-def cache_directory_replacements(payload_family: str, payload_dir_name: str) -> tuple[str, str]:
+def cache_directory_replacements(payload_family: str) -> tuple[str, str]:
     if is_netbsd4_payload_family(payload_family):
         return (
             "$PAYLOAD_DIR/cache",
@@ -57,10 +57,7 @@ def build_template_bundle(
     apple_mount_wait_seconds: int = DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
 ) -> TemplateBundle:
     device_model = values.get("TC_MDNS_DEVICE_MODEL", DEFAULTS["TC_MDNS_DEVICE_MODEL"])
-    start_cache_directory, smbconf_cache_directory = cache_directory_replacements(
-        payload_family,
-        values["TC_PAYLOAD_DIR_NAME"],
-    )
+    start_cache_directory, smbconf_cache_directory = cache_directory_replacements(payload_family)
     smbd_log_file = "/mnt/Memory/samba4/var/log.smbd"
     smbd_max_log_size = "256"
     smbd_log_level_line = ""

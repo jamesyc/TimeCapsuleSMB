@@ -38,6 +38,7 @@ from timecapsulesmb.core.config import extract_host, missing_required_keys, vali
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, is_netbsd6_payload_family, render_compatibility_message
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
+    RemoteInterfaceProbeResult,
     RUNTIME_SMB_CONF,
     build_device_paths,
     discover_volume_root_conn,
@@ -375,6 +376,8 @@ def run_doctor_checks(
     *,
     env_exists: bool,
     repo_root: Path,
+    connection: SshConnection | None = None,
+    precomputed_interface_probe: RemoteInterfaceProbeResult | None = None,
     precomputed_probe_state: ProbedDeviceState | None = None,
     skip_ssh: bool = False,
     skip_bonjour: bool = False,
@@ -399,11 +402,12 @@ def run_doctor_checks(
     if not env_valid:
         return results, any(is_fatal(result) for result in results)
 
-    connection = SshConnection(
-        host=values["TC_HOST"],
-        password=values.get("TC_PASSWORD", ""),
-        ssh_opts=values.get("TC_SSH_OPTS", ""),
-    )
+    if connection is None:
+        connection = SshConnection(
+            host=values["TC_HOST"],
+            password=values.get("TC_PASSWORD", ""),
+            ssh_opts=values.get("TC_SSH_OPTS", ""),
+        )
     host = extract_host(connection.host)
     smb_password = values["TC_PASSWORD"]
     proxied_ssh = ssh_opts_use_proxy(connection.ssh_opts)
@@ -420,9 +424,20 @@ def run_doctor_checks(
         active_smb_conf_reason = "SSH check skipped"
 
     if not skip_ssh and ssh_ok:
-        interface_probe = probe_remote_interface_conn(connection, values["TC_NET_IFACE"])
+        if (
+            precomputed_interface_probe is not None
+            and precomputed_interface_probe.iface == values["TC_NET_IFACE"]
+        ):
+            interface_probe = precomputed_interface_probe
+        else:
+            interface_probe = probe_remote_interface_conn(connection, values["TC_NET_IFACE"])
         if not interface_probe.exists:
-            add_result(CheckResult("FAIL", f"TC_NET_IFACE is invalid. Run the `configure` command again. {interface_probe.detail}."))
+            add_result(
+                CheckResult(
+                    "FAIL",
+                    f"TC_NET_IFACE is invalid. Run the `configure` command again. {interface_probe.detail}.",
+                )
+            )
         try:
             probed_state = precomputed_probe_state or probe_connection_state(connection)
             probe_result = probed_state.probe_result

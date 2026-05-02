@@ -50,6 +50,7 @@ class FakeCommandContext:
         self.stages: list[str] = []
         self.finish = mock.Mock()
         self.connection = connection or SshConnection("root@10.0.0.2", "pw", "-o foo")
+        self.interface_probe = None
         self.probe_state = None
         self.compatibility = compatibility or DeviceCompatibility(
             os_name="NetBSD",
@@ -114,6 +115,18 @@ class FakeCommandContext:
 
     def resolve_env_connection(self, **_kwargs):
         return self.connection
+
+    def inspect_managed_connection(self, **_kwargs):
+        self.interface_probe = RemoteInterfaceProbeResult(
+            iface="bridge0",
+            exists=True,
+            detail="interface bridge0 exists",
+        )
+        return mock.Mock(
+            connection=self.connection,
+            interface_probe=self.interface_probe,
+            probe_state=self.probe_state,
+        )
 
     def resolve_validated_managed_target(self, **_kwargs):
         return mock.Mock(connection=self.connection, probe_state=None)
@@ -4011,7 +4024,10 @@ class CliTests(unittest.TestCase):
             env_path = Path(env_file.name)
             with mock.patch("timecapsulesmb.cli.doctor.ENV_PATH", env_path):
                 with mock.patch("timecapsulesmb.cli.doctor.load_env_values", return_value=values):
-                    with mock.patch("timecapsulesmb.cli.doctor.inspect_managed_connection", side_effect=SystemExit("Connecting to the device failed, SSH error: bind failed")):
+                    with mock.patch(
+                        "timecapsulesmb.cli.context.CommandContext.inspect_managed_connection",
+                        side_effect=SystemExit("Connecting to the device failed, SSH error: bind failed"),
+                    ):
                         with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", return_value=([fake_result], True)):
                             with redirect_stdout(output):
                                 rc = doctor.main([])
@@ -4019,6 +4035,34 @@ class CliTests(unittest.TestCase):
         telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
         self.assertIn("Doctor failures:", telemetry_error)
         self.assertIn("preflight_error=doctor pre-inspection failed: Connecting to the device failed, SSH error: bind failed", telemetry_error)
+
+    def test_doctor_passes_preinspection_state_to_checks(self) -> None:
+        output = io.StringIO()
+        values = self.make_valid_env()
+        command_context = FakeCommandContext()
+        probe_state = self.make_probe_state(self.make_probe_result_netbsd6())
+        command_context.probe_state = probe_state
+        original_inspect = command_context.inspect_managed_connection
+        command_context.inspect_managed_connection = mock.Mock(side_effect=original_inspect)
+
+        with tempfile.NamedTemporaryFile() as env_file:
+            env_path = Path(env_file.name)
+            with mock.patch("timecapsulesmb.cli.doctor.ENV_PATH", env_path):
+                with mock.patch("timecapsulesmb.cli.doctor.load_env_values", return_value=values):
+                    with mock.patch("timecapsulesmb.cli.doctor.CommandContext", return_value=command_context):
+                        with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", return_value=([], False)) as checks_mock:
+                            with redirect_stdout(output):
+                                rc = doctor.main([])
+
+        self.assertEqual(rc, 0)
+        command_context.inspect_managed_connection.assert_called_once_with(
+            iface=values["TC_NET_IFACE"],
+            include_probe=True,
+        )
+        checks_kwargs = checks_mock.call_args.kwargs
+        self.assertIs(checks_kwargs["connection"], command_context.connection)
+        self.assertIs(checks_kwargs["precomputed_interface_probe"], command_context.interface_probe)
+        self.assertIs(checks_kwargs["precomputed_probe_state"], probe_state)
 
     def test_doctor_streams_results_in_human_mode(self) -> None:
         output = io.StringIO()

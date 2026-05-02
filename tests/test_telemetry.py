@@ -20,8 +20,9 @@ from timecapsulesmb.cli.context import (
     CommandContext,
     render_command_debug_lines,
 )
+from timecapsulesmb.cli.runtime import ManagedTargetState
 from timecapsulesmb.device.compat import DeviceCompatibility
-from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState
+from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, RemoteInterfaceProbeResult
 from timecapsulesmb.discovery.bonjour import Discovered
 from timecapsulesmb.telemetry import MAX_SEND_ATTEMPTS, TelemetryClient
 from timecapsulesmb.telemetry.debug import render_debug_mapping
@@ -115,6 +116,73 @@ class TelemetryTests(unittest.TestCase):
 
         self.assertEqual(command.result, "success")
         self.assertEqual(telemetry.emit.call_count, 2)
+
+    def test_command_context_inspect_managed_connection_records_probe_state(self) -> None:
+        telemetry = mock.Mock()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        compatibility = DeviceCompatibility(
+            os_name="NetBSD",
+            os_release="6.0",
+            arch="earmv4",
+            elf_endianness="little",
+            payload_family="netbsd6_samba4",
+            device_generation="gen5",
+            supported=True,
+            reason_code="supported_netbsd6",
+        )
+        probe_state = ProbedDeviceState(
+            probe_result=ProbeResult(
+                ssh_port_reachable=True,
+                ssh_authenticated=True,
+                error=None,
+                os_name="NetBSD",
+                os_release="6.0",
+                arch="earmv4",
+                elf_endianness="little",
+            ),
+            compatibility=compatibility,
+        )
+        interface_probe = RemoteInterfaceProbeResult(
+            iface="bridge0",
+            exists=True,
+            detail="interface bridge0 exists",
+        )
+        target = ManagedTargetState(
+            connection=connection,
+            interface_probe=interface_probe,
+            probe_state=probe_state,
+        )
+
+        context = CommandContext(
+            telemetry,
+            "doctor",
+            "doctor_started",
+            "doctor_finished",
+            values={
+                "TC_HOST": connection.host,
+                "TC_PASSWORD": connection.password,
+                "TC_SSH_OPTS": connection.ssh_opts,
+            },
+        )
+        with mock.patch(
+            "timecapsulesmb.cli.context.runtime.resolve_env_connection",
+            return_value=connection,
+        ) as resolve_mock:
+            with mock.patch(
+                "timecapsulesmb.cli.context.runtime.inspect_managed_connection",
+                return_value=target,
+            ) as inspect_mock:
+                result = context.inspect_managed_connection(iface="bridge0", include_probe=True)
+
+        self.assertIs(result, target)
+        self.assertIs(context.connection, connection)
+        self.assertIs(context.interface_probe, interface_probe)
+        self.assertIs(context.probe_state, probe_state)
+        self.assertIs(context.compatibility, compatibility)
+        self.assertEqual(context.finish_fields["device_family"], "netbsd6_samba4")
+        self.assertEqual(context.finish_fields["device_os_version"], "NetBSD 6.0 (earmv4)")
+        resolve_mock.assert_called_once()
+        inspect_mock.assert_called_once_with(connection, "bridge0", include_probe=True)
 
     def test_command_context_marks_keyboard_interrupt_as_cancelled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

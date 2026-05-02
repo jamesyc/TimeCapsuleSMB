@@ -733,6 +733,99 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(fatal)
         self.assertTrue(any("TC_NET_IFACE is invalid" in result.message for result in results))
 
+    def test_run_doctor_checks_uses_precomputed_connection_and_interface_probe(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+            "TC_AIRPORT_SYAP": "119",
+        }
+        connection = SshConnection("root@10.0.0.9", "pw", "-o injected")
+        interface_probe = RemoteInterfaceProbeResult(
+            iface="bridge0",
+            exists=True,
+            detail="interface bridge0 exists",
+        )
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.check_ssh_login", return_value=CheckResult("PASS", "ssh ok")) as ssh_mock:
+                    with mock.patch("timecapsulesmb.checks.doctor.command_exists", return_value=True):
+                        with mock.patch("timecapsulesmb.checks.doctor.read_active_smb_conf_conn", return_value=""):
+                            with mock.patch("timecapsulesmb.checks.doctor.check_xattr_tdb_persistence", return_value=CheckResult("WARN", "xattr skipped")):
+                                with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=CheckResult("PASS", "445 ok")):
+                                    with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root_conn", side_effect=SystemExit("skip nbns")):
+                                        with mock.patch("timecapsulesmb.checks.doctor.probe_remote_interface_conn") as interface_mock:
+                                            results, fatal = run_doctor_checks(
+                                                values,
+                                                env_exists=True,
+                                                repo_root=REPO_ROOT,
+                                                connection=connection,
+                                                precomputed_interface_probe=interface_probe,
+                                                skip_bonjour=True,
+                                                skip_smb=True,
+                                            )
+        self.assertFalse(fatal)
+        self.assertTrue(any(result.status == "PASS" and result.message == "ssh ok" for result in results))
+        ssh_mock.assert_called_once_with(connection)
+        interface_mock.assert_not_called()
+
+    def test_run_doctor_checks_reprobes_when_precomputed_interface_is_for_other_iface(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SHARE_NAME": "Data",
+            "TC_SAMBA_USER": "admin",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+            "TC_AIRPORT_SYAP": "119",
+        }
+        connection = SshConnection("root@10.0.0.9", "pw", "-o injected")
+        stale_interface_probe = RemoteInterfaceProbeResult(
+            iface="bridge1",
+            exists=True,
+            detail="interface bridge1 exists",
+        )
+        fresh_interface_probe = RemoteInterfaceProbeResult(
+            iface="bridge0",
+            exists=True,
+            detail="interface bridge0 exists",
+        )
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.check_ssh_login", return_value=CheckResult("PASS", "ssh ok")):
+                    with mock.patch("timecapsulesmb.checks.doctor.command_exists", return_value=True):
+                        with mock.patch("timecapsulesmb.checks.doctor.read_active_smb_conf_conn", return_value=""):
+                            with mock.patch("timecapsulesmb.checks.doctor.check_xattr_tdb_persistence", return_value=CheckResult("WARN", "xattr skipped")):
+                                with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=CheckResult("PASS", "445 ok")):
+                                    with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root_conn", side_effect=SystemExit("skip nbns")):
+                                        with mock.patch(
+                                            "timecapsulesmb.checks.doctor.probe_remote_interface_conn",
+                                            return_value=fresh_interface_probe,
+                                        ) as interface_mock:
+                                            _results, _fatal = run_doctor_checks(
+                                                values,
+                                                env_exists=True,
+                                                repo_root=REPO_ROOT,
+                                                connection=connection,
+                                                precomputed_interface_probe=stale_interface_probe,
+                                                skip_bonjour=True,
+                                                skip_smb=True,
+                                            )
+        interface_mock.assert_called_once_with(connection, "bridge0")
+
     def test_run_doctor_checks_reports_managed_mdns_takeover_state(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",

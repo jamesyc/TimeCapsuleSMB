@@ -222,21 +222,16 @@ class DeployModuleTests(unittest.TestCase):
 
     def test_cache_directory_replacements_default_unknown_family_to_ram_cache(self) -> None:
         self.assertEqual(
-            cache_directory_replacements("unknown_future_family", "samba4"),
+            cache_directory_replacements("unknown_future_family"),
             ("/mnt/Memory/samba4/var", "/mnt/Memory/samba4/var"),
         )
 
     def test_cache_directory_replacements_keep_netbsd4_start_expression_unquoted(self) -> None:
-        start_cache, smbconf_cache = cache_directory_replacements("netbsd4le_samba4", "samba4")
+        start_cache, smbconf_cache = cache_directory_replacements("netbsd4le_samba4")
         self.assertEqual(start_cache, "$PAYLOAD_DIR/cache")
         self.assertEqual(smbconf_cache, "__PAYLOAD_DIR__/cache")
         self.assertFalse(start_cache.startswith("'"))
         self.assertFalse(start_cache.endswith("'"))
-
-    def test_cache_directory_replacements_use_custom_payload_dir_for_netbsd4_smbconf(self) -> None:
-        start_cache, smbconf_cache = cache_directory_replacements("netbsd4le_samba4", "samba4-test")
-        self.assertEqual(start_cache, "$PAYLOAD_DIR/cache")
-        self.assertEqual(smbconf_cache, "__PAYLOAD_DIR__/cache")
 
     def test_build_deployment_plan_uses_device_paths(self) -> None:
         payload_dir_name = "samba4"

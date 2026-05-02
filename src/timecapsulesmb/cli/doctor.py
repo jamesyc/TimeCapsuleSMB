@@ -8,12 +8,12 @@ from typing import Optional
 from timecapsulesmb.checks.doctor import run_doctor_checks
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import inspect_managed_connection, load_env_values
+from timecapsulesmb.cli.runtime import load_env_values
 from timecapsulesmb.cli.util import color_green, color_red
 from timecapsulesmb.core.config import ENV_PATH
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.identity import ensure_install_id
-from timecapsulesmb.telemetry import TelemetryClient, build_device_os_version
+from timecapsulesmb.telemetry import TelemetryClient
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -80,28 +80,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     with CommandContext(telemetry, "doctor", "doctor_started", "doctor_finished", values=values, args=args) as command_context:
         if ENV_PATH.exists() and not args.skip_ssh and values.get("TC_NET_IFACE"):
             try:
-                connection = command_context.resolve_env_connection()
-                managed_target = inspect_managed_connection(
-                    connection,
-                    values["TC_NET_IFACE"],
+                command_context.inspect_managed_connection(
+                    iface=values["TC_NET_IFACE"],
                     include_probe=True,
                 )
-                command_context.connection = managed_target.connection
-                command_context.probe_state = managed_target.probe_state
-                command_context.compatibility = (
-                    managed_target.probe_state.compatibility
-                    if managed_target.probe_state is not None
-                    else None
-                )
-                if command_context.compatibility is not None:
-                    command_context.update_fields(
-                        device_os_version=build_device_os_version(
-                            command_context.compatibility.os_name,
-                            command_context.compatibility.os_release,
-                            command_context.compatibility.arch,
-                        ),
-                        device_family=command_context.compatibility.payload_family,
-                    )
             except SystemExit as exc:
                 command_context.preflight_error = f"doctor pre-inspection failed: {system_exit_message(exc)}"
 
@@ -110,6 +92,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             values,
             env_exists=ENV_PATH.exists(),
             repo_root=REPO_ROOT,
+            connection=command_context.connection,
+            precomputed_interface_probe=command_context.interface_probe,
             precomputed_probe_state=command_context.probe_state,
             skip_ssh=args.skip_ssh,
             skip_bonjour=args.skip_bonjour,
