@@ -744,6 +744,7 @@ class CheckTests(unittest.TestCase):
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
         }
+        debug_fields: dict[str, object] = {}
         with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
             with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
                 with mock.patch("timecapsulesmb.checks.doctor.check_ssh_login", return_value=mock.Mock(status="PASS", message="ssh ok")):
@@ -753,10 +754,22 @@ class CheckTests(unittest.TestCase):
                                 with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops_detailed", return_value=[]):
                                     with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root_conn", return_value="/Volumes/dk2"):
                                         with mock.patch("timecapsulesmb.checks.doctor.probe_managed_mdns_takeover_conn", return_value=mock.Mock(ready=False, detail="managed mDNS takeover not active")):
-                                            with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(returncode=0, stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n")):
-                                                results, fatal = run_doctor_checks(values, env_exists=True, repo_root=REPO_ROOT)
+                                            with mock.patch("timecapsulesmb.checks.doctor.read_runtime_log_tails_conn", return_value={
+                                                "remote_rc_local_log_tail": "rc log",
+                                                "remote_mdns_log_tail": "mdns log",
+                                            }) as log_tail_mock:
+                                                with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(returncode=0, stdout="[global]\n xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n")):
+                                                    results, fatal = run_doctor_checks(
+                                                        values,
+                                                        env_exists=True,
+                                                        repo_root=REPO_ROOT,
+                                                        debug_fields=debug_fields,
+                                                    )
         self.assertTrue(fatal)
         self.assertTrue(any("managed mDNS takeover is not active" in result.message for result in results))
+        self.assertEqual(debug_fields["remote_rc_local_log_tail"], "rc log")
+        self.assertEqual(debug_fields["remote_mdns_log_tail"], "mdns log")
+        log_tail_mock.assert_called_once()
 
     def test_run_doctor_checks_reports_managed_smbd_subchecks(self) -> None:
         values = {

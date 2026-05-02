@@ -3980,6 +3980,8 @@ class CliTests(unittest.TestCase):
 
         def fake_run_doctor_checks(*_args, **kwargs):
             kwargs["debug_fields"]["bonjour_zeroconf"] = {"instance_count": 0, "ip_version": "V4Only"}
+            kwargs["debug_fields"]["remote_rc_local_log_tail"] = "rc line 1\nrc line 2"
+            kwargs["debug_fields"]["remote_mdns_log_tail"] = "mdns line"
             return results, True
 
         with mock.patch("timecapsulesmb.cli.doctor.load_env_values", return_value={}):
@@ -3989,6 +3991,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
         self.assertIn("bonjour_zeroconf={instance_count:0,ip_version:V4Only}", telemetry_error)
+        self.assertIn("remote_rc_local_log_tail=rc line 1\nrc line 2", telemetry_error)
+        self.assertIn("remote_mdns_log_tail=mdns line", telemetry_error)
 
     def test_doctor_includes_soft_preinspection_error_in_failure_telemetry(self) -> None:
         output = io.StringIO()

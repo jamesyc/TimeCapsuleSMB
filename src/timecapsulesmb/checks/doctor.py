@@ -39,6 +39,7 @@ from timecapsulesmb.device.probe import (
     probe_remote_interface_conn,
     read_active_smb_conf_conn,
     read_interface_ipv4_conn,
+    read_runtime_log_tails_conn,
 )
 from timecapsulesmb.discovery.native_dns_sd import browse_native_dns_sd
 from timecapsulesmb.transport.local import find_free_local_port
@@ -443,4 +444,6 @@ def run_doctor_checks(
                 add_result(result)
 
     fatal = any(is_fatal(result) for result in results)
+    if fatal and debug_fields is not None and not skip_ssh and ssh_ok:
+        debug_fields.update(read_runtime_log_tails_conn(connection))
     return results, fatal
