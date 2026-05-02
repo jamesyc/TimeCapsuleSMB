@@ -426,7 +426,13 @@ def print_summary(summary: RepairSummary, *, dry_run: bool) -> None:
 
 
 def confirm(prompt: str) -> bool:
-    return input(prompt).strip().lower() in {"y", "yes"}
+    try:
+        return input(prompt).strip().lower() in {"y", "yes"}
+    except EOFError:
+        return False
+    except KeyboardInterrupt:
+        print()
+        return False
 
 
 def load_telemetry_values(explicit_path: Path | None) -> dict[str, str]:

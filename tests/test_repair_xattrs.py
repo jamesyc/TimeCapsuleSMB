@@ -451,6 +451,54 @@ class RepairXattrsTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("No changes made.", output.getvalue())
 
+    def test_prompt_eof_declines_without_repairing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "broken.txt").write_text("data")
+
+            def fake_run(args: list[str]):
+                if args[0] == "xattr":
+                    return mock.Mock(returncode=1, stdout="", stderr="")
+                if args[0] == "stat":
+                    return mock.Mock(returncode=0, stdout="arch\n", stderr="")
+                if args[0] == "chflags":
+                    raise AssertionError("EOF at prompt should not repair")
+                raise AssertionError(args)
+
+            output = io.StringIO()
+            with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
+                with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", side_effect=fake_run):
+                    with mock.patch("builtins.input", side_effect=EOFError):
+                        with redirect_stdout(output):
+                            rc = repair_xattrs.main(["--path", str(root)])
+
+        self.assertEqual(rc, 0)
+        self.assertIn("No changes made.", output.getvalue())
+
+    def test_prompt_keyboard_interrupt_declines_without_repairing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "broken.txt").write_text("data")
+
+            def fake_run(args: list[str]):
+                if args[0] == "xattr":
+                    return mock.Mock(returncode=1, stdout="", stderr="")
+                if args[0] == "stat":
+                    return mock.Mock(returncode=0, stdout="arch\n", stderr="")
+                if args[0] == "chflags":
+                    raise AssertionError("KeyboardInterrupt at prompt should not repair")
+                raise AssertionError(args)
+
+            output = io.StringIO()
+            with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
+                with mock.patch("timecapsulesmb.cli.repair_xattrs.run_capture", side_effect=fake_run):
+                    with mock.patch("builtins.input", side_effect=KeyboardInterrupt):
+                        with redirect_stdout(output):
+                            rc = repair_xattrs.main(["--path", str(root)])
+
+        self.assertEqual(rc, 0)
+        self.assertIn("No changes made.", output.getvalue())
+
     def test_no_candidates_does_not_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
