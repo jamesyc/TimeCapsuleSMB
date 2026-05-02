@@ -4,9 +4,12 @@ import argparse
 import shlex
 from typing import Optional
 
-from timecapsulesmb.cli.runtime import load_env_values, resolve_env_connection
+from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.cli.runtime import load_env_values
 from timecapsulesmb.core.config import airport_exact_display_name, require_valid_config
+from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.device.probe import discover_mounted_volume_conn, wait_for_ssh_state_conn
+from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import run_ssh
 
 
@@ -41,38 +44,64 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     print("Running fsck...")
 
+    ensure_install_id()
     values = load_env_values()
-    require_valid_config(values, profile="fsck")
-    device_name = airport_exact_display_name(values)
-    connection = resolve_env_connection(values, allow_empty_password=True)
+    telemetry = TelemetryClient.from_values(values)
+    with CommandContext(telemetry, "fsck", "fsck_started", "fsck_finished", values=values, args=args) as command_context:
+        command_context.update_fields(
+            reboot_was_attempted=False,
+            device_came_back_after_reboot=False,
+        )
+        command_context.set_stage("validate_config")
+        require_valid_config(values, profile="fsck")
+        device_name = airport_exact_display_name(values)
+        command_context.set_stage("resolve_connection")
+        connection = command_context.resolve_env_connection(allow_empty_password=True)
 
-    mounted = discover_mounted_volume_conn(connection)
-    print(f"Target host: {connection.host}")
-    print(f"Mounted HFS volume: {mounted.device} on {mounted.mountpoint}")
+        command_context.set_stage("discover_mounted_volume")
+        mounted = discover_mounted_volume_conn(connection)
+        command_context.update_fields(fsck_device=mounted.device, fsck_mountpoint=mounted.mountpoint)
+        print(f"Target host: {connection.host}")
+        print(f"Mounted HFS volume: {mounted.device} on {mounted.mountpoint}")
 
-    if not args.yes:
-        answer = input(f"This will stop file sharing, unmount the disk, run fsck_hfs, and reboot the {device_name}. Continue? [Y/n]: ").strip().lower()
-        if answer not in {"", "y", "yes"}:
-            print("fsck cancelled.")
+        if not args.yes:
+            command_context.set_stage("confirm_fsck")
+            answer = input(f"This will stop file sharing, unmount the disk, run fsck_hfs, and reboot the {device_name}. Continue? [Y/n]: ").strip().lower()
+            if answer not in {"", "y", "yes"}:
+                print("fsck cancelled.")
+                command_context.cancel_with_error("Cancelled by user at fsck confirmation prompt.")
+                return 0
+
+        command_context.set_stage("run_fsck")
+        script = build_remote_fsck_script(mounted.device, mounted.mountpoint, reboot=not args.no_reboot)
+        proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=240)
+        if proc.stdout:
+            print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
+
+        if args.no_reboot:
+            if proc.returncode == 0:
+                command_context.succeed()
+                return 0
+            command_context.fail_with_error("fsck_hfs command failed.")
+            return 1
+
+        command_context.update_fields(reboot_was_attempted=True)
+        if args.no_wait:
+            command_context.succeed()
             return 0
 
-    script = build_remote_fsck_script(mounted.device, mounted.mountpoint, reboot=not args.no_reboot)
-    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=240)
-    if proc.stdout:
-        print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
+        print("Waiting for the device to go down...")
+        command_context.set_stage("wait_for_reboot_down")
+        wait_for_ssh_state_conn(connection, expected_up=False, timeout_seconds=90)
+        print("Waiting for the device to come back up...")
+        command_context.set_stage("wait_for_reboot_up")
+        if not wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=420):
+            print("Timed out waiting for SSH after reboot.")
+            command_context.fail_with_error("Timed out waiting for SSH after reboot.")
+            return 1
 
-    if args.no_reboot:
-        return 0 if proc.returncode == 0 else 1
-
-    if args.no_wait:
+        command_context.update_fields(device_came_back_after_reboot=True)
+        print("Device is back online.")
+        command_context.succeed()
         return 0
-
-    print("Waiting for the device to go down...")
-    wait_for_ssh_state_conn(connection, expected_up=False, timeout_seconds=90)
-    print("Waiting for the device to come back up...")
-    if not wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=420):
-        print("Timed out waiting for SSH after reboot.")
-        return 1
-
-    print("Device is back online.")
-    return 0
+    return 1

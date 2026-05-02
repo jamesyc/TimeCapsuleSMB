@@ -4,8 +4,11 @@ import argparse
 import time
 from typing import Iterable, Optional
 
+from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.core.config import ENV_PATH, extract_host, parse_env_values
+from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.integrations.airpyrt import disable_ssh, enable_ssh
+from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.local import tcp_open
 
 
@@ -50,62 +53,95 @@ def wait_for_device_up(
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Use the configured device target from .env to enable or disable SSH via AirPyrt.")
-    parser.parse_args(argv)
+    args = parser.parse_args(argv)
 
+    ensure_install_id()
     values = parse_env_values(ENV_PATH, defaults={})
-    host_target = values.get("TC_HOST", "")
-    password = values.get("TC_PASSWORD", "")
-    if not host_target or not password:
-        print(f"Missing {ENV_PATH} settings. Run '.venv/bin/tcapsule configure' first.")
-        return 1
-    airpyrt_host = extract_host(host_target)
-
-    print(f"Using configured target from {ENV_PATH}: {host_target}")
-    print(f"Probing SSH on {airpyrt_host}:22 ...")
-    if not tcp_open(airpyrt_host, 22):
-        print("SSH not reachable. Attempting to enable via AirPyrt...")
-        try:
-            enable_ssh(airpyrt_host, password, reboot_device=True, verbose=True)
-        except Exception as e:
-            print(f"Failed to enable SSH via AirPyrt: {e}")
+    telemetry = TelemetryClient.from_values(values)
+    with CommandContext(telemetry, "prep-device", "prep_device_started", "prep_device_finished", values=values, args=args) as command_context:
+        command_context.set_stage("load_config")
+        host_target = values.get("TC_HOST", "")
+        password = values.get("TC_PASSWORD", "")
+        if not host_target or not password:
+            message = f"Missing {ENV_PATH} settings. Run '.venv/bin/tcapsule configure' first."
+            command_context.update_fields(prep_device_action="missing_config")
+            print(message)
+            command_context.fail_with_error(message)
             return 1
+        airpyrt_host = extract_host(host_target)
 
-        if not wait_for_ssh(airpyrt_host, expected_state=True):
-            return 1
-    else:
-        should_disable = False
-        while True:
+        print(f"Using configured target from {ENV_PATH}: {host_target}")
+        print(f"Probing SSH on {airpyrt_host}:22 ...")
+        command_context.set_stage("probe_ssh")
+        ssh_open = tcp_open(airpyrt_host, 22)
+        command_context.update_fields(ssh_initially_reachable=ssh_open)
+        if not ssh_open:
+            command_context.update_fields(prep_device_action="enable_ssh")
+            print("SSH not reachable. Attempting to enable via AirPyrt...")
             try:
-                resp = input("SSH already enabled. Disable? [y/N]: ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                print()
-                resp = ""
-            if resp in {"", "n", "no"}:
-                print("Leaving SSH enabled.")
-                break
-            if resp in {"y", "yes"}:
-                should_disable = True
-                break
-            print("Please answer 'y' or 'n'.")
-
-        if should_disable:
-            try:
-                disable_ssh(airpyrt_host, password, reboot_device=True, verbose=True)
+                command_context.set_stage("enable_ssh")
+                enable_ssh(airpyrt_host, password, reboot_device=True, verbose=True)
             except Exception as e:
-                print(f"Failed to disable SSH via AirPyrt: {e}")
+                message = f"Failed to enable SSH via AirPyrt: {e}"
+                print(message)
+                command_context.fail_with_error(message)
                 return 1
 
-            print("Device is starting reboot now, waiting for it to shut down...")
-            if not wait_for_ssh(airpyrt_host, expected_state=False):
-                return 0
-            print("Device is down now, verifying persistence after reboot...")
-            wait_for_device_up(airpyrt_host)
-            print("Device successfully rebooted. Checking if SSH is still disabled...")
-            if not wait_for_ssh(airpyrt_host, expected_state=False, timeout_seconds=30):
-                print("Warning: SSH reopened after reboot. Disable may not have persisted.")
-            else:
-                print("SSH disabled (remains closed after reboot). Enable SSH again if this was not intended.")
-                return 0
+            command_context.set_stage("wait_for_ssh_enabled")
+            if not wait_for_ssh(airpyrt_host, expected_state=True):
+                command_context.update_fields(ssh_final_reachable=False)
+                command_context.fail_with_error("SSH did not open after enabling via AirPyrt.")
+                return 1
+            command_context.update_fields(ssh_final_reachable=True)
+        else:
+            command_context.set_stage("prompt_disable_ssh")
+            should_disable = False
+            while True:
+                try:
+                    resp = input("SSH already enabled. Disable? [y/N]: ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    resp = ""
+                if resp in {"", "n", "no"}:
+                    command_context.update_fields(prep_device_action="leave_enabled", ssh_final_reachable=True)
+                    print("Leaving SSH enabled.")
+                    break
+                if resp in {"y", "yes"}:
+                    should_disable = True
+                    break
+                print("Please answer 'y' or 'n'.")
 
-    print("SSH is configured. You can connect as 'root' using the AirPort admin password.")
-    return 0
+            if should_disable:
+                command_context.update_fields(prep_device_action="disable_ssh")
+                try:
+                    command_context.set_stage("disable_ssh")
+                    disable_ssh(airpyrt_host, password, reboot_device=True, verbose=True)
+                except Exception as e:
+                    message = f"Failed to disable SSH via AirPyrt: {e}"
+                    print(message)
+                    command_context.fail_with_error(message)
+                    return 1
+
+                print("Device is starting reboot now, waiting for it to shut down...")
+                command_context.set_stage("wait_for_ssh_down")
+                if not wait_for_ssh(airpyrt_host, expected_state=False):
+                    command_context.succeed()
+                    return 0
+                print("Device is down now, verifying persistence after reboot...")
+                command_context.set_stage("wait_for_device_up")
+                wait_for_device_up(airpyrt_host)
+                print("Device successfully rebooted. Checking if SSH is still disabled...")
+                command_context.set_stage("verify_ssh_disabled")
+                if not wait_for_ssh(airpyrt_host, expected_state=False, timeout_seconds=30):
+                    command_context.update_fields(ssh_final_reachable=True, ssh_disable_persisted=False)
+                    print("Warning: SSH reopened after reboot. Disable may not have persisted.")
+                else:
+                    command_context.update_fields(ssh_final_reachable=False, ssh_disable_persisted=True)
+                    print("SSH disabled (remains closed after reboot). Enable SSH again if this was not intended.")
+                    command_context.succeed()
+                    return 0
+
+        print("SSH is configured. You can connect as 'root' using the AirPort admin password.")
+        command_context.succeed()
+        return 0
+    return 1

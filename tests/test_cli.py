@@ -131,6 +131,9 @@ class CliTests(unittest.TestCase):
             "timecapsulesmb.cli.deploy.TelemetryClient.from_values",
             "timecapsulesmb.cli.activate.TelemetryClient.from_values",
             "timecapsulesmb.cli.doctor.TelemetryClient.from_values",
+            "timecapsulesmb.cli.fsck.TelemetryClient.from_values",
+            "timecapsulesmb.cli.prep_device.TelemetryClient.from_values",
+            "timecapsulesmb.cli.uninstall.TelemetryClient.from_values",
         ):
             self._exit_stack.enter_context(mock.patch(target, return_value=self._telemetry_client))
         self._exit_stack.enter_context(
@@ -352,6 +355,12 @@ class CliTests(unittest.TestCase):
             if call.args and call.args[0] == "configure_finished":
                 return call.kwargs["result"]
         self.fail("configure_finished telemetry was not emitted")
+
+    def telemetry_payload(self, event: str) -> dict[str, object]:
+        for call in reversed(self._telemetry_client.emit.call_args_list):
+            if call.args and call.args[0] == event:
+                return call.kwargs
+        self.fail(f"{event} telemetry was not emitted")
 
     def configure_prompt_defaults(self, *, host: str = "root@10.0.0.2", password: str = "pw"):
         def fake_prompt(label, default, _secret):
@@ -5088,6 +5097,13 @@ class CliTests(unittest.TestCase):
                 rc = prep_device.main([])
         self.assertEqual(rc, 1)
         self.assertIn("Run '.venv/bin/tcapsule configure' first", output.getvalue())
+        started = self.telemetry_payload("prep_device_started")
+        finished = self.telemetry_payload("prep_device_finished")
+        self.assertEqual(started["command_id"], finished["command_id"])
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["prep_device_action"], "missing_config")
+        self.assertIn("stage=load_config", finished["error"])
+        self.assertNotIn("TC_PASSWORD", finished["error"])
 
     def test_prep_device_enable_flow_succeeds(self) -> None:
         output = io.StringIO()
@@ -5101,6 +5117,27 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         enable_ssh_mock.assert_called_once()
         self.assertIn("SSH is configured", output.getvalue())
+        finished = self.telemetry_payload("prep_device_finished")
+        self.assertEqual(finished["result"], "success")
+        self.assertEqual(finished["prep_device_action"], "enable_ssh")
+        self.assertEqual(finished["ssh_initially_reachable"], False)
+        self.assertEqual(finished["ssh_final_reachable"], True)
+
+    def test_prep_device_enable_exception_emits_failure_stage(self) -> None:
+        output = io.StringIO()
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
+        with mock.patch("timecapsulesmb.cli.prep_device.parse_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=False):
+                with mock.patch("timecapsulesmb.cli.prep_device.enable_ssh", side_effect=RuntimeError("AirPyrt failed")):
+                    with redirect_stdout(output):
+                        rc = prep_device.main([])
+        self.assertEqual(rc, 1)
+        self.assertIn("Failed to enable SSH via AirPyrt: AirPyrt failed", output.getvalue())
+        finished = self.telemetry_payload("prep_device_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["prep_device_action"], "enable_ssh")
+        self.assertIn("stage=enable_ssh", finished["error"])
+        self.assertIn("AirPyrt failed", finished["error"])
 
     def test_prep_device_disable_flow_warns_when_ssh_reopens(self) -> None:
         output = io.StringIO()
@@ -5116,6 +5153,12 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         disable_ssh_mock.assert_called_once()
         self.assertIn("Warning: SSH reopened after reboot", output.getvalue())
+        finished = self.telemetry_payload("prep_device_finished")
+        self.assertEqual(finished["result"], "success")
+        self.assertEqual(finished["prep_device_action"], "disable_ssh")
+        self.assertEqual(finished["ssh_initially_reachable"], True)
+        self.assertEqual(finished["ssh_final_reachable"], True)
+        self.assertEqual(finished["ssh_disable_persisted"], False)
 
     def test_prep_device_disable_flow_confirms_ssh_disabled(self) -> None:
         output = io.StringIO()
@@ -5130,6 +5173,11 @@ class CliTests(unittest.TestCase):
                                     rc = prep_device.main([])
         self.assertEqual(rc, 0)
         self.assertIn("SSH disabled (remains closed after reboot)", output.getvalue())
+        finished = self.telemetry_payload("prep_device_finished")
+        self.assertEqual(finished["result"], "success")
+        self.assertEqual(finished["prep_device_action"], "disable_ssh")
+        self.assertEqual(finished["ssh_final_reachable"], False)
+        self.assertEqual(finished["ssh_disable_persisted"], True)
 
     def test_doctor_json_outputs_structured_results(self) -> None:
         output = io.StringIO()
@@ -5483,6 +5531,13 @@ class CliTests(unittest.TestCase):
         self.assertIn(f"payload dir: /Volumes/dk2/{values['TC_PAYLOAD_DIR_NAME']}", text)
         self.assertIn(f"request: {DETACHED_REBOOT_COMMAND}", text)
         self.assertIn("follow-up: wait for SSH down, then SSH up", text)
+        started = self.telemetry_payload("uninstall_started")
+        finished = self.telemetry_payload("uninstall_finished")
+        self.assertEqual(started["command_id"], finished["command_id"])
+        self.assertEqual(finished["result"], "success")
+        self.assertEqual(finished["volume_root"], "/Volumes/dk2")
+        self.assertEqual(finished["payload_dir"], f"/Volumes/dk2/{values['TC_PAYLOAD_DIR_NAME']}")
+        self.assertEqual(finished["reboot_was_attempted"], False)
 
     def test_uninstall_dry_run_no_reboot_matches_no_reboot_execution_path(self) -> None:
         output = io.StringIO()
@@ -5587,6 +5642,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 240})
         verify_mock.assert_called_once()
         self.assertIn("Device is back online.", output.getvalue())
+        finished = self.telemetry_payload("uninstall_finished")
+        self.assertEqual(finished["result"], "success")
+        self.assertEqual(finished["reboot_was_attempted"], True)
+        self.assertEqual(finished["device_came_back_after_reboot"], True)
+        self.assertEqual(finished["post_uninstall_verified"], True)
 
     def test_uninstall_no_reboot_skips_reboot_and_returns_success(self) -> None:
         output = io.StringIO()
@@ -5636,6 +5696,34 @@ class CliTests(unittest.TestCase):
         run_ssh_mock.assert_not_called()
         self.assertEqual(prompt_text, ["This will reboot the AirPort Extreme 6th generation now. Continue? [Y/n]: "])
         self.assertIn("Skipped reboot. The AirPort Extreme 6th generation may need a manual reboot", output.getvalue())
+        finished = self.telemetry_payload("uninstall_finished")
+        self.assertEqual(finished["result"], "success")
+        self.assertEqual(finished["reboot_was_attempted"], False)
+
+    def test_uninstall_verify_failure_emits_failure_stage(self) -> None:
+        output = io.StringIO()
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_SSH_OPTS": "-o foo",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+        }
+        with mock.patch("timecapsulesmb.cli.uninstall.load_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"):
+                    with mock.patch("timecapsulesmb.cli.uninstall.remote_request_reboot"):
+                        with mock.patch("timecapsulesmb.cli.uninstall.wait_for_ssh_state_conn", side_effect=[True, True]):
+                            with mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall", return_value=False):
+                                with redirect_stdout(output):
+                                    rc = uninstall.main(["--yes"])
+        self.assertEqual(rc, 1)
+        self.assertIn("Managed TimeCapsuleSMB files are still present after reboot.", output.getvalue())
+        finished = self.telemetry_payload("uninstall_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["reboot_was_attempted"], True)
+        self.assertEqual(finished["device_came_back_after_reboot"], True)
+        self.assertEqual(finished["post_uninstall_verified"], False)
+        self.assertIn("stage=verify_post_uninstall", finished["error"])
 
     def test_fsck_yes_reboots_and_waits_by_default(self) -> None:
         output = io.StringIO()
@@ -5665,6 +5753,14 @@ class CliTests(unittest.TestCase):
         self.assertIn("Mounted HFS volume: /dev/dk2 on /Volumes/dk2", text)
         self.assertIn("--- fsck_hfs /dev/dk2 ---", text)
         self.assertIn("Device is back online.", text)
+        started = self.telemetry_payload("fsck_started")
+        finished = self.telemetry_payload("fsck_finished")
+        self.assertEqual(started["command_id"], finished["command_id"])
+        self.assertEqual(finished["result"], "success")
+        self.assertEqual(finished["reboot_was_attempted"], True)
+        self.assertEqual(finished["device_came_back_after_reboot"], True)
+        self.assertEqual(finished["fsck_device"], "/dev/dk2")
+        self.assertEqual(finished["fsck_mountpoint"], "/Volumes/dk2")
 
     def test_fsck_validates_only_host(self) -> None:
         output = io.StringIO()
@@ -5749,6 +5845,28 @@ class CliTests(unittest.TestCase):
             ["This will stop file sharing, unmount the disk, run fsck_hfs, and reboot the AirPort Extreme 6th generation. Continue? [Y/n]: "],
         )
         self.assertIn("fsck cancelled.", output.getvalue())
+        finished = self.telemetry_payload("fsck_finished")
+        self.assertEqual(finished["result"], "cancelled")
+        self.assertIn("Cancelled by user at fsck confirmation prompt.", finished["error"])
+
+    def test_fsck_reboot_timeout_emits_failure_stage(self) -> None:
+        output = io.StringIO()
+        values = self.make_valid_env()
+        mounted = MountedVolume(device="/dev/dk2", mountpoint="/Volumes/dk2")
+        run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\n--- reboot ---\n", returncode=255)
+        with mock.patch("timecapsulesmb.cli.fsck.load_env_values", return_value=values):
+            with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume_conn", return_value=mounted):
+                with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result):
+                    with mock.patch("timecapsulesmb.cli.fsck.wait_for_ssh_state_conn", side_effect=[True, False]):
+                        with redirect_stdout(output):
+                            rc = fsck.main(["--yes"])
+        self.assertEqual(rc, 1)
+        self.assertIn("Timed out waiting for SSH after reboot.", output.getvalue())
+        finished = self.telemetry_payload("fsck_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["reboot_was_attempted"], True)
+        self.assertEqual(finished["device_came_back_after_reboot"], False)
+        self.assertIn("stage=wait_for_reboot_up", finished["error"])
 
     def test_discover_json_outputs_records(self) -> None:
         output = io.StringIO()
