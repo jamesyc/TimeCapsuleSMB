@@ -1495,8 +1495,8 @@ static int parse_snapshot_rrs(const uint8_t *packet, size_t packet_len, struct s
     return 0;
 }
 
-static int open_capture_socket(void) {
-    return open_mdns_socket(1, 1, 0, "capture");
+static int open_capture_socket(uint32_t ipv4_addr) {
+    return open_mdns_socket(1, 1, ipv4_addr, "capture");
 }
 
 static int collect_mdns_responses(int sockfd, int seconds, struct service_record_set *set,
@@ -1658,7 +1658,7 @@ static int filter_records_by_host(struct service_record_set *out, const struct s
     return out->count > 0 ? 0 : -1;
 }
 
-static int capture_mdns_snapshot_raw(struct service_record_set *out) {
+static int capture_mdns_snapshot_raw(struct service_record_set *out, uint32_t ipv4_addr) {
     int sockfd;
     struct sockaddr_in mdns_dest;
     size_t i;
@@ -1666,7 +1666,7 @@ static int capture_mdns_snapshot_raw(struct service_record_set *out) {
 
     memset(out, 0, sizeof(*out));
     memset(&service_types, 0, sizeof(service_types));
-    sockfd = open_capture_socket();
+    sockfd = open_capture_socket(ipv4_addr);
     if (sockfd < 0) {
         return -1;
     }
@@ -1708,11 +1708,11 @@ static int prepare_loaded_snapshot_for_advertising(const struct config *cfg, con
     return filter_records_by_host(out, loaded, matched_host);
 }
 
-static int capture_mdns_snapshot_raw_with_retry(struct service_record_set *out) {
+static int capture_mdns_snapshot_raw_with_retry(struct service_record_set *out, uint32_t ipv4_addr) {
     time_t deadline = time(NULL) + SNAPSHOT_CAPTURE_TIMEOUT_SECONDS;
 
     do {
-        if (capture_mdns_snapshot_raw(out) == 0) {
+        if (capture_mdns_snapshot_raw(out, ipv4_addr) == 0) {
             return 0;
         }
         if (time(NULL) >= deadline) {
@@ -1768,21 +1768,82 @@ static void kill_mdnsresponder(int sig) {
     }
 }
 
+static int join_mdns_multicast_group(int sockfd, uint32_t ipv4_addr, const char *socket_role) {
+    struct ip_mreq mreq;
+    char ipv4_buf[INET_ADDRSTRLEN];
+    int explicit_errno = 0;
+
+    memset(&mreq, 0, sizeof(mreq));
+    mreq.imr_multiaddr.s_addr = inet_addr(MDNS_GROUP);
+    if (ipv4_addr != 0) {
+        mreq.imr_interface.s_addr = ipv4_addr;
+        if (setsockopt(sockfd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) == 0) {
+            fprintf(stderr, "mdns %s socket: multicast membership interface %s\n",
+                    socket_role,
+                    ipv4_to_string(ipv4_addr, ipv4_buf, sizeof(ipv4_buf)));
+            return 0;
+        }
+        explicit_errno = errno;
+        fprintf(stderr, "warning: mdns %s socket: IP_ADD_MEMBERSHIP failed for interface %s: %s; trying kernel-selected interface\n",
+                socket_role,
+                ipv4_to_string(ipv4_addr, ipv4_buf, sizeof(ipv4_buf)),
+                strerror(explicit_errno));
+    }
+
+    mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+    if (setsockopt(sockfd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) == 0) {
+        fprintf(stderr, "mdns %s socket: multicast membership interface kernel-selected\n",
+                socket_role);
+        return 0;
+    }
+
+    if (ipv4_addr != 0) {
+        fprintf(stderr, "setsockopt(IP_ADD_MEMBERSHIP kernel-selected): %s\n", strerror(errno));
+        errno = explicit_errno != 0 ? explicit_errno : errno;
+    } else {
+        perror("setsockopt(IP_ADD_MEMBERSHIP)");
+    }
+    return -1;
+}
+
 static int configure_outbound_multicast_socket(int sockfd, uint32_t ipv4_addr, const char *socket_role) {
     int yes;
+    int explicit_errno = 0;
+    int fallback_errno;
     struct in_addr multicast_if;
     char ipv4_buf[INET_ADDRSTRLEN];
 
-    multicast_if.s_addr = ipv4_addr;
-    if (setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_IF, &multicast_if, sizeof(multicast_if)) < 0) {
-        perror("setsockopt(IP_MULTICAST_IF)");
-        return -1;
+    if (ipv4_addr != 0) {
+        multicast_if.s_addr = ipv4_addr;
+        if (setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_IF, &multicast_if, sizeof(multicast_if)) == 0) {
+            fprintf(stderr, "mdns %s socket: outbound multicast interface %s\n",
+                    socket_role,
+                    ipv4_to_string(ipv4_addr, ipv4_buf, sizeof(ipv4_buf)));
+            goto configure_multicast_options;
+        }
+        explicit_errno = errno;
+        fprintf(stderr, "warning: mdns %s socket: IP_MULTICAST_IF failed for interface %s: %s; trying kernel-selected interface\n",
+                socket_role,
+                ipv4_to_string(ipv4_addr, ipv4_buf, sizeof(ipv4_buf)),
+                strerror(explicit_errno));
     }
 
-    fprintf(stderr, "mdns %s socket: outbound multicast interface %s\n",
-            socket_role,
-            ipv4_to_string(ipv4_addr, ipv4_buf, sizeof(ipv4_buf)));
+    multicast_if.s_addr = htonl(INADDR_ANY);
+    if (setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_IF, &multicast_if, sizeof(multicast_if)) < 0) {
+        fallback_errno = errno;
+        if (ipv4_addr != 0) {
+            fprintf(stderr, "setsockopt(IP_MULTICAST_IF kernel-selected): %s\n", strerror(fallback_errno));
+            errno = explicit_errno != 0 ? explicit_errno : fallback_errno;
+        } else {
+            errno = fallback_errno;
+            perror("setsockopt(IP_MULTICAST_IF kernel-selected)");
+        }
+        return -1;
+    }
+    fprintf(stderr, "mdns %s socket: outbound multicast interface kernel-selected\n",
+            socket_role);
 
+configure_multicast_options:
     yes = 255;
     (void)setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_TTL, &yes, sizeof(yes));
     yes = 1;
@@ -1820,7 +1881,7 @@ static int acquire_mdns_socket(int shared_bind, uint32_t ipv4_addr) {
     if (!shared_bind && mdnsresponder_is_alive()) {
         fprintf(stderr, "mDNS takeover failed: Apple mDNSResponder is still alive after retry ladder\n");
     } else {
-        fprintf(stderr, "mDNS takeover failed: could not bind UDP 5353 using %s mode\n",
+        fprintf(stderr, "mDNS takeover failed: could not acquire UDP 5353 socket using %s mode\n",
                 shared_bind ? "shared" : "exclusive");
     }
     errno = EADDRINUSE;
@@ -2535,7 +2596,6 @@ static int open_mdns_socket(int shared_bind, int log_bind_errors, uint32_t ipv4_
     int sockfd;
     int yes = 1;
     struct sockaddr_in addr;
-    struct ip_mreq mreq;
 
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) {
@@ -2567,11 +2627,7 @@ static int open_mdns_socket(int shared_bind, int log_bind_errors, uint32_t ipv4_
         return -1;
     }
 
-    memset(&mreq, 0, sizeof(mreq));
-    mreq.imr_multiaddr.s_addr = inet_addr(MDNS_GROUP);
-    mreq.imr_interface.s_addr = htonl(INADDR_ANY);
-    if (setsockopt(sockfd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) {
-        perror("setsockopt(IP_ADD_MEMBERSHIP)");
+    if (join_mdns_multicast_group(sockfd, ipv4_addr, socket_role) != 0) {
         close(sockfd);
         return -1;
     }
@@ -2731,7 +2787,7 @@ int main(int argc, char **argv) {
         struct service_record_set filtered_records;
         memset(&captured_records, 0, sizeof(captured_records));
         memset(&filtered_records, 0, sizeof(filtered_records));
-        if (capture_mdns_snapshot_raw_with_retry(&captured_records) == 0) {
+        if (capture_mdns_snapshot_raw_with_retry(&captured_records, cfg.ipv4_addr) == 0) {
             fprintf(stderr, "snapshot capture: captured %lu records\n", (unsigned long)captured_records.count);
             if (cfg.save_all_snapshot_path[0] != '\0' &&
                 write_snapshot_file_atomic(cfg.save_all_snapshot_path, &captured_records) != 0) {

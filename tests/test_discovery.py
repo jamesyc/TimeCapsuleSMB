@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import sys
+import types
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -16,11 +17,15 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.discovery.bonjour import (
     AIRPORT_SERVICE,
     BonjourDiscoverySnapshot,
+    BonjourPtrRecordObservation,
     BonjourResolvedService,
+    BonjourServiceEvent,
     BonjourServiceInstance,
     Collector,
+    DNS_RECORD_TYPE_PTR,
     Discovered,
     SMB_SERVICE,
+    PtrRecordObserver,
     ServiceObservation,
     browse_service_instances,
     discover,
@@ -96,26 +101,52 @@ class DiscoveryTests(unittest.TestCase):
         fake_zc = mock.Mock()
         instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
         record = BonjourResolvedService("Home", "home.local", "_smb._tcp.local.", port=445, ipv4=["10.0.1.1"])
+        event = BonjourServiceEvent("_smb._tcp.local.", "Added", "Home", "Home._smb._tcp.local.", 0.25)
+        ptr_record = BonjourPtrRecordObservation(
+            "_smb._tcp.local.",
+            "Home._smb._tcp.local.",
+            "Home",
+            120,
+            False,
+            False,
+            0.25,
+        )
         fake_collector = mock.Mock()
         fake_collector.results.return_value = [record]
         fake_collector.service_instances.return_value = [instance]
+        fake_collector.service_events.return_value = [event]
         fake_collector.pending_count.return_value = 1
         fake_collector.service_added_count = 2
         fake_collector.service_updated_count = 1
         fake_collector.resolve_attempt_count = 3
         fake_collector.resolve_success_count = 1
         fake_collector.resolve_error_count = 1
+        fake_ptr_observer = mock.Mock()
+        fake_ptr_observer.observations.return_value = [ptr_record]
+        fake_ptr_observer.error = None
+        ptr_observer_calls = mock.Mock()
+        ptr_observer_calls.attach_mock(fake_ptr_observer.stop, "stop")
+        ptr_observer_calls.attach_mock(fake_ptr_observer.observations, "observations")
         fake_ip_version = mock.Mock()
         fake_ip_version.V4Only = object()
         fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
 
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
             with mock.patch("timecapsulesmb.discovery.bonjour.Collector", return_value=fake_collector):
-                with mock.patch("timecapsulesmb.discovery.bonjour.time.monotonic", side_effect=[10.0, 10.0, 16.125]):
-                    snapshot, diagnostics = discover_snapshot_detailed(SMB_SERVICE, timeout=0)
+                with mock.patch("timecapsulesmb.discovery.bonjour.PtrRecordObserver", return_value=fake_ptr_observer):
+                    with mock.patch(
+                        "timecapsulesmb.discovery.bonjour.time.monotonic",
+                        side_effect=[10.0, 10.0, 16.125],
+                    ):
+                        snapshot, diagnostics = discover_snapshot_detailed(SMB_SERVICE, timeout=0)
 
         self.assertEqual(snapshot.instances, [instance])
         self.assertEqual(snapshot.resolved, [record])
+        fake_ptr_observer.start.assert_called_once_with(fake_zc)
+        ptr_observer_calls.assert_has_calls([
+            mock.call.stop(fake_zc),
+            mock.call.observations(),
+        ])
         self.assertEqual(diagnostics.service, "_smb")
         self.assertEqual(diagnostics.service_types, ["_smb._tcp.local."])
         self.assertEqual(diagnostics.ip_version, "V4Only")
@@ -128,6 +159,8 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(diagnostics.resolve_attempt_count, 3)
         self.assertEqual(diagnostics.resolve_success_count, 1)
         self.assertEqual(diagnostics.resolve_error_count, 1)
+        self.assertEqual(diagnostics.service_events, [event])
+        self.assertEqual(diagnostics.ptr_records, [ptr_record])
 
     def test_discover_includes_unresolved_browse_instances(self) -> None:
         fake_zc = mock.Mock()
@@ -268,6 +301,42 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(records[0].hostname, "home.local")
         self.assertEqual(records[0].ipv4, ["10.0.1.1"])
 
+    def test_collector_records_browse_event_diagnostics(self) -> None:
+        class FakeChange:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+        class FakeStateChange:
+            Added = FakeChange("Added")
+            Updated = FakeChange("Updated")
+            Removed = FakeChange("Removed")
+
+        fake_zeroconf_module = mock.Mock(ServiceStateChange=FakeStateChange)
+        fake_zc = mock.Mock()
+        collector = Collector(fake_zc, ["_smb._tcp.local."], start_time=10.0)
+
+        with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
+            with mock.patch("timecapsulesmb.discovery.bonjour.time.monotonic", side_effect=[10.25, 10.5]):
+                collector._on_service_state_change(
+                    zeroconf=fake_zc,
+                    service_type="_smb._tcp.local.",
+                    name="Home._smb._tcp.local.",
+                    state_change=FakeStateChange.Added,
+                )
+                collector._on_service_state_change(
+                    zeroconf=fake_zc,
+                    service_type="_smb._tcp.local.",
+                    name="Home._smb._tcp.local.",
+                    state_change=FakeStateChange.Removed,
+                )
+
+        events = collector.service_events()
+        self.assertEqual([event.state for event in events], ["Added", "Removed"])
+        self.assertEqual([event.elapsed_sec for event in events], [0.25, 0.5])
+        self.assertEqual(events[0].name, "Home")
+        self.assertEqual(events[0].fullname, "Home._smb._tcp.local.")
+        self.assertEqual(collector.service_instances()[0].name, "Home")
+
     def test_collector_keeps_failed_pending_records_for_later_retry(self) -> None:
         class FakeInfo:
             def __init__(self, name: str, server: str, address: str) -> None:
@@ -330,6 +399,79 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(collector.resolve_attempt_count, 2)
         self.assertEqual(collector.resolve_success_count, 1)
         self.assertEqual(collector.resolve_error_count, 0)
+
+    def test_ptr_record_observer_records_matching_ptr_updates(self) -> None:
+        class FakePtrRecord:
+            name = "_smb._tcp.local."
+            type = DNS_RECORD_TYPE_PTR
+            alias = "Home._smb._tcp.local."
+            ttl = 120
+
+            def is_expired(self, now: float) -> bool:
+                return False
+
+        class FakeIgnoredRecord:
+            name = "_airport._tcp.local."
+            type = DNS_RECORD_TYPE_PTR
+            alias = "Home._airport._tcp.local."
+            ttl = 120
+
+        class FakeUpdate:
+            new = FakePtrRecord()
+            old = object()
+
+        observer = PtrRecordObserver(["_smb._tcp.local."], start_time=20.0)
+
+        with mock.patch("timecapsulesmb.discovery.bonjour.time.monotonic", return_value=20.75):
+            observer.async_update_records(
+                None,
+                20.75,
+                [FakeUpdate(), FakeIgnoredRecord()],
+            )
+
+        records = observer.observations()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].service_type, "_smb._tcp.local.")
+        self.assertEqual(records[0].alias, "Home._smb._tcp.local.")
+        self.assertEqual(records[0].alias_name, "Home")
+        self.assertEqual(records[0].ttl, 120)
+        self.assertFalse(records[0].expired)
+        self.assertTrue(records[0].old_record_present)
+        self.assertEqual(records[0].elapsed_sec, 0.75)
+
+    def test_ptr_record_observer_captures_setup_error_as_diagnostic(self) -> None:
+        class FakeDNSQuestion:
+            def __init__(self, name: str, record_type: int, record_class: int) -> None:
+                self.name = name
+                self.record_type = record_type
+                self.record_class = record_class
+
+        class FakeRecordUpdateListener:
+            pass
+
+        fake_zeroconf_module = types.ModuleType("zeroconf")
+        fake_zeroconf_module.__path__ = []
+        fake_zeroconf_module.DNSQuestion = FakeDNSQuestion
+        fake_zeroconf_module.RecordUpdateListener = FakeRecordUpdateListener
+        fake_zeroconf_const_module = types.ModuleType("zeroconf.const")
+        fake_zeroconf_const_module._CLASS_IN = 1
+        fake_zeroconf_const_module._TYPE_PTR = DNS_RECORD_TYPE_PTR
+        fake_zc = mock.Mock()
+        fake_zc.add_listener.side_effect = RuntimeError("listener unavailable")
+        observer = PtrRecordObserver(["_smb._tcp.local."], start_time=0.0)
+
+        with mock.patch.dict(
+            sys.modules,
+            {
+                "zeroconf": fake_zeroconf_module,
+                "zeroconf.const": fake_zeroconf_const_module,
+            },
+        ):
+            observer.start(fake_zc)
+        observer.stop(fake_zc)
+
+        self.assertEqual(observer.error, "RuntimeError: listener unavailable")
+        fake_zc.remove_listener.assert_not_called()
 
     def test_filter_service_records_returns_only_matching_service(self) -> None:
         airport = Discovered(

@@ -20,7 +20,9 @@ from timecapsulesmb.device.probe import (
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoveryDiagnostics,
     BonjourDiscoverySnapshot,
+    BonjourPtrRecordObservation,
     BonjourResolvedService,
+    BonjourServiceEvent,
     BonjourServiceInstance,
     Discovered,
 )
@@ -111,6 +113,62 @@ class TelemetryDebugTests(unittest.TestCase):
         self.assertEqual(summary["pending_count"], 1)
         self.assertEqual(summary["resolve_error_count"], 1)
         self.assertEqual(summary["instances"][0]["fullname"], "Home._smb._tcp.local.")
+
+    def test_debug_summary_for_bonjour_diagnostics_keeps_bounded_event_telemetry(self) -> None:
+        service_events = [
+            BonjourServiceEvent(
+                service_type="_smb._tcp.local.",
+                state="Added",
+                name=f"Home {idx}",
+                fullname=f"Home {idx}._smb._tcp.local.",
+                elapsed_sec=float(idx),
+            )
+            for idx in range(55)
+        ]
+        ptr_records = [
+            BonjourPtrRecordObservation(
+                service_type="_smb._tcp.local.",
+                alias=f"Home {idx}._smb._tcp.local.",
+                alias_name=f"Home {idx}",
+                ttl=120,
+                expired=False,
+                old_record_present=False,
+                elapsed_sec=float(idx),
+            )
+            for idx in range(55)
+        ]
+        diagnostics = BonjourDiscoveryDiagnostics(
+            service="_smb",
+            service_types=["_smb._tcp.local."],
+            timeout_sec=6.0,
+            elapsed_sec=6.125,
+            ip_version="V4Only",
+            instance_count=0,
+            resolved_count=0,
+            pending_count=0,
+            service_added_count=0,
+            service_updated_count=0,
+            resolve_attempt_count=0,
+            resolve_success_count=0,
+            resolve_error_count=0,
+            zeroconf_version="0.148.0",
+            service_events=service_events,
+            ptr_records=ptr_records,
+            ptr_record_error="listener setup failed",
+        )
+
+        summary = debug_summary(diagnostics)
+
+        self.assertEqual(summary["zeroconf_version"], "0.148.0")
+        self.assertEqual(summary["zeroconf_interfaces"], "All")
+        self.assertFalse(summary["zeroconf_apple_p2p"])
+        self.assertEqual(summary["service_event_count"], 55)
+        self.assertEqual(summary["ptr_record_count"], 55)
+        self.assertEqual(len(summary["service_events"]), 50)
+        self.assertEqual(len(summary["ptr_records"]), 50)
+        self.assertEqual(summary["service_events"][0]["name"], "Home 0")
+        self.assertEqual(summary["ptr_records"][0]["alias_name"], "Home 0")
+        self.assertEqual(summary["ptr_record_error"], "listener setup failed")
 
     def test_debug_summary_for_native_dns_sd_diagnostics_is_bounded(self) -> None:
         events = [
