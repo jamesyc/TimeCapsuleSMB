@@ -2,11 +2,12 @@ diff --git a/source3/lib/tallocmsg.c b/source3/lib/tallocmsg.c
 index 750b3bf..27e5e77 100644
 --- a/source3/lib/tallocmsg.c
 +++ b/source3/lib/tallocmsg.c
-@@ -62,6 +62,17 @@ void register_msg_pool_usage(
+@@ -62,6 +62,19 @@ void register_msg_pool_usage(
  	TALLOC_CTX *mem_ctx, struct messaging_context *msg_ctx)
  {
  	struct tevent_req *req = NULL;
 +
++#ifndef HAVE_PTHREAD
 +	/*
 +	 * The Time Capsule appliance build runs Samba without pthread support on
 +	 * NetBSD4 and NetBSD6/7. Samba 4.24's MSG_REQ_POOL_USAGE diagnostic hook
@@ -17,6 +18,7 @@ index 750b3bf..27e5e77 100644
 +	 * messaging, process control, and SMB serving do not depend on it.
 +	 */
 +	return;
++#endif
  
  	req = messaging_filtered_read_send(
  		mem_ctx,

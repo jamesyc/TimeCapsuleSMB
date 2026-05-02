@@ -77,8 +77,6 @@ def upload_deployment_payload(
     rendered_smbconf: Path,
 ) -> None:
     run_scp(connection, plan.smbd_path, plan.payload_targets["smbd"])
-    for name, path in plan.runtime_helper_paths.items():
-        run_scp(connection, path, plan.payload_targets[name])
     run_scp(connection, plan.mdns_path, plan.payload_targets["mdns-advertiser"])
     run_scp(connection, plan.mdns_path, plan.flash_targets["mdns-advertiser"])
     run_scp(connection, plan.nbns_path, plan.payload_targets["nbns-advertiser"])

@@ -116,10 +116,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         share_use_disk_root = parse_bool(values.get("TC_SHARE_USE_DISK_ROOT", "false"))
         resolved_artifacts = resolve_payload_artifacts(REPO_ROOT, payload_family)
         smbd_path = resolved_artifacts["smbd"].absolute_path
-        runtime_helper_paths = {
-            "samba-dcerpcd": resolved_artifacts["samba-dcerpcd"].absolute_path,
-            "rpcd_classic": resolved_artifacts["rpcd_classic"].absolute_path,
-        }
         mdns_path = resolved_artifacts["mdns-advertiser"].absolute_path
         nbns_path = resolved_artifacts["nbns-advertiser"].absolute_path
         device_paths = build_device_paths(
@@ -134,7 +130,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             smbd_path,
             mdns_path,
             nbns_path,
-            runtime_helper_paths=runtime_helper_paths,
             install_nbns=args.install_nbns,
             activate_netbsd4=is_netbsd4,
             reboot_after_deploy=not args.no_reboot,

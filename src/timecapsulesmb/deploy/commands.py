@@ -98,7 +98,7 @@ def render_remote_action(action: RemoteAction) -> str:
     if action.kind == "prepare_dirs":
         payload_dir = action.args[0]
         return (
-            "mkdir -p {} {} {} {} {} {} {} && "
+            "mkdir -p {} {} {} {} {} {} && "
             "rm -rf {} {} {} {} && "
             "ln -s {} {} && "
             "ln -s {} {} && "
@@ -106,7 +106,6 @@ def render_remote_action(action: RemoteAction) -> str:
             "ln -s {} {}"
         ).format(
             shlex.quote(payload_dir),
-            shlex.quote(payload_dir + "/libexec"),
             shlex.quote(payload_dir + "/private"),
             shlex.quote(payload_dir + "/cache"),
             shlex.quote("/mnt/Flash"),
@@ -138,8 +137,6 @@ def render_remote_action(action: RemoteAction) -> str:
         private_dir = f"{payload_dir}/private"
         return (
             f"chmod 755 {shlex.quote(payload_dir + '/smbd')} "
-            f"{shlex.quote(payload_dir + '/libexec/samba-dcerpcd')} "
-            f"{shlex.quote(payload_dir + '/libexec/rpcd_classic')} "
             f"{shlex.quote(payload_dir + '/mdns-advertiser')} "
             f"{shlex.quote(payload_dir + '/nbns-advertiser')} && "
             f"chmod 755 {shlex.quote('/mnt/Flash/rc.local')} "
@@ -148,7 +145,6 @@ def render_remote_action(action: RemoteAction) -> str:
             f"{shlex.quote('/mnt/Flash/watchdog.sh')} "
             f"{shlex.quote('/mnt/Flash/dfree.sh')} "
             f"{shlex.quote('/mnt/Flash/mdns-advertiser')} && "
-            f"chmod 755 {shlex.quote(payload_dir + '/libexec')} && "
             f"chmod 755 {shlex.quote(payload_dir + '/cache')} && "
             f"chmod 700 {shlex.quote(private_dir)} && "
             f"chmod 600 {shlex.quote(private_dir + '/smbpasswd')} "

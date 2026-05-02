@@ -55,7 +55,6 @@ from timecapsulesmb.deploy.verify import (
 )
 from timecapsulesmb.device.probe import (
     ManagedMdnsTakeoverProbeResult,
-    ManagedRpcProbeResult,
     ManagedRuntimeProbeResult,
     ManagedSmbdProbeResult,
     build_device_paths,
@@ -66,7 +65,6 @@ from timecapsulesmb.device.probe import (
     probe_device_conn,
     probe_managed_runtime_conn,
     probe_managed_mdns_takeover_conn,
-    probe_managed_rpc_conn,
     probe_managed_smbd_conn,
     probe_remote_airport_identity_conn,
     wait_for_ssh_state_conn,
@@ -246,10 +244,10 @@ class DeployModuleTests(unittest.TestCase):
         self.assertEqual(paths.data_root, "/Volumes/dk2/ShareRoot")
         self.assertEqual(paths.data_root_marker, "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported")
         self.assertEqual(plan.remote_directories[0], payload_dir)
-        self.assertIn(f"{payload_dir}/libexec", plan.remote_directories)
         self.assertIn(f"{payload_dir}/cache", plan.remote_directories)
-        self.assertEqual(plan.payload_targets["samba-dcerpcd"], f"{payload_dir}/libexec/samba-dcerpcd")
-        self.assertEqual(plan.payload_targets["rpcd_classic"], f"{payload_dir}/libexec/rpcd_classic")
+        self.assertNotIn(f"{payload_dir}/libexec", plan.remote_directories)
+        self.assertNotIn("samba-dcerpcd", plan.payload_targets)
+        self.assertNotIn("rpcd_classic", plan.payload_targets)
         self.assertEqual(plan.payload_targets["nbns-advertiser"], f"{payload_dir}/nbns-advertiser")
         self.assertEqual(
             plan.pre_upload_actions,
@@ -428,7 +426,8 @@ class DeployModuleTests(unittest.TestCase):
         watchdog = load_boot_asset_text("watchdog.sh")
         self.assertIn(". /mnt/Flash/common.sh", start)
         self.assertIn(". /mnt/Flash/common.sh", watchdog)
-        self.assertIn('for helper_dir in "$RAM_SAMBA_LIBEXEC" "$RAM_LIBEXEC" "$RAM_LIB"; do', start)
+        self.assertNotIn("RAM_SAMBA_LIBEXEC", start)
+        self.assertNotIn("stage_runtime_helper", start)
         self.assertNotIn("get_radio_mac()", start)
         self.assertNotIn("get_airport_srcv()", start)
         self.assertNotIn("get_airport_syvs()", start)
@@ -1143,7 +1142,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('if wait_for_process "$MDNS_PROC_NAME" 100; then', rendered)
         self.assertIn('log "smbd startup complete: process observed"', rendered)
 
-    def test_render_start_script_stages_rpc_helpers_without_starting_them_at_boot(self) -> None:
+    def test_render_start_script_does_not_stage_rpc_helpers_from_disk(self) -> None:
         values = {
             "TC_PAYLOAD_DIR_NAME": "samba4",
             "TC_SHARE_NAME": "Data",
@@ -1156,10 +1155,9 @@ class DeployModuleTests(unittest.TestCase):
         }
         bundle = build_template_bundle(values)
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn('stage_runtime_helper "samba-dcerpcd" "$dcerpcd_src"', rendered)
-        self.assertIn('stage_runtime_helper "rpcd_classic" "$rpcd_classic_src"', rendered)
-        self.assertNotIn("start_rpc_helpers()", rendered)
-        self.assertNotIn("Samba RPC named-pipe supervisor", rendered)
+        self.assertNotIn("stage_runtime_helper", rendered)
+        self.assertNotIn("find_payload_runtime_helper", rendered)
+        self.assertNotIn("ln -s \"$helper_src\"", rendered)
         self.assertNotIn("/mnt/Memory/samba4/var/run/ncalrpc/np/srvsvc", rendered)
 
     def test_render_start_script_prepares_local_hostname_resolution_after_network_detection(self) -> None:
@@ -2560,17 +2558,7 @@ int main(void) {{
 
     def test_upload_deployment_payload_uploads_all_expected_files(self) -> None:
         paths = build_device_paths("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan(
-            "host",
-            paths,
-            Path("bin/smbd"),
-            Path("bin/mdns"),
-            Path("bin/nbns"),
-            runtime_helper_paths={
-                "samba-dcerpcd": Path("bin/samba-dcerpcd"),
-                "rpcd_classic": Path("bin/rpcd_classic"),
-            },
-        )
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
         connection = SshConnection("host", "pw", "-o foo")
         with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
             upload_deployment_payload(
@@ -2583,14 +2571,12 @@ int main(void) {{
                 rendered_watchdog=Path("/tmp/watchdog.sh"),
                 rendered_smbconf=Path("/tmp/smb.conf.template"),
             )
-        self.assertEqual(scp_mock.call_count, 12)
+        self.assertEqual(scp_mock.call_count, 10)
         destinations = [call.args[2] for call in scp_mock.call_args_list]
         self.assertEqual(
             destinations,
             [
                 "/Volumes/dk2/samba4/smbd",
-                "/Volumes/dk2/samba4/libexec/samba-dcerpcd",
-                "/Volumes/dk2/samba4/libexec/rpcd_classic",
                 "/Volumes/dk2/samba4/mdns-advertiser",
                 "/mnt/Flash/mdns-advertiser",
                 "/Volumes/dk2/samba4/nbns-advertiser",
@@ -2679,53 +2665,6 @@ int main(void) {{
         self.assertFalse(result.ready)
         self.assertEqual(result.detail, "Apple mDNSResponder is still running")
 
-    def test_probe_managed_rpc_checks_srvsvc_named_pipe_socket_when_helper_is_staged(self) -> None:
-        with mock.patch(
-            "timecapsulesmb.device.probe.run_ssh",
-            return_value=mock.Mock(returncode=0, stdout="PASS:Samba RPC srvsvc named-pipe socket present\n"),
-        ) as run_ssh_mock:
-            result = probe_managed_rpc_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=45)
-        self.assertTrue(result.ready)
-        remote_command = run_ssh_mock.call_args.args[1]
-        self.assertIn("/mnt/Memory/samba4/libexec/samba/samba-dcerpcd", remote_command)
-        self.assertIn("/mnt/Memory/samba4/var/run/ncalrpc/np/srvsvc", remote_command)
-        self.assertIn('/bin/ls "$socket"', remote_command)
-        self.assertNotIn("/usr/bin/pkill -0 samba-dcerpcd", remote_command)
-        self.assertNotIn("--libexec-rpcds", remote_command)
-        self.assertNotIn("helper launch requested", remote_command)
-        self.assertNotIn("while [ \"$attempt\"", remote_command)
-        self.assertNotIn("[ -S ", remote_command)
-
-    def test_probe_managed_rpc_launches_helper_detached_when_socket_is_missing(self) -> None:
-        status_proc = mock.Mock(
-            returncode=1,
-            stdout="FAIL:Samba RPC srvsvc named-pipe socket missing; helper launch needed\n",
-        )
-        launch_proc = mock.Mock(returncode=0, stdout="")
-        with mock.patch(
-            "timecapsulesmb.device.probe.run_ssh",
-            side_effect=[status_proc, launch_proc],
-        ) as run_ssh_mock:
-            result = probe_managed_rpc_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=45)
-        self.assertFalse(result.ready)
-        self.assertEqual(run_ssh_mock.call_count, 2)
-        launch_command = run_ssh_mock.call_args_list[1].args[1]
-        self.assertIn("exec </dev/null >/mnt/Memory/samba4/var/log.samba-dcerpcd-startup 2>&1", launch_command)
-        self.assertIn("--libexec-rpcds", launch_command)
-        self.assertIn("--np-helper", launch_command)
-        self.assertIn("--debuglevel=1", launch_command)
-        self.assertIn("& exit 0", launch_command)
-        self.assertIn("helper launch requested", result.detail)
-
-    def test_probe_managed_rpc_returns_detail_when_socket_is_missing(self) -> None:
-        with mock.patch(
-            "timecapsulesmb.device.probe.run_ssh",
-            return_value=mock.Mock(returncode=1, stdout="FAIL:Samba RPC srvsvc named-pipe socket missing\n"),
-        ):
-            result = probe_managed_rpc_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=12)
-        self.assertFalse(result.ready)
-        self.assertEqual(result.detail, "Samba RPC srvsvc named-pipe socket missing")
-
     def test_probe_managed_runtime_polls_both_probes_and_rechecks_mdns_after_settle(self) -> None:
         smbd_ready = ManagedSmbdProbeResult(True, "managed smbd ready", ("PASS:managed smbd ready",))
         mdns_not_ready = ManagedMdnsTakeoverProbeResult(False, "managed mDNS takeover not active", ("FAIL:managed mDNS takeover not active",))
@@ -2755,7 +2694,7 @@ int main(void) {{
         self.assertIn("pkill mdns-advertiser >/dev/null 2>&1 || true", text)
         self.assertIn("mkdir -p /Volumes/dk2/ShareRoot", text)
         self.assertIn("/bin/sh -c ': > /Volumes/dk2/ShareRoot/.com.apple.timemachine.supported'", text)
-        self.assertIn(f"mkdir -p {payload_dir} {payload_dir}/libexec {payload_dir}/private {payload_dir}/cache /mnt/Flash", text)
+        self.assertIn(f"mkdir -p {payload_dir} {payload_dir}/private {payload_dir}/cache /mnt/Flash", text)
         self.assertIn(f"/bin/sh -c ': > {payload_dir}/private/nbns.enabled'", text)
         self.assertIn(f"generated smbpasswd -> {payload_dir}/private/smbpasswd", text)
         self.assertIn(f"generated adisk UUID -> {payload_dir}/private/adisk.uuid", text)
@@ -2846,12 +2785,10 @@ int main(void) {{
         permissions_cmd = render_remote_action(install_permissions_action(payload_dir))
         enable_cmd = render_remote_action(enable_nbns_action(payload_dir + "/private"))
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4'", prepare_cmd)
-        self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/libexec'", prepare_cmd)
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/private'", prepare_cmd)
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/cache'", prepare_cmd)
-        self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/libexec/samba-dcerpcd'", permissions_cmd)
-        self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/libexec/rpcd_classic'", permissions_cmd)
-        self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/libexec'", permissions_cmd)
+        self.assertNotIn("'/Volumes/dk2/Time Capsule Samba 4/libexec'", prepare_cmd)
+        self.assertNotIn("'/Volumes/dk2/Time Capsule Samba 4/libexec", permissions_cmd)
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/cache'", permissions_cmd)
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/nbns-advertiser'", permissions_cmd)
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/private/nbns.enabled'", permissions_cmd)

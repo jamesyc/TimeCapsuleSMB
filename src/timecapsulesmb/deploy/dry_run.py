@@ -80,7 +80,6 @@ def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
     data["smbd_path"] = str(plan.smbd_path)
     data["mdns_path"] = str(plan.mdns_path)
     data["nbns_path"] = str(plan.nbns_path)
-    data["runtime_helper_paths"] = {name: str(path) for name, path in plan.runtime_helper_paths.items()}
     _add_reboot_request_json(data, plan.reboot_required)
     return data
 

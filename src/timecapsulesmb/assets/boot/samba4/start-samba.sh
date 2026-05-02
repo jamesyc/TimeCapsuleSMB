@@ -17,8 +17,6 @@ set -eu
 # Expected persistent payload layout on the mounted disk:
 #   /Volumes/dkX/__PAYLOAD_DIR_NAME__/
 #     smbd                  or sbin/smbd
-#     libexec/samba-dcerpcd  Samba 4.24 named-pipe RPC supervisor
-#     libexec/rpcd_classic   srvsvc/netdfs/wkssvc helper used by smbclient -L
 #     smb.conf.template     optional; uses __DATA_ROOT__ and
 #                           __BIND_INTERFACES__ tokens
 
@@ -26,9 +24,6 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
 . /mnt/Flash/common.sh
 
-RAM_LIBEXEC="$RAM_ROOT/libexec"
-RAM_SAMBA_LIBEXEC="$RAM_LIBEXEC/samba"
-RAM_LIB="$RAM_ROOT/lib"
 RAM_LOCKS="$RAM_ROOT/locks"
 RAM_LOG="$RAM_VAR/rc.local.log"
 SMBD_LOG="$RAM_VAR/log.smbd"
@@ -165,9 +160,9 @@ prepare_legacy_prefix() {
 }
 
 prepare_ram_root() {
-    mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_VAR" "$RAM_LOCKS" "$RAM_PRIVATE" "$RAM_LIBEXEC" "$RAM_SAMBA_LIBEXEC" "$RAM_LIB"
+    mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_VAR" "$RAM_LOCKS" "$RAM_PRIVATE"
     mkdir -p "$RAM_VAR/run/ncalrpc" "$RAM_VAR/cores"
-    chmod 755 "$RAM_ROOT" "$RAM_SBIN" "$RAM_ETC" "$RAM_VAR" "$RAM_LOCKS" "$RAM_PRIVATE" "$RAM_LIBEXEC" "$RAM_SAMBA_LIBEXEC" "$RAM_LIB"
+    chmod 755 "$RAM_ROOT" "$RAM_SBIN" "$RAM_ETC" "$RAM_VAR" "$RAM_LOCKS" "$RAM_PRIVATE"
     chmod 755 "$RAM_VAR/run" "$RAM_VAR/run/ncalrpc"
     chmod 700 "$RAM_VAR/cores"
 }
@@ -576,43 +571,6 @@ find_payload_nbns() {
     return 1
 }
 
-find_payload_runtime_helper() {
-    payload_dir=$1
-    helper_name=$2
-
-    for helper_path in "$payload_dir/libexec/$helper_name" "$payload_dir/$helper_name"; do
-        if [ -x "$helper_path" ]; then
-            log "selected Samba runtime helper $helper_name at $helper_path"
-            echo "$helper_path"
-            return 0
-        fi
-    done
-
-    log "Samba runtime helper $helper_name not found in $payload_dir"
-    return 1
-}
-
-stage_runtime_helper() {
-    helper_name=$1
-    helper_src=$2
-
-    if [ -z "$helper_src" ] || [ ! -x "$helper_src" ]; then
-        log "Samba runtime helper staging skipped for $helper_name"
-        return 0
-    fi
-
-    # Samba 4.24 opens srvsvc and related named pipes through external helper
-    # binaries. The current build preserves the installed SAMBA_LIBEXECDIR
-    # (/root/tc-netbsd*/libexec/samba), while older experiments used lib or
-    # libexec directly. Stage all three names as symlinks to the disk payload.
-    for helper_dir in "$RAM_SAMBA_LIBEXEC" "$RAM_LIBEXEC" "$RAM_LIB"; do
-        rm -f "$helper_dir/$helper_name"
-        ln -s "$helper_src" "$helper_dir/$helper_name"
-    done
-    chmod 755 "$helper_src" >/dev/null 2>&1 || true
-    log "staged Samba runtime helper $helper_name -> $helper_src"
-}
-
 prepare_smbd_disk_logging() {
     if [ "$SMBD_DISK_LOGGING_ENABLED" != "1" ]; then
         return 0
@@ -636,22 +594,6 @@ stage_runtime() {
 
     cp "$smbd_src" "$RAM_SBIN/smbd"
     chmod 755 "$RAM_SBIN/smbd"
-
-    dcerpcd_src=
-    if dcerpcd_src=$(find_payload_runtime_helper "$payload_dir" "samba-dcerpcd"); then
-        :
-    else
-        dcerpcd_src=
-    fi
-    stage_runtime_helper "samba-dcerpcd" "$dcerpcd_src"
-
-    rpcd_classic_src=
-    if rpcd_classic_src=$(find_payload_runtime_helper "$payload_dir" "rpcd_classic"); then
-        :
-    else
-        rpcd_classic_src=
-    fi
-    stage_runtime_helper "rpcd_classic" "$rpcd_classic_src"
 
     if [ -f "$payload_dir/private/nbns.enabled" ] && [ -n "$nbns_src" ] && [ -x "$nbns_src" ]; then
         cp "$nbns_src" "$RAM_SBIN/nbns-advertiser"

@@ -50,9 +50,9 @@ mkdir -p "$OUT" "$SAMBA4X_WORK"
         "s/os\\.environ\\['PYTHONUNBUFFERED'\\] = '1'\\n/os.environ['PYTHONUNBUFFERED'] = '1'\\n\\ndef APPLY_HOSTCC_ENV\\(bld, taskgen\\):\\n    if not getattr\\(taskgen, 'samba_use_hostcc', False\\):\\n        return\\n    if not bld.env.HOSTCC:\\n        return\\n    taskgen.env = taskgen.env.derive\\(\\)\\n    hostcc = TO_LIST\\(bld.env.HOSTCC\\)\\n    gccdeps_cflags = \\[flag for flag in TO_LIST\\(bld.env.CFLAGS\\) if flag in \\('-MD', '-MMD'\\)\\]\\n    host_cflags = TO_LIST\\(bld.env.HOST_CFLAGS\\) + gccdeps_cflags\\n    taskgen.env.CC = hostcc\\n    taskgen.env.LINK_CC = hostcc\\n    taskgen.env.CFLAGS = host_cflags\\n    taskgen.env.CPPFLAGS = TO_LIST\\(bld.env.HOST_CPPFLAGS\\)\\n    taskgen.env.LDFLAGS = []\\n    taskgen.env.LINKFLAGS = []\\n    taskgen.env.STLIB_MARKER = []\\n    taskgen.env.SHLIB_MARKER = []\\n    taskgen.env.FULLSTATIC_MARKER = []\\n    taskgen.env.EXTRA_CFLAGS = host_cflags\\n    taskgen.env.EXTRA_LDFLAGS = []\\n\\n/" \
         "$SAMBA4X_SRC_DIR/buildtools/wafsamba/wafsamba.py"
     patch_perl_any "Samba 4.x static service binary env helper patch" \
-        "s/\\ndef SAMBA_BINARY/\\ndef APPLY_SMBD_STATIC_ENV\\(bld, taskgen\\):\\n    # Time Capsule deploys a tiny static Samba runtime. smbd is the main\\n    # daemon, while samba-dcerpcd and rpcd_classic are required by Samba\\n    # 4.24's srvsvc named-pipe path used by smbclient -L and doctor.\\n    if getattr\\(taskgen, 'target', None\\) not in \\('smbd\\/smbd', 'samba-dcerpcd', 'rpcd_classic'\\):\\n        return\\n    static_linkflags = TO_LIST\\(getattr\\(bld.env, 'SMBD_STATIC_LINKFLAGS', []\\)\\)\\n    static_ldflags = TO_LIST\\(getattr\\(bld.env, 'SMBD_STATIC_LDFLAGS', []\\)\\)\\n    if not static_linkflags and not static_ldflags:\\n        return\\n    taskgen.env = taskgen.env.derive\\(\\)\\n    taskgen.env.LINKFLAGS = static_linkflags\\n    taskgen.env.LDFLAGS = static_ldflags\\n    taskgen.env.LIBPATH = TO_LIST\\(getattr\\(bld.env, 'SMBD_STATIC_LIBPATH', []\\)\\)\\n    taskgen.env.SHLIB_MARKER = getattr\\(bld.env, 'SMBD_STATIC_SHLIB_MARKER', ''\\)\\n    taskgen.env.FULLSTATIC_MARKER = getattr\\(bld.env, 'SMBD_STATIC_FULLSTATIC_MARKER', '-static'\\)\\n\\ndef SAMBA_BINARY/" \
+        "s/\\ndef SAMBA_BINARY/\\ndef APPLY_SMBD_STATIC_ENV\\(bld, taskgen\\):\\n    # Time Capsule runs smbd from a tiny RAM disk. Keep the deployed binary\\n    # fully static and apply the static link flags only to smbd; external\\n    # DCE-RPC helper binaries are intentionally not shipped because executing\\n    # them from the HFS data disk is unsafe if Apple firmware unmounts it.\\n    if getattr\\(taskgen, 'target', None\\) != 'smbd\\/smbd':\\n        return\\n    static_linkflags = TO_LIST\\(getattr\\(bld.env, 'SMBD_STATIC_LINKFLAGS', []\\)\\)\\n    static_ldflags = TO_LIST\\(getattr\\(bld.env, 'SMBD_STATIC_LDFLAGS', []\\)\\)\\n    if not static_linkflags and not static_ldflags:\\n        return\\n    taskgen.env = taskgen.env.derive\\(\\)\\n    taskgen.env.LINKFLAGS = static_linkflags\\n    taskgen.env.LDFLAGS = static_ldflags\\n    taskgen.env.LIBPATH = TO_LIST\\(getattr\\(bld.env, 'SMBD_STATIC_LIBPATH', []\\)\\)\\n    taskgen.env.SHLIB_MARKER = getattr\\(bld.env, 'SMBD_STATIC_SHLIB_MARKER', ''\\)\\n    taskgen.env.FULLSTATIC_MARKER = getattr\\(bld.env, 'SMBD_STATIC_FULLSTATIC_MARKER', '-static'\\)\\n\\ndef SAMBA_BINARY/" \
         "$SAMBA4X_SRC_DIR/buildtools/wafsamba/wafsamba.py"
-    patch_require_fixed "Samba 4.x static service binary env helper patch" "if getattr(taskgen, 'target', None) not in ('smbd/smbd', 'samba-dcerpcd', 'rpcd_classic'):" \
+    patch_require_fixed "Samba 4.x static service binary env helper patch" "if getattr(taskgen, 'target', None) != 'smbd/smbd':" \
         "$SAMBA4X_SRC_DIR/buildtools/wafsamba/wafsamba.py"
     patch_perl_any "Samba 4.x hostcc binary task patch" \
         "s/samba_ldflags  = pie_ldflags\\n        \\)/samba_ldflags  = pie_ldflags,\\n        samba_use_hostcc = use_hostcc\\n        \\)\\n    APPLY_HOSTCC_ENV\\(bld, t\\)/" \
@@ -83,41 +83,16 @@ mkdir -p "$OUT" "$SAMBA4X_WORK"
     patch_require_fixed "Samba 4.x no-pthread TLS configure patch" "continuing; pthread is removed after configure" \
         "$SAMBA4X_SRC_DIR/lib/replace/wscript"
 
-    # rpcd_classic is now shipped as a static helper for SMB share enumeration.
-    # Its target also pulls in smbd_base, so remove duplicate ncacn_np ownership
-    # from the intermediate RPC helper libraries before waf's rule checker runs.
-    patch_apply_checked "Samba 4.x static RPC helper duplicate ncacn_np patch" \
-        "$PATCH_DIR/0020-static-rpc-helper-avoid-ncacn-duplicate.patch" \
-        "$SAMBA4X_SRC_DIR"
-    # The appliance only needs the classic helper for SMB share enumeration and
-    # workstation metadata. Avoid service-control/eventlog endpoints: svcctl
-    # initializes winreg and cascades into extra RPC helpers that are too heavy
-    # for the no-pthread Time Capsule runtime.
-    patch_apply_checked "Samba 4.x minimal classic RPC helper patch" \
-        "$PATCH_DIR/0022-static-rpc-classic-minimal-interfaces.patch" \
-        "$SAMBA4X_SRC_DIR"
-    # samba-dcerpcd asks each rpcd_* helper to list its interfaces before it can
-    # create named-pipe sockets. In no-pthread static builds, rpcd_classic
-    # aborts while reading optional per-helper worker-count settings, so keep
-    # the rpc_worker_main() defaults for that probe path.
-    patch_apply_checked "Samba 4.x no-pthread RPC worker list defaults patch" \
-        "$PATCH_DIR/0023-no-pthread-rpc-worker-list-defaults.patch" \
-        "$SAMBA4X_SRC_DIR"
-    # The build-tree dynconfig override points SAMBA_LIBEXECDIR at the VM
-    # checkout's bin/ directory. We ship the build-tree binary directly to the
-    # Time Capsule, so preserve the configured install libexec path instead.
-    patch_apply_checked "Samba 4.x installed libexec dynconfig patch" \
-        "$PATCH_DIR/0021-installed-libexec-dynconfig.patch" \
-        "$SAMBA4X_SRC_DIR"
-
-    # NetBSD4 needs libc symbol shims, and all Time Capsule runtimes need
-    # path-aware source3 VFS fallbacks. The NetBSD7 SDK can expose *at/openat2
-    # APIs that are missing or incomplete on the older on-device kernels.
+    # NetBSD4 needs libc symbol shims. NetBSD6/7 use the native libc symbols.
     patch_apply_checked "Samba 4.x NetBSD4 replace compatibility patch" \
         "$PATCH_DIR/0001-netbsd4-replace-compat.patch" \
         "$SAMBA4X_SRC_DIR"
+    # The Time Capsule NetBSD kernels/libcs are too old for Samba 4.24's
+    # source3 VFS path to rely on the modern *at/fdopendir behavior. NetBSD6
+    # reaches ENOSYS during share-root tree connect without these fallbacks, so
+    # this patch is appliance-wide and is enabled by TC_SAMBA4X_VFS_AT_PATH_COMPAT.
     patch_apply_checked "Samba 4.x NetBSD source3 VFS at-path fallback patch" \
-        "$PATCH_DIR/0002-netbsd4-vfs-at-path-fallbacks.patch" \
+        "$PATCH_DIR/0002-netbsd-vfs-at-path-fallbacks.patch" \
         "$SAMBA4X_SRC_DIR"
     # NetBSD 6/7 also lack Linux openat2() semantics. Samba's default VFS can
     # request those constraints while connecting the share root, where returning

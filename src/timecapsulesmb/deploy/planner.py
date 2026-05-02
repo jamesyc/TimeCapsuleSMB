@@ -40,7 +40,6 @@ class DeploymentPlan:
     smbd_path: Path
     mdns_path: Path
     nbns_path: Path
-    runtime_helper_paths: dict[str, Path]
     flash_targets: dict[str, str]
     payload_targets: dict[str, str]
     private_dir: str
@@ -87,7 +86,7 @@ NETBSD6_REBOOT_DEPLOY_CHECKS = [
     PlannedCheck("managed_smbd_parent_process", "managed smbd parent process is running"),
     PlannedCheck("managed_smbd_bound_445", "smbd is bound to TCP 445"),
     PlannedCheck("managed_mdns_takeover_ready", "managed mDNS takeover becomes ready"),
-    PlannedCheck("authenticated_smb_listing", "authenticated SMB listing"),
+    PlannedCheck("authenticated_smb_file_ops", "authenticated SMB file operations"),
 ]
 
 UNINSTALL_REBOOT_CHECKS = [
@@ -124,15 +123,12 @@ def build_deployment_plan(
     mdns_path: Path,
     nbns_path: Path,
     *,
-    runtime_helper_paths: dict[str, Path] | None = None,
     install_nbns: bool = False,
     activate_netbsd4: bool = False,
     reboot_after_deploy: bool = True,
     apple_mount_wait_seconds: int = DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
 ) -> DeploymentPlan:
     payload_dir = device_paths.payload_dir
-    runtime_helper_paths = runtime_helper_paths or {}
-    payload_libexec_dir = f"{payload_dir}/libexec"
     flash_targets = {
         "rc.local": "/mnt/Flash/rc.local",
         "common.sh": "/mnt/Flash/common.sh",
@@ -143,8 +139,6 @@ def build_deployment_plan(
     }
     payload_targets = {
         "smbd": f"{payload_dir}/smbd",
-        "samba-dcerpcd": f"{payload_libexec_dir}/samba-dcerpcd",
-        "rpcd_classic": f"{payload_libexec_dir}/rpcd_classic",
         "mdns-advertiser": f"{payload_dir}/mdns-advertiser",
         "nbns-advertiser": f"{payload_dir}/nbns-advertiser",
         "smb.conf.template": f"{payload_dir}/smb.conf.template",
@@ -160,23 +154,17 @@ def build_deployment_plan(
         smbd_path=smbd_path,
         mdns_path=mdns_path,
         nbns_path=nbns_path,
-        runtime_helper_paths=runtime_helper_paths,
         flash_targets=flash_targets,
         payload_targets=payload_targets,
         private_dir=private_dir,
         remote_directories=[
             payload_dir,
-            payload_libexec_dir,
             private_dir,
             cache_dir,
             "/mnt/Flash",
         ],
         uploads=[
             FileTransfer(source=str(smbd_path), destination=payload_targets["smbd"], kind="checked-in binary"),
-            *[
-                FileTransfer(source=str(path), destination=payload_targets[name], kind="checked-in binary")
-                for name, path in runtime_helper_paths.items()
-            ],
             FileTransfer(source=str(mdns_path), destination=payload_targets["mdns-advertiser"], kind="checked-in binary"),
             FileTransfer(source=str(mdns_path), destination=flash_targets["mdns-advertiser"], kind="checked-in binary"),
             FileTransfer(source=str(nbns_path), destination=payload_targets["nbns-advertiser"], kind="checked-in binary"),

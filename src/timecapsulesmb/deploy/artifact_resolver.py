@@ -31,24 +31,18 @@ def resolve_payload_artifacts(repo_root: Path, payload_family: str) -> dict[str,
     if payload_family == PAYLOAD_FAMILY_NETBSD4LE:
         names = {
             "smbd": "smbd-netbsd4le",
-            "samba-dcerpcd": "samba-dcerpcd-netbsd4le",
-            "rpcd_classic": "rpcd_classic-netbsd4le",
             "mdns-advertiser": "mdns-advertiser-netbsd4le",
             "nbns-advertiser": "nbns-advertiser-netbsd4le",
         }
     elif payload_family == PAYLOAD_FAMILY_NETBSD4BE:
         names = {
             "smbd": "smbd-netbsd4be",
-            "samba-dcerpcd": "samba-dcerpcd-netbsd4be",
-            "rpcd_classic": "rpcd_classic-netbsd4be",
             "mdns-advertiser": "mdns-advertiser-netbsd4be",
             "nbns-advertiser": "nbns-advertiser-netbsd4be",
         }
     elif payload_family == PAYLOAD_FAMILY_NETBSD6:
         names = {
             "smbd": "smbd",
-            "samba-dcerpcd": "samba-dcerpcd",
-            "rpcd_classic": "rpcd_classic",
             "mdns-advertiser": "mdns-advertiser",
             "nbns-advertiser": "nbns-advertiser",
         }

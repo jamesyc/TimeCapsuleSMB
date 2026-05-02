@@ -1203,7 +1203,13 @@ class CheckTests(unittest.TestCase):
                                         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout="")):
                                             results, fatal = run_doctor_checks(values, env_exists=True, repo_root=REPO_ROOT)
         self.assertFalse(fatal)
-        self.assertEqual([result.message for result in results[-10:]], [result.message for result in smb_results])
+        messages = [result.message for result in results]
+        file_op_start = messages.index(smb_results[0].message)
+        self.assertEqual(
+            messages[file_op_start:file_op_start + len(smb_results)],
+            [result.message for result in smb_results],
+        )
+        self.assertIn("listing ok", messages[file_op_start + len(smb_results):])
 
     def test_run_doctor_checks_emits_naming_diagnostics(self) -> None:
         values = {
@@ -1334,7 +1340,7 @@ class CheckTests(unittest.TestCase):
             expected_share_name="Data",
         )
 
-    def test_run_doctor_checks_keeps_proxied_listing_missing_share_fatal_but_still_runs_file_ops(self) -> None:
+    def test_run_doctor_checks_treats_proxied_share_listing_as_diagnostic_when_file_ops_pass(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
@@ -1372,7 +1378,7 @@ class CheckTests(unittest.TestCase):
                                     skip_bonjour=True,
                                 )
 
-        self.assertTrue(fatal)
+        self.assertFalse(fatal)
         tunnel_mock.assert_called_once()
         listing_mock.assert_called_once_with(
             "admin",
@@ -1382,15 +1388,17 @@ class CheckTests(unittest.TestCase):
             port=1445,
         )
         file_ops_mock.assert_called_once_with("admin", "pw", "127.0.0.1", "Data", port=1445)
-        fail_messages = [result.message for result in results if result.status == "FAIL"]
-        self.assertIn(
-            "authenticated SMB listing did not include expected share 'Data' on 127.0.0.1",
-            fail_messages,
+        warn_messages = [result.message for result in results if result.status == "WARN"]
+        self.assertTrue(
+            any(
+                "SMB share enumeration via srvsvc is unavailable" in message
+                and "did not include expected share" in message
+                for message in warn_messages
+            )
         )
         self.assertIn("file ops ok", [result.message for result in results if result.status == "PASS"])
-        self.assertFalse(any("continuing with direct share file-ops verification" in result.message for result in results))
 
-    def test_run_doctor_checks_keeps_unrelated_proxied_listing_failure_fatal(self) -> None:
+    def test_run_doctor_checks_keeps_proxied_file_ops_failure_fatal_even_when_listing_is_diagnostic(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
@@ -1409,13 +1417,14 @@ class CheckTests(unittest.TestCase):
         tunnel.__enter__.return_value = None
         tunnel.__exit__.return_value = None
         listing_result = mock.Mock(status="FAIL", message="missing local tool smbclient")
+        file_ops_result = mock.Mock(status="FAIL", message="SMB directory create failed: NT_STATUS_ACCESS_DENIED")
 
         with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
             with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
                 with mock.patch("timecapsulesmb.checks.doctor.find_free_local_port", return_value=1445):
                     with mock.patch("timecapsulesmb.checks.doctor.ssh_local_forward", return_value=tunnel):
                         with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=listing_result):
-                            with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops_detailed", return_value=[]):
+                            with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops_detailed", return_value=[file_ops_result]):
                                 results, fatal = run_doctor_checks(
                                     values,
                                     env_exists=True,
@@ -1425,7 +1434,8 @@ class CheckTests(unittest.TestCase):
                                 )
 
         self.assertTrue(fatal)
-        self.assertTrue(any(result.status == "FAIL" and result.message == "missing local tool smbclient" for result in results))
+        self.assertTrue(any(result.status == "FAIL" and result.message == "SMB directory create failed: NT_STATUS_ACCESS_DENIED" for result in results))
+        self.assertTrue(any(result.status == "WARN" and "missing local tool smbclient" in result.message for result in results))
 
     def test_run_doctor_checks_rejects_ip_mdns_host_label_before_smb_checks(self) -> None:
         values = {

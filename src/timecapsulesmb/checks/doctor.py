@@ -133,6 +133,33 @@ def _doctor_smb_servers(values: dict[str, str], bonjour_target: BonjourServiceTa
     return ordered
 
 
+def _listing_as_diagnostic(result: CheckResult) -> CheckResult:
+    if result.status == "PASS":
+        return result
+    return CheckResult(
+        "WARN",
+        "SMB share enumeration via srvsvc is unavailable; direct authenticated "
+        f"share operations are the required Time Machine path. Detail: {result.message}",
+    )
+
+
+def _check_file_ops_for_first_working_server(
+    username: str,
+    password: str,
+    servers: list[str],
+    share_name: str,
+) -> tuple[str, list[CheckResult]]:
+    last_server = servers[-1]
+    last_results: list[CheckResult] = [CheckResult("FAIL", "authenticated SMB file operations were not attempted")]
+    for server in servers:
+        results = check_authenticated_smb_file_ops_detailed(username, password, server, share_name)
+        if not any(result.status == "FAIL" for result in results):
+            return server, results
+        last_server = server
+        last_results = results
+    return last_server, last_results
+
+
 def check_xattr_tdb_persistence(connection: SshConnection) -> CheckResult:
     proc_stdout = read_active_smb_conf_conn(connection)
     if not proc_stdout.strip():
@@ -402,47 +429,48 @@ def run_doctor_checks(
                 remote_host=host,
                 remote_port=445,
             ):
-                add_result(
-                    check_authenticated_smb_listing(
-                        values["TC_SAMBA_USER"],
-                        smb_password,
-                        "127.0.0.1",
-                        expected_share_name=values["TC_SHARE_NAME"],
-                        port=local_port,
-                    )
-                )
-                for result in check_authenticated_smb_file_ops_detailed(
+                file_ops_results = check_authenticated_smb_file_ops_detailed(
                     values["TC_SAMBA_USER"],
                     smb_password,
                     "127.0.0.1",
                     values["TC_SHARE_NAME"],
                     port=local_port,
-                ):
+                )
+                for result in file_ops_results:
                     add_result(result)
+                add_result(
+                    _listing_as_diagnostic(
+                        check_authenticated_smb_listing(
+                            values["TC_SAMBA_USER"],
+                            smb_password,
+                            "127.0.0.1",
+                            expected_share_name=values["TC_SHARE_NAME"],
+                            port=local_port,
+                        )
+                    )
+                )
         except (Exception, SystemExit) as e:
             add_result(CheckResult("FAIL", f"authenticated SMB checks failed through SSH tunnel: {e}"))
     elif not skip_smb:
         smb_servers = _doctor_smb_servers(values, bonjour_target)
-        listing_result = check_authenticated_smb_listing(
+        _smb_server, file_ops_results = _check_file_ops_for_first_working_server(
             values["TC_SAMBA_USER"],
             smb_password,
             smb_servers,
-            expected_share_name=values["TC_SHARE_NAME"],
-        )
-        add_result(listing_result)
-        if listing_result.status == "PASS":
-            smb_server = listing_result.message.removeprefix(
-                f"authenticated SMB listing works for {values['TC_SAMBA_USER']}@"
-            )
-        else:
-            smb_server = extract_host(values["TC_HOST"])
-        for result in check_authenticated_smb_file_ops_detailed(
-            values["TC_SAMBA_USER"],
-            smb_password,
-            smb_server,
             values["TC_SHARE_NAME"],
-        ):
+        )
+        for result in file_ops_results:
             add_result(result)
+        add_result(
+            _listing_as_diagnostic(
+                check_authenticated_smb_listing(
+                    values["TC_SAMBA_USER"],
+                    smb_password,
+                    smb_servers,
+                    expected_share_name=values["TC_SHARE_NAME"],
+                )
+            )
+        )
 
     fatal = any(is_fatal(result) for result in results)
     return results, fatal
