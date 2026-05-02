@@ -15,7 +15,6 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.discovery.bonjour import (
     AIRPORT_SERVICE,
-    BonjourDiscoveryError,
     BonjourDiscoverySnapshot,
     BonjourResolvedService,
     BonjourServiceInstance,
@@ -436,7 +435,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIn("home.local", text)
 
     def test_run_cli_reports_bonjour_dependency_errors_as_system_exit(self) -> None:
-        with mock.patch("timecapsulesmb.cli.discover.discover_snapshot", side_effect=BonjourDiscoveryError("zeroconf missing")):
+        with mock.patch("timecapsulesmb.cli.discover.discover_snapshot", side_effect=RuntimeError("zeroconf missing")):
             with self.assertRaises(SystemExit) as cm:
                 run_cli([])
 

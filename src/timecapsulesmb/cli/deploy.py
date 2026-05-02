@@ -28,6 +28,7 @@ from timecapsulesmb.deploy.templates import (
     write_boot_asset,
 )
 from timecapsulesmb.deploy.verify import (
+    managed_runtime_ready,
     render_managed_runtime_verification,
     verify_managed_runtime,
 )
@@ -217,7 +218,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up...",
             ):
                 print(line)
-            if not verification:
+            if not managed_runtime_ready(verification):
                 print("NetBSD4 activation failed.")
                 command_context.fail_with_error("NetBSD4 activation failed.")
                 return 1
@@ -259,7 +260,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 heading="Wait for device to finish loading; it can take a few minutes for Samba to start up...",
             ):
                 print(line)
-            if not verification:
+            if not managed_runtime_ready(verification):
                 print("Managed runtime did not become ready after reboot.")
                 command_context.fail_with_error("Managed runtime did not become ready after reboot.")
                 return 1

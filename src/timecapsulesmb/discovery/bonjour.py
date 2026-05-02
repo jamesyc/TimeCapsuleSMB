@@ -24,10 +24,6 @@ PENDING_RESOLVE_TIMEOUT_MS = 500
 FINAL_PENDING_RESOLVE_TIMEOUT_MS = 3000
 
 
-class BonjourDiscoveryError(RuntimeError):
-    pass
-
-
 @dataclass
 class BonjourServiceInstance:
     service_type: str
@@ -347,7 +343,7 @@ def _open_zeroconf() -> Any:
     try:
         from zeroconf import IPVersion, Zeroconf
     except Exception as e:
-        raise BonjourDiscoveryError(
+        raise RuntimeError(
             "Failed to import zeroconf. Run './tcapsule bootstrap' first, or use 'make install'. "
             f"{type(e).__name__}: {e}"
         ) from e

@@ -10,7 +10,7 @@ from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.dry_run import format_activation_plan
 from timecapsulesmb.deploy.executor import run_remote_actions
 from timecapsulesmb.deploy.planner import build_netbsd4_activation_plan
-from timecapsulesmb.deploy.verify import render_managed_runtime_verification, verify_managed_runtime
+from timecapsulesmb.deploy.verify import managed_runtime_ready, render_managed_runtime_verification, verify_managed_runtime
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, render_compatibility_message
 from timecapsulesmb.device.probe import probe_managed_runtime_conn
 from timecapsulesmb.telemetry import TelemetryClient
@@ -67,7 +67,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up...",
         ):
             print(line)
-        if not verification:
+        if not managed_runtime_ready(verification):
             print("NetBSD4 activation failed.")
             command_context.fail_with_error("NetBSD4 activation failed.")
             return 1

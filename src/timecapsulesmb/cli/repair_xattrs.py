@@ -11,14 +11,10 @@ from timecapsulesmb.repair_xattrs import (
     ACTION_CLEAR_ARCH_FLAG,
     ACTION_FIX_PERMISSIONS,
     DEFAULT_REPAIR_REPORT_LIMIT,
-    AmbiguousMountedShareError,
-    InvalidScanRootError,
     MountedSmbShare,
     RepairCandidate,
     RepairFinding,
     RepairSummary,
-    RepairXattrsConfigError,
-    RepairXattrsError,
     XattrStatus,
     actionable_findings,
     build_repair_report,
@@ -53,7 +49,7 @@ def default_share_path() -> Optional[Path]:
             shares=mounted_smb_shares(),
             path_exists_func=path_exists,
         )
-    except RepairXattrsError as exc:
+    except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
 
 
@@ -134,7 +130,7 @@ def run_repair(args: argparse.Namespace, command_context: CommandContext) -> int
             fix_permissions=args.fix_permissions,
             summary=summary,
         )
-    except RepairXattrsError as exc:
+    except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
     repairs = actionable_findings(findings)
     candidates = [finding_to_candidate(finding) for finding in repairs]

@@ -52,8 +52,8 @@ from timecapsulesmb.deploy.templates import (
     render_template_text,
 )
 from timecapsulesmb.deploy.verify import (
-    PostUninstallVerificationResult,
-    RuntimeVerificationResult,
+    VerificationResult,
+    managed_runtime_ready,
     render_managed_runtime_verification,
     render_post_uninstall_verification,
     verify_managed_runtime,
@@ -2637,8 +2637,8 @@ int main(void) {{
         with mock.patch("timecapsulesmb.deploy.verify.probe_managed_runtime_conn", return_value=result):
             verification = verify_managed_runtime(SshConnection("host", "pw", "-o foo"))
 
-        self.assertIsInstance(verification, RuntimeVerificationResult)
-        self.assertTrue(verification)
+        self.assertIs(verification, result)
+        self.assertTrue(managed_runtime_ready(verification))
         self.assertEqual(
             render_managed_runtime_verification(verification, heading="NetBSD4 activation verification:"),
             [
@@ -2659,8 +2659,8 @@ int main(void) {{
         with mock.patch("timecapsulesmb.deploy.verify.probe_managed_runtime_conn", return_value=result):
             verification = verify_managed_runtime(SshConnection("host", "pw", "-o foo"))
 
-        self.assertIsInstance(verification, RuntimeVerificationResult)
-        self.assertFalse(verification)
+        self.assertIs(verification, result)
+        self.assertFalse(managed_runtime_ready(verification))
         self.assertEqual(
             render_managed_runtime_verification(verification, heading="NetBSD4 activation verification:"),
             [
@@ -2677,7 +2677,7 @@ int main(void) {{
         with mock.patch("timecapsulesmb.deploy.verify.probe_paths_absent_conn", return_value=probe_result):
             verification = verify_post_uninstall(SshConnection("host", "pw", "-o foo"), plan)
 
-        self.assertIsInstance(verification, PostUninstallVerificationResult)
+        self.assertIsInstance(verification, VerificationResult)
         self.assertFalse(verification)
         self.assertEqual(
             render_post_uninstall_verification(verification),

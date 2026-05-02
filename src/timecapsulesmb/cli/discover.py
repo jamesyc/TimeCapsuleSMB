@@ -6,7 +6,6 @@ from typing import Optional
 
 from timecapsulesmb.discovery.bonjour import (
     DEFAULT_BROWSE_TIMEOUT_SEC,
-    BonjourDiscoveryError,
     BonjourResolvedService,
     BonjourServiceInstance,
     discover_snapshot,
@@ -79,7 +78,7 @@ def run_cli(argv: Optional[list[str]] = None) -> int:
 
     try:
         snapshot = discover_snapshot(timeout=args.timeout)
-    except BonjourDiscoveryError as exc:
+    except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
     records = snapshot.resolved
     if args.json:
