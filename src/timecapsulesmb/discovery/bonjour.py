@@ -24,6 +24,7 @@ PENDING_RESOLVE_INTERVAL_SEC = 0.5
 PENDING_RESOLVE_TIMEOUT_MS = 500
 FINAL_PENDING_RESOLVE_TIMEOUT_MS = 3000
 MAX_DIAGNOSTIC_OBSERVATIONS = 100
+DNS_RECORD_TYPE_PTR = 12
 
 
 @dataclass
@@ -389,6 +390,7 @@ class PtrRecordObserver:
         self.error: str | None = None
         self._registered = False
         self._listener: Any | None = None
+        self.ptr_record_type = DNS_RECORD_TYPE_PTR
 
     def start(self, zc: Any) -> None:
         try:
@@ -396,6 +398,7 @@ class PtrRecordObserver:
             from zeroconf.const import _CLASS_IN, _TYPE_PTR
 
             observer = self
+            self.ptr_record_type = _TYPE_PTR
 
             class Listener(RecordUpdateListener):
                 def async_update_records(self, zc: Any, now: float, records: list[Any]) -> None:
@@ -408,7 +411,7 @@ class PtrRecordObserver:
                     observer.update_record(zc, now, *records)
 
             questions = [
-                DNSQuestion(service_type, _TYPE_PTR, _CLASS_IN)
+                DNSQuestion(service_type, self.ptr_record_type, _CLASS_IN)
                 for service_type in sorted(self.services)
             ]
             self._listener = Listener()
@@ -430,7 +433,7 @@ class PtrRecordObserver:
             record = getattr(update, "new", update)
             if record is None:
                 continue
-            if getattr(record, "type", None) != 12:
+            if getattr(record, "type", None) != self.ptr_record_type:
                 continue
             service_type = str(getattr(record, "name", "") or "")
             if service_type not in self.services:

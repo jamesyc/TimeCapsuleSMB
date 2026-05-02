@@ -1808,6 +1808,8 @@ static int join_mdns_multicast_group(int sockfd, uint32_t ipv4_addr, const char 
 
 static int configure_outbound_multicast_socket(int sockfd, uint32_t ipv4_addr, const char *socket_role) {
     int yes;
+    int explicit_errno = 0;
+    int fallback_errno;
     struct in_addr multicast_if;
     char ipv4_buf[INET_ADDRSTRLEN];
 
@@ -1819,15 +1821,23 @@ static int configure_outbound_multicast_socket(int sockfd, uint32_t ipv4_addr, c
                     ipv4_to_string(ipv4_addr, ipv4_buf, sizeof(ipv4_buf)));
             goto configure_multicast_options;
         }
+        explicit_errno = errno;
         fprintf(stderr, "warning: mdns %s socket: IP_MULTICAST_IF failed for interface %s: %s; trying kernel-selected interface\n",
                 socket_role,
                 ipv4_to_string(ipv4_addr, ipv4_buf, sizeof(ipv4_buf)),
-                strerror(errno));
+                strerror(explicit_errno));
     }
 
     multicast_if.s_addr = htonl(INADDR_ANY);
     if (setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_IF, &multicast_if, sizeof(multicast_if)) < 0) {
-        perror("setsockopt(IP_MULTICAST_IF kernel-selected)");
+        fallback_errno = errno;
+        if (ipv4_addr != 0) {
+            fprintf(stderr, "setsockopt(IP_MULTICAST_IF kernel-selected): %s\n", strerror(fallback_errno));
+            errno = explicit_errno != 0 ? explicit_errno : fallback_errno;
+        } else {
+            errno = fallback_errno;
+            perror("setsockopt(IP_MULTICAST_IF kernel-selected)");
+        }
         return -1;
     }
     fprintf(stderr, "mdns %s socket: outbound multicast interface kernel-selected\n",

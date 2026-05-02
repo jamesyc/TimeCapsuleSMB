@@ -22,6 +22,7 @@ from timecapsulesmb.discovery.bonjour import (
     BonjourServiceEvent,
     BonjourServiceInstance,
     Collector,
+    DNS_RECORD_TYPE_PTR,
     Discovered,
     SMB_SERVICE,
     PtrRecordObserver,
@@ -396,7 +397,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_ptr_record_observer_records_matching_ptr_updates(self) -> None:
         class FakePtrRecord:
             name = "_smb._tcp.local."
-            type = 12
+            type = DNS_RECORD_TYPE_PTR
             alias = "Home._smb._tcp.local."
             ttl = 120
 
@@ -405,7 +406,7 @@ class DiscoveryTests(unittest.TestCase):
 
         class FakeIgnoredRecord:
             name = "_airport._tcp.local."
-            type = 12
+            type = DNS_RECORD_TYPE_PTR
             alias = "Home._airport._tcp.local."
             ttl = 120
 
@@ -448,7 +449,7 @@ class DiscoveryTests(unittest.TestCase):
         fake_zeroconf_module.RecordUpdateListener = FakeRecordUpdateListener
         fake_zeroconf_const_module = types.ModuleType("zeroconf.const")
         fake_zeroconf_const_module._CLASS_IN = 1
-        fake_zeroconf_const_module._TYPE_PTR = 12
+        fake_zeroconf_const_module._TYPE_PTR = DNS_RECORD_TYPE_PTR
         fake_zc = mock.Mock()
         fake_zc.add_listener.side_effect = RuntimeError("listener unavailable")
         observer = PtrRecordObserver(["_smb._tcp.local."], start_time=0.0)
