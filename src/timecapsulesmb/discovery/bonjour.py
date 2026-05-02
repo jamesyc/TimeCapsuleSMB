@@ -447,7 +447,7 @@ class PtrRecordObserver:
                 ttl=int(getattr(record, "ttl", 0) or 0),
                 expired=_record_is_expired(record, now),
                 old_record_present=old_record is not None,
-                elapsed_sec=_elapsed_since(self.start_time),
+                elapsed_sec=round(max(0.0, now - self.start_time), 3),
             )
             with self.lock:
                 _append_bounded(self.records, observation)
