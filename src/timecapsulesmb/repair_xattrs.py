@@ -233,31 +233,29 @@ def iter_scan_paths(
     while stack:
         directory, depth = stack.pop()
         try:
-            entries = list(directory.iterdir())
+            for entry in directory.iterdir():
+                if should_skip_path(entry, root, include_hidden=include_hidden, include_time_machine=include_time_machine):
+                    summary.skipped += 1
+                    continue
+                try:
+                    if entry.is_symlink():
+                        summary.skipped += 1
+                    elif entry.is_file():
+                        yield entry, "file"
+                    elif entry.is_dir():
+                        if include_directories:
+                            yield entry, "directory"
+                        if recursive and (max_depth is None or depth < max_depth):
+                            stack.append((entry, depth + 1))
+                        else:
+                            summary.skipped += 1
+                    else:
+                        summary.skipped += 1
+                except OSError:
+                    summary.skipped += 1
         except OSError:
             summary.skipped += 1
             continue
-
-        for entry in entries:
-            if should_skip_path(entry, root, include_hidden=include_hidden, include_time_machine=include_time_machine):
-                summary.skipped += 1
-                continue
-            try:
-                if entry.is_symlink():
-                    summary.skipped += 1
-                elif entry.is_file():
-                    yield entry, "file"
-                elif entry.is_dir():
-                    if include_directories:
-                        yield entry, "directory"
-                    if recursive and (max_depth is None or depth < max_depth):
-                        stack.append((entry, depth + 1))
-                    else:
-                        summary.skipped += 1
-                else:
-                    summary.skipped += 1
-            except OSError:
-                summary.skipped += 1
 
 
 def file_flags(path: Path) -> Optional[str]:

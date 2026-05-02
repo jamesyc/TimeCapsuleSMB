@@ -132,6 +132,41 @@ class RepairXattrsTests(unittest.TestCase):
         self.assertEqual(findings, [])
         self.assertEqual(summary.scanned, 1)
 
+    def test_iter_scan_paths_streams_directory_entries(self) -> None:
+        class ExplodingAfterFirstIterator:
+            def __init__(self, first: Path) -> None:
+                self.first = first
+                self.count = 0
+
+            def __iter__(self):
+                return self
+
+            def __next__(self) -> Path:
+                if self.count == 0:
+                    self.count += 1
+                    return self.first
+                raise AssertionError("iterdir was materialized before yielding")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "first.txt"
+            first.write_text("data")
+            summary = repair_xattrs.RepairSummary()
+
+            with mock.patch.object(Path, "iterdir", return_value=ExplodingAfterFirstIterator(first)):
+                scanner = repair_xattrs.iter_scan_paths(
+                    root,
+                    recursive=True,
+                    max_depth=None,
+                    include_hidden=False,
+                    include_time_machine=False,
+                    summary=summary,
+                )
+                try:
+                    self.assertEqual(next(scanner), (first, "file"))
+                finally:
+                    scanner.close()
+
     def test_does_not_repair_without_arch_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
