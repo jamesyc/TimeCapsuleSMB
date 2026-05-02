@@ -52,7 +52,12 @@ from timecapsulesmb.deploy.templates import (
     render_template_text,
 )
 from timecapsulesmb.deploy.verify import (
+    VerificationResult,
+    managed_runtime_ready,
+    render_managed_runtime_verification,
+    render_post_uninstall_verification,
     verify_managed_runtime,
+    verify_post_uninstall,
 )
 from timecapsulesmb.device.probe import (
     ManagedMdnsTakeoverProbeResult,
@@ -2630,8 +2635,18 @@ int main(void) {{
             lines=("PASS:managed smbd ready", "PASS:managed mDNS takeover active"),
         )
         with mock.patch("timecapsulesmb.deploy.verify.probe_managed_runtime_conn", return_value=result):
-            with redirect_stdout(io.StringIO()):
-                self.assertTrue(verify_managed_runtime(SshConnection("host", "pw", "-o foo"), heading="NetBSD4 activation verification:"))
+            verification = verify_managed_runtime(SshConnection("host", "pw", "-o foo"))
+
+        self.assertIs(verification, result)
+        self.assertTrue(managed_runtime_ready(verification))
+        self.assertEqual(
+            render_managed_runtime_verification(verification, heading="NetBSD4 activation verification:"),
+            [
+                "NetBSD4 activation verification:",
+                "  ok: managed smbd ready",
+                "  ok: managed mDNS takeover active",
+            ],
+        )
 
     def test_verify_managed_runtime_fails_when_runtime_probe_fails(self) -> None:
         result = ManagedRuntimeProbeResult(
@@ -2642,8 +2657,36 @@ int main(void) {{
             lines=("FAIL:managed smbd is not ready", "PASS:managed mDNS takeover active"),
         )
         with mock.patch("timecapsulesmb.deploy.verify.probe_managed_runtime_conn", return_value=result):
-            with redirect_stdout(io.StringIO()):
-                self.assertFalse(verify_managed_runtime(SshConnection("host", "pw", "-o foo"), heading="NetBSD4 activation verification:"))
+            verification = verify_managed_runtime(SshConnection("host", "pw", "-o foo"))
+
+        self.assertIs(verification, result)
+        self.assertFalse(managed_runtime_ready(verification))
+        self.assertEqual(
+            render_managed_runtime_verification(verification, heading="NetBSD4 activation verification:"),
+            [
+                "NetBSD4 activation verification:",
+                "  failed: managed smbd is not ready",
+                "  ok: managed mDNS takeover active",
+            ],
+        )
+
+    def test_verify_post_uninstall_returns_structured_result_and_rendered_lines(self) -> None:
+        plan = mock.Mock(verify_absent_targets=("/Volumes/dk2/samba4", "/mnt/Flash/rc.local"))
+        probe_result = mock.Mock(returncode=1, stdout="ABSENT:/Volumes/dk2/samba4\nPRESENT:/mnt/Flash/rc.local\n")
+
+        with mock.patch("timecapsulesmb.deploy.verify.probe_paths_absent_conn", return_value=probe_result):
+            verification = verify_post_uninstall(SshConnection("host", "pw", "-o foo"), plan)
+
+        self.assertIsInstance(verification, VerificationResult)
+        self.assertFalse(verification)
+        self.assertEqual(
+            render_post_uninstall_verification(verification),
+            [
+                "Post-uninstall verification:",
+                "  ok: removed /Volumes/dk2/samba4",
+                "  failed: still present /mnt/Flash/rc.local",
+            ],
+        )
 
     def test_probe_managed_smbd_single_shot_checks_runtime_conf_parent_and_port_binding(self) -> None:
         with mock.patch(

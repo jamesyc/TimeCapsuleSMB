@@ -4323,7 +4323,7 @@ class CliTests(unittest.TestCase):
         )
         with self.assertRaises(RuntimeError):
             with mock.patch("timecapsulesmb.cli.deploy.load_env_values", return_value=values):
-                with mock.patch("timecapsulesmb.cli.runtime.probe_device_conn", return_value=self.make_probe_result_netbsd6()):
+                with mock.patch("timecapsulesmb.device.probe.probe_device_conn", return_value=self.make_probe_result_netbsd6()):
                     with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
                         with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
                             with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
@@ -4505,10 +4505,6 @@ class CliTests(unittest.TestCase):
         self.assertIn("Device is back online.", text)
         self.assertIn("Waiting for managed runtime to finish starting...", text)
         self.assertIn("Deploy Finished.", text)
-        self.assertEqual(
-            verify_runtime_mock.call_args.kwargs["heading"],
-            "Wait for device to finish loading; it can take a few minutes for Samba to start up...",
-        )
         self.assertEqual(verify_runtime_mock.call_args.kwargs["timeout_seconds"], 240)
 
     def test_deploy_returns_failure_when_managed_smbd_never_becomes_ready(self) -> None:
@@ -5478,10 +5474,7 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(actions_mock.call_args.kwargs, {})
         self.assertEqual(verify_mock.call_args.args[0].host, "root@10.0.0.2")
-        self.assertEqual(
-            verify_mock.call_args.kwargs["heading"],
-            "Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up...",
-        )
+        self.assertEqual(verify_mock.call_args.kwargs["timeout_seconds"], 180)
         self.assertIn("without file transfer", output.getvalue())
 
     def test_activate_skips_rc_local_when_payload_is_already_healthy(self) -> None:
@@ -5884,7 +5877,7 @@ class CliTests(unittest.TestCase):
             ],
             resolved=[record],
         )
-        with mock.patch("timecapsulesmb.discovery.bonjour.discover_snapshot", return_value=snapshot):
+        with mock.patch("timecapsulesmb.cli.discover.discover_snapshot", return_value=snapshot):
             with redirect_stdout(output):
                 rc = discover.main(["--json"])
         self.assertEqual(rc, 0)

@@ -4,11 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from timecapsulesmb.core.config import AppConfig, ENV_PATH, parse_env_values, require_valid_config
-from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result, require_compatibility
+from timecapsulesmb.device.compat import DeviceCompatibility, require_compatibility
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
     RemoteInterfaceProbeResult,
-    probe_device_conn,
+    probe_connection_state,
     probe_remote_interface_conn,
 )
 from timecapsulesmb.transport.ssh import SshConnection
@@ -88,12 +88,6 @@ def resolve_validated_managed_target(
             f"{target.interface_probe.detail}."
         )
     return target
-
-
-def probe_connection_state(connection: SshConnection) -> ProbedDeviceState:
-    probe_result = probe_device_conn(connection)
-    compatibility = compatibility_from_probe_result(probe_result)
-    return ProbedDeviceState(probe_result=probe_result, compatibility=compatibility)
 
 
 def require_connection_compatibility(connection: SshConnection) -> DeviceCompatibility:

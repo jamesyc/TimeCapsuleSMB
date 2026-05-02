@@ -80,7 +80,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("SSH not reachable. Attempting to enable via AirPyrt...")
             try:
                 command_context.set_stage("enable_ssh")
-                enable_ssh(airpyrt_host, password, reboot_device=True, verbose=True)
+                enable_ssh(airpyrt_host, password, reboot_device=True, log=print)
             except Exception as e:
                 message = f"Failed to enable SSH via AirPyrt: {e}"
                 print(message)
@@ -115,7 +115,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.update_fields(prep_device_action="disable_ssh")
                 try:
                     command_context.set_stage("disable_ssh")
-                    disable_ssh(airpyrt_host, password, reboot_device=True, verbose=True)
+                    disable_ssh(airpyrt_host, password, reboot_device=True, log=print)
                 except Exception as e:
                     message = f"Failed to disable SSH via AirPyrt: {e}"
                     print(message)
