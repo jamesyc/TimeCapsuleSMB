@@ -717,11 +717,10 @@ SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_
         dump_elf_notes "staged stripped $label" "$stripped_path"
     }
 
-    # Stage only smbd. Samba 4.24 can use samba-dcerpcd/rpcd_* for srvsvc
-    # share enumeration, but those helpers are too large to copy into the Time
-    # Capsule RAM disk and unsafe to execute from the Apple-managed HFS disk.
-    # The supported appliance surface is direct authenticated SMB tree connect
-    # and Time Machine file I/O.
+    # Stage only smbd. The download patch embeds the minimal srvsvc endpoint
+    # required for Finder/smbclient share enumeration, while omitting the larger
+    # external samba-dcerpcd/rpcd_* helper stack that cannot safely live on the
+    # Apple-managed HFS disk after boot.
     stage_samba4x_binary "smbd" '*/source3/smbd/smbd' \
         "$SAMBA4X_STAGE/sbin/smbd" \
         "$SAMBA4X_STAGE/sbin/smbd.stripped"

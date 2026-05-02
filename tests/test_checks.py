@@ -1340,7 +1340,7 @@ class CheckTests(unittest.TestCase):
             expected_share_name="Data",
         )
 
-    def test_run_doctor_checks_treats_proxied_share_listing_as_diagnostic_when_file_ops_pass(self) -> None:
+    def test_run_doctor_checks_keeps_proxied_share_listing_failure_fatal_even_when_file_ops_pass(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
@@ -1378,7 +1378,7 @@ class CheckTests(unittest.TestCase):
                                     skip_bonjour=True,
                                 )
 
-        self.assertFalse(fatal)
+        self.assertTrue(fatal)
         tunnel_mock.assert_called_once()
         listing_mock.assert_called_once_with(
             "admin",
@@ -1388,17 +1388,11 @@ class CheckTests(unittest.TestCase):
             port=1445,
         )
         file_ops_mock.assert_called_once_with("admin", "pw", "127.0.0.1", "Data", port=1445)
-        warn_messages = [result.message for result in results if result.status == "WARN"]
-        self.assertTrue(
-            any(
-                "SMB share enumeration via srvsvc is unavailable" in message
-                and "did not include expected share" in message
-                for message in warn_messages
-            )
-        )
+        fail_messages = [result.message for result in results if result.status == "FAIL"]
+        self.assertIn("authenticated SMB listing did not include expected share 'Data' on 127.0.0.1", fail_messages)
         self.assertIn("file ops ok", [result.message for result in results if result.status == "PASS"])
 
-    def test_run_doctor_checks_keeps_proxied_file_ops_failure_fatal_even_when_listing_is_diagnostic(self) -> None:
+    def test_run_doctor_checks_keeps_proxied_file_ops_and_listing_failures_fatal(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
@@ -1435,7 +1429,7 @@ class CheckTests(unittest.TestCase):
 
         self.assertTrue(fatal)
         self.assertTrue(any(result.status == "FAIL" and result.message == "SMB directory create failed: NT_STATUS_ACCESS_DENIED" for result in results))
-        self.assertTrue(any(result.status == "WARN" and "missing local tool smbclient" in result.message for result in results))
+        self.assertTrue(any(result.status == "FAIL" and "missing local tool smbclient" in result.message for result in results))
 
     def test_run_doctor_checks_rejects_ip_mdns_host_label_before_smb_checks(self) -> None:
         values = {

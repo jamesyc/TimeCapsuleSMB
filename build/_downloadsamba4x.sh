@@ -114,6 +114,13 @@ mkdir -p "$OUT" "$SAMBA4X_WORK"
     patch_apply_checked "Samba 4.x NetBSD VFS fdopendir path fallback patch" \
         "$PATCH_DIR/0019-netbsd-vfs-fdopendir-path-fallback.patch" \
         "$SAMBA4X_SRC_DIR"
+    # Finder and smbclient -L enumerate shares through IPC$ -> \PIPE\srvsvc.
+    # The Time Capsule runtime copies only smbd onto the RAM disk because the
+    # Apple-managed HFS disk can be unmounted later. Embed exactly srvsvc in
+    # smbd and leave other DCE/RPC helpers out of the deployed artifact.
+    patch_apply_checked "Samba 4.x embedded srvsvc named pipe patch" \
+        "$PATCH_DIR/0020-smbd-embedded-srvsvc.patch" \
+        "$SAMBA4X_SRC_DIR"
 
     # smbd -V exits through Samba's shared popt callback before server.c can
     # free its startup talloc frame. Patch smbd itself so both NetBSD4 and

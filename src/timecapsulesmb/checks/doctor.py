@@ -133,16 +133,6 @@ def _doctor_smb_servers(values: dict[str, str], bonjour_target: BonjourServiceTa
     return ordered
 
 
-def _listing_as_diagnostic(result: CheckResult) -> CheckResult:
-    if result.status == "PASS":
-        return result
-    return CheckResult(
-        "WARN",
-        "SMB share enumeration via srvsvc is unavailable; direct authenticated "
-        f"share operations are the required Time Machine path. Detail: {result.message}",
-    )
-
-
 def _check_file_ops_for_first_working_server(
     username: str,
     password: str,
@@ -439,14 +429,12 @@ def run_doctor_checks(
                 for result in file_ops_results:
                     add_result(result)
                 add_result(
-                    _listing_as_diagnostic(
-                        check_authenticated_smb_listing(
-                            values["TC_SAMBA_USER"],
-                            smb_password,
-                            "127.0.0.1",
-                            expected_share_name=values["TC_SHARE_NAME"],
-                            port=local_port,
-                        )
+                    check_authenticated_smb_listing(
+                        values["TC_SAMBA_USER"],
+                        smb_password,
+                        "127.0.0.1",
+                        expected_share_name=values["TC_SHARE_NAME"],
+                        port=local_port,
                     )
                 )
         except (Exception, SystemExit) as e:
@@ -462,13 +450,11 @@ def run_doctor_checks(
         for result in file_ops_results:
             add_result(result)
         add_result(
-            _listing_as_diagnostic(
-                check_authenticated_smb_listing(
-                    values["TC_SAMBA_USER"],
-                    smb_password,
-                    smb_servers,
-                    expected_share_name=values["TC_SHARE_NAME"],
-                )
+            check_authenticated_smb_listing(
+                values["TC_SAMBA_USER"],
+                smb_password,
+                smb_servers,
+                expected_share_name=values["TC_SHARE_NAME"],
             )
         )
 
