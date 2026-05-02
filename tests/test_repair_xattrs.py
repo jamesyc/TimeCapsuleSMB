@@ -921,7 +921,7 @@ class RepairXattrsTests(unittest.TestCase):
 
         with mock.patch("pathlib.Path.resolve", return_value=target):
             with mock.patch("pathlib.Path.is_file", side_effect=PermissionError("permission denied")):
-                with self.assertRaises(SystemExit) as cm:
+                with self.assertRaises(repair_xattrs.InvalidScanRootError) as cm:
                     list(
                         repair_xattrs.iter_scan_paths(
                             target,

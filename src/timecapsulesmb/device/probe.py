@@ -10,6 +10,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.core.errors import system_exit_message
+from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, ssh_opts_use_proxy
 from timecapsulesmb.core.config import AIRPORT_IDENTITIES_BY_MODEL, AIRPORT_IDENTITIES_BY_SYAP
@@ -359,6 +360,12 @@ def probe_device_conn(connection: SshConnection) -> ProbeResult:
         airport_model=airport_identity.model,
         airport_syap=airport_identity.syap,
     )
+
+
+def probe_connection_state(connection: SshConnection) -> ProbedDeviceState:
+    probe_result = probe_device_conn(connection)
+    compatibility = compatibility_from_probe_result(probe_result)
+    return ProbedDeviceState(probe_result=probe_result, compatibility=compatibility)
 
 
 def probe_ssh_command_conn(

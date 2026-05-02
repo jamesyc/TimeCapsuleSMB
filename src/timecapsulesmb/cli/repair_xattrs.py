@@ -11,10 +11,14 @@ from timecapsulesmb.repair_xattrs import (
     ACTION_CLEAR_ARCH_FLAG,
     ACTION_FIX_PERMISSIONS,
     DEFAULT_REPAIR_REPORT_LIMIT,
+    AmbiguousMountedShareError,
+    InvalidScanRootError,
     MountedSmbShare,
     RepairCandidate,
     RepairFinding,
     RepairSummary,
+    RepairXattrsConfigError,
+    RepairXattrsError,
     XattrStatus,
     actionable_findings,
     build_repair_report,
@@ -43,11 +47,14 @@ from timecapsulesmb.telemetry import TelemetryClient
 
 def default_share_path() -> Optional[Path]:
     values = load_env_values()
-    return default_share_path_from_values(
-        values,
-        shares=mounted_smb_shares(),
-        path_exists_func=path_exists,
-    )
+    try:
+        return default_share_path_from_values(
+            values,
+            shares=mounted_smb_shares(),
+            path_exists_func=path_exists,
+        )
+    except RepairXattrsError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def print_candidates(candidates: list[RepairCandidate], *, dry_run: bool) -> None:
@@ -115,17 +122,20 @@ def run_repair(args: argparse.Namespace, command_context: CommandContext) -> int
 
     summary = RepairSummary()
     print(f"Scanning {root}")
-    findings = find_findings(
-        root,
-        recursive=args.recursive,
-        max_depth=args.max_depth,
-        include_hidden=args.include_hidden,
-        include_time_machine=args.include_time_machine,
-        include_directories=True,
-        include_root_directory=True,
-        fix_permissions=args.fix_permissions,
-        summary=summary,
-    )
+    try:
+        findings = find_findings(
+            root,
+            recursive=args.recursive,
+            max_depth=args.max_depth,
+            include_hidden=args.include_hidden,
+            include_time_machine=args.include_time_machine,
+            include_directories=True,
+            include_root_directory=True,
+            fix_permissions=args.fix_permissions,
+            summary=summary,
+        )
+    except RepairXattrsError as exc:
+        raise SystemExit(str(exc)) from exc
     repairs = actionable_findings(findings)
     candidates = [finding_to_candidate(finding) for finding in repairs]
 

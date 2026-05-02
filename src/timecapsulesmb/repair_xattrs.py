@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 from urllib.parse import unquote
 
-from timecapsulesmb.core.config import require_valid_config
+from timecapsulesmb.core.config import ConfigValidationError, validate_config_values
 
 
 DEFAULT_EXCLUDED_DIR_NAMES = {
@@ -30,6 +30,24 @@ DEFAULT_EXCLUDED_PREFIXES = (
 DEFAULT_REPAIR_REPORT_LIMIT = 20
 ACTION_CLEAR_ARCH_FLAG = "clear_arch_flag"
 ACTION_FIX_PERMISSIONS = "fix_permissions"
+
+
+class RepairXattrsError(RuntimeError):
+    """Base exception for repair-xattrs domain failures."""
+
+
+class RepairXattrsConfigError(RepairXattrsError):
+    def __init__(self, validation_error: ConfigValidationError):
+        self.validation_error = validation_error
+        super().__init__(validation_error.format_for_cli())
+
+
+class AmbiguousMountedShareError(RepairXattrsError):
+    pass
+
+
+class InvalidScanRootError(RepairXattrsError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -128,7 +146,9 @@ def default_share_path_from_values(
     shares: list[MountedSmbShare] | None = None,
     path_exists_func: Callable[[Path], bool] = path_exists,
 ) -> Optional[Path]:
-    require_valid_config(values, profile="repair_xattrs")
+    errors = validate_config_values(values, profile="repair_xattrs")
+    if errors:
+        raise RepairXattrsConfigError(errors[0])
     share_name = values.get("TC_SHARE_NAME")
     target_host = ssh_target_host(values.get("TC_HOST", ""))
     if not share_name or not target_host:
@@ -146,7 +166,7 @@ def default_share_path_from_values(
     if len(candidates) == 1:
         return candidates[0].mountpoint
     if len(candidates) > 1:
-        raise SystemExit(f"Found multiple mounted SMB shares named {share_name!r}; pass --path explicitly.")
+        raise AmbiguousMountedShareError(f"Found multiple mounted SMB shares named {share_name!r}; pass --path explicitly.")
     return None
 
 
@@ -197,13 +217,13 @@ def iter_scan_paths(
     include_directories: bool = False,
     include_root_directory: bool = False,
     summary: RepairSummary,
-):
+) -> Iterator[tuple[Path, str]]:
     try:
         root = root.resolve()
         root_is_file = root.is_file()
         root_is_dir = root.is_dir()
     except OSError as exc:
-        raise SystemExit(f"Cannot access path: {root}: {exc}") from exc
+        raise InvalidScanRootError(f"Cannot access path: {root}: {exc}") from exc
 
     if root_is_file:
         if not should_skip_path(
@@ -218,7 +238,7 @@ def iter_scan_paths(
         return
 
     if not root_is_dir:
-        raise SystemExit(f"Path does not exist or is not a regular file/directory: {root}")
+        raise InvalidScanRootError(f"Path does not exist or is not a regular file/directory: {root}")
 
     if (
         include_directories

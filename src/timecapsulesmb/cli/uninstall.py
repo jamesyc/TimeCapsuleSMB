@@ -10,7 +10,7 @@ from timecapsulesmb.core.config import airport_exact_display_name, require_valid
 from timecapsulesmb.deploy.dry_run import format_uninstall_plan, uninstall_plan_to_jsonable
 from timecapsulesmb.deploy.executor import remote_request_reboot, remote_uninstall_payload
 from timecapsulesmb.deploy.planner import build_uninstall_plan
-from timecapsulesmb.deploy.verify import verify_post_uninstall
+from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root_conn, wait_for_ssh_state_conn
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.telemetry import TelemetryClient
@@ -95,7 +95,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         command_context.update_fields(device_came_back_after_reboot=True)
         print("Device is back online.")
         command_context.set_stage("verify_post_uninstall")
-        if verify_post_uninstall(connection, plan):
+        verification = verify_post_uninstall(connection, plan)
+        for line in render_post_uninstall_verification(verification):
+            print(line)
+        if verification:
             command_context.update_fields(post_uninstall_verified=True)
             command_context.succeed()
             return 0

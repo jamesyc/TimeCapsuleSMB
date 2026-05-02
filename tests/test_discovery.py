@@ -15,6 +15,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.discovery.bonjour import (
     AIRPORT_SERVICE,
+    BonjourDiscoveryError,
     BonjourDiscoverySnapshot,
     BonjourResolvedService,
     BonjourServiceInstance,
@@ -27,11 +28,11 @@ from timecapsulesmb.discovery.bonjour import (
     discover_snapshot_detailed,
     discover_resolved_records,
     discovered_record_root_host,
-    resolve_service_instance,
     resolved_service_from_info,
     filter_service_records,
-    run_cli,
+    resolve_service_instance,
 )
+from timecapsulesmb.cli.discover import run_cli  # noqa: E402
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -424,7 +425,7 @@ class DiscoveryTests(unittest.TestCase):
             ],
         )
         output = io.StringIO()
-        with mock.patch("timecapsulesmb.discovery.bonjour.discover_snapshot", return_value=snapshot):
+        with mock.patch("timecapsulesmb.cli.discover.discover_snapshot", return_value=snapshot):
             with redirect_stdout(output):
                 rc = run_cli([])
         text = output.getvalue()
@@ -433,6 +434,13 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIn("Resolved Records", text)
         self.assertIn("Home._smb._tcp.local.", text)
         self.assertIn("home.local", text)
+
+    def test_run_cli_reports_bonjour_dependency_errors_as_system_exit(self) -> None:
+        with mock.patch("timecapsulesmb.cli.discover.discover_snapshot", side_effect=BonjourDiscoveryError("zeroconf missing")):
+            with self.assertRaises(SystemExit) as cm:
+                run_cli([])
+
+        self.assertEqual(str(cm.exception), "zeroconf missing")
 
 
 if __name__ == "__main__":

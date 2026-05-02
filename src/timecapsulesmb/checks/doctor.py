@@ -34,7 +34,6 @@ from timecapsulesmb.checks.smb_targets import (
     configured_smb_server as _configured_smb_server,
     doctor_smb_servers as _doctor_smb_servers,
 )
-from timecapsulesmb.cli.runtime import probe_connection_state, resolve_env_connection
 from timecapsulesmb.core.config import extract_host, missing_required_keys, validate_config_values
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, is_netbsd6_payload_family, render_compatibility_message
 from timecapsulesmb.device.probe import (
@@ -42,6 +41,7 @@ from timecapsulesmb.device.probe import (
     RUNTIME_SMB_CONF,
     build_device_paths,
     discover_volume_root_conn,
+    probe_connection_state,
     probe_managed_mdns_takeover_conn,
     probe_managed_smbd_conn,
     nbns_marker_enabled_conn,
@@ -357,9 +357,10 @@ def _add_authenticated_smb_results(
     if listing_result.status != "PASS":
         return
 
-    smb_server = listing_result.message.removeprefix(
-        f"authenticated SMB listing works for {values['TC_SAMBA_USER']}@"
-    )
+    smb_server = listing_result.details.get("server")
+    if not isinstance(smb_server, str) or not smb_server:
+        add_result(CheckResult("FAIL", "authenticated SMB listing did not report the server used for file-ops checks"))
+        return
     for result in check_authenticated_smb_file_ops_detailed(
         values["TC_SAMBA_USER"],
         smb_password,
@@ -398,7 +399,11 @@ def run_doctor_checks(
     if not env_valid:
         return results, any(is_fatal(result) for result in results)
 
-    connection = resolve_env_connection(values)
+    connection = SshConnection(
+        host=values["TC_HOST"],
+        password=values.get("TC_PASSWORD", ""),
+        ssh_opts=values.get("TC_SSH_OPTS", ""),
+    )
     host = extract_host(connection.host)
     smb_password = values["TC_PASSWORD"]
     proxied_ssh = ssh_opts_use_proxy(connection.ssh_opts)

@@ -11,6 +11,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.repair_xattrs import (  # noqa: E402
+    AmbiguousMountedShareError,
     MountedSmbShare,
     default_share_path_from_values,
     parse_mounted_smb_shares,
@@ -49,7 +50,7 @@ class RepairXattrsDomainTests(unittest.TestCase):
             MountedSmbShare("timecapsule-b.local", "Data", Path("/Volumes/Data-1")),
         ]
 
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(AmbiguousMountedShareError):
             default_share_path_from_values(values, shares=shares, path_exists_func=lambda _path: True)
 
     def test_should_skip_path_always_skips_managed_payload_directory(self) -> None:

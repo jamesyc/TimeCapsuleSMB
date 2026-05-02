@@ -19,6 +19,7 @@ from timecapsulesmb.integrations.airpyrt import (
     disable_ssh,
     enable_ssh,
     ensure_airpyrt_available,
+    set_dbug,
 )
 
 
@@ -46,6 +47,14 @@ class AirPyrtTests(unittest.TestCase):
         set_dbug_mock.assert_called_once()
         reboot_mock.assert_not_called()
 
+    def test_set_dbug_reports_command_through_log_callback(self) -> None:
+        messages: list[str] = []
+        with mock.patch("timecapsulesmb.integrations.airpyrt._acp_command", return_value=["acp", "-t", "10.0.0.2"]):
+            with mock.patch("timecapsulesmb.integrations.airpyrt.acp_run_check"):
+                set_dbug("10.0.0.2", "pw", "0x3000", log=messages.append)
+
+        self.assertEqual(messages, ["Running: acp -t 10.0.0.2"])
+
     def test_build_airpyrt_ssh_command_uses_modern_compatible_legacy_rsa_options(self) -> None:
         command = build_airpyrt_ssh_command("10.0.0.2", "acp remove dbug")
         self.assertEqual(command[0], "ssh")
@@ -65,6 +74,16 @@ class AirPyrtTests(unittest.TestCase):
                 disable_ssh("10.0.0.2", "pw", reboot_device=True, verbose=False)
         self.assertEqual(ssh_mock.call_count, 2)
         reboot_mock.assert_called_once()
+
+    def test_disable_ssh_reports_success_through_log_callback(self) -> None:
+        messages: list[str] = []
+        with mock.patch(
+            "timecapsulesmb.integrations.airpyrt.ssh_run_command",
+            side_effect=[(1, "nope"), (0, "ok")],
+        ):
+            disable_ssh("10.0.0.2", "pw", reboot_device=False, log=messages.append)
+
+        self.assertEqual(messages, ["Removed 'dbug' via: /usr/sbin/acp remove dbug"])
 
 
 if __name__ == "__main__":
