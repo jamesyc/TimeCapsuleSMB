@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -565,8 +566,9 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("discover_preexisting_data_root()", rendered)
         self.assertIn("mount_fallback_volume()", rendered)
         self.assertIn("resolve_data_root_on_mounted_volume()", rendered)
+        self.assertIn('INITIAL_CANDIDATES=$(disk_name_candidates)', rendered)
+        self.assertIn('if DATA_ROOT=$(discover_preexisting_data_root); then', rendered)
         self.assertIn('DISK_CANDIDATES=$(disk_name_candidates)', rendered)
-        self.assertIn('if DATA_ROOT=$(discover_preexisting_data_root "$DISK_CANDIDATES"); then', rendered)
         self.assertIn('VOLUME_ROOT=$(mount_fallback_volume "$DISK_CANDIDATES") || {', rendered)
         self.assertIn('DATA_ROOT=$(resolve_data_root_on_mounted_volume "$VOLUME_ROOT") || {', rendered)
         self.assertIn("disk_name_candidates()", rendered)
@@ -616,11 +618,12 @@ class DeployModuleTests(unittest.TestCase):
         main_start = rendered.index("cleanup_old_runtime")
         main_section = rendered[main_start:]
         self.assertLess(main_section.index("prepare_locks_ramdisk"), main_section.index("prepare_ram_root"))
-        self.assertLess(main_section.index("DISK_CANDIDATES=$(disk_name_candidates)"), main_section.index('log_disk_discovery_state "$DISK_CANDIDATES"'))
-        self.assertLess(main_section.index('log_disk_discovery_state "$DISK_CANDIDATES"'), main_section.rindex("\nstart_mdns_capture\n"))
+        self.assertLess(main_section.index("INITIAL_CANDIDATES=$(disk_name_candidates)"), main_section.index('log_disk_discovery_state "$INITIAL_CANDIDATES"'))
+        self.assertLess(main_section.index('log_disk_discovery_state "$INITIAL_CANDIDATES"'), main_section.rindex("\nstart_mdns_capture\n"))
         self.assertLess(main_section.index('start_mdns'), main_section.index('waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume'))
-        self.assertLess(main_section.index('waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume'), main_section.index('if DATA_ROOT=$(discover_preexisting_data_root "$DISK_CANDIDATES"); then'))
-        self.assertLess(main_section.index('if DATA_ROOT=$(discover_preexisting_data_root "$DISK_CANDIDATES"); then'), main_section.index('VOLUME_ROOT=$(mount_fallback_volume "$DISK_CANDIDATES") || {'))
+        self.assertLess(main_section.index('waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume'), main_section.index('if DATA_ROOT=$(discover_preexisting_data_root); then'))
+        self.assertLess(main_section.index('if DATA_ROOT=$(discover_preexisting_data_root); then'), main_section.index('DISK_CANDIDATES=$(disk_name_candidates)'))
+        self.assertLess(main_section.index('DISK_CANDIDATES=$(disk_name_candidates)'), main_section.index('VOLUME_ROOT=$(mount_fallback_volume "$DISK_CANDIDATES") || {'))
         self.assertLess(main_section.index('log "smbd startup complete: process observed"'), main_section.rindex('start_mdns_advertiser'))
         self.assertLess(main_section.rindex('start_mdns_advertiser'), main_section.rindex('start_nbns'))
         discover_body = rendered[rendered.index("discover_preexisting_data_root()"):rendered.index("resolve_data_root_on_mounted_volume()")]
@@ -628,13 +631,71 @@ class DeployModuleTests(unittest.TestCase):
         wait_section = rendered[rendered.index("wait_for_existing_mount_target()"):rendered.index("try_mount_candidate()")]
         self.assertIn(f"APPLE_MOUNT_WAIT_SECONDS={DEFAULT_APPLE_MOUNT_WAIT_SECONDS}", rendered)
         self.assertIn('while [ "$attempt" -lt "$APPLE_MOUNT_WAIT_SECONDS" ]; do', wait_section)
-        self.assertIn('if target=$($finder "$finder_arg"); then', wait_section)
+        self.assertIn('disk_candidates=$(disk_name_candidates)', wait_section)
+        self.assertIn('if target=$($finder "$disk_candidates"); then', wait_section)
         self.assertIn('log "$target_name was mounted after ${attempt}s"', wait_section)
         self.assertIn('log "$target_name was not mounted after ${attempt}s"', wait_section)
         self.assertIn('wait_for_existing_mount_target "data root" find_existing_data_root', rendered)
         self.assertIn('wait_for_existing_mount_target "disk root" find_existing_volume_root', rendered)
         self.assertNotIn("wait_for_existing_data_root()", rendered)
         self.assertNotIn("wait_for_existing_volume_root()", rendered)
+
+    def test_render_start_script_wait_refreshes_disk_candidates_each_poll(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(values)
+        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
+        wait_section = rendered[rendered.index("wait_for_existing_mount_target()"):rendered.index("try_mount_candidate()")]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            count_path = Path(tmpdir) / "candidate-count"
+            script_path = Path(tmpdir) / "wait-refresh-test.sh"
+            script_path.write_text(
+                f"""#!/bin/sh
+set -eu
+APPLE_MOUNT_WAIT_SECONDS=3
+COUNT_FILE={shlex.quote(str(count_path))}
+log() {{ :; }}
+sleep() {{ :; }}
+disk_name_candidates() {{
+    count=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
+    count=$((count + 1))
+    echo "$count" >"$COUNT_FILE"
+    if [ "$count" -eq 1 ]; then
+        echo " dk0 dk1"
+    else
+        echo " dk2"
+    fi
+}}
+find_existing_data_root() {{
+    disk_candidates=$1
+    case " $disk_candidates " in
+        *" dk2 "*)
+            echo "/Volumes/dk2/ShareRoot"
+            return 0
+            ;;
+    esac
+    return 1
+}}
+{wait_section}
+result=$(wait_for_existing_mount_target "data root" find_existing_data_root)
+printf '%s\\n' "$result"
+printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
+""",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(["/bin/sh", str(script_path)], capture_output=True, text=True, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.splitlines(), ["/Volumes/dk2/ShareRoot", "calls=2"])
 
     def test_render_start_script_custom_disk_delay_extends_apple_mount_wait(self) -> None:
         values = {
@@ -1312,7 +1373,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then', discover_section)
         self.assertLess(
             discover_section.index('if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then'),
-            discover_section.index('if data_root=$(wait_for_existing_mount_target "data root" find_existing_data_root "$disk_candidates"); then'),
+            discover_section.index('if data_root=$(wait_for_existing_mount_target "data root" find_existing_data_root); then'),
         )
         resolve_start = rendered.index("resolve_data_root_on_mounted_volume()")
         resolve_end = rendered.index("\nwait_for_existing_mount_target()")
@@ -1341,13 +1402,13 @@ class DeployModuleTests(unittest.TestCase):
         discover_end = rendered.index("\nresolve_data_root_on_mounted_volume()")
         discover_section = rendered[discover_start:discover_end]
         self.assertIn('if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then', discover_section)
-        self.assertIn('if volume_root=$(wait_for_existing_mount_target "disk root" find_existing_volume_root "$disk_candidates"); then', discover_section)
+        self.assertIn('if volume_root=$(wait_for_existing_mount_target "disk root" find_existing_volume_root); then', discover_section)
         self.assertIn('log "found Apple-mounted disk root: $volume_root"', discover_section)
         self.assertIn('echo "$volume_root"', discover_section)
         self.assertNotIn('sleep "$APPLE_MOUNT_WAIT_SECONDS"', discover_section)
         self.assertLess(
             discover_section.index('if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then'),
-            discover_section.index('if data_root=$(wait_for_existing_mount_target "data root" find_existing_data_root "$disk_candidates"); then'),
+            discover_section.index('if data_root=$(wait_for_existing_mount_target "data root" find_existing_data_root); then'),
         )
         resolve_start = rendered.index("resolve_data_root_on_mounted_volume()")
         resolve_end = rendered.index("\nwait_for_existing_mount_target()")
@@ -1372,7 +1433,7 @@ class DeployModuleTests(unittest.TestCase):
         }
         bundle = build_template_bundle(values, payload_family="netbsd4le_samba4")
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        data_root_index = rendered.index('if DATA_ROOT=$(discover_preexisting_data_root "$DISK_CANDIDATES"); then')
+        data_root_index = rendered.index('if DATA_ROOT=$(discover_preexisting_data_root); then')
         payload_index = rendered.index('PAYLOAD_DIR=$(find_payload_dir "$DATA_ROOT") || {')
         cache_index = rendered.index("CACHE_DIRECTORY=$PAYLOAD_DIR/cache")
         self.assertGreater(payload_index, data_root_index)
