@@ -16,32 +16,11 @@ from timecapsulesmb.discovery.native_dns_sd import (
     NativeDnsSdDiagnostics,
     NativeDnsSdServiceEvent,
 )
-from timecapsulesmb.transport.ssh import SshConnection
 
 
 MAX_BONJOUR_DEBUG_ITEMS = 50
 MAX_DEBUG_TEXT = 200
 MAX_DEBUG_ERROR_TEXT = 1024
-
-
-DEBUG_VALUE_BLACKLIST = {
-    "TC_PASSWORD",
-    # These are already first-class telemetry fields.
-    "TC_CONFIGURE_ID",
-    "TC_MDNS_DEVICE_MODEL",
-    "TC_AIRPORT_SYAP",
-}
-DEBUG_FIELD_BLACKLIST = {
-    # These are already first-class telemetry fields.
-    "configure_id",
-    "device_model",
-    "device_syap",
-    "device_os_version",
-    "device_family",
-    "nbns_enabled",
-    "reboot_was_attempted",
-    "device_came_back_after_reboot",
-}
 
 
 @singledispatch
@@ -243,47 +222,4 @@ def render_debug_mapping(fields: Mapping[str, object], *, blacklist: set[str] | 
         value = fields.get(key)
         if value is not None and value != "":
             lines.append(f"{key}={render_debug_value(value)}")
-    return lines
-
-
-def _render_connection_debug_lines(connection: SshConnection | None, values: Mapping[str, str] | None) -> list[str]:
-    host = None
-    ssh_opts = None
-    if connection is not None:
-        host = connection.host
-        ssh_opts = connection.ssh_opts
-    elif values is not None:
-        host = values.get("TC_HOST") or None
-        ssh_opts = values.get("TC_SSH_OPTS") or None
-    lines: list[str] = []
-    if host:
-        lines.append(f"host={host}")
-    if ssh_opts:
-        lines.append(f"ssh_opts={ssh_opts}")
-    return lines
-
-
-def render_command_debug_lines(
-    *,
-    command_name: str,
-    stage: str | None,
-    connection: SshConnection | None,
-    values: Mapping[str, str] | None,
-    preflight_error: str | None,
-    finish_fields: Mapping[str, object],
-    probe_state: ProbedDeviceState | None,
-    debug_fields: Mapping[str, object],
-) -> list[str]:
-    lines = ["Debug context:", f"command={command_name}"]
-    if stage:
-        lines.append(f"stage={stage}")
-    lines.extend(_render_connection_debug_lines(connection, values))
-    if values is not None:
-        lines.extend(render_debug_mapping(values, blacklist=DEBUG_VALUE_BLACKLIST))
-    if preflight_error:
-        lines.append(f"preflight_error={preflight_error}")
-    lines.extend(render_debug_mapping(finish_fields, blacklist=DEBUG_FIELD_BLACKLIST))
-    if probe_state is not None:
-        lines.extend(render_debug_mapping(debug_summary(probe_state), blacklist=DEBUG_FIELD_BLACKLIST))
-    lines.extend(render_debug_mapping(debug_fields, blacklist=DEBUG_FIELD_BLACKLIST))
     return lines
