@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import sys
+import types
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -432,11 +433,34 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(records[0].elapsed_sec, 0.75)
 
     def test_ptr_record_observer_captures_setup_error_as_diagnostic(self) -> None:
+        class FakeDNSQuestion:
+            def __init__(self, name: str, record_type: int, record_class: int) -> None:
+                self.name = name
+                self.record_type = record_type
+                self.record_class = record_class
+
+        class FakeRecordUpdateListener:
+            pass
+
+        fake_zeroconf_module = types.ModuleType("zeroconf")
+        fake_zeroconf_module.__path__ = []
+        fake_zeroconf_module.DNSQuestion = FakeDNSQuestion
+        fake_zeroconf_module.RecordUpdateListener = FakeRecordUpdateListener
+        fake_zeroconf_const_module = types.ModuleType("zeroconf.const")
+        fake_zeroconf_const_module._CLASS_IN = 1
+        fake_zeroconf_const_module._TYPE_PTR = 12
         fake_zc = mock.Mock()
         fake_zc.add_listener.side_effect = RuntimeError("listener unavailable")
         observer = PtrRecordObserver(["_smb._tcp.local."], start_time=0.0)
 
-        observer.start(fake_zc)
+        with mock.patch.dict(
+            sys.modules,
+            {
+                "zeroconf": fake_zeroconf_module,
+                "zeroconf.const": fake_zeroconf_const_module,
+            },
+        ):
+            observer.start(fake_zc)
         observer.stop(fake_zc)
 
         self.assertEqual(observer.error, "RuntimeError: listener unavailable")
