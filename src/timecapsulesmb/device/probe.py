@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 
 RUNTIME_SMB_CONF = "/mnt/Memory/samba4/etc/smb.conf"
+NBNS_MARKER_PROBE_TIMEOUT_SECONDS = 10
 SMBD_STATUS_HELPERS = rf'''
 runtime_smb_conf_present() {{
     [ -f {RUNTIME_SMB_CONF} ]
@@ -848,6 +849,7 @@ def nbns_marker_enabled_conn(connection: SshConnection, payload_dir: str) -> boo
         connection,
         f"/bin/sh -c {shlex.quote(script)}",
         check=False,
+        timeout=NBNS_MARKER_PROBE_TIMEOUT_SECONDS,
     )
     return proc.stdout.strip() == "enabled"
 
