@@ -240,18 +240,6 @@ def build_adisk_share_txt(value: str) -> Optional[str]:
     return txt
 
 
-def validate_dns_label(value: str, field_name: str) -> Optional[str]:
-    if not value:
-        return f"{field_name} cannot be blank."
-    if len(value.encode("utf-8")) > MAX_DNS_LABEL_BYTES:
-        return f"{field_name} must be {MAX_DNS_LABEL_BYTES} bytes or fewer."
-    if "." in value:
-        return f"{field_name} must not contain dots."
-    if _contains_invalid_control_character(value):
-        return f"{field_name} contains an invalid control character."
-    return None
-
-
 def validate_mdns_device_model(value: str, field_name: str) -> Optional[str]:
     if not value:
         return f"{field_name} cannot be blank."

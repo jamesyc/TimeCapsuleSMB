@@ -71,6 +71,10 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("TC_SHARE_USE_DISK_ROOT=false", rendered)
         self.assertIn("TC_CONFIGURE_ID=12345678-1234-1234-1234-123456789012", rendered)
 
+    def test_env_example_payload_dir_matches_default(self) -> None:
+        values = parse_env_values(REPO_ROOT / ".env.example", defaults={})
+        self.assertEqual(values["TC_PAYLOAD_DIR_NAME"], DEFAULTS["TC_PAYLOAD_DIR_NAME"])
+
     def test_parse_bool_accepts_true_case_insensitively(self) -> None:
         self.assertTrue(parse_bool("true"))
         self.assertTrue(parse_bool("TRUE"))
