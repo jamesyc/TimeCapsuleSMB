@@ -14,6 +14,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.integrations.airpyrt import (
     acp_run_check,
+    build_airpyrt_ssh_command,
     candidate_interpreters,
     disable_ssh,
     enable_ssh,
@@ -44,6 +45,16 @@ class AirPyrtTests(unittest.TestCase):
                 enable_ssh("10.0.0.2", "pw", reboot_device=False)
         set_dbug_mock.assert_called_once()
         reboot_mock.assert_not_called()
+
+    def test_build_airpyrt_ssh_command_uses_modern_compatible_legacy_rsa_options(self) -> None:
+        command = build_airpyrt_ssh_command("10.0.0.2", "acp remove dbug")
+        self.assertEqual(command[0], "ssh")
+        self.assertIn("HostKeyAlgorithms=+ssh-rsa", command)
+        self.assertIn("KexAlgorithms=+diffie-hellman-group14-sha1", command)
+        self.assertIn("PubkeyAuthentication=no", command)
+        self.assertIn("root@10.0.0.2", command)
+        self.assertEqual(command[-1], "acp remove dbug")
+        self.assertNotIn("HostKeyAlgorithms=+ssh-dss", command)
 
     def test_disable_ssh_retries_and_reboots_on_success(self) -> None:
         with mock.patch(

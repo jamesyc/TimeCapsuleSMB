@@ -8,6 +8,15 @@ import subprocess
 from typing import Iterable, Optional, Tuple
 
 
+AIRPYRT_SSH_OPTIONS = [
+    "-o", "HostKeyAlgorithms=+ssh-rsa",
+    "-o", "KexAlgorithms=+diffie-hellman-group14-sha1",
+    "-o", "PubkeyAuthentication=no",
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "UserKnownHostsFile=/dev/null",
+]
+
+
 def run(cmd: list[str], *, check: bool = True, capture: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         cmd,
@@ -102,6 +111,15 @@ def reboot(host: str, password: str, *, python_candidates: Optional[Iterable[str
         raise RuntimeError(f"Reboot command failed. Output: {e}")
 
 
+def build_airpyrt_ssh_command(host: str, command: str) -> list[str]:
+    return [
+        "ssh",
+        *AIRPYRT_SSH_OPTIONS,
+        f"root@{host}",
+        command,
+    ]
+
+
 def ssh_run_command(host: str, password: str, command: str, *, timeout: int = 30, verbose: bool = True) -> tuple[int, str]:
     try:
         import pexpect
@@ -110,15 +128,7 @@ def ssh_run_command(host: str, password: str, command: str, *, timeout: int = 30
             "pexpect not available. Run './tcapsule bootstrap' first, or use 'make install'."
         )
 
-    ssh_cmd = [
-        "ssh",
-        "-o", "HostKeyAlgorithms=+ssh-dss",
-        "-o", "PubkeyAuthentication=no",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        f"root@{host}",
-        command,
-    ]
+    ssh_cmd = build_airpyrt_ssh_command(host, command)
     if verbose:
         print("SSH exec:", " ".join(shlex.quote(x) for x in ssh_cmd))
 
