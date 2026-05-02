@@ -124,6 +124,9 @@ class DiscoveryTests(unittest.TestCase):
         fake_ptr_observer = mock.Mock()
         fake_ptr_observer.observations.return_value = [ptr_record]
         fake_ptr_observer.error = None
+        ptr_observer_calls = mock.Mock()
+        ptr_observer_calls.attach_mock(fake_ptr_observer.stop, "stop")
+        ptr_observer_calls.attach_mock(fake_ptr_observer.observations, "observations")
         fake_ip_version = mock.Mock()
         fake_ip_version.V4Only = object()
         fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
@@ -140,7 +143,10 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(snapshot.instances, [instance])
         self.assertEqual(snapshot.resolved, [record])
         fake_ptr_observer.start.assert_called_once_with(fake_zc)
-        fake_ptr_observer.stop.assert_called_once_with(fake_zc)
+        ptr_observer_calls.assert_has_calls([
+            mock.call.stop(fake_zc),
+            mock.call.observations(),
+        ])
         self.assertEqual(diagnostics.service, "_smb")
         self.assertEqual(diagnostics.service_types, ["_smb._tcp.local."])
         self.assertEqual(diagnostics.ip_version, "V4Only")

@@ -600,6 +600,8 @@ def discover_snapshot_detailed(
     start = time.monotonic()
     zc = _open_zeroconf()
     ptr_observer: PtrRecordObserver | None = None
+    ptr_records: list[BonjourPtrRecordObservation] = []
+    ptr_record_error: str | None = None
     try:
         collector = Collector(zc, service_types, start_time=start)
         ptr_observer = PtrRecordObserver(service_types, start_time=start)
@@ -616,11 +618,11 @@ def discover_snapshot_detailed(
         records = collector.results()
         instances = collector.service_instances()
         service_events = _collector_service_events(collector)
-        ptr_records = ptr_observer.observations()
-        ptr_record_error = ptr_observer.error
     finally:
         if ptr_observer is not None:
             ptr_observer.stop(zc)
+            ptr_records = ptr_observer.observations()
+            ptr_record_error = ptr_observer.error
         try:
             zc.close()
         except Exception:
