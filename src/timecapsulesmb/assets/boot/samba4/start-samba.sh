@@ -406,10 +406,8 @@ mount_device_if_possible() {
 }
 
 discover_preexisting_data_root() {
-    disk_candidates=$1
-
     if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then
-        if volume_root=$(wait_for_existing_mount_target "disk root" find_existing_volume_root "$disk_candidates"); then
+        if volume_root=$(wait_for_existing_mount_target "disk root" find_existing_volume_root); then
             log "found Apple-mounted disk root: $volume_root"
             echo "$volume_root"
             return 0
@@ -417,7 +415,7 @@ discover_preexisting_data_root() {
         return 1
     fi
 
-    if data_root=$(wait_for_existing_mount_target "data root" find_existing_data_root "$disk_candidates"); then
+    if data_root=$(wait_for_existing_mount_target "data root" find_existing_data_root); then
         log "found Apple-mounted data root: $data_root"
         echo "$data_root"
         return 0
@@ -454,10 +452,10 @@ resolve_data_root_on_mounted_volume() {
 wait_for_existing_mount_target() {
     target_name=$1
     finder=$2
-    finder_arg=$3
     attempt=0
     while [ "$attempt" -lt "$APPLE_MOUNT_WAIT_SECONDS" ]; do
-        if target=$($finder "$finder_arg"); then
+        disk_candidates=$(disk_name_candidates)
+        if target=$($finder "$disk_candidates"); then
             log "$target_name was mounted after ${attempt}s"
             echo "$target"
             return 0
@@ -893,16 +891,17 @@ BIND_INTERFACES=$(wait_for_bind_interfaces) || {
 BRIDGE0_IP=${BIND_INTERFACES#127.0.0.1/8 }
 BRIDGE0_IP=${BRIDGE0_IP%%/*}
 prepare_local_hostname_resolution
-DISK_CANDIDATES=$(disk_name_candidates)
-log_disk_discovery_state "$DISK_CANDIDATES"
+INITIAL_CANDIDATES=$(disk_name_candidates)
+log_disk_discovery_state "$INITIAL_CANDIDATES"
 
 start_mdns_capture
 
 log "disk discovery: waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume before manual mount fallback"
 
-if DATA_ROOT=$(discover_preexisting_data_root "$DISK_CANDIDATES"); then
+if DATA_ROOT=$(discover_preexisting_data_root); then
     :
 else
+    DISK_CANDIDATES=$(disk_name_candidates)
     VOLUME_ROOT=$(mount_fallback_volume "$DISK_CANDIDATES") || {
         log "disk discovery failed: no fallback data volume mounted"
         exit 1
