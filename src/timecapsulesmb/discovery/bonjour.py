@@ -388,17 +388,31 @@ class PtrRecordObserver:
         self.records: list[BonjourPtrRecordObservation] = []
         self.error: str | None = None
         self._registered = False
+        self._listener: Any | None = None
 
     def start(self, zc: Any) -> None:
         try:
-            from zeroconf import DNSQuestion
+            from zeroconf import DNSQuestion, RecordUpdateListener
             from zeroconf.const import _CLASS_IN, _TYPE_PTR
+
+            observer = self
+
+            class Listener(RecordUpdateListener):
+                def async_update_records(self, zc: Any, now: float, records: list[Any]) -> None:
+                    observer.async_update_records(zc, now, records)
+
+                def async_update_records_complete(self) -> None:
+                    observer.async_update_records_complete()
+
+                def update_record(self, zc: Any, now: float, *records: Any) -> None:
+                    observer.update_record(zc, now, *records)
 
             questions = [
                 DNSQuestion(service_type, _TYPE_PTR, _CLASS_IN)
                 for service_type in sorted(self.services)
             ]
-            zc.add_listener(self, questions)
+            self._listener = Listener()
+            zc.add_listener(self._listener, questions)
             self._registered = True
         except Exception as e:
             self.error = f"{type(e).__name__}: {e}"
@@ -407,7 +421,7 @@ class PtrRecordObserver:
         if not self._registered:
             return
         try:
-            zc.remove_listener(self)
+            zc.remove_listener(self._listener)
         except Exception:
             pass
 

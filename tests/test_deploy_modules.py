@@ -524,7 +524,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertNotIn('--load-snapshot "$APPLE_MDNS_SNAPSHOT"', capture_section)
         self.assertNotIn('--instance "$MDNS_INSTANCE_NAME"', capture_section)
         self.assertNotIn('--host "$MDNS_HOST_LABEL"', capture_section)
-        self.assertNotIn('--ipv4 "$BRIDGE0_IP"', capture_section)
+        self.assertIn('--ipv4 "$BRIDGE0_IP"', capture_section)
         self.assertIn('--load-snapshot "$APPLE_MDNS_SNAPSHOT"', advertise_section)
         self.assertIn('--instance "$MDNS_INSTANCE_NAME"', advertise_section)
         self.assertIn('--host "$MDNS_HOST_LABEL"', advertise_section)

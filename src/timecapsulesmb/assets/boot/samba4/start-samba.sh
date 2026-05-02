@@ -729,7 +729,8 @@ start_mdns_capture() {
     log "starting mDNS snapshot capture"
     set -- "$MDNS_BIN" \
         --save-all-snapshot "$ALL_MDNS_SNAPSHOT" \
-        --save-snapshot "$APPLE_MDNS_SNAPSHOT"
+        --save-snapshot "$APPLE_MDNS_SNAPSHOT" \
+        --ipv4 "$BRIDGE0_IP"
     if [ -n "${AIRPORT_WAMA:-}" ] || [ -n "${AIRPORT_RAMA:-}" ] || [ -n "${AIRPORT_RAM2:-}" ] || [ -n "${AIRPORT_SYVS:-}" ] || [ -n "${AIRPORT_SRCV:-}" ]; then
         set -- "$@" \
             --airport-wama "$AIRPORT_WAMA" \
