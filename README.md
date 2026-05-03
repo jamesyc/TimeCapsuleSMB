@@ -1,11 +1,11 @@
 # TimeCapsuleSMB
 
-Apple AirPort Time Capsules are still perfectly usable pieces of hardware, but they only support AFP and SMB1. Apple has removed SMB1 support from macOS a long time ago, and AFP support is being removed for macOS 27. This repo configures a modern Samba setup that runs directly on the Time Capsule itself. The goal is that a Time Capsule can once again show up as a normal SMB server on your network, and modern macOS can connect to it as a network share. 
+Apple AirPort Time Capsules are still perfectly usable pieces of hardware, but they only support AFP and SMB1. Apple has removed SMB1 support from macOS a long time ago, and AFP support is being removed for macOS 27. This repo configures a modern Samba setup that runs directly on the Time Capsule itself; modern macOS can connect to the Time Capsule as a network share, and use it for Time Machine backups. 
 
-**NOTE THAT TIME MACHINE ON MACOS 26.4 (AND 15.7.5) IS CURRENTLY BROKEN**, see https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups  
-Macs running macOS 26.4 can still use the device as a standard Samba network share in Finder.
+**NOTE THAT TIME MACHINE ON MACOS 26.4.x (AND 15.7.5) IS CURRENTLY BROKEN**, see https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups  
+Macs running macOS 26.4.x can still use the device as a standard Samba network share in Finder.
 
-This project is currently confirmed to work for NetBSD 6 based Time Capsules, and NetBSD 4 support now exists as well with some extra caveats described below. Your Time Capsule should work if it looks like this:  
+This project is currently confirmed to work for Gen 5 (NetBSD 6 based) Time Capsules, and Gen 1-4 (NetBSD 4) support now exists as well with some extra caveats described below. Your Time Capsule should fully work if it looks like this:  
 <img width="256" height="192" alt="image" src="https://github.com/user-attachments/assets/5d0b044f-2137-4bb7-8d65-3d1bb251754c" />
 
 ## Expectations
@@ -13,13 +13,15 @@ This project is currently confirmed to work for NetBSD 6 based Time Capsules, an
 If the setup completes successfully, your Time Capsule will run its own Samba 4 server, advertise itself over Bonjour (show up automatically in the "Network" folder on macOS), and accept authenticated SMB3 connections from macOS. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack. You should also be able to use the disk for Time Machine backups:  
 <img width="478" height="268" alt="image" src="https://github.com/user-attachments/assets/c713a1c6-ff71-43a2-a057-451223a1c0e0" />
 
-**This will disable Apple's AFP and SMB file server**, so do not expect those to be running at the same time. The `deploy` script will install files in `/mnt/Flash` on the Time Capsule, plus a `.samba4` folder on the root of the hard drive by default. The `uninstall` script removes those managed files and can optionally reboot the device afterward.
+The `deploy` script will install files in `/mnt/Flash` on the Time Capsule, plus a `.samba4` folder on the root of the hard drive by default. The `uninstall` script removes those managed files and can optionally reboot the device afterward.
 
 NetBSD 6 devices automatically startup on boot. **Older NetBSD 4 devices need a manual `activate` after every reboot.** If you do not run the `activate` command after a reboot, then Samba will not start automatically on an older Time Capsule.
 
 If you find any problems, I would appreciate it if you [file an issue here](https://github.com/jamesyc/TimeCapsuleSMB/issues) for help; I am actively working on it, so expect improvements! However **this is not supported by a trillion dollar company**, this is built by a guy in his free time. Therefore, I honestly do *not* recommend using this if you are still using the Time Capsule as your primary router, or if you have data on it that you are not comfortable losing. I do *not* expect this to permanently break the Time Capsule if something goes wrong, but it *may* mess up your configuration/data so you would need to reset/wipe the device. 
 
 The current authentication model accepts any user as the username, and the Samba password is the same password you enter during setup when the tool asks for the Time Capsule password. Guest access is disabled. 
+
+AirPort Extreme devices are not officially supported (because I do not own one to test on). Unoffically, they work with some minor tweaks. 
 
 ## Requirements
 
