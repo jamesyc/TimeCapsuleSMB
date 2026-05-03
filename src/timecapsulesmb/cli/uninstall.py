@@ -5,17 +5,16 @@ import json
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.cli.flows import request_reboot_and_wait
 from timecapsulesmb.cli.runtime import load_env_values
 from timecapsulesmb.core.config import airport_exact_display_name, require_valid_config
-from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.deploy.dry_run import format_uninstall_plan, uninstall_plan_to_jsonable
-from timecapsulesmb.deploy.executor import remote_request_reboot, remote_uninstall_payload
+from timecapsulesmb.deploy.executor import remote_uninstall_payload
 from timecapsulesmb.deploy.planner import build_uninstall_plan
 from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
-from timecapsulesmb.device.probe import build_device_paths, discover_volume_root_conn, wait_for_ssh_state_conn
+from timecapsulesmb.device.probe import build_device_paths, discover_volume_root_conn
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.telemetry import TelemetryClient
-from timecapsulesmb.transport.ssh import SshCommandTimeout
 
 
 REBOOT_REQUEST_TIMEOUT_NO_DOWN_MESSAGE = (
@@ -87,35 +86,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.succeed()
                 return 0
 
-        command_context.set_stage("reboot")
-        command_context.update_fields(reboot_was_attempted=True)
-        reboot_request_timed_out = False
-        try:
-            remote_request_reboot(connection)
-        except SshCommandTimeout as exc:
-            reboot_request_timed_out = True
-            command_context.add_debug_fields(
-                reboot_request_timed_out=True,
-                reboot_request_error=system_exit_message(exc),
-            )
-            print("Reboot request timed out; checking whether the device is rebooting...")
-        if not reboot_request_timed_out:
-            print("Reboot requested. Waiting for the device to go down...")
-        command_context.set_stage("wait_for_reboot_down")
-        reboot_went_down = wait_for_ssh_state_conn(connection, expected_up=False, timeout_seconds=60)
-        if reboot_request_timed_out and not reboot_went_down:
-            print(REBOOT_REQUEST_TIMEOUT_NO_DOWN_MESSAGE)
-            command_context.fail_with_error(REBOOT_REQUEST_TIMEOUT_NO_DOWN_MESSAGE)
-            return 1
-        print("Waiting for the device to come back up...")
-        command_context.set_stage("wait_for_reboot_up")
-        if not wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=240):
-            print("Timed out waiting for SSH after reboot.")
-            command_context.fail_with_error("Timed out waiting for SSH after reboot.")
+        if not request_reboot_and_wait(
+            connection,
+            command_context,
+            timeout_no_down_message=REBOOT_REQUEST_TIMEOUT_NO_DOWN_MESSAGE,
+        ):
             return 1
 
-        command_context.update_fields(device_came_back_after_reboot=True)
-        print("Device is back online.")
         command_context.set_stage("verify_post_uninstall")
         verification = verify_post_uninstall(connection, plan)
         for line in render_post_uninstall_verification(verification):
