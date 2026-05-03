@@ -5,7 +5,7 @@ NETBSD4_REBOOT_FOLLOWUP = "Run `activate` after a reboot if the device did not a
 # Update this version info for each release, including beta releases
 CLI_VERSION = "2.0.4"
 RELEASE_TAG = "v2.0.4"
-CLI_VERSION_CODE = 20003
+CLI_VERSION_CODE = 20004
 SAMBA_VERSION = "4.8.12"
 
 ANSI_RED = "\033[31m"
