@@ -22,6 +22,10 @@ class SshTransportError(SystemExit):
     """
 
 
+class SshCommandTimeout(SystemExit):
+    """Raised when the local SSH client times out waiting for command completion."""
+
+
 @dataclass
 class SshConnection:
     host: str
@@ -132,7 +136,7 @@ def _spawn_with_password(cmd: list[str], password: str, *, timeout: int, timeout
                 break
             else:
                 output.append(child.before or "")
-                raise SystemExit(timeout_message)
+                raise SshCommandTimeout(timeout_message)
     finally:
         try:
             child.close()

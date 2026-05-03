@@ -8,6 +8,7 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import load_env_values
+from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.core.config import airport_family_display_name, parse_bool
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
@@ -36,9 +37,14 @@ from timecapsulesmb.device.compat import is_netbsd4_payload_family, payload_fami
 from timecapsulesmb.device.probe import build_device_paths, discover_volume_root_conn, wait_for_ssh_state_conn
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_green, color_red
+from timecapsulesmb.transport.ssh import SshCommandTimeout
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+REBOOT_REQUEST_TIMEOUT_NO_DOWN_MESSAGE = (
+    "Reboot request timed out and the device did not go down.\n"
+    "The deploy stopped the managed runtime before reboot; power-cycle or rerun deploy."
+)
 
 
 def _non_negative_int(value: str) -> int:
@@ -243,10 +249,24 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         command_context.set_stage("reboot")
         command_context.update_fields(reboot_was_attempted=True)
-        remote_request_reboot(connection)
-        print("Reboot requested. Waiting for the device to go down...")
+        reboot_request_timed_out = False
+        try:
+            remote_request_reboot(connection)
+        except SshCommandTimeout as exc:
+            reboot_request_timed_out = True
+            command_context.add_debug_fields(
+                reboot_request_timed_out=True,
+                reboot_request_error=system_exit_message(exc),
+            )
+            print("Reboot request timed out; checking whether the device is rebooting...")
+        if not reboot_request_timed_out:
+            print("Reboot requested. Waiting for the device to go down...")
         command_context.set_stage("wait_for_reboot_down")
-        wait_for_ssh_state_conn(connection, expected_up=False, timeout_seconds=60)
+        reboot_went_down = wait_for_ssh_state_conn(connection, expected_up=False, timeout_seconds=60)
+        if reboot_request_timed_out and not reboot_went_down:
+            print(REBOOT_REQUEST_TIMEOUT_NO_DOWN_MESSAGE)
+            command_context.fail_with_error(REBOOT_REQUEST_TIMEOUT_NO_DOWN_MESSAGE)
+            return 1
         print("Waiting for the device to come back up...")
         command_context.set_stage("wait_for_reboot_up")
         if wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=240):

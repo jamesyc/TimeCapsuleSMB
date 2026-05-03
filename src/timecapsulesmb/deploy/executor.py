@@ -19,6 +19,7 @@ from timecapsulesmb.transport.ssh import SshConnection, run_scp, run_ssh
 
 
 DETACHED_REBOOT_COMMAND = "/bin/sh -c 'exec </dev/null >/dev/null 2>&1; (/bin/sleep 1; /sbin/reboot) & exit 0'"
+REBOOT_REQUEST_TIMEOUT_SECONDS = 30
 
 
 def remote_prepare_dirs(connection: SshConnection, payload_dir: str) -> None:
@@ -98,7 +99,7 @@ def run_remote_actions(connection: SshConnection, actions) -> None:
 
 
 def remote_request_reboot(connection: SshConnection) -> None:
-    run_ssh(connection, DETACHED_REBOOT_COMMAND, check=False, timeout=10)
+    run_ssh(connection, DETACHED_REBOOT_COMMAND, check=False, timeout=REBOOT_REQUEST_TIMEOUT_SECONDS)
 
 
 def remote_uninstall_payload(connection: SshConnection, plan: UninstallPlan) -> None:
