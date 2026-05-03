@@ -13,11 +13,58 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.device import probe
-from timecapsulesmb.device.probe import preferred_interface_name, probe_remote_interface_candidates_conn, probe_remote_interface_conn
+from timecapsulesmb.device.probe import (
+    nbns_marker_enabled_conn,
+    preferred_interface_name,
+    probe_remote_interface_candidates_conn,
+    probe_remote_interface_conn,
+    read_runtime_log_tails_conn,
+)
 from timecapsulesmb.transport.ssh import SshConnection
 
 
 class ProbeTests(unittest.TestCase):
+    def test_nbns_marker_enabled_conn_uses_short_timeout_for_disk_path_probe(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="enabled\n")
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
+            result = nbns_marker_enabled_conn(connection, "/Volumes/dk2/.samba4")
+
+        self.assertTrue(result)
+        run_ssh_mock.assert_called_once()
+        args, kwargs = run_ssh_mock.call_args
+        self.assertEqual(args[0], connection)
+        self.assertIn("/Volumes/dk2/.samba4/private/nbns.enabled", args[1])
+        self.assertFalse(kwargs["check"])
+        self.assertEqual(kwargs["timeout"], probe.NBNS_MARKER_PROBE_TIMEOUT_SECONDS)
+
+    def test_read_runtime_log_tails_conn_fetches_rc_local_and_mdns_with_short_timeout(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+
+        def fake_run_ssh(
+            _connection: SshConnection,
+            remote_cmd: str,
+            **_kwargs: object,
+        ) -> subprocess.CompletedProcess[str]:
+            if "rc.local.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rc log\n", stderr="")
+            if "mdns.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="mdns log\n", stderr="")
+            self.fail(f"unexpected remote command: {remote_cmd}")
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=fake_run_ssh) as run_ssh_mock:
+            logs = read_runtime_log_tails_conn(connection)
+
+        self.assertEqual(logs["remote_rc_local_log_tail"], "rc log")
+        self.assertEqual(logs["remote_mdns_log_tail"], "mdns log")
+        self.assertEqual(run_ssh_mock.call_count, 2)
+        for call in run_ssh_mock.call_args_list:
+            args, kwargs = call
+            self.assertEqual(args[0], connection)
+            self.assertFalse(kwargs["check"])
+            self.assertEqual(kwargs["timeout"], probe.REMOTE_LOG_TAIL_TIMEOUT_SECONDS)
+
     def test_probe_remote_interface_conn_uses_connection_wrapper_without_old_positional_shape(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
         proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="bridge0\n")

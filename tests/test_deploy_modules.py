@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,7 @@ from timecapsulesmb.deploy.commands import (
 from timecapsulesmb.deploy.dry_run import format_deployment_plan
 from timecapsulesmb.deploy.executor import (
     DETACHED_REBOOT_COMMAND,
+    REBOOT_REQUEST_TIMEOUT_SECONDS,
     remote_enable_nbns,
     remote_ensure_adisk_uuid,
     remote_initialize_data_root,
@@ -51,7 +53,12 @@ from timecapsulesmb.deploy.templates import (
     render_template_text,
 )
 from timecapsulesmb.deploy.verify import (
+    VerificationResult,
+    managed_runtime_ready,
+    render_managed_runtime_verification,
+    render_post_uninstall_verification,
     verify_managed_runtime,
+    verify_post_uninstall,
 )
 from timecapsulesmb.device.probe import (
     ManagedMdnsTakeoverProbeResult,
@@ -161,7 +168,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertTrue(smbpasswd_text.startswith("root:0:"))
         self.assertEqual(username_map, "!root = root\nroot = *\n")
 
-    def test_remote_request_reboot_uses_short_fire_and_forget_ssh_call(self) -> None:
+    def test_remote_request_reboot_uses_explicit_reboot_timeout(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
             remote_request_reboot(connection)
@@ -169,7 +176,7 @@ class DeployModuleTests(unittest.TestCase):
             connection,
             DETACHED_REBOOT_COMMAND,
             check=False,
-            timeout=10,
+            timeout=REBOOT_REQUEST_TIMEOUT_SECONDS,
         )
 
     def test_build_template_bundle_contains_expected_keys(self) -> None:
@@ -216,21 +223,16 @@ class DeployModuleTests(unittest.TestCase):
 
     def test_cache_directory_replacements_default_unknown_family_to_ram_cache(self) -> None:
         self.assertEqual(
-            cache_directory_replacements("unknown_future_family", "samba4"),
+            cache_directory_replacements("unknown_future_family"),
             ("/mnt/Memory/samba4/var", "/mnt/Memory/samba4/var"),
         )
 
     def test_cache_directory_replacements_keep_netbsd4_start_expression_unquoted(self) -> None:
-        start_cache, smbconf_cache = cache_directory_replacements("netbsd4le_samba4", "samba4")
+        start_cache, smbconf_cache = cache_directory_replacements("netbsd4le_samba4")
         self.assertEqual(start_cache, "$PAYLOAD_DIR/cache")
         self.assertEqual(smbconf_cache, "__PAYLOAD_DIR__/cache")
         self.assertFalse(start_cache.startswith("'"))
         self.assertFalse(start_cache.endswith("'"))
-
-    def test_cache_directory_replacements_use_custom_payload_dir_for_netbsd4_smbconf(self) -> None:
-        start_cache, smbconf_cache = cache_directory_replacements("netbsd4le_samba4", "samba4-test")
-        self.assertEqual(start_cache, "$PAYLOAD_DIR/cache")
-        self.assertEqual(smbconf_cache, "__PAYLOAD_DIR__/cache")
 
     def test_build_deployment_plan_uses_device_paths(self) -> None:
         payload_dir_name = "samba4"
@@ -530,11 +532,11 @@ class DeployModuleTests(unittest.TestCase):
         self.assertNotIn('--load-snapshot "$APPLE_MDNS_SNAPSHOT"', capture_section)
         self.assertNotIn('--instance "$MDNS_INSTANCE_NAME"', capture_section)
         self.assertNotIn('--host "$MDNS_HOST_LABEL"', capture_section)
-        self.assertNotIn('--ipv4 "$BRIDGE0_IP"', capture_section)
+        self.assertIn('--ipv4 "$NET_IFACE_IP"', capture_section)
         self.assertIn('--load-snapshot "$APPLE_MDNS_SNAPSHOT"', advertise_section)
         self.assertIn('--instance "$MDNS_INSTANCE_NAME"', advertise_section)
         self.assertIn('--host "$MDNS_HOST_LABEL"', advertise_section)
-        self.assertIn('--ipv4 "$BRIDGE0_IP"', advertise_section)
+        self.assertIn('--ipv4 "$NET_IFACE_IP"', advertise_section)
         self.assertIn("wait_for_mdns_capture", advertise_section)
         wait_start = rendered.index("wait_for_mdns_capture()")
         wait_end = rendered.index("start_mdns_advertiser()")
@@ -572,8 +574,9 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("discover_preexisting_data_root()", rendered)
         self.assertIn("mount_fallback_volume()", rendered)
         self.assertIn("resolve_data_root_on_mounted_volume()", rendered)
+        self.assertIn('INITIAL_CANDIDATES=$(disk_name_candidates)', rendered)
+        self.assertIn('if DATA_ROOT=$(discover_preexisting_data_root); then', rendered)
         self.assertIn('DISK_CANDIDATES=$(disk_name_candidates)', rendered)
-        self.assertIn('if DATA_ROOT=$(discover_preexisting_data_root "$DISK_CANDIDATES"); then', rendered)
         self.assertIn('VOLUME_ROOT=$(mount_fallback_volume "$DISK_CANDIDATES") || {', rendered)
         self.assertIn('DATA_ROOT=$(resolve_data_root_on_mounted_volume "$VOLUME_ROOT") || {', rendered)
         self.assertIn("disk_name_candidates()", rendered)
@@ -603,7 +606,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('log "disk discovery: waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume before manual mount fallback"', rendered)
         self.assertIn('log "no Apple-mounted usable volume found; falling back to manual mount"', rendered)
         self.assertIn('log "data root resolved after manual mount: $DATA_ROOT"', rendered)
-        self.assertIn('log "starting nbns responder for $SMB_NETBIOS_NAME at $BRIDGE0_IP"', rendered)
+        self.assertIn('log "starting nbns responder for $SMB_NETBIOS_NAME at $NET_IFACE_IP"', rendered)
         self.assertNotIn("wait_for_process()", rendered)
         self.assertNotIn("wait_for_smbd_ready()", rendered)
 
@@ -623,11 +626,12 @@ class DeployModuleTests(unittest.TestCase):
         main_start = rendered.index("cleanup_old_runtime")
         main_section = rendered[main_start:]
         self.assertLess(main_section.index("prepare_locks_ramdisk"), main_section.index("prepare_ram_root"))
-        self.assertLess(main_section.index("DISK_CANDIDATES=$(disk_name_candidates)"), main_section.index('log_disk_discovery_state "$DISK_CANDIDATES"'))
-        self.assertLess(main_section.index('log_disk_discovery_state "$DISK_CANDIDATES"'), main_section.rindex("\nstart_mdns_capture\n"))
+        self.assertLess(main_section.index("INITIAL_CANDIDATES=$(disk_name_candidates)"), main_section.index('log_disk_discovery_state "$INITIAL_CANDIDATES"'))
+        self.assertLess(main_section.index('log_disk_discovery_state "$INITIAL_CANDIDATES"'), main_section.rindex("\nstart_mdns_capture\n"))
         self.assertLess(main_section.index('start_mdns'), main_section.index('waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume'))
-        self.assertLess(main_section.index('waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume'), main_section.index('if DATA_ROOT=$(discover_preexisting_data_root "$DISK_CANDIDATES"); then'))
-        self.assertLess(main_section.index('if DATA_ROOT=$(discover_preexisting_data_root "$DISK_CANDIDATES"); then'), main_section.index('VOLUME_ROOT=$(mount_fallback_volume "$DISK_CANDIDATES") || {'))
+        self.assertLess(main_section.index('waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume'), main_section.index('if DATA_ROOT=$(discover_preexisting_data_root); then'))
+        self.assertLess(main_section.index('if DATA_ROOT=$(discover_preexisting_data_root); then'), main_section.index('DISK_CANDIDATES=$(disk_name_candidates)'))
+        self.assertLess(main_section.index('DISK_CANDIDATES=$(disk_name_candidates)'), main_section.index('VOLUME_ROOT=$(mount_fallback_volume "$DISK_CANDIDATES") || {'))
         self.assertLess(main_section.index('log "smbd startup complete: process observed"'), main_section.rindex('start_mdns_advertiser'))
         self.assertLess(main_section.rindex('start_mdns_advertiser'), main_section.rindex('start_nbns'))
         discover_body = rendered[rendered.index("discover_preexisting_data_root()"):rendered.index("resolve_data_root_on_mounted_volume()")]
@@ -635,13 +639,71 @@ class DeployModuleTests(unittest.TestCase):
         wait_section = rendered[rendered.index("wait_for_existing_mount_target()"):rendered.index("try_mount_candidate()")]
         self.assertIn(f"APPLE_MOUNT_WAIT_SECONDS={DEFAULT_APPLE_MOUNT_WAIT_SECONDS}", rendered)
         self.assertIn('while [ "$attempt" -lt "$APPLE_MOUNT_WAIT_SECONDS" ]; do', wait_section)
-        self.assertIn('if target=$($finder "$finder_arg"); then', wait_section)
+        self.assertIn('disk_candidates=$(disk_name_candidates)', wait_section)
+        self.assertIn('if target=$($finder "$disk_candidates"); then', wait_section)
         self.assertIn('log "$target_name was mounted after ${attempt}s"', wait_section)
         self.assertIn('log "$target_name was not mounted after ${attempt}s"', wait_section)
         self.assertIn('wait_for_existing_mount_target "data root" find_existing_data_root', rendered)
         self.assertIn('wait_for_existing_mount_target "disk root" find_existing_volume_root', rendered)
         self.assertNotIn("wait_for_existing_data_root()", rendered)
         self.assertNotIn("wait_for_existing_volume_root()", rendered)
+
+    def test_render_start_script_wait_refreshes_disk_candidates_each_poll(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(values)
+        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
+        wait_section = rendered[rendered.index("wait_for_existing_mount_target()"):rendered.index("try_mount_candidate()")]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            count_path = Path(tmpdir) / "candidate-count"
+            script_path = Path(tmpdir) / "wait-refresh-test.sh"
+            script_path.write_text(
+                f"""#!/bin/sh
+set -eu
+APPLE_MOUNT_WAIT_SECONDS=3
+COUNT_FILE={shlex.quote(str(count_path))}
+log() {{ :; }}
+sleep() {{ :; }}
+disk_name_candidates() {{
+    count=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
+    count=$((count + 1))
+    echo "$count" >"$COUNT_FILE"
+    if [ "$count" -eq 1 ]; then
+        echo " dk0 dk1"
+    else
+        echo " dk2"
+    fi
+}}
+find_existing_data_root() {{
+    disk_candidates=$1
+    case " $disk_candidates " in
+        *" dk2 "*)
+            echo "/Volumes/dk2/ShareRoot"
+            return 0
+            ;;
+    esac
+    return 1
+}}
+{wait_section}
+result=$(wait_for_existing_mount_target "data root" find_existing_data_root)
+printf '%s\\n' "$result"
+printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
+""",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(["/bin/sh", str(script_path)], capture_output=True, text=True, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.splitlines(), ["/Volumes/dk2/ShareRoot", "calls=2"])
 
     def test_render_start_script_custom_disk_delay_extends_apple_mount_wait(self) -> None:
         values = {
@@ -1181,7 +1243,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertNotIn("grep", helper_section)
         self.assertNotIn("awk", helper_section)
 
-        network_detection = rendered.index("BRIDGE0_IP=${BRIDGE0_IP%%/*}")
+        network_detection = rendered.index("NET_IFACE_IP=${NET_IFACE_IP%%/*}")
         hostname_call = rendered.index("\nprepare_local_hostname_resolution\n", network_detection)
         mdns_capture = rendered.index("\nstart_mdns_capture\n", network_detection)
         smbd_start = rendered.index("\nstart_smbd ||", network_detection)
@@ -1341,7 +1403,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then', discover_section)
         self.assertLess(
             discover_section.index('if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then'),
-            discover_section.index('if data_root=$(wait_for_existing_mount_target "data root" find_existing_data_root "$disk_candidates"); then'),
+            discover_section.index('if data_root=$(wait_for_existing_mount_target "data root" find_existing_data_root); then'),
         )
         resolve_start = rendered.index("resolve_data_root_on_mounted_volume()")
         resolve_end = rendered.index("\nwait_for_existing_mount_target()")
@@ -1370,13 +1432,13 @@ class DeployModuleTests(unittest.TestCase):
         discover_end = rendered.index("\nresolve_data_root_on_mounted_volume()")
         discover_section = rendered[discover_start:discover_end]
         self.assertIn('if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then', discover_section)
-        self.assertIn('if volume_root=$(wait_for_existing_mount_target "disk root" find_existing_volume_root "$disk_candidates"); then', discover_section)
+        self.assertIn('if volume_root=$(wait_for_existing_mount_target "disk root" find_existing_volume_root); then', discover_section)
         self.assertIn('log "found Apple-mounted disk root: $volume_root"', discover_section)
         self.assertIn('echo "$volume_root"', discover_section)
         self.assertNotIn('sleep "$APPLE_MOUNT_WAIT_SECONDS"', discover_section)
         self.assertLess(
             discover_section.index('if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then'),
-            discover_section.index('if data_root=$(wait_for_existing_mount_target "data root" find_existing_data_root "$disk_candidates"); then'),
+            discover_section.index('if data_root=$(wait_for_existing_mount_target "data root" find_existing_data_root); then'),
         )
         resolve_start = rendered.index("resolve_data_root_on_mounted_volume()")
         resolve_end = rendered.index("\nwait_for_existing_mount_target()")
@@ -1401,7 +1463,7 @@ class DeployModuleTests(unittest.TestCase):
         }
         bundle = build_template_bundle(values, payload_family="netbsd4le_samba4")
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        data_root_index = rendered.index('if DATA_ROOT=$(discover_preexisting_data_root "$DISK_CANDIDATES"); then')
+        data_root_index = rendered.index('if DATA_ROOT=$(discover_preexisting_data_root); then')
         payload_index = rendered.index('PAYLOAD_DIR=$(find_payload_dir "$DATA_ROOT") || {')
         cache_index = rendered.index("CACHE_DIRECTORY=$PAYLOAD_DIR/cache")
         self.assertGreater(payload_index, data_root_index)
@@ -2598,8 +2660,18 @@ int main(void) {{
             lines=("PASS:managed smbd ready", "PASS:managed mDNS takeover active"),
         )
         with mock.patch("timecapsulesmb.deploy.verify.probe_managed_runtime_conn", return_value=result):
-            with redirect_stdout(io.StringIO()):
-                self.assertTrue(verify_managed_runtime(SshConnection("host", "pw", "-o foo"), heading="NetBSD4 activation verification:"))
+            verification = verify_managed_runtime(SshConnection("host", "pw", "-o foo"))
+
+        self.assertIs(verification, result)
+        self.assertTrue(managed_runtime_ready(verification))
+        self.assertEqual(
+            render_managed_runtime_verification(verification, heading="NetBSD4 activation verification:"),
+            [
+                "NetBSD4 activation verification:",
+                "  ok: managed smbd ready",
+                "  ok: managed mDNS takeover active",
+            ],
+        )
 
     def test_verify_managed_runtime_fails_when_runtime_probe_fails(self) -> None:
         result = ManagedRuntimeProbeResult(
@@ -2610,8 +2682,36 @@ int main(void) {{
             lines=("FAIL:managed smbd is not ready", "PASS:managed mDNS takeover active"),
         )
         with mock.patch("timecapsulesmb.deploy.verify.probe_managed_runtime_conn", return_value=result):
-            with redirect_stdout(io.StringIO()):
-                self.assertFalse(verify_managed_runtime(SshConnection("host", "pw", "-o foo"), heading="NetBSD4 activation verification:"))
+            verification = verify_managed_runtime(SshConnection("host", "pw", "-o foo"))
+
+        self.assertIs(verification, result)
+        self.assertFalse(managed_runtime_ready(verification))
+        self.assertEqual(
+            render_managed_runtime_verification(verification, heading="NetBSD4 activation verification:"),
+            [
+                "NetBSD4 activation verification:",
+                "  failed: managed smbd is not ready",
+                "  ok: managed mDNS takeover active",
+            ],
+        )
+
+    def test_verify_post_uninstall_returns_structured_result_and_rendered_lines(self) -> None:
+        plan = mock.Mock(verify_absent_targets=("/Volumes/dk2/samba4", "/mnt/Flash/rc.local"))
+        probe_result = mock.Mock(returncode=1, stdout="ABSENT:/Volumes/dk2/samba4\nPRESENT:/mnt/Flash/rc.local\n")
+
+        with mock.patch("timecapsulesmb.deploy.verify.probe_paths_absent_conn", return_value=probe_result):
+            verification = verify_post_uninstall(SshConnection("host", "pw", "-o foo"), plan)
+
+        self.assertIsInstance(verification, VerificationResult)
+        self.assertFalse(verification)
+        self.assertEqual(
+            render_post_uninstall_verification(verification),
+            [
+                "Post-uninstall verification:",
+                "  ok: removed /Volumes/dk2/samba4",
+                "  failed: still present /mnt/Flash/rc.local",
+            ],
+        )
 
     def test_probe_managed_smbd_single_shot_checks_runtime_conf_parent_and_port_binding(self) -> None:
         with mock.patch(

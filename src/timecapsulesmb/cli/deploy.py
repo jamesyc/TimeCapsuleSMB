@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.cli.flows import request_reboot_and_wait, verify_managed_runtime_flow
 from timecapsulesmb.cli.runtime import load_env_values
 from timecapsulesmb.core.config import airport_family_display_name, parse_bool
 from timecapsulesmb.identity import ensure_install_id
@@ -16,7 +17,6 @@ from timecapsulesmb.deploy.dry_run import deployment_plan_to_jsonable, format_de
 from timecapsulesmb.deploy.executor import (
     remote_ensure_adisk_uuid,
     remote_install_auth_files,
-    remote_request_reboot,
     run_remote_actions,
     upload_deployment_payload,
 )
@@ -27,16 +27,17 @@ from timecapsulesmb.deploy.templates import (
     render_template,
     write_boot_asset,
 )
-from timecapsulesmb.deploy.verify import (
-    verify_managed_runtime,
-)
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, payload_family_description, render_compatibility_message
-from timecapsulesmb.device.probe import build_device_paths, discover_volume_root_conn, wait_for_ssh_state_conn
+from timecapsulesmb.device.probe import build_device_paths, discover_volume_root_conn
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_green, color_red
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+REBOOT_REQUEST_TIMEOUT_NO_DOWN_MESSAGE = (
+    "Reboot request timed out and the device did not go down.\n"
+    "The deploy stopped the managed runtime before reboot; power-cycle or rerun deploy."
+)
 
 
 def _non_negative_int(value: str) -> int:
@@ -209,10 +210,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("Activating NetBSD4 payload without reboot.")
             command_context.set_stage("netbsd4_activation")
             run_remote_actions(connection, plan.activation_actions)
-            command_context.set_stage("verify_runtime_activation")
-            if not verify_managed_runtime(connection, timeout_seconds=180, heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up..."):
-                print("NetBSD4 activation failed.")
-                command_context.fail_with_error("NetBSD4 activation failed.")
+            if not verify_managed_runtime_flow(
+                connection,
+                command_context,
+                stage="verify_runtime_activation",
+                timeout_seconds=180,
+                heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up...",
+                failure_message="NetBSD4 activation failed.",
+            ):
                 return 1
             print(f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}")
             print(color_green("Deploy Finished."))
@@ -233,28 +238,24 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.cancel_with_error("Cancelled by user at reboot confirmation prompt.")
                 return 0
 
-        command_context.set_stage("reboot")
-        command_context.update_fields(reboot_was_attempted=True)
-        remote_request_reboot(connection)
-        print("Reboot requested. Waiting for the device to go down...")
-        command_context.set_stage("wait_for_reboot_down")
-        wait_for_ssh_state_conn(connection, expected_up=False, timeout_seconds=60)
-        print("Waiting for the device to come back up...")
-        command_context.set_stage("wait_for_reboot_up")
-        if wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=240):
-            command_context.update_fields(device_came_back_after_reboot=True)
-            print("Device is back online.")
-            print("Waiting for managed runtime to finish starting...")
-            command_context.set_stage("verify_runtime_reboot")
-            if not verify_managed_runtime(connection, timeout_seconds=240, heading="Wait for device to finish loading; it can take a few minutes for Samba to start up..."):
-                print("Managed runtime did not become ready after reboot.")
-                command_context.fail_with_error("Managed runtime did not become ready after reboot.")
-                return 1
+        if not request_reboot_and_wait(
+            connection,
+            command_context,
+            timeout_no_down_message=REBOOT_REQUEST_TIMEOUT_NO_DOWN_MESSAGE,
+        ):
+            return 1
+        print("Waiting for managed runtime to finish starting...")
+        if verify_managed_runtime_flow(
+            connection,
+            command_context,
+            stage="verify_runtime_reboot",
+            timeout_seconds=240,
+            heading="Wait for device to finish loading; it can take a few minutes for Samba to start up...",
+            failure_message="Managed runtime did not become ready after reboot.",
+        ):
             print(color_green("Deploy Finished."))
             command_context.succeed()
             return 0
 
-        print("Timed out waiting for SSH after reboot.")
-        command_context.fail_with_error("Timed out waiting for SSH after reboot.")
         return 1
     return 1

@@ -4,13 +4,13 @@ import argparse
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.cli.flows import verify_managed_runtime_flow
 from timecapsulesmb.cli.runtime import load_env_values
 from timecapsulesmb.core.config import airport_exact_display_name
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.dry_run import format_activation_plan
 from timecapsulesmb.deploy.executor import run_remote_actions
 from timecapsulesmb.deploy.planner import build_netbsd4_activation_plan
-from timecapsulesmb.deploy.verify import verify_managed_runtime
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, render_compatibility_message
 from timecapsulesmb.device.probe import probe_managed_runtime_conn
 from timecapsulesmb.telemetry import TelemetryClient
@@ -61,9 +61,14 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         print("Activating NetBSD4 payload without file transfer.")
         run_remote_actions(connection, plan.actions)
-        if not verify_managed_runtime(connection, timeout_seconds=180, heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up..."):
-            print("NetBSD4 activation failed.")
-            command_context.fail_with_error("NetBSD4 activation failed.")
+        if not verify_managed_runtime_flow(
+            connection,
+            command_context,
+            stage="verify_runtime_activation",
+            timeout_seconds=180,
+            heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up...",
+            failure_message="NetBSD4 activation failed.",
+        ):
             return 1
         print(f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}")
         command_context.succeed()

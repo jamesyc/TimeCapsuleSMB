@@ -3,18 +3,18 @@ from __future__ import annotations
 import importlib
 import time
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.cli import runtime
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.telemetry import build_device_os_version
-from timecapsulesmb.telemetry.debug import debug_summary, render_command_debug_lines
+from timecapsulesmb.telemetry.debug import debug_summary, render_debug_mapping
 
 if TYPE_CHECKING:
     from timecapsulesmb.cli.runtime import ManagedTargetState
     from timecapsulesmb.device.compat import DeviceCompatibility
-    from timecapsulesmb.device.probe import ProbedDeviceState
+    from timecapsulesmb.device.probe import ProbedDeviceState, RemoteInterfaceProbeResult
     from timecapsulesmb.telemetry import TelemetryClient
     from timecapsulesmb.transport.ssh import SshConnection
 
@@ -30,6 +30,69 @@ def missing_required_python_module(module_names: Iterable[str]) -> str | None:
 
 def missing_dependency_message(module_name: str) -> str:
     return f"Failed to load {module_name}. Run `./tcapsule bootstrap` to set up the required dependencies."
+
+
+COMMAND_VALUE_BLACKLIST = {
+    "TC_PASSWORD",
+    # These are already first-class telemetry fields.
+    "TC_CONFIGURE_ID",
+    "TC_MDNS_DEVICE_MODEL",
+    "TC_AIRPORT_SYAP",
+}
+COMMAND_FIELD_BLACKLIST = {
+    # These are already first-class telemetry fields.
+    "configure_id",
+    "device_model",
+    "device_syap",
+    "device_os_version",
+    "device_family",
+    "nbns_enabled",
+    "reboot_was_attempted",
+    "device_came_back_after_reboot",
+}
+
+
+def _render_connection_debug_lines(connection: SshConnection | None, values: Mapping[str, str] | None) -> list[str]:
+    host = None
+    ssh_opts = None
+    if connection is not None:
+        host = connection.host
+        ssh_opts = connection.ssh_opts
+    elif values is not None:
+        host = values.get("TC_HOST") or None
+        ssh_opts = values.get("TC_SSH_OPTS") or None
+    lines: list[str] = []
+    if host:
+        lines.append(f"host={host}")
+    if ssh_opts:
+        lines.append(f"ssh_opts={ssh_opts}")
+    return lines
+
+
+def render_command_debug_lines(
+    *,
+    command_name: str,
+    stage: str | None,
+    connection: SshConnection | None,
+    values: Mapping[str, str] | None,
+    preflight_error: str | None,
+    finish_fields: Mapping[str, object],
+    probe_state: ProbedDeviceState | None,
+    debug_fields: Mapping[str, object],
+) -> list[str]:
+    lines = ["Debug context:", f"command={command_name}"]
+    if stage:
+        lines.append(f"stage={stage}")
+    lines.extend(_render_connection_debug_lines(connection, values))
+    if values is not None:
+        lines.extend(render_debug_mapping(values, blacklist=COMMAND_VALUE_BLACKLIST))
+    if preflight_error:
+        lines.append(f"preflight_error={preflight_error}")
+    lines.extend(render_debug_mapping(finish_fields, blacklist=COMMAND_FIELD_BLACKLIST))
+    if probe_state is not None:
+        lines.extend(render_debug_mapping(debug_summary(probe_state), blacklist=COMMAND_FIELD_BLACKLIST))
+    lines.extend(render_debug_mapping(debug_fields, blacklist=COMMAND_FIELD_BLACKLIST))
+    return lines
 
 
 class CommandContext:
@@ -59,6 +122,7 @@ class CommandContext:
         self.debug_stage: str | None = None
         self.debug_fields: dict[str, object] = {}
         self.connection: SshConnection | None = None
+        self.interface_probe: RemoteInterfaceProbeResult | None = None
         self.probe_state: ProbedDeviceState | None = None
         self.compatibility: DeviceCompatibility | None = None
         self._emit_telemetry(started_event, command_id=self.command_id, **fields)
@@ -155,6 +219,28 @@ class CommandContext:
         )
         return self.connection
 
+    def _apply_managed_target_state(self, target: ManagedTargetState) -> ManagedTargetState:
+        self.connection = target.connection
+        self.interface_probe = target.interface_probe
+        if target.probe_state is not None:
+            self.probe_state = target.probe_state
+            self.compatibility = target.probe_state.compatibility
+            if self.compatibility is not None:
+                self.update_fields(
+                    device_os_version=build_device_os_version(
+                        self.compatibility.os_name,
+                        self.compatibility.os_release,
+                        self.compatibility.arch,
+                    ),
+                    device_family=self.compatibility.payload_family,
+                )
+        return target
+
+    def inspect_managed_connection(self, *, iface: str, include_probe: bool = False) -> ManagedTargetState:
+        connection = self.connection if self.connection is not None else self.resolve_env_connection()
+        target = runtime.inspect_managed_connection(connection, iface, include_probe=include_probe)
+        return self._apply_managed_target_state(target)
+
     def resolve_validated_managed_target(self, *, profile: str, include_probe: bool = False) -> ManagedTargetState:
         if self.values is None:
             raise RuntimeError("CommandContext values are not set.")
@@ -164,11 +250,7 @@ class CommandContext:
             profile=profile,
             include_probe=include_probe,
         )
-        self.connection = target.connection
-        if target.probe_state is not None:
-            self.probe_state = target.probe_state
-            self.compatibility = target.probe_state.compatibility
-        return target
+        return self._apply_managed_target_state(target)
 
     def require_compatibility(self) -> DeviceCompatibility:
         if self.connection is None:

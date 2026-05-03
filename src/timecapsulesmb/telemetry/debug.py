@@ -8,7 +8,9 @@ from timecapsulesmb.device.probe import ProbedDeviceState, RemoteInterfaceCandid
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoveryDiagnostics,
     BonjourDiscoverySnapshot,
+    BonjourPtrRecordObservation,
     BonjourResolvedService,
+    BonjourServiceEvent,
     BonjourServiceInstance,
 )
 from timecapsulesmb.discovery.native_dns_sd import (
@@ -16,32 +18,11 @@ from timecapsulesmb.discovery.native_dns_sd import (
     NativeDnsSdDiagnostics,
     NativeDnsSdServiceEvent,
 )
-from timecapsulesmb.transport.ssh import SshConnection
 
 
 MAX_BONJOUR_DEBUG_ITEMS = 50
 MAX_DEBUG_TEXT = 200
 MAX_DEBUG_ERROR_TEXT = 1024
-
-
-DEBUG_VALUE_BLACKLIST = {
-    "TC_PASSWORD",
-    # These are already first-class telemetry fields.
-    "TC_CONFIGURE_ID",
-    "TC_MDNS_DEVICE_MODEL",
-    "TC_AIRPORT_SYAP",
-}
-DEBUG_FIELD_BLACKLIST = {
-    # These are already first-class telemetry fields.
-    "configure_id",
-    "device_model",
-    "device_syap",
-    "device_os_version",
-    "device_family",
-    "nbns_enabled",
-    "reboot_was_attempted",
-    "device_came_back_after_reboot",
-}
 
 
 @singledispatch
@@ -100,9 +81,41 @@ def _(value: BonjourResolvedService) -> dict[str, object]:
     return summary
 
 
+def _bonjour_service_event_summary(value: BonjourServiceEvent) -> dict[str, object]:
+    return {
+        "service_type": _truncate_debug_text(value.service_type),
+        "state": _truncate_debug_text(value.state),
+        "name": _truncate_debug_text(value.name),
+        "fullname": _truncate_debug_text(value.fullname),
+        "elapsed_sec": value.elapsed_sec,
+    }
+
+
+def _bonjour_ptr_record_summary(value: BonjourPtrRecordObservation) -> dict[str, object]:
+    return {
+        "service_type": _truncate_debug_text(value.service_type),
+        "alias": _truncate_debug_text(value.alias),
+        "alias_name": _truncate_debug_text(value.alias_name),
+        "ttl": value.ttl,
+        "expired": value.expired,
+        "old_record_present": value.old_record_present,
+        "elapsed_sec": value.elapsed_sec,
+    }
+
+
 @debug_summary.register
 def _(value: BonjourServiceInstance) -> dict[str, object]:
     return _bonjour_instance_summary(value)
+
+
+@debug_summary.register
+def _(value: BonjourServiceEvent) -> dict[str, object]:
+    return _bonjour_service_event_summary(value)
+
+
+@debug_summary.register
+def _(value: BonjourPtrRecordObservation) -> dict[str, object]:
+    return _bonjour_ptr_record_summary(value)
 
 
 @debug_summary.register
@@ -117,12 +130,15 @@ def _(value: BonjourDiscoverySnapshot) -> dict[str, object]:
 
 @debug_summary.register
 def _(value: BonjourDiscoveryDiagnostics) -> dict[str, object]:
-    return {
+    summary: dict[str, object] = {
         "service": value.service,
         "service_types": list(value.service_types),
         "timeout_sec": value.timeout_sec,
         "elapsed_sec": value.elapsed_sec,
         "ip_version": value.ip_version,
+        "zeroconf_version": value.zeroconf_version,
+        "zeroconf_interfaces": value.zeroconf_interfaces,
+        "zeroconf_apple_p2p": value.zeroconf_apple_p2p,
         "instance_count": value.instance_count,
         "resolved_count": value.resolved_count,
         "pending_count": value.pending_count,
@@ -131,9 +147,16 @@ def _(value: BonjourDiscoveryDiagnostics) -> dict[str, object]:
         "resolve_attempt_count": value.resolve_attempt_count,
         "resolve_success_count": value.resolve_success_count,
         "resolve_error_count": value.resolve_error_count,
+        "service_event_count": len(value.service_events),
+        "ptr_record_count": len(value.ptr_records),
         "instances": [_bonjour_instance_summary(instance) for instance in _debug_limited(value.instances)],
         "resolved": [_bonjour_record_summary(record) for record in _debug_limited(value.resolved)],
+        "service_events": [_bonjour_service_event_summary(event) for event in _debug_limited(value.service_events)],
+        "ptr_records": [_bonjour_ptr_record_summary(record) for record in _debug_limited(value.ptr_records)],
     }
+    if value.ptr_record_error:
+        summary["ptr_record_error"] = _truncate_debug_text(value.ptr_record_error, MAX_DEBUG_ERROR_TEXT)
+    return summary
 
 
 def _native_dns_sd_event_summary(value: NativeDnsSdServiceEvent) -> dict[str, object]:
@@ -243,47 +266,4 @@ def render_debug_mapping(fields: Mapping[str, object], *, blacklist: set[str] | 
         value = fields.get(key)
         if value is not None and value != "":
             lines.append(f"{key}={render_debug_value(value)}")
-    return lines
-
-
-def _render_connection_debug_lines(connection: SshConnection | None, values: Mapping[str, str] | None) -> list[str]:
-    host = None
-    ssh_opts = None
-    if connection is not None:
-        host = connection.host
-        ssh_opts = connection.ssh_opts
-    elif values is not None:
-        host = values.get("TC_HOST") or None
-        ssh_opts = values.get("TC_SSH_OPTS") or None
-    lines: list[str] = []
-    if host:
-        lines.append(f"host={host}")
-    if ssh_opts:
-        lines.append(f"ssh_opts={ssh_opts}")
-    return lines
-
-
-def render_command_debug_lines(
-    *,
-    command_name: str,
-    stage: str | None,
-    connection: SshConnection | None,
-    values: Mapping[str, str] | None,
-    preflight_error: str | None,
-    finish_fields: Mapping[str, object],
-    probe_state: ProbedDeviceState | None,
-    debug_fields: Mapping[str, object],
-) -> list[str]:
-    lines = ["Debug context:", f"command={command_name}"]
-    if stage:
-        lines.append(f"stage={stage}")
-    lines.extend(_render_connection_debug_lines(connection, values))
-    if values is not None:
-        lines.extend(render_debug_mapping(values, blacklist=DEBUG_VALUE_BLACKLIST))
-    if preflight_error:
-        lines.append(f"preflight_error={preflight_error}")
-    lines.extend(render_debug_mapping(finish_fields, blacklist=DEBUG_FIELD_BLACKLIST))
-    if probe_state is not None:
-        lines.extend(render_debug_mapping(debug_summary(probe_state), blacklist=DEBUG_FIELD_BLACKLIST))
-    lines.extend(render_debug_mapping(debug_fields, blacklist=DEBUG_FIELD_BLACKLIST))
     return lines

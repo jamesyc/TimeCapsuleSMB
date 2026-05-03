@@ -62,7 +62,7 @@ def check_authenticated_smb_listing(
                 "FAIL",
                 f"authenticated SMB listing did not include expected share {expected_share_name!r} on {server}",
             )
-        return CheckResult("PASS", f"authenticated SMB listing works for {username}@{server}")
+        return CheckResult("PASS", f"authenticated SMB listing works for {username}@{server}", {"server": server})
     detail = (proc.stderr or proc.stdout).strip().splitlines()
     msg = detail[-1] if detail else f"failed with rc={proc.returncode}"
     return CheckResult("FAIL", f"authenticated SMB listing failed: {msg}")
@@ -91,7 +91,7 @@ def try_authenticated_smb_listing(
             if expected_share_name is not None and expected_share_name not in proc.stdout:
                 failure_msg = f"expected share {expected_share_name!r} not found via {server}"
                 continue
-            return CheckResult("PASS", f"authenticated SMB listing works for {username}@{server}")
+            return CheckResult("PASS", f"authenticated SMB listing works for {username}@{server}", {"server": server})
         detail = (proc.stderr or proc.stdout).strip().splitlines()
         failure_msg = detail[-1] if detail else f"failed with rc={proc.returncode} via {server}"
     return CheckResult("FAIL", f"authenticated SMB listing failed: {failure_msg}")

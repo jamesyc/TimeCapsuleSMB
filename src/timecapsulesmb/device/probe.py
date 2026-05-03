@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
+from timecapsulesmb.core.errors import system_exit_message
+from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh, ssh_opts_use_proxy
 from timecapsulesmb.core.config import AIRPORT_IDENTITIES_BY_MODEL, AIRPORT_IDENTITIES_BY_SYAP
@@ -18,6 +20,14 @@ if TYPE_CHECKING:
 
 
 RUNTIME_SMB_CONF = "/mnt/Memory/samba4/etc/smb.conf"
+NBNS_MARKER_PROBE_TIMEOUT_SECONDS = 10
+REMOTE_LOG_TAIL_LINES = 80
+REMOTE_LOG_TAIL_MAX_CHARS = 8192
+REMOTE_LOG_TAIL_TIMEOUT_SECONDS = 10
+REMOTE_RUNTIME_LOG_PATHS = {
+    "remote_rc_local_log_tail": "/mnt/Memory/samba4/var/rc.local.log",
+    "remote_mdns_log_tail": "/mnt/Memory/samba4/var/mdns.log",
+}
 SMBD_STATUS_HELPERS = rf'''
 runtime_smb_conf_present() {{
     [ -f {RUNTIME_SMB_CONF} ]
@@ -350,6 +360,12 @@ def probe_device_conn(connection: SshConnection) -> ProbeResult:
         airport_model=airport_identity.model,
         airport_syap=airport_identity.syap,
     )
+
+
+def probe_connection_state(connection: SshConnection) -> ProbedDeviceState:
+    probe_result = probe_device_conn(connection)
+    compatibility = compatibility_from_probe_result(probe_result)
+    return ProbedDeviceState(probe_result=probe_result, compatibility=compatibility)
 
 
 def probe_ssh_command_conn(
@@ -847,8 +863,52 @@ def nbns_marker_enabled_conn(connection: SshConnection, payload_dir: str) -> boo
         connection,
         f"/bin/sh -c {shlex.quote(script)}",
         check=False,
+        timeout=NBNS_MARKER_PROBE_TIMEOUT_SECONDS,
     )
     return proc.stdout.strip() == "enabled"
+
+
+def _limit_remote_log_tail(text: str) -> str:
+    if len(text) <= REMOTE_LOG_TAIL_MAX_CHARS:
+        return text
+    return f"(truncated to last {REMOTE_LOG_TAIL_MAX_CHARS} chars)\n{text[-REMOTE_LOG_TAIL_MAX_CHARS:]}"
+
+
+def read_remote_log_tail_conn(connection: SshConnection, path: str) -> str:
+    quoted_path = shlex.quote(path)
+    script = (
+        f"if [ -f {quoted_path} ]; then "
+        f"/usr/bin/tail -n {REMOTE_LOG_TAIL_LINES} {quoted_path}; "
+        f"else echo '(missing {path})'; fi"
+    )
+    proc = run_ssh(
+        connection,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=REMOTE_LOG_TAIL_TIMEOUT_SECONDS,
+    )
+    parts = []
+    stdout = (proc.stdout or "").rstrip()
+    stderr = (proc.stderr or "").rstrip()
+    if stdout:
+        parts.append(stdout)
+    if stderr:
+        parts.append(f"stderr: {stderr}")
+    returncode = getattr(proc, "returncode", 0)
+    if returncode != 0:
+        parts.append(f"(exit {returncode})")
+    text = "\n".join(parts) if parts else "(empty)"
+    return _limit_remote_log_tail(text)
+
+
+def read_runtime_log_tails_conn(connection: SshConnection) -> dict[str, str]:
+    logs: dict[str, str] = {}
+    for key, path in REMOTE_RUNTIME_LOG_PATHS.items():
+        try:
+            logs[key] = read_remote_log_tail_conn(connection, path)
+        except (Exception, SystemExit) as e:
+            logs[key] = f"(unavailable: {e})"
+    return logs
 
 
 def probe_paths_absent_conn(

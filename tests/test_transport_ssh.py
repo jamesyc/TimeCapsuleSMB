@@ -113,6 +113,26 @@ class SSHTransportTests(unittest.TestCase):
         self.assertEqual(output, "NetBSD\n")
         self.assertEqual(fake_child.sendline.call_args_list, [mock.call("yes"), mock.call("pw")])
 
+    def test_spawn_with_password_timeout_raises_timeout_subtype(self) -> None:
+        try:
+            import pexpect  # noqa: F401
+        except Exception:
+            self.skipTest("pexpect not available")
+        fake_child = mock.Mock()
+        fake_child.expect.side_effect = [3]
+        fake_child.before = "partial output"
+        with mock.patch("pexpect.spawn", return_value=fake_child):
+            with self.assertRaises(ssh_transport.SshCommandTimeout) as exc:
+                ssh_transport._spawn_with_password(
+                    ["ssh", "host", "cmd"],
+                    "pw",
+                    timeout=10,
+                    timeout_message="timeout",
+                )
+        self.assertIsInstance(exc.exception, SystemExit)
+        self.assertEqual(str(exc.exception), "timeout")
+        fake_child.close.assert_called_once()
+
     def test_run_ssh_retries_transient_permission_denied(self) -> None:
         with mock.patch(
             "timecapsulesmb.transport.ssh._ssh_option_supported",
