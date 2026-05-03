@@ -86,7 +86,7 @@ NETBSD6_REBOOT_DEPLOY_CHECKS = [
     PlannedCheck("managed_smbd_parent_process", "managed smbd parent process is running"),
     PlannedCheck("managed_smbd_bound_445", "smbd is bound to TCP 445"),
     PlannedCheck("managed_mdns_takeover_ready", "managed mDNS takeover becomes ready"),
-    PlannedCheck("authenticated_smb_file_ops", "authenticated SMB file operations"),
+    PlannedCheck("authenticated_smb_listing", "authenticated SMB listing"),
 ]
 
 UNINSTALL_REBOOT_CHECKS = [

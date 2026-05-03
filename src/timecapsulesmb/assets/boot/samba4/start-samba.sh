@@ -91,8 +91,6 @@ cleanup_old_runtime() {
     log "cleaning old managed runtime processes and RAM state"
     /usr/bin/pkill -f /mnt/Flash/watchdog.sh >/dev/null 2>&1 || true
     /usr/bin/pkill smbd >/dev/null 2>&1 || true
-    /usr/bin/pkill samba-dcerpcd >/dev/null 2>&1 || true
-    /usr/bin/pkill rpcd_classic >/dev/null 2>&1 || true
     /usr/bin/pkill "$MDNS_PROC_NAME" >/dev/null 2>&1 || true
     /usr/bin/pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true
     sleep 1

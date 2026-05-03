@@ -4196,7 +4196,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("managed smbd parent process is running", text)
         self.assertIn("smbd is bound to TCP 445", text)
         self.assertIn("managed mDNS takeover becomes ready", text)
-        self.assertIn("authenticated SMB file operations", text)
+        self.assertIn("authenticated SMB listing", text)
         actions_mock.assert_not_called()
         upload_mock.assert_not_called()
         auth_mock.assert_not_called()
@@ -5444,7 +5444,7 @@ class CliTests(unittest.TestCase):
                 "managed_smbd_parent_process",
                 "managed_smbd_bound_445",
                 "managed_mdns_takeover_ready",
-                "authenticated_smb_file_ops",
+                "authenticated_smb_listing",
             ],
         )
 

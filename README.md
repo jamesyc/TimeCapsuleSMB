@@ -1,33 +1,33 @@
 # TimeCapsuleSMB
 
-Apple AirPort Time Capsules are still perfectly usable pieces of hardware, but they only support AFP and SMB1. Apple has removed SMB1 support from macOS a long time ago, and AFP support is being removed for macOS 27. This repo configures a modern Samba setup that runs directly on the Time Capsule itself; modern macOS can connect to the Time Capsule as a network share, and use it for Time Machine backups.
+Apple AirPort Time Capsules are still perfectly usable pieces of hardware, but they only support AFP and SMB1. Apple has removed SMB1 support from macOS a long time ago, and AFP support is being removed for macOS 27. This repo configures a modern Samba setup that runs directly on the Time Capsule itself; modern macOS can connect to the Time Capsule as a network share, and use it for Time Machine backups. 
 
-**NOTE THAT TIME MACHINE ON MACOS 26.4.x (AND 15.7.5) IS CURRENTLY BROKEN**, see https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups
+**NOTE THAT TIME MACHINE ON MACOS 26.4.x (AND 15.7.5) IS CURRENTLY BROKEN**, see https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups  
 Macs running macOS 26.4.x can still use the device as a standard Samba network share in Finder.
 
-This project is currently confirmed to work for Gen 5 (NetBSD 6 based) Time Capsules, and Gen 1-4 (NetBSD 4) support now exists as well with some extra caveats described below. Your Time Capsule should fully work if it looks like this:
+This project is currently confirmed to work for Gen 5 (NetBSD 6 based) Time Capsules, and Gen 1-4 (NetBSD 4) support now exists as well with some extra caveats described below. Your Time Capsule should fully work if it looks like this:  
 <img width="256" height="192" alt="image" src="https://github.com/user-attachments/assets/5d0b044f-2137-4bb7-8d65-3d1bb251754c" />
 
 ## Expectations
 
-If the setup completes successfully, your Time Capsule will run its own Samba 4 server, advertise itself over Bonjour (show up automatically in the "Network" folder on macOS), and accept authenticated SMB3 connections from macOS. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack. You should also be able to use the disk for Time Machine backups:
+If the setup completes successfully, your Time Capsule will run its own Samba 4 server, advertise itself over Bonjour (show up automatically in the "Network" folder on macOS), and accept authenticated SMB3 connections from macOS. You should then be able to open Finder, choose Connect to Server, and use a normal SMB URL instead of relying on Apple’s legacy stack. You should also be able to use the disk for Time Machine backups:  
 <img width="478" height="268" alt="image" src="https://github.com/user-attachments/assets/c713a1c6-ff71-43a2-a057-451223a1c0e0" />
 
 The `deploy` script will install files in `/mnt/Flash` on the Time Capsule, plus a `.samba4` folder on the root of the hard drive by default. The `uninstall` script removes those managed files and can optionally reboot the device afterward.
 
 NetBSD 6 devices automatically startup on boot. **Older NetBSD 4 devices need a manual `activate` after every reboot.** If you do not run the `activate` command after a reboot, then Samba will not start automatically on an older Time Capsule.
 
-If you find any problems, I would appreciate it if you [file an issue here](https://github.com/jamesyc/TimeCapsuleSMB/issues) for help; I am actively working on it, so expect improvements! However **this is not supported by a trillion dollar company**, this is built by a guy in his free time. Therefore, I honestly do *not* recommend using this if you are still using the Time Capsule as your primary router, or if you have data on it that you are not comfortable losing. I do *not* expect this to permanently break the Time Capsule if something goes wrong, but it *may* mess up your configuration/data so you would need to reset/wipe the device.
+If you find any problems, I would appreciate it if you [file an issue here](https://github.com/jamesyc/TimeCapsuleSMB/issues) for help; I am actively working on it, so expect improvements! However **this is not supported by a trillion dollar company**, this is built by a guy in his free time. Therefore, I honestly do *not* recommend using this if you are still using the Time Capsule as your primary router, or if you have data on it that you are not comfortable losing. I do *not* expect this to permanently break the Time Capsule if something goes wrong, but it *may* mess up your configuration/data so you would need to reset/wipe the device. 
 
-The current authentication model accepts any user as the username, and the Samba password is the same password you enter during setup when the tool asks for the Time Capsule password. Guest access is disabled.
+The current authentication model accepts any user as the username, and the Samba password is the same password you enter during setup when the tool asks for the Time Capsule password. Guest access is disabled. 
 
-AirPort Extreme devices are not officially supported (because I do not own one to test on). Unoffically, they work with some minor tweaks.
+AirPort Extreme devices are not officially supported (because I do not own one to test on). Unoffically, they work with some minor tweaks. 
 
 ## Requirements
 
-The working binaries are saved in this repository under [bin/](bin), and the normal user workflow uses those checked-in files directly. You do not need to build Samba yourself, but if you want to rebuild `smbd` by yourself, run the scripts in `build/` on a NetBSD machine.
+The working binaries are saved in this repository under [bin/](bin), and the normal user workflow uses those checked-in files directly. You do not need to build Samba yourself, but if you want to rebuild `smbd` by yourself, run the scripts in `build/` on a NetBSD machine. 
 
-Also, if you are an expert and want to DIY the install, you can copy the binary at [/bin/samba4/smbd](/bin/samba4/smbd) for NetBSD 6 devices, [/bin/samba4-netbsd4le/smbd](/bin/samba4-netbsd4le/smbd) for NetBSD 4 little-endian devices, or [/bin/samba4-netbsd4be/smbd](/bin/samba4-netbsd4be/smbd) for NetBSD 4 big-endian devices onto the Time Capsule and set it up yourself. The binaries are statically compiled, so you don't need anything else.
+Also, if you are an expert and want to DIY the install, you can copy the binary at [/bin/samba4/smbd](/bin/samba4/smbd) for NetBSD 6 devices, [/bin/samba4-netbsd4le/smbd](/bin/samba4-netbsd4le/smbd) for NetBSD 4 little-endian devices, or [/bin/samba4-netbsd4be/smbd](/bin/samba4-netbsd4be/smbd) for NetBSD 4 big-endian devices onto the Time Capsule and set it up yourself. The binaries are statically compiled, so you don't need anything else. 
 
 For the typical setup path, you need only:
 
@@ -40,7 +40,7 @@ For the smoothest first-time setup, a Mac is still the easiest path because `pre
 
 ## Quick Start
 
-Download (or run `git clone`) this repository to a folder on your Mac.
+Download (or run `git clone`) this repository to a folder on your Mac. 
 
 From the root of this repository, the normal quick start commands to run is:
 
@@ -154,8 +154,8 @@ Run:
 .venv/bin/tcapsule activate
 ```
 
-This command is for older Gen 1-4 devices after a reboot. It starts Samba without copying the files again.
-For older hardware, this is currently needed after reboot because the firmware does not persist the `/etc` boot hook needed to auto-start Samba.
+This command is for older Gen 1-4 devices after a reboot. It starts Samba without copying the files again.  
+For older hardware, this is currently needed after reboot because the firmware does not persist the `/etc` boot hook needed to auto-start Samba. 
 
 Unfortunately, you need to run `activate` after *every* reboot if your device does not start Samba automatically.
 
@@ -198,7 +198,7 @@ Run:
 .venv/bin/tcapsule uninstall
 ```
 
-This removes the managed TimeCapsuleSMB payload from the internal disk and removes the loader files from `/mnt/Flash`. Apple wipes the filesystem on the device after every reboot, except for `/mnt/Flash`, so that's where we install the loader script. If you delete the 6 non-Apple files we put in `/mnt/Flash`, and delete the `.samba` folder on the hard drive, and then reboot, you can restore your machine to factory clean condition.
+This removes the managed TimeCapsuleSMB payload from the internal disk and removes the loader files from `/mnt/Flash`. Apple wipes the filesystem on the device after every reboot, except for `/mnt/Flash`, so that's where we install the loader script. If you delete the 6 non-Apple files we put in `/mnt/Flash`, and delete the `.samba` folder on the hard drive, and then reboot, you can restore your machine to factory clean condition. 
 
 By default `uninstall` asks before rebooting the Time Capsule. If you want to skip the reboot confirmation prompt, use:
 
@@ -213,7 +213,7 @@ If you want to preview the uninstall plan without changing the device, use:
 .venv/bin/tcapsule uninstall --dry-run --json
 ```
 
-Uninstall success means the managed payload and boot files are gone after reboot. It does **not** check if Apple SMB or AFP to be enabled afterward. Those services may be on or off depending on the device's own settings.
+Uninstall success means the managed payload and boot files are gone after reboot. It does **not** check if Apple SMB or AFP to be enabled afterward. Those services may be on or off depending on the device's own settings. 
 
 If you want to remove the files without rebooting immediately, use:
 
@@ -267,7 +267,7 @@ and boot files such as:
 - [src/timecapsulesmb/assets/boot/samba4/rc.local](src/timecapsulesmb/assets/boot/samba4/rc.local)
 - [src/timecapsulesmb/assets/boot/samba4/start-samba.sh](src/timecapsulesmb/assets/boot/samba4/start-samba.sh)
 
-There are other constraints the Time Capsule places on us:
+There are other constraints the Time Capsule places on us:  
 - The NetBSD 6 source code does not support earmv4 builds, so we need to build from NetBSD 7.
 - Samba 3.x compiles easily, but it doesn't support directory traversal with SMB2 on NetBSD 6. This is a known bug apparently.
 - Samba 4.0.x has the same issue
@@ -340,7 +340,7 @@ This explains the engineering constraints, historical dead ends, and current imp
 
 ## Security Notes
 
-This should be treated as a LAN-only setup. Do not expose this SMB service directly to the public internet! Do not forward ports to it. Do not pretend that an old Time Capsule turned into a modern hardened NAS just because the SMB side now works better. I have tested this with a M1 Macbook Pro and an A1470 Time Capsule. Your mileage may vary.
+This should be treated as a LAN-only setup. Do not expose this SMB service directly to the public internet! Do not forward ports to it. Do not pretend that an old Time Capsule turned into a modern hardened NAS just because the SMB side now works better. I have tested this with a M1 Macbook Pro and an A1470 Time Capsule. Your mileage may vary. 
 
 Also note that the current auth model maps SMB access to `root` internally on the Time Capsule. That is a deliberate compatibility choice for this old firmware, as the version of NetBSD 6 running on the Time Capsule errors when Samba tries to switch users.
 

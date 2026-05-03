@@ -70,7 +70,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run local diagnostics for the current TimeCapsuleSMB setup.")
     parser.add_argument("--skip-ssh", action="store_true", help="Skip SSH reachability checks")
     parser.add_argument("--skip-bonjour", action="store_true", help="Skip Bonjour browse/resolve checks")
-    parser.add_argument("--skip-smb", action="store_true", help="Skip authenticated SMB file-operation checks")
+    parser.add_argument("--skip-smb", action="store_true", help="Skip authenticated SMB listing check")
     parser.add_argument("--json", action="store_true", help="Output doctor results as JSON")
     args = parser.parse_args(argv)
 

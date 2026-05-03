@@ -11,11 +11,11 @@ Gen 1-4 Time Capsules - supported with manual activation after each reboot
 
 #### What AirPort Extreme models are supported?
 
-None of them, officially. Unofficially, they might work. I don't own an Airport Extreme, though, so I cannot test to see if anything is working or broken. Use at your own risk.
+None of them, officially. Unofficially, they might work. I don't own an Airport Extreme, though, so I cannot test to see if anything is working or broken. Use at your own risk. 
 
 #### Is this safe to use?
 
-Yep. This doesn't touch anything that will permanently brick a Time Capsule. This also does not delete any of your previous data.
+Yep. This doesn't touch anything that will permanently brick a Time Capsule. This also does not delete any of your previous data. 
 
 ## Setup and Configuration
 
@@ -34,7 +34,7 @@ The device password you enter during setup will become the SMB password.
 
 #### Do I need to keep the TimeCapsuleSMB folder after setup?
 
-**Yes, it is recommended to keep the TimeCapsuleSMB folder** on your Mac for maintenance purposes. While you can delete it after initial setup, keeping it allows you to:
+**Yes, it is recommended to keep the TimeCapsuleSMB folder** on your Mac for maintenance purposes. While you can delete it after initial setup, keeping it allows you to:  
 - Run `tcapsule doctor` to diagnose issues
 - Run `tcapsule fsck` to repair the disk
 - Run `tcapsule activate` after reboots (for Gen 1-4 NetBSD 4 devices)
@@ -113,7 +113,7 @@ The `deploy` script installs files in:
 
 All other files/folders are stored on ramdisks and will be deleted after a reboot.
 
-The `uninstall` script removes these managed files and optionally reboots the device.
+The `uninstall` script removes these managed files and optionally reboots the device. 
 
 ## Getting Help
 
