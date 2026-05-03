@@ -2,24 +2,24 @@
 
 ## General Questions
 
-### What Time Capsule models are supported?
+#### What Time Capsule models are supported?
 
 Gen 5 Time Capsules - fully supported with automatic startup
 ![Time Capsule Model](https://github.com/user-attachments/assets/5d0b044f-2137-4bb7-8d65-3d1bb251754c)
 
 Gen 1-4 Time Capsules - supported with manual activation after each reboot
 
-### What AirPort Extreme models are supported?
+#### What AirPort Extreme models are supported?
 
 None of them, officially. Unofficially, they might work. I don't own an Airport Extreme, though, so I cannot test to see if anything is working or broken. Use at your own risk. 
 
-### Is this safe to use?
+#### Is this safe to use?
 
 Yep. This doesn't touch anything that will permanently brick a Time Capsule. This also does not delete any of your previous data. 
 
 ## Setup and Configuration
 
-### What is the "Device Password" mode?
+#### What is the "Device Password" mode?
 
 Your Time Capsule must be set to **"Device Password"** mode, not "With accounts" mode; you will get errors if you use "With accounts" mode.
 
@@ -32,7 +32,7 @@ To check/change this:
 
 The device password you enter during setup will become the SMB password.
 
-### Do I need to keep the TimeCapsuleSMB folder after setup?
+#### Do I need to keep the TimeCapsuleSMB folder after setup?
 
 **Yes, it is recommended to keep the TimeCapsuleSMB folder** on your Mac for maintenance purposes. While you can delete it after initial setup, keeping it allows you to:  
 - Run `tcapsule doctor` to diagnose issues
@@ -42,7 +42,7 @@ The device password you enter during setup will become the SMB password.
 
 The folder contains all the scripts, binaries, and configuration files needed for ongoing maintenance.
 
-### How do I connect to the Time Capsule after setup?
+#### How do I connect to the Time Capsule after setup?
 
 Once deployment is complete, you can connect via:
 - **Finder:** Look in the "Network" folder
@@ -54,13 +54,13 @@ Once deployment is complete, you can connect via:
 
 ## Troubleshooting
 
-### Time Machine backups are broken on certain macOS versions
+#### Time Machine backups are broken on certain macOS versions
 
 Time Machine backups on macOS 26.4.x and 15.7.5 is currently broken. See [this article](https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups) for details.
 
 **Workaround:** Macs running these versions can still use the device as a standard Samba network share in Finder, but Time Machine backups will not work properly. You can also try the workaround mentioned in the article.
 
-### The Time Capsule doesn't show up in Finder
+#### The Time Capsule doesn't show up in Finder
 
 1. Try connecting directly:
    ```
@@ -69,7 +69,7 @@ Time Machine backups on macOS 26.4.x and 15.7.5 is currently broken. See [this a
 
 2. Use the IP address from your `.env` file if hostname resolution fails
 
-### I get "Error 22" or "Invalid Argument" errors
+#### I get "Error 22" or "Invalid Argument" errors
 
 **Error 22 / Invalid Argument errors usually indicate disk corruption.**
 
@@ -84,7 +84,7 @@ To fix this:
    - Erase the disk using Apple AirPort Utility
    - Re-run the TimeCapsuleSMB setup
 
-### I need to run `activate` after every reboot
+#### My Gen 1-4 device is not working after every reboot
 
 This is normal for **NetBSD 4 devices** (older Gen 1-4 Time Capsules). The firmware doesn't persist the `/etc` boot hook needed to auto-start Samba.
 
@@ -92,11 +92,11 @@ This is normal for **NetBSD 4 devices** (older Gen 1-4 Time Capsules). The firmw
 
 ## Security and Privacy
 
-### Is this secure?
+#### Is this secure?
 
-Hahahahahaha no. It's using a build of Samba 4.8.12 from 2019. It's *probably* fine for a home network, but if you're very sensitive about security this is not the software for you. Use at your own risk. 
+It's *probably* fine for a home network, but if you're very sensitive about security this is not the software for you. Use at your own risk. It's using a build of Samba 4.8.12 currently.
 
-### What files are added to the Time Capsule?
+#### What files are added to the Time Capsule?
 
 The `deploy` script installs files in:
 - `/mnt/Flash` on the Time Capsule (boot files)
@@ -117,11 +117,11 @@ The `uninstall` script removes these managed files and optionally reboots the de
 
 ## Getting Help
 
-### Where can I get help?
+#### Where can I get help?
 
 If you find any problems, please [file an issue here](https://github.com/jamesyc/TimeCapsuleSMB/issues). The developer is actively working on improvements.
 
-### What information should I include when reporting issues?
+#### What information should I include when reporting issues?
 
 When filing an issue, please include:
 1. Your Time Capsule model
@@ -132,11 +132,11 @@ When filing an issue, please include:
 
 ## Advanced Topics
 
-### Can I rebuild the binaries myself?
+#### Can I rebuild the binaries myself?
 
 Yes! If you want to rebuild `smbd` yourself, run the scripts in `build/` on a NetBSD machine. The binaries are statically compiled, so you don't need anything else on the Time Capsule.
 
-### Can I customize the configuration?
+#### Can I customize the configuration?
 
 Yes! During `tcapsule configure`, you can customize:
 - SMB share name
@@ -148,14 +148,14 @@ However, for most users, the defaults are recommended.
 
 ## Maintenance
 
-### How do I update TimeCapsuleSMB?
+#### How do I update TimeCapsuleSMB?
 
 To update to a newer version:
 1. `git pull` in the TimeCapsuleSMB folder
 2. Run `tcapsule deploy` again
 3. Run `tcapsule doctor` to verify
 
-### How do I completely remove TimeCapsuleSMB?
+#### How do I completely remove TimeCapsuleSMB?
 
 To remove TimeCapsuleSMB:
 ```bash
@@ -164,6 +164,6 @@ To remove TimeCapsuleSMB:
 
 This removes the managed payload and boot files. After a reboot, your Time Capsule will be restored to its factory condition (though Apple SMB/AFP settings may vary).
 
-### What if I want to keep the project folder but remove it from my Mac?
+#### What if I want to keep the project folder but remove it from my Mac?
 
 You can safely delete the TimeCapsuleSMB folder from your Mac after setup. All the important files are stored on the Time Capsule itself. However, it is recommended to keep it for maintenance purposes (see above).
