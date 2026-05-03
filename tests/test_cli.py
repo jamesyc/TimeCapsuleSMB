@@ -35,6 +35,7 @@ from timecapsulesmb.deploy.executor import DETACHED_REBOOT_COMMAND
 from timecapsulesmb.deploy.templates import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourServiceInstance, Discovered
+from timecapsulesmb.cli.version_check import DEFAULT_DOWNLOAD_URL, VERSION_CHECK_URL, VersionCheckResult
 
 
 class FakeCommandContext:
@@ -173,6 +174,12 @@ class CliTests(unittest.TestCase):
                     preferred_iface="bridge0",
                     detail="preferred interface bridge0",
                 ),
+            )
+        )
+        self._version_check = self._exit_stack.enter_context(
+            mock.patch(
+                "timecapsulesmb.cli.main.check_client_version",
+                return_value=VersionCheckResult(should_block=False),
             )
         )
 
@@ -393,6 +400,46 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"doctor": mock.Mock(return_value=7)}):
             rc = main(["doctor", "--skip-smb"])
         self.assertEqual(rc, 7)
+        self._version_check.assert_called_once_with()
+
+    def test_main_blocks_outdated_client_before_dispatch(self) -> None:
+        stderr = io.StringIO()
+        command = mock.Mock(return_value=7)
+        self._version_check.return_value = VersionCheckResult(
+            should_block=True,
+            checked_url=VERSION_CHECK_URL,
+            message="This version is no longer supported. Please update before continuing.",
+            download_url=DEFAULT_DOWNLOAD_URL,
+        )
+
+        with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"doctor": command}):
+            with redirect_stderr(stderr):
+                rc = main(["doctor", "--skip-smb"])
+
+        self.assertEqual(rc, 1)
+        command.assert_not_called()
+        output = stderr.getvalue()
+        self.assertIn(f"Checking current version from: {VERSION_CHECK_URL}", output)
+        self.assertIn(f"Client version is out of date, download the latest version from: {DEFAULT_DOWNLOAD_URL}", output)
+
+    def test_main_skips_version_check_for_command_help(self) -> None:
+        command = mock.Mock(return_value=0)
+        with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"doctor": command}):
+            rc = main(["doctor", "--help"])
+
+        self.assertEqual(rc, 0)
+        self._version_check.assert_not_called()
+        command.assert_called_once_with(["--help"])
+
+    def test_main_dispatches_when_version_check_raises(self) -> None:
+        command = mock.Mock(return_value=7)
+        self._version_check.side_effect = RuntimeError("version check failed")
+
+        with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"doctor": command}):
+            rc = main(["doctor", "--skip-smb"])
+
+        self.assertEqual(rc, 7)
+        command.assert_called_once_with(["--skip-smb"])
 
     def test_main_handles_keyboard_interrupt_cleanly(self) -> None:
         stderr = io.StringIO()

@@ -48,3 +48,4 @@ coverage.xml
 .env
 .env.backup*
 .bootstrap
+.version-check-cache.json

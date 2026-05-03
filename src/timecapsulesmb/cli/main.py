@@ -5,6 +5,7 @@ import sys
 from typing import Optional
 
 from . import activate, bootstrap, configure, deploy, discover, doctor, fsck, prep_device, repair_xattrs, uninstall
+from .version_check import check_client_version, render_version_block_message
 
 
 COMMANDS = {
@@ -28,9 +29,21 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def command_args_request_help(args: list[str]) -> bool:
+    return "-h" in args or "--help" in args
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if not command_args_request_help(args.args):
+        try:
+            version_check = check_client_version()
+            if version_check.should_block:
+                print(render_version_block_message(version_check), file=sys.stderr)
+                return 1
+        except Exception:
+            pass
     try:
         return COMMANDS[args.command](args.args)
     except KeyboardInterrupt:
