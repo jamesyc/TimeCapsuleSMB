@@ -2,11 +2,13 @@
 
 Apple AirPort Time Capsules are still perfectly usable pieces of hardware, but they only support AFP and SMB1. Apple has removed SMB1 support from macOS a long time ago, and AFP support is being removed for macOS 27. This repo configures a modern Samba setup that runs directly on the Time Capsule itself. The goal is that a Time Capsule can once again show up as a normal SMB server on your network, and modern macOS can connect to it as a network share. 
 
-**NOTE THAT TIME MACHINE ON MACOS 26.4 (AND 15.7.5) IS CURRENTLY BROKEN**, see https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups  
-Macs running macOS 26.4 can still use the device as a standard Samba network share in Finder.
+**NOTE THAT TIME MACHINE ON MACOS 26.4 AND 15.7.5 IS CURRENTLY BROKEN**, see https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups
+Macs running macOS 26.4 or 15.7.5 can still use the device as a standard Samba network share in Finder.
 
-This project is currently confirmed to work for NetBSD 6 based Time Capsules, and NetBSD 4 support now exists as well with some extra caveats described below. Your Time Capsule should work if it looks like this:  
+This project is currently confirmed to work for NetBSD 6 based Time Capsules, and NetBSD 4 support now exists as well with some extra caveats described below. Your Time Capsule should work if it looks like this:
 <img width="256" height="192" alt="image" src="https://github.com/user-attachments/assets/5d0b044f-2137-4bb7-8d65-3d1bb251754c" />
+
+**For frequently asked questions and troubleshooting guidance, see [FAQ.md](FAQ.md).**
 
 ## Expectations
 
@@ -23,9 +25,12 @@ The current authentication model accepts any user as the username, and the Samba
 
 ## Requirements
 
-The working binaries are saved in this repository under [bin/](bin), and the normal user workflow uses those checked-in files directly. You do not need to build Samba yourself, but if you want to rebuild `smbd` by yourself, run the scripts in `build/` on a NetBSD machine. 
+**Critical Setup Requirement:**
+Your Time Capsule must be configured in **"Device Password"** mode, not "User/Password" mode. This is essential for TimeCapsuleSMB to work properly. To check/change this setting, open AirPort Utility, select your Time Capsule, go to the "Base Station" tab, and ensure the password mode is set to "Device Password".
 
-Also, if you are an expert and want to DIY the install, you can copy the binary at [/bin/samba4/smbd](/bin/samba4/smbd) for NetBSD 6 devices, [/bin/samba4-netbsd4le/smbd](/bin/samba4-netbsd4le/smbd) for NetBSD 4 little-endian devices, or [/bin/samba4-netbsd4be/smbd](/bin/samba4-netbsd4be/smbd) for NetBSD 4 big-endian devices onto the Time Capsule and set it up yourself. The binaries are statically compiled, so you don't need anything else. 
+The working binaries are saved in this repository under [bin/](bin), and the normal user workflow uses those checked-in files directly. You do not need to build Samba yourself, but if you want to rebuild `smbd` by yourself, run the scripts in `build/` on a NetBSD machine.
+
+Also, if you are an expert and want to DIY the install, you can copy the binary at [/bin/samba4/smbd](/bin/samba4/smbd) for NetBSD 6 devices, [/bin/samba4-netbsd4le/smbd](/bin/samba4-netbsd4le/smbd) for NetBSD 4 little-endian devices, or [/bin/samba4-netbsd4be/smbd](/bin/samba4-netbsd4be/smbd) for NetBSD 4 big-endian devices onto the Time Capsule and set it up yourself. The binaries are statically compiled, so you don't need anything else.
 
 For the typical setup path, you need only:
 
@@ -35,6 +40,8 @@ For the typical setup path, you need only:
 - `smbclient` installed locally for `doctor`
 
 For the smoothest first-time setup, a Mac is still the easiest path because `prep-device` can provision AirPyrt automatically when SSH needs to be enabled on the Time Capsule. Linux works well once SSH is already enabled.
+
+**Important:** We recommend keeping the TimeCapsuleSMB folder on your Mac after setup for maintenance purposes. This allows you to run diagnostic commands, perform updates, and uninstall the setup if needed.
 
 ## Quick Start
 
@@ -327,6 +334,30 @@ Wait a little, then run:
 ```bash
 .venv/bin/tcapsule doctor
 ```
+
+### Error 22 or Invalid Argument Errors
+
+**Error 22 / Invalid Argument errors usually indicate disk corruption.**
+
+To fix disk corruption issues:
+
+1. Run the disk repair command:
+   ```bash
+   .venv/bin/tcapsule fsck
+   ```
+
+2. If `fsck` doesn't resolve the issue, you may need to:
+   - Back up your data if possible
+   - Reformat the disk using Apple's tools
+   - Re-run the TimeCapsuleSMB setup
+
+Disk corruption can occur due to:
+- Improper shutdowns
+- Power failures
+- Age-related hardware issues
+- File system errors
+
+Regular use of `tcapsule fsck` can help identify and prevent disk issues.
 
 ### I Want The Full Technical Story
 
