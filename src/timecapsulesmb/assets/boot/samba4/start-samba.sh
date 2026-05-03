@@ -120,7 +120,7 @@ prepare_locks_ramdisk() {
     kernel_release=$(/usr/bin/uname -r 2>/dev/null || true)
     case "$kernel_release" in
         6.*)
-            if /sbin/mount_tmpfs -s 6m tmpfs "$LOCKS_ROOT" >/dev/null 2>&1; then
+            if /sbin/mount_tmpfs -s 8m tmpfs "$LOCKS_ROOT" >/dev/null 2>&1; then
                 rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true
                 log "mounted $LOCKS_ROOT tmpfs for Samba lock directory"
                 return 0
@@ -130,7 +130,7 @@ prepare_locks_ramdisk() {
             return 0
             ;;
         *)
-            if /sbin/mount_mfs -s 12288 swap "$LOCKS_ROOT" >/dev/null 2>&1; then
+            if /sbin/mount_mfs -s 16384 swap "$LOCKS_ROOT" >/dev/null 2>&1; then
                 rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true
                 log "mounted $LOCKS_ROOT mfs for Samba lock directory"
                 return 0

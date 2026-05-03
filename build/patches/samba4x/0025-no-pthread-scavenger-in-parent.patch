@@ -1,0 +1,42 @@
+diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
+--- a/source3/smbd/scavenger.c
++++ b/source3/smbd/scavenger.c
+@@ -337,21 +337,34 @@ static void smbd_scavenger_msg(struct messaging_context *msg_ctx,
+ 
+ 	if (server_id_equal(&state->parent_id, &self)) {
+-		NTSTATUS status;
+-
++#ifndef HAVE_PTHREAD
++		/*
++		 * The Time Capsule appliance build runs smbd without pthreads
++		 * and avoids helper daemon forks. The scavenger is the current
++		 * Samba 4.24 path that expires disconnected durable handles, so
++		 * keep the timer semantics but host them on the smbd parent event
++		 * loop instead of forwarding to a smbd-scavenger helper process.
++		 */
++		msg = (struct scavenger_message *)data->data;
++		scavenger_add_timer(state, msg);
++		goto done;
++#else
++		NTSTATUS status;
++
+ 		if (!smbd_scavenger_running(state) &&
+ 		    !smbd_scavenger_start(state))
+ 		{
+ 			DEBUG(2, ("Failed to start scavenger\n"));
+ 			goto done;
+ 		}
+ 		DEBUG(10, ("forwarding message to scavenger\n"));
+ 
+ 		status = messaging_send(msg_ctx,
+ 					*state->scavenger_id, msg_type, data);
+ 		if (!NT_STATUS_IS_OK(status)) {
+ 			DEBUG(2, ("forwarding message to scavenger failed: "
+ 				  "%s\n", nt_errstr(status)));
+ 			goto done;
+ 		}
+ 		goto done;
++#endif
+ 	}
+ 
+ 	if (!state->am_scavenger) {

@@ -140,11 +140,10 @@ mkdir -p "$OUT" "$SAMBA4X_WORK"
     patch_apply_checked "Samba 4.x no-pthread pool usage diagnostic skip patch" \
         "$PATCH_DIR/0005-no-pthread-skip-pool-usage.patch" \
         "$SAMBA4X_SRC_DIR"
-    # cleanupd is an auxiliary smbd helper loop that aborts in the static
-    # no-pthread appliance build before TCP/445 can bind. Keep notifyd enabled:
-    # SMB tree connects with the default "change notify = yes" require the
-    # notify-daemon registration.
-    patch_apply_checked "Samba 4.x no-pthread helper daemon skip patch" \
+    # cleanupd is linked into smbd and cleans dead child messaging state, but
+    # the no-pthread appliance build cannot safely fork Samba's cleanup helper.
+    # Host cleanupd in the smbd parent event loop instead of disabling it.
+    patch_apply_checked "Samba 4.x no-pthread in-parent cleanupd patch" \
         "$PATCH_DIR/0006-no-pthread-skip-helper-daemons.patch" \
         "$SAMBA4X_SRC_DIR"
     # The static appliance build has no winbindd. Keep in-process Unix SID and
@@ -193,6 +192,13 @@ mkdir -p "$OUT" "$SAMBA4X_WORK"
     # does not abort while smbd is still starting up.
     patch_apply_checked "Samba 4.x no-pthread notifyd event context owner patch" \
         "$PATCH_DIR/0014-no-pthread-notifyd-event-context-owner.patch" \
+        "$SAMBA4X_SRC_DIR"
+    # Samba 4.24 scavenges disconnected durable handles via smbd/scavenger.c.
+    # The no-pthread appliance build avoids helper daemon forks, so run those
+    # timeout timers on the smbd parent event loop to keep smbXsrv_open_global
+    # records from lingering until the lock ramdisk fills.
+    patch_apply_checked "Samba 4.x no-pthread in-parent scavenger patch" \
+        "$PATCH_DIR/0025-no-pthread-scavenger-in-parent.patch" \
         "$SAMBA4X_SRC_DIR"
     # tevent's pooled request allocator is an optimization. In the no-pthread
     # static appliance build it aborts while notifyd creates its startup request

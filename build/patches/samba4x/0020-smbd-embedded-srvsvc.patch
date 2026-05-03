@@ -250,6 +250,6 @@
 +                        RPC_SRVSVC
 +                        NDR_NAMED_PIPE_AUTH
 +                        npa_tstream
-                        LIBTLS
-                   ''' +
-                   bld.env['dmapi_lib'] +
+                         LIBTLS
+                    ''' +
+                    bld.env['dmapi_lib'] +

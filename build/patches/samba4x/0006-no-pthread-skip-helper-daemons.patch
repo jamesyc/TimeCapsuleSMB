@@ -1,20 +1,24 @@
 diff --git a/source3/smbd/server.c b/source3/smbd/server.c
 --- a/source3/smbd/server.c
 +++ b/source3/smbd/server.c
-@@ -657,6 +670,19 @@ static bool cleanupd_init(struct messaging_context *msg, bool interactive,
+@@ -657,6 +657,23 @@ static bool cleanupd_init(struct messaging_context *msg, bool interactive,
  	char c;
  	int up_pipe[2];
  
 +#ifndef HAVE_PTHREAD
 +	/*
-+	 * The same no-pthread appliance build cannot start Samba 4.24's
-+	 * cleanupd helper. Returning a disconnected id keeps later cleanup
-+	 * notification sends from targeting pid 0. The parent can still accept
-+	 * SMB clients; the tradeoff is less eager cleanup of per-child state on
-+	 * this constrained appliance path.
++	 * The Time Capsule appliance build cannot safely fork Samba 4.24's
++	 * cleanupd helper, but cleanupd itself is linked into smbd. Host the
++	 * long-lived cleanup request in the parent event loop so child process
++	 * messaging state is still cleaned up without entering the no-pthread
++	 * helper process path.
 +	 */
-+	DBG_NOTICE("Skipping cleanupd in no-pthread Time Capsule build\n");
-+	server_id_set_disconnected(ppid);
++	req = smbd_cleanupd_send(msg, ev, msg, parent_id.pid);
++	if (req == NULL) {
++		return false;
++	}
++	*ppid = messaging_server_id(msg);
++	DBG_NOTICE("Running cleanupd in smbd parent for no-pthread build\n");
 +	return true;
 +#endif
 +
