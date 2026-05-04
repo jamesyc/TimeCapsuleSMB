@@ -55,3 +55,7 @@
 # Samba's bundled popt fallback collides with libc glob_pattern_p in the static
 # NetBSD lanes; rename the bundled private symbol.
 0016-popt-glob-symbol-rename.patch|bundled popt glob symbol rename
+# Time Capsule lock databases live on a tiny RAM disk. Let smb.conf force
+# volatile dbwrap TDB deletes onto the global freelist instead of retaining
+# thousands of per-hash-chain dead records after Time Machine closes files.
+0017-dbwrap-tdb-max-dead-config.patch|configurable dbwrap TDB max-dead records

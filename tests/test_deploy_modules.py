@@ -1272,6 +1272,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
         self.assertIn("lock directory = /mnt/Locks", rendered)
         self.assertIn("state directory = /mnt/Memory/samba4/var", rendered)
         self.assertIn("private dir = /mnt/Memory/samba4/private", rendered)
+        self.assertIn("dbwrap_tdb_max_dead:* = 0", rendered)
         self.assertIn("log file = /mnt/Memory/samba4/var/log.smbd", rendered)
         self.assertIn("max log size = 256", rendered)
         self.assertIn("server multi channel support = no", rendered)
@@ -1378,6 +1379,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn("CACHE_DIRECTORY=$PAYLOAD_DIR/cache", rendered)
         self.assertIn("cache directory = $CACHE_DIRECTORY", rendered)
+        self.assertIn("dbwrap_tdb_max_dead:* = 0", rendered)
         self.assertIn("server multi channel support = no", rendered)
         self.assertIn("reset on zero vc = yes", rendered)
 

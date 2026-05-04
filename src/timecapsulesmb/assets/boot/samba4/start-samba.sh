@@ -639,6 +639,8 @@ stage_runtime() {
     state directory = $RAM_VAR
     cache directory = $CACHE_DIRECTORY
     private dir = $RAM_PRIVATE
+    # Keep deleted volatile dbwrap records reusable on the RAM lock disk.
+    dbwrap_tdb_max_dead:* = 0
     log file = $SMBD_LOG
     max log size = 256
     smb ports = 445

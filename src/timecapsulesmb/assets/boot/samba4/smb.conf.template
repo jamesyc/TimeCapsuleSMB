@@ -24,6 +24,8 @@
     state directory = /mnt/Memory/samba4/var
     cache directory = __CACHE_DIRECTORY__
     private dir = /mnt/Memory/samba4/private
+    # Keep deleted volatile dbwrap records reusable on the RAM lock disk.
+    dbwrap_tdb_max_dead:* = 0
     log file = __SMBD_LOG_FILE__
     max log size = __SMBD_MAX_LOG_SIZE____SMBD_LOG_LEVEL_LINE__
     smb ports = 445
