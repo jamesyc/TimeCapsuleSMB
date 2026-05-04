@@ -87,19 +87,13 @@ mkdir -p "$OUT" "$SAMBA4X_WORK"
     patch_apply_checked "Samba 4.x NetBSD4 replace compatibility patch" \
         "$PATCH_DIR/0001-netbsd4-replace-compat.patch" \
         "$SAMBA4X_SRC_DIR"
-    # The Time Capsule NetBSD kernels/libcs are too old for Samba 4.24's
-    # source3 VFS path to rely on the modern *at/fdopendir behavior. NetBSD6
-    # reaches ENOSYS during share-root tree connect without these fallbacks, so
-    # this patch is appliance-wide and is enabled by TC_SAMBA4X_VFS_AT_PATH_COMPAT.
+    # The Time Capsule runtime kernels are older than the NetBSD SDKs used to
+    # compile Samba 4.24. Even the NetBSD 6 appliance binary is built with the
+    # NetBSD 7 SDK, so source3 must not rely on runtime *at syscalls being
+    # present. Keep the path-aware VFS fallback enabled for every appliance
+    # build through TC_SAMBA4X_VFS_AT_PATH_COMPAT.
     patch_apply_checked "Samba 4.x NetBSD source3 VFS at-path fallback patch" \
         "$PATCH_DIR/0002-netbsd-vfs-at-path-fallbacks.patch" \
-        "$SAMBA4X_SRC_DIR"
-    # NetBSD 6/7 also lack Linux openat2() semantics. Samba's default VFS can
-    # request those constraints while connecting the share root, where returning
-    # ENOSYS is not retried. Disable the unsupported constraints and continue
-    # through the ordinary openat() fallback in the same call.
-    patch_apply_checked "Samba 4.x NetBSD openat2 ENOSYS fallback patch" \
-        "$PATCH_DIR/0017-netbsd-openat2-enosys-fallback.patch" \
         "$SAMBA4X_SRC_DIR"
     # The NetBSD4 big-endian runtime can reach SMB2 QUERY_DIRECTORY with a
     # directory handle whose stat mode is still a directory but whose cached

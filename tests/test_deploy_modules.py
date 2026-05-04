@@ -561,7 +561,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("prepare_locks_ramdisk()", rendered)
         self.assertIn('if locks_root_is_mounted; then', rendered)
         self.assertIn('rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true', rendered)
-        self.assertIn('/sbin/mount_tmpfs -s 8m tmpfs "$LOCKS_ROOT" >/dev/null 2>&1', rendered)
+        self.assertIn('/sbin/mount_tmpfs -s 9m tmpfs "$LOCKS_ROOT" >/dev/null 2>&1', rendered)
         self.assertIn('/sbin/mount_mfs -s 16384 swap "$LOCKS_ROOT" >/dev/null 2>&1', rendered)
         self.assertIn('log "mounted $LOCKS_ROOT tmpfs for Samba lock directory"', rendered)
         self.assertIn('log "failed to mount $LOCKS_ROOT tmpfs; using plain directory fallback"', rendered)
