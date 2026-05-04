@@ -15,6 +15,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.cli import repair_xattrs
+from timecapsulesmb import repair_xattrs as repair_xattrs_domain
 
 
 class RecordingCommandContext:
@@ -51,6 +52,12 @@ class RepairXattrsTests(unittest.TestCase):
         self.telemetry_patch = mock.patch("timecapsulesmb.cli.repair_xattrs.TelemetryClient.from_values", return_value=mock.Mock())
         self.telemetry_patch.start()
         self.addCleanup(self.telemetry_patch.stop)
+        self.path_guard_patch = mock.patch(
+            "timecapsulesmb.cli.repair_xattrs.validate_repair_root_under_volumes",
+            side_effect=lambda path: path.expanduser(),
+        )
+        self.path_guard_mock = self.path_guard_patch.start()
+        self.addCleanup(self.path_guard_patch.stop)
 
     def test_finds_arch_file_when_xattr_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -949,6 +956,29 @@ class RepairXattrsTests(unittest.TestCase):
                     with redirect_stdout(io.StringIO()):
                         rc = repair_xattrs.main(["--path", str(target)])
         self.assertEqual(rc, 0)
+        self.path_guard_mock.assert_called_with(target)
+
+    def test_validate_repair_root_accepts_path_under_volumes(self) -> None:
+        self.assertEqual(
+            repair_xattrs_domain.validate_repair_root_under_volumes(Path("/Volumes/Data/Subdir")),
+            Path("/Volumes/Data/Subdir"),
+        )
+
+    def test_validate_repair_root_rejects_root_directory(self) -> None:
+        with self.assertRaises(RuntimeError) as cm:
+            repair_xattrs_domain.validate_repair_root_under_volumes(Path("/"))
+        self.assertIn("can only scan mounted volumes under /Volumes", str(cm.exception))
+        self.assertIn("Refusing to scan: /", str(cm.exception))
+
+    def test_validate_repair_root_rejects_home_directory(self) -> None:
+        with self.assertRaises(RuntimeError) as cm:
+            repair_xattrs_domain.validate_repair_root_under_volumes(Path("/Users/example"))
+        self.assertIn("can only scan mounted volumes under /Volumes", str(cm.exception))
+
+    def test_validate_repair_root_rejects_volumes_root(self) -> None:
+        with self.assertRaises(RuntimeError) as cm:
+            repair_xattrs_domain.validate_repair_root_under_volumes(Path("/Volumes"))
+        self.assertIn("requires a mounted volume below /Volumes", str(cm.exception))
 
     def test_explicit_inaccessible_repair_path_reports_clean_error(self) -> None:
         target = Path("/Volumes/.timemachine/Data")

@@ -35,6 +35,7 @@ from timecapsulesmb.repair_xattrs import (
     should_skip_path,
     ssh_target_host,
     unresolved_findings_after_success,
+    validate_repair_root_under_volumes,
     xattr_status,
     xattrs_readable,
 )
@@ -114,7 +115,10 @@ def run_repair(args: argparse.Namespace, command_context: CommandContext) -> int
     root = args.path or default_share_path()
     if root is None:
         raise SystemExit("Could not determine mounted share path. Pass --path explicitly.")
-    root = root.expanduser()
+    try:
+        root = validate_repair_root_under_volumes(root)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
 
     summary = RepairSummary()
     print(f"Scanning {root}")

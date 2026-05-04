@@ -30,6 +30,7 @@ DEFAULT_EXCLUDED_PREFIXES = (
 DEFAULT_REPAIR_REPORT_LIMIT = 20
 ACTION_CLEAR_ARCH_FLAG = "clear_arch_flag"
 ACTION_FIX_PERMISSIONS = "fix_permissions"
+REPAIR_ROOT_PARENT = Path("/Volumes")
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,30 @@ def path_exists(path: Path) -> bool:
         return path.exists()
     except OSError:
         return False
+
+
+def validate_repair_root_under_volumes(path: Path) -> Path:
+    try:
+        resolved_path = path.expanduser().resolve()
+        resolved_volumes = REPAIR_ROOT_PARENT.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError(f"Cannot access path: {path}: {exc}") from exc
+
+    try:
+        relative = resolved_path.relative_to(resolved_volumes)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"repair-xattrs can only scan mounted volumes under {REPAIR_ROOT_PARENT}. "
+            f"Refusing to scan: {resolved_path}"
+        ) from exc
+
+    if not relative.parts:
+        raise RuntimeError(
+            f"repair-xattrs requires a mounted volume below {REPAIR_ROOT_PARENT}, not {REPAIR_ROOT_PARENT} itself. "
+            f"Pass a mounted SMB share path such as {REPAIR_ROOT_PARENT / 'Data'}."
+        )
+
+    return resolved_path
 
 
 def default_share_path_from_values(
