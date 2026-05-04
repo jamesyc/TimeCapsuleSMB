@@ -1,0 +1,40 @@
+diff --git a/source3/rpc_client/local_np.c b/source3/rpc_client/local_np.c
+index e66e375..073f040 100644
+--- a/source3/rpc_client/local_np.c
++++ b/source3/rpc_client/local_np.c
+@@ -16,7 +16,23 @@
+  */
+ 
+ #include "source3/include/includes.h"
++#ifdef HAVE_POSIX_SPAWN
+ #include <spawn.h>
++#else
++static int samba_fork_exec(const char *path, char *const argv[], char *const envp[], pid_t *pid)
++{
++	pid_t child = fork();
++	if (child == -1) {
++		return errno;
++	}
++	if (child == 0) {
++		execve(path, argv, envp);
++		_exit(127);
++	}
++	*pid = child;
++	return 0;
++}
++#endif
+ #include "local_np.h"
+ #include "lib/async_req/async_sock.h"
+ #include "librpc/gen_ndr/ndr_named_pipe_auth.h"
+@@ -381,7 +397,11 @@ static struct tevent_req *start_rpc_host_send(
+ 	}
+ 
+ 	become_root();
++#ifdef HAVE_POSIX_SPAWN
+ 	ret = posix_spawn(&pid, argv[0], NULL, NULL, argv, environ);
++#else
++	ret = samba_fork_exec(argv[0], argv, environ, &pid);
++#endif
+ 	unbecome_root();
+ 	if (ret != 0) {
+ 		DBG_DEBUG("posix_spawn() failed: %s\n", strerror(ret));

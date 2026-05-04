@@ -1,21 +1,25 @@
+diff --git a/source3/rpc_server/srv_pipe_hnd.c b/source3/rpc_server/srv_pipe_hnd.c
 --- a/source3/rpc_server/srv_pipe_hnd.c
 +++ b/source3/rpc_server/srv_pipe_hnd.c
-@@ -30,7 +30,11 @@
+@@ -30,7 +30,13 @@
  #include "rpc_server/rpc_config.h"
  #include "../lib/tsocket/tsocket.h"
  #include "../lib/util/tevent_ntstatus.h"
++#ifdef TC_SAMBA4X_EMBEDDED_SRVSVC
 +#include "libcli/named_pipe_auth/npa_tstream.h"
 +#include "libcli/smb/smb_constants.h"
- #include "librpc/ndr/ndr_table.h"
 +#include "librpc/gen_ndr/ndr_srvsvc_scompat.h"
 +#include "librpc/rpc/dcesrv_core.h"
++#endif
+ #include "librpc/ndr/ndr_table.h"
  
  #undef DBGC_CLASS
  #define DBGC_CLASS DBGC_RPC_SRV
-@@ -48,6 +52,182 @@
+@@ -48,6 +54,184 @@
  	return (type == FAKE_FILE_TYPE_NAMED_PIPE_PROXY);
  }
  
++#ifdef TC_SAMBA4X_EMBEDDED_SRVSVC
 +static NTSTATUS tc_smbd_init_embedded_srvsvc(struct dcesrv_context **_dce_ctx)
 +{
 +	struct dcesrv_context *dce_ctx = *_dce_ctx;
@@ -191,23 +195,27 @@
 +
 +	return NT_STATUS_OK;
 +}
++#endif
 +
  NTSTATUS np_open(TALLOC_CTX *mem_ctx, const char *name,
  		 const struct tsocket_address *remote_client_address,
  		 const struct tsocket_address *local_server_address,
-@@ -60,6 +240,7 @@
+@@ -60,6 +244,9 @@
  	struct fake_file_handle *handle;
  	struct npa_state *npa = NULL;
  	int ret;
++#ifdef TC_SAMBA4X_EMBEDDED_SRVSVC
 +	NTSTATUS status;
++#endif
  
  	handle = talloc(mem_ctx, struct fake_file_handle);
  	if (handle == NULL) {
-@@ -75,6 +256,26 @@
+@@ -75,6 +262,28 @@
  		.type = FAKE_FILE_TYPE_NAMED_PIPE_PROXY,
  		.private_data = npa,
  	};
 +
++#ifdef TC_SAMBA4X_EMBEDDED_SRVSVC
 +	status = tc_smbd_open_embedded_srvsvc_np(
 +		name,
 +		remote_client_address,
@@ -227,29 +235,52 @@
 +		TALLOC_FREE(handle);
 +		return status;
 +	}
++#endif
  
  	ret = local_np_connect(
  		name,
+diff --git a/source3/wscript_build b/source3/wscript_build
 --- a/source3/wscript_build
 +++ b/source3/wscript_build
-@@ -732,6 +732,8 @@
-                           smbd/conn.c
-                           rpc_server/srv_pipe_hnd.c
-                           rpc_server/rpc_ncacn_np.c
+@@ -640,6 +640,24 @@
+ else:
+     SMB1_SOURCES = ''
+ 
++tc_smbd_embedded_srvsvc_sources = ''
++tc_smbd_embedded_srvsvc_deps = ''
++if bld.env.TC_SAMBA4X_EMBEDDED_SRVSVC:
++    # Time Capsule appliance builds deploy only smbd. Keep srvsvc explicit so
++    # future size audits can disable this endpoint without changing unrelated
++    # RPC code.
++    tc_smbd_embedded_srvsvc_sources = '''
 +                          rpc_server/rpc_handles.c
 +                          rpc_server/rpc_server.c
-                           ''' + NOTIFY_SOURCES + SMB1_SOURCES,
-                    deps='''
-                         talloc
-@@ -764,6 +766,11 @@
-                         fd_handle
-                         cli_spoolss
-                         samba3-namearray
++                          '''
++    tc_smbd_embedded_srvsvc_deps = '''
 +                        dcerpc-server-core
 +                        RPC_CONFIG
 +                        RPC_SRVSVC
 +                        NDR_NAMED_PIPE_AUTH
 +                        npa_tstream
++                        '''
++
+ bld.SAMBA3_LIBRARY('smbd_base',
+                    source='''
+                           smbd/server_reload.c
+@@ -732,7 +750,7 @@
+                           smbd/conn.c
+                           rpc_server/srv_pipe_hnd.c
+                           rpc_server/rpc_ncacn_np.c
+-                          ''' + NOTIFY_SOURCES + SMB1_SOURCES,
++                          ''' + tc_smbd_embedded_srvsvc_sources + NOTIFY_SOURCES + SMB1_SOURCES,
+                    deps='''
+                         talloc
+                         tevent
+@@ -764,6 +782,7 @@
+                         fd_handle
+                         cli_spoolss
+                         samba3-namearray
++                        ''' + tc_smbd_embedded_srvsvc_deps + '''
                          LIBTLS
                     ''' +
                     bld.env['dmapi_lib'] +

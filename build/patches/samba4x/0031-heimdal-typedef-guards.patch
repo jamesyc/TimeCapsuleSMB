@@ -1,0 +1,95 @@
+diff --git a/third_party/heimdal/lib/base/common_plugin.h b/third_party/heimdal/lib/base/common_plugin.h
+index d7b6bca..54bfc6a 100644
+--- a/third_party/heimdal/lib/base/common_plugin.h
++++ b/third_party/heimdal/lib/base/common_plugin.h
+@@ -61,10 +61,16 @@
+ #endif
+ 
+ /* For krb5 plugins, this is a krb5_context */
++#ifndef HEIMDAL_HEIM_PCONTEXT_TYPEDEF
++#define HEIMDAL_HEIM_PCONTEXT_TYPEDEF
+ typedef struct heim_pcontext_s *heim_pcontext;
++#endif
+ 
++#ifndef HEIMDAL_HEIM_GET_INSTANCE_TYPEDEF
++#define HEIMDAL_HEIM_GET_INSTANCE_TYPEDEF
+ typedef uintptr_t
+ (HEIM_LIB_CALL *heim_get_instance_func_t)(const char *);
++#endif
+ typedef heim_get_instance_func_t krb5_get_instance_t;
+ 
+ /*
+diff --git a/third_party/heimdal/lib/base/heimbase.h b/third_party/heimdal/lib/base/heimbase.h
+index dc86bc8..0096d4e 100644
+--- a/third_party/heimdal/lib/base/heimbase.h
++++ b/third_party/heimdal/lib/base/heimbase.h
+@@ -83,7 +83,10 @@
+ 
+ typedef int32_t heim_error_code;
+ typedef struct heim_context_s *heim_context;
++#ifndef HEIMDAL_HEIM_PCONTEXT_TYPEDEF
++#define HEIMDAL_HEIM_PCONTEXT_TYPEDEF
+ typedef struct heim_pcontext_s *heim_pcontext;
++#endif
+ 
+ typedef void (HEIM_CALLCONV *heim_log_log_func_t)(heim_context,
+                                                   const char *,
+@@ -93,8 +96,11 @@ typedef void (HEIM_CALLCONV *heim_log_close_func_t)(void *);
+ 
+ typedef struct heim_log_facility_s heim_log_facility;
+ 
++#ifndef HEIMDAL_HEIM_GET_INSTANCE_TYPEDEF
++#define HEIMDAL_HEIM_GET_INSTANCE_TYPEDEF
+ typedef uintptr_t
+ (HEIM_LIB_CALL *heim_get_instance_func_t)(const char *);
++#endif
+ 
+ #define HEIM_PLUGIN_INVOKE_ALL 1
+ 
+diff --git a/third_party/heimdal/lib/base/log.c b/third_party/heimdal/lib/base/log.c
+index 9a97276..5a166e4 100644
+--- a/third_party/heimdal/lib/base/log.c
++++ b/third_party/heimdal/lib/base/log.c
+@@ -58,7 +58,10 @@ struct heim_log_facility_s {
+     struct heim_log_facility_internal *val;
+ };
+ 
++#ifndef HEIMDAL_HEIM_PCONTEXT_TYPEDEF
++#define HEIMDAL_HEIM_PCONTEXT_TYPEDEF
+ typedef struct heim_pcontext_s *heim_pcontext;
++#endif
+ typedef struct heim_pconfig *heim_pconfig;
+ struct heim_svc_req_desc_common_s {
+     HEIM_SVC_REQUEST_DESC_COMMON_ELEMENTS;
+diff --git a/third_party/heimdal/lib/krb5/krb5.h b/third_party/heimdal/lib/krb5/krb5.h
+index c291f3d..29b3ebc 100644
+--- a/third_party/heimdal/lib/krb5/krb5.h
++++ b/third_party/heimdal/lib/krb5/krb5.h
+@@ -48,8 +48,11 @@
+ #include <k5e1_err.h>
+ 
+ #include <krb5_asn1.h>
++#ifndef HEIMDAL_KRB5_INT_TYPES_DEFINED
++#define HEIMDAL_KRB5_INT_TYPES_DEFINED
+ typedef Krb5Int32 krb5int32;
+ typedef Krb5UInt32 krb5uint32;
++#endif
+ 
+ /* name confusion with MIT */
+ #ifndef KRB5KDC_ERR_KEY_EXP
+diff --git a/third_party/heimdal/lib/krb5/krb5_locl.h b/third_party/heimdal/lib/krb5/krb5_locl.h
+index 6267922..9e25c65 100644
+--- a/third_party/heimdal/lib/krb5/krb5_locl.h
++++ b/third_party/heimdal/lib/krb5/krb5_locl.h
+@@ -125,8 +125,11 @@ struct mbuf;
+ 
+ 
+ #include <krb5_asn1.h>
++#ifndef HEIMDAL_KRB5_INT_TYPES_DEFINED
++#define HEIMDAL_KRB5_INT_TYPES_DEFINED
+ typedef Krb5Int32 krb5int32;
+ typedef Krb5UInt32 krb5uint32;
++#endif
+ #include <pkinit_asn1.h>
+ 
+ struct send_to_kdc;

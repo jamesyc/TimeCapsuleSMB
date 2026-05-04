@@ -4,6 +4,7 @@ set -eu
 . "$(dirname "$0")/env.sh"
 . "$(dirname "$0")/_patch_helpers.sh"
 
+GNUTLS_PATCH_DIR="$(CDPATH= cd "$(dirname "$0")/patches/gnutls" && pwd)"
 TOOLDIR="$TOOLS"
 DESTDIR="$OBJ/destdir.evbarm"
 TRIPLE="$(select_tool_triple)"
@@ -402,25 +403,21 @@ build_samba4x_gnutls() {
     cd "$SAMBA4X_BUILD/gnutls-$SAMBA4X_GNUTLS_VERSION"
     # GnuTLS assumes glibc-style <byteswap.h>. NetBSD 6/7 and NetBSD4 expose
     # the target helpers through <sys/bswap.h> with bswap16/32/64 names.
-    patch_perl "GnuTLS NetBSD bswap include patch" \
-        's/#include <byteswap\.h>/#include <sys\/bswap.h>\n#ifndef bswap_16\n#define bswap_16 bswap16\n#endif\n#ifndef bswap_32\n#define bswap_32 bswap32\n#endif\n#ifndef bswap_64\n#define bswap_64 bswap64\n#endif/' \
-        lib/num.h
-    patch_require_fixed "GnuTLS NetBSD bswap include patch" "#define bswap_16 bswap16" lib/num.h
+    patch_apply_checked "GnuTLS NetBSD bswap include patch" \
+        "$GNUTLS_PATCH_DIR/0001-netbsd-bswap-include.patch" \
+        .
     # All Time Capsule Samba4X lanes are static no-pthread appliance builds.
     # GnuTLS keeps PRNG and FIPS state in C11 thread-local globals by default;
     # on these old NetBSD targets that pulls in runtime TLS behavior that is not
     # needed for a single-threaded smbd and can abort when the first real random
     # buffer is requested during session setup. Make those globals ordinary
     # statics for every no-pthread lane so NetBSD6/7 and NetBSD4 behave the same.
-    patch_perl "GnuTLS no-pthread random TLS patch" \
-        's/static _Thread_local unsigned rnd_initialized = 0;/static unsigned rnd_initialized = 0;/' \
-        lib/random.c
-    patch_require_fixed "GnuTLS no-pthread random TLS patch" "static unsigned rnd_initialized = 0;" lib/random.c
-    patch_perl "GnuTLS no-pthread FIPS TLS patch" \
-        's/static _Thread_local gnutls_fips_mode_t _tfips_mode = -1;/static gnutls_fips_mode_t _tfips_mode = -1;/; s/static _Thread_local gnutls_fips140_context_t _tfips_context = NULL;/static gnutls_fips140_context_t _tfips_context = NULL;/' \
-        lib/fips.c
-    patch_require_fixed "GnuTLS no-pthread FIPS TLS patch" "static gnutls_fips_mode_t _tfips_mode = -1;" lib/fips.c
-    patch_require_fixed "GnuTLS no-pthread FIPS TLS patch" "static gnutls_fips140_context_t _tfips_context = NULL;" lib/fips.c
+    patch_apply_checked "GnuTLS no-pthread random TLS patch" \
+        "$GNUTLS_PATCH_DIR/0002-no-pthread-random-static-state.patch" \
+        .
+    patch_apply_checked "GnuTLS no-pthread FIPS TLS patch" \
+        "$GNUTLS_PATCH_DIR/0003-no-pthread-fips-static-state.patch" \
+        .
     env PKG_CONFIG_PATH="$SAMBA4X_DEPS/lib/pkgconfig" \
         PKG_CONFIG_LIBDIR="$SAMBA4X_DEPS/lib/pkgconfig" \
         PKG_CONFIG_SYSROOT_DIR= \
@@ -484,9 +481,9 @@ if [ "$SDK_FAMILY" = "netbsd4" ]; then
     export CXX="$TOOLDIR/bin/$TRIPLE-g++"
     export CPP="$TOOLDIR/bin/$TRIPLE-cpp"
     export LD="$TOOLDIR/bin/$TRIPLE-ld"
-    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -fcommon -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu -isystem $SAMBA4X_DEPS/include -isystem $DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_NETBSD4_COMPAT=1 -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1"
+    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -fcommon -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu -isystem $SAMBA4X_DEPS/include -isystem $DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_NETBSD4_COMPAT=1 -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1"
     export CXXFLAGS="$CFLAGS"
-    export CPPFLAGS="-isystem $SAMBA4X_DEPS/include -isystem $DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_NETBSD4_COMPAT=1 -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1"
+    export CPPFLAGS="-isystem $SAMBA4X_DEPS/include -isystem $DESTDIR/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_NETBSD4_COMPAT=1 -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1"
     SAMBA4X_NETBSD4_BASE_LDFLAGS="-Wl,-Bstatic -static -L$SAMBA4X_DEPS/lib -L$DESTDIR/lib -L$DESTDIR/usr/lib -B$DESTDIR/usr/lib -B$DESTDIR/usr/lib/csu"
     SAMBA4X_SHARED_LDFLAGS_LIST="'-L$SAMBA4X_DEPS/lib', '-L$DESTDIR/lib', '-L$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib', '-B$DESTDIR/usr/lib/csu'"
     SAMBA4X_NETBSD4_FINAL_LDFLAGS="$SAMBA4X_NETBSD4_BASE_LDFLAGS"
@@ -502,9 +499,9 @@ else
     export CXX="$TOOLDIR/bin/$TRIPLE-g++ --sysroot=$SYSROOT"
     export CPP="$TOOLDIR/bin/$TRIPLE-cpp --sysroot=$SYSROOT"
     export LD="$TOOLDIR/bin/$TRIPLE-ld --sysroot=$SYSROOT"
-    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -fcommon -I$SAMBA4X_DEPS/include -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1"
+    export CFLAGS="-Os -ffunction-sections -fdata-sections -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident -fno-pie -fcommon -I$SAMBA4X_DEPS/include -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1"
     export CXXFLAGS="$CFLAGS"
-    export CPPFLAGS="-I$SAMBA4X_DEPS/include -I$SYSROOT/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1"
+    export CPPFLAGS="-I$SAMBA4X_DEPS/include -I$SYSROOT/usr/include -D_NETBSD_SOURCE -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGE_FILES -DTC_SAMBA4X_VFS_AT_PATH_COMPAT=1 -DTC_SAMBA4X_EMBEDDED_SRVSVC=1"
     SAMBA4X_SHARED_LDFLAGS_LIST="'-L$SAMBA4X_DEPS/lib', '-L$SYSROOT/lib', '-L$SYSROOT/usr/lib'"
     SAMBA4X_FINAL_LDFLAGS_LIST="'-Wl,-Bstatic', '-static', '-Wl,--gc-sections', '-Wl,-Map=$MAP_FILE', '-L$SAMBA4X_DEPS/lib', '-L$SYSROOT/lib', '-L$SYSROOT/usr/lib'"
     SAMBA4X_FINAL_LINKFLAGS="$SAMBA4X_FINAL_LDFLAGS_LIST"
@@ -618,6 +615,10 @@ SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_
         set_waf_cache_value "$cache_file" "SMBD_STATIC_LIBPATH" "[]"
         set_waf_cache_value "$cache_file" "SMBD_STATIC_SHLIB_MARKER" "''"
         set_waf_cache_value "$cache_file" "SMBD_STATIC_FULLSTATIC_MARKER" "'-static'"
+        # Make the extra srvsvc sources/deps in the smbd-base build explicit.
+        # The matching C macro is in CFLAGS/CPPFLAGS above so the pipe handler
+        # code and Waf dependency graph stay in sync.
+        set_waf_cache_value "$cache_file" "TC_SAMBA4X_EMBEDDED_SRVSVC" "True"
         # Apple Time Capsule kernels do not support the pthread behavior Samba
         # 4.24 expects. Remove pthread results unconditionally for the Samba4x
         # appliance build so NetBSD4 and NetBSD6/7 use the same no-pthread path.
@@ -695,11 +696,22 @@ SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_
         stage_path=$3
         stripped_path=$4
 
-        built_path="$(find "$SAMBA4X_SRC_DIR/bin" -path "$source_glob" | head -n1)"
-        if [ -z "$built_path" ] || [ ! -f "$built_path" ]; then
+        matches_file="$SAMBA4X_BUILD/stage-$label-matches.$$"
+        find "$SAMBA4X_SRC_DIR/bin" -path "$source_glob" -type f >"$matches_file"
+        match_count="$(wc -l <"$matches_file" | tr -d ' ')"
+        if [ "$match_count" = "0" ]; then
+            rm -f "$matches_file"
             echo "Unable to locate built Samba 4.x $label under $SAMBA4X_SRC_DIR/bin"
             exit 1
         fi
+        if [ "$match_count" != "1" ]; then
+            echo "Found multiple built Samba 4.x $label candidates under $SAMBA4X_SRC_DIR/bin:"
+            sed 's/^/  /' "$matches_file"
+            rm -f "$matches_file"
+            exit 1
+        fi
+        built_path="$(sed -n '1p' "$matches_file")"
+        rm -f "$matches_file"
 
         "$TOOLDIR/bin/nbfile" "$built_path" 2>&1 || true
         if "$TOOLDIR/bin/$TRIPLE-objdump" -p "$built_path" | grep -Eq '^[[:space:]]+(INTERP|DYNAMIC)'; then

@@ -7,11 +7,11 @@ diff --git a/source3/smbd/smb2_query_directory.c b/source3/smbd/smb2_query_direc
  	if (!fsp->fsp_flags.is_directory) {
 +#ifdef TC_SAMBA4X_NETBSD4_COMPAT
 +		/*
-+		 * On the NetBSD4 big-endian Time Capsule build we can reach
-+		 * SMB2 QUERY_DIRECTORY with a directory handle whose cached
-+		 * is_directory flag has been lost. Trust stat when it still
-+		 * says directory; otherwise let the later directory open and
-+		 * enumeration path decide instead of failing on the stale flag.
++		 * NetBSD4 Time Capsule builds can reach SMB2 QUERY_DIRECTORY
++		 * with a directory handle whose cached is_directory flag has
++		 * been lost. Trust stat when it still says directory; otherwise
++		 * let the later directory open and enumeration path decide
++		 * instead of failing on the stale flag.
 +		 */
 +		if (fsp->fsp_name != NULL &&
 +		    S_ISDIR(fsp->fsp_name->st.st_ex_mode))

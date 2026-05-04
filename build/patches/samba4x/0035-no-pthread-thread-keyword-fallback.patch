@@ -1,0 +1,12 @@
+diff --git a/lib/replace/replace.h b/lib/replace/replace.h
+index 051583c..1fa3cb9 100644
+--- a/lib/replace/replace.h
++++ b/lib/replace/replace.h
+@@ -1122,6 +1122,7 @@ extern const char hexchars_upper[];
+ # ifdef HAVE_PTHREAD
+ # error Configure failed to detect pthread library with missing TLS support
+ # endif
++#define __thread
+ #define HAVE___THREAD
+ #endif
+ 

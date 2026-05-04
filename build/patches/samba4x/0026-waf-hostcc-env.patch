@@ -1,0 +1,69 @@
+diff --git a/buildtools/wafsamba/samba_autoconf.py b/buildtools/wafsamba/samba_autoconf.py
+index 979d5a3..a5012b3 100644
+--- a/buildtools/wafsamba/samba_autoconf.py
++++ b/buildtools/wafsamba/samba_autoconf.py
+@@ -984,7 +984,9 @@ def CURRENT_CFLAGS(bld, target, cflags,
+     if use_hostcc:
+         ret += ['-D_SAMBA_HOSTCC_']
+     ret += TO_LIST(cflags)
+-    if not 'EXTRA_CFLAGS' in bld.env:
++    if use_hostcc:
++        list = TO_LIST(bld.env.HOST_CFLAGS)
++    elif not 'EXTRA_CFLAGS' in bld.env:
+         list = []
+     else:
+         list = bld.env['EXTRA_CFLAGS']
+diff --git a/buildtools/wafsamba/wafsamba.py b/buildtools/wafsamba/wafsamba.py
+index 8dff3d6..3aa1c91 100644
+--- a/buildtools/wafsamba/wafsamba.py
++++ b/buildtools/wafsamba/wafsamba.py
+@@ -40,6 +40,28 @@ LIB_PATH="shared"
+ 
+ os.environ['PYTHONUNBUFFERED'] = '1'
+ 
++def APPLY_HOSTCC_ENV(bld, taskgen):
++    if not getattr(taskgen, 'samba_use_hostcc', False):
++        return
++    if not bld.env.HOSTCC:
++        return
++    taskgen.env = taskgen.env.derive()
++    hostcc = TO_LIST(bld.env.HOSTCC)
++    gccdeps_cflags = [flag for flag in TO_LIST(bld.env.CFLAGS) if flag in ('-MD', '-MMD')]
++    host_cflags = TO_LIST(bld.env.HOST_CFLAGS) + gccdeps_cflags
++    taskgen.env.CC = hostcc
++    taskgen.env.LINK_CC = hostcc
++    taskgen.env.CFLAGS = host_cflags
++    taskgen.env.CPPFLAGS = TO_LIST(bld.env.HOST_CPPFLAGS)
++    taskgen.env.LDFLAGS = []
++    taskgen.env.LINKFLAGS = []
++    taskgen.env.STLIB_MARKER = []
++    taskgen.env.SHLIB_MARKER = []
++    taskgen.env.FULLSTATIC_MARKER = []
++    taskgen.env.EXTRA_CFLAGS = host_cflags
++    taskgen.env.EXTRA_LDFLAGS = []
++
++
+ if Context.HEXVERSION not in (0x2010600,):
+     Logs.error('''
+ Please use the version of waf that comes with Samba, not
+@@ -544,8 +566,10 @@ def SAMBA_BINARY(bld, binname, source,
+         install_path   = None,
+         samba_inst_path= install_path,
+         samba_install  = install,
+-        samba_ldflags  = pie_ldflags
++        samba_ldflags  = pie_ldflags,
++        samba_use_hostcc = use_hostcc
+         )
++    APPLY_HOSTCC_ENV(bld, t)
+ 
+     if manpages is not None and 'XSLTPROC_MANPAGES' in bld.env and bld.env['XSLTPROC_MANPAGES']:
+         bld.MANPAGES(manpages, install)
+@@ -861,6 +885,8 @@ def SAMBA_SUBSYSTEM(bld, modname, source,
+         samba_builtin_subsystem = None,
+         )
+ 
++    APPLY_HOSTCC_ENV(bld, t)
++
+     if cflags_end is not None:
+         t.samba_cflags.extend(TO_LIST(cflags_end))
+ 
