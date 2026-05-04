@@ -14,7 +14,7 @@ index 979d5a3..a5012b3 100644
      else:
          list = bld.env['EXTRA_CFLAGS']
 diff --git a/buildtools/wafsamba/wafsamba.py b/buildtools/wafsamba/wafsamba.py
-index 8dff3d6..3aa1c91 100644
+index 8dff3d6..1bc9766 100644
 --- a/buildtools/wafsamba/wafsamba.py
 +++ b/buildtools/wafsamba/wafsamba.py
 @@ -40,6 +40,28 @@ LIB_PATH="shared"
@@ -46,7 +46,32 @@ index 8dff3d6..3aa1c91 100644
  if Context.HEXVERSION not in (0x2010600,):
      Logs.error('''
  Please use the version of waf that comes with Samba, not
-@@ -544,8 +566,10 @@ def SAMBA_BINARY(bld, binname, source,
+@@ -424,6 +446,24 @@ Build.BuildContext.SAMBA_LIBRARY = SAMBA_LIBRARY
+ 
+ 
+ #################################################################
++def APPLY_SMBD_STATIC_ENV(bld, taskgen):
++    # Time Capsule runs smbd from a tiny RAM disk. Keep the deployed binary
++    # fully static and apply the static link flags only to smbd; external
++    # DCE-RPC helper binaries are intentionally not shipped because executing
++    # them from the HFS data disk is unsafe if Apple firmware unmounts it.
++    if getattr(taskgen, 'target', None) != 'smbd/smbd':
++        return
++    static_linkflags = TO_LIST(getattr(bld.env, 'SMBD_STATIC_LINKFLAGS', []))
++    static_ldflags = TO_LIST(getattr(bld.env, 'SMBD_STATIC_LDFLAGS', []))
++    if not static_linkflags and not static_ldflags:
++        return
++    taskgen.env = taskgen.env.derive()
++    taskgen.env.LINKFLAGS = static_linkflags
++    taskgen.env.LDFLAGS = static_ldflags
++    taskgen.env.LIBPATH = TO_LIST(getattr(bld.env, 'SMBD_STATIC_LIBPATH', []))
++    taskgen.env.SHLIB_MARKER = getattr(bld.env, 'SMBD_STATIC_SHLIB_MARKER', '')
++    taskgen.env.FULLSTATIC_MARKER = getattr(bld.env, 'SMBD_STATIC_FULLSTATIC_MARKER', '-static')
++
+ def SAMBA_BINARY(bld, binname, source,
+                  deps='',
+                  includes='',
+@@ -544,8 +584,11 @@ def SAMBA_BINARY(bld, binname, source,
          install_path   = None,
          samba_inst_path= install_path,
          samba_install  = install,
@@ -55,10 +80,11 @@ index 8dff3d6..3aa1c91 100644
 +        samba_use_hostcc = use_hostcc
          )
 +    APPLY_HOSTCC_ENV(bld, t)
++    APPLY_SMBD_STATIC_ENV(bld, t)
  
      if manpages is not None and 'XSLTPROC_MANPAGES' in bld.env and bld.env['XSLTPROC_MANPAGES']:
          bld.MANPAGES(manpages, install)
-@@ -861,6 +885,8 @@ def SAMBA_SUBSYSTEM(bld, modname, source,
+@@ -861,6 +904,8 @@ def SAMBA_SUBSYSTEM(bld, modname, source,
          samba_builtin_subsystem = None,
          )
  

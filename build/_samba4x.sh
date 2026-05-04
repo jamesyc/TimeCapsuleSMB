@@ -166,6 +166,151 @@ undef_config_symbol() {
     fi
 }
 
+set_waf_cache_empty_values() {
+    cache_file="$1"
+    shift
+
+    for name in "$@"; do
+        set_waf_cache_value "$cache_file" "$name" "()"
+    done
+}
+
+remove_samba4x_pthread_waf_text() {
+    cache_file="$1"
+
+    remove_waf_cache_fixed_text "$cache_file" "'pthread': 'SYSLIB'" "s/'pthread': 'SYSLIB'/'pthread': 'EMPTY'/g" "Samba 4.x waf cache pthread syslib removal"
+    remove_waf_cache_fixed_text "$cache_file" "'-lpthread'" "s/'-lpthread',\\s*//g; s/\\s*'\\-lpthread'\\s*//g" "Samba 4.x waf cache -lpthread removal"
+    remove_waf_cache_fixed_text "$cache_file" "'-pthread'" "s/'-pthread',\\s*//g; s/\\s*'\\-pthread'\\s*//g" "Samba 4.x waf cache -pthread removal"
+    remove_waf_cache_fixed_text "$cache_file" "'-D_REENTRANT'" "s/'-D_REENTRANT',\\s*//g; s/\\s*'\\-D_REENTRANT'\\s*//g" "Samba 4.x waf cache reentrant define removal"
+    remove_waf_cache_fixed_text "$cache_file" "'-D_POSIX_PTHREAD_SEMANTICS'" "s/'-D_POSIX_PTHREAD_SEMANTICS',\\s*//g; s/\\s*'\\-D_POSIX_PTHREAD_SEMANTICS'\\s*//g" "Samba 4.x waf cache pthread semantics define removal"
+    remove_waf_cache_fixed_text "$cache_file" "'HAVE_PTHREAD': '1'" "s/'HAVE_PTHREAD': '1'/'HAVE_PTHREAD': ()/g" "Samba 4.x waf cache HAVE_PTHREAD dict removal"
+    remove_waf_cache_fixed_text "$cache_file" "'HAVE_PTHREAD_CREATE': 1" "s/'HAVE_PTHREAD_CREATE': 1/'HAVE_PTHREAD_CREATE': ()/g" "Samba 4.x waf cache HAVE_PTHREAD_CREATE dict removal"
+    remove_waf_cache_fixed_text "$cache_file" "'HAVE_PTHREAD_ATTR_INIT': 1" "s/'HAVE_PTHREAD_ATTR_INIT': 1/'HAVE_PTHREAD_ATTR_INIT': ()/g" "Samba 4.x waf cache HAVE_PTHREAD_ATTR_INIT dict removal"
+    remove_waf_cache_fixed_text "$cache_file" "'HAVE_LIBPTHREAD': 1" "s/'HAVE_LIBPTHREAD': 1/'HAVE_LIBPTHREAD': ()/g" "Samba 4.x waf cache HAVE_LIBPTHREAD dict removal"
+    remove_waf_cache_fixed_text "$cache_file" "'WITH_PTHREADPOOL': '1'" "s/'WITH_PTHREADPOOL': '1'/'WITH_PTHREADPOOL': ()/g" "Samba 4.x waf cache WITH_PTHREADPOOL dict removal"
+}
+
+apply_samba4x_static_waf_cache() {
+    cache_file="$1"
+
+    set_waf_cache_value "$cache_file" "HOST_CFLAGS" "'$HOST_CFLAGS'"
+    set_waf_cache_value "$cache_file" "HOST_CPPFLAGS" "'$HOST_CPPFLAGS'"
+    set_waf_cache_value "$cache_file" "ENABLE_PIE" "False"
+    set_waf_cache_value "$cache_file" "LDFLAGS" "[$SAMBA4X_SHARED_LDFLAGS_LIST]"
+    set_waf_cache_value "$cache_file" "SMBD_STATIC_LINKFLAGS" "[$SAMBA4X_FINAL_LINKFLAGS]"
+    set_waf_cache_value "$cache_file" "SMBD_STATIC_LDFLAGS" "[$SAMBA4X_FINAL_LDFLAGS_LIST]"
+    set_waf_cache_value "$cache_file" "SMBD_STATIC_LIBPATH" "[]"
+    set_waf_cache_value "$cache_file" "SMBD_STATIC_SHLIB_MARKER" "''"
+    set_waf_cache_value "$cache_file" "SMBD_STATIC_FULLSTATIC_MARKER" "'-static'"
+    set_waf_cache_value "$cache_file" "TC_SAMBA4X_EMBEDDED_SRVSVC" "True"
+    set_waf_cache_value "$cache_file" "FULLSTATIC" "True"
+}
+
+apply_samba4x_no_pthread_waf_cache() {
+    cache_file="$1"
+
+    set_waf_cache_empty_values "$cache_file" \
+        HAVE_PTHREAD \
+        HAVE_PTHREAD_CREATE \
+        HAVE_PTHREAD_ATTR_INIT \
+        HAVE_LIBPTHREAD \
+        WITH_PTHREADPOOL
+    set_waf_cache_value "$cache_file" "LIB_pthread" "[]"
+    set_waf_cache_value "$cache_file" "LIB_PTHREAD" "''"
+    set_waf_cache_value "$cache_file" "replace_add_global_pthread" "False"
+    remove_samba4x_pthread_waf_text "$cache_file"
+}
+
+apply_samba4x_runtime_waf_cache() {
+    cache_file="$1"
+
+    set_waf_cache_empty_values "$cache_file" \
+        HAVE_POSIX_FALLOCATE \
+        _POSIX_FALLOCATE_CAPABLE_LIBC \
+        HAVE_BACKTRACE \
+        HAVE_BACKTRACE_SYMBOLS \
+        HAVE_EXECINFO_H \
+        HAVE_SETPROCTITLE \
+        HAVE_SETPROCTITLE_INIT
+}
+
+apply_samba4x_waf_cache_overrides() {
+    cache_file="$1"
+
+    # Waf configure runs on the VM while targeting the Time Capsule. Keep the
+    # generated cache deterministic and target-safe: smbd must be static, all
+    # appliance targets are no-pthread, and old NetBSD libc process-title and
+    # backtrace probes must not leak into the static binary.
+    apply_samba4x_static_waf_cache "$cache_file"
+    apply_samba4x_runtime_waf_cache "$cache_file"
+    apply_samba4x_no_pthread_waf_cache "$cache_file"
+
+    if [ "$SDK_FAMILY" = "netbsd4" ]; then
+        # NetBSD4's old static libc/toolchain combination does not support the
+        # stack protector runtime expected by newer Samba configure probes.
+        # NetBSD6/7 keep the normal detection.
+        remove_waf_cache_fixed_text "$cache_file" "'-fstack-protector'" "s/'-fstack-protector',\\s*//g; s/\\s*'\\-fstack-protector'\\s*//g" "Samba 4.x waf cache NetBSD4 stack protector removal"
+    fi
+}
+
+sync_samba4x_config_header() {
+    config_header="$1"
+
+    # Mirror the waf cache overrides so generated config headers do not
+    # accidentally re-enable VM-host detections for the appliance target.
+    for symbol in \
+        HAVE_POSIX_FALLOCATE \
+        _POSIX_FALLOCATE_CAPABLE_LIBC \
+        HAVE_PTHREAD \
+        HAVE_PTHREAD_CREATE \
+        HAVE_PTHREAD_ATTR_INIT \
+        HAVE_LIBPTHREAD \
+        WITH_PTHREADPOOL \
+        HAVE_EXECINFO_H \
+        HAVE_BACKTRACE \
+        HAVE_BACKTRACE_SYMBOLS \
+        HAVE_SETPROCTITLE \
+        HAVE_SETPROCTITLE_INIT
+    do
+        undef_config_symbol "$config_header" "$symbol"
+    done
+}
+
+configure_samba4x() {
+    set -- \
+        --cross-compile \
+        "--cross-execute=$CROSS_EXECUTE" \
+        "--hostcc=$HOST_CC" \
+        "--prefix=$SAMBA4X_STAGE" \
+        --without-pie \
+        --disable-python \
+        --disable-avahi \
+        --without-acl-support \
+        --without-ad-dc \
+        --without-ads \
+        --without-automount \
+        --without-dmapi \
+        --without-ldap \
+        --without-json \
+        --without-gettext \
+        --without-pam \
+        --disable-cups \
+        --disable-iprint \
+        --without-winbind \
+        --without-utmp \
+        --without-syslog \
+        --nonshared-binary=smbd/smbd
+
+    if [ -n "$SAMBA4X_STATIC_MODULES" ]; then
+        set -- "$@" "--with-static-modules=$SAMBA4X_STATIC_MODULES"
+    fi
+    if [ "$SDK_FAMILY" = "netbsd4" ]; then
+        set -- "$@" --disable-fault-handling --without-libarchive
+    fi
+
+    PYTHON="$PYTHON3_BIN" ./configure "$@"
+}
+
 download_samba4x_archive() {
     url="$1"
     archive="$2"
@@ -401,23 +546,9 @@ build_samba4x_gnutls() {
     archive="$(download_samba4x_archive "$SAMBA4X_GNUTLS_URL" "gnutls-$SAMBA4X_GNUTLS_VERSION.tar.xz")"
     extract_samba4x_archive "$archive" "gnutls-$SAMBA4X_GNUTLS_VERSION"
     cd "$SAMBA4X_BUILD/gnutls-$SAMBA4X_GNUTLS_VERSION"
-    # GnuTLS assumes glibc-style <byteswap.h>. NetBSD 6/7 and NetBSD4 expose
-    # the target helpers through <sys/bswap.h> with bswap16/32/64 names.
-    patch_apply_checked "GnuTLS NetBSD bswap include patch" \
-        "$GNUTLS_PATCH_DIR/0001-netbsd-bswap-include.patch" \
-        .
-    # All Time Capsule Samba4X lanes are static no-pthread appliance builds.
-    # GnuTLS keeps PRNG and FIPS state in C11 thread-local globals by default;
-    # on these old NetBSD targets that pulls in runtime TLS behavior that is not
-    # needed for a single-threaded smbd and can abort when the first real random
-    # buffer is requested during session setup. Make those globals ordinary
-    # statics for every no-pthread lane so NetBSD6/7 and NetBSD4 behave the same.
-    patch_apply_checked "GnuTLS no-pthread random TLS patch" \
-        "$GNUTLS_PATCH_DIR/0002-no-pthread-random-static-state.patch" \
-        .
-    patch_apply_checked "GnuTLS no-pthread FIPS TLS patch" \
-        "$GNUTLS_PATCH_DIR/0003-no-pthread-fips-static-state.patch" \
-        .
+    # GnuTLS needs only target compatibility edits: NetBSD bswap names and
+    # ordinary static PRNG/FIPS state for the single-threaded appliance build.
+    patch_apply_series "GnuTLS" "$GNUTLS_PATCH_DIR/series" .
     env PKG_CONFIG_PATH="$SAMBA4X_DEPS/lib/pkgconfig" \
         PKG_CONFIG_LIBDIR="$SAMBA4X_DEPS/lib/pkgconfig" \
         PKG_CONFIG_SYSROOT_DIR= \
@@ -565,97 +696,11 @@ SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_
     cd "$SAMBA4X_SRC_DIR"
     PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf distclean >/dev/null 2>&1 || true
 
-    CONFIGURE_ARGS="\
-      --cross-compile \
-      --cross-execute=$CROSS_EXECUTE \
-      --hostcc=$HOST_CC \
-      --prefix=$SAMBA4X_STAGE \
-      --without-pie \
-      --disable-python \
-      --disable-avahi \
-      --without-acl-support \
-      --without-ad-dc \
-      --without-ads \
-      --without-automount \
-      --without-dmapi \
-      --without-ldap \
-      --without-json \
-      --without-gettext \
-      --without-pam \
-      --disable-cups \
-      --disable-iprint \
-      --without-winbind \
-      --without-utmp \
-      --without-syslog \
-      --nonshared-binary=smbd/smbd"
-
-    if [ -n "$SAMBA4X_STATIC_MODULES" ]; then
-        CONFIGURE_ARGS="$CONFIGURE_ARGS --with-static-modules=$SAMBA4X_STATIC_MODULES"
-    fi
-    if [ "$SDK_FAMILY" = "netbsd4" ]; then
-        CONFIGURE_ARGS="$CONFIGURE_ARGS --disable-fault-handling --without-libarchive"
-    fi
-
-    eval "PYTHON=\"$PYTHON3_BIN\" ./configure $CONFIGURE_ARGS"
+    configure_samba4x
 
     for cache_file in "$SAMBA4X_SRC_DIR"/bin/c4che/*.py; do
         [ -f "$cache_file" ] || continue
-        # Waf configure runs on the VM while targeting the Time Capsule. Keep
-        # these generated cache values deterministic and target-safe: smbd must
-        # be static, all Time Capsule targets are no-pthread, and NetBSD4 also
-        # needs stack-protector detections scrubbed after configure.
-        set_waf_cache_value "$cache_file" "HOST_CFLAGS" "'$HOST_CFLAGS'"
-        set_waf_cache_value "$cache_file" "HOST_CPPFLAGS" "'$HOST_CPPFLAGS'"
-        set_waf_cache_value "$cache_file" "ENABLE_PIE" "False"
-        set_waf_cache_value "$cache_file" "HAVE_POSIX_FALLOCATE" "()"
-        set_waf_cache_value "$cache_file" "_POSIX_FALLOCATE_CAPABLE_LIBC" "()"
-        set_waf_cache_value "$cache_file" "LDFLAGS" "[$SAMBA4X_SHARED_LDFLAGS_LIST]"
-        set_waf_cache_value "$cache_file" "SMBD_STATIC_LINKFLAGS" "[$SAMBA4X_FINAL_LINKFLAGS]"
-        set_waf_cache_value "$cache_file" "SMBD_STATIC_LDFLAGS" "[$SAMBA4X_FINAL_LDFLAGS_LIST]"
-        set_waf_cache_value "$cache_file" "SMBD_STATIC_LIBPATH" "[]"
-        set_waf_cache_value "$cache_file" "SMBD_STATIC_SHLIB_MARKER" "''"
-        set_waf_cache_value "$cache_file" "SMBD_STATIC_FULLSTATIC_MARKER" "'-static'"
-        # Make the extra srvsvc sources/deps in the smbd-base build explicit.
-        # The matching C macro is in CFLAGS/CPPFLAGS above so the pipe handler
-        # code and Waf dependency graph stay in sync.
-        set_waf_cache_value "$cache_file" "TC_SAMBA4X_EMBEDDED_SRVSVC" "True"
-        # Apple Time Capsule kernels do not support the pthread behavior Samba
-        # 4.24 expects. Remove pthread results unconditionally for the Samba4x
-        # appliance build so NetBSD4 and NetBSD6/7 use the same no-pthread path.
-        set_waf_cache_value "$cache_file" "HAVE_PTHREAD" "()"
-        set_waf_cache_value "$cache_file" "HAVE_PTHREAD_CREATE" "()"
-        set_waf_cache_value "$cache_file" "HAVE_PTHREAD_ATTR_INIT" "()"
-        set_waf_cache_value "$cache_file" "HAVE_LIBPTHREAD" "()"
-        set_waf_cache_value "$cache_file" "WITH_PTHREADPOOL" "()"
-        set_waf_cache_value "$cache_file" "LIB_pthread" "[]"
-        set_waf_cache_value "$cache_file" "LIB_PTHREAD" "''"
-        set_waf_cache_value "$cache_file" "replace_add_global_pthread" "False"
-        remove_waf_cache_fixed_text "$cache_file" "'pthread': 'SYSLIB'" "s/'pthread': 'SYSLIB'/'pthread': 'EMPTY'/g" "Samba 4.x waf cache pthread syslib removal"
-        remove_waf_cache_fixed_text "$cache_file" "'-lpthread'" "s/'-lpthread',\\s*//g; s/\\s*'\\-lpthread'\\s*//g" "Samba 4.x waf cache -lpthread removal"
-        remove_waf_cache_fixed_text "$cache_file" "'-pthread'" "s/'-pthread',\\s*//g; s/\\s*'\\-pthread'\\s*//g" "Samba 4.x waf cache -pthread removal"
-        remove_waf_cache_fixed_text "$cache_file" "'-D_REENTRANT'" "s/'-D_REENTRANT',\\s*//g; s/\\s*'\\-D_REENTRANT'\\s*//g" "Samba 4.x waf cache reentrant define removal"
-        remove_waf_cache_fixed_text "$cache_file" "'-D_POSIX_PTHREAD_SEMANTICS'" "s/'-D_POSIX_PTHREAD_SEMANTICS',\\s*//g; s/\\s*'\\-D_POSIX_PTHREAD_SEMANTICS'\\s*//g" "Samba 4.x waf cache pthread semantics define removal"
-        remove_waf_cache_fixed_text "$cache_file" "'HAVE_PTHREAD': '1'" "s/'HAVE_PTHREAD': '1'/'HAVE_PTHREAD': ()/g" "Samba 4.x waf cache HAVE_PTHREAD dict removal"
-        remove_waf_cache_fixed_text "$cache_file" "'HAVE_PTHREAD_CREATE': 1" "s/'HAVE_PTHREAD_CREATE': 1/'HAVE_PTHREAD_CREATE': ()/g" "Samba 4.x waf cache HAVE_PTHREAD_CREATE dict removal"
-        remove_waf_cache_fixed_text "$cache_file" "'HAVE_PTHREAD_ATTR_INIT': 1" "s/'HAVE_PTHREAD_ATTR_INIT': 1/'HAVE_PTHREAD_ATTR_INIT': ()/g" "Samba 4.x waf cache HAVE_PTHREAD_ATTR_INIT dict removal"
-        remove_waf_cache_fixed_text "$cache_file" "'HAVE_LIBPTHREAD': 1" "s/'HAVE_LIBPTHREAD': 1/'HAVE_LIBPTHREAD': ()/g" "Samba 4.x waf cache HAVE_LIBPTHREAD dict removal"
-        remove_waf_cache_fixed_text "$cache_file" "'WITH_PTHREADPOOL': '1'" "s/'WITH_PTHREADPOOL': '1'/'WITH_PTHREADPOOL': ()/g" "Samba 4.x waf cache WITH_PTHREADPOOL dict removal"
-        if [ "$SDK_FAMILY" = "netbsd4" ]; then
-            # NetBSD4's old static libc/toolchain combination does not support
-            # the stack protector runtime expected by newer Samba configure
-            # probes. NetBSD6/7 keep the normal detection.
-            remove_waf_cache_fixed_text "$cache_file" "'-fstack-protector'" "s/'-fstack-protector',\\s*//g; s/\\s*'\\-fstack-protector'\\s*//g" "Samba 4.x waf cache NetBSD4 stack protector removal"
-        fi
-        set_waf_cache_value "$cache_file" "HAVE_BACKTRACE" "()"
-        set_waf_cache_value "$cache_file" "HAVE_BACKTRACE_SYMBOLS" "()"
-        set_waf_cache_value "$cache_file" "HAVE_EXECINFO_H" "()"
-        # The Time Capsule static appliance binary runs on old NetBSD libc.
-        # Samba only uses process titles for ps/debug labels, while NetBSD's
-        # libc setproctitle path aborts in smbd helper children during startup.
-        # Force lib/replace's no-op fallback so notifyd/cleanupd can start.
-        set_waf_cache_value "$cache_file" "HAVE_SETPROCTITLE" "()"
-        set_waf_cache_value "$cache_file" "HAVE_SETPROCTITLE_INIT" "()"
-        set_waf_cache_value "$cache_file" "FULLSTATIC" "True"
+        apply_samba4x_waf_cache_overrides "$cache_file"
     done
 
     for config_header in \
@@ -664,23 +709,7 @@ SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_
         "$SAMBA4X_SRC_DIR/bin/default/source4/include/config.h"
     do
         [ -f "$config_header" ] || continue
-        # The generated config headers mirror waf's cache. Keep them in sync
-        # so all Time Capsule targets compile the same static no-pthread
-        # appliance path instead of accidentally re-enabling VM-host detections.
-        undef_config_symbol "$config_header" "HAVE_POSIX_FALLOCATE"
-        undef_config_symbol "$config_header" "_POSIX_FALLOCATE_CAPABLE_LIBC"
-        undef_config_symbol "$config_header" "HAVE_PTHREAD"
-        undef_config_symbol "$config_header" "HAVE_PTHREAD_CREATE"
-        undef_config_symbol "$config_header" "HAVE_PTHREAD_ATTR_INIT"
-        undef_config_symbol "$config_header" "HAVE_LIBPTHREAD"
-        undef_config_symbol "$config_header" "WITH_PTHREADPOOL"
-        undef_config_symbol "$config_header" "HAVE_EXECINFO_H"
-        undef_config_symbol "$config_header" "HAVE_BACKTRACE"
-        undef_config_symbol "$config_header" "HAVE_BACKTRACE_SYMBOLS"
-        # Keep config.h aligned with the waf cache override above. This trades
-        # cosmetic process titles for reliable startup on NetBSD4 and 6/7.
-        undef_config_symbol "$config_header" "HAVE_SETPROCTITLE"
-        undef_config_symbol "$config_header" "HAVE_SETPROCTITLE_INIT"
+        sync_samba4x_config_header "$config_header"
     done
 
     if [ "$SDK_FAMILY" = "netbsd4" ] && [ "$SAMBA4X_NETBSD4_GC_SECTIONS" = "1" ]; then
@@ -696,7 +725,7 @@ SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_
         stage_path=$3
         stripped_path=$4
 
-        matches_file="$SAMBA4X_BUILD/stage-$label-matches.$$"
+        matches_file="$(mktemp "$SAMBA4X_BUILD/stage-$label-matches.XXXXXX")"
         find "$SAMBA4X_SRC_DIR/bin" -path "$source_glob" -type f >"$matches_file"
         match_count="$(wc -l <"$matches_file" | tr -d ' ')"
         if [ "$match_count" = "0" ]; then

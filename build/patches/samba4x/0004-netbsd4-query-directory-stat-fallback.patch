@@ -1,7 +1,8 @@
 diff --git a/source3/smbd/smb2_query_directory.c b/source3/smbd/smb2_query_directory.c
+index 79712ad..7870458 100644
 --- a/source3/smbd/smb2_query_directory.c
 +++ b/source3/smbd/smb2_query_directory.c
-@@ -283,6 +283,22 @@ static struct tevent_req *smbd_smb2_query_directory_send(TALLOC_CTX *mem_ctx,
+@@ -284,6 +284,22 @@ static struct tevent_req *smbd_smb2_query_directory_send(TALLOC_CTX *mem_ctx,
  	}
  
  	if (!fsp->fsp_flags.is_directory) {

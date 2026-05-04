@@ -1,3 +1,70 @@
+diff --git a/source3/include/includes.h b/source3/include/includes.h
+index b80683d..05f16e6 100644
+--- a/source3/include/includes.h
++++ b/source3/include/includes.h
+@@ -204,7 +204,10 @@ struct stat_ex {
+ 	uint32_t	st_ex_iflags;
+ };
+ 
++#ifndef SAMBA_SMB_STRUCT_STAT_TYPEDEF
++#define SAMBA_SMB_STRUCT_STAT_TYPEDEF
+ typedef struct stat_ex SMB_STRUCT_STAT;
++#endif
+ 
+ enum timestamp_set_resolution {
+ 	TIMESTAMP_SET_SECONDS = 0,
+diff --git a/source3/include/vfs.h b/source3/include/vfs.h
+index 3922b63..d6e8aad 100644
+--- a/source3/include/vfs.h
++++ b/source3/include/vfs.h
+@@ -412,6 +412,10 @@
+ struct vfs_handle_struct;
+ struct connection_struct;
+ struct files_struct;
++#ifndef SAMBA_FILES_STRUCT_TYPEDEF
++#define SAMBA_FILES_STRUCT_TYPEDEF
++typedef struct files_struct files_struct;
++#endif
+ struct security_descriptor;
+ struct vfs_statvfs_struct;
+ struct smb_request;
+@@ -435,7 +439,7 @@ struct fsp_lease {
+ 	struct smb2_lease lease;
+ };
+ 
+-typedef struct files_struct {
++struct files_struct {
+ 	struct files_struct *next, *prev;
+ 	uint64_t fnum;
+ 	struct smbXsrv_open *op;
+@@ -554,7 +558,7 @@ typedef struct files_struct {
+ 	 * lock attempts on the same offset.
+ 	 */
+ 	uint64_t lock_failure_offset;
+-} files_struct;
++};
+ 
+ /*
+  * The fsp flags "is_pathref" and "is_fsa"
+diff --git a/source3/param/loadparm.h b/source3/param/loadparm.h
+index 72773a8..9194653 100644
+--- a/source3/param/loadparm.h
++++ b/source3/param/loadparm.h
+@@ -26,8 +26,14 @@
+ #include <regex.h>
+ 
+ /* Forward declarations */
++#ifndef SAMBA_SMB_STRUCT_STAT_TYPEDEF
++#define SAMBA_SMB_STRUCT_STAT_TYPEDEF
+ typedef struct stat_ex SMB_STRUCT_STAT;
++#endif
++#ifndef SAMBA_FILES_STRUCT_TYPEDEF
++#define SAMBA_FILES_STRUCT_TYPEDEF
+ typedef struct files_struct files_struct;
++#endif
+ struct smbd_server_connection;
+ struct security_descriptor;
+ struct loadparm_context;
 diff --git a/third_party/heimdal/lib/base/common_plugin.h b/third_party/heimdal/lib/base/common_plugin.h
 index d7b6bca..54bfc6a 100644
 --- a/third_party/heimdal/lib/base/common_plugin.h

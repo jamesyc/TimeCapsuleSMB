@@ -1,0 +1,114 @@
+diff --git a/lib/tevent/tevent_debug.c b/lib/tevent/tevent_debug.c
+index c38c58a..fdea82f 100644
+--- a/lib/tevent/tevent_debug.c
++++ b/lib/tevent/tevent_debug.c
+@@ -341,6 +341,11 @@ void tevent_thread_call_depth_reset_from_req(struct tevent_req *req)
+ void _tevent_thread_call_depth_reset_from_req(struct tevent_req *req,
+ 					     const char *fname)
+ {
++#ifndef HAVE_PTHREAD
++	(void)req;
++	(void)fname;
++	return;
++#endif
+ 	if (tevent_thread_call_depth_state_g.cb != NULL) {
+ 		tevent_thread_call_depth_state_g.cb(
+ 			tevent_thread_call_depth_state_g.cb_private,
+@@ -354,6 +359,11 @@ void _tevent_thread_call_depth_reset_from_req(struct tevent_req *req,
+ void tevent_thread_call_depth_set_callback(tevent_call_depth_callback_t f,
+ 					   void *private_data)
+ {
++#ifndef HAVE_PTHREAD
++	(void)f;
++	(void)private_data;
++	return;
++#endif
+ 	/* In case of deactivation, make sure that call depth is set to 0 */
+ 	if (tevent_thread_call_depth_state_g.cb != NULL) {
+ 		tevent_thread_call_depth_state_g.cb(
+diff --git a/lib/tevent/tevent_internal.h b/lib/tevent/tevent_internal.h
+index 049a3a6..4fbf842 100644
+--- a/lib/tevent/tevent_internal.h
++++ b/lib/tevent/tevent_internal.h
+@@ -567,6 +567,20 @@ static inline void tevent_thread_call_depth_notify(
+ 			size_t depth,
+ 			const char *fname)
+ {
++#ifndef HAVE_PTHREAD
++	/*
++	 * The Time Capsule appliance build removes pthread support after
++	 * configure. tevent's call-depth tracking is explicitly thread-local
++	 * diagnostics; on the static no-pthread NetBSD targets the TLS callback
++	 * state can abort during early smbd startup. Disable the tracking hooks
++	 * in that build while leaving normal request state/callback flow intact.
++	 */
++	(void)cmd;
++	(void)req;
++	(void)depth;
++	(void)fname;
++	return;
++#endif
+ 	if (tevent_thread_call_depth_state_g.cb != NULL) {
+ 		tevent_thread_call_depth_state_g.cb(
+ 			tevent_thread_call_depth_state_g.cb_private,
+diff --git a/lib/tevent/tevent_req.c b/lib/tevent/tevent_req.c
+index 544f853..daf5d12 100644
+--- a/lib/tevent/tevent_req.c
++++ b/lib/tevent/tevent_req.c
+@@ -95,9 +95,19 @@ struct tevent_req *__tevent_req_create(TALLOC_CTX *mem_ctx,
+ 		return NULL;
+ 	}
+ 
++#ifdef HAVE_PTHREAD
+ 	req = talloc_pooled_object(
+ 		mem_ctx, struct tevent_req, 2,
+ 		sizeof(struct tevent_immediate) + data_size);
++#else
++	/*
++	 * The Time Capsule smbd build is static and has pthread support removed
++	 * after configure. Avoid tevent's pooled request allocation in that mode:
++	 * notifyd's first long-lived request aborts in the pool path on these old
++	 * NetBSD targets, while ordinary talloc children are sufficient here.
++	 */
++	req = talloc_zero(mem_ctx, struct tevent_req);
++#endif
+ 	if (req == NULL) {
+ 		return NULL;
+ 	}
+@@ -114,10 +124,13 @@ struct tevent_req *__tevent_req_create(TALLOC_CTX *mem_ctx,
+ 	data = talloc_zero_size(req, data_size);
+ 
+ 	/*
+-	 * No need to check for req->internal.trigger!=NULL or
+-	 * data!=NULL, this can't fail: talloc_pooled_object has
+-	 * already allocated sufficient memory.
++	 * The pooled pthread path has already allocated enough memory, but the
++	 * no-pthread appliance fallback above uses ordinary talloc children.
+ 	 */
++	if (req->internal.trigger == NULL || data == NULL) {
++		TALLOC_FREE(req);
++		return NULL;
++	}
+ 
+ 	talloc_set_name_const(data, type);
+ 
+diff --git a/lib/tevent/tevent_threads.c b/lib/tevent/tevent_threads.c
+index 2dc1f17..5cc9e41 100644
+--- a/lib/tevent/tevent_threads.c
++++ b/lib/tevent/tevent_threads.c
+@@ -394,6 +394,7 @@ static int tevent_threaded_context_destructor(
+ 		DLIST_REMOVE(main_ev->threaded_contexts, tctx);
+ 	}
+ 
++#ifdef HAVE_PTHREAD
+ 	/*
+ 	 * We have to coordinate with _tevent_threaded_schedule_immediate's
+ 	 * unlock of the event_ctx_mutex. We're in the main thread here,
+@@ -416,6 +417,7 @@ static int tevent_threaded_context_destructor(
+ 		abort();
+ 	}
+ 
++#endif
+ 	return 0;
+ }
+ 

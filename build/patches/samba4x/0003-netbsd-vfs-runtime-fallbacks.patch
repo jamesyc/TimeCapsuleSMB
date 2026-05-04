@@ -1,12 +1,11 @@
 diff --git a/source3/modules/vfs_default.c b/source3/modules/vfs_default.c
-index 480886d..6432d43 100644
+index 480886d..1bacb2d 100644
 --- a/source3/modules/vfs_default.c
 +++ b/source3/modules/vfs_default.c
-@@ -87,6 +87,18 @@ static int vfswrap_connect(vfs_handle_struct *handle, const char *service, const
- #ifdef DISABLE_VFS_OPEN_HOW_RESOLVE_NO_XDEV
+@@ -88,6 +88,18 @@ static int vfswrap_connect(vfs_handle_struct *handle, const char *service, const
  	handle->conn->open_how_resolve &= ~VFS_OPEN_HOW_RESOLVE_NO_XDEV;
  #endif
-+
+ 
 +#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
 +	/*
 +	 * Runtime Time Capsule kernels do not provide usable openat2()
@@ -18,9 +17,10 @@ index 480886d..6432d43 100644
 +		~(VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS |
 +		  VFS_OPEN_HOW_RESOLVE_NO_XDEV);
 +#endif
- 
++
  	return 0;    /* Return >= 0 for success */
  }
+ 
 @@ -355,6 +367,15 @@ static NTSTATUS vfswrap_get_dfs_referrals(struct vfs_handle_struct *handle,
  	return NT_STATUS_OK;
  }
@@ -107,7 +107,35 @@ index 480886d..6432d43 100644
  	if (ret < 0) {
  		status = map_nt_error_from_unix(errno);
  		goto err;
-@@ -583,6 +641,84 @@ static void vfswrap_rewinddir(vfs_handle_struct *handle, DIR *dirp)
+@@ -549,8 +607,27 @@ static DIR *vfswrap_fdopendir(vfs_handle_struct *handle,
+ 	DIR *result;
+ 
+ 	START_PROFILE_X(SNUM(handle->conn), syscall_fdopendir);
++#ifdef TC_SAMBA4X_NETBSD4_COMPAT
++	/*
++	 * NetBSD4's libc does not provide fdopendir(), and Samba's replace
++	 * fallback reports that as NT_STATUS_NOT_SUPPORTED during SMB2
++	 * QUERY_DIRECTORY. The default VFS still has Samba's tracked pathname
++	 * for the directory handle, so use the older path-based opendir().
++	 *
++	 * opendir() owns a separate directory fd; the original fsp fd remains
++	 * owned by Samba's files_struct lifecycle.
++	 */
++	if (fsp->fsp_name == NULL || fsp->fsp_name->base_name == NULL) {
++		errno = EINVAL;
++		result = NULL;
++	} else {
++		result = opendir(fsp->fsp_name->base_name);
++	}
++#else
+ 	result = sys_fdopendir(fsp_get_io_fd(fsp));
++#endif
+ 	END_PROFILE_X(syscall_fdopendir);
++
+ 	return result;
+ }
+ 
+@@ -583,6 +660,84 @@ static void vfswrap_rewinddir(vfs_handle_struct *handle, DIR *dirp)
  	END_PROFILE_X(syscall_rewinddir);
  }
  
@@ -192,7 +220,7 @@ index 480886d..6432d43 100644
  static int vfswrap_mkdirat(vfs_handle_struct *handle,
  			struct files_struct *dirfsp,
  			const struct smb_filename *smb_fname,
-@@ -592,7 +728,20 @@ static int vfswrap_mkdirat(vfs_handle_struct *handle,
+@@ -592,7 +747,20 @@ static int vfswrap_mkdirat(vfs_handle_struct *handle,
  
  	START_PROFILE_X(SNUM(handle->conn), syscall_mkdirat);
  
@@ -213,7 +241,7 @@ index 480886d..6432d43 100644
  
  	END_PROFILE_X(syscall_mkdirat);
  	return result;
-@@ -663,6 +812,39 @@ static int vfswrap_openat(vfs_handle_struct *handle,
+@@ -663,6 +831,39 @@ static int vfswrap_openat(vfs_handle_struct *handle,
  	}
  #endif
  
@@ -253,7 +281,7 @@ index 480886d..6432d43 100644
  	if (how->resolve & VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS ||
  	    how->resolve & VFS_OPEN_HOW_RESOLVE_NO_XDEV)
  	{
-@@ -712,6 +894,7 @@ static int vfswrap_openat(vfs_handle_struct *handle,
+@@ -712,6 +913,7 @@ static int vfswrap_openat(vfs_handle_struct *handle,
  			smb_fname->base_name,
  			flags,
  			mode);
@@ -261,7 +289,7 @@ index 480886d..6432d43 100644
  
  	if (became_root) {
  		int err = errno;
-@@ -1316,11 +1499,33 @@ static int vfswrap_renameat(vfs_handle_struct *handle,
+@@ -1316,11 +1518,33 @@ static int vfswrap_renameat(vfs_handle_struct *handle,
  		flags |= RENAME_NOREPLACE;
  	}
  
@@ -295,7 +323,7 @@ index 480886d..6432d43 100644
  
  	END_PROFILE_X(syscall_renameat);
  	return result;
-@@ -1394,12 +1599,36 @@ static int vfswrap_fstatat(
+@@ -1394,12 +1618,36 @@ static int vfswrap_fstatat(
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
@@ -332,7 +360,7 @@ index 480886d..6432d43 100644
  
  	END_PROFILE_X(syscall_fstatat);
  	return result;
-@@ -2754,9 +2983,27 @@ static int vfswrap_unlinkat(vfs_handle_struct *handle,
+@@ -2754,9 +3002,27 @@ static int vfswrap_unlinkat(vfs_handle_struct *handle,
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
@@ -360,7 +388,7 @@ index 480886d..6432d43 100644
  
  	END_PROFILE_X(syscall_unlinkat);
  	return result;
-@@ -3243,9 +3490,22 @@ static int vfswrap_symlinkat(vfs_handle_struct *handle,
+@@ -3243,9 +3509,22 @@ static int vfswrap_symlinkat(vfs_handle_struct *handle,
  
  	SMB_ASSERT(!is_named_stream(new_smb_fname));
  
@@ -383,7 +411,7 @@ index 480886d..6432d43 100644
  	END_PROFILE_X(syscall_symlinkat);
  	return result;
  }
-@@ -3262,10 +3522,23 @@ static int vfswrap_readlinkat(vfs_handle_struct *handle,
+@@ -3262,10 +3541,23 @@ static int vfswrap_readlinkat(vfs_handle_struct *handle,
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
@@ -407,7 +435,7 @@ index 480886d..6432d43 100644
  
  	END_PROFILE_X(syscall_readlinkat);
  	return result;
-@@ -3285,11 +3558,28 @@ static int vfswrap_linkat(vfs_handle_struct *handle,
+@@ -3285,11 +3577,28 @@ static int vfswrap_linkat(vfs_handle_struct *handle,
  	SMB_ASSERT(!is_named_stream(old_smb_fname));
  	SMB_ASSERT(!is_named_stream(new_smb_fname));
  
@@ -436,7 +464,7 @@ index 480886d..6432d43 100644
  
  	END_PROFILE_X(syscall_linkat);
  	return result;
-@@ -3307,10 +3597,23 @@ static int vfswrap_mknodat(vfs_handle_struct *handle,
+@@ -3307,10 +3616,23 @@ static int vfswrap_mknodat(vfs_handle_struct *handle,
  
  	SMB_ASSERT(!is_named_stream(smb_fname));
  
@@ -460,7 +488,7 @@ index 480886d..6432d43 100644
  
  	END_PROFILE_X(syscall_mknodat);
  	return result;
-@@ -4161,4 +4464,3 @@ NTSTATUS vfs_default_init(TALLOC_CTX *ctx)
+@@ -4161,4 +4483,3 @@ NTSTATUS vfs_default_init(TALLOC_CTX *ctx)
  				DEFAULT_VFS_MODULE_NAME, &vfs_default_fns);
  }
  

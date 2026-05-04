@@ -1,7 +1,8 @@
 diff --git a/source3/rpc_server/srv_pipe_hnd.c b/source3/rpc_server/srv_pipe_hnd.c
+index b9e2676..3f2caef 100644
 --- a/source3/rpc_server/srv_pipe_hnd.c
 +++ b/source3/rpc_server/srv_pipe_hnd.c
-@@ -30,7 +30,13 @@
+@@ -30,6 +30,12 @@
  #include "rpc_server/rpc_config.h"
  #include "../lib/tsocket/tsocket.h"
  #include "../lib/util/tevent_ntstatus.h"
@@ -14,8 +15,7 @@ diff --git a/source3/rpc_server/srv_pipe_hnd.c b/source3/rpc_server/srv_pipe_hnd
  #include "librpc/ndr/ndr_table.h"
  
  #undef DBGC_CLASS
- #define DBGC_CLASS DBGC_RPC_SRV
-@@ -48,6 +54,184 @@
+@@ -48,6 +54,184 @@ bool fsp_is_np(struct files_struct *fsp)
  	return (type == FAKE_FILE_TYPE_NAMED_PIPE_PROXY);
  }
  
@@ -200,7 +200,7 @@ diff --git a/source3/rpc_server/srv_pipe_hnd.c b/source3/rpc_server/srv_pipe_hnd
  NTSTATUS np_open(TALLOC_CTX *mem_ctx, const char *name,
  		 const struct tsocket_address *remote_client_address,
  		 const struct tsocket_address *local_server_address,
-@@ -60,6 +244,9 @@
+@@ -60,6 +244,9 @@ NTSTATUS np_open(TALLOC_CTX *mem_ctx, const char *name,
  	struct fake_file_handle *handle;
  	struct npa_state *npa = NULL;
  	int ret;
@@ -210,11 +210,10 @@ diff --git a/source3/rpc_server/srv_pipe_hnd.c b/source3/rpc_server/srv_pipe_hnd
  
  	handle = talloc(mem_ctx, struct fake_file_handle);
  	if (handle == NULL) {
-@@ -75,6 +262,28 @@
- 		.type = FAKE_FILE_TYPE_NAMED_PIPE_PROXY,
+@@ -76,6 +263,28 @@ NTSTATUS np_open(TALLOC_CTX *mem_ctx, const char *name,
  		.private_data = npa,
  	};
-+
+ 
 +#ifdef TC_SAMBA4X_EMBEDDED_SRVSVC
 +	status = tc_smbd_open_embedded_srvsvc_np(
 +		name,
@@ -236,13 +235,15 @@ diff --git a/source3/rpc_server/srv_pipe_hnd.c b/source3/rpc_server/srv_pipe_hnd
 +		return status;
 +	}
 +#endif
- 
++
  	ret = local_np_connect(
  		name,
+ 		NCACN_NP,
 diff --git a/source3/wscript_build b/source3/wscript_build
+index e4a595d..caa8ee7 100644
 --- a/source3/wscript_build
 +++ b/source3/wscript_build
-@@ -640,6 +640,24 @@
+@@ -640,6 +640,24 @@ if bld.CONFIG_SET('WITH_SMB1SERVER'):
  else:
      SMB1_SOURCES = ''
  
@@ -267,7 +268,7 @@ diff --git a/source3/wscript_build b/source3/wscript_build
  bld.SAMBA3_LIBRARY('smbd_base',
                     source='''
                            smbd/server_reload.c
-@@ -732,7 +750,7 @@
+@@ -732,7 +750,7 @@ bld.SAMBA3_LIBRARY('smbd_base',
                            smbd/conn.c
                            rpc_server/srv_pipe_hnd.c
                            rpc_server/rpc_ncacn_np.c
@@ -276,7 +277,7 @@ diff --git a/source3/wscript_build b/source3/wscript_build
                     deps='''
                          talloc
                          tevent
-@@ -764,6 +782,7 @@
+@@ -764,6 +782,7 @@ bld.SAMBA3_LIBRARY('smbd_base',
                          fd_handle
                          cli_spoolss
                          samba3-namearray

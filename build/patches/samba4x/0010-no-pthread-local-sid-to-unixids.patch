@@ -1,8 +1,8 @@
 diff --git a/source3/passdb/lookup_sid.c b/source3/passdb/lookup_sid.c
-index 0204a87..a32564d 100644
+index 7a29bb1..fb7a648 100644
 --- a/source3/passdb/lookup_sid.c
 +++ b/source3/passdb/lookup_sid.c
-@@ -1445,6 +1445,19 @@ bool sids_to_unixids(const struct dom_sid *sids, uint32_t num_sids,
+@@ -1449,6 +1449,19 @@ bool sids_to_unixids(const struct dom_sid *sids, uint32_t num_sids,
  	 * via wbcSidsToUnixIds().
  	 */
  
@@ -22,7 +22,7 @@ index 0204a87..a32564d 100644
  	wbc_ids_size = num_not_cached;
  	wbc_ids = talloc_array(talloc_tos(), struct wbcUnixId, wbc_ids_size);
  	if (wbc_ids == NULL) {
-@@ -1507,6 +1520,7 @@ bool sids_to_unixids(const struct dom_sid *sids, uint32_t num_sids,
+@@ -1520,6 +1533,7 @@ bool sids_to_unixids(const struct dom_sid *sids, uint32_t num_sids,
  		}
  		num_not_cached += 1;
  	}

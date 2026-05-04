@@ -1,0 +1,122 @@
+diff --git a/source3/smbd/scavenger.c b/source3/smbd/scavenger.c
+index 194ff2b..747521c 100644
+--- a/source3/smbd/scavenger.c
++++ b/source3/smbd/scavenger.c
+@@ -336,6 +336,18 @@ static void smbd_scavenger_msg(struct messaging_context *msg_ctx,
+ 		   server_id_str_buf(src, &tmp2)));
+ 
+ 	if (server_id_equal(&state->parent_id, &self)) {
++#ifndef HAVE_PTHREAD
++		/*
++		 * The Time Capsule appliance build runs smbd without pthreads
++		 * and avoids helper daemon forks. The scavenger is the current
++		 * Samba 4.24 path that expires disconnected durable handles, so
++		 * keep the timer semantics but host them on the smbd parent event
++		 * loop instead of forwarding to a smbd-scavenger helper process.
++		 */
++		msg = (struct scavenger_message *)data->data;
++		scavenger_add_timer(state, msg);
++		goto done;
++#else
+ 		NTSTATUS status;
+ 
+ 		if (!smbd_scavenger_running(state) &&
+@@ -354,6 +366,7 @@ static void smbd_scavenger_msg(struct messaging_context *msg_ctx,
+ 			goto done;
+ 		}
+ 		goto done;
++#endif
+ 	}
+ 
+ 	if (!state->am_scavenger) {
+diff --git a/source3/smbd/server.c b/source3/smbd/server.c
+index b2f130c..828b3f3 100644
+--- a/source3/smbd/server.c
++++ b/source3/smbd/server.c
+@@ -443,8 +443,20 @@ static struct tevent_req *notifyd_req(struct messaging_context *msg_ctx,
+ 		ctdbd_conn = messaging_ctdb_connection();
+ 	}
+ 
++#ifdef HAVE_PTHREAD
+ 	req = notifyd_send(msg_ctx, ev, msg_ctx, ctdbd_conn,
+ 			   sys_notify_watch, sys_notify_ctx);
++#else
++	/*
++	 * The no-pthread static appliance build keeps notifyd in the smbd
++	 * parent process. Its lifetime is the parent event loop, matching the
++	 * standalone notifydd caller, so parent the long-lived request to ev
++	 * instead of msg_ctx. On NetBSD Time Capsules, the msg_ctx-owned request
++	 * path aborts inside tevent_req_create() during startup.
++	 */
++	req = notifyd_send(ev, ev, msg_ctx, ctdbd_conn,
++			   sys_notify_watch, sys_notify_ctx);
++#endif
+ 	if (req == NULL) {
+ 		TALLOC_FREE(sys_notify_ctx);
+ 		return NULL;
+@@ -490,6 +502,22 @@ static bool smbd_notifyd_init(struct messaging_context *msg, bool interactive,
+ 		return (req != NULL);
+ 	}
+ 
++#ifndef HAVE_PTHREAD
++	/*
++	 * The Time Capsule appliance build runs smbd without pthreads. Keep
++	 * notifyd semantics, but host the long-lived notify request in the smbd
++	 * parent event loop instead of forking a notifyd helper that aborts on
++	 * the no-pthread NetBSD targets.
++	 */
++	req = notifyd_req(msg, ev);
++	if (req == NULL) {
++		return false;
++	}
++	*ppid = messaging_server_id(msg);
++	DBG_NOTICE("Running notifyd in smbd parent for no-pthread build\n");
++	return true;
++#endif
++
+ 	pid = fork();
+ 	if (pid == -1) {
+ 		DEBUG(1, ("%s: fork failed: %s\n", __func__,
+@@ -671,6 +699,23 @@ static bool cleanupd_init(struct messaging_context *msg, bool interactive,
+ 	char c;
+ 	int up_pipe[2];
+ 
++#ifndef HAVE_PTHREAD
++	/*
++	 * The Time Capsule appliance build cannot safely fork Samba 4.24's
++	 * cleanupd helper, but cleanupd itself is linked into smbd. Host the
++	 * long-lived cleanup request in the parent event loop so child process
++	 * messaging state is still cleaned up without entering the no-pthread
++	 * helper process path.
++	 */
++	req = smbd_cleanupd_send(msg, ev, msg, parent_id.pid);
++	if (req == NULL) {
++		return false;
++	}
++	*ppid = messaging_server_id(msg);
++	DBG_NOTICE("Running cleanupd in smbd parent for no-pthread build\n");
++	return true;
++#endif
++
+ 	if (interactive) {
+ 		req = smbd_cleanupd_send(msg, ev, msg, parent_id.pid);
+ 		*ppid = messaging_server_id(msg);
+@@ -2473,9 +2518,18 @@ quic_disabled:
+ 		exit_daemon("Samba cannot init the cleanupd", EACCES);
+ 	}
+ 
++#ifndef HAVE_PTHREAD
++	/*
++	 * background_job_send() creates another long-lived helper loop. Skip the
++	 * periodic messaging-datagram wipe in no-pthread appliance builds; stale
++	 * datagram sockets are less harmful than preventing smbd from binding.
++	 */
++	DBG_NOTICE("Skipping messaging dgm cleanup in no-pthread Time Capsule build\n");
++#else
+ 	if (!messaging_parent_dgm_cleanup_init(msg_ctx)) {
+ 		exit(1);
+ 	}
++#endif
+ 
+ 	if (!smbd_scavenger_init(NULL, msg_ctx, ev_ctx)) {
+ 		exit_daemon("Samba cannot init scavenging", EACCES);

@@ -1,5 +1,5 @@
 diff --git a/lib/tdb/common/open.c b/lib/tdb/common/open.c
-index 6580d0d..19ffcc4 100644
+index 87312f7..fe57f99 100644
 --- a/lib/tdb/common/open.c
 +++ b/lib/tdb/common/open.c
 @@ -854,6 +854,7 @@ static int tdb_reopen_internal(struct tdb_context *tdb, bool active_lock)
@@ -27,3 +27,18 @@ index 6580d0d..19ffcc4 100644
  	/*
  	 * We only use st.st_dev and st.st_ino from the raw fstat()
  	 * call, everything else needs to use tdb_fstat() in order
+diff --git a/lib/tdb_wrap/tdb_wrap.c b/lib/tdb_wrap/tdb_wrap.c
+index 49585aa..f4cf249 100644
+--- a/lib/tdb_wrap/tdb_wrap.c
++++ b/lib/tdb_wrap/tdb_wrap.c
+@@ -25,6 +25,10 @@
+ #include "lib/util/debug.h"
+ #include "tdb_wrap.h"
+ 
++#ifndef O_CLOEXEC
++#define O_CLOEXEC 0
++#endif
++
+ /*
+  Log tdb messages via DEBUG().
+ */
