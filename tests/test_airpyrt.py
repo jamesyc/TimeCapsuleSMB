@@ -88,6 +88,19 @@ class AirPyrtTests(unittest.TestCase):
 
         self.assertEqual(messages, ["Removed 'dbug' via: /usr/sbin/acp remove dbug"])
 
+    def test_disable_ssh_treats_missing_dbug_property_as_success(self) -> None:
+        messages: list[str] = []
+        with mock.patch(
+            "timecapsulesmb.integrations.airpyrt.ssh_run_command",
+            return_value=(22, "### remove property error: -10"),
+        ) as ssh_mock:
+            with mock.patch("timecapsulesmb.integrations.airpyrt.reboot") as reboot_mock:
+                disable_ssh("10.0.0.2", "pw", reboot_device=True, log=messages.append)
+
+        ssh_mock.assert_called_once()
+        reboot_mock.assert_called_once()
+        self.assertEqual(messages, ["'dbug' already absent via: acp remove dbug"])
+
 
 if __name__ == "__main__":
     unittest.main()

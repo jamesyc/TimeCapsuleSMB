@@ -198,6 +198,10 @@ def enable_ssh(
         reboot(host, password, python_candidates=python_candidates, log=logger)
 
 
+def _dbug_property_already_absent(output: str) -> bool:
+    return "remove property error: -10" in output
+
+
 def disable_ssh(
     host: str,
     password: str,
@@ -218,6 +222,9 @@ def disable_ssh(
         rc, out = ssh_run_command(host, password, command, log=logger)
         if rc == 0:
             _emit(logger, f"Removed 'dbug' via: {command}")
+            break
+        if _dbug_property_already_absent(out):
+            _emit(logger, f"'dbug' already absent via: {command}")
             break
         last_err = (rc, out)
     else:
