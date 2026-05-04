@@ -5365,20 +5365,20 @@ class CliTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertIn(f"{ANSI_RED}Failed to enable SSH via AirPyrt:{ANSI_RESET}", rendered)
         self.assertIn(f"{ANSI_RED}{AIRPYRT_NOT_FOUND_ERROR}{ANSI_RESET}", rendered)
-        self.assertIn("In order to run prep-device to enable/disable SSH on the device, AirPyrt must be installed.", rendered)
+        self.assertIn("In order to run prep-device to enable SSH on the device, AirPyrt must be installed.", rendered)
         self.assertIn(f"{ANSI_RED}To automatically install AirPyrt, run:{ANSI_RESET}", rendered)
         self.assertIn(f"{ANSI_RED}  ./tcapsule bootstrap{ANSI_RESET}", rendered)
-        self.assertIn("Or you can manually enable/disable SSH on your device with any other method.", rendered)
+        self.assertIn("Or you can manually enable SSH on your device with any other method.", rendered)
         self.assertIn("and make sure 'acp' is on PATH or set AIRPYRT_PY to that interpreter.", rendered)
         finished = self.telemetry_payload("prep_device_finished")
         self.assertIn(f"Failed to enable SSH via AirPyrt: {error}", finished["error"])
         self.assertNotIn("In order to run prep-device", finished["error"])
         self.assertNotIn(ANSI_RED, finished["error"])
 
-    def test_prep_device_disable_airpyrt_missing_guidance_highlights_bootstrap(self) -> None:
+    def test_prep_device_disable_failure_is_reported_as_ssh_not_airpyrt(self) -> None:
         output = io.StringIO()
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
-        error = AIRPYRT_NOT_FOUND_ERROR
+        error = "on-device acp failed"
         with mock.patch("timecapsulesmb.cli.prep_device.parse_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=True):
                 with mock.patch("builtins.input", return_value="y"):
@@ -5388,16 +5388,13 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(rc, 1)
         rendered = output.getvalue()
-        self.assertIn(f"{ANSI_RED}Failed to disable SSH via AirPyrt:{ANSI_RESET}", rendered)
-        self.assertIn(f"{ANSI_RED}{AIRPYRT_NOT_FOUND_ERROR}{ANSI_RESET}", rendered)
-        self.assertIn("In order to run prep-device to enable/disable SSH on the device, AirPyrt must be installed.", rendered)
-        self.assertIn(f"{ANSI_RED}To automatically install AirPyrt, run:{ANSI_RESET}", rendered)
-        self.assertIn(f"{ANSI_RED}  ./tcapsule bootstrap{ANSI_RESET}", rendered)
-        self.assertIn("Or you can manually enable/disable SSH on your device with any other method.", rendered)
-        self.assertIn("and make sure 'acp' is on PATH or set AIRPYRT_PY to that interpreter.", rendered)
+        self.assertIn(f"{ANSI_RED}Failed to disable SSH over SSH:{ANSI_RESET}", rendered)
+        self.assertIn(error, rendered)
+        self.assertNotIn("AirPyrt", rendered)
+        self.assertNotIn("./tcapsule bootstrap", rendered)
         finished = self.telemetry_payload("prep_device_finished")
-        self.assertIn(f"Failed to disable SSH via AirPyrt: {error}", finished["error"])
-        self.assertNotIn("In order to run prep-device", finished["error"])
+        self.assertIn(f"Failed to disable SSH over SSH: {error}", finished["error"])
+        self.assertNotIn("AirPyrt", finished["error"])
         self.assertNotIn(ANSI_RED, finished["error"])
 
     def test_prep_device_disable_flow_warns_when_ssh_reopens(self) -> None:

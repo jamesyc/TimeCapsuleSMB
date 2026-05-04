@@ -15,10 +15,10 @@ from timecapsulesmb.transport.local import tcp_open
 
 AIRPYRT_CLI_INSTALL_GUIDANCE = (
     color_red(AIRPYRT_NOT_FOUND_ERROR),
-    "In order to run prep-device to enable/disable SSH on the device, AirPyrt must be installed.",
+    "In order to run prep-device to enable SSH on the device, AirPyrt must be installed.",
     color_red("To automatically install AirPyrt, run:"),
     color_red("  ./tcapsule bootstrap"),
-    "Or you can manually enable/disable SSH on your device with any other method.",
+    "Or you can manually enable SSH on your device with any other method.",
     "To manually install AirPyrt, see https://github.com/samuelthomas2774/airport/wiki/AirPyrt#installation and make sure 'acp' is on PATH or set AIRPYRT_PY to that interpreter.",
 )
 
@@ -74,7 +74,7 @@ def wait_for_device_up(
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Use the configured device target from .env to enable or disable SSH via AirPyrt.")
+    parser = argparse.ArgumentParser(description="Use the configured device target from .env to enable SSH via AirPyrt or disable SSH over SSH.")
     args = parser.parse_args(argv)
 
     ensure_install_id()
@@ -143,8 +143,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                     disable_ssh(connection, reboot_device=True, log=print)
                 except Exception as e:
                     error_text = str(e)
-                    message = f"Failed to disable SSH via AirPyrt: {error_text}"
-                    print_airpyrt_failure_for_cli("Failed to disable SSH via AirPyrt", error_text)
+                    message = f"Failed to disable SSH over SSH: {error_text}"
+                    print(color_red("Failed to disable SSH over SSH:"))
+                    print(error_text)
                     command_context.fail_with_error(message)
                     return 1
 
