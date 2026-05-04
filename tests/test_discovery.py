@@ -34,6 +34,7 @@ from timecapsulesmb.discovery.bonjour import (
     discovered_record_root_host,
     resolved_service_from_info,
     filter_service_records,
+    _open_zeroconf,
     resolve_service_instance,
 )
 from timecapsulesmb.cli.discover import run_cli  # noqa: E402
@@ -74,6 +75,25 @@ class DiscoveryTests(unittest.TestCase):
         fake_collector.start.assert_called_once()
         fake_collector.resolve_pending.assert_called_once_with(timeout_ms=3000)
         fake_zc.close.assert_called_once()
+
+    def test_open_zeroconf_reports_missing_dependency_with_bootstrap_guidance(self) -> None:
+        real_import = __import__
+
+        def missing_zeroconf_import(name: str, *args: object, **kwargs: object) -> object:
+            if name == "zeroconf":
+                raise ModuleNotFoundError("No module named 'zeroconf'")
+            return real_import(name, *args, **kwargs)
+
+        with mock.patch("builtins.__import__", side_effect=missing_zeroconf_import):
+            with self.assertRaises(RuntimeError) as exc:
+                _open_zeroconf()
+
+        self.assertEqual(
+            str(exc.exception),
+            "Failed to load zeroconf. Install the Python package zeroconf. "
+            "Run `./tcapsule bootstrap` first to set up the required dependencies. "
+            "ModuleNotFoundError: No module named 'zeroconf'",
+        )
 
     def test_discover_retries_pending_resolution_during_browse_window(self) -> None:
         fake_zc = mock.Mock()

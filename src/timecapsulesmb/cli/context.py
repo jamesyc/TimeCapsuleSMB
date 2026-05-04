@@ -19,17 +19,21 @@ if TYPE_CHECKING:
     from timecapsulesmb.transport.ssh import SshConnection
 
 
-def missing_required_python_module(module_names: Iterable[str]) -> str | None:
+def missing_required_python_module(module_names: Iterable[str]) -> tuple[str, BaseException] | None:
     for module_name in module_names:
         try:
             importlib.import_module(module_name)
-        except Exception:
-            return module_name
+        except Exception as e:
+            return module_name, e
     return None
 
 
-def missing_dependency_message(module_name: str) -> str:
-    return f"Failed to load {module_name}. Run `./tcapsule bootstrap` to set up the required dependencies."
+def missing_dependency_message(module_name: str, error: BaseException | None = None) -> str:
+    error_suffix = f" {type(error).__name__}: {error}" if error is not None else ""
+    return (
+        f"Failed to load {module_name}. Install the Python package {module_name}. "
+        f"Run `./tcapsule bootstrap` first to set up the required dependencies.{error_suffix}"
+    )
 
 
 COMMAND_VALUE_BLACKLIST = {

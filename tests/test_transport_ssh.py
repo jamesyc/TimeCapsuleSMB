@@ -16,12 +16,25 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.transport import ssh as ssh_transport
 
 
+REAL_IMPORT = __import__
+MISSING_PEXPECT_MESSAGE = (
+    "Failed to load pexpect. Install the Python package pexpect. "
+    "Run `./tcapsule bootstrap` first to set up the required dependencies. "
+    "ModuleNotFoundError: No module named 'pexpect'"
+)
+
+
 class SSHTransportTests(unittest.TestCase):
     def setUp(self) -> None:
         ssh_transport._ssh_option_supported.cache_clear()
 
     def tearDown(self) -> None:
         ssh_transport._ssh_option_supported.cache_clear()
+
+    def missing_pexpect_import(self, name: str, *args: object, **kwargs: object) -> object:
+        if name == "pexpect":
+            raise ModuleNotFoundError("No module named 'pexpect'")
+        return REAL_IMPORT(name, *args, **kwargs)
 
     def test_normalize_ssh_tokens_rewrites_pubkeyacceptedalgorithms_for_older_ssh(self) -> None:
         with mock.patch(
@@ -405,7 +418,7 @@ class SSHTransportTests(unittest.TestCase):
             self.assertFalse(ssh_transport._ssh_option_supported("PubkeyAcceptedAlgorithms"))
 
     def test_spawn_with_password_reports_missing_pexpect(self) -> None:
-        with mock.patch.dict("sys.modules", {"pexpect": None}):
+        with mock.patch("builtins.__import__", side_effect=self.missing_pexpect_import):
             with self.assertRaises(SystemExit) as exc:
                 ssh_transport._spawn_with_password(
                     ["ssh", "host", "cmd"],
@@ -413,7 +426,20 @@ class SSHTransportTests(unittest.TestCase):
                     timeout=10,
                     timeout_message="timeout",
                 )
-        self.assertIn("pexpect is required for SSH transport", str(exc.exception))
+        self.assertEqual(str(exc.exception), MISSING_PEXPECT_MESSAGE)
+
+    def test_ssh_local_forward_reports_missing_pexpect(self) -> None:
+        with mock.patch("builtins.__import__", side_effect=self.missing_pexpect_import):
+            with self.assertRaises(SystemExit) as exc:
+                with ssh_transport.ssh_local_forward(
+                    ssh_transport.SshConnection("root@192.168.1.118", "pw", ""),
+                    local_port=10445,
+                    remote_host="127.0.0.1",
+                    remote_port=445,
+                    ready_timeout=5,
+                ):
+                    pass
+        self.assertEqual(str(exc.exception), MISSING_PEXPECT_MESSAGE)
 
     def test_ssh_local_forward_waits_for_port_and_closes_child(self) -> None:
         try:

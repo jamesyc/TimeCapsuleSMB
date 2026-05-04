@@ -256,7 +256,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         command_context.set_stage("dependency_check")
         missing_module = missing_required_python_module(REQUIRED_PYTHON_MODULES)
         if missing_module is not None:
-            message = missing_dependency_message(missing_module)
+            module_name, error = missing_module
+            message = missing_dependency_message(module_name, error)
             print(message)
             command_context.set_error(message)
             command_context.fail()

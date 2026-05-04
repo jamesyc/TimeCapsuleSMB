@@ -517,10 +517,9 @@ def _open_zeroconf() -> Any:
     try:
         from zeroconf import IPVersion, Zeroconf
     except Exception as e:
-        raise RuntimeError(
-            "Failed to import zeroconf. Run './tcapsule bootstrap' first, or use 'make install'. "
-            f"{type(e).__name__}: {e}"
-        ) from e
+        from timecapsulesmb.cli.context import missing_dependency_message
+
+        raise RuntimeError(missing_dependency_message("zeroconf", e)) from e
 
     # Our Time Capsule targets advertise over IPv4, and zeroconf 0.147.x can
     # miss _smb._tcp browse results on macOS when run in dual-stack mode.
