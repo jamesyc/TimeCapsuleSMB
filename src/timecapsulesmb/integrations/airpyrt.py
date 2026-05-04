@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterable
 from typing import Optional, Tuple
 
 
+AIRPYRT_NOT_FOUND_ERROR = "AirPyrt (acp) not found."
 AIRPYRT_SSH_OPTIONS = [
     "-o", "HostKeyAlgorithms=+ssh-rsa",
     "-o", "KexAlgorithms=+diffie-hellman-group14-sha1",
@@ -91,12 +92,7 @@ def ensure_airpyrt_available(python_candidates: Optional[Iterable[str]] = None) 
     acp_exec = find_acp_executable()
     py = find_airpyrt_python(python_candidates)
     if not acp_exec and not py:
-        raise RuntimeError(
-            "AirPyrt (acp) not found. Install per https://github.com/samuelthomas2774/airport/wiki/AirPyrt#installation\n"
-            "Example: git clone https://github.com/x56/airpyrt-tools.git && cd airpyrt-tools && python2 setup.py install --user\n"
-            "Then ensure 'acp' is on PATH or set AIRPYRT_PY to that interpreter.\n"
-            "For this repo, the supported path is: ./tcapsule bootstrap"
-        )
+        raise RuntimeError(AIRPYRT_NOT_FOUND_ERROR)
     return acp_exec, py
 
 

@@ -13,6 +13,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.integrations.airpyrt import (
+    AIRPYRT_NOT_FOUND_ERROR,
     acp_run_check,
     build_airpyrt_ssh_command,
     candidate_interpreters,
@@ -31,8 +32,10 @@ class AirPyrtTests(unittest.TestCase):
     def test_ensure_airpyrt_available_raises_when_missing(self) -> None:
         with mock.patch("timecapsulesmb.integrations.airpyrt.find_acp_executable", return_value=None):
             with mock.patch("timecapsulesmb.integrations.airpyrt.find_airpyrt_python", return_value=None):
-                with self.assertRaises(RuntimeError):
+                with self.assertRaises(RuntimeError) as exc:
                     ensure_airpyrt_available()
+        message = str(exc.exception)
+        self.assertEqual(message, AIRPYRT_NOT_FOUND_ERROR)
 
     def test_acp_run_check_raises_on_embedded_error_code(self) -> None:
         proc = mock.Mock(returncode=0, stdout="error code: -0x1234")

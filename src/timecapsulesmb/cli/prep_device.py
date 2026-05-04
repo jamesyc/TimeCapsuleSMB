@@ -5,11 +5,28 @@ import time
 from typing import Iterable, Optional
 
 from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.cli.util import color_red
 from timecapsulesmb.core.config import ENV_PATH, extract_host, parse_env_values
 from timecapsulesmb.identity import ensure_install_id
-from timecapsulesmb.integrations.airpyrt import disable_ssh, enable_ssh
+from timecapsulesmb.integrations.airpyrt import AIRPYRT_NOT_FOUND_ERROR, disable_ssh, enable_ssh
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.local import tcp_open
+
+
+AIRPYRT_CLI_INSTALL_GUIDANCE = (
+    color_red(AIRPYRT_NOT_FOUND_ERROR),
+    "In order to run prep-device to enable SSH on the device, AirPyrt must be installed.",
+    color_red("To automatically install AirPyrt, run:"),
+    color_red("  ./tcapsule bootstrap"),
+    "Or you can manually enable SSH on your device with any other method.",
+    "To manually install AirPyrt, see https://github.com/samuelthomas2774/airport/wiki/AirPyrt#installation and make sure 'acp' is on PATH or set AIRPYRT_PY to that interpreter.",
+)
+
+
+def render_airpyrt_error_for_cli(error_text: str) -> str:
+    if error_text.strip() == AIRPYRT_NOT_FOUND_ERROR:
+        return "\n".join(AIRPYRT_CLI_INSTALL_GUIDANCE)
+    return "\n".join(error_text.splitlines())
 
 
 def wait_for_ssh(
@@ -82,8 +99,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.set_stage("enable_ssh")
                 enable_ssh(airpyrt_host, password, reboot_device=True, log=print)
             except Exception as e:
-                message = f"Failed to enable SSH via AirPyrt: {e}"
-                print(message)
+                error_text = str(e)
+                message = f"Failed to enable SSH via AirPyrt: {error_text}"
+                print(color_red("Failed to enable SSH via AirPyrt:"))
+                print(render_airpyrt_error_for_cli(error_text))
                 command_context.fail_with_error(message)
                 return 1
 
