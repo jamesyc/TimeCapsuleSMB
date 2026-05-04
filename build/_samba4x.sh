@@ -512,7 +512,7 @@ export PKG_CONFIG_PATH="$SAMBA4X_DEPS/lib/pkgconfig"
 export PKG_CONFIG_LIBDIR="$SAMBA4X_DEPS/lib/pkgconfig"
 export PKG_CONFIG_SYSROOT_DIR=
 
-CROSS_EXECUTE="$(cd "$(dirname "$0")" && pwd)/samba4x-cross-exec.sh"
+CROSS_EXECUTE="$(cd "$(dirname "$0")" && pwd)/samba4-cross-exec.sh"
 SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_acl_xattr'
 
 {
