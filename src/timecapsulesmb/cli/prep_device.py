@@ -15,10 +15,10 @@ from timecapsulesmb.transport.local import tcp_open
 
 AIRPYRT_CLI_INSTALL_GUIDANCE = (
     color_red(AIRPYRT_NOT_FOUND_ERROR),
-    "In order to run prep-device to enable SSH on the device, AirPyrt must be installed.",
+    "In order to run prep-device to enable/disable SSH on the device, AirPyrt must be installed.",
     color_red("To automatically install AirPyrt, run:"),
     color_red("  ./tcapsule bootstrap"),
-    "Or you can manually enable SSH on your device with any other method.",
+    "Or you can manually enable/disable SSH on your device with any other method.",
     "To manually install AirPyrt, see https://github.com/samuelthomas2774/airport/wiki/AirPyrt#installation and make sure 'acp' is on PATH or set AIRPYRT_PY to that interpreter.",
 )
 
@@ -27,6 +27,11 @@ def render_airpyrt_error_for_cli(error_text: str) -> str:
     if error_text.strip() == AIRPYRT_NOT_FOUND_ERROR:
         return "\n".join(AIRPYRT_CLI_INSTALL_GUIDANCE)
     return "\n".join(error_text.splitlines())
+
+
+def print_airpyrt_failure_for_cli(prefix: str, error_text: str) -> None:
+    print(color_red(f"{prefix}:"))
+    print(render_airpyrt_error_for_cli(error_text))
 
 
 def wait_for_ssh(
@@ -101,8 +106,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             except Exception as e:
                 error_text = str(e)
                 message = f"Failed to enable SSH via AirPyrt: {error_text}"
-                print(color_red("Failed to enable SSH via AirPyrt:"))
-                print(render_airpyrt_error_for_cli(error_text))
+                print_airpyrt_failure_for_cli("Failed to enable SSH via AirPyrt", error_text)
                 command_context.fail_with_error(message)
                 return 1
 
@@ -136,8 +140,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                     command_context.set_stage("disable_ssh")
                     disable_ssh(airpyrt_host, password, reboot_device=True, log=print)
                 except Exception as e:
-                    message = f"Failed to disable SSH via AirPyrt: {e}"
-                    print(message)
+                    error_text = str(e)
+                    message = f"Failed to disable SSH via AirPyrt: {error_text}"
+                    print_airpyrt_failure_for_cli("Failed to disable SSH via AirPyrt", error_text)
                     command_context.fail_with_error(message)
                     return 1
 
