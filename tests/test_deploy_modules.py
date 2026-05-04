@@ -2621,6 +2621,10 @@ int main(void) {{
                 "/Volumes/dk2/samba4/smb.conf.template",
             ],
         )
+        binary_upload_timeouts = [call.kwargs.get("timeout") for call in scp_mock.call_args_list[:4]]
+        self.assertEqual(binary_upload_timeouts, [180, 180, 180, 180])
+        text_upload_timeouts = [call.kwargs.get("timeout") for call in scp_mock.call_args_list[4:]]
+        self.assertEqual(text_upload_timeouts, [None, None, None, None, None, None])
 
     def test_verify_managed_runtime_passes_when_runtime_probe_succeeds(self) -> None:
         result = ManagedRuntimeProbeResult(

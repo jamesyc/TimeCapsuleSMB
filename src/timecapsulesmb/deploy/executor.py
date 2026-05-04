@@ -20,6 +20,7 @@ from timecapsulesmb.transport.ssh import SshConnection, run_scp, run_ssh
 
 DETACHED_REBOOT_COMMAND = "/bin/sh -c 'exec </dev/null >/dev/null 2>&1; (/bin/sleep 1; /sbin/reboot) & exit 0'"
 REBOOT_REQUEST_TIMEOUT_SECONDS = 30
+PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS = 180
 
 
 def remote_prepare_dirs(connection: SshConnection, payload_dir: str) -> None:
@@ -77,10 +78,10 @@ def upload_deployment_payload(
     rendered_watchdog: Path,
     rendered_smbconf: Path,
 ) -> None:
-    run_scp(connection, plan.smbd_path, plan.payload_targets["smbd"])
-    run_scp(connection, plan.mdns_path, plan.payload_targets["mdns-advertiser"])
-    run_scp(connection, plan.mdns_path, plan.flash_targets["mdns-advertiser"])
-    run_scp(connection, plan.nbns_path, plan.payload_targets["nbns-advertiser"])
+    run_scp(connection, plan.smbd_path, plan.payload_targets["smbd"], timeout=PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS)
+    run_scp(connection, plan.mdns_path, plan.payload_targets["mdns-advertiser"], timeout=PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS)
+    run_scp(connection, plan.mdns_path, plan.flash_targets["mdns-advertiser"], timeout=PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS)
+    run_scp(connection, plan.nbns_path, plan.payload_targets["nbns-advertiser"], timeout=PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS)
     run_scp(connection, rc_local, plan.flash_targets["rc.local"])
     run_scp(connection, common_sh, plan.flash_targets["common.sh"])
     run_scp(connection, rendered_start, plan.flash_targets["start-samba.sh"])
