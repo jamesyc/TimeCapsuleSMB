@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from timecapsulesmb.core.config import AppConfig, ENV_PATH, parse_env_values, require_valid_config
+from timecapsulesmb.core.config import DEFAULTS, AppConfig, ENV_PATH, parse_env_values, require_valid_config
 from timecapsulesmb.device.compat import DeviceCompatibility, require_compatibility
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
@@ -57,7 +57,7 @@ def resolve_env_connection(
     for key in required_keys:
         config.require(key)
     host, password = resolve_ssh_credentials(values, allow_empty_password=allow_empty_password)
-    return SshConnection(host=host, password=password, ssh_opts=config.get("TC_SSH_OPTS"))
+    return SshConnection(host=host, password=password, ssh_opts=config.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"]))
 
 
 def inspect_managed_connection(

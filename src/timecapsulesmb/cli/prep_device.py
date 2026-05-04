@@ -90,9 +90,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(message)
             command_context.fail_with_error(message)
             return 1
-        airpyrt_host = extract_host(host_target)
+        connection = command_context.resolve_env_connection()
+        airpyrt_host = extract_host(connection.host)
+        password = connection.password
 
-        print(f"Using configured target from {ENV_PATH}: {host_target}")
+        print(f"Using configured target from {ENV_PATH}: {connection.host}")
         print(f"Probing SSH on {airpyrt_host}:22 ...")
         command_context.set_stage("probe_ssh")
         ssh_open = tcp_open(airpyrt_host, 22)
@@ -138,7 +140,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.update_fields(prep_device_action="disable_ssh")
                 try:
                     command_context.set_stage("disable_ssh")
-                    disable_ssh(airpyrt_host, password, reboot_device=True, log=print)
+                    disable_ssh(connection, reboot_device=True, log=print)
                 except Exception as e:
                     error_text = str(e)
                     message = f"Failed to disable SSH via AirPyrt: {error_text}"

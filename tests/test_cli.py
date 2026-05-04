@@ -5402,7 +5402,7 @@ class CliTests(unittest.TestCase):
 
     def test_prep_device_disable_flow_warns_when_ssh_reopens(self) -> None:
         output = io.StringIO()
-        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw", "TC_SSH_OPTS": "-o ProxyJump=bastion"}
         with mock.patch("timecapsulesmb.cli.prep_device.parse_env_values", return_value=values):
             with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=True):
                 with mock.patch("builtins.input", return_value="y"):
@@ -5412,7 +5412,11 @@ class CliTests(unittest.TestCase):
                                 with redirect_stdout(output):
                                     rc = prep_device.main([])
         self.assertEqual(rc, 0)
-        disable_ssh_mock.assert_called_once()
+        disable_ssh_mock.assert_called_once_with(
+            SshConnection("root@10.0.0.2", "pw", "-o ProxyJump=bastion"),
+            reboot_device=True,
+            log=print,
+        )
         self.assertIn("Warning: SSH reopened after reboot", output.getvalue())
         finished = self.telemetry_payload("prep_device_finished")
         self.assertEqual(finished["result"], "success")
