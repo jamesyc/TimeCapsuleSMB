@@ -55,7 +55,7 @@ diff --git a/lib/tevent/tevent_req.c b/lib/tevent/tevent_req.c
 index 544f853..daf5d12 100644
 --- a/lib/tevent/tevent_req.c
 +++ b/lib/tevent/tevent_req.c
-@@ -95,9 +95,19 @@ struct tevent_req *__tevent_req_create(TALLOC_CTX *mem_ctx,
+@@ -95,9 +95,22 @@ struct tevent_req *__tevent_req_create(TALLOC_CTX *mem_ctx,
  		return NULL;
  	}
  
@@ -69,13 +69,16 @@ index 544f853..daf5d12 100644
 +	 * after configure. Avoid tevent's pooled request allocation in that mode:
 +	 * notifyd's first long-lived request aborts in the pool path on these old
 +	 * NetBSD targets, while ordinary talloc children are sufficient here.
++	 * Samba 4.24 initializes internal.trigger below with tevent_create_immediate()
++	 * and stores the private state in req->data, so this fallback only changes
++	 * the parent request allocation strategy.
 +	 */
 +	req = talloc_zero(mem_ctx, struct tevent_req);
 +#endif
  	if (req == NULL) {
  		return NULL;
  	}
-@@ -114,10 +124,13 @@ struct tevent_req *__tevent_req_create(TALLOC_CTX *mem_ctx,
+@@ -114,10 +127,13 @@ struct tevent_req *__tevent_req_create(TALLOC_CTX *mem_ctx,
  	data = talloc_zero_size(req, data_size);
  
  	/*
