@@ -5,8 +5,7 @@ Apple AirPort Time Capsules are still perfectly usable pieces of hardware, but t
 **NOTE THAT TIME MACHINE ON MACOS 26.4.x (AND 15.7.5) IS CURRENTLY BROKEN**, see https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups  
 Macs running macOS 26.4.x can still use the device as a standard Samba network share in Finder.
 
-This project is currently confirmed to work for Gen 5 (NetBSD 6 based) Time Capsules, and Gen 1-4 (NetBSD 4) support now exists as well with some extra caveats described below. Your Time Capsule should fully work if it looks like this:  
-<img width="256" height="192" alt="image" src="https://github.com/user-attachments/assets/5d0b044f-2137-4bb7-8d65-3d1bb251754c" />
+This project is fully working for Gen 5 (NetBSD 6 based) Time Capsules, and Gen 1-4 (NetBSD 4) support now exists as well with some extra caveats described below. 
 
 ## Expectations
 
