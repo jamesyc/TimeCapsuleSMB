@@ -3,10 +3,10 @@ from __future__ import annotations
 NETBSD4_REBOOT_GUIDANCE = "NetBSD 4 devices cannot auto-run Samba after a reboot."
 NETBSD4_REBOOT_FOLLOWUP = "Run `activate` after a reboot if the device did not auto-start Samba."
 # Update this version info for each release, including beta releases
-CLI_VERSION = "2.0.6"
-RELEASE_TAG = "v2.0.6"
-CLI_VERSION_CODE = 20006
-SAMBA_VERSION = "4.8.12"
+CLI_VERSION = "2.1.0-beta2"
+RELEASE_TAG = "v2.1.0-beta2"
+CLI_VERSION_CODE = 20102
+SAMBA_VERSION = "4.24.1"
 
 ANSI_RED = "\033[31m"
 ANSI_GREEN = "\033[32m"
