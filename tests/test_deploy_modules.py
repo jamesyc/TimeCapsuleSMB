@@ -2251,6 +2251,61 @@ int main(void) {{
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(run.stdout.splitlines(), ["1", "1", "1", "1", "0", "0"])
 
+    def test_mdns_advertiser_retries_interrupted_sendto(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <errno.h>
+#include <netinet/in.h>
+#include <stdio.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+
+ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
+                    const struct sockaddr *dest, socklen_t dest_len);
+
+#define sendto fake_sendto
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+#undef sendto
+
+static int sendto_call_count = 0;
+
+ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
+                    const struct sockaddr *dest, socklen_t dest_len) {{
+    (void)sockfd;
+    (void)buf;
+    (void)flags;
+    (void)dest;
+    (void)dest_len;
+
+    sendto_call_count++;
+    if (sendto_call_count == 1) {{
+        errno = EINTR;
+        return -1;
+    }}
+    return (ssize_t)len;
+}}
+
+int main(void) {{
+    struct sockaddr_in dest;
+    unsigned char packet[4] = {{1, 2, 3, 4}};
+    ssize_t sent;
+
+    memset(&dest, 0, sizeof(dest));
+    sent = sendto_retry(1, packet, sizeof(packet), 0, (const struct sockaddr *)&dest, sizeof(dest));
+    if (sent != (ssize_t)sizeof(packet)) {{
+        return 1;
+    }}
+    if (sendto_call_count != 2) {{
+        return 2;
+    }}
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_sendto_eintr")
+        self.assertEqual(run.returncode, 0, run.stderr)
+
     def test_mdns_advertiser_splits_snapshot_announcements_and_keeps_managed_device_info(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
         source = '''
@@ -2445,6 +2500,61 @@ int main(void) {{
         lines = run.stdout.splitlines()
         self.assertGreaterEqual(int(lines[0]), 3)
         self.assertEqual(lines[1:], ["1", "2"])
+
+    def test_nbns_advertiser_retries_interrupted_sendto(self) -> None:
+        nbns_source = (REPO_ROOT / "build" / "nbns-advertiser.c").as_posix()
+        source = '''
+#include <errno.h>
+#include <netinet/in.h>
+#include <stdio.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+
+ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
+                    const struct sockaddr *dest, socklen_t dest_len);
+
+#define sendto fake_sendto
+#define main nbns_advertiser_main
+#include "{nbns_source}"
+#undef main
+#undef sendto
+
+static int sendto_call_count = 0;
+
+ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
+                    const struct sockaddr *dest, socklen_t dest_len) {{
+    (void)sockfd;
+    (void)buf;
+    (void)flags;
+    (void)dest;
+    (void)dest_len;
+
+    sendto_call_count++;
+    if (sendto_call_count == 1) {{
+        errno = EINTR;
+        return -1;
+    }}
+    return (ssize_t)len;
+}}
+
+int main(void) {{
+    struct sockaddr_in dest;
+    unsigned char packet[4] = {{1, 2, 3, 4}};
+    ssize_t sent;
+
+    memset(&dest, 0, sizeof(dest));
+    sent = sendto_retry(1, packet, sizeof(packet), 0, (const struct sockaddr *)&dest, sizeof(dest));
+    if (sent != (ssize_t)sizeof(packet)) {{
+        return 1;
+    }}
+    if (sendto_call_count != 2) {{
+        return 2;
+    }}
+    return 0;
+}}
+'''.format(nbns_source=nbns_source)
+        run = self._compile_and_run_c_helper(source, "nbns_sendto_eintr")
+        self.assertEqual(run.returncode, 0, run.stderr)
 
     def test_nbns_advertiser_rejects_overlong_name_before_truncation(self) -> None:
         if shutil.which("cc") is None:

@@ -63,6 +63,17 @@
 
 static volatile sig_atomic_t g_stop = 0;
 
+static ssize_t sendto_retry(int sockfd, const void *buf, size_t len, int flags,
+                            const struct sockaddr *dest, socklen_t dest_len) {
+    ssize_t sent;
+
+    do {
+        sent = sendto(sockfd, buf, len, flags, dest, dest_len);
+    } while (sent < 0 && errno == EINTR);
+
+    return sent;
+}
+
 enum exit_code {
     EXIT_OK = 0,
     EXIT_SOCKET_ACQUIRE_FAILED = 1,
@@ -1368,7 +1379,7 @@ static int send_query_question(int sockfd, const struct sockaddr_in *dest, const
         append_u16(packet, &off, sizeof(packet), DNS_CLASS_IN) != 0) {
         return -1;
     }
-    return sendto(sockfd, packet, off, 0, (const struct sockaddr *)dest, sizeof(*dest)) >= 0 ? 0 : -1;
+    return sendto_retry(sockfd, packet, off, 0, (const struct sockaddr *)dest, sizeof(*dest)) >= 0 ? 0 : -1;
 }
 
 static void parse_txt_rdata(struct service_record *record, const uint8_t *rdata, size_t rdlength) {
@@ -1948,7 +1959,7 @@ static int send_dns_packet(const char *stage, int sockfd, const uint8_t *buf, si
     int saved_errno;
 
     errno = 0;
-    sent = sendto(sockfd, buf, packet_len, 0, (const struct sockaddr *)dest, sizeof(*dest));
+    sent = sendto_retry(sockfd, buf, packet_len, 0, (const struct sockaddr *)dest, sizeof(*dest));
     saved_errno = errno;
     if (sent < 0) {
         errno = saved_errno;
