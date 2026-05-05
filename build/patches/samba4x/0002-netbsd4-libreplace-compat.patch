@@ -2,7 +2,7 @@ diff --git a/lib/replace/replace.c b/lib/replace/replace.c
 index dd07e6c..daeec37 100644
 --- a/lib/replace/replace.c
 +++ b/lib/replace/replace.c
-@@ -45,6 +45,226 @@
+@@ -45,6 +45,229 @@
  #define mkdir(d,m) _mkdir(d)
  #endif
  
@@ -162,6 +162,9 @@ index dd07e6c..daeec37 100644
 +	if (fd != -1) {
 +		while (done < n) {
 +			ssize_t ret = read(fd, p + done, n - done);
++			if (ret == -1 && errno == EINTR) {
++				continue;
++			}
 +			if (ret <= 0) {
 +				break;
 +			}
