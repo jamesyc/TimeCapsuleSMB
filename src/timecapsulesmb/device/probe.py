@@ -547,10 +547,7 @@ exit 1
 def probe_remote_interface_conn(connection: SshConnection, iface: str) -> RemoteInterfaceProbeResult:
     script = f"/sbin/ifconfig {shlex.quote(iface)} >/dev/null 2>&1"
     proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False)
-    return_code = getattr(proc, "returncode", 0)
-    if not isinstance(return_code, int):
-        return RemoteInterfaceProbeResult(iface=iface, exists=True, detail=f"ifconfig {iface} returned non-integer status")
-    if return_code == 0:
+    if proc.returncode == 0:
         return RemoteInterfaceProbeResult(iface=iface, exists=True, detail=f"interface {iface} exists")
     return RemoteInterfaceProbeResult(iface=iface, exists=False, detail=f"interface {iface} was not found on the device")
 
@@ -775,14 +772,7 @@ exit "$status"
         timeout=timeout_seconds,
     )
     lines = _probe_lines(proc.stdout)
-    return_code = getattr(proc, "returncode", 0)
-    if not isinstance(return_code, int):
-        return ManagedMdnsTakeoverProbeResult(
-            ready=True,
-            detail="managed mDNS takeover probe returned non-integer status",
-            lines=lines,
-        )
-    if return_code == 0:
+    if proc.returncode == 0:
         return ManagedMdnsTakeoverProbeResult(
             ready=True,
             detail=_probe_detail(lines, "managed mDNS takeover active"),
@@ -894,9 +884,8 @@ def read_remote_log_tail_conn(connection: SshConnection, path: str) -> str:
         parts.append(stdout)
     if stderr:
         parts.append(f"stderr: {stderr}")
-    returncode = getattr(proc, "returncode", 0)
-    if returncode != 0:
-        parts.append(f"(exit {returncode})")
+    if proc.returncode != 0:
+        parts.append(f"(exit {proc.returncode})")
     text = "\n".join(parts) if parts else "(empty)"
     return _limit_remote_log_tail(text)
 

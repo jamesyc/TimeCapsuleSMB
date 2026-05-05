@@ -9,8 +9,8 @@ It is intentionally denser than [README.md](README.md). The README is the user-f
 The current system works end to end on the target Apple AirPort Time Capsule.
 
 What is working now:
-- static Samba 4.8.x built from NetBSD 7 sources for NetBSD 6-era Time Capsules
-- static Samba 4.8.x built from NetBSD 4 sources for older NetBSD 4-era Time Capsules
+- static Samba 4.8.x built from NetBSD 7 sources for NetBSD 6-era AirPort storage devices
+- static Samba 4.8.x built from NetBSD 4 sources for older NetBSD 4-era AirPort storage devices
 - static tiny SMB / Time Machine mDNS advertiser
 - optional static NBNS responder for NetBIOS name discovery
 - boot-time runtime staging via `/mnt/Flash/rc.local`
@@ -48,21 +48,26 @@ Current user experience:
 
 Current auth model:
 - SMB login user: `admin`
-- the login is mapped to Unix `root`
+- `TC_PASSWORD` is reused as the SMB password
+- generated Samba auth stores a `root` SMB account hash
+- the username map currently maps incoming SMB usernames to Unix `root`
 - filesystem access still runs as `root`
 - this avoids the privilege-switch failures seen with non-root identities on this firmware
 
 ## Device Profile
 
-The important target device facts are:
+The important target families are:
 
-- OS: `NetBSD 6.0`
-- arch: `evbarm`
-- CPU family: `ARM Cortex-A9`
-- memory: `256 MiB`
+- NetBSD 6.x `evbarm`: 5th generation Time Capsules and same-era AirPort storage devices
+- NetBSD 4.x `evbarm`: older little-endian AirPort storage devices
+- NetBSD 4.x `armeb`: older big-endian AirPort storage devices
+- AirPort Extreme devices with attached USB storage are supported by the same deploy/runtime model, with device-specific defaults chosen during configuration
+
+The details differ by generation, but the important shared constraints are:
 - root fs is tiny
 - flash is tiny
 - `/mnt/Memory` is only about `16 MiB`
+- the runtime has to fit in RAM while lock/cache databases can grow during client activity
 
 Relevant mount points:
 - `/` on `/dev/md0a`
@@ -74,7 +79,7 @@ Relevant mount points:
 Current live storage numbers observed during development:
 - `/`: about `15.5 MiB` total, about `4.7 MiB` free
 - `/mnt/Flash`: about `1 MiB` total, about `933 KiB` free
-- `/mnt/Memory`: `16 MiB` total, often under `2 MiB` free once Samba is staged
+- `/mnt/Memory`: `16 MiB` total, with limited free headroom once Samba is staged
 - `/Volumes/dk2`: effectively the large 2 TB data disk
 
 These constraints drive almost every design decision in this repo.
@@ -227,11 +232,6 @@ Current maintainer build lanes:
   - [build/mdnsoldbe.sh](build/mdnsoldbe.sh)
   - [build/nbnsoldle.sh](build/nbnsoldle.sh)
   - [build/nbnsoldbe.sh](build/nbnsoldbe.sh)
-- NetBSD 4 Samba 3 exploratory lane:
-  - [build/downloadsamba3oldle.sh](build/downloadsamba3oldle.sh)
-  - [build/downloadsamba3oldbe.sh](build/downloadsamba3oldbe.sh)
-  - [build/samba3oldle.sh](build/samba3oldle.sh)
-  - [build/samba3oldbe.sh](build/samba3oldbe.sh)
 
 The direct scripts target the NetBSD 7 lane by default. The `*oldle.sh` and `*oldbe.sh` wrappers select the NetBSD 4 little-endian and big-endian lanes.
 
@@ -364,8 +364,8 @@ Samba lock state now lives on a dedicated second ramdisk:
 - `lock directory = /mnt/Locks`
 
 Current mount behavior:
-- NetBSD 6 mounts `tmpfs` at `/mnt/Locks`
-- NetBSD 4 mounts `mfs` at `/mnt/Locks`
+- NetBSD 6 mounts a `6 MiB` `tmpfs` at `/mnt/Locks` with `mount_tmpfs -s 6m`
+- NetBSD 4 mounts an `mfs` ramdisk at `/mnt/Locks` with `mount_mfs -s 12288`
 - if the NetBSD 6 tmpfs mount fails, startup falls back to a plain `/mnt/Locks` directory on the root filesystem
 - if the NetBSD 4 mfs mount fails, startup aborts instead of falling back to the tiny root filesystem
 
@@ -435,7 +435,7 @@ Current rendered Samba config characteristics:
 - `min protocol = SMB2`
 - `max protocol = SMB3`
 - `guest ok = no`
-- `valid users = admin root`
+- `valid users = <TC_SAMBA_USER> root`
 - `force user = root`
 - `force group = wheel`
 - `reset on zero vc = yes`
@@ -454,15 +454,16 @@ Current rendered Samba config characteristics:
 - `fruit:metadata = stream`
 - `fruit:time machine = yes`
 - `fruit:posix_rename = yes`
-- `streams_xattr:store_stream_type = no`
 - `acl_xattr:ignore system acls = yes`
 - `xattr_tdb:file = /Volumes/dk2/.samba4/private/xattr.tdb` on the tested box
 
 Current auth mapping:
-- `admin` maps to Unix `root`
-- the `smbpasswd` backend contains a `root` entry
+- the configured `TC_SAMBA_USER` is the normal user-facing SMB login name
+- the `smbpasswd` backend contains a `root` entry with the configured password hash
 - `username.map` contains:
-  - `root = admin`
+  - `!root = root`
+  - `root = *`
+- incoming SMB usernames are mapped to Unix `root`; the CLI and docs still guide users toward the configured `TC_SAMBA_USER`
 
 This is intentionally pragmatic:
 - login is authenticated
@@ -551,7 +552,7 @@ The intended user flow is:
    - [`./tcapsule bootstrap`](./tcapsule)
 2. generate local config
    - [src/timecapsulesmb/cli/configure.py](src/timecapsulesmb/cli/configure.py)
-3. enable or disable SSH as needed
+3. enable SSH with AirPyrt if SSH is not reachable, or optionally disable SSH over SSH when it is already reachable
    - [src/timecapsulesmb/cli/prep_device.py](src/timecapsulesmb/cli/prep_device.py)
 4. deploy and reboot
    - [src/timecapsulesmb/cli/deploy.py](src/timecapsulesmb/cli/deploy.py)
@@ -615,7 +616,7 @@ Current validation behavior:
 - `TC_PAYLOAD_DIR_NAME`: must be one safe path component; slashes, `.`/`..`, control characters, traversal, and shell-hostile characters are rejected.
 - `TC_MDNS_INSTANCE_NAME`: may contain spaces, but must be valid printable mDNS instance text within DNS name limits.
 - `TC_MDNS_HOST_LABEL`: must be a single DNS-safe label using letters, numbers, and hyphens; spaces are rejected.
-- `TC_MDNS_DEVICE_MODEL`: must be `TimeCapsule` or one of the supported Time Capsule model identifiers.
+- `TC_MDNS_DEVICE_MODEL`: must be `TimeCapsule`, `AirPort`, or one of the supported exact Time Capsule or AirPort Extreme model identifiers.
 - `TC_AIRPORT_SYAP`: must be one of the known Apple syAP codes.
 - when `TC_AIRPORT_SYAP` is one of the known exact generation values, `TC_MDNS_DEVICE_MODEL` must match it rather than remaining a mismatched generic or wrong generation.
 - `TC_CONFIGURE_ID`: is a local configuration revision ID and is not user-validated.
@@ -643,13 +644,13 @@ Current important package areas:
 - [src/timecapsulesmb/core/](src/timecapsulesmb/core): shared config parsing, defaults, and common models
 - [src/timecapsulesmb/transport/](src/timecapsulesmb/transport): local command execution plus SSH and SCP helpers
 - [src/timecapsulesmb/discovery/](src/timecapsulesmb/discovery): Bonjour-based device discovery
-- [src/timecapsulesmb/integrations/](src/timecapsulesmb/integrations): AirPyrt-backed SSH enable and disable flows
+- [src/timecapsulesmb/integrations/](src/timecapsulesmb/integrations): AirPyrt SSH enable support plus on-device SSH disable helpers
 - [src/timecapsulesmb/checks/](src/timecapsulesmb/checks): reusable local, network, Bonjour, and SMB verification checks
 - [src/timecapsulesmb/device/](src/timecapsulesmb/device): remote probing for device-specific layout such as the active `dk2` or `dk3` volume root, plus generation / compatibility classification
 - [src/timecapsulesmb/deploy/](src/timecapsulesmb/deploy): auth generation, template rendering, deployment planning, execution, dry-run formatting, artifact resolution, and post-deploy verification
 - [src/timecapsulesmb/assets/](src/timecapsulesmb/assets): packaged boot templates and artifact metadata
 - [src/timecapsulesmb/identity.py](src/timecapsulesmb/identity.py): local install identity loaded from `.bootstrap`
-- [src/timecapsulesmb/telemetry.py](src/timecapsulesmb/telemetry.py): best-effort client telemetry for `configure`, `deploy`, `activate`, and `doctor`
+- [src/timecapsulesmb/telemetry/](src/timecapsulesmb/telemetry): best-effort client telemetry for user-facing commands
 - [build/](build): maintainer build tooling, including Samba cross-exec record/replay helpers
 
 Developer note:
@@ -848,19 +849,31 @@ Hidden operator mode:
 
 Client telemetry is now emitted by:
 - `tcapsule configure`
+- `tcapsule prep-device`
 - `tcapsule deploy`
 - `tcapsule activate`
 - `tcapsule doctor`
+- `tcapsule fsck`
+- `tcapsule repair-xattrs`
+- `tcapsule uninstall`
 
 Current event model:
 - `configure_started`
 - `configure_finished`
+- `prep_device_started`
+- `prep_device_finished`
 - `deploy_started`
 - `deploy_finished`
 - `activate_started`
 - `activate_finished`
 - `doctor_started`
 - `doctor_finished`
+- `fsck_started`
+- `fsck_finished`
+- `repair_xattrs_started`
+- `repair_xattrs_finished`
+- `uninstall_started`
+- `uninstall_finished`
 
 Current identity model:
 - `.bootstrap` stores a stable local `INSTALL_ID`
@@ -903,7 +916,6 @@ Current important outputs:
 - [bin/samba4/smbd](bin/samba4/smbd)
 - [bin/samba4-netbsd4le/smbd](bin/samba4-netbsd4le/smbd)
 - [bin/samba4-netbsd4be/smbd](bin/samba4-netbsd4be/smbd)
-- [bin/samba3-netbsd4le/smbd](bin/samba3-netbsd4le/smbd)
 - [bin/mdns/mdns-advertiser](bin/mdns/mdns-advertiser)
 - [bin/mdns-netbsd4le/mdns-advertiser](bin/mdns-netbsd4le/mdns-advertiser)
 - [bin/mdns-netbsd4be/mdns-advertiser](bin/mdns-netbsd4be/mdns-advertiser)
@@ -917,7 +929,6 @@ Current active deploy artifact sizes:
 - NetBSD 6 `nbns-advertiser`: about `184K`
 - NetBSD 4 little-endian `smbd`: about `11M`
 - NetBSD 4 big-endian `smbd`: about `11M`
-- NetBSD 4 little-endian `samba3 smbd`: about `8.0M`
 - NetBSD 4 little-endian `mdns-advertiser`: about `186K`
 - NetBSD 4 big-endian `mdns-advertiser`: about `185K`
 - NetBSD 4 little-endian `nbns-advertiser`: about `113K`
@@ -945,10 +956,6 @@ Current validated maintainer flows:
   - [build/bootstrapoldle.sh](build/bootstrapoldle.sh)
   - [build/hellooldle.sh](build/hellooldle.sh)
   - [build/hellooldbe.sh](build/hellooldbe.sh)
-  - [build/downloadsamba3oldle.sh](build/downloadsamba3oldle.sh)
-  - [build/downloadsamba3oldbe.sh](build/downloadsamba3oldbe.sh)
-  - [build/samba3oldle.sh](build/samba3oldle.sh)
-  - [build/samba3oldbe.sh](build/samba3oldbe.sh)
   - [build/downloadsamba4oldle.sh](build/downloadsamba4oldle.sh)
   - [build/downloadsamba4oldbe.sh](build/downloadsamba4oldbe.sh)
   - [build/samba4oldle.sh](build/samba4oldle.sh)
@@ -1009,9 +1016,9 @@ That is why the current authenticated design still maps to `root`.
 - This is still LAN-only software.
 - The current authenticated design still maps file access to `root`.
 - `/mnt/Memory` is tight; only about `1-2 MiB` may remain free after staging.
-- The repo still assumes Time Capsule-specific behavior such as:
+- The repo still assumes AirPort storage firmware behavior such as:
   - `bridge0`
-  - `dk2` / `dk3`
+  - `dk1` / `dk2` / `dk3`
   - `ShareRoot` / `Shared`
 - Apple firmware behavior may still change runtime mount timing or disk state in edge cases.
 

@@ -28,19 +28,15 @@ def verify_managed_runtime(
     return probe_managed_runtime_conn(connection, timeout_seconds=timeout_seconds)
 
 
-def managed_runtime_ready(result: ManagedRuntimeProbeResult | bool) -> bool:
-    if isinstance(result, bool):
-        return result
+def managed_runtime_ready(result: ManagedRuntimeProbeResult) -> bool:
     return result.ready
 
 
 def render_managed_runtime_verification(
-    result: ManagedRuntimeProbeResult | bool,
+    result: ManagedRuntimeProbeResult,
     *,
     heading: str | None = None,
 ) -> list[str]:
-    if not isinstance(result, ManagedRuntimeProbeResult):
-        return []
     lines: list[str] = []
     if heading:
         lines.append(heading)
@@ -61,9 +57,7 @@ def verify_post_uninstall(connection: SshConnection, plan: UninstallPlan) -> Ver
     return VerificationResult(ok=ok, lines=tuple(proc.stdout.strip().splitlines()))
 
 
-def render_post_uninstall_verification(result: VerificationResult | bool) -> list[str]:
-    if not isinstance(result, VerificationResult):
-        return []
+def render_post_uninstall_verification(result: VerificationResult) -> list[str]:
     lines = ["Post-uninstall verification:"]
     for line in result.lines:
         if line.startswith("ABSENT:"):

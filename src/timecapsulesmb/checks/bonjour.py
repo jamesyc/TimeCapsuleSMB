@@ -5,7 +5,7 @@ import socket
 from dataclasses import dataclass
 
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.core.config import extract_host
+from timecapsulesmb.core.config import AppConfig, extract_host
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoverySnapshot,
     BonjourDiscoveryDiagnostics,
@@ -14,7 +14,6 @@ from timecapsulesmb.discovery.bonjour import (
     DEFAULT_BROWSE_TIMEOUT_SEC,
     FINAL_PENDING_RESOLVE_TIMEOUT_MS,
     SMB_SERVICE,
-    discover_snapshot,
     discover_snapshot_detailed,
     resolve_service_instance,
 )
@@ -40,11 +39,6 @@ class BonjourServiceTarget:
     hostname: str | None
     port: int = 445
 
-    def authority(self) -> str | None:
-        if not self.hostname:
-            return None
-        return f"{self.hostname}:{self.port}"
-
     def host_label(self) -> str | None:
         if not self.hostname:
             return None
@@ -56,43 +50,21 @@ class BonjourServiceTarget:
         return host
 
 
-def _ip_literal(value: str) -> str | None:
-    candidate = value.strip()
-    if not candidate:
-        return None
-    try:
-        ipaddress.ip_address(candidate)
-    except ValueError:
-        return None
-    return candidate
-
-
-def build_bonjour_expected_identity(values: dict[str, str]) -> BonjourExpectedIdentity:
+def build_bonjour_expected_identity(config: AppConfig) -> BonjourExpectedIdentity:
+    target_ip = None
+    candidate_ip = extract_host(config.get("TC_HOST")).strip()
+    if candidate_ip:
+        try:
+            ipaddress.ip_address(candidate_ip)
+        except ValueError:
+            pass
+        else:
+            target_ip = candidate_ip
     return BonjourExpectedIdentity(
-        instance_name=values["TC_MDNS_INSTANCE_NAME"],
-        host_label=values.get("TC_MDNS_HOST_LABEL") or None,
-        target_ip=_ip_literal(extract_host(values.get("TC_HOST", ""))),
+        instance_name=config.require("TC_MDNS_INSTANCE_NAME"),
+        host_label=config.get("TC_MDNS_HOST_LABEL") or None,
+        target_ip=target_ip,
     )
-
-
-def _describe_instance(instance: BonjourServiceInstance) -> str:
-    name = instance.name or "-"
-    return f"{name!r}"
-
-
-def _candidate_summary(instances: list[BonjourServiceInstance]) -> str:
-    if not instances:
-        return "none"
-    return "; ".join(_describe_instance(instance) for instance in instances)
-
-
-def discover_smb_services(timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC) -> tuple[BonjourDiscoverySnapshot | None, CheckResult | None]:
-    try:
-        return discover_snapshot(SMB_SERVICE, timeout=timeout), None
-    except SystemExit as e:
-        return None, CheckResult("FAIL", f"Bonjour check failed: {e}")
-    except Exception as e:
-        return None, CheckResult("FAIL", f"Bonjour check failed: {e}")
 
 
 def discover_smb_services_detailed(
@@ -134,7 +106,15 @@ def check_smb_instance(selection: BonjourInstanceSelection) -> list[CheckResult]
             "FAIL",
             f"no discovered _smb._tcp instance matched configured instance {selection.expected_instance_name!r}",
         ),
-        CheckResult("INFO", f"discovered _smb._tcp candidates: {_candidate_summary(selection.candidates)}"),
+        CheckResult(
+            "INFO",
+            "discovered _smb._tcp candidates: "
+            + (
+                "; ".join(f"{(instance.name or '-')!r}" for instance in selection.candidates)
+                if selection.candidates
+                else "none"
+            ),
+        ),
     ]
 
 

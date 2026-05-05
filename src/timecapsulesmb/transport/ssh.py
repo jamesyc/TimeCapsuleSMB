@@ -120,7 +120,9 @@ def _spawn_with_password(cmd: list[str], password: str, *, timeout: int, timeout
     try:
         import pexpect
     except Exception as e:
-        raise SystemExit(f"pexpect is required for SSH transport: {e}")
+        from timecapsulesmb.cli.context import missing_dependency_message
+
+        raise SystemExit(missing_dependency_message("pexpect", e)) from e
 
     child = pexpect.spawn(cmd[0], cmd[1:], encoding="utf-8", codec_errors="replace", timeout=timeout)
     output: list[str] = []
@@ -244,7 +246,9 @@ def ssh_local_forward(
     try:
         import pexpect
     except Exception as e:
-        raise SystemExit(f"pexpect is required for SSH transport: {e}")
+        from timecapsulesmb.cli.context import missing_dependency_message
+
+        raise SystemExit(missing_dependency_message("pexpect", e)) from e
 
     cmd = [
         "ssh",

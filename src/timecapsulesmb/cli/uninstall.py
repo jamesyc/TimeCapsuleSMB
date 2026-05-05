@@ -6,8 +6,8 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import request_reboot_and_wait
-from timecapsulesmb.cli.runtime import load_env_values
-from timecapsulesmb.core.config import airport_exact_display_name, require_valid_config
+from timecapsulesmb.cli.runtime import load_env_config
+from timecapsulesmb.core.config import airport_exact_display_name_from_config
 from timecapsulesmb.deploy.dry_run import format_uninstall_plan, uninstall_plan_to_jsonable
 from timecapsulesmb.deploy.executor import remote_uninstall_payload
 from timecapsulesmb.deploy.planner import build_uninstall_plan
@@ -38,24 +38,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("Uninstalling...")
 
     ensure_install_id()
-    values = load_env_values()
-    telemetry = TelemetryClient.from_values(values)
-    with CommandContext(telemetry, "uninstall", "uninstall_started", "uninstall_finished", values=values, args=args) as command_context:
+    config = load_env_config()
+    telemetry = TelemetryClient.from_config(config)
+    with CommandContext(telemetry, "uninstall", "uninstall_started", "uninstall_finished", config=config, args=args) as command_context:
         command_context.update_fields(
             reboot_was_attempted=False,
             device_came_back_after_reboot=False,
             post_uninstall_verified=False,
         )
         command_context.set_stage("validate_config")
-        require_valid_config(values, profile="uninstall")
-        device_name = airport_exact_display_name(values)
+        command_context.require_valid_config(profile="uninstall")
+        device_name = airport_exact_display_name_from_config(config)
         command_context.set_stage("resolve_connection")
         connection = command_context.resolve_env_connection(allow_empty_password=True)
 
         command_context.set_stage("discover_volume_root")
         volume_root = discover_volume_root_conn(connection)
         command_context.update_fields(volume_root=volume_root)
-        device_paths = build_device_paths(volume_root, values["TC_PAYLOAD_DIR_NAME"])
+        device_paths = build_device_paths(volume_root, config.require("TC_PAYLOAD_DIR_NAME"))
         command_context.set_stage("build_uninstall_plan")
         plan = build_uninstall_plan(connection.host, device_paths, reboot_after_uninstall=not args.no_reboot)
         command_context.update_fields(payload_dir=plan.payload_dir)

@@ -35,10 +35,6 @@
     "smbd-netbsd4be": {
       "path": "bin/samba4-netbsd4be/smbd",
       "sha256": "87a1aae2ff6edaf7ffb1eaba2ad1ec879f8ef8ed570e3451e866471a92c334aa"
-    },
-    "smbd-samba3-netbsd4le": {
-      "path": "bin/samba3-netbsd4le/smbd",
-      "sha256": "5a2a88ebc868adfe606e1583394478f97c2ab3c36c084631a18b2e0b741c45e8"
     }
   }
 }

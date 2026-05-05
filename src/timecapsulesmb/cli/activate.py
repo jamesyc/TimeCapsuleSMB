@@ -5,8 +5,8 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import verify_managed_runtime_flow
-from timecapsulesmb.cli.runtime import load_env_values
-from timecapsulesmb.core.config import airport_exact_display_name
+from timecapsulesmb.cli.runtime import load_env_config
+from timecapsulesmb.core.config import airport_exact_display_name_from_config
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.dry_run import format_activation_plan
 from timecapsulesmb.deploy.executor import run_remote_actions
@@ -24,9 +24,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     ensure_install_id()
-    values = load_env_values()
-    telemetry = TelemetryClient.from_values(values)
-    with CommandContext(telemetry, "activate", "activate_started", "activate_finished", values=values, args=args) as command_context:
+    config = load_env_config()
+    telemetry = TelemetryClient.from_config(config)
+    with CommandContext(telemetry, "activate", "activate_started", "activate_finished", config=config, args=args) as command_context:
         target = command_context.resolve_validated_managed_target(profile="activate", include_probe=True)
         connection = target.connection
         compatibility = command_context.require_compatibility()
@@ -38,7 +38,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             raise SystemExit("activate is only supported for NetBSD4 AirPort storage devices; use deploy for persistent NetBSD6 installs.")
 
         plan = build_netbsd4_activation_plan()
-        device_name = airport_exact_display_name(values)
+        device_name = airport_exact_display_name_from_config(config)
 
         if args.dry_run:
             print(format_activation_plan(plan, device_name=device_name))

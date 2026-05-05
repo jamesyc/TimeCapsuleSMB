@@ -21,6 +21,7 @@ from timecapsulesmb.cli.context import (
     render_command_debug_lines,
 )
 from timecapsulesmb.cli.runtime import ManagedTargetState
+from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, RemoteInterfaceProbeResult
 from timecapsulesmb.discovery.bonjour import Discovered
@@ -29,13 +30,20 @@ from timecapsulesmb.telemetry.debug import render_debug_mapping
 from timecapsulesmb.transport.ssh import SshConnection
 
 
+def telemetry_client_from_values(
+    values: dict[str, str] | None = None,
+    **kwargs: object,
+) -> TelemetryClient:
+    return TelemetryClient.from_config(AppConfig.from_values(values or {}), **kwargs)
+
+
 class TelemetryTests(unittest.TestCase):
     def test_emit_builds_schema_v3_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bootstrap_path = Path(tmp) / ".bootstrap"
             bootstrap_path.write_text("INSTALL_ID=test-install\n")
             with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
-                client = TelemetryClient.from_values(
+                client = telemetry_client_from_values(
                     {
                         "TC_CONFIGURE_ID": "config-id",
                         "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
@@ -62,7 +70,7 @@ class TelemetryTests(unittest.TestCase):
             bootstrap_path = Path(tmp) / ".bootstrap"
             bootstrap_path.write_text("INSTALL_ID=test-install\nTELEMETRY=false\n")
             with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
-                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
                 with mock.patch.object(client, "_dispatch_payload_async") as dispatch_mock:
                     client.emit("doctor_started")
         dispatch_mock.assert_not_called()
@@ -72,7 +80,7 @@ class TelemetryTests(unittest.TestCase):
             bootstrap_path = Path(tmp) / ".bootstrap"
             bootstrap_path.write_text("INSTALL_ID=test-install\n")
             with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
-                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
                 success_response = mock.MagicMock()
                 success_response.__enter__.return_value = success_response
                 success_response.__exit__.return_value = None
@@ -85,7 +93,7 @@ class TelemetryTests(unittest.TestCase):
             bootstrap_path = Path(tmp) / ".bootstrap"
             bootstrap_path.write_text("INSTALL_ID=test-install\n")
             with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
-                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
                 with mock.patch.object(client, "_dispatch_payload_async") as dispatch_mock:
                     with mock.patch.object(client, "_send_payload") as send_mock:
                         command = CommandContext(client, "deploy", "deploy_started", "deploy_finished")
@@ -152,17 +160,18 @@ class TelemetryTests(unittest.TestCase):
             interface_probe=interface_probe,
             probe_state=probe_state,
         )
+        config = AppConfig.from_values({
+            "TC_HOST": connection.host,
+            "TC_PASSWORD": connection.password,
+            "TC_SSH_OPTS": connection.ssh_opts,
+        })
 
         context = CommandContext(
             telemetry,
             "doctor",
             "doctor_started",
             "doctor_finished",
-            values={
-                "TC_HOST": connection.host,
-                "TC_PASSWORD": connection.password,
-                "TC_SSH_OPTS": connection.ssh_opts,
-            },
+            config=config,
         )
         with mock.patch(
             "timecapsulesmb.cli.context.runtime.resolve_env_connection",
@@ -184,12 +193,24 @@ class TelemetryTests(unittest.TestCase):
         resolve_mock.assert_called_once()
         inspect_mock.assert_called_once_with(connection, "bridge0", include_probe=True)
 
+    def test_command_context_resolve_env_connection_requires_config(self) -> None:
+        command = CommandContext(
+            mock.Mock(),
+            "deploy",
+            "deploy_started",
+            "deploy_finished",
+            values={"TC_HOST": "root@10.0.0.2"},
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "CommandContext config is not set"):
+            command.resolve_env_connection()
+
     def test_command_context_marks_keyboard_interrupt_as_cancelled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bootstrap_path = Path(tmp) / ".bootstrap"
             bootstrap_path.write_text("INSTALL_ID=test-install\n")
             with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
-                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
                 with mock.patch.object(client, "_dispatch_payload_async"):
                     with mock.patch.object(client, "_send_payload") as send_mock:
                         with self.assertRaises(KeyboardInterrupt):
@@ -207,7 +228,7 @@ class TelemetryTests(unittest.TestCase):
             bootstrap_path = Path(tmp) / ".bootstrap"
             bootstrap_path.write_text("INSTALL_ID=test-install\n")
             with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
-                client = TelemetryClient.from_values(
+                client = telemetry_client_from_values(
                     {
                         "TC_HOST": "root@192.168.1.118",
                         "TC_SSH_OPTS": "-L 108:127.0.0.1:108",
@@ -237,7 +258,7 @@ class TelemetryTests(unittest.TestCase):
             bootstrap_path = Path(tmp) / ".bootstrap"
             bootstrap_path.write_text("INSTALL_ID=test-install\n")
             with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
-                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
                 with mock.patch.object(client, "_dispatch_payload_async"):
                     with mock.patch.object(client, "_send_payload") as send_mock:
                         command = CommandContext(client, "deploy", "deploy_started", "deploy_finished")
@@ -252,7 +273,7 @@ class TelemetryTests(unittest.TestCase):
             bootstrap_path = Path(tmp) / ".bootstrap"
             bootstrap_path.write_text("INSTALL_ID=test-install\n")
             with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
-                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
                 with mock.patch.object(client, "_dispatch_payload_async"):
                     with mock.patch.object(client, "_send_payload") as send_mock:
                         with self.assertRaises(SystemExit):
@@ -267,7 +288,7 @@ class TelemetryTests(unittest.TestCase):
             bootstrap_path = Path(tmp) / ".bootstrap"
             bootstrap_path.write_text("INSTALL_ID=test-install\n")
             with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
-                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
                 with mock.patch.object(client, "_dispatch_payload_async"):
                     with mock.patch.object(client, "_send_payload") as send_mock:
                         with self.assertRaises(RuntimeError):
@@ -284,7 +305,7 @@ class TelemetryTests(unittest.TestCase):
             bootstrap_path = Path(tmp) / ".bootstrap"
             bootstrap_path.write_text("INSTALL_ID=test-install\n")
             with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
-                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
                 with mock.patch.object(client, "_dispatch_payload_async"):
                     with mock.patch.object(client, "_send_payload") as send_mock:
                         with self.assertRaises(SystemExit):
@@ -315,7 +336,7 @@ class TelemetryTests(unittest.TestCase):
             bootstrap_path = Path(tmp) / ".bootstrap"
             bootstrap_path.write_text("INSTALL_ID=test-install\n")
             with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
-                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
                 with mock.patch.object(client, "_dispatch_payload_async"):
                     with mock.patch.object(client, "_send_payload") as send_mock:
                         with self.assertRaises(SystemExit):
@@ -341,7 +362,7 @@ class TelemetryTests(unittest.TestCase):
             bootstrap_path = Path(tmp) / ".bootstrap"
             bootstrap_path.write_text("INSTALL_ID=test-install\n")
             with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
-                client = TelemetryClient.from_values({}, bootstrap_path=bootstrap_path)
+                client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
                 with mock.patch.object(client, "_dispatch_payload_async"):
                     with mock.patch.object(client, "_send_payload") as send_mock:
                         with self.assertRaises(SystemExit):
@@ -484,6 +505,23 @@ class TelemetryTests(unittest.TestCase):
 
         self.assertIn("host=root@10.0.0.1", lines)
         self.assertIn("ssh_opts=-o ConnectTimeout=5", lines)
+
+    def test_render_command_debug_lines_includes_env_path_when_config_is_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            lines = render_command_debug_lines(
+                command_name="deploy",
+                stage="validate_config",
+                connection=None,
+                values={},
+                preflight_error=None,
+                finish_fields={},
+                probe_state=None,
+                debug_fields={},
+                config=AppConfig.from_values({}, path=env_path, exists=False, file_values={}),
+            )
+
+        self.assertIn(f"env_path={env_path}", lines)
 
 
 if __name__ == "__main__":

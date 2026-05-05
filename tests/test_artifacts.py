@@ -22,7 +22,6 @@ class ArtifactTests(unittest.TestCase):
         self.assertIn("smbd", manifest)
         self.assertIn("smbd-netbsd4le", manifest)
         self.assertIn("smbd-netbsd4be", manifest)
-        self.assertIn("smbd-samba3-netbsd4le", manifest)
         self.assertIn("mdns-advertiser", manifest)
         self.assertIn("mdns-advertiser-netbsd4le", manifest)
         self.assertIn("mdns-advertiser-netbsd4be", manifest)
@@ -31,6 +30,7 @@ class ArtifactTests(unittest.TestCase):
         self.assertIn("nbns-advertiser-netbsd4be", manifest)
         self.assertNotIn("smbd-netbsd4", manifest)
         self.assertNotIn("smbd-samba3-netbsd4", manifest)
+        self.assertNotIn("smbd-samba3-netbsd4le", manifest)
         self.assertNotIn("mdns-advertiser-netbsd4", manifest)
         self.assertNotIn("nbns-advertiser-netbsd4", manifest)
 

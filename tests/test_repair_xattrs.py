@@ -15,6 +15,8 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.cli import repair_xattrs
+from timecapsulesmb import repair_xattrs as repair_xattrs_domain
+from timecapsulesmb.core.config import AppConfig
 
 
 class RecordingCommandContext:
@@ -46,11 +48,25 @@ class RecordingCommandContext:
 
 
 class RepairXattrsTests(unittest.TestCase):
+    def app_config(self, values: dict[str, str], *, exists: bool = True) -> AppConfig:
+        return AppConfig.from_values(
+            values,
+            path=REPO_ROOT / ".env",
+            exists=exists,
+            file_values=values if exists else {},
+        )
+
     def setUp(self) -> None:
         RecordingCommandContext.instances = []
-        self.telemetry_patch = mock.patch("timecapsulesmb.cli.repair_xattrs.TelemetryClient.from_values", return_value=mock.Mock())
+        self.telemetry_patch = mock.patch("timecapsulesmb.cli.repair_xattrs.TelemetryClient.from_config", return_value=mock.Mock())
         self.telemetry_patch.start()
         self.addCleanup(self.telemetry_patch.stop)
+        self.path_guard_patch = mock.patch(
+            "timecapsulesmb.cli.repair_xattrs.validate_repair_root_under_volumes",
+            side_effect=lambda path: path.expanduser(),
+        )
+        self.path_guard_mock = self.path_guard_patch.start()
+        self.addCleanup(self.path_guard_patch.stop)
 
     def test_finds_arch_file_when_xattr_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -211,7 +227,7 @@ class RepairXattrsTests(unittest.TestCase):
             output = io.StringIO()
             with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
                 with mock.patch("timecapsulesmb.repair_xattrs.run_capture", side_effect=fake_run):
-                    with mock.patch("timecapsulesmb.cli.repair_xattrs.TelemetryClient.from_values", return_value=mock.Mock()):
+                    with mock.patch("timecapsulesmb.cli.repair_xattrs.TelemetryClient.from_config", return_value=mock.Mock()):
                         with mock.patch("timecapsulesmb.cli.repair_xattrs.CommandContext", RecordingCommandContext):
                             with redirect_stdout(output):
                                 rc = repair_xattrs.main(["--path", str(root), "--dry-run", "--verbose"])
@@ -318,7 +334,7 @@ class RepairXattrsTests(unittest.TestCase):
 
             with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
                 with mock.patch("timecapsulesmb.repair_xattrs.run_capture", side_effect=fake_run):
-                    with mock.patch("timecapsulesmb.cli.repair_xattrs.TelemetryClient.from_values", return_value=mock.Mock()):
+                    with mock.patch("timecapsulesmb.cli.repair_xattrs.TelemetryClient.from_config", return_value=mock.Mock()):
                         with mock.patch("timecapsulesmb.cli.repair_xattrs.CommandContext", RecordingCommandContext):
                             with redirect_stdout(io.StringIO()):
                                 rc = repair_xattrs.main(["--path", str(root), "--dry-run"])
@@ -401,7 +417,7 @@ class RepairXattrsTests(unittest.TestCase):
 
             with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
                 with mock.patch("timecapsulesmb.repair_xattrs.run_capture", side_effect=fake_run):
-                    with mock.patch("timecapsulesmb.cli.repair_xattrs.TelemetryClient.from_values", return_value=mock.Mock()):
+                    with mock.patch("timecapsulesmb.cli.repair_xattrs.TelemetryClient.from_config", return_value=mock.Mock()):
                         with mock.patch("timecapsulesmb.cli.repair_xattrs.CommandContext", RecordingCommandContext):
                             with redirect_stdout(io.StringIO()):
                                 rc = repair_xattrs.main(["--path", str(root), "--yes"])
@@ -879,25 +895,32 @@ class RepairXattrsTests(unittest.TestCase):
             repair_xattrs.MountedSmbShare("10.0.0.2", "Data", Path("/Volumes/WrongData")),
             repair_xattrs.MountedSmbShare("192.168.1.217", "Data", Path("/Volumes/Data")),
         ]
-        with mock.patch("timecapsulesmb.cli.repair_xattrs.load_env_values", return_value=env):
-            with mock.patch("timecapsulesmb.cli.repair_xattrs.mounted_smb_shares", return_value=shares):
-                with mock.patch("pathlib.Path.exists", return_value=True):
-                    self.assertEqual(repair_xattrs.default_share_path(), Path("/Volumes/Data"))
+        self.assertEqual(
+            repair_xattrs_domain.default_share_path_from_config(
+                self.app_config(env),
+                shares=shares,
+                path_exists_func=lambda _path: True,
+            ),
+            Path("/Volumes/Data"),
+        )
 
     def test_default_share_path_uses_unique_matching_smb_share_when_host_label_differs(self) -> None:
         env = {"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}
         shares = [repair_xattrs.MountedSmbShare("timecapsulesamba4.local", "Data", Path("/Volumes/Data-1"))]
-        with mock.patch("timecapsulesmb.cli.repair_xattrs.load_env_values", return_value=env):
-            with mock.patch("timecapsulesmb.cli.repair_xattrs.mounted_smb_shares", return_value=shares):
-                with mock.patch("pathlib.Path.exists", return_value=True):
-                    self.assertEqual(repair_xattrs.default_share_path(), Path("/Volumes/Data-1"))
+        self.assertEqual(
+            repair_xattrs_domain.default_share_path_from_config(
+                self.app_config(env),
+                shares=shares,
+                path_exists_func=lambda _path: True,
+            ),
+            Path("/Volumes/Data-1"),
+        )
 
     def test_default_share_path_ignores_afp_mount_with_matching_volume_name(self) -> None:
         env = {"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}
         mount_output = "//James%20Chang@AirPort._afpovertcp._tcp.local/Data on /Volumes/Data (afpfs, nodev)\n"
-        with mock.patch("timecapsulesmb.cli.repair_xattrs.load_env_values", return_value=env):
-            with mock.patch("timecapsulesmb.repair_xattrs.run_capture", return_value=mock.Mock(returncode=0, stdout=mount_output)):
-                self.assertIsNone(repair_xattrs.default_share_path())
+        with mock.patch("timecapsulesmb.repair_xattrs.run_capture", return_value=mock.Mock(returncode=0, stdout=mount_output)):
+            self.assertIsNone(repair_xattrs_domain.default_share_path_from_config(self.app_config(env)))
 
     def test_default_share_path_ignores_inaccessible_smb_mountpoints(self) -> None:
         env = {"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}
@@ -911,10 +934,14 @@ class RepairXattrsTests(unittest.TestCase):
                 return False
             return True
 
-        with mock.patch("timecapsulesmb.cli.repair_xattrs.load_env_values", return_value=env):
-            with mock.patch("timecapsulesmb.cli.repair_xattrs.mounted_smb_shares", return_value=shares):
-                with mock.patch("timecapsulesmb.cli.repair_xattrs.path_exists", side_effect=fake_path_exists):
-                    self.assertEqual(repair_xattrs.default_share_path(), Path("/Volumes/Data"))
+        self.assertEqual(
+            repair_xattrs_domain.default_share_path_from_config(
+                self.app_config(env),
+                shares=shares,
+                path_exists_func=fake_path_exists,
+            ),
+            Path("/Volumes/Data"),
+        )
 
     def test_default_share_path_rejects_ambiguous_matching_smb_shares(self) -> None:
         env = {"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}
@@ -922,22 +949,28 @@ class RepairXattrsTests(unittest.TestCase):
             repair_xattrs.MountedSmbShare("timecapsule-a.local", "Data", Path("/Volumes/Data")),
             repair_xattrs.MountedSmbShare("timecapsule-b.local", "Data", Path("/Volumes/Data-1")),
         ]
-        with mock.patch("timecapsulesmb.cli.repair_xattrs.load_env_values", return_value=env):
-            with mock.patch("timecapsulesmb.cli.repair_xattrs.mounted_smb_shares", return_value=shares):
-                with mock.patch("pathlib.Path.exists", return_value=True):
-                    with self.assertRaises(SystemExit) as cm:
-                        repair_xattrs.default_share_path()
+        with self.assertRaises(RuntimeError) as cm:
+            repair_xattrs_domain.default_share_path_from_config(
+                self.app_config(env),
+                shares=shares,
+                path_exists_func=lambda _path: True,
+            )
         self.assertIn("multiple mounted SMB shares", str(cm.exception))
 
     def test_default_share_path_returns_none_when_share_missing(self) -> None:
-        with mock.patch("timecapsulesmb.cli.repair_xattrs.load_env_values", return_value={"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}):
-            with mock.patch("timecapsulesmb.cli.repair_xattrs.mounted_smb_shares", return_value=[]):
-                self.assertIsNone(repair_xattrs.default_share_path())
+        self.assertIsNone(
+            repair_xattrs_domain.default_share_path_from_config(
+                self.app_config({"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}),
+                shares=[],
+            )
+        )
 
     def test_default_share_path_rejects_invalid_env_share_name(self) -> None:
-        with mock.patch("timecapsulesmb.cli.repair_xattrs.load_env_values", return_value={"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Bad/Share"}):
-            with self.assertRaises(SystemExit) as cm:
-                repair_xattrs.default_share_path()
+        with self.assertRaises(RuntimeError) as cm:
+            repair_xattrs_domain.default_share_path_from_config(
+                self.app_config({"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Bad/Share"}),
+                shares=[],
+            )
         self.assertIn("TC_SHARE_NAME is invalid", str(cm.exception))
 
     def test_explicit_repair_path_does_not_require_valid_env_share_name(self) -> None:
@@ -949,6 +982,29 @@ class RepairXattrsTests(unittest.TestCase):
                     with redirect_stdout(io.StringIO()):
                         rc = repair_xattrs.main(["--path", str(target)])
         self.assertEqual(rc, 0)
+        self.path_guard_mock.assert_called_with(target)
+
+    def test_validate_repair_root_accepts_path_under_volumes(self) -> None:
+        self.assertEqual(
+            repair_xattrs_domain.validate_repair_root_under_volumes(Path("/Volumes/Data/Subdir")),
+            Path("/Volumes/Data/Subdir"),
+        )
+
+    def test_validate_repair_root_rejects_root_directory(self) -> None:
+        with self.assertRaises(RuntimeError) as cm:
+            repair_xattrs_domain.validate_repair_root_under_volumes(Path("/"))
+        self.assertIn("can only scan mounted volumes under /Volumes", str(cm.exception))
+        self.assertIn("Refusing to scan: /", str(cm.exception))
+
+    def test_validate_repair_root_rejects_home_directory(self) -> None:
+        with self.assertRaises(RuntimeError) as cm:
+            repair_xattrs_domain.validate_repair_root_under_volumes(Path("/Users/example"))
+        self.assertIn("can only scan mounted volumes under /Volumes", str(cm.exception))
+
+    def test_validate_repair_root_rejects_volumes_root(self) -> None:
+        with self.assertRaises(RuntimeError) as cm:
+            repair_xattrs_domain.validate_repair_root_under_volumes(Path("/Volumes"))
+        self.assertIn("requires a mounted volume below /Volumes", str(cm.exception))
 
     def test_explicit_inaccessible_repair_path_reports_clean_error(self) -> None:
         target = Path("/Volumes/.timemachine/Data")
@@ -992,9 +1048,13 @@ class RepairXattrsTests(unittest.TestCase):
 
     def test_missing_default_path_is_rejected(self) -> None:
         with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
-            with mock.patch("timecapsulesmb.cli.repair_xattrs.default_share_path", return_value=None):
-                with self.assertRaises(SystemExit) as cm:
-                    repair_xattrs.main([])
+            with mock.patch(
+                "timecapsulesmb.cli.repair_xattrs.load_env_config",
+                return_value=self.app_config({"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}),
+            ):
+                with mock.patch("timecapsulesmb.cli.repair_xattrs.mounted_smb_shares", return_value=[]):
+                    with self.assertRaises(SystemExit) as cm:
+                        repair_xattrs.main([])
         self.assertIn("Pass --path explicitly", str(cm.exception))
 
     def test_subprocess_output_decodes_invalid_xattr_bytes(self) -> None:

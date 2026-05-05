@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import load_env_values
+from timecapsulesmb.cli.runtime import load_env_config
+from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.repair_xattrs import (
     ACTION_CLEAR_ARCH_FLAG,
     ACTION_FIX_PERMISSIONS,
@@ -19,7 +20,7 @@ from timecapsulesmb.repair_xattrs import (
     actionable_findings,
     build_repair_report,
     classify_path,
-    default_share_path_from_values,
+    default_share_path_from_config,
     file_flags,
     find_findings,
     finding_to_candidate,
@@ -35,22 +36,11 @@ from timecapsulesmb.repair_xattrs import (
     should_skip_path,
     ssh_target_host,
     unresolved_findings_after_success,
+    validate_repair_root_under_volumes,
     xattr_status,
     xattrs_readable,
 )
 from timecapsulesmb.telemetry import TelemetryClient
-
-
-def default_share_path() -> Optional[Path]:
-    values = load_env_values()
-    try:
-        return default_share_path_from_values(
-            values,
-            shares=mounted_smb_shares(),
-            path_exists_func=path_exists,
-        )
-    except RuntimeError as exc:
-        raise SystemExit(str(exc)) from exc
 
 
 def print_candidates(candidates: list[RepairCandidate], *, dry_run: bool) -> None:
@@ -100,21 +90,24 @@ def confirm(prompt: str) -> bool:
         return False
 
 
-def load_telemetry_values(explicit_path: Path | None) -> dict[str, str]:
-    try:
-        values = load_env_values()
-    except (OSError, SystemExit):
-        return {}
-    if explicit_path is None:
-        return values
-    return values if isinstance(values, dict) else {}
-
-
-def run_repair(args: argparse.Namespace, command_context: CommandContext) -> int:
-    root = args.path or default_share_path()
+def run_repair(args: argparse.Namespace, command_context: CommandContext, config: AppConfig) -> int:
+    if args.path is None:
+        try:
+            root = default_share_path_from_config(
+                config,
+                shares=mounted_smb_shares(),
+                path_exists_func=path_exists,
+            )
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from exc
+    else:
+        root = args.path
     if root is None:
         raise SystemExit("Could not determine mounted share path. Pass --path explicitly.")
-    root = root.expanduser()
+    try:
+        root = validate_repair_root_under_volumes(root)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
 
     summary = RepairSummary()
     print(f"Scanning {root}")
@@ -210,10 +203,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     if sys.platform != "darwin":
         raise SystemExit("repair-xattrs must be run on macOS because it uses xattr/chflags on the mounted SMB share.")
 
-    values = load_telemetry_values(args.path)
-    telemetry = TelemetryClient.from_values(values)
-    with CommandContext(telemetry, "repair-xattrs", "repair_xattrs_started", "repair_xattrs_finished", values=values, args=args) as command_context:
-        return run_repair(args, command_context)
+    try:
+        config = load_env_config()
+    except (OSError, SystemExit):
+        config = AppConfig.missing()
+    telemetry = TelemetryClient.from_config(config)
+    with CommandContext(telemetry, "repair-xattrs", "repair_xattrs_started", "repair_xattrs_finished", config=config, args=args) as command_context:
+        return run_repair(args, command_context, config)
     return 1
 
 

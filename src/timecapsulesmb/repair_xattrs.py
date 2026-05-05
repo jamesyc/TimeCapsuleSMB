@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import unquote
 
-from timecapsulesmb.core.config import validate_config_values
+from timecapsulesmb.core.config import AppConfig, validate_app_config
 
 
 DEFAULT_EXCLUDED_DIR_NAMES = {
@@ -30,6 +30,7 @@ DEFAULT_EXCLUDED_PREFIXES = (
 DEFAULT_REPAIR_REPORT_LIMIT = 20
 ACTION_CLEAR_ARCH_FLAG = "clear_arch_flag"
 ACTION_FIX_PERMISSIONS = "fix_permissions"
+REPAIR_ROOT_PARENT = Path("/Volumes")
 
 
 @dataclass(frozen=True)
@@ -122,17 +123,41 @@ def path_exists(path: Path) -> bool:
         return False
 
 
-def default_share_path_from_values(
-    values: dict[str, str],
+def validate_repair_root_under_volumes(path: Path) -> Path:
+    try:
+        resolved_path = path.expanduser().resolve()
+        resolved_volumes = REPAIR_ROOT_PARENT.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError(f"Cannot access path: {path}: {exc}") from exc
+
+    try:
+        relative = resolved_path.relative_to(resolved_volumes)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"repair-xattrs can only scan mounted volumes under {REPAIR_ROOT_PARENT}. "
+            f"Refusing to scan: {resolved_path}"
+        ) from exc
+
+    if not relative.parts:
+        raise RuntimeError(
+            f"repair-xattrs requires a mounted volume below {REPAIR_ROOT_PARENT}, not {REPAIR_ROOT_PARENT} itself. "
+            f"Pass a mounted SMB share path such as {REPAIR_ROOT_PARENT / 'Data'}."
+        )
+
+    return resolved_path
+
+
+def default_share_path_from_config(
+    config: AppConfig,
     *,
     shares: list[MountedSmbShare] | None = None,
     path_exists_func: Callable[[Path], bool] = path_exists,
 ) -> Optional[Path]:
-    errors = validate_config_values(values, profile="repair_xattrs")
+    errors = validate_app_config(config, profile="repair_xattrs")
     if errors:
         raise RuntimeError(errors[0].format_for_cli())
-    share_name = values.get("TC_SHARE_NAME")
-    target_host = ssh_target_host(values.get("TC_HOST", ""))
+    share_name = config.get("TC_SHARE_NAME")
+    target_host = ssh_target_host(config.get("TC_HOST"))
     if not share_name or not target_host:
         return None
 

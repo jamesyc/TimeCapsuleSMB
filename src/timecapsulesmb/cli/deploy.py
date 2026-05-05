@@ -8,8 +8,8 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import request_reboot_and_wait, verify_managed_runtime_flow
-from timecapsulesmb.cli.runtime import load_env_values
-from timecapsulesmb.core.config import airport_family_display_name, parse_bool
+from timecapsulesmb.cli.runtime import load_env_config
+from timecapsulesmb.core.config import airport_family_display_name_from_config, parse_bool
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
@@ -75,9 +75,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("Deploying...")
 
     ensure_install_id()
-    values = load_env_values()
-    telemetry = TelemetryClient.from_values(values, nbns_enabled=args.install_nbns)
-    with CommandContext(telemetry, "deploy", "deploy_started", "deploy_finished", values=values, args=args) as command_context:
+    config = load_env_config()
+    telemetry = TelemetryClient.from_config(config, nbns_enabled=args.install_nbns)
+    with CommandContext(telemetry, "deploy", "deploy_started", "deploy_finished", config=config, args=args) as command_context:
         command_context.update_fields(
             nbns_enabled=args.install_nbns,
             reboot_was_attempted=False,
@@ -114,14 +114,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         apple_mount_wait_seconds = args.mount_wait
         command_context.set_stage("discover_volume_root")
         volume_root = discover_volume_root_conn(connection)
-        share_use_disk_root = parse_bool(values.get("TC_SHARE_USE_DISK_ROOT", "false"))
+        share_use_disk_root = parse_bool(config.get("TC_SHARE_USE_DISK_ROOT", "false"))
         resolved_artifacts = resolve_payload_artifacts(REPO_ROOT, payload_family)
         smbd_path = resolved_artifacts["smbd"].absolute_path
         mdns_path = resolved_artifacts["mdns-advertiser"].absolute_path
         nbns_path = resolved_artifacts["nbns-advertiser"].absolute_path
         device_paths = build_device_paths(
             volume_root,
-            values["TC_PAYLOAD_DIR_NAME"],
+            config.require("TC_PAYLOAD_DIR_NAME"),
             share_use_disk_root=share_use_disk_root,
         )
         command_context.set_stage("build_deployment_plan")
@@ -161,7 +161,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         adisk_uuid = remote_ensure_adisk_uuid(connection, plan.private_dir)
         command_context.set_stage("render_templates")
         template_bundle = build_template_bundle(
-            values,
+            config,
             adisk_disk_key=plan.disk_key,
             adisk_uuid=adisk_uuid,
             payload_family=payload_family,
@@ -199,7 +199,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
 
         command_context.set_stage("install_auth_files")
-        remote_install_auth_files(connection, plan.private_dir, values["TC_SAMBA_USER"], smb_password)
+        remote_install_auth_files(connection, plan.private_dir, config.require("TC_SAMBA_USER"), smb_password)
         command_context.set_stage("post_auth_actions")
         run_remote_actions(connection, plan.post_auth_actions)
 
@@ -231,7 +231,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 0
 
         if not args.yes:
-            device_name = airport_family_display_name(values)
+            device_name = airport_family_display_name_from_config(config)
             answer = input(f"This will reboot the {device_name} now. Continue? [Y/n]: ").strip().lower()
             if answer not in {"", "y", "yes"}:
                 print("Deployment complete without reboot.")

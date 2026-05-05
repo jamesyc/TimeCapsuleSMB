@@ -13,23 +13,28 @@ from timecapsulesmb.telemetry.debug import debug_summary, render_debug_mapping
 
 if TYPE_CHECKING:
     from timecapsulesmb.cli.runtime import ManagedTargetState
+    from timecapsulesmb.core.config import AppConfig
     from timecapsulesmb.device.compat import DeviceCompatibility
     from timecapsulesmb.device.probe import ProbedDeviceState, RemoteInterfaceProbeResult
     from timecapsulesmb.telemetry import TelemetryClient
     from timecapsulesmb.transport.ssh import SshConnection
 
 
-def missing_required_python_module(module_names: Iterable[str]) -> str | None:
+def missing_required_python_module(module_names: Iterable[str]) -> tuple[str, BaseException] | None:
     for module_name in module_names:
         try:
             importlib.import_module(module_name)
-        except Exception:
-            return module_name
+        except Exception as e:
+            return module_name, e
     return None
 
 
-def missing_dependency_message(module_name: str) -> str:
-    return f"Failed to load {module_name}. Run `./tcapsule bootstrap` to set up the required dependencies."
+def missing_dependency_message(module_name: str, error: BaseException | None = None) -> str:
+    error_suffix = f" {type(error).__name__}: {error}" if error is not None else ""
+    return (
+        f"Failed to load {module_name}. Install the Python package {module_name}. "
+        f"Run `./tcapsule bootstrap` first to set up the required dependencies.{error_suffix}"
+    )
 
 
 COMMAND_VALUE_BLACKLIST = {
@@ -79,13 +84,17 @@ def render_command_debug_lines(
     finish_fields: Mapping[str, object],
     probe_state: ProbedDeviceState | None,
     debug_fields: Mapping[str, object],
+    config: AppConfig | None = None,
 ) -> list[str]:
+    debug_values = config.values if config is not None else values
     lines = ["Debug context:", f"command={command_name}"]
     if stage:
         lines.append(f"stage={stage}")
-    lines.extend(_render_connection_debug_lines(connection, values))
-    if values is not None:
-        lines.extend(render_debug_mapping(values, blacklist=COMMAND_VALUE_BLACKLIST))
+    if config is not None:
+        lines.append(f"env_path={config.path}")
+    lines.extend(_render_connection_debug_lines(connection, debug_values))
+    if debug_values is not None:
+        lines.extend(render_debug_mapping(debug_values, blacklist=COMMAND_VALUE_BLACKLIST))
     if preflight_error:
         lines.append(f"preflight_error={preflight_error}")
     lines.extend(render_debug_mapping(finish_fields, blacklist=COMMAND_FIELD_BLACKLIST))
@@ -104,12 +113,14 @@ class CommandContext:
         finished_event: str,
         *,
         values: dict[str, str] | None = None,
+        config: AppConfig | None = None,
         args: object | None = None,
         **fields: object,
     ) -> None:
         self.telemetry = telemetry
         self.command_name = command_name
         self.values = values
+        self.config = config
         self.args = args
         self.finished_event = finished_event
         self.start_time = time.monotonic()
@@ -195,6 +206,7 @@ class CommandContext:
                 finish_fields=self.finish_fields,
                 probe_state=self.probe_state,
                 debug_fields=self.debug_fields,
+                config=self.config,
             ),
         ])
 
@@ -210,14 +222,24 @@ class CommandContext:
         required_keys: tuple[str, ...] = (),
         allow_empty_password: bool = False,
     ) -> SshConnection:
-        if self.values is None:
-            raise RuntimeError("CommandContext values are not set.")
+        if self.config is None:
+            raise RuntimeError("CommandContext config is not set.")
         self.connection = runtime.resolve_env_connection(
-            self.values,
+            self.config,
             required_keys=required_keys,
             allow_empty_password=allow_empty_password,
         )
         return self.connection
+
+    def require_valid_config(self, *, profile: str) -> None:
+        if self.config is None:
+            raise RuntimeError("CommandContext config is not set.")
+        from timecapsulesmb.core.config import require_valid_app_config
+        require_valid_app_config(
+            self.config,
+            profile=profile,
+            command_name=self.command_name,
+        )
 
     def _apply_managed_target_state(self, target: ManagedTargetState) -> ManagedTargetState:
         self.connection = target.connection
@@ -242,10 +264,10 @@ class CommandContext:
         return self._apply_managed_target_state(target)
 
     def resolve_validated_managed_target(self, *, profile: str, include_probe: bool = False) -> ManagedTargetState:
-        if self.values is None:
-            raise RuntimeError("CommandContext values are not set.")
+        if self.config is None:
+            raise RuntimeError("CommandContext config is not set.")
         target = runtime.resolve_validated_managed_target(
-            self.values,
+            self.config,
             command_name=self.command_name,
             profile=profile,
             include_probe=include_probe,

@@ -8,14 +8,11 @@ import subprocess
 from collections.abc import Callable, Iterable
 from typing import Optional, Tuple
 
+from timecapsulesmb.deploy.executor import remote_request_reboot
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh
 
-AIRPYRT_SSH_OPTIONS = [
-    "-o", "HostKeyAlgorithms=+ssh-rsa",
-    "-o", "KexAlgorithms=+diffie-hellman-group14-sha1",
-    "-o", "PubkeyAuthentication=no",
-    "-o", "StrictHostKeyChecking=no",
-    "-o", "UserKnownHostsFile=/dev/null",
-]
+
+AIRPYRT_NOT_FOUND_ERROR = "AirPyrt (acp) not found."
 
 LogCallback = Callable[[str], None]
 
@@ -91,12 +88,7 @@ def ensure_airpyrt_available(python_candidates: Optional[Iterable[str]] = None) 
     acp_exec = find_acp_executable()
     py = find_airpyrt_python(python_candidates)
     if not acp_exec and not py:
-        raise RuntimeError(
-            "AirPyrt (acp) not found. Install per https://github.com/samuelthomas2774/airport/wiki/AirPyrt#installation\n"
-            "Example: git clone https://github.com/x56/airpyrt-tools.git && cd airpyrt-tools && python2 setup.py install --user\n"
-            "Then ensure 'acp' is on PATH or set AIRPYRT_PY to that interpreter.\n"
-            "For this repo, the supported path is: ./tcapsule bootstrap"
-        )
+        raise RuntimeError(AIRPYRT_NOT_FOUND_ERROR)
     return acp_exec, py
 
 
@@ -142,51 +134,6 @@ def reboot(
         raise RuntimeError(f"Reboot command failed. Output: {e}")
 
 
-def build_airpyrt_ssh_command(host: str, command: str) -> list[str]:
-    return [
-        "ssh",
-        *AIRPYRT_SSH_OPTIONS,
-        f"root@{host}",
-        command,
-    ]
-
-
-def ssh_run_command(
-    host: str,
-    password: str,
-    command: str,
-    *,
-    timeout: int = 30,
-    log: LogCallback | None = None,
-    verbose: bool = False,
-) -> tuple[int, str]:
-    try:
-        import pexpect
-    except Exception:
-        raise RuntimeError(
-            "pexpect not available. Run './tcapsule bootstrap' first, or use 'make install'."
-        )
-
-    ssh_cmd = build_airpyrt_ssh_command(host, command)
-    _emit(_resolve_log(log, verbose), f"SSH exec: {' '.join(shlex.quote(x) for x in ssh_cmd)}")
-
-    child = pexpect.spawn(ssh_cmd[0], ssh_cmd[1:], encoding="utf-8", timeout=timeout)
-    out_chunks: list[str] = []
-    try:
-        i = child.expect(["[Pp]assword:", pexpect.EOF, pexpect.TIMEOUT], timeout=timeout)
-        if i == 0:
-            child.sendline(password)
-            child.expect(pexpect.EOF, timeout=timeout)
-        out_chunks.append(child.before or "")
-    finally:
-        try:
-            child.close()
-        except Exception:
-            pass
-    rc = child.exitstatus if child.exitstatus is not None else (child.signalstatus or 1)
-    return rc, "".join(out_chunks)
-
-
 def enable_ssh(
     host: str,
     password: str,
@@ -202,12 +149,14 @@ def enable_ssh(
         reboot(host, password, python_candidates=python_candidates, log=logger)
 
 
+def _dbug_property_already_absent(output: str) -> bool:
+    return "remove property error: -10" in output
+
+
 def disable_ssh(
-    host: str,
-    password: str,
+    connection: SshConnection,
     *,
     reboot_device: bool = True,
-    python_candidates: Optional[Iterable[str]] = None,
     log: LogCallback | None = None,
     verbose: bool = False,
 ) -> None:
@@ -219,9 +168,14 @@ def disable_ssh(
     ]
     last_err: Optional[Tuple[int, str]] = None
     for command in cmds:
-        rc, out = ssh_run_command(host, password, command, log=logger)
+        proc = run_ssh(connection, command, check=False, timeout=30)
+        rc = proc.returncode
+        out = proc.stdout or ""
         if rc == 0:
             _emit(logger, f"Removed 'dbug' via: {command}")
+            break
+        if _dbug_property_already_absent(out):
+            _emit(logger, f"'dbug' already absent via: {command}")
             break
         last_err = (rc, out)
     else:
@@ -229,4 +183,7 @@ def disable_ssh(
         raise RuntimeError(f"Failed to remove 'dbug' via on-device acp (rc={code}). Output: {out}")
 
     if reboot_device:
-        reboot(host, password, python_candidates=python_candidates, log=logger)
+        try:
+            remote_request_reboot(connection)
+        except SshCommandTimeout as exc:
+            _emit(logger, f"Reboot request timed out; checking whether the device is rebooting... ({exc})")

@@ -11,9 +11,9 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
 
 from timecapsulesmb.cli.util import CLI_VERSION, RELEASE_TAG, SAMBA_VERSION
+from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.identity import BOOTSTRAP_PATH, load_install_identity
 
 
@@ -48,9 +48,9 @@ class TelemetryClient:
         self.enabled = enabled and context is not None and bool(token)
 
     @classmethod
-    def from_values(
+    def from_config(
         cls,
-        values: Optional[dict[str, str]] = None,
+        config: AppConfig,
         *,
         nbns_enabled: bool | None = None,
         bootstrap_path: Path = BOOTSTRAP_PATH,
@@ -67,9 +67,9 @@ class TelemetryClient:
             samba_version=SAMBA_VERSION,
             host_os=detect_host_os(),
             host_os_version=detect_host_os_version(),
-            configure_id=(values or {}).get("TC_CONFIGURE_ID") or None,
-            device_model=(values or {}).get("TC_MDNS_DEVICE_MODEL") or None,
-            device_syap=(values or {}).get("TC_AIRPORT_SYAP") or None,
+            configure_id=config.get("TC_CONFIGURE_ID") or None,
+            device_model=config.get("TC_MDNS_DEVICE_MODEL") or None,
+            device_syap=config.get("TC_AIRPORT_SYAP") or None,
             nbns_enabled=nbns_enabled,
         )
         return cls(endpoint=endpoint, token=token, context=context, enabled=identity.telemetry_enabled)

@@ -517,31 +517,13 @@ def _open_zeroconf() -> Any:
     try:
         from zeroconf import IPVersion, Zeroconf
     except Exception as e:
-        raise RuntimeError(
-            "Failed to import zeroconf. Run './tcapsule bootstrap' first, or use 'make install'. "
-            f"{type(e).__name__}: {e}"
-        ) from e
+        from timecapsulesmb.cli.context import missing_dependency_message
+
+        raise RuntimeError(missing_dependency_message("zeroconf", e)) from e
 
     # Our Time Capsule targets advertise over IPv4, and zeroconf 0.147.x can
     # miss _smb._tcp browse results on macOS when run in dual-stack mode.
     return Zeroconf(ip_version=IPVersion.V4Only)
-
-
-def browse_service_instances(service: str | None = None, timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC) -> list[BonjourServiceInstance]:
-    zc = _open_zeroconf()
-    try:
-        collector = Collector(zc, _matching_service_types(service))
-        collector.start()
-        time.sleep(max(0.0, timeout))
-        instances = collector.service_instances()
-    finally:
-        try:
-            zc.close()
-        except Exception:
-            pass
-
-    instances.sort(key=lambda instance: (instance.service_type or "", instance.name or "", instance.fullname or ""))
-    return instances
 
 
 def resolve_service_instance(instance: BonjourServiceInstance, timeout_ms: int = FINAL_PENDING_RESOLVE_TIMEOUT_MS) -> BonjourResolvedService | None:
@@ -564,32 +546,6 @@ def _sort_instances(instances: list[BonjourServiceInstance]) -> list[BonjourServ
 
 def _sort_records(records: list[BonjourResolvedService]) -> list[BonjourResolvedService]:
     return sorted(records, key=lambda record: (record.service_type or "", record.hostname or "", record.name or ""))
-
-
-def _collector_int(collector: Collector, attr: str) -> int:
-    value = getattr(collector, attr, 0)
-    return value if isinstance(value, int) else 0
-
-
-def _collector_pending_count(collector: Collector) -> int:
-    pending_count = getattr(collector, "pending_count", None)
-    if callable(pending_count):
-        value = pending_count()
-        return value if isinstance(value, int) else 0
-    pending = getattr(collector, "pending", None)
-    return len(pending) if isinstance(pending, set) else 0
-
-
-def _collector_service_events(collector: Collector) -> list[BonjourServiceEvent]:
-    service_events = getattr(collector, "service_events", None)
-    if callable(service_events):
-        try:
-            value = service_events()
-        except Exception:
-            return []
-        return list(value) if isinstance(value, list) else []
-    events = getattr(collector, "events", None)
-    return list(events) if isinstance(events, list) else []
 
 
 def discover_snapshot_detailed(
@@ -617,7 +573,7 @@ def discover_snapshot_detailed(
         collector.resolve_pending(timeout_ms=FINAL_PENDING_RESOLVE_TIMEOUT_MS)
         records = collector.results()
         instances = collector.service_instances()
-        service_events = _collector_service_events(collector)
+        service_events = collector.service_events()
     finally:
         if ptr_observer is not None:
             ptr_observer.stop(zc)
@@ -642,12 +598,12 @@ def discover_snapshot_detailed(
         ip_version="V4Only",
         instance_count=len(sorted_instances),
         resolved_count=len(sorted_records),
-        pending_count=_collector_pending_count(collector),
-        service_added_count=_collector_int(collector, "service_added_count"),
-        service_updated_count=_collector_int(collector, "service_updated_count"),
-        resolve_attempt_count=_collector_int(collector, "resolve_attempt_count"),
-        resolve_success_count=_collector_int(collector, "resolve_success_count"),
-        resolve_error_count=_collector_int(collector, "resolve_error_count"),
+        pending_count=collector.pending_count(),
+        service_added_count=collector.service_added_count,
+        service_updated_count=collector.service_updated_count,
+        resolve_attempt_count=collector.resolve_attempt_count,
+        resolve_success_count=collector.resolve_success_count,
+        resolve_error_count=collector.resolve_error_count,
         zeroconf_version=_installed_zeroconf_version(),
         zeroconf_interfaces="All",
         zeroconf_apple_p2p=False,
@@ -699,10 +655,6 @@ def record_has_service(record: BonjourResolvedService, service: str) -> bool:
         isinstance(value, str) and value.startswith(service)
         for value in services
     )
-
-
-def filter_service_records(records: list[BonjourResolvedService], service: str) -> list[BonjourResolvedService]:
-    return [record for record in records if record_has_service(record, service)]
 
 
 def discovery_record_to_jsonable(record: BonjourResolvedService) -> dict[str, object]:

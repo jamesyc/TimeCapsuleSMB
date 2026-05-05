@@ -7,8 +7,9 @@ from typing import Callable, Optional
 import ipaddress
 import re
 
+from timecapsulesmb.core.paths import resolve_app_paths
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = resolve_app_paths().project_root
 ENV_PATH = REPO_ROOT / ".env"
 MAX_DNS_LABEL_BYTES = 63
 MAX_DNS_NAME_BYTES = 255
@@ -64,24 +65,6 @@ def airport_identity_from_values(values: dict[str, str]) -> AirportDeviceIdentit
     return AIRPORT_IDENTITIES_BY_SYAP.get(syap) or AIRPORT_IDENTITIES_BY_MODEL.get(model)
 
 
-def airport_family_display_name(values: dict[str, str]) -> str:
-    model = values.get("TC_MDNS_DEVICE_MODEL", "")
-    identity = airport_identity_from_values(values)
-    family = identity.family if identity is not None else ""
-    if family == "time_capsule" or model == "TimeCapsule":
-        return "Time Capsule"
-    if family == "airport_extreme" or model == "AirPort":
-        return "AirPort Extreme"
-    return "AirPort storage device"
-
-
-def airport_exact_display_name(values: dict[str, str]) -> str:
-    identity = airport_identity_from_values(values)
-    if identity is not None:
-        return identity.display_name
-    return airport_family_display_name(values)
-
-
 DEFAULTS = {
     "TC_HOST": "root@192.168.1.101",
     "TC_SSH_OPTS": "-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
@@ -96,33 +79,6 @@ DEFAULTS = {
     "TC_AIRPORT_SYAP": "",
     "TC_SHARE_USE_DISK_ROOT": "false",
 }
-
-REQUIRED_ENV_KEYS = [
-    "TC_HOST",
-    "TC_PASSWORD",
-    "TC_NET_IFACE",
-    "TC_SHARE_NAME",
-    "TC_SAMBA_USER",
-    "TC_NETBIOS_NAME",
-    "TC_PAYLOAD_DIR_NAME",
-    "TC_MDNS_INSTANCE_NAME",
-    "TC_MDNS_HOST_LABEL",
-    "TC_MDNS_DEVICE_MODEL",
-]
-
-CONFIG_FIELDS = [
-    ("TC_HOST", "Device SSH target", DEFAULTS["TC_HOST"], False),
-    ("TC_PASSWORD", "Device root password", "", True),
-    ("TC_NET_IFACE", "Network interface on the device", DEFAULTS["TC_NET_IFACE"], False),
-    ("TC_SHARE_NAME", "SMB share name", DEFAULTS["TC_SHARE_NAME"], False),
-    ("TC_SAMBA_USER", "Samba username", DEFAULTS["TC_SAMBA_USER"], False),
-    ("TC_NETBIOS_NAME", "Samba NetBIOS name", DEFAULTS["TC_NETBIOS_NAME"], False),
-    ("TC_PAYLOAD_DIR_NAME", "Persistent payload directory name", DEFAULTS["TC_PAYLOAD_DIR_NAME"], False),
-    ("TC_MDNS_INSTANCE_NAME", "mDNS SMB instance name", DEFAULTS["TC_MDNS_INSTANCE_NAME"], False),
-    ("TC_MDNS_HOST_LABEL", "mDNS host label", DEFAULTS["TC_MDNS_HOST_LABEL"], False),
-    ("TC_AIRPORT_SYAP", "Airport Utility syAP code", DEFAULTS["TC_AIRPORT_SYAP"], False),
-    ("TC_MDNS_DEVICE_MODEL", "mDNS device model hint", DEFAULTS["TC_MDNS_DEVICE_MODEL"], False),
-]
 
 ENV_FILE_KEYS = [
     "TC_HOST",
@@ -146,27 +102,112 @@ CONFIG_HEADER = """# Local user/device configuration for TimeCapsuleSMB.
 """
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class AppConfig:
+    path: Path
+    exists: bool
+    file_values: dict[str, str]
     values: dict[str, str]
+
+    def __init__(
+        self,
+        *,
+        values: dict[str, str] | None = None,
+        path: Path | None = None,
+        exists: bool = True,
+        file_values: dict[str, str] | None = None,
+    ) -> None:
+        resolved_values = dict(values or {})
+        resolved_file_values = dict(file_values or {})
+        object.__setattr__(self, "path", path or ENV_PATH)
+        object.__setattr__(self, "exists", exists)
+        object.__setattr__(self, "file_values", resolved_file_values)
+        object.__setattr__(self, "values", resolved_values)
+
+    @classmethod
+    def from_values(
+        cls,
+        values: dict[str, str] | None = None,
+        *,
+        path: Path | None = None,
+        exists: bool = True,
+        file_values: dict[str, str] | None = None,
+    ) -> "AppConfig":
+        return cls(values=values, path=path, exists=exists, file_values=file_values)
+
+    @classmethod
+    def from_file(cls, path: Path = ENV_PATH, *, defaults: Optional[dict[str, str]] = None) -> "AppConfig":
+        resolved_defaults = dict(DEFAULTS if defaults is None else defaults)
+        exists = path.exists()
+        file_values = parse_env_file(path) if exists else {}
+        values = dict(resolved_defaults)
+        values.update(file_values)
+        return cls(values=values, path=path, exists=exists, file_values=file_values)
+
+    @classmethod
+    def missing(cls, path: Path | None = None) -> "AppConfig":
+        return cls(values={}, path=path, exists=False, file_values={})
 
     def get(self, key: str, default: str = "") -> str:
         return self.values.get(key, default)
 
+    def has_file_value(self, key: str) -> bool:
+        return bool(self.file_values.get(key, ""))
+
+    def has_value(self, key: str) -> bool:
+        return bool(self.values.get(key, ""))
+
     def require(self, key: str, *, messagebefore: str = "", messageafter: str = "") -> str:
         value = self.get(key)
         if not value:
-            raise SystemExit(f"{messagebefore}Missing required setting in .env: {key}{messageafter}")
+            raise SystemExit(f"{messagebefore}Missing required setting in {self.path}: {key}{messageafter}")
         return value
 
 
-@dataclass(frozen=True)
-class ConfigValidationError:
-    key: str
-    message: str
+def airport_identity_from_config(config: AppConfig) -> AirportDeviceIdentity | None:
+    return (
+        AIRPORT_IDENTITIES_BY_SYAP.get(config.get("TC_AIRPORT_SYAP"))
+        or AIRPORT_IDENTITIES_BY_MODEL.get(config.get("TC_MDNS_DEVICE_MODEL"))
+    )
 
-    def format_for_cli(self) -> str:
-        return f"{self.key} is invalid. Run the `configure` command again.\n{self.message}"
+
+def airport_family_display_name_from_config(config: AppConfig) -> str:
+    model = config.get("TC_MDNS_DEVICE_MODEL")
+    identity = airport_identity_from_config(config)
+    family = identity.family if identity is not None else ""
+    if family == "time_capsule" or model == "TimeCapsule":
+        return "Time Capsule"
+    if family == "airport_extreme" or model == "AirPort":
+        return "AirPort Extreme"
+    return "AirPort storage device"
+
+
+def airport_exact_display_name_from_config(config: AppConfig) -> str:
+    identity = airport_identity_from_config(config)
+    if identity is not None:
+        return identity.display_name
+    return airport_family_display_name_from_config(config)
+
+
+@dataclass(frozen=True)
+class ConfigIssue:
+    kind: str
+    key: str | None
+    message: str
+    path: Path
+
+    def format_for_cli(self, *, command_name: str | None = None) -> str:
+        if self.kind == "missing_file":
+            lines = [f"Missing required configuration file: {self.path}"]
+        elif self.kind == "missing_key" and self.key:
+            lines = [f"Missing required setting in {self.path}: {self.key}"]
+        elif self.key:
+            lines = [f"{self.key} is invalid in {self.path}. Run the `configure` command again.", self.message]
+        else:
+            lines = [self.message]
+        if command_name:
+            lines.append(f"Please run the `configure` command before running `{command_name}`.")
+        return "\n".join(lines)
 
 
 def parse_env_value(raw_value: str) -> str:
@@ -185,8 +226,8 @@ def parse_env_value(raw_value: str) -> str:
         return value.strip("'\"")
 
 
-def parse_env_values(path: Path, *, defaults: Optional[dict[str, str]] = None) -> dict[str, str]:
-    values = dict(DEFAULTS if defaults is None else defaults)
+def parse_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
     if not path.exists():
         return values
     for raw_line in path.read_text().splitlines():
@@ -198,8 +239,8 @@ def parse_env_values(path: Path, *, defaults: Optional[dict[str, str]] = None) -
     return values
 
 
-def missing_required_keys(values: dict[str, str]) -> list[str]:
-    return [key for key in REQUIRED_ENV_KEYS if not values.get(key, "")]
+def load_app_config(path: Path = ENV_PATH, *, defaults: Optional[dict[str, str]] = None) -> AppConfig:
+    return AppConfig.from_file(path, defaults=defaults)
 
 
 def shell_quote(value: str) -> str:
@@ -429,87 +470,158 @@ CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
     "TC_SHARE_USE_DISK_ROOT": validate_bool,
 }
 
-CONFIG_VALIDATION_PROFILES: dict[str, tuple[str, ...]] = {
-    "configure": (
-        "TC_NET_IFACE",
-        "TC_SHARE_NAME",
-        "TC_SAMBA_USER",
-        "TC_NETBIOS_NAME",
-        "TC_PAYLOAD_DIR_NAME",
-        "TC_MDNS_INSTANCE_NAME",
-        "TC_MDNS_HOST_LABEL",
-        "TC_MDNS_DEVICE_MODEL",
-        "TC_AIRPORT_SYAP",
-        "TC_SHARE_USE_DISK_ROOT",
+
+@dataclass(frozen=True)
+class ConfigProfile:
+    required_file_values: tuple[str, ...] = ()
+    required_values: tuple[str, ...] = ()
+    validated_keys: tuple[str, ...] = ()
+    require_env_file: bool = True
+    cross_check_syap_model: bool = False
+
+
+CONFIGURE_VALIDATED_KEYS = (
+    "TC_NET_IFACE",
+    "TC_SHARE_NAME",
+    "TC_SAMBA_USER",
+    "TC_NETBIOS_NAME",
+    "TC_PAYLOAD_DIR_NAME",
+    "TC_MDNS_INSTANCE_NAME",
+    "TC_MDNS_HOST_LABEL",
+    "TC_MDNS_DEVICE_MODEL",
+    "TC_AIRPORT_SYAP",
+    "TC_SHARE_USE_DISK_ROOT",
+)
+MANAGED_VALIDATED_KEYS = (
+    "TC_HOST",
+    "TC_NET_IFACE",
+    "TC_SHARE_NAME",
+    "TC_SAMBA_USER",
+    "TC_NETBIOS_NAME",
+    "TC_PAYLOAD_DIR_NAME",
+    "TC_MDNS_INSTANCE_NAME",
+    "TC_MDNS_HOST_LABEL",
+    "TC_MDNS_DEVICE_MODEL",
+    "TC_AIRPORT_SYAP",
+    "TC_SHARE_USE_DISK_ROOT",
+)
+MANAGED_REQUIRED_FILE_KEYS = (
+    "TC_HOST",
+    "TC_NET_IFACE",
+    "TC_SHARE_NAME",
+    "TC_SAMBA_USER",
+    "TC_NETBIOS_NAME",
+    "TC_PAYLOAD_DIR_NAME",
+    "TC_MDNS_INSTANCE_NAME",
+    "TC_MDNS_HOST_LABEL",
+    "TC_MDNS_DEVICE_MODEL",
+    "TC_AIRPORT_SYAP",
+)
+
+CONFIG_PROFILES: dict[str, ConfigProfile] = {
+    "configure": ConfigProfile(
+        validated_keys=CONFIGURE_VALIDATED_KEYS,
+        require_env_file=False,
     ),
-    "deploy": (
-        "TC_HOST",
-        "TC_NET_IFACE",
-        "TC_SHARE_NAME",
-        "TC_SAMBA_USER",
-        "TC_NETBIOS_NAME",
-        "TC_PAYLOAD_DIR_NAME",
-        "TC_MDNS_INSTANCE_NAME",
-        "TC_MDNS_HOST_LABEL",
-        "TC_MDNS_DEVICE_MODEL",
-        "TC_AIRPORT_SYAP",
-        "TC_SHARE_USE_DISK_ROOT",
+    "deploy": ConfigProfile(
+        required_file_values=MANAGED_REQUIRED_FILE_KEYS,
+        validated_keys=MANAGED_VALIDATED_KEYS,
+        cross_check_syap_model=True,
     ),
-    "activate": (
-        "TC_HOST",
-        "TC_NET_IFACE",
-        "TC_SHARE_NAME",
-        "TC_SAMBA_USER",
-        "TC_NETBIOS_NAME",
-        "TC_PAYLOAD_DIR_NAME",
-        "TC_MDNS_INSTANCE_NAME",
-        "TC_MDNS_HOST_LABEL",
-        "TC_MDNS_DEVICE_MODEL",
-        "TC_AIRPORT_SYAP",
-        "TC_SHARE_USE_DISK_ROOT",
+    "activate": ConfigProfile(
+        required_file_values=MANAGED_REQUIRED_FILE_KEYS,
+        validated_keys=MANAGED_VALIDATED_KEYS,
+        cross_check_syap_model=True,
     ),
-    "doctor": (
-        "TC_HOST",
-        "TC_NET_IFACE",
-        "TC_SHARE_NAME",
-        "TC_SAMBA_USER",
-        "TC_NETBIOS_NAME",
-        "TC_PAYLOAD_DIR_NAME",
-        "TC_MDNS_INSTANCE_NAME",
-        "TC_MDNS_HOST_LABEL",
-        "TC_MDNS_DEVICE_MODEL",
-        "TC_AIRPORT_SYAP",
-        "TC_SHARE_USE_DISK_ROOT",
+    "doctor": ConfigProfile(
+        required_file_values=(*MANAGED_REQUIRED_FILE_KEYS, "TC_PASSWORD"),
+        validated_keys=MANAGED_VALIDATED_KEYS,
+        cross_check_syap_model=True,
     ),
-    "uninstall": ("TC_HOST", "TC_PAYLOAD_DIR_NAME"),
-    "fsck": ("TC_HOST",),
-    "repair_xattrs": ("TC_SHARE_NAME",),
+    "uninstall": ConfigProfile(
+        required_file_values=("TC_HOST", "TC_PAYLOAD_DIR_NAME"),
+        validated_keys=("TC_HOST", "TC_PAYLOAD_DIR_NAME"),
+    ),
+    "fsck": ConfigProfile(
+        required_file_values=("TC_HOST",),
+        validated_keys=("TC_HOST",),
+    ),
+    "prep_device": ConfigProfile(
+        required_file_values=("TC_HOST", "TC_PASSWORD"),
+        validated_keys=("TC_HOST",),
+    ),
+    "repair_xattrs": ConfigProfile(
+        required_values=("TC_SHARE_NAME",),
+        validated_keys=("TC_SHARE_NAME",),
+        require_env_file=False,
+    ),
 }
+def validate_app_config(config: AppConfig, *, profile: str) -> list[ConfigIssue]:
+    profile_config = CONFIG_PROFILES[profile]
+    if profile_config.require_env_file and not config.exists:
+        return [
+            ConfigIssue(
+                kind="missing_file",
+                key=None,
+                message=f"Missing required configuration file: {config.path}",
+                path=config.path,
+            )
+        ]
 
+    errors: list[ConfigIssue] = []
+    missing_keys: set[str] = set()
+    for key in profile_config.required_file_values:
+        if not config.has_file_value(key):
+            missing_keys.add(key)
+            errors.append(ConfigIssue(
+                kind="missing_key",
+                key=key,
+                message=f"Missing required setting in {config.path}: {key}",
+                path=config.path,
+            ))
+    for key in profile_config.required_values:
+        if not config.has_value(key):
+            missing_keys.add(key)
+            errors.append(ConfigIssue(
+                kind="missing_key",
+                key=key,
+                message=f"Missing required setting in {config.path}: {key}",
+                path=config.path,
+            ))
 
-def validate_config_values(values: dict[str, str], *, profile: str) -> list[ConfigValidationError]:
-    errors: list[ConfigValidationError] = []
-    for key in CONFIG_VALIDATION_PROFILES[profile]:
+    for key in profile_config.validated_keys:
+        if key in missing_keys:
+            continue
         validator = CONFIG_VALIDATORS.get(key)
         if validator is None:
             continue
-        error = validator(values.get(key, ""), key)
+        error = validator(config.get(key, ""), key)
         if error:
-            errors.append(ConfigValidationError(key, error))
-    if profile in {"deploy", "activate", "doctor"}:
+            errors.append(ConfigIssue(
+                kind="invalid_value",
+                key=key,
+                message=error,
+                path=config.path,
+            ))
+    if profile_config.cross_check_syap_model and "TC_AIRPORT_SYAP" not in missing_keys and "TC_MDNS_DEVICE_MODEL" not in missing_keys:
         syap_model_error = validate_mdns_device_model_matches_syap(
-            values.get("TC_AIRPORT_SYAP", ""),
-            values.get("TC_MDNS_DEVICE_MODEL", ""),
+            config.get("TC_AIRPORT_SYAP", ""),
+            config.get("TC_MDNS_DEVICE_MODEL", ""),
         )
         if syap_model_error:
-            errors.append(ConfigValidationError("TC_MDNS_DEVICE_MODEL", syap_model_error))
+            errors.append(ConfigIssue(
+                kind="inconsistent_values",
+                key="TC_MDNS_DEVICE_MODEL",
+                message=syap_model_error,
+                path=config.path,
+            ))
     return errors
 
 
-def require_valid_config(values: dict[str, str], *, profile: str) -> None:
-    errors = validate_config_values(values, profile=profile)
+def require_valid_app_config(config: AppConfig, *, profile: str, command_name: str | None = None) -> None:
+    errors = validate_app_config(config, profile=profile)
     if errors:
-        raise SystemExit(errors[0].format_for_cli())
+        raise SystemExit(errors[0].format_for_cli(command_name=command_name))
 
 
 def render_env_text(values: dict[str, str]) -> str:
@@ -523,28 +635,3 @@ def render_env_text(values: dict[str, str]) -> str:
 
 def write_env_file(path: Path, values: dict[str, str]) -> None:
     path.write_text(render_env_text(values))
-
-
-def upsert_env_key(path: Path, key: str, value: str) -> None:
-    rendered = f"{key}={shell_quote(value)}"
-    try:
-        lines = path.read_text().splitlines()
-    except FileNotFoundError:
-        path.write_text(f"{CONFIG_HEADER.rstrip()}\n\n{rendered}\n")
-        return
-
-    updated = False
-    new_lines: list[str] = []
-    for line in lines:
-        if line.strip().startswith(f"{key}="):
-            if not updated:
-                new_lines.append(rendered)
-                updated = True
-            continue
-        new_lines.append(line)
-    if not updated:
-        if new_lines and new_lines[-1] != "":
-            new_lines.append("")
-        new_lines.append(rendered)
-    new_lines.append("")
-    path.write_text("\n".join(new_lines))

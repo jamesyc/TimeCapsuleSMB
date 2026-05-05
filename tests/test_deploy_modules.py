@@ -34,11 +34,7 @@ from timecapsulesmb.deploy.dry_run import format_deployment_plan
 from timecapsulesmb.deploy.executor import (
     DETACHED_REBOOT_COMMAND,
     REBOOT_REQUEST_TIMEOUT_SECONDS,
-    remote_enable_nbns,
     remote_ensure_adisk_uuid,
-    remote_initialize_data_root,
-    remote_install_permissions,
-    remote_prepare_dirs,
     remote_request_reboot,
     remote_uninstall_payload,
     upload_deployment_payload,
@@ -60,6 +56,7 @@ from timecapsulesmb.deploy.verify import (
     verify_managed_runtime,
     verify_post_uninstall,
 )
+from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.device.probe import (
     ManagedMdnsTakeoverProbeResult,
     ManagedRuntimeProbeResult,
@@ -80,6 +77,9 @@ from timecapsulesmb.transport.ssh import SshConnection
 
 
 class DeployModuleTests(unittest.TestCase):
+    def _template_config(self, values: dict[str, str]) -> AppConfig:
+        return AppConfig.from_values(values)
+
     def _compile_and_run_c_helper(self, source: str, bin_name: str, args: list[str] | None = None) -> subprocess.CompletedProcess[str]:
         if shutil.which("cc") is None:
             self.skipTest("cc not available")
@@ -191,7 +191,7 @@ class DeployModuleTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         self.assertIn("__SMB_SHARE_NAME__", bundle.start_script_replacements)
         self.assertIn("__SMB_SAMBA_USER__", bundle.smbconf_replacements)
         self.assertIn("__CACHE_DIRECTORY__", bundle.start_script_replacements)
@@ -217,7 +217,7 @@ class DeployModuleTests(unittest.TestCase):
             "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         self.assertEqual(bundle.start_script_replacements["__MDNS_DEVICE_MODEL__"], "TimeCapsule")
         self.assertEqual(bundle.start_script_replacements["__AIRPORT_SYAP__"], "''")
 
@@ -468,7 +468,7 @@ class DeployModuleTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn('MDNS_DEVICE_MODEL=AirPortTimeCapsule', rendered)
         self.assertIn("AIRPORT_SYAP=119", rendered)
@@ -517,7 +517,7 @@ class DeployModuleTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         capture_start = rendered.index("start_mdns_capture()")
         capture_end = rendered.index("wait_for_mdns_capture()")
@@ -619,7 +619,7 @@ class DeployModuleTests(unittest.TestCase):
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         main_start = rendered.index("cleanup_old_runtime")
         main_section = rendered[main_start:]
@@ -657,7 +657,7 @@ class DeployModuleTests(unittest.TestCase):
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         wait_section = rendered[rendered.index("wait_for_existing_mount_target()"):rendered.index("try_mount_candidate()")]
 
@@ -714,7 +714,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values, apple_mount_wait_seconds=123)
+        bundle = build_template_bundle(self._template_config(values), apple_mount_wait_seconds=123)
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn("APPLE_MOUNT_WAIT_SECONDS=123", rendered)
 
@@ -729,7 +729,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         main_section = rendered[rendered.index("\ncleanup_old_runtime\nif ! prepare_locks_ramdisk; then"):]
         smbd_start = main_section.index("start_smbd || {")
@@ -749,7 +749,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         main_section = rendered[rendered.index("\ncleanup_old_runtime\nif ! prepare_locks_ramdisk; then"):]
         smbd_ready = main_section.index('log "smbd startup complete: process observed"')
@@ -767,7 +767,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn("mount_fallback_volume()", rendered)
         self.assertIn("resolve_data_root_on_mounted_volume()", rendered)
@@ -786,7 +786,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         pre_mount_start = rendered.index("discover_preexisting_data_root()")
         pre_mount_end = rendered.index("resolve_data_root_on_mounted_volume()")
@@ -804,7 +804,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         start = rendered.index("find_existing_data_root() {")
         end = rendered.index("\nfind_existing_volume_root() {")
@@ -826,7 +826,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         mounted_check = rendered.index('if is_volume_root_mounted "$volume_root"; then')
         initialize = rendered.index('initialize_data_root_under_volume "$volume_root"')
@@ -843,7 +843,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         share_marker = rendered.index('if [ -f "$volume_root/ShareRoot/.com.apple.timemachine.supported" ]; then')
         shared_marker = rendered.index('if [ -f "$volume_root/Shared/.com.apple.timemachine.supported" ]; then')
@@ -864,7 +864,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         mount_start = rendered.index("mount_fallback_volume()")
         mount_section = rendered[mount_start:rendered.index("\nfind_payload_dir()")]
@@ -884,7 +884,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn('log "no Apple-mounted usable volume found; falling back to manual mount"', rendered)
 
@@ -899,7 +899,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn('log "data root resolved after manual mount: $DATA_ROOT"', rendered)
 
@@ -914,7 +914,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn('log "initialized ShareRoot under $volume_root"', rendered)
 
@@ -929,7 +929,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn('log "found Apple-mounted data root: $data_root"', rendered)
 
@@ -944,7 +944,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn('while [ "$attempt" -lt 60 ]; do', rendered)
 
@@ -959,7 +959,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn('log "mdns skipped; missing $NET_IFACE MAC address"', rendered)
         self.assertIn('log "mdns advertiser failed to stay running"', rendered)
@@ -975,7 +975,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn('log "nbns responder skipped; marker missing"', rendered)
 
@@ -990,7 +990,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn('log "nbns responder launch skipped; missing runtime binary"', rendered)
         self.assertIn('log "nbns responder failed to stay running"', rendered)
@@ -1006,7 +1006,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         nbns_start = rendered.index("start_nbns()")
         nbns_end = rendered.index("\ncleanup_old_runtime\nif ! prepare_locks_ramdisk; then")
@@ -1027,7 +1027,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn('log "payload discovery failed: missing payload directory under mounted volume"', rendered)
         self.assertIn('log "payload discovery failed: missing smbd binary in $PAYLOAD_DIR"', rendered)
@@ -1044,7 +1044,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         payload_start = rendered.index("find_payload_dir()")
         payload_end = rendered.index("find_payload_smbd()")
@@ -1068,7 +1068,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn("passdb backend = smbpasswd:$PAYLOAD_DIR/private/smbpasswd", rendered)
         self.assertIn("username map = $PAYLOAD_DIR/private/username.map", rendered)
@@ -1090,7 +1090,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn('log "disk discovery failed: no fallback data volume mounted"', rendered)
         self.assertIn('log "data root resolution failed on mounted volume $VOLUME_ROOT"', rendered)
@@ -1106,7 +1106,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         mount_start = rendered.index("mount_fallback_volume()")
         mount_end = rendered.index("find_payload_dir()")
@@ -1124,7 +1124,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         recovery_start = rendered.index("resolve_data_root_on_mounted_volume()")
         recovery_end = rendered.index("wait_for_existing_mount_target()")
@@ -1142,7 +1142,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         candidate_start = rendered.index("try_mount_candidate()")
         candidate_end = rendered.index("mount_fallback_volume()")
@@ -1162,7 +1162,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         mount_start = rendered.index("mount_device_if_possible()")
         mount_end = rendered.index("discover_preexisting_data_root()")
@@ -1191,7 +1191,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn('"$RAM_SBIN/smbd" -D -s "$RAM_ETC/smb.conf"', rendered)
         self.assertIn('if wait_for_process smbd 15; then', rendered)
@@ -1213,7 +1213,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertNotIn("stage_runtime_helper", rendered)
         self.assertNotIn("find_payload_runtime_helper", rendered)
@@ -1231,7 +1231,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         helper_start = rendered.index("prepare_local_hostname_resolution()")
         helper_end = rendered.index("start_smbd()")
@@ -1266,7 +1266,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("smb.conf.template", bundle.smbconf_replacements)
         self.assertIn("cache directory = /mnt/Memory/samba4/var", rendered)
         self.assertIn("lock directory = /mnt/Locks", rendered)
@@ -1295,7 +1295,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values, debug_logging=True)
+        bundle = build_template_bundle(self._template_config(values), debug_logging=True)
         rendered = render_template("smb.conf.template", bundle.smbconf_replacements)
         self.assertIn("log file = __DATA_ROOT__/samba4-logs/log.smbd", rendered)
         self.assertIn("max log size = 1048576", rendered)
@@ -1313,10 +1313,10 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        normal_bundle = build_template_bundle(values)
+        normal_bundle = build_template_bundle(self._template_config(values))
         normal_rendered = render_template("start-samba.sh", normal_bundle.start_script_replacements)
         self.assertIn("SMBD_DISK_LOGGING_ENABLED=0", normal_rendered)
-        debug_bundle = build_template_bundle(values, debug_logging=True, data_root="/Volumes/dk2/ShareRoot")
+        debug_bundle = build_template_bundle(self._template_config(values), debug_logging=True, data_root="/Volumes/dk2/ShareRoot")
         debug_rendered = render_template("start-samba.sh", debug_bundle.start_script_replacements)
 
         self.assertIn("SMBD_DISK_LOGGING_ENABLED=1", debug_rendered)
@@ -1337,7 +1337,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values, debug_logging=True, data_root="/Volumes/dk2/ShareRoot")
+        bundle = build_template_bundle(self._template_config(values), debug_logging=True, data_root="/Volumes/dk2/ShareRoot")
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         main_section = rendered[rendered.index("cleanup_old_runtime"):]
 
@@ -1355,7 +1355,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values, payload_family="netbsd4le_samba4")
+        bundle = build_template_bundle(self._template_config(values), payload_family="netbsd4le_samba4")
         rendered = render_template("smb.conf.template", bundle.smbconf_replacements)
         self.assertIn("cache directory = __PAYLOAD_DIR__/cache", rendered)
         self.assertIn("lock directory = /mnt/Locks", rendered)
@@ -1375,7 +1375,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values, payload_family="netbsd4le_samba4")
+        bundle = build_template_bundle(self._template_config(values), payload_family="netbsd4le_samba4")
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn("CACHE_DIRECTORY=$PAYLOAD_DIR/cache", rendered)
         self.assertIn("cache directory = $CACHE_DIRECTORY", rendered)
@@ -1394,7 +1394,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn("SHARE_USE_DISK_ROOT=false", rendered)
         discover_start = rendered.index("discover_preexisting_data_root()")
@@ -1425,7 +1425,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values, share_use_disk_root=True)
+        bundle = build_template_bundle(self._template_config(values), share_use_disk_root=True)
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         self.assertIn("SHARE_USE_DISK_ROOT=true", rendered)
         discover_start = rendered.index("discover_preexisting_data_root()")
@@ -1461,7 +1461,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values, payload_family="netbsd4le_samba4")
+        bundle = build_template_bundle(self._template_config(values), payload_family="netbsd4le_samba4")
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         data_root_index = rendered.index('if DATA_ROOT=$(discover_preexisting_data_root); then')
         payload_index = rendered.index('PAYLOAD_DIR=$(find_payload_dir "$DATA_ROOT") || {')
@@ -1480,7 +1480,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values, payload_family="netbsd4le_samba4")
+        bundle = build_template_bundle(self._template_config(values), payload_family="netbsd4le_samba4")
         rendered = render_template("smb.conf.template", bundle.smbconf_replacements)
         self.assertIn("cache directory = __PAYLOAD_DIR__/cache", rendered)
         self.assertNotIn("__CACHE_DIRECTORY__", rendered)
@@ -1498,7 +1498,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_AIRPORT_SYAP": "119",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("watchdog.sh", bundle.watchdog_replacements)
         self.assertIn('MDNS_DEVICE_MODEL=AirPortTimeCapsule', rendered)
         self.assertIn('AIRPORT_SYAP=119', rendered)
@@ -1544,7 +1544,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("watchdog.sh", bundle.watchdog_replacements)
         self.assertIn("RECOVERY_POLL_SECONDS=10", rendered)
         self.assertIn("STEADY_POLL_SECONDS=300", rendered)
@@ -1567,7 +1567,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("watchdog.sh", bundle.watchdog_replacements)
         self.assertIn("nbns_enabled()", rendered)
         self.assertIn('if nbns_enabled; then', rendered)
@@ -1584,7 +1584,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values)
+        bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("watchdog.sh", bundle.watchdog_replacements)
         restart_start = rendered.index("restart_nbns()")
         restart_end = rendered.index("nbns_enabled()")
@@ -1605,7 +1605,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
             "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
             "TC_SAMBA_USER": "admin",
         }
-        bundle = build_template_bundle(values, adisk_disk_key="dk3", adisk_uuid="12345678-1234-1234-1234-123456789012")
+        bundle = build_template_bundle(self._template_config(values), adisk_disk_key="dk3", adisk_uuid="12345678-1234-1234-1234-123456789012")
         self.assertEqual(bundle.start_script_replacements["__ADISK_DISK_KEY__"], "dk3")
         self.assertEqual(bundle.start_script_replacements["__ADISK_UUID__"], "12345678-1234-1234-1234-123456789012")
 
@@ -2561,39 +2561,6 @@ int main(void) {{
         self.assertFalse(result.ssh_authenticated)
         self.assertEqual(result.error, "SSH is not reachable yet.")
 
-    def test_remote_prepare_dirs_builds_expected_command(self) -> None:
-        connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
-            remote_prepare_dirs(connection, "/Volumes/dk2/samba4")
-        command = run_ssh_mock.call_args.args[1]
-        self.assertEqual(command, render_remote_action(prepare_dirs_action("/Volumes/dk2/samba4")))
-
-    def test_remote_initialize_data_root_builds_expected_command(self) -> None:
-        connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
-            remote_initialize_data_root(
-                connection,
-                "/Volumes/dk2/ShareRoot",
-                "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported",
-            )
-        command = run_ssh_mock.call_args.args[1]
-        self.assertEqual(
-            command,
-            render_remote_action(
-                initialize_data_root_action(
-                    "/Volumes/dk2/ShareRoot",
-                    "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported",
-                )
-            ),
-        )
-
-    def test_remote_install_permissions_builds_expected_command(self) -> None:
-        connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
-            remote_install_permissions(connection, "/Volumes/dk2/samba4")
-        command = run_ssh_mock.call_args.args[1]
-        self.assertEqual(command, render_remote_action(install_permissions_action("/Volumes/dk2/samba4")))
-
     def test_remote_ensure_adisk_uuid_reuses_existing_file(self) -> None:
         connection = SshConnection("host", "pw", "-o foo")
         with mock.patch("timecapsulesmb.deploy.executor.run_ssh", return_value=mock.Mock(stdout="12345678-1234-1234-1234-123456789012\n")):
@@ -2611,12 +2578,6 @@ int main(void) {{
                     result = remote_ensure_adisk_uuid(connection, "/Volumes/dk2/samba4/private")
         self.assertEqual(result, str(fixed_uuid))
         self.assertEqual(scp_mock.call_count, 1)
-
-    def test_remote_enable_nbns_creates_marker_without_touch(self) -> None:
-        connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
-            remote_enable_nbns(connection, "/Volumes/dk2/samba4/private")
-        self.assertEqual(run_ssh_mock.call_args.args[1], render_remote_action(enable_nbns_action("/Volumes/dk2/samba4/private")))
 
     def test_upload_deployment_payload_uploads_all_expected_files(self) -> None:
         paths = build_device_paths("/Volumes/dk2", "samba4")
@@ -2650,6 +2611,10 @@ int main(void) {{
                 "/Volumes/dk2/samba4/smb.conf.template",
             ],
         )
+        binary_upload_timeouts = [call.kwargs.get("timeout") for call in scp_mock.call_args_list[:4]]
+        self.assertEqual(binary_upload_timeouts, [180, 180, 180, 180])
+        text_upload_timeouts = [call.kwargs.get("timeout") for call in scp_mock.call_args_list[4:]]
+        self.assertEqual(text_upload_timeouts, [None, None, None, None, None, None])
 
     def test_verify_managed_runtime_passes_when_runtime_probe_succeeds(self) -> None:
         result = ManagedRuntimeProbeResult(
@@ -2910,12 +2875,11 @@ int main(void) {{
         self.assertIn("'/Volumes/dk2/Time Capsule ShareRoot'", initialize_cmd)
         self.assertIn("'/Volumes/dk2/Time Capsule ShareRoot/.com.apple.timemachine.supported'", initialize_cmd)
 
-    def test_deployment_plan_and_executor_share_permission_command_generation(self) -> None:
+    def test_deployment_plan_uses_install_permissions_action(self) -> None:
         payload_dir = "/Volumes/dk2/Time Capsule Samba 4"
-        connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
-            remote_install_permissions(connection, payload_dir)
-        self.assertEqual(run_ssh_mock.call_args.args[1], render_remote_action(install_permissions_action(payload_dir)))
+        paths = build_device_paths("/Volumes/dk2", "Time Capsule Samba 4")
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
+        self.assertIn(install_permissions_action(payload_dir), plan.post_auth_actions)
 
     def test_remote_uninstall_payload_runs_actions_sequentially(self) -> None:
         paths = build_device_paths("/Volumes/dk2", "samba4")

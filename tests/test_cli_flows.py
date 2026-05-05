@@ -18,6 +18,11 @@ from timecapsulesmb.cli.flows import (
     request_reboot_and_wait,
     verify_managed_runtime_flow,
 )
+from timecapsulesmb.device.probe import (
+    ManagedMdnsTakeoverProbeResult,
+    ManagedRuntimeProbeResult,
+    ManagedSmbdProbeResult,
+)
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
 
 
@@ -48,6 +53,19 @@ class FakeCommandContext:
 class CliFlowTests(unittest.TestCase):
     def make_connection(self) -> SshConnection:
         return SshConnection("root@10.0.0.2", "pw", "-o foo")
+
+    def managed_runtime_probe(self, ready: bool) -> ManagedRuntimeProbeResult:
+        status = "PASS" if ready else "FAIL"
+        detail = "managed runtime is ready" if ready else "managed runtime is not ready"
+        smbd = ManagedSmbdProbeResult(ready, detail, (f"{status}:managed smbd ready",))
+        mdns = ManagedMdnsTakeoverProbeResult(ready, detail, (f"{status}:managed mDNS takeover active",))
+        return ManagedRuntimeProbeResult(
+            ready=ready,
+            detail=detail,
+            smbd=smbd,
+            mdns=mdns,
+            lines=smbd.lines + mdns.lines,
+        )
 
     def test_request_reboot_and_wait_succeeds_after_normal_reboot_request(self) -> None:
         command_context = FakeCommandContext()
@@ -145,7 +163,7 @@ class CliFlowTests(unittest.TestCase):
 
     def test_verify_managed_runtime_flow_succeeds_when_runtime_ready(self) -> None:
         command_context = FakeCommandContext()
-        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=True) as verify_mock:
+        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(True)) as verify_mock:
             ok = verify_managed_runtime_flow(
                 self.make_connection(),
                 command_context,
@@ -163,7 +181,7 @@ class CliFlowTests(unittest.TestCase):
     def test_verify_managed_runtime_flow_fails_when_runtime_not_ready(self) -> None:
         command_context = FakeCommandContext()
         output = io.StringIO()
-        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=False):
+        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(False)):
             with redirect_stdout(output):
                 ok = verify_managed_runtime_flow(
                     self.make_connection(),
