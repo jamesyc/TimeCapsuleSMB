@@ -6,8 +6,8 @@
 #
 # Quick start:
 #   1) ./tcapsule bootstrap
-#   2) .venv/bin/tcapsule prep-device
-#   3) .venv/bin/tcapsule configure
+#   2) .venv/bin/tcapsule configure
+#   3) .venv/bin/tcapsule prep-device
 #
 # Targets:
 #   make venv                    - create local virtualenv at .venv

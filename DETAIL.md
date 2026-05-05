@@ -232,11 +232,6 @@ Current maintainer build lanes:
   - [build/mdnsoldbe.sh](build/mdnsoldbe.sh)
   - [build/nbnsoldle.sh](build/nbnsoldle.sh)
   - [build/nbnsoldbe.sh](build/nbnsoldbe.sh)
-- NetBSD 4 Samba 3 exploratory lane:
-  - [build/downloadsamba3oldle.sh](build/downloadsamba3oldle.sh)
-  - [build/downloadsamba3oldbe.sh](build/downloadsamba3oldbe.sh)
-  - [build/samba3oldle.sh](build/samba3oldle.sh)
-  - [build/samba3oldbe.sh](build/samba3oldbe.sh)
 
 The direct scripts target the NetBSD 7 lane by default. The `*oldle.sh` and `*oldbe.sh` wrappers select the NetBSD 4 little-endian and big-endian lanes.
 
@@ -921,7 +916,6 @@ Current important outputs:
 - [bin/samba4/smbd](bin/samba4/smbd)
 - [bin/samba4-netbsd4le/smbd](bin/samba4-netbsd4le/smbd)
 - [bin/samba4-netbsd4be/smbd](bin/samba4-netbsd4be/smbd)
-- [bin/samba3-netbsd4le/smbd](bin/samba3-netbsd4le/smbd)
 - [bin/mdns/mdns-advertiser](bin/mdns/mdns-advertiser)
 - [bin/mdns-netbsd4le/mdns-advertiser](bin/mdns-netbsd4le/mdns-advertiser)
 - [bin/mdns-netbsd4be/mdns-advertiser](bin/mdns-netbsd4be/mdns-advertiser)
@@ -935,7 +929,6 @@ Current active deploy artifact sizes:
 - NetBSD 6 `nbns-advertiser`: about `184K`
 - NetBSD 4 little-endian `smbd`: about `11M`
 - NetBSD 4 big-endian `smbd`: about `11M`
-- NetBSD 4 little-endian `samba3 smbd`: about `8.0M`
 - NetBSD 4 little-endian `mdns-advertiser`: about `186K`
 - NetBSD 4 big-endian `mdns-advertiser`: about `185K`
 - NetBSD 4 little-endian `nbns-advertiser`: about `113K`
@@ -963,10 +956,6 @@ Current validated maintainer flows:
   - [build/bootstrapoldle.sh](build/bootstrapoldle.sh)
   - [build/hellooldle.sh](build/hellooldle.sh)
   - [build/hellooldbe.sh](build/hellooldbe.sh)
-  - [build/downloadsamba3oldle.sh](build/downloadsamba3oldle.sh)
-  - [build/downloadsamba3oldbe.sh](build/downloadsamba3oldbe.sh)
-  - [build/samba3oldle.sh](build/samba3oldle.sh)
-  - [build/samba3oldbe.sh](build/samba3oldbe.sh)
   - [build/downloadsamba4oldle.sh](build/downloadsamba4oldle.sh)
   - [build/downloadsamba4oldbe.sh](build/downloadsamba4oldbe.sh)
   - [build/samba4oldle.sh](build/samba4oldle.sh)
