@@ -169,11 +169,15 @@ Run:
 
 This is a non-destructive diagnostic command. `tcapsule doctor` checks:
 
-- that your `.env` is complete and valid
 - that the required local tools exist
+- that your `.env` exists, is complete, and is valid
 - that the checked-in binaries are present and match the expected checksums
 - that SSH is reachable
-- that the configured remote network interface and managed target look sane
+- that the configured remote network interface, detected device compatibility, and selected payload family look sane
+- that the managed runtime is up:
+  - `smbd` is running and bound to TCP 445
+  - the managed mDNS takeover is active
+  - the optional NBNS responder is checked when enabled
 - what the box is currently advertising and serving for:
   - Bonjour instance name
   - Bonjour host label
@@ -183,6 +187,7 @@ This is a non-destructive diagnostic command. `tcapsule doctor` checks:
 - that Bonjour `_smb._tcp` advertisement is visible and resolves
 - that an authenticated SMB listing actually works and includes the configured share name
 - that authenticated SMB file operations also work on the share
+- that `xattr_tdb:file` in the active Samba config points at persistent storage instead of the RAM disk
 
 If you want the results in JSON instead of human-readable text, use:
 
@@ -198,7 +203,7 @@ Run:
 .venv/bin/tcapsule uninstall
 ```
 
-This removes the managed TimeCapsuleSMB payload from the internal disk and removes the loader files from `/mnt/Flash`. Apple wipes the filesystem on the device after every reboot, except for `/mnt/Flash`, so that's where we install the loader script. If you delete the 6 non-Apple files we put in `/mnt/Flash`, and delete the `.samba` folder on the hard drive, and then reboot, you can restore your machine to factory clean condition. 
+This removes the managed TimeCapsuleSMB payload from the internal disk and removes the loader files from `/mnt/Flash`. Apple wipes the filesystem on the device after every reboot, except for `/mnt/Flash`, so that's where we install the loader script. If you delete the 6 non-Apple files we put in `/mnt/Flash`, and delete the `.samba4` folder on the hard drive, and then reboot, you can restore your machine to factory clean condition.
 
 By default `uninstall` asks before rebooting the Time Capsule. If you want to skip the reboot confirmation prompt, use:
 
@@ -351,6 +356,13 @@ The checked-in binaries are already built. If you want to rebuild them yourself,
 The main build outputs are:
 
 - [bin/samba4/smbd](bin/samba4/smbd)
+- [bin/samba4-netbsd4le/smbd](bin/samba4-netbsd4le/smbd)
+- [bin/samba4-netbsd4be/smbd](bin/samba4-netbsd4be/smbd)
 - [bin/mdns/mdns-advertiser](bin/mdns/mdns-advertiser)
+- [bin/mdns-netbsd4le/mdns-advertiser](bin/mdns-netbsd4le/mdns-advertiser)
+- [bin/mdns-netbsd4be/mdns-advertiser](bin/mdns-netbsd4be/mdns-advertiser)
+- [bin/nbns/nbns-advertiser](bin/nbns/nbns-advertiser)
+- [bin/nbns-netbsd4le/nbns-advertiser](bin/nbns-netbsd4le/nbns-advertiser)
+- [bin/nbns-netbsd4be/nbns-advertiser](bin/nbns-netbsd4be/nbns-advertiser)
 
 If you want the actual engineering details, read [DETAIL.md](DETAIL.md)
