@@ -30,6 +30,9 @@ from timecapsulesmb.core.config import (
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
 from timecapsulesmb.device.probe import (
     MountedVolume,
+    ManagedMdnsTakeoverProbeResult,
+    ManagedRuntimeProbeResult,
+    ManagedSmbdProbeResult,
     ProbeResult,
     ProbedDeviceState,
     RemoteInterfaceCandidate,
@@ -38,6 +41,7 @@ from timecapsulesmb.device.probe import (
 )
 from timecapsulesmb.deploy.executor import DETACHED_REBOOT_COMMAND
 from timecapsulesmb.deploy.templates import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
+from timecapsulesmb.deploy.verify import VerificationResult
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourServiceInstance, Discovered
 from timecapsulesmb.cli.version_check import DEFAULT_DOWNLOAD_URL, VERSION_CHECK_URL, VersionCheckResult
@@ -144,11 +148,24 @@ class FakeCommandContext:
 
 
 class CliTests(unittest.TestCase):
+    def managed_runtime_probe(self, ready: bool) -> ManagedRuntimeProbeResult:
+        status = "PASS" if ready else "FAIL"
+        detail = "managed runtime is ready" if ready else "managed runtime is not ready"
+        smbd = ManagedSmbdProbeResult(ready, detail, (f"{status}:managed smbd ready",))
+        mdns = ManagedMdnsTakeoverProbeResult(ready, detail, (f"{status}:managed mDNS takeover active",))
+        return ManagedRuntimeProbeResult(
+            ready=ready,
+            detail=detail,
+            smbd=smbd,
+            mdns=mdns,
+            lines=smbd.lines + mdns.lines,
+        )
+
     def setUp(self) -> None:
         self._exit_stack = ExitStack()
         self._telemetry_client = mock.Mock()
         for target in (
-            "timecapsulesmb.cli.configure.TelemetryClient.from_values",
+            "timecapsulesmb.cli.configure.TelemetryClient.from_config",
             "timecapsulesmb.cli.deploy.TelemetryClient.from_config",
             "timecapsulesmb.cli.activate.TelemetryClient.from_config",
             "timecapsulesmb.cli.doctor.TelemetryClient.from_config",
@@ -743,7 +760,7 @@ class CliTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
                             with mock.patch("timecapsulesmb.cli.configure.confirm", return_value=True):
                                 with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
-                                    with mock.patch("timecapsulesmb.cli.configure.TelemetryClient.from_values") as telemetry_factory:
+                                    with mock.patch("timecapsulesmb.cli.configure.TelemetryClient.from_config") as telemetry_factory:
                                         with mock.patch("timecapsulesmb.cli.configure.CommandContext", return_value=command_context) as command_context_factory:
                                             with redirect_stdout(output):
                                                 rc = configure.main([])
@@ -751,7 +768,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(fake_values["TC_SAMBA_USER"], "admin")
         self.assertEqual(fake_values["TC_SHARE_USE_DISK_ROOT"], "false")
         uuid.UUID(fake_values["TC_CONFIGURE_ID"])
-        telemetry_values = telemetry_factory.call_args.args[0]
+        telemetry_values = telemetry_factory.call_args.args[0].values
         self.assertEqual(telemetry_values["TC_CONFIGURE_ID"], fake_values["TC_CONFIGURE_ID"])
         self.assertEqual(command_context_factory.call_args.kwargs["configure_id"], fake_values["TC_CONFIGURE_ID"])
         command_context.finish.assert_called_once()
@@ -951,7 +968,7 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value={"TC_HOST": "root@10.0.0.2"}):
                     with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                         with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=KeyboardInterrupt):
-                            with mock.patch("timecapsulesmb.cli.configure.TelemetryClient.from_values"):
+                            with mock.patch("timecapsulesmb.cli.configure.TelemetryClient.from_config"):
                                 with self.assertRaises(KeyboardInterrupt):
                                     configure.main([])
             text = env_path.read_text()
@@ -4602,7 +4619,7 @@ class CliTests(unittest.TestCase):
                 )
             )
             wait_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]))
-            verify_runtime_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=True))
+            verify_runtime_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(True)))
             with redirect_stdout(output):
                 rc = deploy.main([])
 
@@ -4714,7 +4731,7 @@ class CliTests(unittest.TestCase):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
                                         with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"):
                                             with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]):
-                                                with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=True) as verify_runtime_mock:
+                                                with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(True)) as verify_runtime_mock:
                                                     with mock.patch("builtins.input", return_value="y"):
                                                         with redirect_stdout(output):
                                                             rc = deploy.main([])
@@ -4755,7 +4772,7 @@ class CliTests(unittest.TestCase):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
                                         with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"):
                                             with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]):
-                                                with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=False) as verify_runtime_mock:
+                                                with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(False)) as verify_runtime_mock:
                                                     with mock.patch("builtins.input", return_value="y"):
                                                         with redirect_stdout(output):
                                                             rc = deploy.main([])
@@ -4793,7 +4810,7 @@ class CliTests(unittest.TestCase):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
                                         with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"):
                                             with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]):
-                                                with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=False) as verify_runtime_mock:
+                                                with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(False)) as verify_runtime_mock:
                                                     with mock.patch("builtins.input", return_value="y"):
                                                         with redirect_stdout(output):
                                                             rc = deploy.main([])
@@ -4962,7 +4979,7 @@ class CliTests(unittest.TestCase):
                                 with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
                                     with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
                                         with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
-                                            with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=True):
+                                            with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(True)):
                                                 with redirect_stdout(output):
                                                     rc = deploy.main([])
         self.assertEqual(rc, 0)
@@ -4998,7 +5015,7 @@ class CliTests(unittest.TestCase):
                                 with mock.patch("timecapsulesmb.cli.deploy.build_template_bundle", return_value=template_bundle) as template_mock:
                                     with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
                                         with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
-                                            with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=True):
+                                            with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(True)):
                                                 rc = deploy.main(["--yes", "--no-reboot"])
         self.assertEqual(rc, 0)
         template_mock.assert_called_once()
@@ -5106,7 +5123,7 @@ class CliTests(unittest.TestCase):
                             with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
                                 with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
-                                        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=True) as verify_mock:
+                                        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(True)) as verify_mock:
                                             with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as run_ssh_mock:
                                                 with redirect_stdout(output):
                                                     rc = deploy.main(["--yes"])
@@ -5151,7 +5168,7 @@ class CliTests(unittest.TestCase):
                             with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
                                 with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
-                                        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=True):
+                                        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(True)):
                                             with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as run_ssh_mock:
                                                 with redirect_stdout(output):
                                                     rc = deploy.main(["--yes", "--no-reboot"])
@@ -5185,7 +5202,7 @@ class CliTests(unittest.TestCase):
                             with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
                                 with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
                                     with mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"):
-                                        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=False):
+                                        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(False)):
                                             with redirect_stdout(output):
                                                 rc = deploy.main(["--yes"])
         self.assertEqual(rc, 1)
@@ -5735,7 +5752,7 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("timecapsulesmb.cli.activate.probe_managed_runtime_conn", return_value=mock.Mock(ready=False)):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
-                        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=True) as verify_mock:
+                        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(True)) as verify_mock:
                             with redirect_stdout(output):
                                 rc = activate.main(["--yes"])
         self.assertEqual(rc, 0)
@@ -5777,7 +5794,7 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                 with mock.patch("timecapsulesmb.cli.activate.probe_managed_runtime_conn", return_value=mock.Mock(ready=False)):
                     with mock.patch("timecapsulesmb.cli.activate.run_remote_actions"):
-                        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=False):
+                        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(False)):
                             with redirect_stdout(output):
                                 rc = activate.main(["--yes"])
         self.assertEqual(rc, 1)
@@ -5901,7 +5918,7 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload") as uninstall_mock:
                     with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as run_ssh_mock:
                         with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
-                            with mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall", return_value=True) as verify_mock:
+                            with mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall", return_value=VerificationResult(True, ())) as verify_mock:
                                 with redirect_stdout(output):
                                     rc = uninstall.main(["--yes"])
         self.assertEqual(rc, 0)
@@ -5933,7 +5950,7 @@ class CliTests(unittest.TestCase):
                 )
             )
             wait_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]))
-            verify_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall", return_value=True))
+            verify_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall", return_value=VerificationResult(True, ())))
             with redirect_stdout(output):
                 rc = uninstall.main(["--yes"])
 
@@ -6047,7 +6064,7 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"):
                     with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"):
                         with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]):
-                            with mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall", return_value=False):
+                            with mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall", return_value=VerificationResult(False, ())):
                                 with redirect_stdout(output):
                                     rc = uninstall.main(["--yes"])
         self.assertEqual(rc, 1)

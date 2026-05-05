@@ -16,7 +16,7 @@ from timecapsulesmb.checks.smb_config import (  # noqa: E402
     parse_active_share_names,
     parse_xattr_tdb_paths,
 )
-from timecapsulesmb.checks.smb_targets import configured_smb_server, doctor_smb_servers  # noqa: E402
+from timecapsulesmb.checks.smb_targets import doctor_smb_servers  # noqa: E402
 from timecapsulesmb.core.config import AppConfig  # noqa: E402
 
 
@@ -59,11 +59,20 @@ class DoctorHelperTests(unittest.TestCase):
 
         self.assertEqual(parse_active_share_names(smb_conf), ["Data", "Time Machine"])
 
-    def test_configured_smb_server_appends_local_only_for_single_label_hostname(self) -> None:
-        self.assertEqual(configured_smb_server("timecapsulesamba4"), "timecapsulesamba4.local")
-        self.assertEqual(configured_smb_server("timecapsulesamba4.local"), "timecapsulesamba4.local")
-        self.assertEqual(configured_smb_server("10.0.1.99"), "10.0.1.99")
-        self.assertEqual(configured_smb_server(""), "")
+    def test_doctor_smb_servers_appends_local_only_for_single_label_hostname(self) -> None:
+        base_values = {"TC_HOST": "root@10.0.1.99"}
+        self.assertEqual(
+            doctor_smb_servers(AppConfig.from_values({**base_values, "TC_MDNS_HOST_LABEL": "timecapsulesamba4"}), None),
+            ["timecapsulesamba4.local", "10.0.1.99"],
+        )
+        self.assertEqual(
+            doctor_smb_servers(AppConfig.from_values({**base_values, "TC_MDNS_HOST_LABEL": "timecapsulesamba4.local"}), None),
+            ["timecapsulesamba4.local", "10.0.1.99"],
+        )
+        self.assertEqual(
+            doctor_smb_servers(AppConfig.from_values({**base_values, "TC_MDNS_HOST_LABEL": "10.0.1.99"}), None),
+            ["10.0.1.99"],
+        )
 
     def test_doctor_smb_servers_orders_configured_bonjour_then_ssh_host_and_deduplicates(self) -> None:
         values = {

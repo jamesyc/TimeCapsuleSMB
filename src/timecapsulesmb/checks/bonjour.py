@@ -50,29 +50,21 @@ class BonjourServiceTarget:
         return host
 
 
-def _ip_literal(value: str) -> str | None:
-    candidate = value.strip()
-    if not candidate:
-        return None
-    try:
-        ipaddress.ip_address(candidate)
-    except ValueError:
-        return None
-    return candidate
-
-
 def build_bonjour_expected_identity(config: AppConfig) -> BonjourExpectedIdentity:
+    target_ip = None
+    candidate_ip = extract_host(config.get("TC_HOST")).strip()
+    if candidate_ip:
+        try:
+            ipaddress.ip_address(candidate_ip)
+        except ValueError:
+            pass
+        else:
+            target_ip = candidate_ip
     return BonjourExpectedIdentity(
         instance_name=config.require("TC_MDNS_INSTANCE_NAME"),
         host_label=config.get("TC_MDNS_HOST_LABEL") or None,
-        target_ip=_ip_literal(extract_host(config.get("TC_HOST"))),
+        target_ip=target_ip,
     )
-
-
-def _candidate_summary(instances: list[BonjourServiceInstance]) -> str:
-    if not instances:
-        return "none"
-    return "; ".join(f"{(instance.name or '-')!r}" for instance in instances)
 
 
 def discover_smb_services_detailed(
@@ -114,7 +106,15 @@ def check_smb_instance(selection: BonjourInstanceSelection) -> list[CheckResult]
             "FAIL",
             f"no discovered _smb._tcp instance matched configured instance {selection.expected_instance_name!r}",
         ),
-        CheckResult("INFO", f"discovered _smb._tcp candidates: {_candidate_summary(selection.candidates)}"),
+        CheckResult(
+            "INFO",
+            "discovered _smb._tcp candidates: "
+            + (
+                "; ".join(f"{(instance.name or '-')!r}" for instance in selection.candidates)
+                if selection.candidates
+                else "none"
+            ),
+        ),
     ]
 
 

@@ -19,6 +19,7 @@ from timecapsulesmb.configure_defaults import (
 )
 from timecapsulesmb.core.config import (
     AIRPORT_DEVICE_IDENTITIES,
+    AppConfig,
     CONFIG_VALIDATORS,
     DEFAULTS,
     ENV_PATH,
@@ -242,7 +243,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     configure_id = str(uuid.uuid4())
     telemetry_values = dict(existing)
     telemetry_values["TC_CONFIGURE_ID"] = configure_id
-    telemetry = TelemetryClient.from_values(telemetry_values)
+    telemetry = TelemetryClient.from_config(AppConfig.from_values(telemetry_values))
     values: dict[str, str] = {}
     discovered_airport_syap: Optional[str] = None
     probed_device: DeviceCompatibility | None = None

@@ -43,18 +43,6 @@ from timecapsulesmb.repair_xattrs import (
 from timecapsulesmb.telemetry import TelemetryClient
 
 
-def default_share_path() -> Optional[Path]:
-    config = load_env_config()
-    try:
-        return default_share_path_from_config(
-            config,
-            shares=mounted_smb_shares(),
-            path_exists_func=path_exists,
-        )
-    except RuntimeError as exc:
-        raise SystemExit(str(exc)) from exc
-
-
 def print_candidates(candidates: list[RepairCandidate], *, dry_run: bool) -> None:
     verb = "Would repair" if dry_run else "Repairable"
     for candidate in candidates:
@@ -102,8 +90,18 @@ def confirm(prompt: str) -> bool:
         return False
 
 
-def run_repair(args: argparse.Namespace, command_context: CommandContext) -> int:
-    root = args.path or default_share_path()
+def run_repair(args: argparse.Namespace, command_context: CommandContext, config: AppConfig) -> int:
+    if args.path is None:
+        try:
+            root = default_share_path_from_config(
+                config,
+                shares=mounted_smb_shares(),
+                path_exists_func=path_exists,
+            )
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from exc
+    else:
+        root = args.path
     if root is None:
         raise SystemExit("Could not determine mounted share path. Pass --path explicitly.")
     try:
@@ -211,7 +209,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         config = AppConfig.missing()
     telemetry = TelemetryClient.from_config(config)
     with CommandContext(telemetry, "repair-xattrs", "repair_xattrs_started", "repair_xattrs_finished", config=config, args=args) as command_context:
-        return run_repair(args, command_context)
+        return run_repair(args, command_context, config)
     return 1
 
 

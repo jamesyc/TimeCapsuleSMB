@@ -30,10 +30,7 @@ from timecapsulesmb.checks.smb_config import (
     parse_active_share_names,
     parse_xattr_tdb_paths,
 )
-from timecapsulesmb.checks.smb_targets import (
-    configured_smb_server as _configured_smb_server,
-    doctor_smb_servers as _doctor_smb_servers,
-)
+from timecapsulesmb.checks.smb_targets import doctor_smb_servers
 from timecapsulesmb.core.config import AppConfig, extract_host, validate_app_config
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, is_netbsd6_payload_family, render_compatibility_message
 from timecapsulesmb.device.probe import (
@@ -342,7 +339,7 @@ def _add_authenticated_smb_results(
             add_result(CheckResult("FAIL", f"authenticated SMB checks failed through SSH tunnel: {e}"))
         return
 
-    smb_servers = _doctor_smb_servers(config, bonjour_target)
+    smb_servers = doctor_smb_servers(config, bonjour_target)
     listing_result = check_authenticated_smb_listing(
         config.require("TC_SAMBA_USER"),
         smb_password,

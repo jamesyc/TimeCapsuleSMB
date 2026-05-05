@@ -27,7 +27,7 @@ from timecapsulesmb.checks.bonjour import (
     select_resolved_smb_record,
     select_smb_instance,
 )
-from timecapsulesmb.checks.doctor import _configured_smb_server, check_xattr_tdb_persistence, run_doctor_checks
+from timecapsulesmb.checks.doctor import check_xattr_tdb_persistence, run_doctor_checks
 from timecapsulesmb.checks.local_tools import check_required_local_tools
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.checks.network import check_ssh_login, ssh_opts_use_proxy
@@ -37,6 +37,7 @@ from timecapsulesmb.checks.smb import (
     check_authenticated_smb_listing,
     try_authenticated_smb_listing,
 )
+from timecapsulesmb.checks.smb_targets import doctor_smb_servers
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.probe import RemoteInterfaceProbeResult
@@ -172,10 +173,20 @@ class CheckTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._exit_stack.close()
 
-    def test_configured_smb_server_appends_local_only_for_single_label_hostname(self) -> None:
-        self.assertEqual(_configured_smb_server("timecapsulesamba4"), "timecapsulesamba4.local")
-        self.assertEqual(_configured_smb_server("timecapsulesamba4.local"), "timecapsulesamba4.local")
-        self.assertEqual(_configured_smb_server("10.0.1.99"), "10.0.1.99")
+    def test_doctor_smb_servers_appends_local_only_for_single_label_hostname(self) -> None:
+        base_values = {"TC_HOST": "root@10.0.1.99"}
+        self.assertEqual(
+            doctor_smb_servers(AppConfig.from_values({**base_values, "TC_MDNS_HOST_LABEL": "timecapsulesamba4"}), None),
+            ["timecapsulesamba4.local", "10.0.1.99"],
+        )
+        self.assertEqual(
+            doctor_smb_servers(AppConfig.from_values({**base_values, "TC_MDNS_HOST_LABEL": "timecapsulesamba4.local"}), None),
+            ["timecapsulesamba4.local", "10.0.1.99"],
+        )
+        self.assertEqual(
+            doctor_smb_servers(AppConfig.from_values({**base_values, "TC_MDNS_HOST_LABEL": "10.0.1.99"}), None),
+            ["10.0.1.99"],
+        )
 
     def test_build_bonjour_expected_identity_uses_instance_host_label_and_ip_literal(self) -> None:
         identity = build_bonjour_expected_identity(

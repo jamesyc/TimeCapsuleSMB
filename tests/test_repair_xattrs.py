@@ -895,25 +895,32 @@ class RepairXattrsTests(unittest.TestCase):
             repair_xattrs.MountedSmbShare("10.0.0.2", "Data", Path("/Volumes/WrongData")),
             repair_xattrs.MountedSmbShare("192.168.1.217", "Data", Path("/Volumes/Data")),
         ]
-        with mock.patch("timecapsulesmb.cli.repair_xattrs.load_env_config", return_value=self.app_config(env)):
-            with mock.patch("timecapsulesmb.cli.repair_xattrs.mounted_smb_shares", return_value=shares):
-                with mock.patch("pathlib.Path.exists", return_value=True):
-                    self.assertEqual(repair_xattrs.default_share_path(), Path("/Volumes/Data"))
+        self.assertEqual(
+            repair_xattrs_domain.default_share_path_from_config(
+                self.app_config(env),
+                shares=shares,
+                path_exists_func=lambda _path: True,
+            ),
+            Path("/Volumes/Data"),
+        )
 
     def test_default_share_path_uses_unique_matching_smb_share_when_host_label_differs(self) -> None:
         env = {"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}
         shares = [repair_xattrs.MountedSmbShare("timecapsulesamba4.local", "Data", Path("/Volumes/Data-1"))]
-        with mock.patch("timecapsulesmb.cli.repair_xattrs.load_env_config", return_value=self.app_config(env)):
-            with mock.patch("timecapsulesmb.cli.repair_xattrs.mounted_smb_shares", return_value=shares):
-                with mock.patch("pathlib.Path.exists", return_value=True):
-                    self.assertEqual(repair_xattrs.default_share_path(), Path("/Volumes/Data-1"))
+        self.assertEqual(
+            repair_xattrs_domain.default_share_path_from_config(
+                self.app_config(env),
+                shares=shares,
+                path_exists_func=lambda _path: True,
+            ),
+            Path("/Volumes/Data-1"),
+        )
 
     def test_default_share_path_ignores_afp_mount_with_matching_volume_name(self) -> None:
         env = {"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}
         mount_output = "//James%20Chang@AirPort._afpovertcp._tcp.local/Data on /Volumes/Data (afpfs, nodev)\n"
-        with mock.patch("timecapsulesmb.cli.repair_xattrs.load_env_config", return_value=self.app_config(env)):
-            with mock.patch("timecapsulesmb.repair_xattrs.run_capture", return_value=mock.Mock(returncode=0, stdout=mount_output)):
-                self.assertIsNone(repair_xattrs.default_share_path())
+        with mock.patch("timecapsulesmb.repair_xattrs.run_capture", return_value=mock.Mock(returncode=0, stdout=mount_output)):
+            self.assertIsNone(repair_xattrs_domain.default_share_path_from_config(self.app_config(env)))
 
     def test_default_share_path_ignores_inaccessible_smb_mountpoints(self) -> None:
         env = {"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}
@@ -927,10 +934,14 @@ class RepairXattrsTests(unittest.TestCase):
                 return False
             return True
 
-        with mock.patch("timecapsulesmb.cli.repair_xattrs.load_env_config", return_value=self.app_config(env)):
-            with mock.patch("timecapsulesmb.cli.repair_xattrs.mounted_smb_shares", return_value=shares):
-                with mock.patch("timecapsulesmb.cli.repair_xattrs.path_exists", side_effect=fake_path_exists):
-                    self.assertEqual(repair_xattrs.default_share_path(), Path("/Volumes/Data"))
+        self.assertEqual(
+            repair_xattrs_domain.default_share_path_from_config(
+                self.app_config(env),
+                shares=shares,
+                path_exists_func=fake_path_exists,
+            ),
+            Path("/Volumes/Data"),
+        )
 
     def test_default_share_path_rejects_ambiguous_matching_smb_shares(self) -> None:
         env = {"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}
@@ -938,22 +949,28 @@ class RepairXattrsTests(unittest.TestCase):
             repair_xattrs.MountedSmbShare("timecapsule-a.local", "Data", Path("/Volumes/Data")),
             repair_xattrs.MountedSmbShare("timecapsule-b.local", "Data", Path("/Volumes/Data-1")),
         ]
-        with mock.patch("timecapsulesmb.cli.repair_xattrs.load_env_config", return_value=self.app_config(env)):
-            with mock.patch("timecapsulesmb.cli.repair_xattrs.mounted_smb_shares", return_value=shares):
-                with mock.patch("pathlib.Path.exists", return_value=True):
-                    with self.assertRaises(SystemExit) as cm:
-                        repair_xattrs.default_share_path()
+        with self.assertRaises(RuntimeError) as cm:
+            repair_xattrs_domain.default_share_path_from_config(
+                self.app_config(env),
+                shares=shares,
+                path_exists_func=lambda _path: True,
+            )
         self.assertIn("multiple mounted SMB shares", str(cm.exception))
 
     def test_default_share_path_returns_none_when_share_missing(self) -> None:
-        with mock.patch("timecapsulesmb.cli.repair_xattrs.load_env_config", return_value=self.app_config({"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"})):
-            with mock.patch("timecapsulesmb.cli.repair_xattrs.mounted_smb_shares", return_value=[]):
-                self.assertIsNone(repair_xattrs.default_share_path())
+        self.assertIsNone(
+            repair_xattrs_domain.default_share_path_from_config(
+                self.app_config({"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}),
+                shares=[],
+            )
+        )
 
     def test_default_share_path_rejects_invalid_env_share_name(self) -> None:
-        with mock.patch("timecapsulesmb.cli.repair_xattrs.load_env_config", return_value=self.app_config({"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Bad/Share"})):
-            with self.assertRaises(SystemExit) as cm:
-                repair_xattrs.default_share_path()
+        with self.assertRaises(RuntimeError) as cm:
+            repair_xattrs_domain.default_share_path_from_config(
+                self.app_config({"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Bad/Share"}),
+                shares=[],
+            )
         self.assertIn("TC_SHARE_NAME is invalid", str(cm.exception))
 
     def test_explicit_repair_path_does_not_require_valid_env_share_name(self) -> None:
@@ -1031,9 +1048,13 @@ class RepairXattrsTests(unittest.TestCase):
 
     def test_missing_default_path_is_rejected(self) -> None:
         with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
-            with mock.patch("timecapsulesmb.cli.repair_xattrs.default_share_path", return_value=None):
-                with self.assertRaises(SystemExit) as cm:
-                    repair_xattrs.main([])
+            with mock.patch(
+                "timecapsulesmb.cli.repair_xattrs.load_env_config",
+                return_value=self.app_config({"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}),
+            ):
+                with mock.patch("timecapsulesmb.cli.repair_xattrs.mounted_smb_shares", return_value=[]):
+                    with self.assertRaises(SystemExit) as cm:
+                        repair_xattrs.main([])
         self.assertIn("Pass --path explicitly", str(cm.exception))
 
     def test_subprocess_output_decodes_invalid_xattr_bytes(self) -> None:
