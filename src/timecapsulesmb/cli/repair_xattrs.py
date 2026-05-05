@@ -102,16 +102,6 @@ def confirm(prompt: str) -> bool:
         return False
 
 
-def load_telemetry_config(explicit_path: Path | None) -> AppConfig:
-    try:
-        config = load_env_config()
-    except (OSError, SystemExit):
-        return AppConfig.missing()
-    if explicit_path is None:
-        return config
-    return config
-
-
 def run_repair(args: argparse.Namespace, command_context: CommandContext) -> int:
     root = args.path or default_share_path()
     if root is None:
@@ -215,7 +205,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     if sys.platform != "darwin":
         raise SystemExit("repair-xattrs must be run on macOS because it uses xattr/chflags on the mounted SMB share.")
 
-    config = load_telemetry_config(args.path)
+    try:
+        config = load_env_config()
+    except (OSError, SystemExit):
+        config = AppConfig.missing()
     telemetry = TelemetryClient.from_config(config)
     with CommandContext(telemetry, "repair-xattrs", "repair_xattrs_started", "repair_xattrs_finished", config=config, args=args) as command_context:
         return run_repair(args, command_context)

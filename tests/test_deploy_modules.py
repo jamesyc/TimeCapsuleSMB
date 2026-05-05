@@ -34,11 +34,7 @@ from timecapsulesmb.deploy.dry_run import format_deployment_plan
 from timecapsulesmb.deploy.executor import (
     DETACHED_REBOOT_COMMAND,
     REBOOT_REQUEST_TIMEOUT_SECONDS,
-    remote_enable_nbns,
     remote_ensure_adisk_uuid,
-    remote_initialize_data_root,
-    remote_install_permissions,
-    remote_prepare_dirs,
     remote_request_reboot,
     remote_uninstall_payload,
     upload_deployment_payload,
@@ -2536,39 +2532,6 @@ int main(void) {{
         self.assertFalse(result.ssh_authenticated)
         self.assertEqual(result.error, "SSH is not reachable yet.")
 
-    def test_remote_prepare_dirs_builds_expected_command(self) -> None:
-        connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
-            remote_prepare_dirs(connection, "/Volumes/dk2/samba4")
-        command = run_ssh_mock.call_args.args[1]
-        self.assertEqual(command, render_remote_action(prepare_dirs_action("/Volumes/dk2/samba4")))
-
-    def test_remote_initialize_data_root_builds_expected_command(self) -> None:
-        connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
-            remote_initialize_data_root(
-                connection,
-                "/Volumes/dk2/ShareRoot",
-                "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported",
-            )
-        command = run_ssh_mock.call_args.args[1]
-        self.assertEqual(
-            command,
-            render_remote_action(
-                initialize_data_root_action(
-                    "/Volumes/dk2/ShareRoot",
-                    "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported",
-                )
-            ),
-        )
-
-    def test_remote_install_permissions_builds_expected_command(self) -> None:
-        connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
-            remote_install_permissions(connection, "/Volumes/dk2/samba4")
-        command = run_ssh_mock.call_args.args[1]
-        self.assertEqual(command, render_remote_action(install_permissions_action("/Volumes/dk2/samba4")))
-
     def test_remote_ensure_adisk_uuid_reuses_existing_file(self) -> None:
         connection = SshConnection("host", "pw", "-o foo")
         with mock.patch("timecapsulesmb.deploy.executor.run_ssh", return_value=mock.Mock(stdout="12345678-1234-1234-1234-123456789012\n")):
@@ -2586,12 +2549,6 @@ int main(void) {{
                     result = remote_ensure_adisk_uuid(connection, "/Volumes/dk2/samba4/private")
         self.assertEqual(result, str(fixed_uuid))
         self.assertEqual(scp_mock.call_count, 1)
-
-    def test_remote_enable_nbns_creates_marker_without_touch(self) -> None:
-        connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
-            remote_enable_nbns(connection, "/Volumes/dk2/samba4/private")
-        self.assertEqual(run_ssh_mock.call_args.args[1], render_remote_action(enable_nbns_action("/Volumes/dk2/samba4/private")))
 
     def test_upload_deployment_payload_uploads_all_expected_files(self) -> None:
         paths = build_device_paths("/Volumes/dk2", "samba4")
@@ -2887,12 +2844,11 @@ int main(void) {{
         self.assertIn("'/Volumes/dk2/Time Capsule ShareRoot'", initialize_cmd)
         self.assertIn("'/Volumes/dk2/Time Capsule ShareRoot/.com.apple.timemachine.supported'", initialize_cmd)
 
-    def test_deployment_plan_and_executor_share_permission_command_generation(self) -> None:
+    def test_deployment_plan_uses_install_permissions_action(self) -> None:
         payload_dir = "/Volumes/dk2/Time Capsule Samba 4"
-        connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
-            remote_install_permissions(connection, payload_dir)
-        self.assertEqual(run_ssh_mock.call_args.args[1], render_remote_action(install_permissions_action(payload_dir)))
+        paths = build_device_paths("/Volumes/dk2", "Time Capsule Samba 4")
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
+        self.assertIn(install_permissions_action(payload_dir), plan.post_auth_actions)
 
     def test_remote_uninstall_payload_runs_actions_sequentially(self) -> None:
         paths = build_device_paths("/Volumes/dk2", "samba4")

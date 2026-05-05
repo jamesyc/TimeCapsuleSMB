@@ -6,14 +6,7 @@ import uuid
 from pathlib import Path
 
 from timecapsulesmb.deploy.auth import render_smbpasswd
-from timecapsulesmb.deploy.commands import (
-    enable_nbns_action,
-    initialize_data_root_action,
-    install_permissions_action,
-    prepare_dirs_action,
-    render_remote_action,
-    render_remote_actions,
-)
+from timecapsulesmb.deploy.commands import render_remote_actions
 from timecapsulesmb.deploy.planner import DeploymentPlan, UninstallPlan
 from timecapsulesmb.transport.ssh import SshConnection, run_scp, run_ssh
 
@@ -21,18 +14,6 @@ from timecapsulesmb.transport.ssh import SshConnection, run_scp, run_ssh
 DETACHED_REBOOT_COMMAND = "/bin/sh -c 'exec </dev/null >/dev/null 2>&1; (/bin/sleep 1; /sbin/reboot) & exit 0'"
 REBOOT_REQUEST_TIMEOUT_SECONDS = 30
 PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS = 180
-
-
-def remote_prepare_dirs(connection: SshConnection, payload_dir: str) -> None:
-    run_ssh(connection, render_remote_action(prepare_dirs_action(payload_dir)))
-
-
-def remote_initialize_data_root(connection: SshConnection, data_root: str, marker_path: str) -> None:
-    run_ssh(connection, render_remote_action(initialize_data_root_action(data_root, marker_path)))
-
-
-def remote_install_permissions(connection: SshConnection, payload_dir: str) -> None:
-    run_ssh(connection, render_remote_action(install_permissions_action(payload_dir)))
 
 
 def remote_install_auth_files(connection: SshConnection, private_dir: str, samba_user: str, samba_password: str) -> None:
@@ -88,10 +69,6 @@ def upload_deployment_payload(
     run_scp(connection, rendered_watchdog, plan.flash_targets["watchdog.sh"])
     run_scp(connection, rendered_dfree, plan.flash_targets["dfree.sh"])
     run_scp(connection, rendered_smbconf, plan.payload_targets["smb.conf.template"])
-
-
-def remote_enable_nbns(connection: SshConnection, private_dir: str) -> None:
-    run_ssh(connection, render_remote_action(enable_nbns_action(private_dir)))
 
 
 def run_remote_actions(connection: SshConnection, actions) -> None:

@@ -21,7 +21,6 @@ from timecapsulesmb.checks.bonjour import (
     check_bonjour_host_ip,
     check_smb_instance,
     check_smb_service_target,
-    discover_smb_services,
     discover_smb_services_detailed,
     resolve_smb_instance,
     resolve_smb_service_target,
@@ -377,19 +376,6 @@ class CheckTests(unittest.TestCase):
         self.assertEqual([r.status for r in results], ["FAIL", "PASS"])
         self.assertEqual([r.message for r in results], ["missing local tool smbclient", "found local tool ssh"])
 
-    def test_discover_smb_services_returns_snapshot_from_single_discovery_session(self) -> None:
-        snapshot = BonjourDiscoverySnapshot(
-            instances=[BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")],
-            resolved=[BonjourResolvedService("Home", "home.local", "_smb._tcp.local.", fullname="Home._smb._tcp.local.")],
-        )
-
-        with mock.patch("timecapsulesmb.checks.bonjour.discover_snapshot", return_value=snapshot) as discover_mock:
-            result, error = discover_smb_services(timeout=3.5)
-
-        discover_mock.assert_called_once_with("_smb", timeout=3.5)
-        self.assertIs(result, snapshot)
-        self.assertIsNone(error)
-
     def test_discover_smb_services_detailed_returns_snapshot_and_diagnostics(self) -> None:
         snapshot = BonjourDiscoverySnapshot(
             instances=[BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")],
@@ -421,10 +407,11 @@ class CheckTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertIs(result_diagnostics, diagnostics)
 
-    def test_discover_smb_services_returns_fail_when_discovery_backend_exits(self) -> None:
-        with mock.patch("timecapsulesmb.checks.bonjour.discover_snapshot", side_effect=SystemExit("zeroconf missing")):
-            snapshot, error = discover_smb_services()
+    def test_discover_smb_services_detailed_returns_fail_when_discovery_backend_exits(self) -> None:
+        with mock.patch("timecapsulesmb.checks.bonjour.discover_snapshot_detailed", side_effect=SystemExit("zeroconf missing")):
+            snapshot, error, diagnostics = discover_smb_services_detailed()
         self.assertIsNone(snapshot)
+        self.assertIsNone(diagnostics)
         self.assertIsNotNone(error)
         assert error is not None
         self.assertEqual(error.status, "FAIL")
@@ -484,7 +471,6 @@ class CheckTests(unittest.TestCase):
         record = BonjourResolvedService("Home", "home.local", "_smb._tcp.local.", port=445)
         target = resolve_smb_service_target(record, expected_instance_name="Home")
         self.assertEqual(target.hostname, "home.local")
-        self.assertEqual(target.authority(), "home.local:445")
         self.assertEqual(target.host_label(), "home")
         self.assertEqual(check_smb_service_target(target).status, "PASS")
 

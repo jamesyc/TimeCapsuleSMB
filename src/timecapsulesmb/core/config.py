@@ -65,24 +65,6 @@ def airport_identity_from_values(values: dict[str, str]) -> AirportDeviceIdentit
     return AIRPORT_IDENTITIES_BY_SYAP.get(syap) or AIRPORT_IDENTITIES_BY_MODEL.get(model)
 
 
-def airport_family_display_name(values: dict[str, str]) -> str:
-    model = values.get("TC_MDNS_DEVICE_MODEL", "")
-    identity = airport_identity_from_values(values)
-    family = identity.family if identity is not None else ""
-    if family == "time_capsule" or model == "TimeCapsule":
-        return "Time Capsule"
-    if family == "airport_extreme" or model == "AirPort":
-        return "AirPort Extreme"
-    return "AirPort storage device"
-
-
-def airport_exact_display_name(values: dict[str, str]) -> str:
-    identity = airport_identity_from_values(values)
-    if identity is not None:
-        return identity.display_name
-    return airport_family_display_name(values)
-
-
 DEFAULTS = {
     "TC_HOST": "root@192.168.1.101",
     "TC_SSH_OPTS": "-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",

@@ -192,13 +192,9 @@ def print_saved_value_hint(value: str) -> None:
     print(f"Found saved value: {value}")
 
 
-def print_reused_env_value(key: str, value: str) -> None:
-    print(f"Using {key} from .env: {value}")
-
-
 def print_automatic_value_choice(key: str, choice: ConfigureValueChoice) -> None:
     if choice.source == "saved":
-        print_reused_env_value(key, choice.value)
+        print(f"Using {key} from .env: {choice.value}")
     elif choice.source == "discovered":
         print(f"Using discovered {key}: {choice.value}")
     elif choice.source == "probed":

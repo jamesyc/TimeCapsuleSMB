@@ -27,13 +27,12 @@ from timecapsulesmb.discovery.bonjour import (
     SMB_SERVICE,
     PtrRecordObserver,
     ServiceObservation,
-    browse_service_instances,
     discover,
     discover_snapshot_detailed,
     discover_resolved_records,
     discovered_record_root_host,
     resolved_service_from_info,
-    filter_service_records,
+    record_has_service,
     _open_zeroconf,
     resolve_service_instance,
 )
@@ -202,26 +201,6 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(records[0].name, "Home")
         self.assertEqual(records[0].hostname, "")
         self.assertEqual(records[0].fullname, "Home._smb._tcp.local.")
-
-    def test_browse_service_instances_returns_seen_instances_without_resolving(self) -> None:
-        fake_zc = mock.Mock()
-        fake_collector = mock.Mock()
-        instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
-        fake_collector.service_instances.return_value = [instance]
-        fake_ip_version = mock.Mock()
-        fake_ip_version.V4Only = object()
-        fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
-
-        with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
-            with mock.patch("timecapsulesmb.discovery.bonjour.Collector", return_value=fake_collector) as collector_cls:
-                with mock.patch("timecapsulesmb.discovery.bonjour.time.sleep") as fake_sleep:
-                    instances = browse_service_instances(SMB_SERVICE, timeout=0.25)
-
-        collector_cls.assert_called_once_with(fake_zc, ["_smb._tcp.local."])
-        fake_collector.start.assert_called_once()
-        fake_collector.resolve_pending.assert_not_called()
-        fake_sleep.assert_called_once_with(0.25)
-        self.assertEqual(instances, [instance])
 
     def test_resolve_service_instance_returns_resolved_record(self) -> None:
         class FakeInfo:
@@ -493,7 +472,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(observer.error, "RuntimeError: listener unavailable")
         fake_zc.remove_listener.assert_not_called()
 
-    def test_filter_service_records_returns_only_matching_service(self) -> None:
+    def test_record_has_service_matches_requested_service(self) -> None:
         airport = Discovered(
             name="James's AirPort Time Capsule",
             hostname="Jamess-AirPort-Time-Capsule.local",
@@ -508,8 +487,9 @@ class DiscoveryTests(unittest.TestCase):
             ipv4=["192.168.1.217"],
             properties={"model": "TimeCapsule8,119"},
         )
-        self.assertEqual(filter_service_records([airport, samba], SMB_SERVICE), [samba])
-        self.assertEqual(filter_service_records([airport, samba], "_smb._tcp.local"), [samba])
+        self.assertFalse(record_has_service(airport, SMB_SERVICE))
+        self.assertTrue(record_has_service(samba, SMB_SERVICE))
+        self.assertTrue(record_has_service(samba, "_smb._tcp.local"))
 
     def test_collector_results_preserve_raw_service_records(self) -> None:
         observations = {
@@ -565,9 +545,9 @@ class DiscoveryTests(unittest.TestCase):
             },
         )
 
-    def test_filter_service_records_accepts_service_prefix_for_airport(self) -> None:
+    def test_record_has_service_accepts_service_prefix_for_airport(self) -> None:
         airport = Discovered(name="AirPort Time Capsule", hostname="airport.local", service_type="_airport._tcp.local")
-        self.assertEqual(filter_service_records([airport], AIRPORT_SERVICE), [airport])
+        self.assertTrue(record_has_service(airport, AIRPORT_SERVICE))
 
     def test_run_cli_prints_browse_and_resolved_tables(self) -> None:
         snapshot = BonjourDiscoverySnapshot(

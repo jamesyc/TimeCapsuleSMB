@@ -31,11 +31,6 @@ def render_airpyrt_error_for_cli(error_text: str) -> str:
     return "\n".join(error_text.splitlines())
 
 
-def print_airpyrt_failure_for_cli(prefix: str, error_text: str) -> None:
-    print(color_red(f"{prefix}:"))
-    print(render_airpyrt_error_for_cli(error_text))
-
-
 def wait_for_ssh(
     host: str,
     *,
@@ -110,7 +105,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             except Exception as e:
                 error_text = str(e)
                 message = f"Failed to enable SSH via AirPyrt: {error_text}"
-                print_airpyrt_failure_for_cli("Failed to enable SSH via AirPyrt", error_text)
+                print(color_red("Failed to enable SSH via AirPyrt:"))
+                print(render_airpyrt_error_for_cli(error_text))
                 command_context.fail_with_error(message)
                 return 1
 

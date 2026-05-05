@@ -29,14 +29,10 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def command_args_request_help(args: list[str]) -> bool:
-    return "-h" in args or "--help" in args
-
-
 def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if not command_args_request_help(args.args):
+    if "-h" not in args.args and "--help" not in args.args:
         try:
             version_check = check_client_version()
             if version_check.should_block:

@@ -526,23 +526,6 @@ def _open_zeroconf() -> Any:
     return Zeroconf(ip_version=IPVersion.V4Only)
 
 
-def browse_service_instances(service: str | None = None, timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC) -> list[BonjourServiceInstance]:
-    zc = _open_zeroconf()
-    try:
-        collector = Collector(zc, _matching_service_types(service))
-        collector.start()
-        time.sleep(max(0.0, timeout))
-        instances = collector.service_instances()
-    finally:
-        try:
-            zc.close()
-        except Exception:
-            pass
-
-    instances.sort(key=lambda instance: (instance.service_type or "", instance.name or "", instance.fullname or ""))
-    return instances
-
-
 def resolve_service_instance(instance: BonjourServiceInstance, timeout_ms: int = FINAL_PENDING_RESOLVE_TIMEOUT_MS) -> BonjourResolvedService | None:
     zc = _open_zeroconf()
     try:
@@ -698,10 +681,6 @@ def record_has_service(record: BonjourResolvedService, service: str) -> bool:
         isinstance(value, str) and value.startswith(service)
         for value in services
     )
-
-
-def filter_service_records(records: list[BonjourResolvedService], service: str) -> list[BonjourResolvedService]:
-    return [record for record in records if record_has_service(record, service)]
 
 
 def discovery_record_to_jsonable(record: BonjourResolvedService) -> dict[str, object]:

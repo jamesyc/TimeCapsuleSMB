@@ -21,7 +21,12 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.cli import activate, bootstrap, configure, deploy, discover, doctor, fsck, prep_device, uninstall
 from timecapsulesmb.cli.main import main
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.core.config import AppConfig, DEFAULTS, airport_exact_display_name, airport_family_display_name
+from timecapsulesmb.core.config import (
+    AppConfig,
+    DEFAULTS,
+    airport_exact_display_name_from_config,
+    airport_family_display_name_from_config,
+)
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
 from timecapsulesmb.device.probe import (
     MountedVolume,
@@ -4491,44 +4496,44 @@ class CliTests(unittest.TestCase):
 
     def test_deploy_reboot_prompt_names_airport_extreme_from_configured_identity(self) -> None:
         self.assertEqual(
-            airport_family_display_name(
-                {
+            airport_family_display_name_from_config(
+                AppConfig.from_values({
                     "TC_AIRPORT_SYAP": "120",
                     "TC_MDNS_DEVICE_MODEL": "AirPort7,120",
-                }
+                })
             ),
             "AirPort Extreme",
         )
 
     def test_deploy_reboot_prompt_names_time_capsule_from_configured_identity(self) -> None:
         self.assertEqual(
-            airport_family_display_name(
-                {
+            airport_family_display_name_from_config(
+                AppConfig.from_values({
                     "TC_AIRPORT_SYAP": "119",
                     "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-                }
+                })
             ),
             "Time Capsule",
         )
 
     def test_deploy_reboot_prompt_uses_generic_name_without_known_identity(self) -> None:
         self.assertEqual(
-            airport_family_display_name(
-                {
+            airport_family_display_name_from_config(
+                AppConfig.from_values({
                     "TC_AIRPORT_SYAP": "",
                     "TC_MDNS_DEVICE_MODEL": "",
-                }
+                })
             ),
             "AirPort storage device",
         )
 
     def test_exact_device_display_name_uses_configured_identity(self) -> None:
         self.assertEqual(
-            airport_exact_display_name(
-                {
+            airport_exact_display_name_from_config(
+                AppConfig.from_values({
                     "TC_AIRPORT_SYAP": "120",
                     "TC_MDNS_DEVICE_MODEL": "AirPort7,120",
-                }
+                })
             ),
             "AirPort Extreme 6th generation",
         )

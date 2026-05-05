@@ -14,7 +14,6 @@ from timecapsulesmb.discovery.bonjour import (
     DEFAULT_BROWSE_TIMEOUT_SEC,
     FINAL_PENDING_RESOLVE_TIMEOUT_MS,
     SMB_SERVICE,
-    discover_snapshot,
     discover_snapshot_detailed,
     resolve_service_instance,
 )
@@ -39,11 +38,6 @@ class BonjourServiceTarget:
     instance_name: str
     hostname: str | None
     port: int = 445
-
-    def authority(self) -> str | None:
-        if not self.hostname:
-            return None
-        return f"{self.hostname}:{self.port}"
 
     def host_label(self) -> str | None:
         if not self.hostname:
@@ -75,24 +69,10 @@ def build_bonjour_expected_identity(config: AppConfig) -> BonjourExpectedIdentit
     )
 
 
-def _describe_instance(instance: BonjourServiceInstance) -> str:
-    name = instance.name or "-"
-    return f"{name!r}"
-
-
 def _candidate_summary(instances: list[BonjourServiceInstance]) -> str:
     if not instances:
         return "none"
-    return "; ".join(_describe_instance(instance) for instance in instances)
-
-
-def discover_smb_services(timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC) -> tuple[BonjourDiscoverySnapshot | None, CheckResult | None]:
-    try:
-        return discover_snapshot(SMB_SERVICE, timeout=timeout), None
-    except SystemExit as e:
-        return None, CheckResult("FAIL", f"Bonjour check failed: {e}")
-    except Exception as e:
-        return None, CheckResult("FAIL", f"Bonjour check failed: {e}")
+    return "; ".join(f"{(instance.name or '-')!r}" for instance in instances)
 
 
 def discover_smb_services_detailed(
