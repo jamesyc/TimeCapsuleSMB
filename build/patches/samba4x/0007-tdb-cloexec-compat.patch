@@ -10,7 +10,7 @@ index 87312f7..fe57f99 100644
  #endif
  
  	if (tdb->flags & TDB_INTERNAL) {
-@@ -884,6 +885,16 @@ static int tdb_reopen_internal(struct tdb_context *tdb, bool active_lock)
+@@ -884,6 +885,22 @@ static int tdb_reopen_internal(struct tdb_context *tdb, bool active_lock)
  		TDB_LOG((tdb, TDB_DEBUG_FATAL, "tdb_reopen: open failed (%s)\n", strerror(errno)));
  		goto fail;
  	}
@@ -20,8 +20,14 @@ index 87312f7..fe57f99 100644
 +	 * inherit reopened database handles.
 +	 */
 +	v = fcntl(tdb->fd, F_GETFD, 0);
-+	if (v != -1) {
-+		fcntl(tdb->fd, F_SETFD, v | FD_CLOEXEC);
++	if (v == -1) {
++		TDB_LOG((tdb, TDB_DEBUG_WARNING,
++			 "tdb_reopen: WARNING could not read close-on-exec flags (%s)\n",
++			 strerror(errno)));
++	} else if (fcntl(tdb->fd, F_SETFD, v | FD_CLOEXEC) == -1) {
++		TDB_LOG((tdb, TDB_DEBUG_WARNING,
++			 "tdb_reopen: WARNING could not restore close-on-exec (%s)\n",
++			 strerror(errno)));
 +	}
 +
  	/*
