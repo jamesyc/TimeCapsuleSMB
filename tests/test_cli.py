@@ -5349,7 +5349,7 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.prep_device.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=False):
                 with mock.patch("timecapsulesmb.cli.prep_device.enable_ssh") as enable_ssh_mock:
-                    with mock.patch("timecapsulesmb.cli.prep_device.wait_for_ssh", return_value=True):
+                    with mock.patch("timecapsulesmb.cli.prep_device.wait_for_tcp_port_state", return_value=True):
                         with redirect_stdout(output):
                             rc = prep_device.main([])
         self.assertEqual(rc, 0)
@@ -5433,7 +5433,7 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=True):
                 with mock.patch("builtins.input", return_value="y"):
                     with mock.patch("timecapsulesmb.cli.prep_device.disable_ssh") as disable_ssh_mock:
-                        with mock.patch("timecapsulesmb.cli.prep_device.wait_for_ssh", side_effect=[True, False]):
+                        with mock.patch("timecapsulesmb.cli.prep_device.wait_for_tcp_port_state", side_effect=[True, False]):
                             with mock.patch("timecapsulesmb.cli.prep_device.wait_for_device_up"):
                                 with redirect_stdout(output):
                                     rc = prep_device.main([])
@@ -5458,7 +5458,7 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=True):
                 with mock.patch("builtins.input", return_value="y"):
                     with mock.patch("timecapsulesmb.cli.prep_device.disable_ssh"):
-                        with mock.patch("timecapsulesmb.cli.prep_device.wait_for_ssh", side_effect=[True, True]):
+                        with mock.patch("timecapsulesmb.cli.prep_device.wait_for_tcp_port_state", side_effect=[True, True]):
                             with mock.patch("timecapsulesmb.cli.prep_device.wait_for_device_up"):
                                 with redirect_stdout(output):
                                     rc = prep_device.main([])

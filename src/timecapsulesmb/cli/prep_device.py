@@ -31,7 +31,7 @@ def render_airpyrt_error_for_cli(error_text: str) -> str:
     return "\n".join(error_text.splitlines())
 
 
-def wait_for_ssh(
+def wait_for_tcp_port_state(
     host: str,
     *,
     expected_state: bool,
@@ -111,7 +111,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 return 1
 
             command_context.set_stage("wait_for_ssh_enabled")
-            if not wait_for_ssh(airpyrt_host, expected_state=True):
+            if not wait_for_tcp_port_state(airpyrt_host, expected_state=True):
                 command_context.update_fields(ssh_final_reachable=False)
                 command_context.fail_with_error("SSH did not open after enabling via AirPyrt.")
                 return 1
@@ -149,7 +149,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
                 print("Device is starting reboot now, waiting for it to shut down...")
                 command_context.set_stage("wait_for_ssh_down")
-                if not wait_for_ssh(airpyrt_host, expected_state=False):
+                if not wait_for_tcp_port_state(airpyrt_host, expected_state=False):
                     command_context.succeed()
                     return 0
                 print("Device is down now, verifying persistence after reboot...")
@@ -157,7 +157,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 wait_for_device_up(airpyrt_host)
                 print("Device successfully rebooted. Checking if SSH is still disabled...")
                 command_context.set_stage("verify_ssh_disabled")
-                if not wait_for_ssh(airpyrt_host, expected_state=False, timeout_seconds=30):
+                if not wait_for_tcp_port_state(airpyrt_host, expected_state=False, timeout_seconds=30):
                     command_context.update_fields(ssh_final_reachable=True, ssh_disable_persisted=False)
                     print("Warning: SSH reopened after reboot. Disable may not have persisted.")
                 else:
