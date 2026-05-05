@@ -84,7 +84,14 @@ patch_require_fixed() {
     pattern="$2"
     target="$3"
 
-    if ! awk -v pattern="$pattern" 'index($0, pattern) { found = 1 } END { exit(found ? 0 : 1) }' "$target"; then
+    # Pass the literal search text through the environment. awk -v parses
+    # escape sequences in assigned strings, so text like "\n" would become a
+    # newline before index() sees it.
+    if ! PATCH_REQUIRE_FIXED_PATTERN="$pattern" awk '
+        BEGIN { pattern = ENVIRON["PATCH_REQUIRE_FIXED_PATTERN"] }
+        index($0, pattern) { found = 1 }
+        END { exit(found ? 0 : 1) }
+    ' "$target"; then
         patch_fail "$desc: expected text not found in $target"
     fi
 }
