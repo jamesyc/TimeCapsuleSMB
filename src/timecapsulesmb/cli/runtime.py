@@ -3,7 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from timecapsulesmb.core.config import DEFAULTS, AppConfig, ENV_PATH, parse_env_values, require_valid_config
+from timecapsulesmb.core.config import (
+    DEFAULTS,
+    AppConfig,
+    load_app_config,
+    require_valid_app_config,
+)
+from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.device.compat import DeviceCompatibility, require_compatibility
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
@@ -21,24 +27,16 @@ class ManagedTargetState:
     probe_state: ProbedDeviceState | None
 
 
-def load_env_values(*, env_path: Path = ENV_PATH, defaults: dict[str, str] | None = None) -> dict[str, str]:
-    resolved_defaults = defaults if defaults is not None else None
-    return parse_env_values(env_path, defaults=resolved_defaults)
-
-
-def require_airport_syap(values: dict[str, str], *, command_name: str) -> None:
-    AppConfig(values).require(
-        "TC_AIRPORT_SYAP",
-        messageafter=f"\nPlease run the `configure` command before running `{command_name}`.",
-    )
+def load_env_config(*, env_path: Path | None = None, defaults: dict[str, str] | None = None) -> AppConfig:
+    resolved_path = env_path or resolve_app_paths().env_path
+    return load_app_config(resolved_path, defaults=defaults)
 
 
 def resolve_ssh_credentials(
-    values: dict[str, str],
+    config: AppConfig,
     *,
     allow_empty_password: bool = False,
 ) -> tuple[str, str]:
-    config = AppConfig(values)
     host = config.require("TC_HOST")
     password = config.get("TC_PASSWORD")
     if not password and not allow_empty_password:
@@ -48,15 +46,14 @@ def resolve_ssh_credentials(
 
 
 def resolve_env_connection(
-    values: dict[str, str],
+    config: AppConfig,
     *,
     required_keys: tuple[str, ...] = (),
     allow_empty_password: bool = False,
 ) -> SshConnection:
-    config = AppConfig(values)
     for key in required_keys:
         config.require(key)
-    host, password = resolve_ssh_credentials(values, allow_empty_password=allow_empty_password)
+    host, password = resolve_ssh_credentials(config, allow_empty_password=allow_empty_password)
     return SshConnection(host=host, password=password, ssh_opts=config.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"]))
 
 
@@ -72,16 +69,15 @@ def inspect_managed_connection(
 
 
 def resolve_validated_managed_target(
-    values: dict[str, str],
+    config: AppConfig,
     *,
     command_name: str,
     profile: str,
     include_probe: bool = False,
 ) -> ManagedTargetState:
-    require_airport_syap(values, command_name=command_name)
-    require_valid_config(values, profile=profile)
-    connection = resolve_env_connection(values)
-    target = inspect_managed_connection(connection, values["TC_NET_IFACE"], include_probe=include_probe)
+    require_valid_app_config(config, profile=profile, command_name=command_name)
+    connection = resolve_env_connection(config)
+    target = inspect_managed_connection(connection, config.require("TC_NET_IFACE"), include_probe=include_probe)
     if not target.interface_probe.exists:
         raise SystemExit(
             "TC_NET_IFACE is invalid. Run the `configure` command again.\n"

@@ -5,7 +5,7 @@ import socket
 from dataclasses import dataclass
 
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.core.config import extract_host
+from timecapsulesmb.core.config import AppConfig, extract_host
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoverySnapshot,
     BonjourDiscoveryDiagnostics,
@@ -67,11 +67,11 @@ def _ip_literal(value: str) -> str | None:
     return candidate
 
 
-def build_bonjour_expected_identity(values: dict[str, str]) -> BonjourExpectedIdentity:
+def build_bonjour_expected_identity(config: AppConfig) -> BonjourExpectedIdentity:
     return BonjourExpectedIdentity(
-        instance_name=values["TC_MDNS_INSTANCE_NAME"],
-        host_label=values.get("TC_MDNS_HOST_LABEL") or None,
-        target_ip=_ip_literal(extract_host(values.get("TC_HOST", ""))),
+        instance_name=config.require("TC_MDNS_INSTANCE_NAME"),
+        host_label=config.get("TC_MDNS_HOST_LABEL") or None,
+        target_ip=_ip_literal(extract_host(config.get("TC_HOST"))),
     )
 
 

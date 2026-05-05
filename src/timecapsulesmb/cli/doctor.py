@@ -8,9 +8,8 @@ from typing import Optional
 from timecapsulesmb.checks.doctor import run_doctor_checks
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import load_env_values
+from timecapsulesmb.cli.runtime import load_env_config
 from timecapsulesmb.cli.util import color_green, color_red
-from timecapsulesmb.core.config import ENV_PATH
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.telemetry import TelemetryClient
@@ -75,13 +74,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     ensure_install_id()
-    values = load_env_values()
-    telemetry = TelemetryClient.from_values(values)
-    with CommandContext(telemetry, "doctor", "doctor_started", "doctor_finished", values=values, args=args) as command_context:
-        if ENV_PATH.exists() and not args.skip_ssh and values.get("TC_NET_IFACE"):
+    config = load_env_config()
+    telemetry = TelemetryClient.from_config(config)
+    with CommandContext(telemetry, "doctor", "doctor_started", "doctor_finished", config=config, args=args) as command_context:
+        if config.exists and not args.skip_ssh and config.get("TC_NET_IFACE"):
             try:
                 command_context.inspect_managed_connection(
-                    iface=values["TC_NET_IFACE"],
+                    iface=config.require("TC_NET_IFACE"),
                     include_probe=True,
                 )
             except SystemExit as exc:
@@ -89,8 +88,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         doctor_debug: dict[str, object] = {}
         results, fatal = run_doctor_checks(
-            values,
-            env_exists=ENV_PATH.exists(),
+            config,
             repo_root=REPO_ROOT,
             connection=command_context.connection,
             precomputed_interface_probe=command_context.interface_probe,

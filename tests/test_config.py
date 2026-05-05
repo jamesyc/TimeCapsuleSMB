@@ -19,16 +19,16 @@ from timecapsulesmb.core.config import (
     build_mdns_device_model_txt,
     DEFAULTS,
     extract_host,
-    missing_required_keys,
+    load_app_config,
     parse_bool,
+    parse_env_file,
     parse_env_value,
-    parse_env_values,
+    require_valid_app_config,
     render_env_text,
-    upsert_env_key,
+    validate_app_config,
     validate_adisk_share_name,
     validate_airport_syap,
     validate_bool,
-    validate_config_values,
     validate_mdns_device_model_matches_syap,
     validate_mdns_device_model,
     validate_mdns_host_label,
@@ -40,23 +40,110 @@ from timecapsulesmb.core.config import (
     validate_ssh_target,
     write_env_file,
 )
+from timecapsulesmb.core.paths import resolve_app_paths, resolve_project_root
 
 
 class ConfigTests(unittest.TestCase):
-    def test_parse_env_values_applies_defaults_and_unquotes_values(self) -> None:
+    def valid_deploy_file_values(self) -> dict[str, str]:
+        values = dict(DEFAULTS)
+        values["TC_HOST"] = "root@10.0.0.2"
+        values["TC_PASSWORD"] = "pw"
+        values["TC_AIRPORT_SYAP"] = "119"
+        values["TC_MDNS_DEVICE_MODEL"] = "TimeCapsule8,119"
+        return values
+
+    def test_load_app_config_applies_defaults_and_unquotes_file_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ".env"
             path.write_text("TC_HOST='root@10.0.0.5'\nTC_SHARE_NAME='Archive Share'\n")
-            values = parse_env_values(path)
+            values = load_app_config(path).values
         self.assertEqual(values["TC_HOST"], "root@10.0.0.5")
         self.assertEqual(values["TC_SHARE_NAME"], "Archive Share")
         self.assertEqual(values["TC_MDNS_HOST_LABEL"], DEFAULTS["TC_MDNS_HOST_LABEL"])
 
-    def test_missing_required_keys_detects_blank_values(self) -> None:
+    def test_parse_env_file_does_not_apply_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text("TC_HOST='root@10.0.0.5'\n")
+            values = parse_env_file(path)
+        self.assertEqual(values, {"TC_HOST": "root@10.0.0.5"})
+
+    def test_load_app_config_tracks_missing_env_and_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            config = load_app_config(path)
+        self.assertFalse(config.exists)
+        self.assertEqual(config.path, path)
+        self.assertEqual(config.file_values, {})
+        self.assertEqual(config.get("TC_HOST"), DEFAULTS["TC_HOST"])
+
+    def test_load_app_config_tracks_file_values_and_merged_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text("TC_HOST=root@10.0.0.5\n")
+            config = load_app_config(path)
+        self.assertTrue(config.exists)
+        self.assertEqual(config.file_values, {"TC_HOST": "root@10.0.0.5"})
+        self.assertTrue(config.has_file_value("TC_HOST"))
+        self.assertFalse(config.has_file_value("TC_SHARE_USE_DISK_ROOT"))
+        self.assertEqual(config.get("TC_SHARE_USE_DISK_ROOT"), DEFAULTS["TC_SHARE_USE_DISK_ROOT"])
+
+    def test_validate_app_config_reports_missing_env_before_defaulted_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = load_app_config(Path(tmp) / ".env")
+            errors = validate_app_config(config, profile="deploy")
+        self.assertEqual(errors[0].kind, "missing_file")
+        self.assertIsNone(errors[0].key)
+
+    def test_validate_app_config_requires_file_value_for_airport_syap(self) -> None:
+        values = self.valid_deploy_file_values()
+        file_values = dict(values)
+        file_values.pop("TC_AIRPORT_SYAP")
+        values["TC_AIRPORT_SYAP"] = DEFAULTS["TC_AIRPORT_SYAP"]
+        with tempfile.TemporaryDirectory() as tmp:
+            config = AppConfig.from_values(
+                values,
+                path=Path(tmp) / ".env",
+                exists=True,
+                file_values=file_values,
+            )
+            errors = validate_app_config(config, profile="deploy")
+        self.assertEqual(errors[0].kind, "missing_key")
+        self.assertEqual(errors[0].key, "TC_AIRPORT_SYAP")
+
+    def test_validate_app_config_allows_defaulted_optional_share_use_disk_root(self) -> None:
+        file_values = self.valid_deploy_file_values()
+        file_values.pop("TC_SHARE_USE_DISK_ROOT", None)
         values = dict(DEFAULTS)
-        values["TC_PASSWORD"] = ""
-        missing = missing_required_keys(values)
-        self.assertIn("TC_PASSWORD", missing)
+        values.update(file_values)
+        with tempfile.TemporaryDirectory() as tmp:
+            config = AppConfig.from_values(
+                values,
+                path=Path(tmp) / ".env",
+                exists=True,
+                file_values=file_values,
+            )
+            errors = validate_app_config(config, profile="deploy")
+        self.assertEqual(errors, [])
+
+    def test_require_valid_app_config_formats_actual_env_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            config = AppConfig.from_values({}, path=path, exists=True, file_values={})
+            with self.assertRaises(SystemExit) as ctx:
+                require_valid_app_config(config, profile="deploy", command_name="deploy")
+        self.assertIn(f"Missing required setting in {path}: TC_HOST", str(ctx.exception))
+        self.assertIn("before running `deploy`", str(ctx.exception))
+
+    def test_resolve_project_root_prefers_start_project_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            nested = root / "nested"
+            nested.mkdir()
+            (root / "tcapsule").write_text("#!/usr/bin/env python3\n")
+            (root / "src" / "timecapsulesmb").mkdir(parents=True)
+            self.assertEqual(resolve_project_root(nested), root)
+            self.assertEqual(resolve_app_paths(nested).env_path, root / ".env")
 
     def test_render_env_text_contains_config_keys(self) -> None:
         values = dict(DEFAULTS)
@@ -72,7 +159,7 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("TC_CONFIGURE_ID=12345678-1234-1234-1234-123456789012", rendered)
 
     def test_env_example_payload_dir_matches_default(self) -> None:
-        values = parse_env_values(REPO_ROOT / ".env.example", defaults={})
+        values = parse_env_file(REPO_ROOT / ".env.example")
         self.assertEqual(values["TC_PAYLOAD_DIR_NAME"], DEFAULTS["TC_PAYLOAD_DIR_NAME"])
 
     def test_parse_bool_accepts_true_case_insensitively(self) -> None:
@@ -94,7 +181,7 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ".env"
             write_env_file(path, values)
-            reparsed = parse_env_values(path)
+            reparsed = parse_env_file(path)
         self.assertEqual(reparsed["TC_MDNS_DEVICE_MODEL"], "AirPortTimeCapsule")
 
     def test_write_env_file_round_trips_airport_syap(self) -> None:
@@ -104,7 +191,7 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ".env"
             write_env_file(path, values)
-            reparsed = parse_env_values(path)
+            reparsed = parse_env_file(path)
         self.assertEqual(reparsed["TC_AIRPORT_SYAP"], "119")
 
     def test_validate_airport_syap_accepts_known_codes(self) -> None:
@@ -157,30 +244,8 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ".env"
             write_env_file(path, values)
-            reparsed = parse_env_values(path)
+            reparsed = parse_env_file(path)
         self.assertEqual(reparsed["TC_CONFIGURE_ID"], "12345678-1234-1234-1234-123456789012")
-
-    def test_upsert_env_key_updates_existing_key_without_rewriting_other_values(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / ".env"
-            path.write_text("TC_HOST=root@10.0.0.5\nTC_CONFIGURE_ID=old-id\nTC_SHARE_NAME=Data\n")
-            upsert_env_key(path, "TC_CONFIGURE_ID", "new-id")
-            text = path.read_text()
-            values = parse_env_values(path, defaults={})
-        self.assertIn("TC_HOST=root@10.0.0.5", text)
-        self.assertIn("TC_SHARE_NAME=Data", text)
-        self.assertEqual(values["TC_CONFIGURE_ID"], "new-id")
-        self.assertEqual(text.count("TC_CONFIGURE_ID="), 1)
-
-    def test_upsert_env_key_creates_minimal_file_when_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / ".env"
-            upsert_env_key(path, "TC_CONFIGURE_ID", "new-id")
-            text = path.read_text()
-            values = parse_env_values(path, defaults={})
-        self.assertIn("# Generated by tcapsule configure", text)
-        self.assertIn("TC_CONFIGURE_ID=new-id", text)
-        self.assertEqual(values["TC_CONFIGURE_ID"], "new-id")
 
     def test_parse_env_value_falls_back_for_unbalanced_quotes(self) -> None:
         self.assertEqual(parse_env_value("'unterminated"), "unterminated")
@@ -196,7 +261,7 @@ class ConfigTests(unittest.TestCase):
             "-o HostKeyAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1",
         )
 
-    def test_parse_env_values_preserves_full_ssh_opts_value(self) -> None:
+    def test_parse_env_file_preserves_full_ssh_opts_value(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ".env"
             ssh_opts = (
@@ -206,7 +271,7 @@ class ConfigTests(unittest.TestCase):
                 "-o ProxyCommand=ssh\\ -4\\ -W\\ %h:%p\\ jump.example.com"
             )
             path.write_text(f"TC_SSH_OPTS='{ssh_opts}'\n")
-            values = parse_env_values(path)
+            values = parse_env_file(path)
         self.assertEqual(values["TC_SSH_OPTS"], ssh_opts)
 
     def test_write_env_file_round_trips_full_ssh_opts(self) -> None:
@@ -220,7 +285,7 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ".env"
             write_env_file(path, values)
-            reparsed = parse_env_values(path)
+            reparsed = parse_env_file(path)
         self.assertEqual(reparsed["TC_SSH_OPTS"], values["TC_SSH_OPTS"])
 
     def test_render_env_text_falls_back_to_default_ssh_opts_when_missing(self) -> None:
@@ -405,41 +470,45 @@ class ConfigTests(unittest.TestCase):
             "Device SSH target username may contain only letters, numbers, dots, underscores, and hyphens.",
         )
 
-    def test_validate_config_values_uses_profiles(self) -> None:
+    def test_validate_app_config_uses_profiles(self) -> None:
         values = dict(DEFAULTS)
         values["TC_HOST"] = "root@10.0.0.2"
         values["TC_PASSWORD"] = "pw"
         values["TC_AIRPORT_SYAP"] = "119"
         values["TC_MDNS_DEVICE_MODEL"] = "TimeCapsule8,119"
-        self.assertEqual(validate_config_values(values, profile="deploy"), [])
+        config = AppConfig.from_values(values, file_values=values)
+        self.assertEqual(validate_app_config(config, profile="deploy"), [])
         values["TC_MDNS_HOST_LABEL"] = "Time Capsule"
-        errors = validate_config_values(values, profile="deploy")
+        config = AppConfig.from_values(values, file_values=values)
+        errors = validate_app_config(config, profile="deploy")
         self.assertEqual(errors[0].key, "TC_MDNS_HOST_LABEL")
 
-    def test_validate_config_values_rejects_generic_device_model_when_syap_is_specific(self) -> None:
+    def test_validate_app_config_rejects_generic_device_model_when_syap_is_specific(self) -> None:
         values = dict(DEFAULTS)
         values["TC_HOST"] = "root@10.0.0.2"
         values["TC_PASSWORD"] = "pw"
         values["TC_AIRPORT_SYAP"] = "119"
         values["TC_MDNS_DEVICE_MODEL"] = "TimeCapsule"
-        errors = validate_config_values(values, profile="deploy")
+        config = AppConfig.from_values(values, file_values=values)
+        errors = validate_app_config(config, profile="deploy")
         self.assertEqual(errors[0].key, "TC_MDNS_DEVICE_MODEL")
         self.assertEqual(errors[0].message,
                          'TC_MDNS_DEVICE_MODEL "TimeCapsule" must match the '
                          'configured syAP expected value "TimeCapsule8,119".')
 
-    def test_validate_config_values_rejects_bare_deploy_host(self) -> None:
+    def test_validate_app_config_rejects_bare_deploy_host(self) -> None:
         values = dict(DEFAULTS)
         values["TC_HOST"] = "10.0.0.2"
         values["TC_PASSWORD"] = "pw"
         values["TC_AIRPORT_SYAP"] = "119"
         values["TC_MDNS_DEVICE_MODEL"] = "TimeCapsule8,119"
-        errors = validate_config_values(values, profile="deploy")
+        config = AppConfig.from_values(values, file_values=values)
+        errors = validate_app_config(config, profile="deploy")
         self.assertEqual(errors[0].key, "TC_HOST")
         self.assertIn("must include a username", errors[0].message)
 
     def test_app_config_require_raises_for_missing_value(self) -> None:
-        config = AppConfig({"TC_HOST": ""})
+        config = AppConfig.from_values({"TC_HOST": ""})
         with self.assertRaises(SystemExit):
             config.require("TC_HOST")
 

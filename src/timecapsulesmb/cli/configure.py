@@ -20,13 +20,11 @@ from timecapsulesmb.configure_defaults import (
 from timecapsulesmb.core.config import (
     AIRPORT_DEVICE_IDENTITIES,
     CONFIG_VALIDATORS,
-    CONFIG_FIELDS,
     DEFAULTS,
     ENV_PATH,
     infer_mdns_device_model_from_airport_syap,
-    parse_env_values,
+    parse_env_file,
     parse_bool,
-    upsert_env_key,
     write_env_file,
 )
 from timecapsulesmb.cli.context import CommandContext, missing_dependency_message, missing_required_python_module
@@ -53,6 +51,17 @@ from timecapsulesmb.cli.util import color_cyan
 HIDDEN_CONFIG_KEYS = {"TC_SSH_OPTS", "TC_CONFIGURE_ID"}
 NO_SAVED_VALUE_HINT_KEYS = {"TC_PASSWORD", *HIDDEN_CONFIG_KEYS}
 REQUIRED_PYTHON_MODULES = ("zeroconf", "pexpect", "ifaddr")
+CONFIGURE_DETAIL_FIELDS = [
+    ("TC_NET_IFACE", "Network interface on the device", DEFAULTS["TC_NET_IFACE"], False),
+    ("TC_SHARE_NAME", "SMB share name", DEFAULTS["TC_SHARE_NAME"], False),
+    ("TC_SAMBA_USER", "Samba username", DEFAULTS["TC_SAMBA_USER"], False),
+    ("TC_NETBIOS_NAME", "Samba NetBIOS name", DEFAULTS["TC_NETBIOS_NAME"], False),
+    ("TC_PAYLOAD_DIR_NAME", "Persistent payload directory name", DEFAULTS["TC_PAYLOAD_DIR_NAME"], False),
+    ("TC_MDNS_INSTANCE_NAME", "mDNS SMB instance name", DEFAULTS["TC_MDNS_INSTANCE_NAME"], False),
+    ("TC_MDNS_HOST_LABEL", "mDNS host label", DEFAULTS["TC_MDNS_HOST_LABEL"], False),
+    ("TC_AIRPORT_SYAP", "Airport Utility syAP code", DEFAULTS["TC_AIRPORT_SYAP"], False),
+    ("TC_MDNS_DEVICE_MODEL", "mDNS device model hint", DEFAULTS["TC_MDNS_DEVICE_MODEL"], False),
+]
 
 
 def prompt(label: str, default: str, secret: bool) -> str:
@@ -233,9 +242,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     ensure_install_id()
-    existing = parse_env_values(ENV_PATH, defaults={})
+    existing = parse_env_file(ENV_PATH)
     configure_id = str(uuid.uuid4())
-    upsert_env_key(ENV_PATH, "TC_CONFIGURE_ID", configure_id)
     telemetry_values = dict(existing)
     telemetry_values["TC_CONFIGURE_ID"] = configure_id
     telemetry = TelemetryClient.from_values(telemetry_values)
@@ -354,7 +362,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
         prompt_defaults = derived_prompt_defaults(name_defaults)
 
-        for key, label, default, secret in CONFIG_FIELDS[2:]:
+        for key, label, default, secret in CONFIGURE_DETAIL_FIELDS:
             if key == "TC_AIRPORT_SYAP":
                 candidate_syaps = probed_device.syap_candidates if probed_device is not None else ()
                 saved_syap_value = saved_syap_value_for_candidates(saved_syap_choice, candidate_syaps)

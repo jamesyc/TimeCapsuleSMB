@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from timecapsulesmb.cli.util import CLI_VERSION, RELEASE_TAG, SAMBA_VERSION
+from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.identity import BOOTSTRAP_PATH, load_install_identity
 
 
@@ -70,6 +71,33 @@ class TelemetryClient:
             configure_id=(values or {}).get("TC_CONFIGURE_ID") or None,
             device_model=(values or {}).get("TC_MDNS_DEVICE_MODEL") or None,
             device_syap=(values or {}).get("TC_AIRPORT_SYAP") or None,
+            nbns_enabled=nbns_enabled,
+        )
+        return cls(endpoint=endpoint, token=token, context=context, enabled=identity.telemetry_enabled)
+
+    @classmethod
+    def from_config(
+        cls,
+        config: AppConfig,
+        *,
+        nbns_enabled: bool | None = None,
+        bootstrap_path: Path = BOOTSTRAP_PATH,
+    ) -> "TelemetryClient":
+        identity = load_install_identity(bootstrap_path)
+        endpoint = os.getenv(TELEMETRY_URL_ENV, DEFAULT_TELEMETRY_URL)
+        token = os.getenv(TELEMETRY_TOKEN_ENV, DEFAULT_TELEMETRY_TOKEN).strip() or None
+        if not identity.install_id:
+            return cls(endpoint=endpoint, token=token, context=None, enabled=False)
+        context = TelemetryContext(
+            install_id=identity.install_id,
+            cli_version=CLI_VERSION,
+            release_tag=RELEASE_TAG,
+            samba_version=SAMBA_VERSION,
+            host_os=detect_host_os(),
+            host_os_version=detect_host_os_version(),
+            configure_id=config.get("TC_CONFIGURE_ID") or None,
+            device_model=config.get("TC_MDNS_DEVICE_MODEL") or None,
+            device_syap=config.get("TC_AIRPORT_SYAP") or None,
             nbns_enabled=nbns_enabled,
         )
         return cls(endpoint=endpoint, token=token, context=context, enabled=identity.telemetry_enabled)

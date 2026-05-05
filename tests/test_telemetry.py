@@ -21,6 +21,7 @@ from timecapsulesmb.cli.context import (
     render_command_debug_lines,
 )
 from timecapsulesmb.cli.runtime import ManagedTargetState
+from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, RemoteInterfaceProbeResult
 from timecapsulesmb.discovery.bonjour import Discovered
@@ -152,17 +153,18 @@ class TelemetryTests(unittest.TestCase):
             interface_probe=interface_probe,
             probe_state=probe_state,
         )
+        config = AppConfig.from_values({
+            "TC_HOST": connection.host,
+            "TC_PASSWORD": connection.password,
+            "TC_SSH_OPTS": connection.ssh_opts,
+        })
 
         context = CommandContext(
             telemetry,
             "doctor",
             "doctor_started",
             "doctor_finished",
-            values={
-                "TC_HOST": connection.host,
-                "TC_PASSWORD": connection.password,
-                "TC_SSH_OPTS": connection.ssh_opts,
-            },
+            config=config,
         )
         with mock.patch(
             "timecapsulesmb.cli.context.runtime.resolve_env_connection",
@@ -183,6 +185,18 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(context.finish_fields["device_os_version"], "NetBSD 6.0 (earmv4)")
         resolve_mock.assert_called_once()
         inspect_mock.assert_called_once_with(connection, "bridge0", include_probe=True)
+
+    def test_command_context_resolve_env_connection_requires_config(self) -> None:
+        command = CommandContext(
+            mock.Mock(),
+            "deploy",
+            "deploy_started",
+            "deploy_finished",
+            values={"TC_HOST": "root@10.0.0.2"},
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "CommandContext config is not set"):
+            command.resolve_env_connection()
 
     def test_command_context_marks_keyboard_interrupt_as_cancelled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -484,6 +498,23 @@ class TelemetryTests(unittest.TestCase):
 
         self.assertIn("host=root@10.0.0.1", lines)
         self.assertIn("ssh_opts=-o ConnectTimeout=5", lines)
+
+    def test_render_command_debug_lines_includes_env_path_when_config_is_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            lines = render_command_debug_lines(
+                command_name="deploy",
+                stage="validate_config",
+                connection=None,
+                values={},
+                preflight_error=None,
+                finish_fields={},
+                probe_state=None,
+                debug_fields={},
+                config=AppConfig.from_values({}, path=env_path, exists=False, file_values={}),
+            )
+
+        self.assertIn(f"env_path={env_path}", lines)
 
 
 if __name__ == "__main__":

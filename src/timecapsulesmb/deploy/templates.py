@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 
-from timecapsulesmb.core.config import DEFAULTS, shell_quote
+from timecapsulesmb.core.config import DEFAULTS, AppConfig, shell_quote
 from timecapsulesmb.device.compat import PAYLOAD_FAMILY_NETBSD6, is_netbsd4_payload_family
 
 
@@ -46,7 +46,7 @@ def write_boot_asset(name: str, destination: Path) -> None:
 
 
 def build_template_bundle(
-    values: dict[str, str],
+    config: AppConfig,
     *,
     adisk_disk_key: str = "dk0",
     adisk_uuid: str = "",
@@ -56,7 +56,7 @@ def build_template_bundle(
     share_use_disk_root: bool = False,
     apple_mount_wait_seconds: int = DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
 ) -> TemplateBundle:
-    device_model = values.get("TC_MDNS_DEVICE_MODEL", DEFAULTS["TC_MDNS_DEVICE_MODEL"])
+    device_model = config.get("TC_MDNS_DEVICE_MODEL", DEFAULTS["TC_MDNS_DEVICE_MODEL"])
     start_cache_directory, smbconf_cache_directory = cache_directory_replacements(payload_family)
     smbd_log_file = "/mnt/Memory/samba4/var/log.smbd"
     smbd_max_log_size = "256"
@@ -72,15 +72,15 @@ def build_template_bundle(
         mdns_log_enabled = "1"
     return TemplateBundle(
         start_script_replacements={
-            "__PAYLOAD_DIR_NAME__": shell_quote(values["TC_PAYLOAD_DIR_NAME"]),
+            "__PAYLOAD_DIR_NAME__": shell_quote(config.require("TC_PAYLOAD_DIR_NAME")),
             "__CACHE_DIRECTORY__": start_cache_directory,
-            "__SMB_SHARE_NAME__": shell_quote(values["TC_SHARE_NAME"]),
-            "__SMB_NETBIOS_NAME__": shell_quote(values["TC_NETBIOS_NAME"]),
-            "__NET_IFACE__": shell_quote(values["TC_NET_IFACE"]),
-            "__MDNS_INSTANCE_NAME__": shell_quote(values["TC_MDNS_INSTANCE_NAME"]),
-            "__MDNS_HOST_LABEL__": shell_quote(values["TC_MDNS_HOST_LABEL"]),
+            "__SMB_SHARE_NAME__": shell_quote(config.require("TC_SHARE_NAME")),
+            "__SMB_NETBIOS_NAME__": shell_quote(config.require("TC_NETBIOS_NAME")),
+            "__NET_IFACE__": shell_quote(config.require("TC_NET_IFACE")),
+            "__MDNS_INSTANCE_NAME__": shell_quote(config.require("TC_MDNS_INSTANCE_NAME")),
+            "__MDNS_HOST_LABEL__": shell_quote(config.require("TC_MDNS_HOST_LABEL")),
             "__MDNS_DEVICE_MODEL__": shell_quote(device_model),
-            "__AIRPORT_SYAP__": shell_quote(values.get("TC_AIRPORT_SYAP", DEFAULTS["TC_AIRPORT_SYAP"])),
+            "__AIRPORT_SYAP__": shell_quote(config.get("TC_AIRPORT_SYAP", DEFAULTS["TC_AIRPORT_SYAP"])),
             "__ADISK_DISK_KEY__": shell_quote(adisk_disk_key),
             "__ADISK_UUID__": shell_quote(adisk_uuid),
             "__SMBD_DISK_LOGGING_ENABLED__": smbd_disk_logging_enabled,
@@ -90,24 +90,24 @@ def build_template_bundle(
             "__APPLE_MOUNT_WAIT_SECONDS__": str(apple_mount_wait_seconds),
         },
         watchdog_replacements={
-            "__SMB_SHARE_NAME__": shell_quote(values["TC_SHARE_NAME"]),
-            "__SMB_NETBIOS_NAME__": shell_quote(values["TC_NETBIOS_NAME"]),
-            "__NET_IFACE__": shell_quote(values["TC_NET_IFACE"]),
-            "__MDNS_INSTANCE_NAME__": shell_quote(values["TC_MDNS_INSTANCE_NAME"]),
-            "__MDNS_HOST_LABEL__": shell_quote(values["TC_MDNS_HOST_LABEL"]),
+            "__SMB_SHARE_NAME__": shell_quote(config.require("TC_SHARE_NAME")),
+            "__SMB_NETBIOS_NAME__": shell_quote(config.require("TC_NETBIOS_NAME")),
+            "__NET_IFACE__": shell_quote(config.require("TC_NET_IFACE")),
+            "__MDNS_INSTANCE_NAME__": shell_quote(config.require("TC_MDNS_INSTANCE_NAME")),
+            "__MDNS_HOST_LABEL__": shell_quote(config.require("TC_MDNS_HOST_LABEL")),
             "__MDNS_DEVICE_MODEL__": shell_quote(device_model),
-            "__AIRPORT_SYAP__": shell_quote(values.get("TC_AIRPORT_SYAP", DEFAULTS["TC_AIRPORT_SYAP"])),
+            "__AIRPORT_SYAP__": shell_quote(config.get("TC_AIRPORT_SYAP", DEFAULTS["TC_AIRPORT_SYAP"])),
             "__ADISK_DISK_KEY__": shell_quote(adisk_disk_key),
             "__ADISK_UUID__": shell_quote(adisk_uuid),
             "__MDNS_LOG_ENABLED__": mdns_log_enabled,
             "__MDNS_LOG_FILE__": shell_quote(mdns_log_file),
         },
         smbconf_replacements={
-            "__PAYLOAD_DIR_NAME__": values["TC_PAYLOAD_DIR_NAME"],
-            "__SMB_SHARE_NAME__": values["TC_SHARE_NAME"],
-            "__SMB_SAMBA_USER__": values["TC_SAMBA_USER"],
-            "__SMB_NETBIOS_NAME__": values["TC_NETBIOS_NAME"],
-            "__NET_IFACE__": values["TC_NET_IFACE"],
+            "__PAYLOAD_DIR_NAME__": config.require("TC_PAYLOAD_DIR_NAME"),
+            "__SMB_SHARE_NAME__": config.require("TC_SHARE_NAME"),
+            "__SMB_SAMBA_USER__": config.require("TC_SAMBA_USER"),
+            "__SMB_NETBIOS_NAME__": config.require("TC_NETBIOS_NAME"),
+            "__NET_IFACE__": config.require("TC_NET_IFACE"),
             "__MDNS_DEVICE_MODEL__": device_model,
             "__CACHE_DIRECTORY__": smbconf_cache_directory,
             "__SMBD_LOG_FILE__": smbd_log_file,

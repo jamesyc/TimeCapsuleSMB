@@ -17,6 +17,7 @@ from timecapsulesmb.checks.smb_config import (  # noqa: E402
     parse_xattr_tdb_paths,
 )
 from timecapsulesmb.checks.smb_targets import configured_smb_server, doctor_smb_servers  # noqa: E402
+from timecapsulesmb.core.config import AppConfig  # noqa: E402
 
 
 class DoctorHelperTests(unittest.TestCase):
@@ -72,7 +73,7 @@ class DoctorHelperTests(unittest.TestCase):
         target = BonjourServiceTarget("Time Capsule Samba 4", "timecapsulesamba4.local", 445)
 
         self.assertEqual(
-            doctor_smb_servers(values, target),
+            doctor_smb_servers(AppConfig.from_values(values), target),
             ["timecapsulesamba4.local", "10.0.1.99"],
         )
 

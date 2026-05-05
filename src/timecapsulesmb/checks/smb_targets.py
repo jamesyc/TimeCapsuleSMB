@@ -4,7 +4,7 @@ import ipaddress
 from typing import Optional
 
 from timecapsulesmb.checks.bonjour import BonjourServiceTarget
-from timecapsulesmb.core.config import extract_host
+from timecapsulesmb.core.config import AppConfig, extract_host
 
 
 def configured_smb_server(host_label: str) -> str:
@@ -21,14 +21,14 @@ def configured_smb_server(host_label: str) -> str:
     return f"{value}.local"
 
 
-def doctor_smb_servers(values: dict[str, str], bonjour_target: BonjourServiceTarget | None) -> list[str]:
+def doctor_smb_servers(config: AppConfig, bonjour_target: BonjourServiceTarget | None) -> list[str]:
     ordered: list[str] = []
 
     def add(value: Optional[str]) -> None:
         if value and value not in ordered:
             ordered.append(value)
 
-    add(configured_smb_server(values["TC_MDNS_HOST_LABEL"]))
+    add(configured_smb_server(config.require("TC_MDNS_HOST_LABEL")))
     add(bonjour_target.hostname if bonjour_target is not None else None)
-    add(extract_host(values["TC_HOST"]))
+    add(extract_host(config.require("TC_HOST")))
     return ordered

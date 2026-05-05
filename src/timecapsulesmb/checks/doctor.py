@@ -34,7 +34,7 @@ from timecapsulesmb.checks.smb_targets import (
     configured_smb_server as _configured_smb_server,
     doctor_smb_servers as _doctor_smb_servers,
 )
-from timecapsulesmb.core.config import extract_host, missing_required_keys, validate_config_values
+from timecapsulesmb.core.config import AppConfig, extract_host, validate_app_config
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, is_netbsd6_payload_family, render_compatibility_message
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
@@ -106,34 +106,29 @@ def _add_sshpass_result_for_payload(add_result: Callable[[CheckResult], None], p
     add_result(CheckResult("INFO", "local sshpass not installed; target upload fallback requirement unknown"))
 
 
-def _add_env_validation_results(
-    values: dict[str, str],
+def _add_config_validation_results(
+    config: AppConfig,
     *,
-    env_exists: bool,
     repo_root: Path,
     add_result: Callable[[CheckResult], None],
 ) -> bool:
-    for result in check_required_local_tools():
-        add_result(result)
-    for result in check_required_artifacts(repo_root):
-        add_result(result)
-
-    if not env_exists:
-        add_result(CheckResult("FAIL", f"missing {repo_root / '.env'}"))
+    if not config.exists:
+        add_result(CheckResult("FAIL", f"missing required configuration file: {config.path}"))
         return False
 
-    missing = missing_required_keys(values)
-    if missing:
-        add_result(CheckResult("FAIL", f".env is missing required keys: {', '.join(missing)}"))
-        return False
-
-    validation_errors = validate_config_values(values, profile="doctor")
+    add_result(CheckResult("PASS", f"configuration file exists: {config.path}"))
+    validation_errors = validate_app_config(config, profile="doctor")
     if validation_errors:
         for error in validation_errors:
             add_result(CheckResult("FAIL", error.format_for_cli().replace("\n", " ")))
         return False
 
-    add_result(CheckResult("PASS", ".env contains all required keys"))
+    add_result(CheckResult("PASS", f"{config.path} contains all required settings"))
+
+    for result in check_required_local_tools():
+        add_result(result)
+    for result in check_required_artifacts(repo_root):
+        add_result(result)
     return True
 
 
@@ -198,7 +193,7 @@ def _add_bonjour_debug_fields(
 
 
 def _add_bonjour_results(
-    values: dict[str, str],
+    config: AppConfig,
     *,
     proxied_ssh: bool,
     skip_bonjour: bool,
@@ -216,7 +211,7 @@ def _add_bonjour_results(
         add_result(CheckResult("SKIP", "Bonjour check skipped for SSH-proxied target; local mDNS may find a different AirPort device"))
     elif not skip_bonjour:
         try:
-            bonjour_expected = build_bonjour_expected_identity(values)
+            bonjour_expected = build_bonjour_expected_identity(config)
             bonjour_expected_debug = {
                 "instance_name": bonjour_expected.instance_name,
                 "host_label": bonjour_expected.host_label,
@@ -286,7 +281,7 @@ def _add_bonjour_results(
 
 def _add_nbns_results(
     connection: SshConnection,
-    values: dict[str, str],
+    config: AppConfig,
     *,
     host: str,
     proxied_ssh: bool,
@@ -294,13 +289,13 @@ def _add_nbns_results(
 ) -> None:
     try:
         volume_root = discover_volume_root_conn(connection)
-        device_paths = build_device_paths(volume_root, values["TC_PAYLOAD_DIR_NAME"])
+        device_paths = build_device_paths(volume_root, config.require("TC_PAYLOAD_DIR_NAME"))
         if nbns_marker_enabled_conn(connection, device_paths.payload_dir):
             if proxied_ssh:
                 add_result(CheckResult("SKIP", "NBNS check skipped for SSH-proxied target; UDP/137 is not reachable through the SSH jump host"))
             else:
-                expected_ip = read_interface_ipv4_conn(connection, values["TC_NET_IFACE"])
-                add_result(check_nbns_name_resolution(values["TC_NETBIOS_NAME"], host, expected_ip))
+                expected_ip = read_interface_ipv4_conn(connection, config.require("TC_NET_IFACE"))
+                add_result(check_nbns_name_resolution(config.require("TC_NETBIOS_NAME"), host, expected_ip))
         else:
             add_result(CheckResult("SKIP", "NBNS responder not enabled"))
     except (Exception, SystemExit) as e:
@@ -309,7 +304,7 @@ def _add_nbns_results(
 
 def _add_authenticated_smb_results(
     connection: SshConnection,
-    values: dict[str, str],
+    config: AppConfig,
     bonjour_target: BonjourServiceTarget | None,
     *,
     host: str,
@@ -328,18 +323,18 @@ def _add_authenticated_smb_results(
             ):
                 add_result(
                     check_authenticated_smb_listing(
-                        values["TC_SAMBA_USER"],
+                        config.require("TC_SAMBA_USER"),
                         smb_password,
                         "127.0.0.1",
-                        expected_share_name=values["TC_SHARE_NAME"],
+                        expected_share_name=config.require("TC_SHARE_NAME"),
                         port=local_port,
                     )
                 )
                 for result in check_authenticated_smb_file_ops_detailed(
-                    values["TC_SAMBA_USER"],
+                    config.require("TC_SAMBA_USER"),
                     smb_password,
                     "127.0.0.1",
-                    values["TC_SHARE_NAME"],
+                    config.require("TC_SHARE_NAME"),
                     port=local_port,
                 ):
                     add_result(result)
@@ -347,12 +342,12 @@ def _add_authenticated_smb_results(
             add_result(CheckResult("FAIL", f"authenticated SMB checks failed through SSH tunnel: {e}"))
         return
 
-    smb_servers = _doctor_smb_servers(values, bonjour_target)
+    smb_servers = _doctor_smb_servers(config, bonjour_target)
     listing_result = check_authenticated_smb_listing(
-        values["TC_SAMBA_USER"],
+        config.require("TC_SAMBA_USER"),
         smb_password,
         smb_servers,
-        expected_share_name=values["TC_SHARE_NAME"],
+        expected_share_name=config.require("TC_SHARE_NAME"),
     )
     add_result(listing_result)
     if listing_result.status != "PASS":
@@ -363,18 +358,17 @@ def _add_authenticated_smb_results(
         add_result(CheckResult("FAIL", "authenticated SMB listing did not report the server used for file-ops checks"))
         return
     for result in check_authenticated_smb_file_ops_detailed(
-        values["TC_SAMBA_USER"],
+        config.require("TC_SAMBA_USER"),
         smb_password,
         smb_server,
-        values["TC_SHARE_NAME"],
+        config.require("TC_SHARE_NAME"),
     ):
         add_result(result)
 
 
 def run_doctor_checks(
-    values: dict[str, str],
+    config: AppConfig,
     *,
-    env_exists: bool,
     repo_root: Path,
     connection: SshConnection | None = None,
     precomputed_interface_probe: RemoteInterfaceProbeResult | None = None,
@@ -392,24 +386,23 @@ def run_doctor_checks(
         if on_result is not None:
             on_result(result)
 
-    env_valid = _add_env_validation_results(
-        values,
-        env_exists=env_exists,
+    config_valid = _add_config_validation_results(
+        config,
         repo_root=repo_root,
         add_result=add_result,
     )
 
-    if not env_valid:
+    if not config_valid:
         return results, any(is_fatal(result) for result in results)
 
     if connection is None:
         connection = SshConnection(
-            host=values["TC_HOST"],
-            password=values.get("TC_PASSWORD", ""),
-            ssh_opts=values.get("TC_SSH_OPTS", ""),
+            host=config.require("TC_HOST"),
+            password=config.get("TC_PASSWORD"),
+            ssh_opts=config.get("TC_SSH_OPTS"),
         )
     host = extract_host(connection.host)
-    smb_password = values["TC_PASSWORD"]
+    smb_password = config.require("TC_PASSWORD")
     proxied_ssh = ssh_opts_use_proxy(connection.ssh_opts)
     ssh_ok = False
     active_smb_conf: Optional[str] = None
@@ -426,11 +419,11 @@ def run_doctor_checks(
     if not skip_ssh and ssh_ok:
         if (
             precomputed_interface_probe is not None
-            and precomputed_interface_probe.iface == values["TC_NET_IFACE"]
+            and precomputed_interface_probe.iface == config.require("TC_NET_IFACE")
         ):
             interface_probe = precomputed_interface_probe
         else:
-            interface_probe = probe_remote_interface_conn(connection, values["TC_NET_IFACE"])
+            interface_probe = probe_remote_interface_conn(connection, config.require("TC_NET_IFACE"))
         if not interface_probe.exists:
             add_result(
                 CheckResult(
@@ -485,7 +478,7 @@ def run_doctor_checks(
         add_result(check_smb_port(host))
 
     bonjour_result = _add_bonjour_results(
-        values,
+        config,
         proxied_ssh=proxied_ssh,
         skip_bonjour=skip_bonjour,
         add_result=add_result,
@@ -514,7 +507,7 @@ def run_doctor_checks(
     if not skip_ssh and ssh_ok:
         _add_nbns_results(
             connection,
-            values,
+            config,
             host=host,
             proxied_ssh=proxied_ssh,
             add_result=add_result,
@@ -523,7 +516,7 @@ def run_doctor_checks(
     if not skip_smb:
         _add_authenticated_smb_results(
             connection,
-            values,
+            config,
             bonjour_result.target,
             host=host,
             smb_password=smb_password,

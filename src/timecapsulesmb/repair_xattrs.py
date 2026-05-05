@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import unquote
 
-from timecapsulesmb.core.config import validate_config_values
+from timecapsulesmb.core.config import AppConfig, validate_app_config
 
 
 DEFAULT_EXCLUDED_DIR_NAMES = {
@@ -147,17 +147,17 @@ def validate_repair_root_under_volumes(path: Path) -> Path:
     return resolved_path
 
 
-def default_share_path_from_values(
-    values: dict[str, str],
+def default_share_path_from_config(
+    config: AppConfig,
     *,
     shares: list[MountedSmbShare] | None = None,
     path_exists_func: Callable[[Path], bool] = path_exists,
 ) -> Optional[Path]:
-    errors = validate_config_values(values, profile="repair_xattrs")
+    errors = validate_app_config(config, profile="repair_xattrs")
     if errors:
         raise RuntimeError(errors[0].format_for_cli())
-    share_name = values.get("TC_SHARE_NAME")
-    target_host = ssh_target_host(values.get("TC_HOST", ""))
+    share_name = config.get("TC_SHARE_NAME")
+    target_host = ssh_target_host(config.get("TC_HOST"))
     if not share_name or not target_host:
         return None
 

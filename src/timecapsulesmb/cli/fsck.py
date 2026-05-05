@@ -5,8 +5,8 @@ import shlex
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import load_env_values
-from timecapsulesmb.core.config import airport_exact_display_name, require_valid_config
+from timecapsulesmb.cli.runtime import load_env_config
+from timecapsulesmb.core.config import airport_exact_display_name_from_config
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.device.probe import discover_mounted_volume_conn, wait_for_ssh_state_conn
 from timecapsulesmb.telemetry import TelemetryClient
@@ -45,16 +45,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     print("Running fsck...")
 
     ensure_install_id()
-    values = load_env_values()
-    telemetry = TelemetryClient.from_values(values)
-    with CommandContext(telemetry, "fsck", "fsck_started", "fsck_finished", values=values, args=args) as command_context:
+    config = load_env_config()
+    telemetry = TelemetryClient.from_config(config)
+    with CommandContext(telemetry, "fsck", "fsck_started", "fsck_finished", config=config, args=args) as command_context:
         command_context.update_fields(
             reboot_was_attempted=False,
             device_came_back_after_reboot=False,
         )
         command_context.set_stage("validate_config")
-        require_valid_config(values, profile="fsck")
-        device_name = airport_exact_display_name(values)
+        command_context.require_valid_config(profile="fsck")
+        device_name = airport_exact_display_name_from_config(config)
         command_context.set_stage("resolve_connection")
         connection = command_context.resolve_env_connection(allow_empty_password=True)
 

@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import load_env_values
+from timecapsulesmb.cli.runtime import load_env_config
+from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.repair_xattrs import (
     ACTION_CLEAR_ARCH_FLAG,
     ACTION_FIX_PERMISSIONS,
@@ -19,7 +20,7 @@ from timecapsulesmb.repair_xattrs import (
     actionable_findings,
     build_repair_report,
     classify_path,
-    default_share_path_from_values,
+    default_share_path_from_config,
     file_flags,
     find_findings,
     finding_to_candidate,
@@ -43,10 +44,10 @@ from timecapsulesmb.telemetry import TelemetryClient
 
 
 def default_share_path() -> Optional[Path]:
-    values = load_env_values()
+    config = load_env_config()
     try:
-        return default_share_path_from_values(
-            values,
+        return default_share_path_from_config(
+            config,
             shares=mounted_smb_shares(),
             path_exists_func=path_exists,
         )
@@ -101,14 +102,14 @@ def confirm(prompt: str) -> bool:
         return False
 
 
-def load_telemetry_values(explicit_path: Path | None) -> dict[str, str]:
+def load_telemetry_config(explicit_path: Path | None) -> AppConfig:
     try:
-        values = load_env_values()
+        config = load_env_config()
     except (OSError, SystemExit):
-        return {}
+        return AppConfig.missing()
     if explicit_path is None:
-        return values
-    return values if isinstance(values, dict) else {}
+        return config
+    return config
 
 
 def run_repair(args: argparse.Namespace, command_context: CommandContext) -> int:
@@ -214,9 +215,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     if sys.platform != "darwin":
         raise SystemExit("repair-xattrs must be run on macOS because it uses xattr/chflags on the mounted SMB share.")
 
-    values = load_telemetry_values(args.path)
-    telemetry = TelemetryClient.from_values(values)
-    with CommandContext(telemetry, "repair-xattrs", "repair_xattrs_started", "repair_xattrs_finished", values=values, args=args) as command_context:
+    config = load_telemetry_config(args.path)
+    telemetry = TelemetryClient.from_config(config)
+    with CommandContext(telemetry, "repair-xattrs", "repair_xattrs_started", "repair_xattrs_finished", config=config, args=args) as command_context:
         return run_repair(args, command_context)
     return 1
 

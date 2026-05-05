@@ -6,7 +6,9 @@ from typing import Iterable, Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.util import color_red
-from timecapsulesmb.core.config import ENV_PATH, extract_host, parse_env_values
+from timecapsulesmb.cli.runtime import load_env_config
+from timecapsulesmb.core.config import extract_host
+from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.integrations.airpyrt import AIRPYRT_NOT_FOUND_ERROR, disable_ssh, enable_ssh
 from timecapsulesmb.telemetry import TelemetryClient
@@ -78,14 +80,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     ensure_install_id()
-    values = parse_env_values(ENV_PATH, defaults={})
-    telemetry = TelemetryClient.from_values(values)
-    with CommandContext(telemetry, "prep-device", "prep_device_started", "prep_device_finished", values=values, args=args) as command_context:
+    config = load_env_config(defaults={})
+    telemetry = TelemetryClient.from_config(config)
+    with CommandContext(telemetry, "prep-device", "prep_device_started", "prep_device_finished", config=config, args=args) as command_context:
         command_context.set_stage("load_config")
-        host_target = values.get("TC_HOST", "")
-        password = values.get("TC_PASSWORD", "")
-        if not host_target or not password:
-            message = f"Missing {ENV_PATH} settings. Run '.venv/bin/tcapsule configure' first."
+        try:
+            command_context.require_valid_config(profile="prep_device")
+        except SystemExit as exc:
+            message = system_exit_message(exc) or f"Missing {config.path} settings. Run '.venv/bin/tcapsule configure' first."
             command_context.update_fields(prep_device_action="missing_config")
             print(message)
             command_context.fail_with_error(message)
@@ -94,7 +96,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         airpyrt_host = extract_host(connection.host)
         password = connection.password
 
-        print(f"Using configured target from {ENV_PATH}: {connection.host}")
+        print(f"Using configured target from {config.path}: {connection.host}")
         print(f"Probing SSH on {airpyrt_host}:22 ...")
         command_context.set_stage("probe_ssh")
         ssh_open = tcp_open(airpyrt_host, 22)
