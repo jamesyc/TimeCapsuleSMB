@@ -54,15 +54,13 @@ def build_doctor_error(results: list[CheckResult]) -> str | None:
 
 def print_followup_help() -> None:
     print("")
-    print("For other issues:")
-    print("- (If you have xattr issues, or macOS Error -50) then try running:")
-    print("    .venv/bin/tcapsule repair-xattrs")
-    print("")
+    print("Some troubleshooting tips:")
+    print("- (To remove old Apple devices entries from mDNS cache) try running:")
+    print("    sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder")
     print("- (If you have disk corruption issues, or error 22) then try running:")
     print("    .venv/bin/tcapsule fsck")
-    print("")
-    print("- (To remove old Apple devices entries from mDNS cache) then try running:")
-    print("    sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder")
+    print("- (If you have xattr issues, or macOS Error -50) then try running:")
+    print("    .venv/bin/tcapsule repair-xattrs")
 
 
 def main(argv: Optional[list[str]] = None) -> int:
