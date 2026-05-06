@@ -38,7 +38,6 @@ from timecapsulesmb.device.probe import (
     RemoteInterfaceCandidatesProbeResult,
     RemoteInterfaceProbeResult,
 )
-from timecapsulesmb.deploy.executor import DETACHED_REBOOT_COMMAND
 from timecapsulesmb.deploy.templates import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.deploy.verify import VerificationResult
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
@@ -212,6 +211,12 @@ class CliTests(unittest.TestCase):
             mock.patch(
                 "timecapsulesmb.cli.configure.enable_ssh_and_reprobe_for_configure",
                 side_effect=fake_configure_acp_probe,
+            )
+        )
+        self._exit_stack.enter_context(
+            mock.patch(
+                "timecapsulesmb.cli.flows.acp_reboot",
+                side_effect=ACPConnectionError("ACP unavailable in tests"),
             )
         )
         self._version_check = self._exit_stack.enter_context(
@@ -4231,7 +4236,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("volume root: /Volumes/dk2", text)
         self.assertIn(f"Apple mount wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s", text)
         self.assertIn("generated smbpasswd", text)
-        self.assertIn(f"request: {DETACHED_REBOOT_COMMAND}", text)
+        self.assertIn("request: attempt device reboot", text)
         self.assertIn("follow-up: wait for SSH down, then SSH up", text)
         self.assertIn("SSH goes down after reboot request", text)
         self.assertIn("SSH returns after reboot", text)
@@ -4257,7 +4262,6 @@ class CliTests(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("Reboot:\n  no", text)
         self.assertIn("Post-deploy checks:\n  none", text)
-        self.assertNotIn(DETACHED_REBOOT_COMMAND, text)
         self.assertNotIn("detached_ssh", text)
         self.assertNotIn("SSH returns after reboot", text)
         self.assertNotIn("smbd is bound to TCP 445", text)
@@ -4636,7 +4640,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 240})
         verify_runtime_mock.assert_called_once()
         text = output.getvalue()
-        self.assertIn("Reboot request timed out; checking whether the device is rebooting...", text)
+        self.assertIn("SSH reboot request timed out; checking whether the device is rebooting...", text)
         self.assertIn("Device is back online.", text)
         finished = self.telemetry_payload("deploy_finished")
         self.assertEqual(finished["result"], "success")
@@ -4676,16 +4680,17 @@ class CliTests(unittest.TestCase):
         wait_mock.assert_called_once()
         verify_runtime_mock.assert_not_called()
         text = output.getvalue()
-        self.assertIn("Reboot request timed out and the device did not go down.", text)
+        self.assertIn("Reboot was requested but the device did not go down.", text)
         self.assertIn("The deploy stopped the managed runtime before reboot; power-cycle or rerun deploy.", text)
         finished = self.telemetry_payload("deploy_finished")
         self.assertEqual(finished["result"], "failure")
         self.assertEqual(finished["reboot_was_attempted"], True)
         self.assertEqual(finished["device_came_back_after_reboot"], False)
         self.assertIn("stage=wait_for_reboot_down", finished["error"])
-        self.assertIn("reboot_request_timed_out=true", finished["error"])
+        self.assertIn("ssh_reboot_timed_out=true", finished["error"])
 
-    def test_deploy_reboot_request_non_timeout_error_still_fails_immediately(self) -> None:
+    def test_deploy_reboot_request_non_timeout_error_observes_reboot_state(self) -> None:
+        output = io.StringIO()
         values = self.make_valid_env()
         with ExitStack() as stack:
             stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)))
@@ -4703,12 +4708,14 @@ class CliTests(unittest.TestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"))
             stack.enter_context(mock.patch("builtins.input", return_value="y"))
             stack.enter_context(mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=SystemExit("ssh command failed")))
-            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn"))
-            with self.assertRaises(SystemExit) as exc:
-                deploy.main([])
+            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]))
+            stack.enter_context(mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(True)))
+            with redirect_stdout(output):
+                rc = deploy.main([])
 
-        self.assertEqual(str(exc.exception), "ssh command failed")
-        wait_mock.assert_not_called()
+        self.assertEqual(rc, 0)
+        self.assertEqual(wait_mock.call_count, 2)
+        self.assertIn("SSH reboot request failed; checking whether the device is rebooting anyway...", output.getvalue())
 
     def test_deploy_waits_for_managed_smbd_before_verifying(self) -> None:
         output = io.StringIO()
@@ -5529,8 +5536,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             payload["reboot_request"],
             {
-                "mode": "detached_ssh",
-                "command": DETACHED_REBOOT_COMMAND,
+                "mode": "device_reboot",
+                "strategy": "acp_then_ssh",
                 "follow_up": ["wait_for_ssh_down", "wait_for_ssh_up"],
             },
         )
@@ -5820,7 +5827,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Dry run: uninstall plan", text)
         self.assertIn("host: root@10.0.0.2", text)
         self.assertIn(f"payload dir: /Volumes/dk2/{values['TC_PAYLOAD_DIR_NAME']}", text)
-        self.assertIn(f"request: {DETACHED_REBOOT_COMMAND}", text)
+        self.assertIn("request: attempt device reboot", text)
         self.assertIn("follow-up: wait for SSH down, then SSH up", text)
         started = self.telemetry_payload("uninstall_started")
         finished = self.telemetry_payload("uninstall_finished")
@@ -5846,7 +5853,6 @@ class CliTests(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("Reboot:\n  no", text)
         self.assertIn("Post-uninstall checks:\n  none", text)
-        self.assertNotIn(DETACHED_REBOOT_COMMAND, text)
         self.assertNotIn("SSH returns after reboot", text)
 
     def test_uninstall_validates_only_host_and_payload_dir(self) -> None:
@@ -5894,8 +5900,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             payload["reboot_request"],
             {
-                "mode": "detached_ssh",
-                "command": DETACHED_REBOOT_COMMAND,
+                "mode": "device_reboot",
+                "strategy": "acp_then_ssh",
                 "follow_up": ["wait_for_ssh_down", "wait_for_ssh_up"],
             },
         )
@@ -5962,7 +5968,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 240})
         verify_mock.assert_called_once()
         text = output.getvalue()
-        self.assertIn("Reboot request timed out; checking whether the device is rebooting...", text)
+        self.assertIn("SSH reboot request timed out; checking whether the device is rebooting...", text)
         self.assertIn("Device is back online.", text)
         finished = self.telemetry_payload("uninstall_finished")
         self.assertEqual(finished["result"], "success")
@@ -5992,7 +5998,7 @@ class CliTests(unittest.TestCase):
         wait_mock.assert_called_once()
         verify_mock.assert_not_called()
         text = output.getvalue()
-        self.assertIn("Reboot request timed out and the device did not go down.", text)
+        self.assertIn("Reboot was requested but the device did not go down.", text)
         self.assertIn("The uninstall removed managed TimeCapsuleSMB files before reboot; power-cycle or rerun uninstall.", text)
         finished = self.telemetry_payload("uninstall_finished")
         self.assertEqual(finished["result"], "failure")
@@ -6000,7 +6006,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(finished["device_came_back_after_reboot"], False)
         self.assertEqual(finished["post_uninstall_verified"], False)
         self.assertIn("stage=wait_for_reboot_down", finished["error"])
-        self.assertIn("reboot_request_timed_out=true", finished["error"])
+        self.assertIn("ssh_reboot_timed_out=true", finished["error"])
 
     def test_uninstall_no_reboot_skips_reboot_and_returns_success(self) -> None:
         output = io.StringIO()
