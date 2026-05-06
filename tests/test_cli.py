@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import io
 import json
 import sys
@@ -448,6 +449,34 @@ class CliTests(unittest.TestCase):
             return default
 
         return fake_prompt
+
+    def run_configure_after_bonjour_error(self, error: BaseException):
+        output = io.StringIO()
+        fake_values = {}
+
+        def fake_prompt(label, default, _secret):
+            if label == "Device SSH target":
+                return default
+            if label == "Device root password":
+                return "pw"
+            if label == "Airport Utility syAP code":
+                return "119"
+            if label == "mDNS device model hint":
+                return default or "TimeCapsule8,119"
+            return default
+
+        def fake_write_env_file(_path, values):
+            fake_values.update(values)
+
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", side_effect=error):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6_no_identity())):
+                        with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                            with redirect_stdout(output):
+                                rc = configure.main([])
+
+        return rc, output.getvalue(), fake_values
 
     def force_configure_acp_reprobe_auth_failed(self) -> None:
         self._configure_acp_probe_mock.side_effect = [self.make_probe_state(self.make_probe_result_auth_failed())]
@@ -939,6 +968,115 @@ class CliTests(unittest.TestCase):
                 values[key] = value
         self.assertIn("TC_HOST=root@10.0.0.2", text)
         self.assertNotIn("TC_CONFIGURE_ID=", text)
+
+    def test_configure_falls_back_to_manual_entry_when_bonjour_permission_denied(self) -> None:
+        rc, text, values = self.run_configure_after_bonjour_error(
+            PermissionError(errno.EACCES, "Permission denied")
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(values["TC_HOST"], DEFAULTS["TC_HOST"])
+        self.assertIn("Warning: mDNS discovery failed:", text)
+        self.assertIn("PermissionError: [Errno 13] Permission denied", text)
+        self.assertIn("This only affects automatic device discovery.", text)
+        self.assertIn("Falling back to manual SSH target entry.", text)
+        payload = self.telemetry_payload("configure_finished")
+        self.assertEqual(payload["result"], "success")
+        self.assertEqual(payload["bonjour_discovery_failed"], True)
+        self.assertEqual(payload["bonjour_discovery_fallback"], True)
+        self.assertEqual(payload["bonjour_discovery_fallback_reason"], "discovery_exception")
+        self.assertEqual(payload["bonjour_discovery_error_type"], "PermissionError")
+        self.assertIn("PermissionError: [Errno 13] Permission denied", payload["bonjour_discovery_error"])
+
+    def test_configure_falls_back_to_manual_entry_when_bonjour_operation_not_permitted(self) -> None:
+        rc, text, _values = self.run_configure_after_bonjour_error(
+            OSError(errno.EPERM, "Operation not permitted")
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertIn("Operation not permitted", text)
+        payload = self.telemetry_payload("configure_finished")
+        self.assertEqual(payload["result"], "success")
+        self.assertEqual(payload["bonjour_discovery_fallback"], True)
+        self.assertEqual(payload["bonjour_discovery_error_type"], "PermissionError")
+        self.assertIn("Operation not permitted", payload["bonjour_discovery_error"])
+
+    def test_configure_falls_back_to_manual_entry_when_bonjour_network_is_down(self) -> None:
+        rc, text, _values = self.run_configure_after_bonjour_error(
+            OSError(errno.ENETDOWN, "Network is down")
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertIn("Network is down", text)
+        payload = self.telemetry_payload("configure_finished")
+        self.assertEqual(payload["result"], "success")
+        self.assertEqual(payload["bonjour_discovery_fallback"], True)
+        self.assertEqual(payload["bonjour_discovery_error_type"], "OSError")
+        self.assertIn("Network is down", payload["bonjour_discovery_error"])
+
+    def test_configure_falls_back_to_manual_entry_when_bonjour_runtime_error_occurs(self) -> None:
+        rc, text, _values = self.run_configure_after_bonjour_error(
+            RuntimeError("zeroconf broke")
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertIn("zeroconf broke", text)
+        payload = self.telemetry_payload("configure_finished")
+        self.assertEqual(payload["result"], "success")
+        self.assertEqual(payload["bonjour_discovery_fallback"], True)
+        self.assertEqual(payload["bonjour_discovery_error_type"], "RuntimeError")
+        self.assertIn("RuntimeError: zeroconf broke", payload["bonjour_discovery_error"])
+
+    def test_configure_does_not_fallback_for_keyboard_interrupt_during_bonjour(self) -> None:
+        with mock.patch("timecapsulesmb.cli.configure.ensure_install_id"):
+            with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value={}):
+                with mock.patch(
+                    "timecapsulesmb.cli.configure.discover_resolved_records",
+                    side_effect=KeyboardInterrupt,
+                ):
+                    with self.assertRaises(KeyboardInterrupt):
+                        with redirect_stdout(io.StringIO()):
+                            configure.main([])
+
+        self.assertEqual(self.configure_finished_result(), "cancelled")
+        self.assertIn("Cancelled by user", self.configure_finished_error())
+
+    def test_configure_preserves_bonjour_permission_fallback_on_later_failure(self) -> None:
+        output = io.StringIO()
+
+        def fake_prompt(label, default, _secret):
+            if label == "Device SSH target":
+                return default
+            if label == "Device root password":
+                return "pw"
+            if label == "Airport Utility syAP code":
+                return "119"
+            if label == "mDNS device model hint":
+                return default or "TimeCapsule8,119"
+            return default
+
+        with mock.patch("timecapsulesmb.cli.configure.ensure_install_id"):
+            with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value={}):
+                with mock.patch(
+                    "timecapsulesmb.cli.configure.discover_resolved_records",
+                    side_effect=PermissionError(errno.EACCES, "Permission denied"),
+                ):
+                    with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
+                        with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_netbsd6_no_identity())):
+                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=RuntimeError("disk full")):
+                                with self.assertRaises(RuntimeError):
+                                    with redirect_stdout(output):
+                                        configure.main([])
+
+        self.assertIn("Falling back to manual SSH target entry.", output.getvalue())
+        error = self.configure_finished_error()
+        self.assertIn("RuntimeError: disk full", error)
+        self.assertIn("stage=write_env", error)
+        self.assertIn("bonjour_discovery_failed=true", error)
+        self.assertIn("bonjour_discovery_fallback=true", error)
+        self.assertIn("bonjour_discovery_fallback_reason=discovery_exception", error)
+        self.assertIn("bonjour_discovery_error_type=PermissionError", error)
+        self.assertIn("bonjour_discovery_error=PermissionError: [Errno 13] Permission denied", error)
 
     def test_configure_telemetry_includes_bonjour_stage_when_discovery_fails(self) -> None:
         with mock.patch("timecapsulesmb.cli.configure.ensure_install_id"):
