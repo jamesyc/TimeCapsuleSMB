@@ -318,8 +318,38 @@ class CliFlowTests(unittest.TestCase):
 
         self.assertFalse(ok)
         self.assertEqual(command_context.stages, ["verify_runtime"])
-        self.assertEqual(command_context.error, "runtime failed")
-        self.assertIn("runtime failed", output.getvalue())
+        self.assertEqual(command_context.error, "runtime failed managed runtime is not ready")
+        self.assertIn("runtime failed managed runtime is not ready", output.getvalue())
+
+    def test_verify_managed_runtime_flow_includes_runtime_timeout_detail(self) -> None:
+        command_context = FakeCommandContext()
+        smbd = ManagedSmbdProbeResult(False, "managed smbd readiness probe timed out", ("FAIL:managed smbd readiness probe timed out",))
+        mdns = ManagedMdnsTakeoverProbeResult(False, "managed mDNS takeover probe timed out", ("FAIL:managed mDNS takeover probe timed out",))
+        result = ManagedRuntimeProbeResult(
+            ready=False,
+            detail="runtime verification timed out after 180s; managed smbd readiness probe timed out; managed mDNS takeover probe timed out",
+            smbd=smbd,
+            mdns=mdns,
+            lines=smbd.lines + mdns.lines + ("FAIL:runtime verification timed out after 180s",),
+        )
+        output = io.StringIO()
+        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=result):
+            with redirect_stdout(output):
+                ok = verify_managed_runtime_flow(
+                    self.make_connection(),
+                    command_context,
+                    stage="verify_runtime",
+                    timeout_seconds=180,
+                    heading="Checking runtime",
+                    failure_message="NetBSD4 activation failed.",
+                )
+
+        self.assertFalse(ok)
+        self.assertEqual(
+            command_context.error,
+            "NetBSD4 activation failed. runtime verification timed out after 180s; managed smbd readiness probe timed out; managed mDNS takeover probe timed out",
+        )
+        self.assertIn("failed: runtime verification timed out after 180s", output.getvalue())
 
 
 if __name__ == "__main__":
