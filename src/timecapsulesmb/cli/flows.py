@@ -182,6 +182,9 @@ def verify_managed_runtime_flow(
     for line in render_managed_runtime_verification(verification, heading=heading):
         print(line)
     if not managed_runtime_ready(verification):
+        detail = verification.detail.strip()
+        if detail:
+            failure_message = f"{failure_message.rstrip()} {detail}"
         print(failure_message)
         command_context.fail_with_error(failure_message)
         return False
