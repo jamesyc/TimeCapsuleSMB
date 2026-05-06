@@ -185,7 +185,14 @@ def _render_install_permissions_action(action: InstallPermissionsAction) -> str:
 
 
 def _render_remove_path_action(action: RemovePathAction) -> str:
-    return f"rm -rf {shlex.quote(action.path)}"
+    path = action.path
+    if path.rstrip("/") == "/mnt/Flash" or (
+        path.startswith("/mnt/Flash")
+        and len(path) > len("/mnt/Flash")
+        and path[len("/mnt/Flash")].isspace()
+    ):
+        raise ValueError(f"Refusing to remove flash root path: {path}")
+    return f"rm -rf {shlex.quote(path)}"
 
 
 def _render_run_script_action(action: RunScriptAction) -> str:

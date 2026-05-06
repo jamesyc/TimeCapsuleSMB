@@ -3207,6 +3207,24 @@ int main(void) {{
         self.assertIn(remove_path_action("/mnt/Flash/allmdns.txt"), plan.remote_actions)
         self.assertIn(remove_path_action("/mnt/Flash/applemdns.txt"), plan.remote_actions)
 
+    def test_render_remove_path_refuses_flash_root(self) -> None:
+        unsafe_paths = [
+            "/mnt/Flash",
+            "/mnt/Flash/",
+            "/mnt/Flash//",
+            "/mnt/Flash stale",
+            "/mnt/Flash\tstale",
+        ]
+        for unsafe_path in unsafe_paths:
+            with self.subTest(path=unsafe_path):
+                with self.assertRaisesRegex(ValueError, "Refusing to remove flash root path"):
+                    render_remote_action(remove_path_action(unsafe_path))
+
+        self.assertEqual(
+            render_remote_action(remove_path_action("/mnt/Flash/rc.local")),
+            "rm -rf /mnt/Flash/rc.local",
+        )
+
     def test_remote_action_rendering_quotes_payload_paths_with_spaces(self) -> None:
         payload_dir = "/Volumes/dk2/Time Capsule Samba 4"
         prepare_cmd = render_remote_action(
