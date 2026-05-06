@@ -79,13 +79,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     ensure_install_id()
     config = load_env_config(defaults={})
     telemetry = TelemetryClient.from_config(config)
-    with CommandContext(telemetry, "prep-device", "prep_device_started", "prep_device_finished", config=config, args=args) as command_context:
+    with CommandContext(telemetry, "set-ssh", "set_ssh_started", "set_ssh_finished", config=config, args=args) as command_context:
         command_context.set_stage("load_config")
         try:
-            command_context.require_valid_config(profile="prep_device")
+            command_context.require_valid_config(profile="set_ssh")
         except SystemExit as exc:
             message = system_exit_message(exc) or f"Missing {config.path} settings. Run '.venv/bin/tcapsule configure' first."
-            command_context.update_fields(prep_device_action="missing_config")
+            command_context.update_fields(set_ssh_action="missing_config")
             print(message)
             command_context.fail_with_error(message)
             return 1
@@ -99,7 +99,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         ssh_open = tcp_open(acp_host, 22)
         command_context.update_fields(ssh_initially_reachable=ssh_open)
         if not ssh_open:
-            command_context.update_fields(prep_device_action="enable_ssh")
+            command_context.update_fields(set_ssh_action="enable_ssh")
             print("SSH not reachable. Attempting to enable via ACP...")
             try:
                 command_context.set_stage("enable_ssh")
@@ -128,7 +128,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     print()
                     resp = ""
                 if resp in {"", "n", "no"}:
-                    command_context.update_fields(prep_device_action="leave_enabled", ssh_final_reachable=True)
+                    command_context.update_fields(set_ssh_action="leave_enabled", ssh_final_reachable=True)
                     print("Leaving SSH enabled.")
                     break
                 if resp in {"y", "yes"}:
@@ -137,7 +137,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 print("Please answer 'y' or 'n'.")
 
             if should_disable:
-                command_context.update_fields(prep_device_action="disable_ssh")
+                command_context.update_fields(set_ssh_action="disable_ssh")
                 try:
                     command_context.set_stage("disable_ssh")
                     disable_ssh_over_ssh(connection, reboot_device=True, log=print)

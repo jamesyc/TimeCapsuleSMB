@@ -18,10 +18,10 @@
 #   make test-c                  - compile-check mdns/nbns helper sources
 #   make discover                - run tcapsule discover (depends on install)
 #   make bootstrap-host          - run the host bootstrap helper
-#   make prep-device             - advanced SSH toggle helper
+#   make set-ssh                 - advanced SSH toggle helper
 #   make clean                   - remove the .venv directory
 
-.PHONY: venv install test coverage coverage-html test-c discover bootstrap-host prep-device setup clean
+.PHONY: venv install test coverage coverage-html test-c discover bootstrap-host set-ssh setup clean
 
 VENVDIR := .venv
 PYTHON := python3
@@ -58,8 +58,8 @@ discover: install
 bootstrap-host:
 	./tcapsule bootstrap
 
-prep-device: install
-	$(VENVDIR)/bin/tcapsule prep-device
+set-ssh: install
+	$(VENVDIR)/bin/tcapsule set-ssh
 
 setup: install
 

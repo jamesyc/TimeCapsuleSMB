@@ -12,7 +12,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.cli import prep_device
+from timecapsulesmb.cli import set_ssh
 from timecapsulesmb.integrations import acp
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
 
@@ -108,11 +108,11 @@ class ACPTests(unittest.TestCase):
     def test_disable_ssh_over_ssh_retries_and_reboots_on_success(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o ProxyJump=bastion")
         with mock.patch(
-            "timecapsulesmb.cli.prep_device.run_ssh",
+            "timecapsulesmb.cli.set_ssh.run_ssh",
             side_effect=[ssh_result(1, "nope"), ssh_result(0, "ok")],
         ) as run_ssh_mock:
-            with mock.patch("timecapsulesmb.cli.prep_device.remote_request_reboot") as reboot_mock:
-                prep_device.disable_ssh_over_ssh(connection, reboot_device=True)
+            with mock.patch("timecapsulesmb.cli.set_ssh.remote_request_reboot") as reboot_mock:
+                set_ssh.disable_ssh_over_ssh(connection, reboot_device=True)
 
         self.assertEqual(run_ssh_mock.call_count, 2)
         run_ssh_mock.assert_has_calls([
@@ -125,11 +125,11 @@ class ACPTests(unittest.TestCase):
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         messages: list[str] = []
         with mock.patch(
-            "timecapsulesmb.cli.prep_device.run_ssh",
+            "timecapsulesmb.cli.set_ssh.run_ssh",
             return_value=ssh_result(22, "### remove property error: -10"),
         ) as run_ssh_mock:
-            with mock.patch("timecapsulesmb.cli.prep_device.remote_request_reboot") as reboot_mock:
-                prep_device.disable_ssh_over_ssh(connection, reboot_device=True, log=messages.append)
+            with mock.patch("timecapsulesmb.cli.set_ssh.remote_request_reboot") as reboot_mock:
+                set_ssh.disable_ssh_over_ssh(connection, reboot_device=True, log=messages.append)
 
         run_ssh_mock.assert_called_once_with(connection, "acp remove dbug", check=False, timeout=30)
         reboot_mock.assert_called_once_with(connection)
@@ -138,23 +138,23 @@ class ACPTests(unittest.TestCase):
     def test_disable_ssh_over_ssh_reports_bad_ssh_password_as_auth_failure(self) -> None:
         connection = SshConnection("root@10.0.0.2", "bad", "-o foo")
         with mock.patch(
-            "timecapsulesmb.cli.prep_device.run_ssh",
+            "timecapsulesmb.cli.set_ssh.run_ssh",
             return_value=ssh_result(255, "Permission denied, please try again."),
         ):
             with self.assertRaises(RuntimeError) as exc:
-                prep_device.disable_ssh_over_ssh(connection, reboot_device=False)
+                set_ssh.disable_ssh_over_ssh(connection, reboot_device=False)
 
         self.assertEqual(str(exc.exception), "SSH authentication failed while trying to disable SSH over SSH.")
 
     def test_disable_ssh_over_ssh_continues_after_detached_reboot_timeout(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         messages: list[str] = []
-        with mock.patch("timecapsulesmb.cli.prep_device.run_ssh", return_value=ssh_result(0, "ok")):
+        with mock.patch("timecapsulesmb.cli.set_ssh.run_ssh", return_value=ssh_result(0, "ok")):
             with mock.patch(
-                "timecapsulesmb.cli.prep_device.remote_request_reboot",
+                "timecapsulesmb.cli.set_ssh.remote_request_reboot",
                 side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot"),
             ):
-                prep_device.disable_ssh_over_ssh(connection, reboot_device=True, log=messages.append)
+                set_ssh.disable_ssh_over_ssh(connection, reboot_device=True, log=messages.append)
 
         self.assertIn("Reboot request timed out; checking whether the device is rebooting...", messages[-1])
 

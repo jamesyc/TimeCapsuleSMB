@@ -17,7 +17,8 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.cli import activate, bootstrap, configure, deploy, discover, doctor, fsck, prep_device, uninstall
+import timecapsulesmb.cli.main as cli_main_module
+from timecapsulesmb.cli import activate, bootstrap, configure, deploy, discover, doctor, fsck, set_ssh, uninstall
 from timecapsulesmb.cli.main import main
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.core.config import (
@@ -168,7 +169,7 @@ class CliTests(unittest.TestCase):
             "timecapsulesmb.cli.activate.TelemetryClient.from_config",
             "timecapsulesmb.cli.doctor.TelemetryClient.from_config",
             "timecapsulesmb.cli.fsck.TelemetryClient.from_config",
-            "timecapsulesmb.cli.prep_device.TelemetryClient.from_config",
+            "timecapsulesmb.cli.set_ssh.TelemetryClient.from_config",
             "timecapsulesmb.cli.uninstall.TelemetryClient.from_config",
         ):
             self._exit_stack.enter_context(mock.patch(target, return_value=self._telemetry_client))
@@ -531,6 +532,10 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         commands["fsck"].assert_called_once_with(["--yes", "--no-reboot"])
 
+    def test_set_ssh_command_replaces_prep_device(self) -> None:
+        self.assertIs(cli_main_module.COMMANDS["set-ssh"], set_ssh.main)
+        self.assertNotIn("prep-device", cli_main_module.COMMANDS)
+
     def test_bootstrap_prints_full_next_steps(self) -> None:
         output = io.StringIO()
         with mock.patch("pathlib.Path.exists", return_value=True):
@@ -549,7 +554,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("deploy", text)
         self.assertIn("doctor", text)
         self.assertIn("activate", text)
-        self.assertNotIn("prep-device", text)
+        self.assertNotIn("set-ssh", text)
 
     def test_bootstrap_prints_same_core_next_steps_on_linux(self) -> None:
         output = io.StringIO()
@@ -569,7 +574,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("deploy", text)
         self.assertIn("doctor", text)
         self.assertIn("activate", text)
-        self.assertNotIn("prep-device", text)
+        self.assertNotIn("set-ssh", text)
         self.assertNotIn("AirPyrt", text)
 
     def test_bootstrap_rejects_removed_skip_airpyrt_flag(self) -> None:
@@ -733,7 +738,7 @@ class CliTests(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("This writes a local .env configuration file", text)
         self.assertIn(f"Review the .env file configuration: wrote {configure.ENV_PATH}", text)
-        self.assertNotIn("prep-device", text)
+        self.assertNotIn("set-ssh", text)
         self.assertIn("- Deploy this configuration to your Time Capsule/Airport Extreme device, run:", text)
         self.assertIn("    .venv/bin/tcapsule deploy", text)
 
@@ -5343,87 +5348,87 @@ class CliTests(unittest.TestCase):
         self.assertIn("Linux", text)
         self.assertIn("No deployable payload is available", text)
 
-    def test_prep_device_returns_error_when_env_missing(self) -> None:
+    def test_set_ssh_returns_error_when_env_missing(self) -> None:
         output = io.StringIO()
-        with mock.patch("timecapsulesmb.cli.prep_device.load_env_config", return_value=self.make_app_config({}, exists=False)):
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config({}, exists=False)):
             with redirect_stdout(output):
-                rc = prep_device.main([])
+                rc = set_ssh.main([])
         self.assertEqual(rc, 1)
-        self.assertIn("Please run the `configure` command before running `prep-device`.", output.getvalue())
-        started = self.telemetry_payload("prep_device_started")
-        finished = self.telemetry_payload("prep_device_finished")
+        self.assertIn("Please run the `configure` command before running `set-ssh`.", output.getvalue())
+        started = self.telemetry_payload("set_ssh_started")
+        finished = self.telemetry_payload("set_ssh_finished")
         self.assertEqual(started["command_id"], finished["command_id"])
         self.assertEqual(finished["result"], "failure")
-        self.assertEqual(finished["prep_device_action"], "missing_config")
+        self.assertEqual(finished["set_ssh_action"], "missing_config")
         self.assertIn("stage=load_config", finished["error"])
         self.assertNotIn("TC_PASSWORD", finished["error"])
 
-    def test_prep_device_enable_flow_succeeds(self) -> None:
+    def test_set_ssh_enable_flow_succeeds(self) -> None:
         output = io.StringIO()
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
-        with mock.patch("timecapsulesmb.cli.prep_device.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=False):
-                with mock.patch("timecapsulesmb.cli.prep_device.enable_ssh") as enable_ssh_mock:
-                    with mock.patch("timecapsulesmb.cli.prep_device.wait_for_tcp_port_state", return_value=True):
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
+                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh") as enable_ssh_mock:
+                    with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_tcp_port_state", return_value=True):
                         with redirect_stdout(output):
-                            rc = prep_device.main([])
+                            rc = set_ssh.main([])
         self.assertEqual(rc, 0)
         enable_ssh_mock.assert_called_once()
         self.assertIn("SSH is configured", output.getvalue())
-        finished = self.telemetry_payload("prep_device_finished")
+        finished = self.telemetry_payload("set_ssh_finished")
         self.assertEqual(finished["result"], "success")
-        self.assertEqual(finished["prep_device_action"], "enable_ssh")
+        self.assertEqual(finished["set_ssh_action"], "enable_ssh")
         self.assertEqual(finished["ssh_initially_reachable"], False)
         self.assertEqual(finished["ssh_final_reachable"], True)
 
-    def test_prep_device_enable_exception_emits_failure_stage(self) -> None:
+    def test_set_ssh_enable_exception_emits_failure_stage(self) -> None:
         output = io.StringIO()
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
-        with mock.patch("timecapsulesmb.cli.prep_device.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=False):
-                with mock.patch("timecapsulesmb.cli.prep_device.enable_ssh", side_effect=RuntimeError("ACP failed")):
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
+                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh", side_effect=RuntimeError("ACP failed")):
                     with redirect_stdout(output):
-                        rc = prep_device.main([])
+                        rc = set_ssh.main([])
         self.assertEqual(rc, 1)
         message = "Failed to enable SSH via ACP: ACP failed"
         self.assertIn(f"{ANSI_RED}Failed to enable SSH via ACP:{ANSI_RESET}", output.getvalue())
         self.assertIn("ACP failed", output.getvalue())
-        finished = self.telemetry_payload("prep_device_finished")
+        finished = self.telemetry_payload("set_ssh_finished")
         self.assertEqual(finished["result"], "failure")
-        self.assertEqual(finished["prep_device_action"], "enable_ssh")
+        self.assertEqual(finished["set_ssh_action"], "enable_ssh")
         self.assertIn("stage=enable_ssh", finished["error"])
         self.assertIn(message, finished["error"])
         self.assertNotIn(ANSI_RED, finished["error"])
 
-    def test_prep_device_enable_failure_reports_acp_error_without_bootstrap_guidance(self) -> None:
+    def test_set_ssh_enable_failure_reports_acp_error_without_bootstrap_guidance(self) -> None:
         output = io.StringIO()
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
         error = "ACP command failed with error_code -0x1234 (likely wrong AirPort admin password)"
-        with mock.patch("timecapsulesmb.cli.prep_device.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=False):
-                with mock.patch("timecapsulesmb.cli.prep_device.enable_ssh", side_effect=RuntimeError(error)):
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
+                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh", side_effect=RuntimeError(error)):
                     with redirect_stdout(output):
-                        rc = prep_device.main([])
+                        rc = set_ssh.main([])
 
         self.assertEqual(rc, 1)
         rendered = output.getvalue()
         self.assertIn(f"{ANSI_RED}Failed to enable SSH via ACP:{ANSI_RESET}", rendered)
         self.assertIn(error, rendered)
         self.assertNotIn("./tcapsule bootstrap", rendered)
-        finished = self.telemetry_payload("prep_device_finished")
+        finished = self.telemetry_payload("set_ssh_finished")
         self.assertIn(f"Failed to enable SSH via ACP: {error}", finished["error"])
         self.assertNotIn(ANSI_RED, finished["error"])
 
-    def test_prep_device_disable_failure_is_reported_as_ssh_error(self) -> None:
+    def test_set_ssh_disable_failure_is_reported_as_ssh_error(self) -> None:
         output = io.StringIO()
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
         error = "on-device acp failed"
-        with mock.patch("timecapsulesmb.cli.prep_device.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=True):
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
                 with mock.patch("builtins.input", return_value="y"):
-                    with mock.patch("timecapsulesmb.cli.prep_device.disable_ssh_over_ssh", side_effect=RuntimeError(error)):
+                    with mock.patch("timecapsulesmb.cli.set_ssh.disable_ssh_over_ssh", side_effect=RuntimeError(error)):
                         with redirect_stdout(output):
-                            rc = prep_device.main([])
+                            rc = set_ssh.main([])
 
         self.assertEqual(rc, 1)
         rendered = output.getvalue()
@@ -5431,22 +5436,22 @@ class CliTests(unittest.TestCase):
         self.assertIn(error, rendered)
         self.assertNotIn("AirPyrt", rendered)
         self.assertNotIn("./tcapsule bootstrap", rendered)
-        finished = self.telemetry_payload("prep_device_finished")
+        finished = self.telemetry_payload("set_ssh_finished")
         self.assertIn(f"Failed to disable SSH over SSH: {error}", finished["error"])
         self.assertNotIn("AirPyrt", finished["error"])
         self.assertNotIn(ANSI_RED, finished["error"])
 
-    def test_prep_device_disable_flow_warns_when_ssh_reopens(self) -> None:
+    def test_set_ssh_disable_flow_warns_when_ssh_reopens(self) -> None:
         output = io.StringIO()
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw", "TC_SSH_OPTS": "-o ProxyJump=bastion"}
-        with mock.patch("timecapsulesmb.cli.prep_device.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=True):
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
                 with mock.patch("builtins.input", return_value="y"):
-                    with mock.patch("timecapsulesmb.cli.prep_device.disable_ssh_over_ssh") as disable_ssh_mock:
-                        with mock.patch("timecapsulesmb.cli.prep_device.wait_for_tcp_port_state", side_effect=[True, False]):
-                            with mock.patch("timecapsulesmb.cli.prep_device.wait_for_device_up"):
+                    with mock.patch("timecapsulesmb.cli.set_ssh.disable_ssh_over_ssh") as disable_ssh_mock:
+                        with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_tcp_port_state", side_effect=[True, False]):
+                            with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_device_up"):
                                 with redirect_stdout(output):
-                                    rc = prep_device.main([])
+                                    rc = set_ssh.main([])
         self.assertEqual(rc, 0)
         disable_ssh_mock.assert_called_once_with(
             SshConnection("root@10.0.0.2", "pw", "-o ProxyJump=bastion"),
@@ -5454,29 +5459,29 @@ class CliTests(unittest.TestCase):
             log=print,
         )
         self.assertIn("Warning: SSH reopened after reboot", output.getvalue())
-        finished = self.telemetry_payload("prep_device_finished")
+        finished = self.telemetry_payload("set_ssh_finished")
         self.assertEqual(finished["result"], "success")
-        self.assertEqual(finished["prep_device_action"], "disable_ssh")
+        self.assertEqual(finished["set_ssh_action"], "disable_ssh")
         self.assertEqual(finished["ssh_initially_reachable"], True)
         self.assertEqual(finished["ssh_final_reachable"], True)
         self.assertEqual(finished["ssh_disable_persisted"], False)
 
-    def test_prep_device_disable_flow_confirms_ssh_disabled(self) -> None:
+    def test_set_ssh_disable_flow_confirms_ssh_disabled(self) -> None:
         output = io.StringIO()
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
-        with mock.patch("timecapsulesmb.cli.prep_device.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=True):
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
                 with mock.patch("builtins.input", return_value="y"):
-                    with mock.patch("timecapsulesmb.cli.prep_device.disable_ssh_over_ssh"):
-                        with mock.patch("timecapsulesmb.cli.prep_device.wait_for_tcp_port_state", side_effect=[True, True]):
-                            with mock.patch("timecapsulesmb.cli.prep_device.wait_for_device_up"):
+                    with mock.patch("timecapsulesmb.cli.set_ssh.disable_ssh_over_ssh"):
+                        with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_tcp_port_state", side_effect=[True, True]):
+                            with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_device_up"):
                                 with redirect_stdout(output):
-                                    rc = prep_device.main([])
+                                    rc = set_ssh.main([])
         self.assertEqual(rc, 0)
         self.assertIn("SSH disabled (remains closed after reboot)", output.getvalue())
-        finished = self.telemetry_payload("prep_device_finished")
+        finished = self.telemetry_payload("set_ssh_finished")
         self.assertEqual(finished["result"], "success")
-        self.assertEqual(finished["prep_device_action"], "disable_ssh")
+        self.assertEqual(finished["set_ssh_action"], "disable_ssh")
         self.assertEqual(finished["ssh_final_reachable"], False)
         self.assertEqual(finished["ssh_disable_persisted"], True)
 

@@ -563,7 +563,7 @@ The intended user flow is:
 7. remove the payload later if needed
    - [src/timecapsulesmb/cli/uninstall.py](src/timecapsulesmb/cli/uninstall.py)
 
-`tcapsule prep-device` still exists as an advanced SSH toggle helper, but it is no longer part of the normal setup flow.
+`tcapsule set-ssh` still exists as an advanced SSH toggle helper, but it is no longer part of the normal setup flow.
 
 `tcapsule configure` writes repo-root `.env`.
 
@@ -642,7 +642,7 @@ Workflow details:
 ## Host-Side Architecture
 
 Current important package areas:
-- [src/timecapsulesmb/cli/](src/timecapsulesmb/cli): command entrypoints for `bootstrap`, `discover`, `configure`, `prep-device`, `deploy`, `activate`, `doctor`, `repair-xattrs`, and `uninstall`
+- [src/timecapsulesmb/cli/](src/timecapsulesmb/cli): command entrypoints for `bootstrap`, `discover`, `configure`, `set-ssh`, `deploy`, `activate`, `doctor`, `repair-xattrs`, and `uninstall`
 - [src/timecapsulesmb/core/](src/timecapsulesmb/core): shared config parsing, defaults, and common models
 - [src/timecapsulesmb/transport/](src/timecapsulesmb/transport): local command execution plus SSH and SCP helpers
 - [src/timecapsulesmb/discovery/](src/timecapsulesmb/discovery): Bonjour-based device discovery
@@ -851,7 +851,7 @@ Hidden operator mode:
 
 Client telemetry is now emitted by:
 - `tcapsule configure`
-- `tcapsule prep-device`
+- `tcapsule set-ssh`
 - `tcapsule deploy`
 - `tcapsule activate`
 - `tcapsule doctor`
@@ -862,8 +862,8 @@ Client telemetry is now emitted by:
 Current event model:
 - `configure_started`
 - `configure_finished`
-- `prep_device_started`
-- `prep_device_finished`
+- `set_ssh_started`
+- `set_ssh_finished`
 - `deploy_started`
 - `deploy_finished`
 - `activate_started`
