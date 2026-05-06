@@ -74,7 +74,7 @@ from timecapsulesmb.device.probe import (
     probe_remote_airport_identity_conn,
     wait_for_ssh_state_conn,
 )
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
 
 class DeployModuleTests(unittest.TestCase):
@@ -3131,7 +3131,7 @@ int main(void) {{
 
     def test_wait_for_ssh_state_treats_probe_failure_as_down(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o ProxyCommand=jump")
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=SystemExit("timeout")) as run_ssh_mock:
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=SshError("timeout")) as run_ssh_mock:
             self.assertTrue(wait_for_ssh_state_conn(connection, expected_up=False, timeout_seconds=1))
         run_ssh_mock.assert_called_once_with(connection, "/bin/echo ok", check=False, timeout=10)
 
@@ -3146,7 +3146,7 @@ int main(void) {{
 
     def test_wait_for_ssh_state_retries_until_down(self) -> None:
         ok = mock.Mock(returncode=0, stdout="ok\n")
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=[ok, SystemExit("down")]) as run_ssh_mock:
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=[ok, SshError("down")]) as run_ssh_mock:
             with mock.patch("timecapsulesmb.device.probe.time.sleep") as sleep_mock:
                 self.assertTrue(wait_for_ssh_state_conn(SshConnection("root@10.0.0.2", "pw", "-o ProxyCommand=jump"), expected_up=False, timeout_seconds=6))
         self.assertEqual(run_ssh_mock.call_count, 2)

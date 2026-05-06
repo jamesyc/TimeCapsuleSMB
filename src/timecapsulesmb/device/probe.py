@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.transport.local import tcp_open
+from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, ssh_opts_use_proxy
 from timecapsulesmb.core.config import AIRPORT_IDENTITIES_BY_MODEL, AIRPORT_IDENTITIES_BY_SYAP
 
@@ -340,7 +341,7 @@ def probe_device_conn(connection: SshConnection) -> ProbeResult:
         os_name, os_release, arch = _probe_remote_os_info_conn(connection)
         elf_endianness = _probe_remote_elf_endianness_conn(connection)
         airport_identity = probe_remote_airport_identity_conn(connection)
-    except SystemExit as exc:
+    except (TransportError, SystemExit) as exc:
         return ProbeResult(
             ssh_port_reachable=True,
             ssh_authenticated=False,
@@ -379,7 +380,7 @@ def probe_ssh_command_conn(
 ) -> SshCommandProbeResult:
     try:
         proc = run_ssh(connection, command, check=False, timeout=timeout)
-    except SystemExit as exc:
+    except (TransportError, SystemExit) as exc:
         return SshCommandProbeResult(ok=False, detail=system_exit_message(exc))
     if proc.returncode == 0:
         stdout = proc.stdout.strip()
@@ -1007,7 +1008,7 @@ def wait_for_ssh_state_conn(
         try:
             proc = run_ssh(connection, "/bin/echo ok", check=False, timeout=10)
             is_up = proc.returncode == 0 and proc.stdout.strip().endswith("ok")
-        except SystemExit:
+        except (TransportError, SystemExit):
             is_up = False
         if is_up == expected_up:
             return True

@@ -15,7 +15,7 @@ from timecapsulesmb.deploy.verify import (
 from timecapsulesmb.device.probe import wait_for_ssh_state_conn
 from timecapsulesmb.integrations.acp import ACPError, reboot as acp_reboot
 from timecapsulesmb.transport.local import tcp_open
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
 
 REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
@@ -129,7 +129,7 @@ def _request_reboot_via_ssh(connection: SshConnection, command_context: CommandC
         )
         print("SSH reboot request timed out; checking whether the device is rebooting...")
         return
-    except SystemExit as exc:
+    except SshError as exc:
         command_context.add_debug_fields(
             ssh_reboot_succeeded=False,
             ssh_reboot_error=system_exit_message(exc),

@@ -42,7 +42,7 @@ from timecapsulesmb.device.probe import (
 )
 from timecapsulesmb.deploy.templates import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.deploy.verify import VerificationResult
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourServiceInstance, Discovered
 from timecapsulesmb.cli.version_check import DEFAULT_DOWNLOAD_URL, VERSION_CHECK_URL, VersionCheckResult
 from timecapsulesmb.cli.util import ANSI_RED, ANSI_RESET
@@ -4265,7 +4265,7 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config(values, path=env_path)):
                 with mock.patch(
                     "timecapsulesmb.cli.context.CommandContext.inspect_managed_connection",
-                    side_effect=SystemExit("Connecting to the device failed, SSH error: bind failed"),
+                    side_effect=SshError("Connecting to the device failed, SSH error: bind failed"),
                 ):
                     with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", return_value=([fake_result], True)):
                         with redirect_stdout(output):
@@ -4850,7 +4850,7 @@ class CliTests(unittest.TestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"))
             stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.remote_install_auth_files"))
             stack.enter_context(mock.patch("builtins.input", return_value="y"))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=SystemExit("ssh command failed")))
+            stack.enter_context(mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=SshError("ssh command failed")))
             wait_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]))
             stack.enter_context(mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(True)))
             with redirect_stdout(output):

@@ -47,7 +47,7 @@ from timecapsulesmb.discovery.bonjour import (
     BonjourResolvedService,
     BonjourServiceInstance,
 )
-from timecapsulesmb.transport.ssh import SshConnection
+from timecapsulesmb.transport.ssh import SshConnection, SshError
 
 
 class CheckTests(unittest.TestCase):
@@ -1985,7 +1985,7 @@ class CheckTests(unittest.TestCase):
                                         return_value=RemoteInterfaceProbeResult(iface="bridge0", exists=True, detail="interface bridge0 exists"),
                                     ):
                                         with mock.patch("timecapsulesmb.checks.doctor.probe_managed_mdns_takeover_conn", return_value=mock.Mock(ready=True, detail="managed mDNS takeover active")):
-                                            with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root_conn", side_effect=SystemExit("ssh failed")):
+                                            with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root_conn", side_effect=SshError("ssh failed")):
                                                 results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
         self.assertFalse(fatal)
         nbns_result = next(result for result in results if result.status == "WARN" and result.message.startswith("NBNS check skipped:"))
@@ -2038,7 +2038,7 @@ class CheckTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
                 with mock.patch("timecapsulesmb.checks.doctor.check_ssh_login", return_value=mock.Mock(status="PASS", message="ssh ok")):
                     with mock.patch("timecapsulesmb.checks.doctor.find_free_local_port", return_value=1445):
-                        with mock.patch("timecapsulesmb.checks.doctor.ssh_local_forward", side_effect=SystemExit("tunnel failed")):
+                        with mock.patch("timecapsulesmb.checks.doctor.ssh_local_forward", side_effect=SshError("tunnel failed")):
                             with mock.patch("timecapsulesmb.checks.doctor.discover_volume_root_conn", return_value="/Volumes/dk2"):
                                 with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout="")):
                                     results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT, skip_bonjour=True)

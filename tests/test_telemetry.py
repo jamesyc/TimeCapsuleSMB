@@ -27,7 +27,7 @@ from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, RemoteIn
 from timecapsulesmb.discovery.bonjour import Discovered
 from timecapsulesmb.telemetry import MAX_SEND_ATTEMPTS, TelemetryClient
 from timecapsulesmb.telemetry.debug import render_debug_mapping
-from timecapsulesmb.transport.ssh import SshConnection
+from timecapsulesmb.transport.ssh import SshConnection, SshError
 
 
 def telemetry_client_from_values(
@@ -250,6 +250,34 @@ class TelemetryTests(unittest.TestCase):
         finished_payload = send_mock.call_args.args[0]
         self.assertEqual(finished_payload["result"], "failure")
         self.assertIn("Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied", finished_payload["error"])
+        self.assertIn("Debug context:", finished_payload["error"])
+        self.assertIn("ssh_opts=-L 108:127.0.0.1:108", finished_payload["error"])
+
+    def test_command_context_converts_transport_error_to_system_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = telemetry_client_from_values(
+                    {
+                        "TC_HOST": "root@192.168.1.118",
+                        "TC_SSH_OPTS": "-L 108:127.0.0.1:108",
+                    },
+                    bootstrap_path=bootstrap_path,
+                )
+                with mock.patch.object(client, "_dispatch_payload_async"):
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        with self.assertRaises(SystemExit) as raised:
+                            with CommandContext(client, "deploy", "deploy_started", "deploy_finished", values={
+                                "TC_HOST": "root@192.168.1.118",
+                                "TC_SSH_OPTS": "-L 108:127.0.0.1:108",
+                            }):
+                                raise SshError("Connecting to the device failed, SSH error: timeout")
+        self.assertEqual(str(raised.exception), "Connecting to the device failed, SSH error: timeout")
+        finished_payload = send_mock.call_args.args[0]
+        self.assertEqual(finished_payload["result"], "failure")
+        self.assertIn("Connecting to the device failed, SSH error: timeout", finished_payload["error"])
+        self.assertNotIn("SshError:", finished_payload["error"])
         self.assertIn("Debug context:", finished_payload["error"])
         self.assertIn("ssh_opts=-L 108:127.0.0.1:108", finished_payload["error"])
 

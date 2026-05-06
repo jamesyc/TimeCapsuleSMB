@@ -27,7 +27,7 @@ from timecapsulesmb.device.probe import (
     ManagedSmbdProbeResult,
 )
 from timecapsulesmb.integrations.acp import ACPConnectionError
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
 
 class FakeCommandContext:
@@ -189,7 +189,7 @@ class CliFlowTests(unittest.TestCase):
             "timecapsulesmb.cli.flows.acp_reboot",
             side_effect=ACPConnectionError("ACP timed out"),
         ):
-            with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=SystemExit("ssh failed")):
+            with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=SshError("ssh failed")):
                 with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
                     with redirect_stdout(output):
                         ok = request_reboot_and_wait(
@@ -255,7 +255,7 @@ class CliFlowTests(unittest.TestCase):
             "timecapsulesmb.cli.flows.acp_reboot",
             side_effect=ACPConnectionError("ACP timed out"),
         ):
-            with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=SystemExit("ssh failed")):
+            with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=SshError("ssh failed")):
                 with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", return_value=False) as wait_mock:
                     with redirect_stdout(output):
                         ok = request_reboot_and_wait(
