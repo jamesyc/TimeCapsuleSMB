@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import time
+from typing import Iterable
+
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.deploy.executor import remote_request_reboot
@@ -9,10 +12,53 @@ from timecapsulesmb.deploy.verify import (
     verify_managed_runtime,
 )
 from timecapsulesmb.device.probe import wait_for_ssh_state_conn
+from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
 
 
 REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
+
+
+def wait_for_tcp_port_state(
+    host: str,
+    port: int,
+    *,
+    expected_state: bool,
+    timeout_seconds: int = 120,
+    interval_seconds: int = 5,
+    verbose: bool = True,
+    service_name: str | None = None,
+) -> bool:
+    label = service_name or f"TCP port {port}"
+    expected_state_string = "open" if expected_state else "closed"
+    if verbose:
+        print(f"Waiting for {label} to be {expected_state_string}...")
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        time.sleep(interval_seconds)
+        is_open = tcp_open(host, port)
+        if is_open == expected_state:
+            if verbose:
+                print(f"{label} is {expected_state_string}.")
+            return True
+    if verbose:
+        print(f"{label} did not become {expected_state_string} within {timeout_seconds}s.")
+    return False
+
+
+def wait_for_device_up(
+    host: str,
+    *,
+    probe_ports: Iterable[int] = (5009, 445, 139),
+    timeout_seconds: int = 180,
+    interval_seconds: int = 5,
+) -> bool:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        time.sleep(interval_seconds)
+        if any(tcp_open(host, port) for port in probe_ports):
+            return True
+    return False
 
 
 def request_reboot_and_wait(

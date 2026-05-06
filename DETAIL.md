@@ -550,20 +550,20 @@ The intended user flow is:
 
 1. bootstrap the local host
    - [`./tcapsule bootstrap`](./tcapsule)
-2. generate local config
+2. generate local config and enable SSH when needed
    - [src/timecapsulesmb/cli/configure.py](src/timecapsulesmb/cli/configure.py)
-3. enable SSH with AirPyrt if SSH is not reachable, or optionally disable SSH over SSH when it is already reachable
-   - [src/timecapsulesmb/cli/prep_device.py](src/timecapsulesmb/cli/prep_device.py)
-4. deploy and reboot
+3. deploy and reboot
    - [src/timecapsulesmb/cli/deploy.py](src/timecapsulesmb/cli/deploy.py)
-5. activate older NetBSD 4 devices if they do not auto-start Samba after reboot
+4. activate older NetBSD 4 devices if they do not auto-start Samba after reboot
    - [src/timecapsulesmb/cli/activate.py](src/timecapsulesmb/cli/activate.py)
-6. run local diagnostics
+5. run local diagnostics
    - [src/timecapsulesmb/cli/doctor.py](src/timecapsulesmb/cli/doctor.py)
-7. optionally repair the HDD before redeploying
+6. optionally repair the HDD before redeploying
    - [src/timecapsulesmb/cli/fsck.py](src/timecapsulesmb/cli/fsck.py)
-8. remove the payload later if needed
+7. remove the payload later if needed
    - [src/timecapsulesmb/cli/uninstall.py](src/timecapsulesmb/cli/uninstall.py)
+
+`tcapsule prep-device` still exists as an advanced SSH toggle helper, but it is no longer part of the normal setup flow.
 
 `tcapsule configure` writes repo-root `.env`.
 
@@ -624,13 +624,15 @@ Current validation behavior:
 Workflow details:
 - `configure` now starts by attempting mDNS discovery of the Time Capsule on the local network
 - if SSH is already reachable, `configure` validates the SSH target/password and then probes the device directly
+- if SSH is closed, `configure` enables SSH with the built-in Python 3 ACP client, reboots the device through ACP, waits for SSH to come back, and then probes the device directly
+- ACP authentication failures during `configure` reprompt for the Time Capsule password; non-authentication ACP failures stop configuration with the underlying error
 - `configure` can now choose `TC_AIRPORT_SYAP` and `TC_MDNS_DEVICE_MODEL` from several sources, in priority order:
   - discovered `_airport._tcp` `syAP`
   - exact probed compatibility match
-  - probed Apple identity from `ACPData.bin`
+  - probed Apple identity from on-device `acp` output
   - model derived from the chosen `syAP`
   - saved valid values from `.env`
-- for NetBSD 4 devices, the probe/compatibility layer narrows the allowed `syAP` and model candidates by endianness and then narrows further when `ACPData.bin` identifies the exact generation
+- for NetBSD 4 devices, the probe/compatibility layer narrows the allowed `syAP` and model candidates by endianness and then narrows further when on-device `acp` identifies the exact generation
 - `configure` validates user-facing mDNS/share inputs before writing `.env`
 - `deploy`, `activate`, and `doctor` fail early when managed `.env` config values are invalid
 - the command entrypoints live under [src/timecapsulesmb/cli/](src/timecapsulesmb/cli)
@@ -644,7 +646,7 @@ Current important package areas:
 - [src/timecapsulesmb/core/](src/timecapsulesmb/core): shared config parsing, defaults, and common models
 - [src/timecapsulesmb/transport/](src/timecapsulesmb/transport): local command execution plus SSH and SCP helpers
 - [src/timecapsulesmb/discovery/](src/timecapsulesmb/discovery): Bonjour-based device discovery
-- [src/timecapsulesmb/integrations/](src/timecapsulesmb/integrations): AirPyrt SSH enable support plus on-device SSH disable helpers
+- [src/timecapsulesmb/integrations/](src/timecapsulesmb/integrations): self-contained Python 3 ACP client for SSH enable/reboot support
 - [src/timecapsulesmb/checks/](src/timecapsulesmb/checks): reusable local, network, Bonjour, and SMB verification checks
 - [src/timecapsulesmb/device/](src/timecapsulesmb/device): remote probing for device-specific layout such as the active `dk2` or `dk3` volume root, plus generation / compatibility classification
 - [src/timecapsulesmb/deploy/](src/timecapsulesmb/deploy): auth generation, template rendering, deployment planning, execution, dry-run formatting, artifact resolution, and post-deploy verification

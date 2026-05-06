@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import json
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -46,7 +45,7 @@ from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourServiceInstance, Discovered
 from timecapsulesmb.cli.version_check import DEFAULT_DOWNLOAD_URL, VERSION_CHECK_URL, VersionCheckResult
 from timecapsulesmb.cli.util import ANSI_RED, ANSI_RESET
-from timecapsulesmb.integrations.airpyrt import AIRPYRT_NOT_FOUND_ERROR
+from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
 
 
 class FakeCommandContext:
@@ -198,6 +197,21 @@ class CliTests(unittest.TestCase):
                     preferred_iface="bridge0",
                     detail="preferred interface bridge0",
                 ),
+            )
+        )
+        def fake_configure_acp_probe(_connection, command_context, **_kwargs):
+            command_context.add_debug_fields(
+                configure_acp_enable_attempted=True,
+                configure_acp_enable_succeeded=True,
+                ssh_initially_reachable=False,
+            )
+            command_context.update_fields(ssh_final_reachable=True)
+            return self.make_probe_state(self.make_probe_result_netbsd6())
+
+        self._configure_acp_probe_mock = self._exit_stack.enter_context(
+            mock.patch(
+                "timecapsulesmb.cli.configure.enable_ssh_and_reprobe_for_configure",
+                side_effect=fake_configure_acp_probe,
             )
         )
         self._version_check = self._exit_stack.enter_context(
@@ -429,6 +443,9 @@ class CliTests(unittest.TestCase):
 
         return fake_prompt
 
+    def force_configure_acp_reprobe_auth_failed(self) -> None:
+        self._configure_acp_probe_mock.side_effect = [self.make_probe_state(self.make_probe_result_auth_failed())]
+
     def test_dispatches_to_command_handler(self) -> None:
         with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"doctor": mock.Mock(return_value=7)}):
             rc = main(["doctor", "--skip-smb"])
@@ -516,20 +533,20 @@ class CliTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
                     with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_smbclient"):
                         with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_sshpass"):
-                            with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_airpyrt", return_value=True):
-                                with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
-                                    with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
-                                        with redirect_stdout(output):
-                                            rc = bootstrap.main(["--skip-airpyrt"])
+                            with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
+                                with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
+                                    with redirect_stdout(output):
+                                        rc = bootstrap.main([])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("Detected host platform", text)
-        self.assertIn("prep-device", text)
         self.assertIn("configure", text)
         self.assertIn("deploy", text)
         self.assertIn("doctor", text)
+        self.assertIn("activate", text)
+        self.assertNotIn("prep-device", text)
 
-    def test_bootstrap_prints_linux_next_steps_without_prep_device_when_airpyrt_unavailable(self) -> None:
+    def test_bootstrap_prints_same_core_next_steps_on_linux(self) -> None:
         output = io.StringIO()
         with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
             with mock.patch("pathlib.Path.exists", return_value=True):
@@ -537,59 +554,26 @@ class CliTests(unittest.TestCase):
                     with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
                         with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_smbclient"):
                             with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_sshpass"):
-                                with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_airpyrt", return_value=False):
-                                    with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
-                                        with redirect_stdout(output):
-                                            rc = bootstrap.main(["--skip-airpyrt"])
+                                with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
+                                    with redirect_stdout(output):
+                                        rc = bootstrap.main([])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("Detected host platform: Linux", text)
-        self.assertNotIn("  2. /Users", text)
-        self.assertIn("  2. If SSH is already enabled on the Time Capsule/AirPort Extreme device, continue to deploy. ", text)
-        self.assertIn("\033[31mOtherwise enable SSH manually with `prep-device` from a Mac.\033[0m", text)
-        self.assertIn("  3. ", text)
-        self.assertIn("  4. ", text)
+        self.assertIn("configure", text)
+        self.assertIn("deploy", text)
+        self.assertIn("doctor", text)
+        self.assertIn("activate", text)
+        self.assertNotIn("prep-device", text)
+        self.assertNotIn("AirPyrt", text)
 
-    def test_bootstrap_explains_long_running_airpyrt_step(self) -> None:
-        output = io.StringIO()
-        with mock.patch("pathlib.Path.exists", return_value=True):
-            with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", return_value=bootstrap.VENVDIR / "bin" / "python"):
-                with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
-                    with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_smbclient"):
-                        with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_sshpass"):
-                            with mock.patch("timecapsulesmb.cli.bootstrap.run") as run_mock:
-                                with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", return_value="/usr/bin/make"):
-                                    with mock.patch("timecapsulesmb.cli.bootstrap.confirm", return_value=True):
-                                        with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
-                                            with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
-                                                with redirect_stdout(output):
-                                                    rc = bootstrap.main([])
-        self.assertEqual(rc, 0)
-        text = output.getvalue()
-        self.assertIn("Provisioning AirPyrt via 'make airpyrt'", text)
-        self.assertIn("may take several minutes", text)
-        self.assertIn("--skip-airpyrt", text)
-        run_mock.assert_called_once_with(["/usr/bin/make", "airpyrt"], cwd=bootstrap.REPO_ROOT)
-
-    def test_bootstrap_can_skip_optional_airpyrt_after_prompt(self) -> None:
-        output = io.StringIO()
-        with mock.patch("pathlib.Path.exists", return_value=True):
-            with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", return_value=bootstrap.VENVDIR / "bin" / "python"):
-                with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
-                    with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_smbclient"):
-                        with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_sshpass"):
-                            with mock.patch("timecapsulesmb.cli.bootstrap.run") as run_mock:
-                                with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", return_value="/usr/bin/make"):
-                                    with mock.patch("timecapsulesmb.cli.bootstrap.confirm", return_value=False):
-                                        with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
-                                            with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
-                                                with redirect_stdout(output):
-                                                    rc = bootstrap.main([])
-        self.assertEqual(rc, 0)
-        text = output.getvalue()
-        self.assertIn("AirPyrt support is optional", text)
-        self.assertIn("Skipping AirPyrt setup", text)
-        run_mock.assert_not_called()
+    def test_bootstrap_rejects_removed_skip_airpyrt_flag(self) -> None:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as ctx:
+                bootstrap.main(["--skip-airpyrt"])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("unrecognized arguments: --skip-airpyrt", stderr.getvalue())
 
     def test_bootstrap_returns_error_when_requirements_missing(self) -> None:
         stderr = io.StringIO()
@@ -598,28 +582,6 @@ class CliTests(unittest.TestCase):
                 rc = bootstrap.main([])
         self.assertEqual(rc, 1)
         self.assertIn("Missing", stderr.getvalue())
-
-    def test_bootstrap_continues_when_airpyrt_setup_fails(self) -> None:
-        output = io.StringIO()
-        with mock.patch("pathlib.Path.exists", return_value=True):
-            with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv", return_value=bootstrap.VENVDIR / "bin" / "python"):
-                with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements"):
-                    with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_smbclient"):
-                        with mock.patch("timecapsulesmb.cli.bootstrap.maybe_install_sshpass"):
-                            with mock.patch(
-                                "timecapsulesmb.cli.bootstrap.run",
-                                side_effect=subprocess.CalledProcessError(2, ["make", "airpyrt"]),
-                            ):
-                                with mock.patch("timecapsulesmb.cli.bootstrap.shutil.which", return_value="/usr/bin/make"):
-                                    with mock.patch("timecapsulesmb.cli.bootstrap.confirm", return_value=True):
-                                        with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
-                                            with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="macOS"):
-                                                with redirect_stdout(output):
-                                                    rc = bootstrap.main([])
-        self.assertEqual(rc, 0)
-        text = output.getvalue()
-        self.assertIn("Warning: AirPyrt setup failed", text)
-        self.assertIn("Host setup complete.", text)
 
     def test_bootstrap_installs_smbclient_via_homebrew_on_macos(self) -> None:
         output = io.StringIO()
@@ -719,18 +681,6 @@ class CliTests(unittest.TestCase):
                 with self.assertRaises(bootstrap.BootstrapError):
                     bootstrap.maybe_install_sshpass()
 
-    def test_bootstrap_prints_linux_airpyrt_guidance(self) -> None:
-        output = io.StringIO()
-        with mock.patch("timecapsulesmb.cli.bootstrap.current_platform_label", return_value="Linux"):
-            with redirect_stdout(output):
-                ready = bootstrap.maybe_install_airpyrt(skip_airpyrt=False)
-        self.assertFalse(ready)
-        text = output.getvalue()
-        self.assertIn("Automatic AirPyrt setup is not implemented for Linux", text)
-        self.assertIn("If SSH is already enabled", text)
-        self.assertIn("use a Mac for 'prep-device'.", text)
-        self.assertIn("\033[31m", text)
-
     def test_configure_writes_values_from_prompts(self) -> None:
         output = io.StringIO()
         fake_values = {}
@@ -778,8 +728,7 @@ class CliTests(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("This writes a local .env configuration file", text)
         self.assertIn(f"Review the .env file configuration: wrote {configure.ENV_PATH}", text)
-        self.assertIn("- Prep your device to enable SSH on it, run:", text)
-        self.assertIn("    .venv/bin/tcapsule prep-device", text)
+        self.assertNotIn("prep-device", text)
         self.assertIn("- Deploy this configuration to your Time Capsule/Airport Extreme device, run:", text)
         self.assertIn("    .venv/bin/tcapsule deploy", text)
 
@@ -997,7 +946,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("stage=bonjour_discovery", error)
         self.assertIn("TC_SHARE_USE_DISK_ROOT=false", error)
 
-    def test_configure_telemetry_records_unreachable_ssh_saved_branch_on_later_failure(self) -> None:
+    def test_configure_telemetry_records_acp_enable_branch_on_later_failure(self) -> None:
         with mock.patch("timecapsulesmb.cli.configure.ensure_install_id"):
             with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value={}):
                 with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
@@ -1015,10 +964,12 @@ class CliTests(unittest.TestCase):
         self.assertIn("host=root@10.0.0.2", error)
         self.assertIn("ssh_opts=-o HostKeyAlgorithms=+ssh-rsa", error)
         self.assertIn("TC_HOST=root@10.0.0.2", error)
-        self.assertIn("configure_saved_without_ssh_reachability=true", error)
-        self.assertIn("probe_ssh_port_reachable=false", error)
-        self.assertIn("probe_ssh_authenticated=false", error)
-        self.assertIn("probe_error=SSH is not reachable yet.", error)
+        self.assertIn("configure_acp_enable_attempted=true", error)
+        self.assertIn("configure_acp_enable_succeeded=true", error)
+        self.assertIn("ssh_initially_reachable=false", error)
+        self.assertIn("ssh_final_reachable=true", error)
+        self.assertIn("probe_ssh_port_reachable=true", error)
+        self.assertIn("probe_ssh_authenticated=true", error)
         self.assertNotIn("TC_PASSWORD", error)
         self.assertNotIn("pw", error)
 
@@ -2076,7 +2027,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("Airport Utility syAP code", seen_labels)
         self.assertNotIn("mDNS device model hint", seen_labels)
 
-    def test_configure_discovered_missing_syap_prompts_with_valid_existing_syap_default(self) -> None:
+    def test_configure_discovered_missing_syap_uses_probed_syap_after_acp(self) -> None:
         output = io.StringIO()
         fake_values = {}
         seen_defaults = {}
@@ -2119,11 +2070,11 @@ class CliTests(unittest.TestCase):
                                     with redirect_stdout(output):
                                         rc = configure.main([])
         self.assertEqual(rc, 0)
-        self.assertEqual(seen_defaults["Airport Utility syAP code"], "116")
-        self.assertEqual(fake_values["TC_AIRPORT_SYAP"], "116")
-        self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,116")
+        self.assertNotIn("Airport Utility syAP code", seen_defaults)
+        self.assertEqual(fake_values["TC_AIRPORT_SYAP"], "119")
+        self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
         self.assertNotIn("mDNS device model hint", seen_defaults)
-        self.assertIn("Found saved value: 116", output.getvalue())
+        self.assertIn("Using probed TC_AIRPORT_SYAP: 119", output.getvalue())
 
     def test_configure_selected_smb_record_without_airport_syap_uses_probe_before_saved_syap(self) -> None:
         output = io.StringIO()
@@ -2213,7 +2164,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Found saved value: 113", text)
         self.assertIn("From detected connection, syAP code should be one of: 119, 120", text)
 
-    def test_configure_discovered_invalid_syap_prompts_with_valid_existing_syap_default(self) -> None:
+    def test_configure_discovered_invalid_syap_uses_probed_syap_after_acp(self) -> None:
         output = io.StringIO()
         fake_values = {}
         seen_defaults = {}
@@ -2256,12 +2207,11 @@ class CliTests(unittest.TestCase):
                                     with redirect_stdout(output):
                                         rc = configure.main([])
         self.assertEqual(rc, 0)
-        self.assertEqual(seen_defaults["Airport Utility syAP code"], "109")
-        self.assertEqual(fake_values["TC_AIRPORT_SYAP"], "109")
-        self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,109")
+        self.assertNotIn("Airport Utility syAP code", seen_defaults)
+        self.assertEqual(fake_values["TC_AIRPORT_SYAP"], "119")
+        self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
         self.assertNotIn("mDNS device model hint", seen_defaults)
-        self.assertIn("Found saved value: 109", output.getvalue())
-        self.assertIn("could not discover Airport Utility syAP", output.getvalue())
+        self.assertIn("Using probed TC_AIRPORT_SYAP: 119", output.getvalue())
 
     def test_configure_discovered_invalid_syap_reprompts_until_valid_when_existing_syap_invalid(self) -> None:
         output = io.StringIO()
@@ -2299,6 +2249,7 @@ class CliTests(unittest.TestCase):
         def fake_write_env_file(_path, values):
             fake_values.update(values)
 
+        self._configure_acp_probe_mock.side_effect = [self.make_probe_state(self.make_probe_result_netbsd4le())]
         with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value={"TC_AIRPORT_SYAP": "998"}):
             with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[record]):
                 with mock.patch("builtins.input", side_effect=["1"]):
@@ -2413,6 +2364,7 @@ class CliTests(unittest.TestCase):
         def fake_write_env_file(_path, values):
             fake_values.update(values)
 
+        self.force_configure_acp_reprobe_auth_failed()
         with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value={"TC_AIRPORT_SYAP": "999"}):
             with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
@@ -2451,6 +2403,7 @@ class CliTests(unittest.TestCase):
         def fake_write_env_file(_path, values):
             fake_values.update(values)
 
+        self.force_configure_acp_reprobe_auth_failed()
         with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value=existing):
             with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
@@ -2491,6 +2444,7 @@ class CliTests(unittest.TestCase):
         def fake_write_env_file(_path, values):
             fake_values.update(values)
 
+        self.force_configure_acp_reprobe_auth_failed()
         with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value=existing):
             with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
@@ -2533,6 +2487,7 @@ class CliTests(unittest.TestCase):
         def fake_write_env_file(_path, values):
             fake_values.update(values)
 
+        self.force_configure_acp_reprobe_auth_failed()
         with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value=existing):
             with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
@@ -2578,6 +2533,7 @@ class CliTests(unittest.TestCase):
         def fake_write_env_file(_path, values):
             fake_values.update(values)
 
+        self.force_configure_acp_reprobe_auth_failed()
         with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value=existing):
             with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
@@ -2621,6 +2577,7 @@ class CliTests(unittest.TestCase):
         def fake_write_env_file(_path, values):
             fake_values.update(values)
 
+        self.force_configure_acp_reprobe_auth_failed()
         with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value=existing):
             with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
@@ -2664,6 +2621,7 @@ class CliTests(unittest.TestCase):
         def fake_write_env_file(_path, values):
             fake_values.update(values)
 
+        self.force_configure_acp_reprobe_auth_failed()
         with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value=existing):
             with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
@@ -2709,6 +2667,7 @@ class CliTests(unittest.TestCase):
         def fake_write_env_file(_path, values):
             fake_values.update(values)
 
+        self.force_configure_acp_reprobe_auth_failed()
         with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value=existing):
             with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
@@ -2749,6 +2708,7 @@ class CliTests(unittest.TestCase):
         def fake_write_env_file(_path, values):
             fake_values.update(values)
 
+        self.force_configure_acp_reprobe_auth_failed()
         with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value=existing):
             with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
@@ -2790,6 +2750,7 @@ class CliTests(unittest.TestCase):
         def fake_write_env_file(_path, values):
             fake_values.update(values)
 
+        self.force_configure_acp_reprobe_auth_failed()
         with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value=existing):
             with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
@@ -2991,8 +2952,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_HOST"], "root@10.0.0.2")
         self.assertEqual(fake_values["TC_PASSWORD"], "badpw")
+        self._configure_acp_probe_mock.assert_not_called()
 
-    def test_configure_can_reprompt_when_ssh_is_not_reachable_yet(self) -> None:
+    def test_configure_reprompts_when_acp_rejects_airport_password(self) -> None:
         output = io.StringIO()
         fake_values = {}
         prompt_values = iter([
@@ -3020,18 +2982,58 @@ class CliTests(unittest.TestCase):
         def fake_write_env_file(_path, values):
             fake_values.update(values)
 
+        self._configure_acp_probe_mock.side_effect = [
+            ACPAuthError("ACP command failed with error_code -0x10 (likely wrong AirPort admin password)"),
+            self.make_probe_state(self.make_probe_result_netbsd6_no_identity()),
+        ]
         with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value={}):
             with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
                     with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
-                        with mock.patch("timecapsulesmb.cli.configure.confirm", side_effect=[False, True]):
-                            with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
-                                with redirect_stdout(output):
-                                    rc = configure.main([])
+                        with mock.patch("timecapsulesmb.cli.configure.write_env_file", side_effect=fake_write_env_file):
+                            with redirect_stdout(output):
+                                rc = configure.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(fake_values["TC_HOST"], "root@10.0.0.3")
         self.assertEqual(fake_values["TC_PASSWORD"], "goodpw")
-        self.assertIn("cannot validate this password", output.getvalue())
+        self.assertEqual(self._configure_acp_probe_mock.call_count, 2)
+        self.assertIn("The AirPort admin password did not work", output.getvalue())
+        self.assertIn("Please enter the SSH target and password again", output.getvalue())
+
+    def test_configure_hard_fails_when_acp_enable_fails_non_auth(self) -> None:
+        output = io.StringIO()
+        self._configure_acp_probe_mock.side_effect = ACPConnectionError("Could not connect to ACP on 10.0.0.2:5009")
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=self.configure_prompt_defaults()):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
+                        with mock.patch("timecapsulesmb.cli.configure.write_env_file") as write_env_mock:
+                            with redirect_stdout(output):
+                                rc = configure.main([])
+
+        self.assertEqual(rc, 1)
+        write_env_mock.assert_not_called()
+        self.assertIn(f"{ANSI_RED}Failed to enable SSH via ACP:{ANSI_RESET}", output.getvalue())
+        self.assertIn("Could not connect to ACP on 10.0.0.2:5009", output.getvalue())
+        error = self.configure_finished_error()
+        self.assertIn("Failed to enable SSH via ACP: Could not connect to ACP on 10.0.0.2:5009", error)
+        self.assertIn("stage=ssh_probe", error)
+
+    def test_configure_hard_fails_when_ssh_does_not_open_after_acp(self) -> None:
+        output = io.StringIO()
+        self._configure_acp_probe_mock.side_effect = [None]
+        with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value={}):
+            with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
+                with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=self.configure_prompt_defaults()):
+                    with mock.patch("timecapsulesmb.cli.configure.probe_connection_state", return_value=self.make_probe_state(self.make_probe_result_unreachable())):
+                        with mock.patch("timecapsulesmb.cli.configure.write_env_file") as write_env_mock:
+                            with redirect_stdout(output):
+                                rc = configure.main([])
+
+        self.assertEqual(rc, 1)
+        write_env_mock.assert_not_called()
+        self.assertIn("SSH did not open after enabling via ACP.", output.getvalue())
+        self.assertIn("SSH did not open after enabling via ACP.", self.configure_finished_error())
 
     def test_configure_reprompts_invalid_mdns_labels(self) -> None:
         output = io.StringIO()
@@ -3181,6 +3183,7 @@ class CliTests(unittest.TestCase):
         def fake_write_env_file(_path, values):
             fake_values.update(values)
 
+        self.force_configure_acp_reprobe_auth_failed()
         with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value={}):
             with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
@@ -3219,6 +3222,7 @@ class CliTests(unittest.TestCase):
         def fake_write_env_file(_path, values):
             fake_values.update(values)
 
+        self.force_configure_acp_reprobe_auth_failed()
         with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value={}):
             with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
@@ -3606,6 +3610,7 @@ class CliTests(unittest.TestCase):
                 defaults[label] = default
             return next(prompt_values)
 
+        self.force_configure_acp_reprobe_auth_failed()
         with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value={}):
             with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
@@ -3640,6 +3645,7 @@ class CliTests(unittest.TestCase):
                 defaults[label] = default
             return next(prompt_values)
 
+        self.force_configure_acp_reprobe_auth_failed()
         with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value={}):
             with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
@@ -3674,6 +3680,7 @@ class CliTests(unittest.TestCase):
                 defaults[label] = default
             return next(prompt_values)
 
+        self.force_configure_acp_reprobe_auth_failed()
         with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value={}):
             with mock.patch("timecapsulesmb.cli.configure.discover_resolved_records", return_value=[]):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
@@ -3715,6 +3722,7 @@ class CliTests(unittest.TestCase):
                 defaults[label] = default
             return next(prompt_values)
 
+        self.force_configure_acp_reprobe_auth_failed()
         with mock.patch("timecapsulesmb.cli.configure.parse_env_file", return_value={}):
             with mock.patch("timecapsulesmb.cli.configure.discover_default_record", return_value=discovered):
                 with mock.patch("timecapsulesmb.cli.configure.prompt", side_effect=fake_prompt):
@@ -5366,13 +5374,13 @@ class CliTests(unittest.TestCase):
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
         with mock.patch("timecapsulesmb.cli.prep_device.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=False):
-                with mock.patch("timecapsulesmb.cli.prep_device.enable_ssh", side_effect=RuntimeError("AirPyrt failed")):
+                with mock.patch("timecapsulesmb.cli.prep_device.enable_ssh", side_effect=RuntimeError("ACP failed")):
                     with redirect_stdout(output):
                         rc = prep_device.main([])
         self.assertEqual(rc, 1)
-        message = "Failed to enable SSH via AirPyrt: AirPyrt failed"
-        self.assertIn(f"{ANSI_RED}Failed to enable SSH via AirPyrt:{ANSI_RESET}", output.getvalue())
-        self.assertIn("AirPyrt failed", output.getvalue())
+        message = "Failed to enable SSH via ACP: ACP failed"
+        self.assertIn(f"{ANSI_RED}Failed to enable SSH via ACP:{ANSI_RESET}", output.getvalue())
+        self.assertIn("ACP failed", output.getvalue())
         finished = self.telemetry_payload("prep_device_finished")
         self.assertEqual(finished["result"], "failure")
         self.assertEqual(finished["prep_device_action"], "enable_ssh")
@@ -5380,10 +5388,10 @@ class CliTests(unittest.TestCase):
         self.assertIn(message, finished["error"])
         self.assertNotIn(ANSI_RED, finished["error"])
 
-    def test_prep_device_airpyrt_missing_guidance_highlights_bootstrap(self) -> None:
+    def test_prep_device_enable_failure_reports_acp_error_without_bootstrap_guidance(self) -> None:
         output = io.StringIO()
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
-        error = AIRPYRT_NOT_FOUND_ERROR
+        error = "ACP command failed with error_code -0x1234 (likely wrong AirPort admin password)"
         with mock.patch("timecapsulesmb.cli.prep_device.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=False):
                 with mock.patch("timecapsulesmb.cli.prep_device.enable_ssh", side_effect=RuntimeError(error)):
@@ -5392,26 +5400,21 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(rc, 1)
         rendered = output.getvalue()
-        self.assertIn(f"{ANSI_RED}Failed to enable SSH via AirPyrt:{ANSI_RESET}", rendered)
-        self.assertIn(f"{ANSI_RED}{AIRPYRT_NOT_FOUND_ERROR}{ANSI_RESET}", rendered)
-        self.assertIn("In order to run prep-device to enable SSH on the device, AirPyrt must be installed.", rendered)
-        self.assertIn(f"{ANSI_RED}To automatically install AirPyrt, run:{ANSI_RESET}", rendered)
-        self.assertIn(f"{ANSI_RED}  ./tcapsule bootstrap{ANSI_RESET}", rendered)
-        self.assertIn("Or you can manually enable SSH on your device with any other method.", rendered)
-        self.assertIn("and make sure 'acp' is on PATH or set AIRPYRT_PY to that interpreter.", rendered)
+        self.assertIn(f"{ANSI_RED}Failed to enable SSH via ACP:{ANSI_RESET}", rendered)
+        self.assertIn(error, rendered)
+        self.assertNotIn("./tcapsule bootstrap", rendered)
         finished = self.telemetry_payload("prep_device_finished")
-        self.assertIn(f"Failed to enable SSH via AirPyrt: {error}", finished["error"])
-        self.assertNotIn("In order to run prep-device", finished["error"])
+        self.assertIn(f"Failed to enable SSH via ACP: {error}", finished["error"])
         self.assertNotIn(ANSI_RED, finished["error"])
 
-    def test_prep_device_disable_failure_is_reported_as_ssh_not_airpyrt(self) -> None:
+    def test_prep_device_disable_failure_is_reported_as_ssh_error(self) -> None:
         output = io.StringIO()
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
         error = "on-device acp failed"
         with mock.patch("timecapsulesmb.cli.prep_device.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=True):
                 with mock.patch("builtins.input", return_value="y"):
-                    with mock.patch("timecapsulesmb.cli.prep_device.disable_ssh", side_effect=RuntimeError(error)):
+                    with mock.patch("timecapsulesmb.cli.prep_device.disable_ssh_over_ssh", side_effect=RuntimeError(error)):
                         with redirect_stdout(output):
                             rc = prep_device.main([])
 
@@ -5432,7 +5435,7 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.prep_device.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=True):
                 with mock.patch("builtins.input", return_value="y"):
-                    with mock.patch("timecapsulesmb.cli.prep_device.disable_ssh") as disable_ssh_mock:
+                    with mock.patch("timecapsulesmb.cli.prep_device.disable_ssh_over_ssh") as disable_ssh_mock:
                         with mock.patch("timecapsulesmb.cli.prep_device.wait_for_tcp_port_state", side_effect=[True, False]):
                             with mock.patch("timecapsulesmb.cli.prep_device.wait_for_device_up"):
                                 with redirect_stdout(output):
@@ -5457,7 +5460,7 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.prep_device.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.prep_device.tcp_open", return_value=True):
                 with mock.patch("builtins.input", return_value="y"):
-                    with mock.patch("timecapsulesmb.cli.prep_device.disable_ssh"):
+                    with mock.patch("timecapsulesmb.cli.prep_device.disable_ssh_over_ssh"):
                         with mock.patch("timecapsulesmb.cli.prep_device.wait_for_tcp_port_state", side_effect=[True, True]):
                             with mock.patch("timecapsulesmb.cli.prep_device.wait_for_device_up"):
                                 with redirect_stdout(output):
