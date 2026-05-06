@@ -12,10 +12,8 @@ from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.device.util import (
     DISK_NAME_CANDIDATES_SH,
-    DevicePaths,
     MOUNTED_VOLUME_DISCOVERY_SH,
     MountedVolume,
-    build_device_paths,
 )
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.errors import TransportError

@@ -62,7 +62,6 @@ from timecapsulesmb.device.probe import (
     ManagedMdnsTakeoverProbeResult,
     ManagedRuntimeProbeResult,
     ManagedSmbdProbeResult,
-    build_device_paths,
     discover_mounted_volume_conn,
     discover_mounted_volume_root_conn,
     extract_airport_identity_from_acp_output,
@@ -74,6 +73,7 @@ from timecapsulesmb.device.probe import (
     probe_remote_airport_identity_conn,
     wait_for_ssh_state_conn,
 )
+from timecapsulesmb.device.util import build_device_paths
 from timecapsulesmb.device.mounts import ensure_volume_root_mounted_conn
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
