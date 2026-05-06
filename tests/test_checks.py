@@ -27,7 +27,14 @@ from timecapsulesmb.checks.bonjour import (
     select_resolved_smb_record,
     select_smb_instance,
 )
-from timecapsulesmb.checks.doctor import check_xattr_tdb_persistence, run_doctor_checks
+from timecapsulesmb.checks.doctor import (
+    DOCTOR_CHECKS,
+    DoctorCheck,
+    DoctorRunContext,
+    _run_doctor_registry,
+    check_xattr_tdb_persistence,
+    run_doctor_checks,
+)
 from timecapsulesmb.checks.local_tools import check_required_local_tools
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.checks.network import check_ssh_login, ssh_opts_use_proxy
@@ -60,6 +67,20 @@ class CheckTests(unittest.TestCase):
             path=REPO_ROOT / ".env",
             exists=exists,
             file_values=values if exists else {},
+        )
+
+    def doctor_context(self) -> DoctorRunContext:
+        return DoctorRunContext(
+            config=self.doctor_config({}),
+            repo_root=REPO_ROOT,
+            connection=None,
+            precomputed_interface_probe=None,
+            precomputed_probe_state=None,
+            skip_ssh=False,
+            skip_bonjour=False,
+            skip_smb=False,
+            on_result=None,
+            debug_fields=None,
         )
 
     def setUp(self) -> None:
@@ -172,6 +193,66 @@ class CheckTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self._exit_stack.close()
+
+    def test_doctor_registry_declares_satisfied_dependencies(self) -> None:
+        expected_ids = [
+            "config_validation",
+            "connection_context",
+            "ssh_login",
+            "remote_interface",
+            "device_compatibility",
+            "managed_smbd",
+            "managed_mdns",
+            "active_smb_conf",
+            "direct_smb_port",
+            "bonjour",
+            "bonjour_debug_fields",
+            "bonjour_naming_info",
+            "active_smb_conf_info",
+            "nbns",
+            "authenticated_smb",
+            "fatal_runtime_log_tails",
+        ]
+        self.assertEqual([check.id for check in DOCTOR_CHECKS], expected_ids)
+
+        provided = {"config", "repo_root"}
+        for check in DOCTOR_CHECKS:
+            missing = [dependency for dependency in check.requires if dependency not in provided]
+            self.assertEqual(missing, [], f"{check.id} has unsatisfied dependencies")
+            provided.update(check.provides)
+
+    def test_doctor_registry_runner_rejects_missing_dependency(self) -> None:
+        check = DoctorCheck(
+            id="bad_check",
+            requires=("missing_dependency",),
+            provides=(),
+            run=lambda _context: None,
+        )
+
+        with self.assertRaisesRegex(AssertionError, "bad_check.*missing_dependency"):
+            _run_doctor_registry(self.doctor_context(), (check,))
+
+    def test_doctor_registry_runner_stops_when_context_requests_stop(self) -> None:
+        calls: list[str] = []
+
+        def stop_check(context: DoctorRunContext) -> None:
+            calls.append("stop")
+            context.add_result(CheckResult("FAIL", "stopped"))
+            context.stop = True
+
+        def later_check(_context: DoctorRunContext) -> None:
+            calls.append("later")
+
+        checks = (
+            DoctorCheck("stop_check", ("config",), ("stopped",), stop_check),
+            DoctorCheck("later_check", ("stopped",), ("later",), later_check),
+        )
+
+        context = self.doctor_context()
+        _run_doctor_registry(context, checks)
+
+        self.assertEqual(calls, ["stop"])
+        self.assertEqual([result.message for result in context.results], ["stopped"])
 
     def test_doctor_smb_servers_appends_local_only_for_single_label_hostname(self) -> None:
         base_values = {"TC_HOST": "root@10.0.1.99"}
