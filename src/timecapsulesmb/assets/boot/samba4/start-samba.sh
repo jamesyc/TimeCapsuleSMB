@@ -43,6 +43,7 @@ PAYLOAD_DIR_NAME=__PAYLOAD_DIR_NAME__
 PAYLOAD_TEMPLATE_NAME=smb.conf.template
 
 SMB_SHARE_NAME=__SMB_SHARE_NAME__
+SMB_SAMBA_USER=__SMB_SAMBA_USER__
 SMB_NETBIOS_NAME=__SMB_NETBIOS_NAME__
 NET_IFACE=__NET_IFACE__
 MDNS_INSTANCE_NAME=__MDNS_INSTANCE_NAME__
@@ -685,7 +686,7 @@ stage_runtime() {
     browseable = yes
     read only = no
     guest ok = no
-    valid users = __SMB_SAMBA_USER__ root
+    valid users = $SMB_SAMBA_USER root
     vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb
     acl_xattr:ignore system acls = yes
     fruit:resource = file

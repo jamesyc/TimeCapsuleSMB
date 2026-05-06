@@ -75,6 +75,7 @@ def build_template_bundle(
             "__PAYLOAD_DIR_NAME__": shell_quote(config.require("TC_PAYLOAD_DIR_NAME")),
             "__CACHE_DIRECTORY__": start_cache_directory,
             "__SMB_SHARE_NAME__": shell_quote(config.require("TC_SHARE_NAME")),
+            "__SMB_SAMBA_USER__": shell_quote(config.require("TC_SAMBA_USER")),
             "__SMB_NETBIOS_NAME__": shell_quote(config.require("TC_NETBIOS_NAME")),
             "__NET_IFACE__": shell_quote(config.require("TC_NET_IFACE")),
             "__MDNS_INSTANCE_NAME__": shell_quote(config.require("TC_MDNS_INSTANCE_NAME")),
