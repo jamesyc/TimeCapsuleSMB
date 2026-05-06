@@ -9,8 +9,9 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import request_reboot_and_wait, verify_managed_runtime_flow
-from timecapsulesmb.cli.runtime import load_env_config
+from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
 from timecapsulesmb.core.config import airport_family_display_name_from_config, parse_bool
+from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
@@ -39,8 +40,10 @@ from timecapsulesmb.deploy.planner import (
 )
 from timecapsulesmb.deploy.templates import (
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+    SMBCONF_RUNTIME_TOKENS,
     build_template_bundle,
-    render_template,
+    render_checked_template,
+    render_runtime_smbconf_text,
     write_boot_asset,
 )
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, payload_family_description, render_compatibility_message
@@ -50,7 +53,6 @@ from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_green, color_red
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
 REBOOT_NO_DOWN_MESSAGE = (
     "Reboot was requested but the device did not go down.\n"
     "The deploy stopped the managed runtime before reboot; power-cycle or rerun deploy."
@@ -69,6 +71,7 @@ def _non_negative_int(value: str) -> int:
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Deploy the checked-in Samba 4 payload to an AirPort storage device.")
+    add_config_argument(parser)
     parser.add_argument("--no-reboot", action="store_true", help="Do not reboot after deployment")
     parser.add_argument("--yes", action="store_true", help="Do not prompt before reboot")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without making changes")
@@ -92,7 +95,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("Deploying...")
 
     ensure_install_id()
-    config = load_env_config()
+    app_paths = resolve_app_paths(config_path=args.config)
+    config = load_env_config(env_path=args.config)
     telemetry = TelemetryClient.from_config(config, nbns_enabled=args.install_nbns)
     with CommandContext(telemetry, "deploy", "deploy_started", "deploy_finished", config=config, args=args) as command_context:
         command_context.update_fields(
@@ -107,7 +111,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         smb_password = connection.password
 
         command_context.set_stage("validate_artifacts")
-        artifact_results = validate_artifacts(REPO_ROOT)
+        artifact_results = validate_artifacts(app_paths.distribution_root)
         failures = [message for _, ok, message in artifact_results if not ok]
         if failures:
             raise SystemExit("; ".join(failures))
@@ -130,7 +134,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"Using {payload_family_description(payload_family)} payload...")
         apple_mount_wait_seconds = args.mount_wait
         share_use_disk_root = parse_bool(config.get("TC_SHARE_USE_DISK_ROOT", "false"))
-        resolved_artifacts = resolve_payload_artifacts(REPO_ROOT, payload_family)
+        resolved_artifacts = resolve_payload_artifacts(app_paths.distribution_root, payload_family)
         smbd_path = resolved_artifacts["smbd"].absolute_path
         mdns_path = resolved_artifacts["mdns-advertiser"].absolute_path
         nbns_path = resolved_artifacts["nbns-advertiser"].absolute_path
@@ -208,10 +212,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             generated_nbns_marker = tmpdir / "nbns.enabled"
             write_boot_asset("rc.local", rendered_rc_local)
             write_boot_asset("common.sh", rendered_common)
-            rendered_start.write_text(render_template("start-samba.sh", template_bundle.start_script_replacements))
+            rendered_start.write_text(render_checked_template("start-samba.sh", template_bundle.start_script_replacements))
             write_boot_asset("dfree.sh", rendered_dfree)
-            rendered_watchdog.write_text(render_template("watchdog.sh", template_bundle.watchdog_replacements))
-            rendered_smbconf.write_text(render_template("smb.conf.template", template_bundle.smbconf_replacements))
+            rendered_watchdog.write_text(render_checked_template("watchdog.sh", template_bundle.watchdog_replacements))
+            smbconf_text = render_checked_template(
+                "smb.conf.template",
+                template_bundle.smbconf_replacements,
+                allowed_unresolved_tokens=SMBCONF_RUNTIME_TOKENS,
+            )
+            render_runtime_smbconf_text(smbconf_text)
+            rendered_smbconf.write_text(smbconf_text)
             smbpasswd_text, username_map_text = render_smbpasswd(config.require("TC_SAMBA_USER"), smb_password)
             generated_smbpasswd.write_text(smbpasswd_text)
             generated_username_map.write_text(username_map_text)

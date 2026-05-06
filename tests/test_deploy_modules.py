@@ -70,11 +70,17 @@ from timecapsulesmb.deploy.planner import (
 )
 from timecapsulesmb.deploy.templates import (
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+    SMBCONF_RUNTIME_TOKENS,
+    TemplateRenderError,
     build_template_bundle,
     cache_directory_replacements,
     load_boot_asset_text,
+    render_checked_template,
+    render_checked_template_text,
+    render_runtime_smbconf_text,
     render_template,
     render_template_text,
+    unresolved_template_tokens,
 )
 from timecapsulesmb.deploy.verify import (
     VerificationResult,
@@ -251,6 +257,54 @@ class DeployModuleTests(unittest.TestCase):
         bundle = build_template_bundle(self._template_config(values))
         self.assertEqual(bundle.start_script_replacements["__MDNS_DEVICE_MODEL__"], "TimeCapsule")
         self.assertEqual(bundle.start_script_replacements["__AIRPORT_SYAP__"], "''")
+
+    def test_checked_template_rendering_rejects_unexpected_leftover_token(self) -> None:
+        with self.assertRaises(TemplateRenderError) as ctx:
+            render_checked_template_text("x=__KNOWN__ y=__LEFTOVER__", {"__KNOWN__": "ok"})
+
+        self.assertIn("__LEFTOVER__", str(ctx.exception))
+
+    def test_checked_start_script_and_watchdog_render_without_deploy_time_tokens(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+            "TC_AIRPORT_SYAP": "119",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(self._template_config(values))
+
+        start_script = render_checked_template("start-samba.sh", bundle.start_script_replacements)
+        watchdog = render_checked_template("watchdog.sh", bundle.watchdog_replacements)
+
+        self.assertEqual(unresolved_template_tokens(start_script), ())
+        self.assertEqual(unresolved_template_tokens(watchdog), ())
+
+    def test_checked_smbconf_allows_only_runtime_tokens_then_runtime_render_is_clean(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+            "TC_AIRPORT_SYAP": "119",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(self._template_config(values))
+
+        smbconf = render_checked_template(
+            "smb.conf.template",
+            bundle.smbconf_replacements,
+            allowed_unresolved_tokens=SMBCONF_RUNTIME_TOKENS,
+        )
+        self.assertEqual(set(unresolved_template_tokens(smbconf)), set(SMBCONF_RUNTIME_TOKENS))
+        self.assertEqual(unresolved_template_tokens(render_runtime_smbconf_text(smbconf)), ())
 
     def test_cache_directory_replacements_default_unknown_family_to_ram_cache(self) -> None:
         self.assertEqual(
@@ -1183,6 +1237,25 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
         self.assertIn("directory mask = 0777", rendered)
         self.assertIn("force create mode = 0666", rendered)
         self.assertIn("force directory mode = 0777", rendered)
+
+    def test_render_start_script_fallback_smb_conf_uses_configured_samba_user(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "archive-admin",
+        }
+        bundle = build_template_bundle(self._template_config(values))
+
+        rendered = render_checked_template("start-samba.sh", bundle.start_script_replacements)
+
+        self.assertIn("SMB_SAMBA_USER=archive-admin", rendered)
+        self.assertIn('valid users = $SMB_SAMBA_USER root', rendered)
+        self.assertNotIn("__SMB_SAMBA_USER__", rendered)
 
     def test_render_start_script_logs_mount_and_recovery_failures(self) -> None:
         values = {

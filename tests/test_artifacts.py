@@ -47,6 +47,29 @@ class ArtifactTests(unittest.TestCase):
         self.assertEqual(results[0][1], False)
         self.assertIn("missing bin/missing", results[0][2])
 
+    def test_validate_artifacts_hashes_every_manifest_entry_under_distribution_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            files = {
+                "one": (root / "bin" / "one", b"one"),
+                "two": (root / "payloads" / "two", b"two"),
+            }
+            records = {}
+            for name, (path, content) in files.items():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+                records[name] = ArtifactRecord(
+                    name=name,
+                    path=str(path.relative_to(root)),
+                    sha256=hashlib.sha256(content).hexdigest(),
+                )
+            with mock.patch("timecapsulesmb.deploy.artifacts.load_artifact_manifest", return_value=records):
+                results = validate_artifacts(root)
+
+        self.assertEqual([name for name, _ok, _message in results], ["one", "two"])
+        self.assertTrue(all(ok for _name, ok, _message in results))
+        self.assertEqual([message for _name, _ok, message in results], ["validated bin/one", "validated payloads/two"])
+
     def test_validate_artifacts_reports_checksum_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

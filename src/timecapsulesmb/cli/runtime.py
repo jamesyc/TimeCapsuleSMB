@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,8 +29,29 @@ class ManagedTargetState:
     probe_state: ProbedDeviceState | None
 
 
+def add_config_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to the TimeCapsuleSMB config file. Overrides TCAPSULE_CONFIG and the repo-local .env.",
+    )
+
+
+def config_path_from_args(args: argparse.Namespace) -> Path | None:
+    return getattr(args, "config", None)
+
+
+def load_config_from_args(
+    args: argparse.Namespace,
+    *,
+    defaults: dict[str, str] | None = None,
+) -> AppConfig:
+    return load_env_config(env_path=config_path_from_args(args), defaults=defaults)
+
+
 def load_env_config(*, env_path: Path | None = None, defaults: dict[str, str] | None = None) -> AppConfig:
-    resolved_path = env_path or resolve_app_paths().env_path
+    resolved_path = resolve_app_paths(config_path=env_path).config_path
     return load_app_config(resolved_path, defaults=defaults)
 
 

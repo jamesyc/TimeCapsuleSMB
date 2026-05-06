@@ -7,9 +7,9 @@ from typing import Callable, Optional
 import ipaddress
 import re
 
-from timecapsulesmb.core.paths import resolve_app_paths
+from timecapsulesmb.core.paths import package_project_root, resolve_app_paths
 
-REPO_ROOT = resolve_app_paths().project_root
+REPO_ROOT = package_project_root()
 ENV_PATH = REPO_ROOT / ".env"
 MAX_DNS_LABEL_BYTES = 63
 MAX_DNS_NAME_BYTES = 255
@@ -123,7 +123,7 @@ class AppConfig:
     ) -> None:
         resolved_values = dict(values or {})
         resolved_file_values = dict(file_values or {})
-        object.__setattr__(self, "path", path or ENV_PATH)
+        object.__setattr__(self, "path", path or default_env_path())
         object.__setattr__(self, "exists", exists)
         object.__setattr__(self, "file_values", resolved_file_values)
         object.__setattr__(self, "values", resolved_values)
@@ -140,13 +140,14 @@ class AppConfig:
         return cls(values=values, path=path, exists=exists, file_values=file_values)
 
     @classmethod
-    def from_file(cls, path: Path = ENV_PATH, *, defaults: Optional[dict[str, str]] = None) -> "AppConfig":
+    def from_file(cls, path: Path | None = None, *, defaults: Optional[dict[str, str]] = None) -> "AppConfig":
+        resolved_path = path or default_env_path()
         resolved_defaults = dict(DEFAULTS if defaults is None else defaults)
-        exists = path.exists()
-        file_values = parse_env_file(path) if exists else {}
+        exists = resolved_path.exists()
+        file_values = parse_env_file(resolved_path) if exists else {}
         values = dict(resolved_defaults)
         values.update(file_values)
-        return cls(values=values, path=path, exists=exists, file_values=file_values)
+        return cls(values=values, path=resolved_path, exists=exists, file_values=file_values)
 
     @classmethod
     def missing(cls, path: Path | None = None) -> "AppConfig":
@@ -254,7 +255,11 @@ def parse_env_file(path: Path) -> dict[str, str]:
     return values
 
 
-def load_app_config(path: Path = ENV_PATH, *, defaults: Optional[dict[str, str]] = None) -> AppConfig:
+def default_env_path() -> Path:
+    return resolve_app_paths().config_path
+
+
+def load_app_config(path: Path | None = None, *, defaults: Optional[dict[str, str]] = None) -> AppConfig:
     return AppConfig.from_file(path, defaults=defaults)
 
 

@@ -6,7 +6,7 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import request_reboot_and_wait
-from timecapsulesmb.cli.runtime import load_env_config
+from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
 from timecapsulesmb.core.config import airport_exact_display_name_from_config
 from timecapsulesmb.deploy.dry_run import format_uninstall_plan, uninstall_plan_to_jsonable
 from timecapsulesmb.deploy.executor import remote_uninstall_payload
@@ -26,6 +26,7 @@ REBOOT_NO_DOWN_MESSAGE = (
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Remove the managed TimeCapsuleSMB payload from the configured device.")
+    add_config_argument(parser)
     parser.add_argument("--yes", action="store_true", help="Do not prompt before reboot")
     parser.add_argument("--no-reboot", action="store_true", help="Remove files but do not reboot the device")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without making changes")
@@ -39,7 +40,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("Uninstalling...")
 
     ensure_install_id()
-    config = load_env_config()
+    config = load_env_config(env_path=args.config)
     telemetry = TelemetryClient.from_config(config)
     with CommandContext(telemetry, "uninstall", "uninstall_started", "uninstall_finished", config=config, args=args) as command_context:
         command_context.update_fields(

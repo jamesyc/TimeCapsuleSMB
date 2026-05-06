@@ -6,7 +6,7 @@ from typing import Callable, Optional
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import wait_for_device_up, wait_for_tcp_port_state
 from timecapsulesmb.cli.util import color_red
-from timecapsulesmb.cli.runtime import load_env_config
+from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
 from timecapsulesmb.core.config import ConfigError, extract_host
 from timecapsulesmb.deploy.executor import remote_request_reboot
 from timecapsulesmb.identity import ensure_install_id
@@ -73,10 +73,11 @@ def disable_ssh_over_ssh(
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Use the configured device target from .env to enable SSH via ACP or disable SSH over SSH.")
+    add_config_argument(parser)
     args = parser.parse_args(argv)
 
     ensure_install_id()
-    config = load_env_config(defaults={})
+    config = load_env_config(env_path=args.config, defaults={})
     telemetry = TelemetryClient.from_config(config)
     with CommandContext(telemetry, "set-ssh", "set_ssh_started", "set_ssh_finished", config=config, args=args) as command_context:
         command_context.set_stage("load_config")

@@ -71,6 +71,13 @@ On macOS, `bootstrap` can also offer to install `smbclient` via Homebrew. On Lin
 
 If this is your first time using the repo, this is the only command you should run with the repo-local launcher. After this step, use `.venv/bin/tcapsule ...` to run a command.
 
+You can inspect the local repo-only install before continuing:
+
+```bash
+.venv/bin/tcapsule paths
+.venv/bin/tcapsule validate-install
+```
+
 ## Step 2: Create The Local Config
 
 Run:
@@ -100,6 +107,14 @@ The password you enter here also becomes the password used for the SMB login as 
 - password: the same Time Capsule password you entered during configuration
 
 Samba does not magically use Apple’s internal password backend; unfortunately, using Apple's password system is not possible. We deliberately reuse the same password value so that the user experience is simpler and less confusing.
+
+If you want to keep the device config somewhere else, pass `--config PATH` to `configure`; the other config-consuming commands accept the same option and load that path:
+
+```bash
+.venv/bin/tcapsule configure --config ./my-time-capsule.env
+.venv/bin/tcapsule deploy --config ./my-time-capsule.env
+.venv/bin/tcapsule doctor --config ./my-time-capsule.env
+```
 
 ## Step 3: Deploy It
 

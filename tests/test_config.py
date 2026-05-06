@@ -42,7 +42,7 @@ from timecapsulesmb.core.config import (
     validate_ssh_target,
     write_env_file,
 )
-from timecapsulesmb.core.paths import resolve_app_paths, resolve_project_root
+from timecapsulesmb.core.paths import manifest_artifact_paths, resolve_app_paths, resolve_project_root
 
 
 class ConfigTests(unittest.TestCase):
@@ -145,6 +145,10 @@ class ConfigTests(unittest.TestCase):
             nested.mkdir()
             (root / "tcapsule").write_text("#!/usr/bin/env python3\n")
             (root / "src" / "timecapsulesmb").mkdir(parents=True)
+            for relative_path in manifest_artifact_paths():
+                artifact_path = root / relative_path
+                artifact_path.parent.mkdir(parents=True, exist_ok=True)
+                artifact_path.write_bytes(b"payload")
             self.assertEqual(resolve_project_root(nested), root)
             self.assertEqual(resolve_app_paths(nested).env_path, root / ".env")
 

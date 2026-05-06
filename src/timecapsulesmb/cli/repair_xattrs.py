@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import load_env_config
+from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.repair_xattrs import (
     ACTION_CLEAR_ARCH_FLAG,
@@ -184,6 +184,7 @@ def run_repair(args: argparse.Namespace, command_context: CommandContext, config
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Repair files whose SMB xattr metadata is broken by clearing the macOS arch flag.")
+    add_config_argument(parser)
     parser.add_argument("--path", type=Path, default=None, help="Mounted SMB share path or subdirectory to scan. Defaults to the mounted SMB share matching .env.")
     parser.add_argument("--dry-run", action="store_true", help="Only scan and report files; do not prompt or repair")
     parser.add_argument("--yes", action="store_true", help="Repair without prompting")
@@ -204,7 +205,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         raise SystemExit("repair-xattrs must be run on macOS because it uses xattr/chflags on the mounted SMB share.")
 
     try:
-        config = load_env_config()
+        config = load_env_config(env_path=args.config)
     except OSError:
         config = AppConfig.missing()
     telemetry = TelemetryClient.from_config(config)

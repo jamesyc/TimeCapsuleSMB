@@ -5,7 +5,7 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import verify_managed_runtime_flow
-from timecapsulesmb.cli.runtime import load_env_config
+from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
 from timecapsulesmb.core.config import airport_exact_display_name_from_config
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.dry_run import format_activation_plan
@@ -19,12 +19,13 @@ from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUID
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Manually activate an already-deployed NetBSD4 AirPort storage device payload.")
+    add_config_argument(parser)
     parser.add_argument("--yes", action="store_true", help="Do not prompt before restarting the deployed Samba services")
     parser.add_argument("--dry-run", action="store_true", help="Print activation actions without making changes")
     args = parser.parse_args(argv)
 
     ensure_install_id()
-    config = load_env_config()
+    config = load_env_config(env_path=args.config)
     telemetry = TelemetryClient.from_config(config)
     with CommandContext(telemetry, "activate", "activate_started", "activate_finished", config=config, args=args) as command_context:
         target = command_context.resolve_validated_managed_target(profile="activate", include_probe=True)

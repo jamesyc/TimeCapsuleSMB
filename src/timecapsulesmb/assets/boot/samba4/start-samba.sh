@@ -17,8 +17,8 @@ set -eu
 # Expected persistent payload layout on the mounted disk:
 #   /Volumes/dkX/__PAYLOAD_DIR_NAME__/
 #     smbd                  or sbin/smbd
-#     smb.conf.template     optional; uses __DATA_ROOT__ and
-#                           __BIND_INTERFACES__ tokens
+#     smb.conf.template     optional; uses runtime data-root and
+#                           bind-interface placeholders
 
 PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
@@ -630,10 +630,13 @@ stage_runtime() {
 
     if [ -f "$payload_dir/$PAYLOAD_TEMPLATE_NAME" ]; then
         log "rendering smb.conf from payload template $payload_dir/$PAYLOAD_TEMPLATE_NAME"
+        data_root_token=$(printf '%s%s%s' '__' 'DATA_ROOT' '__')
+        payload_dir_token=$(printf '%s%s%s' '__' 'PAYLOAD_DIR' '__')
+        bind_interfaces_token=$(printf '%s%s%s' '__' 'BIND_INTERFACES' '__')
         sed \
-            -e "s#__DATA_ROOT__#$DATA_ROOT#g" \
-            -e "s#__PAYLOAD_DIR__#$PAYLOAD_DIR#g" \
-            -e "s#__BIND_INTERFACES__#$BIND_INTERFACES#g" \
+            -e "s#$data_root_token#$DATA_ROOT#g" \
+            -e "s#$payload_dir_token#$PAYLOAD_DIR#g" \
+            -e "s#$bind_interfaces_token#$BIND_INTERFACES#g" \
             "$payload_dir/$PAYLOAD_TEMPLATE_NAME" >"$RAM_ETC/smb.conf"
         return 0
     fi

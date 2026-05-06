@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.checks.doctor import run_doctor_checks
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import load_env_config
+from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
 from timecapsulesmb.cli.util import color_green, color_red
 from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.core.errors import system_exit_message
@@ -16,9 +15,7 @@ from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.errors import TransportError
-
-
-REPO_ROOT = Path(__file__).resolve().parents[3]
+from timecapsulesmb.core.paths import resolve_app_paths
 
 
 def print_result(result: CheckResult) -> None:
@@ -68,6 +65,7 @@ def print_followup_help() -> None:
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run local diagnostics for the current TimeCapsuleSMB setup.")
+    add_config_argument(parser)
     parser.add_argument("--skip-ssh", action="store_true", help="Skip SSH reachability checks")
     parser.add_argument("--skip-bonjour", action="store_true", help="Skip Bonjour browse/resolve checks")
     parser.add_argument("--skip-smb", action="store_true", help="Skip authenticated SMB listing check")
@@ -75,7 +73,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     ensure_install_id()
-    config = load_env_config()
+    app_paths = resolve_app_paths(config_path=args.config)
+    config = load_env_config(env_path=args.config)
     telemetry = TelemetryClient.from_config(config)
     with CommandContext(telemetry, "doctor", "doctor_started", "doctor_finished", config=config, args=args) as command_context:
         if config.exists and not args.skip_ssh and config.get("TC_NET_IFACE"):
@@ -90,7 +89,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         doctor_debug: dict[str, object] = {}
         results, fatal = run_doctor_checks(
             config,
-            repo_root=REPO_ROOT,
+            repo_root=app_paths.distribution_root,
             connection=command_context.connection,
             precomputed_interface_probe=command_context.interface_probe,
             precomputed_probe_state=command_context.probe_state,

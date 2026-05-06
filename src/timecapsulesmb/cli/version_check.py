@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from timecapsulesmb.cli.util import CLI_VERSION, CLI_VERSION_CODE
-from timecapsulesmb.core.config import REPO_ROOT
+from timecapsulesmb.core.paths import package_project_root, resolve_app_paths
 
 
 VERSION_CHECK_URL = "https://raw.githubusercontent.com/jamesyc/TimeCapsuleSMB/main/version.json"
@@ -16,7 +16,7 @@ DEFAULT_DOWNLOAD_URL = "https://github.com/jamesyc/TimeCapsuleSMB/releases/lates
 DEFAULT_UNSUPPORTED_MESSAGE = "This version is no longer supported. Please update before continuing."
 VERSION_CHECK_TIMEOUT_SECONDS = 3.0
 VERSION_CHECK_CACHE_SECONDS = 3 * 60 * 60
-VERSION_CHECK_CACHE_PATH = REPO_ROOT / ".version-check-cache.json"
+VERSION_CHECK_CACHE_PATH = package_project_root() / ".version-check-cache.json"
 VERSION_CHECK_SCHEMA = 1
 MAX_VERSION_RESPONSE_BYTES = 64 * 1024
 
@@ -134,12 +134,16 @@ def save_cached_payload(
         return
 
 
+def default_version_check_cache_path() -> Path:
+    return resolve_app_paths().version_check_cache_path
+
+
 def check_client_version(
     *,
     local_version_code: int = CLI_VERSION_CODE,
     url: str = VERSION_CHECK_URL,
     timeout: float = VERSION_CHECK_TIMEOUT_SECONDS,
-    cache_path: Path = VERSION_CHECK_CACHE_PATH,
+    cache_path: Path | None = None,
     now: float | None = None,
     opener: UrlOpen = urllib.request.urlopen,
 ) -> VersionCheckResult:
@@ -148,7 +152,7 @@ def check_client_version(
             local_version_code=local_version_code,
             url=url,
             timeout=timeout,
-            cache_path=cache_path,
+            cache_path=cache_path or default_version_check_cache_path(),
             now=now,
             opener=opener,
         )

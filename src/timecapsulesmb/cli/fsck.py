@@ -6,7 +6,7 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import observe_reboot_cycle
-from timecapsulesmb.cli.runtime import load_env_config
+from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
 from timecapsulesmb.core.config import airport_exact_display_name_from_config
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.device.probe import discover_mounted_volume_conn
@@ -41,6 +41,7 @@ def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> s
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Run fsck_hfs on the mounted device data disk and reboot by default.")
+    add_config_argument(parser)
     parser.add_argument("--yes", action="store_true", help="Do not prompt before running fsck")
     parser.add_argument("--no-reboot", action="store_true", help="Run fsck only; do not reboot afterward")
     parser.add_argument("--no-wait", action="store_true", help="Do not wait for SSH to go down and come back after reboot")
@@ -49,7 +50,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     print("Running fsck...")
 
     ensure_install_id()
-    config = load_env_config()
+    config = load_env_config(env_path=args.config)
     telemetry = TelemetryClient.from_config(config)
     with CommandContext(telemetry, "fsck", "fsck_started", "fsck_finished", config=config, args=args) as command_context:
         command_context.update_fields(

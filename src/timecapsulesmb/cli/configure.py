@@ -31,7 +31,8 @@ from timecapsulesmb.core.config import (
 )
 from timecapsulesmb.cli.context import CommandContext, missing_dependency_message, missing_required_python_module
 from timecapsulesmb.cli.flows import wait_for_tcp_port_state
-from timecapsulesmb.cli.runtime import probe_connection_state
+from timecapsulesmb.cli.runtime import add_config_argument, probe_connection_state
+from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.device.compat import DeviceCompatibility, render_compatibility_message
 from timecapsulesmb.device.probe import (
@@ -287,15 +288,17 @@ def enable_ssh_and_reprobe_for_configure(
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Create or update the local TimeCapsuleSMB .env configuration.")
+    add_config_argument(parser)
     parser.add_argument("--share-use-disk-root", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     ensure_install_id()
-    existing = parse_env_file(ENV_PATH)
+    env_path = resolve_app_paths(config_path=args.config).config_path
+    existing = parse_env_file(env_path)
     configure_id = str(uuid.uuid4())
     telemetry_values = dict(existing)
     telemetry_values["TC_CONFIGURE_ID"] = configure_id
-    telemetry = TelemetryClient.from_config(AppConfig.from_values(telemetry_values))
+    telemetry = TelemetryClient.from_config(AppConfig.from_values(telemetry_values, path=env_path))
     values: dict[str, str] = {}
     discovered_airport_syap: Optional[str] = None
     probed_device: DeviceCompatibility | None = None
@@ -322,7 +325,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         command_context.set_stage("startup")
         print("This writes a local .env configuration file in this folder. The other tcapsule commands use that file.")
-        print(f"Writing {ENV_PATH}")
+        print(f"Writing {env_path}")
         print(f"Press Enter to accept the [{color_cyan('saved/suggested/default')}] value.")
         print("Most users can just keep the suggested values.\n")
 
@@ -590,13 +593,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         apply_device_storage_defaults(values)
         values["TC_CONFIGURE_ID"] = configure_id
         command_context.set_stage("write_env")
-        write_env_file(ENV_PATH, values)
+        write_env_file(env_path, values)
         command_context.update_fields(
             configure_id=configure_id,
             device_syap=values.get("TC_AIRPORT_SYAP"),
             device_model=values.get("TC_MDNS_DEVICE_MODEL"),
         )
-        print(f"\nReview the .env file configuration: wrote {ENV_PATH}")
+        print(f"\nReview the .env file configuration: wrote {env_path}")
         print("Next steps:")
         print("- Deploy this configuration to your Time Capsule/Airport Extreme device, run:")
         print("    .venv/bin/tcapsule deploy")

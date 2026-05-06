@@ -3,12 +3,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
+import re
 
 from timecapsulesmb.core.config import DEFAULTS, AppConfig, shell_quote
 from timecapsulesmb.device.compat import PAYLOAD_FAMILY_NETBSD6, is_netbsd4_payload_family
 
 
 DEFAULT_APPLE_MOUNT_WAIT_SECONDS = 30
+TEMPLATE_TOKEN_PATTERN = re.compile(r"__[A-Z0-9_]+__")
+SMBCONF_RUNTIME_TOKENS = frozenset({"__DATA_ROOT__", "__PAYLOAD_DIR__", "__BIND_INTERFACES__"})
+
+
+class TemplateRenderError(RuntimeError):
+    """Raised when a rendered deployment template still has unresolved tokens."""
 
 
 @dataclass(frozen=True)
@@ -39,6 +46,56 @@ def render_template_text(content: str, replacements: dict[str, str]) -> str:
 
 def render_template(name: str, replacements: dict[str, str]) -> str:
     return render_template_text(load_boot_asset_text(name), replacements)
+
+
+def unresolved_template_tokens(content: str) -> tuple[str, ...]:
+    return tuple(sorted(set(TEMPLATE_TOKEN_PATTERN.findall(content))))
+
+
+def require_no_unresolved_template_tokens(
+    content: str,
+    *,
+    allowed_tokens: set[str] | frozenset[str] | tuple[str, ...] = (),
+) -> None:
+    allowed = set(allowed_tokens)
+    unresolved = [token for token in unresolved_template_tokens(content) if token not in allowed]
+    if unresolved:
+        raise TemplateRenderError(f"unresolved template token(s): {', '.join(unresolved)}")
+
+
+def render_checked_template_text(
+    content: str,
+    replacements: dict[str, str],
+    *,
+    allowed_unresolved_tokens: set[str] | frozenset[str] | tuple[str, ...] = (),
+) -> str:
+    rendered = render_template_text(content, replacements)
+    require_no_unresolved_template_tokens(rendered, allowed_tokens=allowed_unresolved_tokens)
+    return rendered
+
+
+def render_checked_template(
+    name: str,
+    replacements: dict[str, str],
+    *,
+    allowed_unresolved_tokens: set[str] | frozenset[str] | tuple[str, ...] = (),
+) -> str:
+    return render_checked_template_text(
+        load_boot_asset_text(name),
+        replacements,
+        allowed_unresolved_tokens=allowed_unresolved_tokens,
+    )
+
+
+def render_runtime_smbconf_text(content: str) -> str:
+    return render_checked_template_text(
+        content,
+        {
+            "__DATA_ROOT__": "/Volumes/dk2/ShareRoot",
+            "__PAYLOAD_DIR__": "/Volumes/dk2/ShareRoot/.samba4",
+            "__BIND_INTERFACES__": "127.0.0.1/8 192.168.1.2/24",
+        },
+    )
 
 
 def write_boot_asset(name: str, destination: Path) -> None:
