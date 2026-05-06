@@ -166,6 +166,34 @@ undef_config_symbol() {
     fi
 }
 
+define_config_symbol() {
+    config_header="$1"
+    symbol="$2"
+    value="$3"
+    desc="Samba 4.x config header define $symbol"
+
+    if grep -Fqx "#define $symbol $value" "$config_header"; then
+        return 0
+    fi
+    if grep -E -q "^/[*][[:space:]]+#undef[[:space:]]+$symbol[[:space:]]+[*]/$" "$config_header"; then
+        patch_perl "$desc" "s|^/\\* #undef $symbol \\*/\$|#define $symbol $value|m" "$config_header"
+    elif grep -E -q "^#define[[:space:]]+$symbol([[:space:]]|$)" "$config_header"; then
+        patch_perl "$desc" "s|^#define[ \t]+$symbol([ \t]+[^\n]*)?\$|#define $symbol $value|m" "$config_header"
+    else
+        printf '#define %s %s\n' "$symbol" "$value" >>"$config_header"
+    fi
+    patch_require_fixed "$desc" "#define $symbol $value" "$config_header"
+}
+
+require_config_symbol_defined() {
+    config_header="$1"
+    symbol="$2"
+
+    if ! grep -E -q "^#define[[:space:]]+$symbol([[:space:]]|$)" "$config_header"; then
+        patch_fail "Samba 4.x config header expected $symbol in $config_header"
+    fi
+}
+
 set_waf_cache_empty_values() {
     cache_file="$1"
     shift
@@ -227,11 +255,18 @@ apply_samba4x_runtime_waf_cache() {
     set_waf_cache_empty_values "$cache_file" \
         HAVE_POSIX_FALLOCATE \
         _POSIX_FALLOCATE_CAPABLE_LIBC \
+        HAVE_GETIFADDRS \
+        HAVE_FREEIFADDRS \
+        HAVE_IFACE_GETIFADDRS \
         HAVE_BACKTRACE \
         HAVE_BACKTRACE_SYMBOLS \
         HAVE_EXECINFO_H \
         HAVE_SETPROCTITLE \
         HAVE_SETPROCTITLE_INIT
+    # Samba's fallback probe is executed during cross-configure and can fail
+    # to prove IFCONF even though NetBSD provides the ioctl interface. Force
+    # the exact libreplace backend we want after disabling native getifaddrs.
+    set_waf_cache_value "$cache_file" "HAVE_IFACE_IFCONF" "1"
 }
 
 apply_samba4x_waf_cache_overrides() {
@@ -261,6 +296,9 @@ sync_samba4x_config_header() {
     for symbol in \
         HAVE_POSIX_FALLOCATE \
         _POSIX_FALLOCATE_CAPABLE_LIBC \
+        HAVE_GETIFADDRS \
+        HAVE_FREEIFADDRS \
+        HAVE_IFACE_GETIFADDRS \
         HAVE_PTHREAD \
         HAVE_PTHREAD_CREATE \
         HAVE_PTHREAD_ATTR_INIT \
@@ -274,6 +312,16 @@ sync_samba4x_config_header() {
     do
         undef_config_symbol "$config_header" "$symbol"
     done
+    define_config_symbol "$config_header" "HAVE_IFACE_IFCONF" "1"
+}
+
+verify_samba4x_runtime_config() {
+    config_header="$1"
+
+    # Native NetBSD getifaddrs can hang during interface enumeration on Time
+    # Capsule runtime kernels. The source patch removes native detection and
+    # should leave Samba on libreplace's ioctl-based IFCONF implementation.
+    require_config_symbol_defined "$config_header" "HAVE_IFACE_IFCONF"
 }
 
 configure_samba4x() {
@@ -711,6 +759,7 @@ SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_
         [ -f "$config_header" ] || continue
         sync_samba4x_config_header "$config_header"
     done
+    verify_samba4x_runtime_config "$SAMBA4X_SRC_DIR/bin/default/include/config.h"
 
     if [ "$SDK_FAMILY" = "netbsd4" ] && [ "$SAMBA4X_NETBSD4_GC_SECTIONS" = "1" ]; then
         export LDFLAGS="$SAMBA4X_NETBSD4_FINAL_LDFLAGS"

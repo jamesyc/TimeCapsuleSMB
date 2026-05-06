@@ -59,3 +59,14 @@
 # volatile dbwrap TDB deletes onto the global freelist instead of retaining
 # thousands of per-hash-chain dead records after Time Machine closes files.
 0017-dbwrap-tdb-max-dead-config.patch|configurable dbwrap TDB max-dead records
+# macOS and Time Machine probe stream/ACL xattrs on untouched files. When
+# xattr_tdb backs that metadata, a missing row must behave like an empty xattr
+# set, not EINVAL. This is a real macOS interoperability fix, not a NetBSD shim,
+# and likely applies to future Samba versions that still use xattr_tdb here.
+0018-xattr-tdb-missing-row-empty-xattrs.patch|xattr_tdb missing rows behave like empty xattrs
+# Time Machine durable handles on HFS sparsebundle bands should not treat
+# allocation-block count drift as file identity loss after reconnect.
+0019-time-machine-durable-st-ex-blocks.patch|allow durable reconnect across HFS allocation-block drift
+# Time Capsule kernels can hang in native NetBSD getifaddrs(); force Samba's
+# interface enumeration through libreplace's ioctl-based fallback.
+0020-netbsd-getifaddrs-fallback.patch|force ioctl-based interface enumeration on NetBSD

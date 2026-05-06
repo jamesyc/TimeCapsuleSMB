@@ -1,0 +1,38 @@
+diff --git a/source3/lib/xattr_tdb.c b/source3/lib/xattr_tdb.c
+index 3db5b82..2aa15e9 100644
+--- a/source3/lib/xattr_tdb.c
++++ b/source3/lib/xattr_tdb.c
+@@ -105,7 +105,24 @@ static NTSTATUS xattr_tdb_load_attrs(TALLOC_CTX *mem_ctx,
+ 			      &data);
+ 	if (!NT_STATUS_IS_OK(status)) {
+ 		if (NT_STATUS_EQUAL(status, NT_STATUS_NOT_FOUND)) {
+-			return status;
++			/*
++			 * macOS clients, including Time Machine, aggressively
++			 * probe stream and ACL xattrs. When Samba is configured
++			 * to store those in xattr_tdb, untouched files and
++			 * directories legitimately have no xattr.tdb row yet.
++			 *
++			 * Treat a missing row as an empty xattr set so macOS
++			 * sees the requested attribute as missing instead of
++			 * EINVAL. This is not a NetBSD syscall compatibility
++			 * shim; it is a macOS/Time Machine interoperability fix
++			 * likely needed by future Samba versions whenever
++			 * xattr_tdb backs macOS metadata.
++			 */
++			*presult = talloc_zero(mem_ctx, struct tdb_xattrs);
++			if (*presult == NULL) {
++				return NT_STATUS_NO_MEMORY;
++			}
++			return NT_STATUS_OK;
+ 		}
+ 		return NT_STATUS_INTERNAL_DB_CORRUPTION;
+ 	}
+@@ -239,6 +256,7 @@ int xattr_tdb_setattr(struct db_context *db_ctx,
+ 
+ 	if (rec == NULL) {
+ 		DEBUG(0, ("xattr_tdb_lock_attrs failed\n"));
++		TALLOC_FREE(frame);
+ 		errno = EINVAL;
+ 		return -1;
+ 	}

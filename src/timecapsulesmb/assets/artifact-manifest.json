@@ -26,15 +26,15 @@
     },
     "smbd": {
       "path": "bin/samba4/smbd",
-      "sha256": "754c7ab4c4d83a09fe1a8666fc24a1671f31507c1947a9f914418ad6ec1bca04"
+      "sha256": "fa35ba151abb5254a5320eac5812286e68e1241f735047556a54ae6fd1db419d"
     },
     "smbd-netbsd4le": {
       "path": "bin/samba4-netbsd4le/smbd",
-      "sha256": "8a2448ac2e038ee1c99fa1b9dbaf839821db6a2194b833a576b1d5236baff51e"
+      "sha256": "2e157baa02edab096e0104f28e2c36d1fe1e7d361b3ba459fc48d3e3a8178b21"
     },
     "smbd-netbsd4be": {
       "path": "bin/samba4-netbsd4be/smbd",
-      "sha256": "ad4a9909edddbef7436e4131208b6ccba85da78978e45c1078e19d02e274c8cd"
+      "sha256": "83b69f607938278398de99f3215cdb9ab10703f22f07349cb5eefad0e00cb072"
     }
   }
 }
