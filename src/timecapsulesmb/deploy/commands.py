@@ -118,103 +118,126 @@ def run_script_action(path: str) -> RemoteAction:
     return RunScriptAction(path)
 
 
+def _render_stop_process_action(action: StopProcessAction) -> str:
+    name = action.name
+    return (
+        f"pkill {shlex.quote(name)} >/dev/null 2>&1 || true; "
+        "attempt=0; "
+        f"while /bin/sh -c {shlex.quote(_render_process_present(name, full=False))} >/dev/null 2>&1; do "
+        'if [ "$attempt" -ge 10 ]; then break; fi; '
+        "attempt=$((attempt + 1)); "
+        "sleep 1; "
+        "done"
+    )
+
+
+def _render_stop_process_full_action(action: StopProcessFullAction) -> str:
+    pattern = action.pattern
+    return (
+        f"pkill -f {shlex.quote(pattern)} >/dev/null 2>&1 || true; "
+        "attempt=0; "
+        f"while /bin/sh -c {shlex.quote(_render_process_present(pattern, full=True))} >/dev/null 2>&1; do "
+        'if [ "$attempt" -ge 10 ]; then break; fi; '
+        "attempt=$((attempt + 1)); "
+        "sleep 1; "
+        "done"
+    )
+
+
+def _render_prepare_dirs_action(action: PrepareDirsAction) -> str:
+    payload_dir = action.payload_dir
+    return (
+        "mkdir -p {} {} {} {} {} {} && "
+        "rm -rf {} {} {} {} && "
+        "ln -s {} {} && "
+        "ln -s {} {} && "
+        "ln -s {} {} && "
+        "ln -s {} {}"
+    ).format(
+        shlex.quote(payload_dir),
+        shlex.quote(payload_dir + "/private"),
+        shlex.quote(payload_dir + "/cache"),
+        shlex.quote("/mnt/Flash"),
+        shlex.quote("/root"),
+        shlex.quote("/mnt/Memory/samba4"),
+        shlex.quote("/root/tc-netbsd4"),
+        shlex.quote("/root/tc-netbsd4le"),
+        shlex.quote("/root/tc-netbsd4be"),
+        shlex.quote("/root/tc-netbsd7"),
+        shlex.quote("/mnt/Memory/samba4"),
+        shlex.quote("/root/tc-netbsd4"),
+        shlex.quote("/mnt/Memory/samba4"),
+        shlex.quote("/root/tc-netbsd4le"),
+        shlex.quote("/mnt/Memory/samba4"),
+        shlex.quote("/root/tc-netbsd4be"),
+        shlex.quote("/mnt/Memory/samba4"),
+        shlex.quote("/root/tc-netbsd7"),
+    )
+
+
+def _render_initialize_data_root_action(action: InitializeDataRootAction) -> str:
+    data_root = action.data_root
+    marker_path = action.marker_path
+    return (
+        f"mkdir -p {shlex.quote(data_root)} && "
+        f"/bin/sh -c {shlex.quote(f': > {shlex.quote(marker_path)}')}"
+    )
+
+
+def _render_install_permissions_action(action: InstallPermissionsAction) -> str:
+    payload_dir = action.payload_dir
+    private_dir = f"{payload_dir}/private"
+    return (
+        f"chmod 755 {shlex.quote(payload_dir + '/smbd')} "
+        f"{shlex.quote(payload_dir + '/mdns-advertiser')} "
+        f"{shlex.quote(payload_dir + '/nbns-advertiser')} && "
+        f"chmod 755 {shlex.quote('/mnt/Flash/rc.local')} "
+        f"{shlex.quote('/mnt/Flash/common.sh')} "
+        f"{shlex.quote('/mnt/Flash/start-samba.sh')} "
+        f"{shlex.quote('/mnt/Flash/watchdog.sh')} "
+        f"{shlex.quote('/mnt/Flash/dfree.sh')} "
+        f"{shlex.quote('/mnt/Flash/mdns-advertiser')} && "
+        f"chmod 755 {shlex.quote(payload_dir + '/cache')} && "
+        f"chmod 700 {shlex.quote(private_dir)} && "
+        f"chmod 600 {shlex.quote(private_dir + '/smbpasswd')} "
+        f"{shlex.quote(private_dir + '/username.map')} "
+        f"{shlex.quote(private_dir + '/adisk.uuid')} && "
+        f"if [ -f {shlex.quote(private_dir + '/nbns.enabled')} ]; then "
+        f"chmod 600 {shlex.quote(private_dir + '/nbns.enabled')}; "
+        f"fi"
+    )
+
+
+def _render_enable_nbns_action(action: EnableNbnsAction) -> str:
+    marker_path = action.private_dir + "/nbns.enabled"
+    return f"/bin/sh -c {shlex.quote(f': > {shlex.quote(marker_path)}')}"
+
+
+def _render_remove_path_action(action: RemovePathAction) -> str:
+    return f"rm -rf {shlex.quote(action.path)}"
+
+
+def _render_run_script_action(action: RunScriptAction) -> str:
+    return f"/bin/sh {shlex.quote(action.path)}"
+
+
 def render_remote_action(action: RemoteAction) -> str:
     if isinstance(action, StopProcessAction):
-        name = action.name
-        return (
-            f"pkill {shlex.quote(name)} >/dev/null 2>&1 || true; "
-            "attempt=0; "
-            f"while /bin/sh -c {shlex.quote(_render_process_present(name, full=False))} >/dev/null 2>&1; do "
-            'if [ "$attempt" -ge 10 ]; then break; fi; '
-            "attempt=$((attempt + 1)); "
-            "sleep 1; "
-            "done"
-        )
-
+        return _render_stop_process_action(action)
     if isinstance(action, StopProcessFullAction):
-        pattern = action.pattern
-        return (
-            f"pkill -f {shlex.quote(pattern)} >/dev/null 2>&1 || true; "
-            "attempt=0; "
-            f"while /bin/sh -c {shlex.quote(_render_process_present(pattern, full=True))} >/dev/null 2>&1; do "
-            'if [ "$attempt" -ge 10 ]; then break; fi; '
-            "attempt=$((attempt + 1)); "
-            "sleep 1; "
-            "done"
-        )
-
+        return _render_stop_process_full_action(action)
     if isinstance(action, PrepareDirsAction):
-        payload_dir = action.payload_dir
-        return (
-            "mkdir -p {} {} {} {} {} {} && "
-            "rm -rf {} {} {} {} && "
-            "ln -s {} {} && "
-            "ln -s {} {} && "
-            "ln -s {} {} && "
-            "ln -s {} {}"
-        ).format(
-            shlex.quote(payload_dir),
-            shlex.quote(payload_dir + "/private"),
-            shlex.quote(payload_dir + "/cache"),
-            shlex.quote("/mnt/Flash"),
-            shlex.quote("/root"),
-            shlex.quote("/mnt/Memory/samba4"),
-            shlex.quote("/root/tc-netbsd4"),
-            shlex.quote("/root/tc-netbsd4le"),
-            shlex.quote("/root/tc-netbsd4be"),
-            shlex.quote("/root/tc-netbsd7"),
-            shlex.quote("/mnt/Memory/samba4"),
-            shlex.quote("/root/tc-netbsd4"),
-            shlex.quote("/mnt/Memory/samba4"),
-            shlex.quote("/root/tc-netbsd4le"),
-            shlex.quote("/mnt/Memory/samba4"),
-            shlex.quote("/root/tc-netbsd4be"),
-            shlex.quote("/mnt/Memory/samba4"),
-            shlex.quote("/root/tc-netbsd7"),
-        )
-
+        return _render_prepare_dirs_action(action)
     if isinstance(action, InitializeDataRootAction):
-        data_root = action.data_root
-        marker_path = action.marker_path
-        return (
-            f"mkdir -p {shlex.quote(data_root)} && "
-            f"/bin/sh -c {shlex.quote(f': > {shlex.quote(marker_path)}')}"
-        )
-
+        return _render_initialize_data_root_action(action)
     if isinstance(action, InstallPermissionsAction):
-        payload_dir = action.payload_dir
-        private_dir = f"{payload_dir}/private"
-        return (
-            f"chmod 755 {shlex.quote(payload_dir + '/smbd')} "
-            f"{shlex.quote(payload_dir + '/mdns-advertiser')} "
-            f"{shlex.quote(payload_dir + '/nbns-advertiser')} && "
-            f"chmod 755 {shlex.quote('/mnt/Flash/rc.local')} "
-            f"{shlex.quote('/mnt/Flash/common.sh')} "
-            f"{shlex.quote('/mnt/Flash/start-samba.sh')} "
-            f"{shlex.quote('/mnt/Flash/watchdog.sh')} "
-            f"{shlex.quote('/mnt/Flash/dfree.sh')} "
-            f"{shlex.quote('/mnt/Flash/mdns-advertiser')} && "
-            f"chmod 755 {shlex.quote(payload_dir + '/cache')} && "
-            f"chmod 700 {shlex.quote(private_dir)} && "
-            f"chmod 600 {shlex.quote(private_dir + '/smbpasswd')} "
-            f"{shlex.quote(private_dir + '/username.map')} "
-            f"{shlex.quote(private_dir + '/adisk.uuid')} && "
-            f"if [ -f {shlex.quote(private_dir + '/nbns.enabled')} ]; then "
-            f"chmod 600 {shlex.quote(private_dir + '/nbns.enabled')}; "
-            f"fi"
-        )
-
+        return _render_install_permissions_action(action)
     if isinstance(action, EnableNbnsAction):
-        private_dir = action.private_dir
-        marker_path = private_dir + "/nbns.enabled"
-        return f"/bin/sh -c {shlex.quote(f': > {shlex.quote(marker_path)}')}"
-
+        return _render_enable_nbns_action(action)
     if isinstance(action, RemovePathAction):
-        return f"rm -rf {shlex.quote(action.path)}"
-
+        return _render_remove_path_action(action)
     if isinstance(action, RunScriptAction):
-        return f"/bin/sh {shlex.quote(action.path)}"
-
+        return _render_run_script_action(action)
     raise TypeError(f"Unsupported remote action: {action!r}")
 
 
