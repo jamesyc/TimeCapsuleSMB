@@ -21,7 +21,7 @@ from timecapsulesmb.cli.context import (
     render_command_debug_lines,
 )
 from timecapsulesmb.cli.runtime import ManagedTargetState
-from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.core.config import AppConfig, ConfigError
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, RemoteInterfaceProbeResult
 from timecapsulesmb.discovery.bonjour import Discovered
@@ -280,6 +280,28 @@ class TelemetryTests(unittest.TestCase):
         self.assertNotIn("SshError:", finished_payload["error"])
         self.assertIn("Debug context:", finished_payload["error"])
         self.assertIn("ssh_opts=-L 108:127.0.0.1:108", finished_payload["error"])
+
+    def test_command_context_converts_config_error_to_system_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            env_path = Path(tmp) / ".env"
+            config = AppConfig.from_values({"TC_HOST": ""}, path=env_path, exists=True, file_values={})
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
+                with mock.patch.object(client, "_dispatch_payload_async"):
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        with self.assertRaises(SystemExit) as raised:
+                            with CommandContext(client, "deploy", "deploy_started", "deploy_finished", config=config):
+                                config.require("TC_HOST")
+        self.assertEqual(str(raised.exception), f"Missing required setting in {env_path}: TC_HOST")
+        self.assertIsInstance(raised.exception.__cause__, ConfigError)
+        finished_payload = send_mock.call_args.args[0]
+        self.assertEqual(finished_payload["result"], "failure")
+        self.assertIn(f"Missing required setting in {env_path}: TC_HOST", finished_payload["error"])
+        self.assertNotIn("ConfigError:", finished_payload["error"])
+        self.assertIn("Debug context:", finished_payload["error"])
+        self.assertIn(f"env_path={env_path}", finished_payload["error"])
 
     def test_command_context_failure_without_error_gets_fallback_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

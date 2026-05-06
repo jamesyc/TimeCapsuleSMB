@@ -7,8 +7,7 @@ from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import wait_for_device_up, wait_for_tcp_port_state
 from timecapsulesmb.cli.util import color_red
 from timecapsulesmb.cli.runtime import load_env_config
-from timecapsulesmb.core.config import extract_host
-from timecapsulesmb.core.errors import system_exit_message
+from timecapsulesmb.core.config import ConfigError, extract_host
 from timecapsulesmb.deploy.executor import remote_request_reboot
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.integrations.acp import enable_ssh
@@ -83,8 +82,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         command_context.set_stage("load_config")
         try:
             command_context.require_valid_config(profile="set_ssh")
-        except SystemExit as exc:
-            message = system_exit_message(exc) or f"Missing {config.path} settings. Run '.venv/bin/tcapsule configure' first."
+        except ConfigError as exc:
+            message = str(exc) or f"Missing {config.path} settings. Run '.venv/bin/tcapsule configure' first."
             command_context.update_fields(set_ssh_action="missing_config")
             print(message)
             command_context.fail_with_error(message)

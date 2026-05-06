@@ -15,6 +15,8 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.core.config import (
     AIRPORT_SYAP_TO_MODEL,
     AppConfig,
+    ConfigError,
+    ConfigValidationError,
     build_adisk_share_txt,
     build_mdns_device_model_txt,
     DEFAULTS,
@@ -130,8 +132,9 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ".env"
             config = AppConfig.from_values({}, path=path, exists=True, file_values={})
-            with self.assertRaises(SystemExit) as ctx:
+            with self.assertRaises(ConfigValidationError) as ctx:
                 require_valid_app_config(config, profile="deploy", command_name="deploy")
+        self.assertNotIsInstance(ctx.exception, SystemExit)
         self.assertIn(f"Missing required setting in {path}: TC_HOST", str(ctx.exception))
         self.assertIn("before running `deploy`", str(ctx.exception))
 
@@ -509,8 +512,9 @@ class ConfigTests(unittest.TestCase):
 
     def test_app_config_require_raises_for_missing_value(self) -> None:
         config = AppConfig.from_values({"TC_HOST": ""})
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigError) as ctx:
             config.require("TC_HOST")
+        self.assertNotIsInstance(ctx.exception, SystemExit)
 
 
 if __name__ == "__main__":

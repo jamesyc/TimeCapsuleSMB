@@ -102,6 +102,10 @@ CONFIG_HEADER = """# Local user/device configuration for TimeCapsuleSMB.
 """
 
 
+class ConfigError(Exception):
+    """Base class for recoverable configuration failures."""
+
+
 @dataclass(frozen=True, init=False)
 class AppConfig:
     path: Path
@@ -160,7 +164,7 @@ class AppConfig:
     def require(self, key: str, *, messagebefore: str = "", messageafter: str = "") -> str:
         value = self.get(key)
         if not value:
-            raise SystemExit(f"{messagebefore}Missing required setting in {self.path}: {key}{messageafter}")
+            raise ConfigError(f"{messagebefore}Missing required setting in {self.path}: {key}{messageafter}")
         return value
 
 
@@ -208,6 +212,17 @@ class ConfigIssue:
         if command_name:
             lines.append(f"Please run the `configure` command before running `{command_name}`.")
         return "\n".join(lines)
+
+
+class ConfigValidationError(ConfigError):
+    def __init__(self, issues: list[ConfigIssue], *, command_name: str | None = None) -> None:
+        self.issues = issues
+        self.command_name = command_name
+        if issues:
+            message = issues[0].format_for_cli(command_name=command_name)
+        else:
+            message = "Configuration validation failed."
+        super().__init__(message)
 
 
 def parse_env_value(raw_value: str) -> str:
@@ -621,7 +636,7 @@ def validate_app_config(config: AppConfig, *, profile: str) -> list[ConfigIssue]
 def require_valid_app_config(config: AppConfig, *, profile: str, command_name: str | None = None) -> None:
     errors = validate_app_config(config, profile=profile)
     if errors:
-        raise SystemExit(errors[0].format_for_cli(command_name=command_name))
+        raise ConfigValidationError(errors, command_name=command_name)
 
 
 def render_env_text(values: dict[str, str]) -> str:
