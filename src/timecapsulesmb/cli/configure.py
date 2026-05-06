@@ -138,6 +138,12 @@ def discover_default_record(existing: dict[str, str]) -> Optional[BonjourResolve
     return selected
 
 
+def exception_summary(exc: BaseException) -> str:
+    message = str(exc)
+    name = type(exc).__name__
+    return f"{name}: {message}" if message else name
+
+
 def prompt_host_and_password(existing: dict[str, str], values: dict[str, str], discovered_host: Optional[str]) -> None:
     host_default = values.get("TC_HOST") or discovered_host or valid_existing_config_value(
         existing,
@@ -325,7 +331,21 @@ def main(argv: Optional[list[str]] = None) -> int:
         existing_share_use_disk_root = parse_bool(existing.get("TC_SHARE_USE_DISK_ROOT", DEFAULTS["TC_SHARE_USE_DISK_ROOT"]))
         values["TC_SHARE_USE_DISK_ROOT"] = "true" if args.share_use_disk_root or existing_share_use_disk_root else "false"
         command_context.set_stage("bonjour_discovery")
-        discovered_record = discover_default_record(existing)
+        try:
+            discovered_record = discover_default_record(existing)
+        except Exception as exc:
+            error_text = exception_summary(exc)
+            print(f"Warning: mDNS discovery failed: {error_text}")
+            print("This only affects automatic device discovery. Configure will continue with manual SSH target entry.")
+            print("Falling back to manual SSH target entry.\n")
+            command_context.update_fields(
+                bonjour_discovery_failed=True,
+                bonjour_discovery_fallback=True,
+                bonjour_discovery_fallback_reason="discovery_exception",
+                bonjour_discovery_error_type=type(exc).__name__,
+                bonjour_discovery_error=error_text,
+            )
+            discovered_record = None
         command_context.add_debug_fields(selected_bonjour_record=discovered_record)
         discovered_host = discovered_record_root_host(discovered_record) if discovered_record else None
         command_context.add_debug_fields(discovered_host=discovered_host)
