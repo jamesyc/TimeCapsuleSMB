@@ -14,8 +14,11 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.cli.flows import (
+    ACP_REBOOT_REQUEST_TIMEOUT_SECONDS,
     REBOOT_UP_TIMEOUT_MESSAGE,
     request_reboot_and_wait,
+    wait_for_device_up,
+    wait_for_tcp_port_state,
     verify_managed_runtime_flow,
 )
 from timecapsulesmb.device.probe import (
@@ -23,6 +26,7 @@ from timecapsulesmb.device.probe import (
     ManagedRuntimeProbeResult,
     ManagedSmbdProbeResult,
 )
+from timecapsulesmb.integrations.acp import ACPConnectionError
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
 
 
@@ -67,63 +71,176 @@ class CliFlowTests(unittest.TestCase):
             lines=smbd.lines + mdns.lines,
         )
 
-    def test_request_reboot_and_wait_succeeds_after_normal_reboot_request(self) -> None:
+    def test_wait_for_tcp_port_state_checks_before_sleeping(self) -> None:
+        with mock.patch("timecapsulesmb.cli.flows.tcp_open", return_value=True) as tcp_open_mock:
+            with mock.patch("timecapsulesmb.cli.flows.time.sleep") as sleep_mock:
+                ok = wait_for_tcp_port_state(
+                    "10.0.0.2",
+                    22,
+                    expected_state=True,
+                    timeout_seconds=30,
+                    interval_seconds=5,
+                    verbose=False,
+                )
+
+        self.assertTrue(ok)
+        tcp_open_mock.assert_called_once_with("10.0.0.2", 22)
+        sleep_mock.assert_not_called()
+
+    def test_wait_for_device_up_checks_before_sleeping(self) -> None:
+        with mock.patch("timecapsulesmb.cli.flows.tcp_open", return_value=True) as tcp_open_mock:
+            with mock.patch("timecapsulesmb.cli.flows.time.sleep") as sleep_mock:
+                ok = wait_for_device_up(
+                    "10.0.0.2",
+                    probe_ports=(5009, 445),
+                    timeout_seconds=30,
+                    interval_seconds=5,
+                )
+
+        self.assertTrue(ok)
+        tcp_open_mock.assert_called_once_with("10.0.0.2", 5009)
+        sleep_mock.assert_not_called()
+
+    def test_request_reboot_and_wait_succeeds_after_acp_reboot_request(self) -> None:
         command_context = FakeCommandContext()
         output = io.StringIO()
-        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
-            with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
-                with redirect_stdout(output):
-                    ok = request_reboot_and_wait(
-                        self.make_connection(),
-                        command_context,
-                        timeout_no_down_message="did not go down",
-                    )
+        with mock.patch("timecapsulesmb.cli.flows.acp_reboot") as acp_reboot_mock:
+            with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as ssh_reboot_mock:
+                with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
+                    with redirect_stdout(output):
+                        ok = request_reboot_and_wait(
+                            self.make_connection(),
+                            command_context,
+                            reboot_no_down_message="did not go down",
+                        )
+
+        self.assertTrue(ok)
+        acp_reboot_mock.assert_called_once_with("10.0.0.2", "pw", timeout=ACP_REBOOT_REQUEST_TIMEOUT_SECONDS)
+        ssh_reboot_mock.assert_not_called()
+        self.assertEqual(wait_mock.call_args_list[0].kwargs, {"expected_up": False, "timeout_seconds": 60})
+        self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 240})
+        self.assertEqual(command_context.finish_fields["reboot_was_attempted"], True)
+        self.assertEqual(command_context.finish_fields["device_came_back_after_reboot"], True)
+        self.assertEqual(command_context.debug_fields["reboot_request_strategy"], "acp_then_ssh")
+        self.assertEqual(command_context.debug_fields["acp_reboot_attempted"], True)
+        self.assertEqual(command_context.debug_fields["acp_reboot_succeeded"], True)
+        self.assertIsNone(command_context.error)
+        self.assertIn("ACP reboot requested.", output.getvalue())
+        self.assertIn("Waiting for the device to go down...", output.getvalue())
+
+    def test_request_reboot_and_wait_uses_ssh_fallback_when_acp_fails(self) -> None:
+        command_context = FakeCommandContext()
+        output = io.StringIO()
+        with mock.patch(
+            "timecapsulesmb.cli.flows.acp_reboot",
+            side_effect=ACPConnectionError("ACP timed out"),
+        ):
+            with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
+                with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
+                    with redirect_stdout(output):
+                        ok = request_reboot_and_wait(
+                            self.make_connection(),
+                            command_context,
+                            reboot_no_down_message="did not go down",
+                        )
 
         self.assertTrue(ok)
         reboot_mock.assert_called_once()
         self.assertEqual(wait_mock.call_args_list[0].kwargs, {"expected_up": False, "timeout_seconds": 60})
         self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 240})
-        self.assertEqual(command_context.finish_fields["reboot_was_attempted"], True)
+        self.assertEqual(command_context.debug_fields["acp_reboot_succeeded"], False)
+        self.assertEqual(command_context.debug_fields["acp_reboot_error"], "ACP timed out")
+        self.assertEqual(command_context.debug_fields["ssh_reboot_attempted"], True)
+        self.assertEqual(command_context.debug_fields["ssh_reboot_succeeded"], True)
         self.assertEqual(command_context.finish_fields["device_came_back_after_reboot"], True)
-        self.assertIsNone(command_context.error)
-        self.assertIn("Reboot requested. Waiting for the device to go down...", output.getvalue())
+        self.assertIn("ACP reboot request failed; trying SSH reboot request.", output.getvalue())
+        self.assertIn("SSH reboot requested.", output.getvalue())
 
-    def test_request_reboot_and_wait_observes_device_state_after_request_timeout(self) -> None:
+    def test_request_reboot_and_wait_observes_device_state_after_ssh_fallback_timeout(self) -> None:
         command_context = FakeCommandContext()
         output = io.StringIO()
         with mock.patch(
-            "timecapsulesmb.cli.flows.remote_request_reboot",
-            side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot"),
+            "timecapsulesmb.cli.flows.acp_reboot",
+            side_effect=ACPConnectionError("ACP timed out"),
         ):
-            with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
-                with redirect_stdout(output):
-                    ok = request_reboot_and_wait(
-                        self.make_connection(),
-                        command_context,
-                        timeout_no_down_message="did not go down",
-                    )
+            with mock.patch(
+                "timecapsulesmb.cli.flows.remote_request_reboot",
+                side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot"),
+            ):
+                with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
+                    with redirect_stdout(output):
+                        ok = request_reboot_and_wait(
+                            self.make_connection(),
+                            command_context,
+                            reboot_no_down_message="did not go down",
+                        )
 
         self.assertTrue(ok)
         self.assertEqual(wait_mock.call_count, 2)
-        self.assertEqual(command_context.debug_fields["reboot_request_timed_out"], True)
-        self.assertEqual(command_context.debug_fields["reboot_request_error"], "Timed out waiting for ssh command to finish: reboot")
+        self.assertEqual(command_context.debug_fields["ssh_reboot_timed_out"], True)
+        self.assertEqual(command_context.debug_fields["ssh_reboot_error"], "Timed out waiting for ssh command to finish: reboot")
         self.assertEqual(command_context.finish_fields["device_came_back_after_reboot"], True)
-        self.assertIn("Reboot request timed out; checking whether the device is rebooting...", output.getvalue())
+        self.assertIn("SSH reboot request timed out; checking whether the device is rebooting...", output.getvalue())
 
-    def test_request_reboot_and_wait_fails_after_timeout_when_device_never_goes_down(self) -> None:
+    def test_request_reboot_and_wait_observes_device_state_after_ssh_fallback_error(self) -> None:
         command_context = FakeCommandContext()
         output = io.StringIO()
         with mock.patch(
-            "timecapsulesmb.cli.flows.remote_request_reboot",
-            side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot"),
+            "timecapsulesmb.cli.flows.acp_reboot",
+            side_effect=ACPConnectionError("ACP timed out"),
         ):
+            with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=SystemExit("ssh failed")):
+                with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
+                    with redirect_stdout(output):
+                        ok = request_reboot_and_wait(
+                            self.make_connection(),
+                            command_context,
+                            reboot_no_down_message="did not go down",
+                        )
+
+        self.assertTrue(ok)
+        self.assertEqual(wait_mock.call_count, 2)
+        self.assertEqual(command_context.debug_fields["ssh_reboot_succeeded"], False)
+        self.assertEqual(command_context.debug_fields["ssh_reboot_error"], "ssh failed")
+        self.assertEqual(command_context.finish_fields["device_came_back_after_reboot"], True)
+        self.assertIn("SSH reboot request failed; checking whether the device is rebooting anyway...", output.getvalue())
+
+    def test_request_reboot_and_wait_fails_when_device_never_goes_down_after_acp_request(self) -> None:
+        command_context = FakeCommandContext()
+        output = io.StringIO()
+        with mock.patch("timecapsulesmb.cli.flows.acp_reboot"):
             with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", return_value=False) as wait_mock:
                 with redirect_stdout(output):
                     ok = request_reboot_and_wait(
                         self.make_connection(),
                         command_context,
-                        timeout_no_down_message="clear reboot failure",
+                        reboot_no_down_message="did not go down",
                     )
+
+        self.assertFalse(ok)
+        wait_mock.assert_called_once()
+        self.assertEqual(command_context.error, "did not go down")
+        self.assertNotIn("device_came_back_after_reboot", command_context.finish_fields)
+        self.assertIn("did not go down", output.getvalue())
+
+    def test_request_reboot_and_wait_fails_after_ssh_fallback_timeout_when_device_never_goes_down(self) -> None:
+        command_context = FakeCommandContext()
+        output = io.StringIO()
+        with mock.patch(
+            "timecapsulesmb.cli.flows.acp_reboot",
+            side_effect=ACPConnectionError("ACP timed out"),
+        ):
+            with mock.patch(
+                "timecapsulesmb.cli.flows.remote_request_reboot",
+                side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot"),
+            ):
+                with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", return_value=False) as wait_mock:
+                    with redirect_stdout(output):
+                        ok = request_reboot_and_wait(
+                            self.make_connection(),
+                            command_context,
+                            reboot_no_down_message="clear reboot failure",
+                        )
 
         self.assertFalse(ok)
         wait_mock.assert_called_once()
@@ -131,30 +248,37 @@ class CliFlowTests(unittest.TestCase):
         self.assertNotIn("device_came_back_after_reboot", command_context.finish_fields)
         self.assertIn("clear reboot failure", output.getvalue())
 
-    def test_request_reboot_and_wait_propagates_non_timeout_reboot_errors(self) -> None:
+    def test_request_reboot_and_wait_fails_when_device_never_goes_down_after_all_request_errors(self) -> None:
         command_context = FakeCommandContext()
-        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=SystemExit("ssh failed")):
-            with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn") as wait_mock:
-                with self.assertRaises(SystemExit) as raised:
-                    request_reboot_and_wait(
-                        self.make_connection(),
-                        command_context,
-                        timeout_no_down_message="did not go down",
-                    )
+        output = io.StringIO()
+        with mock.patch(
+            "timecapsulesmb.cli.flows.acp_reboot",
+            side_effect=ACPConnectionError("ACP timed out"),
+        ):
+            with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=SystemExit("ssh failed")):
+                with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", return_value=False) as wait_mock:
+                    with redirect_stdout(output):
+                        ok = request_reboot_and_wait(
+                            self.make_connection(),
+                            command_context,
+                            reboot_no_down_message="did not go down",
+                        )
 
-        self.assertEqual(str(raised.exception), "ssh failed")
-        wait_mock.assert_not_called()
+        self.assertFalse(ok)
+        wait_mock.assert_called_once()
+        self.assertEqual(command_context.error, "did not go down")
+        self.assertIn("SSH reboot request failed; checking whether the device is rebooting anyway...", output.getvalue())
 
     def test_request_reboot_and_wait_fails_when_ssh_does_not_return(self) -> None:
         command_context = FakeCommandContext()
         output = io.StringIO()
-        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"):
+        with mock.patch("timecapsulesmb.cli.flows.acp_reboot"):
             with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, False]):
                 with redirect_stdout(output):
                     ok = request_reboot_and_wait(
                         self.make_connection(),
                         command_context,
-                        timeout_no_down_message="did not go down",
+                        reboot_no_down_message="did not go down",
                     )
 
         self.assertFalse(ok)
@@ -194,8 +318,38 @@ class CliFlowTests(unittest.TestCase):
 
         self.assertFalse(ok)
         self.assertEqual(command_context.stages, ["verify_runtime"])
-        self.assertEqual(command_context.error, "runtime failed")
-        self.assertIn("runtime failed", output.getvalue())
+        self.assertEqual(command_context.error, "runtime failed managed runtime is not ready")
+        self.assertIn("runtime failed managed runtime is not ready", output.getvalue())
+
+    def test_verify_managed_runtime_flow_includes_runtime_timeout_detail(self) -> None:
+        command_context = FakeCommandContext()
+        smbd = ManagedSmbdProbeResult(False, "managed smbd readiness probe timed out", ("FAIL:managed smbd readiness probe timed out",))
+        mdns = ManagedMdnsTakeoverProbeResult(False, "managed mDNS takeover probe timed out", ("FAIL:managed mDNS takeover probe timed out",))
+        result = ManagedRuntimeProbeResult(
+            ready=False,
+            detail="runtime verification timed out after 180s; managed smbd readiness probe timed out; managed mDNS takeover probe timed out",
+            smbd=smbd,
+            mdns=mdns,
+            lines=smbd.lines + mdns.lines + ("FAIL:runtime verification timed out after 180s",),
+        )
+        output = io.StringIO()
+        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=result):
+            with redirect_stdout(output):
+                ok = verify_managed_runtime_flow(
+                    self.make_connection(),
+                    command_context,
+                    stage="verify_runtime",
+                    timeout_seconds=180,
+                    heading="Checking runtime",
+                    failure_message="NetBSD4 activation failed.",
+                )
+
+        self.assertFalse(ok)
+        self.assertEqual(
+            command_context.error,
+            "NetBSD4 activation failed. runtime verification timed out after 180s; managed smbd readiness probe timed out; managed mDNS takeover probe timed out",
+        )
+        self.assertIn("failed: runtime verification timed out after 180s", output.getvalue())
 
 
 if __name__ == "__main__":

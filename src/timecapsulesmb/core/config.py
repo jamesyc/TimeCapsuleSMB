@@ -546,7 +546,7 @@ CONFIG_PROFILES: dict[str, ConfigProfile] = {
         required_file_values=("TC_HOST",),
         validated_keys=("TC_HOST",),
     ),
-    "prep_device": ConfigProfile(
+    "set_ssh": ConfigProfile(
         required_file_values=("TC_HOST", "TC_PASSWORD"),
         validated_keys=("TC_HOST",),
     ),

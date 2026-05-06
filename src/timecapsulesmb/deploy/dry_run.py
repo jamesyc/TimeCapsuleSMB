@@ -4,14 +4,13 @@ from dataclasses import asdict
 
 from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE
 from timecapsulesmb.deploy.commands import render_remote_actions
-from timecapsulesmb.deploy.executor import DETACHED_REBOOT_COMMAND
 from timecapsulesmb.deploy.planner import ActivationPlan, DeploymentPlan, UninstallPlan
 
 
 def _append_reboot_request(lines: list[str], reboot_required: bool) -> None:
     if not reboot_required:
         return
-    lines.append(f"  request: {DETACHED_REBOOT_COMMAND}")
+    lines.append("  request: attempt device reboot")
     lines.append("  follow-up: wait for SSH down, then SSH up")
 
 
@@ -19,8 +18,8 @@ def _add_reboot_request_json(data: dict[str, object], reboot_required: bool) -> 
     if not reboot_required:
         return
     data["reboot_request"] = {
-        "mode": "detached_ssh",
-        "command": DETACHED_REBOOT_COMMAND,
+        "mode": "device_reboot",
+        "strategy": "acp_then_ssh",
         "follow_up": ["wait_for_ssh_down", "wait_for_ssh_up"],
     }
 

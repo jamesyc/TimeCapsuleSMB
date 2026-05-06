@@ -38,6 +38,7 @@ from timecapsulesmb.deploy.executor import (
     remote_request_reboot,
     remote_uninstall_payload,
     upload_deployment_payload,
+    upload_flash_file,
 )
 from timecapsulesmb.deploy.planner import build_deployment_plan, build_uninstall_plan
 from timecapsulesmb.deploy.templates import (
@@ -73,7 +74,7 @@ from timecapsulesmb.device.probe import (
     probe_remote_airport_identity_conn,
     wait_for_ssh_state_conn,
 )
-from timecapsulesmb.transport.ssh import SshConnection
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
 
 
 class DeployModuleTests(unittest.TestCase):
@@ -2694,16 +2695,17 @@ int main(void) {{
         plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
         connection = SshConnection("host", "pw", "-o foo")
         with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
-            upload_deployment_payload(
-                plan,
-                connection=connection,
-                rc_local=Path("/tmp/rc.local"),
-                common_sh=Path("/tmp/common.sh"),
-                rendered_start=Path("/tmp/start-samba.sh"),
-                rendered_dfree=Path("/tmp/dfree.sh"),
-                rendered_watchdog=Path("/tmp/watchdog.sh"),
-                rendered_smbconf=Path("/tmp/smb.conf.template"),
-            )
+            with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as ssh_mock:
+                upload_deployment_payload(
+                    plan,
+                    connection=connection,
+                    rc_local=Path("/tmp/rc.local"),
+                    common_sh=Path("/tmp/common.sh"),
+                    rendered_start=Path("/tmp/start-samba.sh"),
+                    rendered_dfree=Path("/tmp/dfree.sh"),
+                    rendered_watchdog=Path("/tmp/watchdog.sh"),
+                    rendered_smbconf=Path("/tmp/smb.conf.template"),
+                )
         self.assertEqual(scp_mock.call_count, 10)
         destinations = [call.args[2] for call in scp_mock.call_args_list]
         self.assertEqual(
@@ -2711,20 +2713,35 @@ int main(void) {{
             [
                 "/Volumes/dk2/samba4/smbd",
                 "/Volumes/dk2/samba4/mdns-advertiser",
-                "/mnt/Flash/mdns-advertiser",
+                "/mnt/Flash/.mdns-advertiser.tmp",
                 "/Volumes/dk2/samba4/nbns-advertiser",
-                "/mnt/Flash/rc.local",
-                "/mnt/Flash/common.sh",
-                "/mnt/Flash/start-samba.sh",
-                "/mnt/Flash/watchdog.sh",
-                "/mnt/Flash/dfree.sh",
+                "/mnt/Flash/.rc.local.tmp",
+                "/mnt/Flash/.common.sh.tmp",
+                "/mnt/Flash/.start-samba.sh.tmp",
+                "/mnt/Flash/.watchdog.sh.tmp",
+                "/mnt/Flash/.dfree.sh.tmp",
                 "/Volumes/dk2/samba4/smb.conf.template",
             ],
         )
         binary_upload_timeouts = [call.kwargs.get("timeout") for call in scp_mock.call_args_list[:4]]
         self.assertEqual(binary_upload_timeouts, [180, 180, 180, 180])
         text_upload_timeouts = [call.kwargs.get("timeout") for call in scp_mock.call_args_list[4:]]
-        self.assertEqual(text_upload_timeouts, [None, None, None, None, None, None])
+        self.assertEqual(text_upload_timeouts, [120, 120, 120, 120, 120, None])
+        self.assertEqual(ssh_mock.call_count, 12)
+
+    def test_upload_flash_file_uploads_tmp_then_installs_with_rename_and_cleanup(self) -> None:
+        connection = SshConnection("host", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
+            with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as ssh_mock:
+                upload_flash_file(connection, Path("/tmp/mdns-advertiser"), "/mnt/Flash/mdns-advertiser", timeout=180)
+
+        scp_mock.assert_called_once_with(connection, Path("/tmp/mdns-advertiser"), "/mnt/Flash/.mdns-advertiser.tmp", timeout=180)
+        ssh_commands = [call.args[1] for call in ssh_mock.call_args_list]
+        self.assertEqual(len(ssh_commands), 2)
+        self.assertIn("rm -f /mnt/Flash/.mdns-advertiser.tmp", ssh_commands[0])
+        self.assertIn("chmod 755 /mnt/Flash/.mdns-advertiser.tmp", ssh_commands[1])
+        self.assertIn("mv -f /mnt/Flash/.mdns-advertiser.tmp /mnt/Flash/mdns-advertiser", ssh_commands[1])
+        self.assertIn("rm -f /mnt/Flash/.mdns-advertiser.tmp", ssh_commands[1])
 
     def test_verify_managed_runtime_passes_when_runtime_probe_succeeds(self) -> None:
         result = ManagedRuntimeProbeResult(
@@ -2797,7 +2814,10 @@ int main(void) {{
         remote_command = run_ssh_mock.call_args.args[1]
         self.assertIn("capture_ps_out()", remote_command)
         self.assertIn("smbd_parent_process_present()", remote_command)
+        self.assertIn('capture_fstat_for_ucomm "$ps_out" smbd', remote_command)
+        self.assertIn('/usr/bin/fstat -p "$1"', remote_command)
         self.assertIn("smbd_bound_445()", remote_command)
+        self.assertNotIn('out="$(fstat 2>&1)"', remote_command)
         self.assertNotIn("smbd_ready_marker_matches_parent()", remote_command)
         self.assertNotIn("/mnt/Memory/samba4/var/smbd.ready", remote_command)
         self.assertNotIn("capture_ps_lstart_out()", remote_command)
@@ -2817,6 +2837,16 @@ int main(void) {{
         self.assertFalse(result.ready)
         self.assertEqual(result.detail, "managed smbd parent process is not running")
 
+    def test_probe_managed_smbd_returns_detail_when_probe_times_out(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.device.probe.run_ssh",
+            side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: runtime probe"),
+        ):
+            result = probe_managed_smbd_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=12)
+        self.assertFalse(result.ready)
+        self.assertEqual(result.detail, "managed smbd readiness probe timed out")
+        self.assertEqual(result.lines, ("FAIL:managed smbd readiness probe timed out",))
+
     def test_probe_managed_mdns_takeover_single_shot_checks_process_binding_and_apple_responder(self) -> None:
         with mock.patch(
             "timecapsulesmb.device.probe.run_ssh",
@@ -2827,7 +2857,10 @@ int main(void) {{
         self.assertIn("capture_ps_out()", remote_command)
         self.assertIn("mdns_process_present()", remote_command)
         self.assertIn("apple_mdns_present()", remote_command)
+        self.assertIn('capture_fstat_for_ucomm "$ps_out" mdns-advertiser', remote_command)
+        self.assertIn('/usr/bin/fstat -p "$1"', remote_command)
         self.assertIn("mdns_bound_5353()", remote_command)
+        self.assertNotIn('out="$(fstat 2>&1)"', remote_command)
         self.assertNotIn("max_attempts", remote_command)
         self.assertNotIn("sleep 5", remote_command)
 
@@ -2839,6 +2872,16 @@ int main(void) {{
             result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=12)
         self.assertFalse(result.ready)
         self.assertEqual(result.detail, "Apple mDNSResponder is still running")
+
+    def test_probe_managed_mdns_takeover_returns_detail_when_probe_times_out(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.device.probe.run_ssh",
+            side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: runtime probe"),
+        ):
+            result = probe_managed_mdns_takeover_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=12)
+        self.assertFalse(result.ready)
+        self.assertEqual(result.detail, "managed mDNS takeover probe timed out")
+        self.assertEqual(result.lines, ("FAIL:managed mDNS takeover probe timed out",))
 
     def test_probe_managed_runtime_polls_both_probes_and_rechecks_mdns_after_settle(self) -> None:
         smbd_ready = ManagedSmbdProbeResult(True, "managed smbd ready", ("PASS:managed smbd ready",))
@@ -2856,6 +2899,47 @@ int main(void) {{
         self.assertEqual(mdns_mock.call_count, 3)
         self.assertNotIn(mock.call(1.0), sleep_mock.call_args_list)
         self.assertIn(mock.call(3.0), sleep_mock.call_args_list)
+
+    def test_probe_managed_runtime_continues_polling_after_single_probe_timeout(self) -> None:
+        smbd_timeout = ManagedSmbdProbeResult(False, "managed smbd readiness probe timed out", ("FAIL:managed smbd readiness probe timed out",))
+        smbd_ready = ManagedSmbdProbeResult(True, "managed smbd ready", ("PASS:managed smbd ready",))
+        mdns_ready = ManagedMdnsTakeoverProbeResult(True, "managed mDNS takeover active", ("PASS:managed mDNS takeover active",))
+        connection = SshConnection("host", "pw", "-o foo")
+        monotonic_values = iter([0.0, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
+        with mock.patch("timecapsulesmb.device.probe.probe_managed_smbd_conn", side_effect=[smbd_timeout, smbd_ready]) as smbd_mock:
+            with mock.patch("timecapsulesmb.device.probe.probe_managed_mdns_takeover_conn", side_effect=[mdns_ready, mdns_ready]) as mdns_mock:
+                with mock.patch("timecapsulesmb.device.probe.time.monotonic", side_effect=lambda: next(monotonic_values)):
+                    with mock.patch("timecapsulesmb.device.probe.time.sleep"):
+                        result = probe_managed_runtime_conn(
+                            connection,
+                            timeout_seconds=10,
+                            poll_interval_seconds=0.1,
+                            smbd_mdns_stagger_seconds=0.0,
+                            mdns_settle_seconds=0.0,
+                        )
+        self.assertTrue(result.ready)
+        self.assertEqual(smbd_mock.call_count, 2)
+        self.assertEqual(mdns_mock.call_count, 2)
+
+    def test_probe_managed_runtime_reports_readable_timeout(self) -> None:
+        smbd_timeout = ManagedSmbdProbeResult(False, "managed smbd readiness probe timed out", ("FAIL:managed smbd readiness probe timed out",))
+        mdns_timeout = ManagedMdnsTakeoverProbeResult(False, "managed mDNS takeover probe timed out", ("FAIL:managed mDNS takeover probe timed out",))
+        connection = SshConnection("host", "pw", "-o foo")
+        monotonic_values = iter([0.0, 0.0, 0.1, 0.2, 0.3, 1.1])
+        with mock.patch("timecapsulesmb.device.probe.probe_managed_smbd_conn", return_value=smbd_timeout):
+            with mock.patch("timecapsulesmb.device.probe.probe_managed_mdns_takeover_conn", return_value=mdns_timeout):
+                with mock.patch("timecapsulesmb.device.probe.time.monotonic", side_effect=lambda: next(monotonic_values)):
+                    with mock.patch("timecapsulesmb.device.probe.time.sleep"):
+                        result = probe_managed_runtime_conn(
+                            connection,
+                            timeout_seconds=1,
+                            poll_interval_seconds=0.1,
+                            smbd_mdns_stagger_seconds=0.0,
+                            mdns_settle_seconds=0.0,
+                        )
+        self.assertFalse(result.ready)
+        self.assertIn("runtime verification timed out after 1s", result.detail)
+        self.assertIn("FAIL:runtime verification timed out after 1s", result.lines)
 
     def test_format_deployment_plan_contains_concrete_actions(self) -> None:
         payload_dir_name = "samba4"

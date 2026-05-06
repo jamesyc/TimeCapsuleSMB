@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.transport.local import tcp_open
-from timecapsulesmb.transport.ssh import SshConnection, run_ssh, ssh_opts_use_proxy
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, ssh_opts_use_proxy
 from timecapsulesmb.core.config import AIRPORT_IDENTITIES_BY_MODEL, AIRPORT_IDENTITIES_BY_SYAP
 
 if TYPE_CHECKING:
@@ -100,6 +100,26 @@ EOF
     return 1
 }}
 
+capture_fstat_for_ucomm() {{
+    ps_out=$1
+    ucomm=$2
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        set -- $line
+        [ "$#" -ge 5 ] || continue
+        [ "$5" = "$ucomm" ] || continue
+        case "$3" in
+            Z*) continue ;;
+        esac
+        # NetBSD4 has fstat but not netstat/sockstat/lsof. Scope fstat to
+        # candidate PIDs so activation checks do not scan every open file on a
+        # busy Time Capsule.
+        /usr/bin/fstat -p "$1" 2>/dev/null || true
+    done <<EOF
+$ps_out
+EOF
+}}
+
 smbd_bound_445() {{
     case "$1" in
         *smbd*":445"*) return 0 ;;
@@ -112,15 +132,6 @@ mdns_bound_5353() {{
         *mdns-advertiser*":5353"*) return 0 ;;
         *) return 1 ;;
     esac
-}}
-
-managed_smbd_ready() {{
-    ps_out=$1
-    fstat_out=$2
-    runtime_smb_conf_present || return 1
-    smbd_parent_process_present "$ps_out" || return 1
-    smbd_bound_445 "$fstat_out" || return 1
-    return 0
 }}
 
 describe_managed_smbd_status() {{
@@ -146,15 +157,6 @@ describe_managed_smbd_status() {{
         status=1
     fi
     return "$status"
-}}
-
-managed_mdns_takeover_ready() {{
-    ps_out=$1
-    fstat_out=$2
-    mdns_process_present "$ps_out" || return 1
-    mdns_bound_5353 "$fstat_out" || return 1
-    apple_mdns_present "$ps_out" && return 1
-    return 0
 }}
 
 describe_managed_mdns_status() {{
@@ -726,24 +728,28 @@ def _probe_detail(lines: tuple[str, ...], default: str) -> str:
 def probe_managed_smbd_conn(connection: SshConnection, *, timeout_seconds: int = 20) -> ManagedSmbdProbeResult:
     script = rf'''
 {SMBD_STATUS_HELPERS}
-if ! command -v fstat >/dev/null 2>&1; then
+if [ ! -x /usr/bin/fstat ]; then
     echo "FAIL:fstat missing"
     exit 1
 fi
 ps_out="$(capture_ps_out)"
-out="$(fstat 2>&1)"
+out="$(capture_fstat_for_ucomm "$ps_out" smbd)"
 status=0
 if ! describe_managed_smbd_status "$ps_out" "$out"; then
     status=1
 fi
 exit "$status"
 '''
-    proc = run_ssh(
-        connection,
-        f"/bin/sh -c {shlex.quote(script)}",
-        check=False,
-        timeout=timeout_seconds,
-    )
+    try:
+        proc = run_ssh(
+            connection,
+            f"/bin/sh -c {shlex.quote(script)}",
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except SshCommandTimeout:
+        lines = ("FAIL:managed smbd readiness probe timed out",)
+        return ManagedSmbdProbeResult(ready=False, detail=_probe_detail(lines, "managed smbd not ready"), lines=lines)
     lines = _probe_lines(proc.stdout)
     if proc.returncode == 0:
         return ManagedSmbdProbeResult(ready=True, detail=_probe_detail(lines, "managed smbd ready"), lines=lines)
@@ -753,24 +759,32 @@ exit "$status"
 def probe_managed_mdns_takeover_conn(connection: SshConnection, *, timeout_seconds: int = 20) -> ManagedMdnsTakeoverProbeResult:
     script = rf'''
 {SMBD_STATUS_HELPERS}
-if ! command -v fstat >/dev/null 2>&1; then
+if [ ! -x /usr/bin/fstat ]; then
     echo "FAIL:fstat missing"
     exit 1
 fi
 ps_out="$(capture_ps_out)"
-out="$(fstat 2>&1)"
+out="$(capture_fstat_for_ucomm "$ps_out" mdns-advertiser)"
 status=0
 if ! describe_managed_mdns_status "$ps_out" "$out"; then
     status=1
 fi
 exit "$status"
 '''
-    proc = run_ssh(
-        connection,
-        f"/bin/sh -c {shlex.quote(script)}",
-        check=False,
-        timeout=timeout_seconds,
-    )
+    try:
+        proc = run_ssh(
+            connection,
+            f"/bin/sh -c {shlex.quote(script)}",
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except SshCommandTimeout:
+        lines = ("FAIL:managed mDNS takeover probe timed out",)
+        return ManagedMdnsTakeoverProbeResult(
+            ready=False,
+            detail=_probe_detail(lines, "managed mDNS takeover not active"),
+            lines=lines,
+        )
     lines = _probe_lines(proc.stdout)
     if proc.returncode == 0:
         return ManagedMdnsTakeoverProbeResult(
@@ -801,19 +815,22 @@ def probe_managed_runtime_conn(
 
     while time.monotonic() < deadline:
         iteration_start = time.monotonic()
+        probe_timeout = max(1, min(20, int(deadline - iteration_start)))
         if not smbd_ready:
-            last_smbd = probe_managed_smbd_conn(connection, timeout_seconds=20)
+            last_smbd = probe_managed_smbd_conn(connection, timeout_seconds=probe_timeout)
             smbd_ready = last_smbd.ready
         
         if not mdns_ready:
             if not smbd_ready:
                 time.sleep(smbd_mdns_stagger_seconds)
-            last_mdns = probe_managed_mdns_takeover_conn(connection, timeout_seconds=20)
+            probe_timeout = max(1, min(20, int(deadline - time.monotonic())))
+            last_mdns = probe_managed_mdns_takeover_conn(connection, timeout_seconds=probe_timeout)
             mdns_ready = last_mdns.ready
 
         if smbd_ready and mdns_ready:
             time.sleep(mdns_settle_seconds)
-            settled_mdns = probe_managed_mdns_takeover_conn(connection, timeout_seconds=20)
+            probe_timeout = max(1, min(20, int(deadline - time.monotonic())))
+            settled_mdns = probe_managed_mdns_takeover_conn(connection, timeout_seconds=probe_timeout)
             if settled_mdns.ready:
                 lines = last_smbd.lines + settled_mdns.lines + ("PASS:mdns-advertiser remained healthy after settle delay",)
                 return ManagedRuntimeProbeResult(
@@ -835,10 +852,11 @@ def probe_managed_runtime_conn(
         if sleep_for > 0:
             time.sleep(sleep_for)
 
-    lines = last_smbd.lines + last_mdns.lines
+    timeout_detail = f"runtime verification timed out after {timeout_seconds}s"
+    lines = last_smbd.lines + last_mdns.lines + (f"FAIL:{timeout_detail}",)
     return ManagedRuntimeProbeResult(
         ready=False,
-        detail=f"{last_smbd.detail}; {last_mdns.detail}",
+        detail=f"{timeout_detail}; {last_smbd.detail}; {last_mdns.detail}",
         smbd=last_smbd,
         mdns=last_mdns,
         lines=lines,

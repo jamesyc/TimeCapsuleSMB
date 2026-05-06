@@ -34,8 +34,8 @@ from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUID
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-REBOOT_REQUEST_TIMEOUT_NO_DOWN_MESSAGE = (
-    "Reboot request timed out and the device did not go down.\n"
+REBOOT_NO_DOWN_MESSAGE = (
+    "Reboot was requested but the device did not go down.\n"
     "The deploy stopped the managed runtime before reboot; power-cycle or rerun deploy."
 )
 
@@ -241,7 +241,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not request_reboot_and_wait(
             connection,
             command_context,
-            timeout_no_down_message=REBOOT_REQUEST_TIMEOUT_NO_DOWN_MESSAGE,
+            reboot_no_down_message=REBOOT_NO_DOWN_MESSAGE,
         ):
             return 1
         print("Waiting for managed runtime to finish starting...")
