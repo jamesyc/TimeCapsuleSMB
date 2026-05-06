@@ -42,14 +42,11 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     lines.append("")
     lines.append("Uploads:")
     for upload in plan.uploads:
-        lines.append(f"  {upload.source} -> {upload.destination}")
+        timeout = f", timeout {upload.timeout_seconds}s" if upload.timeout_seconds is not None else ""
+        lines.append(f"  {upload.description} ({upload.source_id}, {upload.mode}{timeout}) -> {upload.destination}")
     lines.append("")
-    lines.append("Generated auth:")
-    for generated in plan.generated_auth_files:
-        lines.append(f"  {generated.source} -> {generated.destination}")
-    lines.append("")
-    lines.append("Remote actions (post-auth):")
-    for command in render_remote_actions(plan.post_auth_actions):
+    lines.append("Remote actions (post-upload):")
+    for command in render_remote_actions(plan.post_upload_actions):
         lines.append(f"  {command}")
     lines.append("")
     if plan.activation_actions:
@@ -80,7 +77,7 @@ def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
     data["mdns_path"] = str(plan.mdns_path)
     data["nbns_path"] = str(plan.nbns_path)
     data["pre_upload_actions"] = remote_actions_to_jsonable(plan.pre_upload_actions)
-    data["post_auth_actions"] = remote_actions_to_jsonable(plan.post_auth_actions)
+    data["post_upload_actions"] = remote_actions_to_jsonable(plan.post_upload_actions)
     data["activation_actions"] = remote_actions_to_jsonable(plan.activation_actions)
     _add_reboot_request_json(data, plan.reboot_required)
     return data

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -13,14 +14,29 @@ from timecapsulesmb.core.config import airport_family_display_name_from_config, 
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
+from timecapsulesmb.deploy.auth import render_smbpasswd
 from timecapsulesmb.deploy.dry_run import deployment_plan_to_jsonable, format_deployment_plan
 from timecapsulesmb.deploy.executor import (
-    remote_ensure_adisk_uuid,
-    remote_install_auth_files,
+    remote_read_adisk_uuid,
     run_remote_actions,
     upload_deployment_payload,
 )
-from timecapsulesmb.deploy.planner import build_deployment_plan
+from timecapsulesmb.deploy.planner import (
+    BINARY_MDNS_SOURCE,
+    BINARY_NBNS_SOURCE,
+    BINARY_SMBD_SOURCE,
+    GENERATED_ADISK_UUID_SOURCE,
+    GENERATED_NBNS_MARKER_SOURCE,
+    GENERATED_SMBPASSWD_SOURCE,
+    GENERATED_USERNAME_MAP_SOURCE,
+    PACKAGED_COMMON_SH_SOURCE,
+    PACKAGED_DFREE_SH_SOURCE,
+    PACKAGED_RC_LOCAL_SOURCE,
+    RENDERED_SMB_CONF_SOURCE,
+    RENDERED_START_SAMBA_SOURCE,
+    RENDERED_WATCHDOG_SOURCE,
+    build_deployment_plan,
+)
 from timecapsulesmb.deploy.templates import (
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
     build_template_bundle,
@@ -164,8 +180,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         command_context.set_stage("pre_upload_actions")
         run_remote_actions(connection, plan.pre_upload_actions)
-        command_context.set_stage("ensure_adisk_uuid")
-        adisk_uuid = remote_ensure_adisk_uuid(connection, plan.private_dir)
+        command_context.set_stage("read_adisk_uuid")
+        adisk_uuid = remote_read_adisk_uuid(connection, plan.private_dir) or str(uuid.uuid4())
         command_context.set_stage("render_templates")
         template_bundle = build_template_bundle(
             config,
@@ -186,29 +202,47 @@ def main(argv: Optional[list[str]] = None) -> int:
             rendered_dfree = tmpdir / "dfree.sh"
             rendered_watchdog = tmpdir / "watchdog.sh"
             rendered_smbconf = tmpdir / "smb.conf.template"
+            generated_smbpasswd = tmpdir / "smbpasswd"
+            generated_username_map = tmpdir / "username.map"
+            generated_adisk_uuid = tmpdir / "adisk.uuid"
+            generated_nbns_marker = tmpdir / "nbns.enabled"
             write_boot_asset("rc.local", rendered_rc_local)
             write_boot_asset("common.sh", rendered_common)
             rendered_start.write_text(render_template("start-samba.sh", template_bundle.start_script_replacements))
             write_boot_asset("dfree.sh", rendered_dfree)
             rendered_watchdog.write_text(render_template("watchdog.sh", template_bundle.watchdog_replacements))
             rendered_smbconf.write_text(render_template("smb.conf.template", template_bundle.smbconf_replacements))
+            smbpasswd_text, username_map_text = render_smbpasswd(config.require("TC_SAMBA_USER"), smb_password)
+            generated_smbpasswd.write_text(smbpasswd_text)
+            generated_username_map.write_text(username_map_text)
+            generated_adisk_uuid.write_text(f"{adisk_uuid}\n")
+            upload_sources = {
+                BINARY_SMBD_SOURCE: plan.smbd_path,
+                BINARY_MDNS_SOURCE: plan.mdns_path,
+                BINARY_NBNS_SOURCE: plan.nbns_path,
+                GENERATED_SMBPASSWD_SOURCE: generated_smbpasswd,
+                GENERATED_USERNAME_MAP_SOURCE: generated_username_map,
+                GENERATED_ADISK_UUID_SOURCE: generated_adisk_uuid,
+                PACKAGED_RC_LOCAL_SOURCE: rendered_rc_local,
+                PACKAGED_COMMON_SH_SOURCE: rendered_common,
+                PACKAGED_DFREE_SH_SOURCE: rendered_dfree,
+                RENDERED_START_SAMBA_SOURCE: rendered_start,
+                RENDERED_WATCHDOG_SOURCE: rendered_watchdog,
+                RENDERED_SMB_CONF_SOURCE: rendered_smbconf,
+            }
+            if any(transfer.source_id == GENERATED_NBNS_MARKER_SOURCE for transfer in plan.uploads):
+                generated_nbns_marker.write_text("")
+                upload_sources[GENERATED_NBNS_MARKER_SOURCE] = generated_nbns_marker
 
             command_context.set_stage("upload_payload")
             upload_deployment_payload(
                 plan,
                 connection=connection,
-                rc_local=rendered_rc_local,
-                common_sh=rendered_common,
-                rendered_start=rendered_start,
-                rendered_dfree=rendered_dfree,
-                rendered_watchdog=rendered_watchdog,
-                rendered_smbconf=rendered_smbconf,
+                source_resolver=upload_sources,
             )
 
-        command_context.set_stage("install_auth_files")
-        remote_install_auth_files(connection, plan.private_dir, config.require("TC_SAMBA_USER"), smb_password)
-        command_context.set_stage("post_auth_actions")
-        run_remote_actions(connection, plan.post_auth_actions)
+        command_context.set_stage("post_upload_actions")
+        run_remote_actions(connection, plan.post_upload_actions)
 
         print(f"Deployed Samba payload to {plan.payload_dir}")
         print("Updated /mnt/Flash boot files.")

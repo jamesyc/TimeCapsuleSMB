@@ -2,12 +2,26 @@ from __future__ import annotations
 
 import shlex
 from dataclasses import dataclass
-from typing import Union
+from typing import Iterable, Union
+
+
+@dataclass(frozen=True)
+class RemoteSymlink:
+    path: str
+    target: str
+
+
+@dataclass(frozen=True)
+class RemotePermission:
+    path: str
+    mode: str
+    optional: bool = False
 
 
 @dataclass(frozen=True)
 class PrepareDirsAction:
-    payload_dir: str
+    directories: tuple[str, ...]
+    recreated_symlinks: tuple[RemoteSymlink, ...]
 
 
 @dataclass(frozen=True)
@@ -18,12 +32,7 @@ class InitializeDataRootAction:
 
 @dataclass(frozen=True)
 class InstallPermissionsAction:
-    payload_dir: str
-
-
-@dataclass(frozen=True)
-class EnableNbnsAction:
-    private_dir: str
+    permissions: tuple[RemotePermission, ...]
 
 
 @dataclass(frozen=True)
@@ -50,7 +59,6 @@ RemoteAction = Union[
     PrepareDirsAction,
     InitializeDataRootAction,
     InstallPermissionsAction,
-    EnableNbnsAction,
     StopProcessAction,
     StopProcessFullAction,
     RemovePathAction,
@@ -86,20 +94,19 @@ def _render_process_present(pattern: str, *, full: bool) -> str:
     )
 
 
-def prepare_dirs_action(payload_dir: str) -> RemoteAction:
-    return PrepareDirsAction(payload_dir)
+def prepare_dirs_action(
+    directories: Iterable[str],
+    recreated_symlinks: Iterable[RemoteSymlink] = (),
+) -> RemoteAction:
+    return PrepareDirsAction(tuple(directories), tuple(recreated_symlinks))
 
 
 def initialize_data_root_action(data_root: str, marker_path: str) -> RemoteAction:
     return InitializeDataRootAction(data_root, marker_path)
 
 
-def install_permissions_action(payload_dir: str) -> RemoteAction:
-    return InstallPermissionsAction(payload_dir)
-
-
-def enable_nbns_action(private_dir: str) -> RemoteAction:
-    return EnableNbnsAction(private_dir)
+def install_permissions_action(permissions: Iterable[RemotePermission]) -> RemoteAction:
+    return InstallPermissionsAction(tuple(permissions))
 
 
 def stop_process_action(name: str) -> RemoteAction:
@@ -145,34 +152,16 @@ def _render_stop_process_full_action(action: StopProcessFullAction) -> str:
 
 
 def _render_prepare_dirs_action(action: PrepareDirsAction) -> str:
-    payload_dir = action.payload_dir
-    return (
-        "mkdir -p {} {} {} {} {} {} && "
-        "rm -rf {} {} {} {} && "
-        "ln -s {} {} && "
-        "ln -s {} {} && "
-        "ln -s {} {} && "
-        "ln -s {} {}"
-    ).format(
-        shlex.quote(payload_dir),
-        shlex.quote(payload_dir + "/private"),
-        shlex.quote(payload_dir + "/cache"),
-        shlex.quote("/mnt/Flash"),
-        shlex.quote("/root"),
-        shlex.quote("/mnt/Memory/samba4"),
-        shlex.quote("/root/tc-netbsd4"),
-        shlex.quote("/root/tc-netbsd4le"),
-        shlex.quote("/root/tc-netbsd4be"),
-        shlex.quote("/root/tc-netbsd7"),
-        shlex.quote("/mnt/Memory/samba4"),
-        shlex.quote("/root/tc-netbsd4"),
-        shlex.quote("/mnt/Memory/samba4"),
-        shlex.quote("/root/tc-netbsd4le"),
-        shlex.quote("/mnt/Memory/samba4"),
-        shlex.quote("/root/tc-netbsd4be"),
-        shlex.quote("/mnt/Memory/samba4"),
-        shlex.quote("/root/tc-netbsd7"),
-    )
+    commands: list[str] = []
+    if action.directories:
+        commands.append("mkdir -p {}".format(" ".join(shlex.quote(path) for path in action.directories)))
+    if action.recreated_symlinks:
+        commands.append("rm -rf {}".format(" ".join(shlex.quote(link.path) for link in action.recreated_symlinks)))
+        commands.extend(
+            f"ln -s {shlex.quote(link.target)} {shlex.quote(link.path)}"
+            for link in action.recreated_symlinks
+        )
+    return " && ".join(commands) if commands else "true"
 
 
 def _render_initialize_data_root_action(action: InitializeDataRootAction) -> str:
@@ -185,32 +174,14 @@ def _render_initialize_data_root_action(action: InitializeDataRootAction) -> str
 
 
 def _render_install_permissions_action(action: InstallPermissionsAction) -> str:
-    payload_dir = action.payload_dir
-    private_dir = f"{payload_dir}/private"
-    return (
-        f"chmod 755 {shlex.quote(payload_dir + '/smbd')} "
-        f"{shlex.quote(payload_dir + '/mdns-advertiser')} "
-        f"{shlex.quote(payload_dir + '/nbns-advertiser')} && "
-        f"chmod 755 {shlex.quote('/mnt/Flash/rc.local')} "
-        f"{shlex.quote('/mnt/Flash/common.sh')} "
-        f"{shlex.quote('/mnt/Flash/start-samba.sh')} "
-        f"{shlex.quote('/mnt/Flash/watchdog.sh')} "
-        f"{shlex.quote('/mnt/Flash/dfree.sh')} "
-        f"{shlex.quote('/mnt/Flash/mdns-advertiser')} && "
-        f"chmod 755 {shlex.quote(payload_dir + '/cache')} && "
-        f"chmod 700 {shlex.quote(private_dir)} && "
-        f"chmod 600 {shlex.quote(private_dir + '/smbpasswd')} "
-        f"{shlex.quote(private_dir + '/username.map')} "
-        f"{shlex.quote(private_dir + '/adisk.uuid')} && "
-        f"if [ -f {shlex.quote(private_dir + '/nbns.enabled')} ]; then "
-        f"chmod 600 {shlex.quote(private_dir + '/nbns.enabled')}; "
-        f"fi"
-    )
-
-
-def _render_enable_nbns_action(action: EnableNbnsAction) -> str:
-    marker_path = action.private_dir + "/nbns.enabled"
-    return f"/bin/sh -c {shlex.quote(f': > {shlex.quote(marker_path)}')}"
+    commands: list[str] = []
+    for permission in action.permissions:
+        chmod = f"chmod {shlex.quote(permission.mode)} {shlex.quote(permission.path)}"
+        if permission.optional:
+            commands.append(f"if [ -e {shlex.quote(permission.path)} ]; then {chmod}; fi")
+        else:
+            commands.append(chmod)
+    return " && ".join(commands) if commands else "true"
 
 
 def _render_remove_path_action(action: RemovePathAction) -> str:
@@ -232,8 +203,6 @@ def render_remote_action(action: RemoteAction) -> str:
         return _render_initialize_data_root_action(action)
     if isinstance(action, InstallPermissionsAction):
         return _render_install_permissions_action(action)
-    if isinstance(action, EnableNbnsAction):
-        return _render_enable_nbns_action(action)
     if isinstance(action, RemovePathAction):
         return _render_remove_path_action(action)
     if isinstance(action, RunScriptAction):
@@ -255,13 +224,24 @@ def remote_action_to_jsonable(action: RemoteAction) -> dict[str, object]:
     if isinstance(action, StopProcessFullAction):
         return _action_json("stop_process_full", action.pattern)
     if isinstance(action, PrepareDirsAction):
-        return _action_json("prepare_dirs", action.payload_dir)
+        return {
+            "kind": "prepare_dirs",
+            "directories": list(action.directories),
+            "recreated_symlinks": [
+                {"path": link.path, "target": link.target}
+                for link in action.recreated_symlinks
+            ],
+        }
     if isinstance(action, InitializeDataRootAction):
         return _action_json("initialize_data_root", action.data_root, action.marker_path)
     if isinstance(action, InstallPermissionsAction):
-        return _action_json("install_permissions", action.payload_dir)
-    if isinstance(action, EnableNbnsAction):
-        return _action_json("enable_nbns", action.private_dir)
+        return {
+            "kind": "install_permissions",
+            "permissions": [
+                {"path": permission.path, "mode": permission.mode, "optional": permission.optional}
+                for permission in action.permissions
+            ],
+        }
     if isinstance(action, RemovePathAction):
         return _action_json("remove_path", action.path)
     if isinstance(action, RunScriptAction):

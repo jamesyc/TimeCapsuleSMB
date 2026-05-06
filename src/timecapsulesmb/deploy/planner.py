@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from timecapsulesmb.deploy.commands import (
     RemoteAction,
-    enable_nbns_action,
+    RemotePermission,
+    RemoteSymlink,
     initialize_data_root_action,
     install_permissions_action,
     prepare_dirs_action,
@@ -18,11 +20,32 @@ from timecapsulesmb.deploy.templates import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.device.util import DevicePaths
 
 
+TransferMode = Literal["scp", "flash_atomic", "generated"]
+
+BINARY_SMBD_SOURCE = "binary:smbd"
+BINARY_MDNS_SOURCE = "binary:mdns-advertiser"
+BINARY_NBNS_SOURCE = "binary:nbns-advertiser"
+PACKAGED_RC_LOCAL_SOURCE = "packaged:rc.local"
+PACKAGED_COMMON_SH_SOURCE = "packaged:common.sh"
+PACKAGED_DFREE_SH_SOURCE = "packaged:dfree.sh"
+RENDERED_START_SAMBA_SOURCE = "rendered:start-samba.sh"
+RENDERED_WATCHDOG_SOURCE = "rendered:watchdog.sh"
+RENDERED_SMB_CONF_SOURCE = "rendered:smb.conf.template"
+GENERATED_SMBPASSWD_SOURCE = "generated:smbpasswd"
+GENERATED_USERNAME_MAP_SOURCE = "generated:username.map"
+GENERATED_ADISK_UUID_SOURCE = "generated:adisk.uuid"
+GENERATED_NBNS_MARKER_SOURCE = "generated:nbns.enabled"
+PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS = 180
+FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS = 120
+
+
 @dataclass(frozen=True)
 class FileTransfer:
-    source: str
+    source_id: str
     destination: str
-    kind: str
+    mode: TransferMode
+    timeout_seconds: int | None
+    description: str
 
 
 @dataclass(frozen=True)
@@ -44,10 +67,11 @@ class DeploymentPlan:
     payload_targets: dict[str, str]
     private_dir: str
     remote_directories: list[str]
+    legacy_symlinks: list[RemoteSymlink]
+    permissions: list[RemotePermission]
     uploads: list[FileTransfer]
-    generated_auth_files: list[FileTransfer]
     pre_upload_actions: list[RemoteAction]
-    post_auth_actions: list[RemoteAction]
+    post_upload_actions: list[RemoteAction]
     activation_actions: list[RemoteAction]
     reboot_required: bool
     post_deploy_checks: list[PlannedCheck]
@@ -146,6 +170,46 @@ def build_deployment_plan(
     private_dir = f"{payload_dir}/private"
     cache_dir = f"{payload_dir}/cache"
     reboot_required = (not activate_netbsd4) and reboot_after_deploy
+    remote_directories = [
+        payload_dir,
+        private_dir,
+        cache_dir,
+        "/mnt/Flash",
+        "/root",
+        "/mnt/Memory/samba4",
+    ]
+    legacy_symlinks = [
+        RemoteSymlink("/root/tc-netbsd4", "/mnt/Memory/samba4"),
+        RemoteSymlink("/root/tc-netbsd4le", "/mnt/Memory/samba4"),
+        RemoteSymlink("/root/tc-netbsd4be", "/mnt/Memory/samba4"),
+        RemoteSymlink("/root/tc-netbsd7", "/mnt/Memory/samba4"),
+    ]
+    generated_files = [
+        FileTransfer(GENERATED_SMBPASSWD_SOURCE, f"{private_dir}/smbpasswd", "generated", None, "generated smbpasswd"),
+        FileTransfer(GENERATED_USERNAME_MAP_SOURCE, f"{private_dir}/username.map", "generated", None, "generated username.map"),
+        FileTransfer(GENERATED_ADISK_UUID_SOURCE, f"{private_dir}/adisk.uuid", "generated", None, "generated adisk UUID"),
+    ]
+    if install_nbns:
+        generated_files.append(
+            FileTransfer(GENERATED_NBNS_MARKER_SOURCE, f"{private_dir}/nbns.enabled", "generated", None, "generated nbns marker")
+        )
+    permissions = [
+        RemotePermission(payload_targets["smbd"], "755"),
+        RemotePermission(payload_targets["mdns-advertiser"], "755"),
+        RemotePermission(payload_targets["nbns-advertiser"], "755"),
+        RemotePermission(flash_targets["rc.local"], "755"),
+        RemotePermission(flash_targets["common.sh"], "755"),
+        RemotePermission(flash_targets["start-samba.sh"], "755"),
+        RemotePermission(flash_targets["watchdog.sh"], "755"),
+        RemotePermission(flash_targets["dfree.sh"], "755"),
+        RemotePermission(flash_targets["mdns-advertiser"], "755"),
+        RemotePermission(cache_dir, "755"),
+        RemotePermission(private_dir, "700"),
+        RemotePermission(f"{private_dir}/smbpasswd", "600"),
+        RemotePermission(f"{private_dir}/username.map", "600"),
+        RemotePermission(f"{private_dir}/adisk.uuid", "600"),
+        RemotePermission(f"{private_dir}/nbns.enabled", "600", optional=True),
+    ]
     return DeploymentPlan(
         host=host,
         volume_root=device_paths.volume_root,
@@ -157,32 +221,22 @@ def build_deployment_plan(
         flash_targets=flash_targets,
         payload_targets=payload_targets,
         private_dir=private_dir,
-        remote_directories=[
-            payload_dir,
-            private_dir,
-            cache_dir,
-            "/mnt/Flash",
-        ],
+        remote_directories=remote_directories,
+        legacy_symlinks=legacy_symlinks,
+        permissions=permissions,
         uploads=[
-            FileTransfer(source=str(smbd_path), destination=payload_targets["smbd"], kind="checked-in binary"),
-            FileTransfer(source=str(mdns_path), destination=payload_targets["mdns-advertiser"], kind="checked-in binary"),
-            FileTransfer(source=str(mdns_path), destination=flash_targets["mdns-advertiser"], kind="checked-in binary"),
-            FileTransfer(source=str(nbns_path), destination=payload_targets["nbns-advertiser"], kind="checked-in binary"),
-            FileTransfer(source="packaged rc.local", destination=flash_targets["rc.local"], kind="packaged asset"),
-            FileTransfer(source="packaged common.sh", destination=flash_targets["common.sh"], kind="packaged asset"),
-            FileTransfer(source="rendered start-samba.sh", destination=flash_targets["start-samba.sh"], kind="rendered asset"),
-            FileTransfer(source="rendered watchdog.sh", destination=flash_targets["watchdog.sh"], kind="rendered asset"),
-            FileTransfer(source="packaged dfree.sh", destination=flash_targets["dfree.sh"], kind="packaged asset"),
-            FileTransfer(source="rendered smb.conf.template", destination=payload_targets["smb.conf.template"], kind="rendered asset"),
+            FileTransfer(BINARY_SMBD_SOURCE, payload_targets["smbd"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in smbd"),
+            FileTransfer(BINARY_MDNS_SOURCE, payload_targets["mdns-advertiser"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in mdns-advertiser"),
+            FileTransfer(BINARY_MDNS_SOURCE, flash_targets["mdns-advertiser"], "flash_atomic", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "flash mdns-advertiser"),
+            FileTransfer(BINARY_NBNS_SOURCE, payload_targets["nbns-advertiser"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in nbns-advertiser"),
+            FileTransfer(PACKAGED_RC_LOCAL_SOURCE, flash_targets["rc.local"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged rc.local"),
+            FileTransfer(PACKAGED_COMMON_SH_SOURCE, flash_targets["common.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged common.sh"),
+            FileTransfer(RENDERED_START_SAMBA_SOURCE, flash_targets["start-samba.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "rendered start-samba.sh"),
+            FileTransfer(RENDERED_WATCHDOG_SOURCE, flash_targets["watchdog.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "rendered watchdog.sh"),
+            FileTransfer(PACKAGED_DFREE_SH_SOURCE, flash_targets["dfree.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged dfree.sh"),
+            FileTransfer(RENDERED_SMB_CONF_SOURCE, payload_targets["smb.conf.template"], "scp", None, "rendered smb.conf.template"),
+            *generated_files,
         ],
-        generated_auth_files=[
-            FileTransfer(source="generated smbpasswd", destination=f"{private_dir}/smbpasswd", kind="generated auth"),
-            FileTransfer(source="generated username.map", destination=f"{private_dir}/username.map", kind="generated auth"),
-            FileTransfer(source="generated adisk UUID", destination=f"{private_dir}/adisk.uuid", kind="generated metadata"),
-        ]
-        + ([
-            FileTransfer(source="generated nbns marker", destination=f"{private_dir}/nbns.enabled", kind="generated metadata"),
-        ] if install_nbns else []),
         pre_upload_actions=[
             # Existing installs run mdns-advertiser directly from /mnt/Flash.
             # Stop the watchdog first so it does not restart daemons while
@@ -192,10 +246,9 @@ def build_deployment_plan(
             stop_process_action("mdns-advertiser"),
             stop_process_action("nbns-advertiser"),
             initialize_data_root_action(device_paths.data_root, device_paths.data_root_marker),
-            prepare_dirs_action(payload_dir),
-        ]
-        + ([enable_nbns_action(private_dir)] if install_nbns else []),
-        post_auth_actions=[install_permissions_action(payload_dir)],
+            prepare_dirs_action(remote_directories, legacy_symlinks),
+        ],
+        post_upload_actions=[install_permissions_action(permissions)],
         activation_actions=build_netbsd4_activation_actions() if activate_netbsd4 else [],
         reboot_required=reboot_required,
         post_deploy_checks=NETBSD4_ACTIVATION_CHECKS if activate_netbsd4 else (NETBSD6_REBOOT_DEPLOY_CHECKS if reboot_required else []),
