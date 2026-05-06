@@ -5,12 +5,16 @@ import shlex
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.cli.flows import observe_reboot_cycle
 from timecapsulesmb.cli.runtime import load_env_config
 from timecapsulesmb.core.config import airport_exact_display_name_from_config
 from timecapsulesmb.identity import ensure_install_id
-from timecapsulesmb.device.probe import discover_mounted_volume_conn, wait_for_ssh_state_conn
+from timecapsulesmb.device.probe import discover_mounted_volume_conn
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import run_ssh
+
+
+FSCK_REBOOT_NO_DOWN_MESSAGE = "fsck requested reboot from the device, but SSH did not go down."
 
 
 def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> str:
@@ -90,18 +94,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.succeed()
             return 0
 
-        print("Waiting for the device to go down...")
-        command_context.set_stage("wait_for_reboot_down")
-        wait_for_ssh_state_conn(connection, expected_up=False, timeout_seconds=90)
-        print("Waiting for the device to come back up...")
-        command_context.set_stage("wait_for_reboot_up")
-        if not wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=420):
-            print("Timed out waiting for SSH after reboot.")
-            command_context.fail_with_error("Timed out waiting for SSH after reboot.")
+        if not observe_reboot_cycle(
+            connection,
+            command_context,
+            reboot_no_down_message=FSCK_REBOOT_NO_DOWN_MESSAGE,
+            down_timeout_seconds=90,
+            up_timeout_seconds=420,
+        ):
             return 1
 
-        command_context.update_fields(device_came_back_after_reboot=True)
-        print("Device is back online.")
         command_context.succeed()
         return 0
     return 1

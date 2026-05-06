@@ -80,7 +80,7 @@ def request_reboot_and_wait(
     command_context.update_fields(reboot_was_attempted=True)
     _request_reboot_acp_then_ssh(connection, command_context)
 
-    return _observe_reboot_cycle(
+    return observe_reboot_cycle(
         connection,
         command_context,
         reboot_no_down_message=reboot_no_down_message,
@@ -141,7 +141,7 @@ def _request_reboot_via_ssh(connection: SshConnection, command_context: CommandC
     print("SSH reboot requested.")
 
 
-def _observe_reboot_cycle(
+def observe_reboot_cycle(
     connection: SshConnection,
     command_context: CommandContext,
     *,

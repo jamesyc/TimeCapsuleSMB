@@ -6314,7 +6314,7 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume_conn", return_value=mounted):
                 with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result) as run_ssh_mock:
-                    with mock.patch("timecapsulesmb.cli.fsck.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
+                    with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
                         with redirect_stdout(output):
                             rc = fsck.main(["--yes"])
         self.assertEqual(rc, 0)
@@ -6372,11 +6372,11 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume_conn", return_value=mounted):
                 with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result):
-                    with mock.patch("timecapsulesmb.cli.fsck.wait_for_ssh_state_conn") as wait_mock:
+                    with mock.patch("timecapsulesmb.cli.fsck.observe_reboot_cycle") as observe_mock:
                         with redirect_stdout(output):
                             rc = fsck.main(["--yes", "--no-wait"])
         self.assertEqual(rc, 0)
-        wait_mock.assert_not_called()
+        observe_mock.assert_not_called()
 
     def test_fsck_no_reboot_omits_reboot_and_waits(self) -> None:
         output = io.StringIO()
@@ -6390,11 +6390,11 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume_conn", return_value=mounted):
                 with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result) as run_ssh_mock:
-                    with mock.patch("timecapsulesmb.cli.fsck.wait_for_ssh_state_conn") as wait_mock:
+                    with mock.patch("timecapsulesmb.cli.fsck.observe_reboot_cycle") as observe_mock:
                         with redirect_stdout(output):
                             rc = fsck.main(["--yes", "--no-reboot"])
         self.assertEqual(rc, 0)
-        wait_mock.assert_not_called()
+        observe_mock.assert_not_called()
         self.assertNotIn("/sbin/reboot", run_ssh_mock.call_args.args[1])
 
     def test_fsck_prompt_decline_cancels_before_remote_actions(self) -> None:
@@ -6430,6 +6430,26 @@ class CliTests(unittest.TestCase):
         self.assertEqual(finished["result"], "cancelled")
         self.assertIn("Cancelled by user at fsck confirmation prompt.", finished["error"])
 
+    def test_fsck_reboot_no_down_emits_failure_stage(self) -> None:
+        output = io.StringIO()
+        values = self.make_valid_env()
+        mounted = MountedVolume(device="/dev/dk2", mountpoint="/Volumes/dk2")
+        run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\n--- reboot ---\n", returncode=255)
+        with mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume_conn", return_value=mounted):
+                with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result):
+                    with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", return_value=False) as wait_mock:
+                        with redirect_stdout(output):
+                            rc = fsck.main(["--yes"])
+        self.assertEqual(rc, 1)
+        wait_mock.assert_called_once()
+        self.assertIn("fsck requested reboot from the device, but SSH did not go down.", output.getvalue())
+        finished = self.telemetry_payload("fsck_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["reboot_was_attempted"], True)
+        self.assertEqual(finished["device_came_back_after_reboot"], False)
+        self.assertIn("stage=wait_for_reboot_down", finished["error"])
+
     def test_fsck_reboot_timeout_emits_failure_stage(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
@@ -6438,7 +6458,7 @@ class CliTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume_conn", return_value=mounted):
                 with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result):
-                    with mock.patch("timecapsulesmb.cli.fsck.wait_for_ssh_state_conn", side_effect=[True, False]):
+                    with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, False]):
                         with redirect_stdout(output):
                             rc = fsck.main(["--yes"])
         self.assertEqual(rc, 1)
