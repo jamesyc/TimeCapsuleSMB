@@ -12,7 +12,7 @@ from timecapsulesmb.deploy.verify import (
     render_managed_runtime_verification,
     verify_managed_runtime,
 )
-from timecapsulesmb.device.probe import wait_for_ssh_state_conn
+from timecapsulesmb.device.probe import read_runtime_log_tails_conn, wait_for_ssh_state_conn
 from timecapsulesmb.integrations.acp import ACPError, reboot as acp_reboot
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
@@ -182,6 +182,10 @@ def verify_managed_runtime_flow(
     for line in render_managed_runtime_verification(verification, heading=heading):
         print(line)
     if not managed_runtime_ready(verification):
+        try:
+            command_context.add_debug_fields(**read_runtime_log_tails_conn(connection))
+        except Exception as exc:
+            command_context.add_debug_fields(remote_runtime_log_tail_error=system_exit_message(exc))
         detail = verification.detail.strip()
         if detail:
             failure_message = f"{failure_message.rstrip()} {detail}"
