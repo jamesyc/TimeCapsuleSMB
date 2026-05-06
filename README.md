@@ -35,20 +35,19 @@ For the typical setup path, you need only:
 - Python 3.9+
 - `smbclient` installed locally for `doctor`
 
-For the smoothest first-time setup, a Mac is still the easiest path because `prep-device` can provision AirPyrt automatically when SSH needs to be enabled on the Time Capsule. Linux works well once SSH is already enabled.
+During first-time setup, `configure` can enable SSH on the Time Capsule when needed using the built-in Python 3 ACP client.
 
 ## Quick Start
 
-Download (or run `git clone`) this repository to a folder on your Mac. 
+Download (or run `git clone`) this repository to a folder on your Mac or Linux machine.
 
 From the root of this repository, the normal quick start commands to run is:
 
 1. `./tcapsule bootstrap`
 2. `.venv/bin/tcapsule configure` save a config/settings file
-3. `.venv/bin/tcapsule prep-device` to set up SSH, macOS only
-4. `.venv/bin/tcapsule deploy` deploy to the Time Capsule according to the config file
-5. `.venv/bin/tcapsule doctor` check if everything is working
-6. `.venv/bin/tcapsule activate` after reboot on NetBSD 4 devices if Samba did not auto-start
+3. `.venv/bin/tcapsule deploy` deploy to the Time Capsule according to the config file
+4. `.venv/bin/tcapsule doctor` check if everything is working
+5. `.venv/bin/tcapsule activate` after reboot on NetBSD 4 devices if Samba did not auto-start
 
 If you run into any issues:
 - `.venv/bin/tcapsule fsck` if the internal disk needs repair before deploy
@@ -66,9 +65,9 @@ Run:
 ./tcapsule bootstrap
 ```
 
-This command prepares the local Python environment in this folder. It creates the `.venv` folder, installs in there the Python dependencies needed for discovery, deployment, and verification, installs the local `tcapsule` command into that virtualenv, and optionally provisions AirPyrt support.
+This command prepares the local Python environment in this folder. It creates the `.venv` folder, installs in there the Python dependencies needed for discovery, deployment, and verification, and installs the local `tcapsule` command into that virtualenv.
 
-On macOS, `bootstrap` can also offer to install `smbclient` via Homebrew and can provision AirPyrt for `prep-device`. On Linux, `bootstrap` will guide you to install `smbclient` with your distro package manager. AirPyrt auto-install is not implemented for Linux yet, so Linux users should usually skip `prep-device` if SSH is already enabled on the Time Capsule.
+On macOS, `bootstrap` can also offer to install `smbclient` via Homebrew. On Linux, `bootstrap` will guide you to install `smbclient` with your distro package manager. NetBSD 4 devices also need `sshpass` locally because their firmware does not provide a usable remote `scp`.
 
 If this is your first time using the repo, this is the only command you should run with the repo-local launcher. After this step, use `.venv/bin/tcapsule ...` to run a command.
 
@@ -83,6 +82,8 @@ Run:
 This writes a hidden `.env` file in the repo folder, and the other `tcapsule` commands use that file as their local device configuration.
 
 At the start of `configure`, the tool first tries to discover your Time Capsule on the local network via mDNS/Bonjour. If it finds one, it prefills the SSH target for you. If it does not find one, it falls back to the normal manual prompt flow.
+
+`configure` also checks whether SSH is reachable. If SSH is closed, it enables SSH using the built-in Python 3 ACP client, reboots the device, waits for SSH to come up, and then continues the normal probing flow. If the password is wrong, it asks again instead of writing a broken `.env` file.
 
 For typical users, most of the defaults are good enough. If the script offers a value and you do not have a reason to change it, **just pressing Enter is usually the correct choice**.
 
@@ -100,25 +101,7 @@ The password you enter here also becomes the password used for the SMB login as 
 
 Samba does not magically use Apple’s internal password backend; unfortunately, using Apple's password system is not possible. We deliberately reuse the same password value so that the user experience is simpler and less confusing.
 
-## Step 3: Find The Time Capsule And Enable SSH
-
-On a Mac, run:
-
-```bash
-.venv/bin/tcapsule prep-device
-```
-
-This step uses the `.env` configuration you just wrote. In particular, it uses the configured `TC_HOST` and `TC_PASSWORD` values and then enables or disables SSH through AirPyrt as needed.
-
-If you are on Linux and SSH is already enabled on the Time Capsule, you should skip `prep-device` and continue directly to `deploy`.
-
-In practical terms, this script will:
-
-- use the Time Capsule target from `.env`
-- check whether SSH is already reachable
-- enable SSH if SSH is not already available
-
-## Step 4: Deploy It
+## Step 3: Deploy It
 
 Run:
 
@@ -145,7 +128,7 @@ If you want a machine-readable deployment plan without changing the device, use:
 .venv/bin/tcapsule deploy --dry-run --json
 ```
 
-## Step 5: Activate It Again If Needed
+## Step 4: Activate It Again If Needed
 
 Run:
 
@@ -158,7 +141,7 @@ For older hardware, this is currently needed after reboot because the firmware d
 
 Unfortunately, you need to run `activate` after *every* reboot if your device does not start Samba automatically.
 
-## Step 6: Verify The Result
+## Step 5: Verify The Result
 
 Run:
 
@@ -194,7 +177,7 @@ If you want the results in JSON instead of human-readable text, use:
 .venv/bin/tcapsule doctor --json
 ```
 
-## Step 7: Remove It Later If Needed
+## Step 6: Remove It Later If Needed
 
 Run:
 

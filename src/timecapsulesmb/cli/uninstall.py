@@ -17,8 +17,8 @@ from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.telemetry import TelemetryClient
 
 
-REBOOT_REQUEST_TIMEOUT_NO_DOWN_MESSAGE = (
-    "Reboot request timed out and the device did not go down.\n"
+REBOOT_NO_DOWN_MESSAGE = (
+    "Reboot was requested but the device did not go down.\n"
     "The uninstall removed managed TimeCapsuleSMB files before reboot; power-cycle or rerun uninstall."
 )
 
@@ -89,7 +89,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not request_reboot_and_wait(
             connection,
             command_context,
-            timeout_no_down_message=REBOOT_REQUEST_TIMEOUT_NO_DOWN_MESSAGE,
+            reboot_no_down_message=REBOOT_NO_DOWN_MESSAGE,
         ):
             return 1
 

@@ -4,7 +4,7 @@ import argparse
 import sys
 from typing import Optional
 
-from . import activate, bootstrap, configure, deploy, discover, doctor, fsck, prep_device, repair_xattrs, uninstall
+from . import activate, bootstrap, configure, deploy, discover, doctor, fsck, set_ssh, repair_xattrs, uninstall
 from .version_check import check_client_version, render_version_block_message
 
 
@@ -16,7 +16,7 @@ COMMANDS = {
     "discover": discover.main,
     "doctor": doctor.main,
     "fsck": fsck.main,
-    "prep-device": prep_device.main,
+    "set-ssh": set_ssh.main,
     "repair-xattrs": repair_xattrs.main,
     "uninstall": uninstall.main,
 }
