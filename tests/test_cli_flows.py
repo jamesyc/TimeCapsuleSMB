@@ -17,6 +17,8 @@ from timecapsulesmb.cli.flows import (
     ACP_REBOOT_REQUEST_TIMEOUT_SECONDS,
     REBOOT_UP_TIMEOUT_MESSAGE,
     request_reboot_and_wait,
+    wait_for_device_up,
+    wait_for_tcp_port_state,
     verify_managed_runtime_flow,
 )
 from timecapsulesmb.device.probe import (
@@ -68,6 +70,36 @@ class CliFlowTests(unittest.TestCase):
             mdns=mdns,
             lines=smbd.lines + mdns.lines,
         )
+
+    def test_wait_for_tcp_port_state_checks_before_sleeping(self) -> None:
+        with mock.patch("timecapsulesmb.cli.flows.tcp_open", return_value=True) as tcp_open_mock:
+            with mock.patch("timecapsulesmb.cli.flows.time.sleep") as sleep_mock:
+                ok = wait_for_tcp_port_state(
+                    "10.0.0.2",
+                    22,
+                    expected_state=True,
+                    timeout_seconds=30,
+                    interval_seconds=5,
+                    verbose=False,
+                )
+
+        self.assertTrue(ok)
+        tcp_open_mock.assert_called_once_with("10.0.0.2", 22)
+        sleep_mock.assert_not_called()
+
+    def test_wait_for_device_up_checks_before_sleeping(self) -> None:
+        with mock.patch("timecapsulesmb.cli.flows.tcp_open", return_value=True) as tcp_open_mock:
+            with mock.patch("timecapsulesmb.cli.flows.time.sleep") as sleep_mock:
+                ok = wait_for_device_up(
+                    "10.0.0.2",
+                    probe_ports=(5009, 445),
+                    timeout_seconds=30,
+                    interval_seconds=5,
+                )
+
+        self.assertTrue(ok)
+        tcp_open_mock.assert_called_once_with("10.0.0.2", 5009)
+        sleep_mock.assert_not_called()
 
     def test_request_reboot_and_wait_succeeds_after_acp_reboot_request(self) -> None:
         command_context = FakeCommandContext()

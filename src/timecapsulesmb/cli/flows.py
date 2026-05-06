@@ -37,13 +37,15 @@ def wait_for_tcp_port_state(
     if verbose:
         print(f"Waiting for {label} to be {expected_state_string}...")
     deadline = time.time() + timeout_seconds
-    while time.time() < deadline:
-        time.sleep(interval_seconds)
+    while True:
         is_open = tcp_open(host, port)
         if is_open == expected_state:
             if verbose:
                 print(f"{label} is {expected_state_string}.")
             return True
+        if time.time() >= deadline:
+            break
+        time.sleep(interval_seconds)
     if verbose:
         print(f"{label} did not become {expected_state_string} within {timeout_seconds}s.")
     return False
@@ -57,10 +59,12 @@ def wait_for_device_up(
     interval_seconds: int = 5,
 ) -> bool:
     deadline = time.time() + timeout_seconds
-    while time.time() < deadline:
-        time.sleep(interval_seconds)
+    while True:
         if any(tcp_open(host, port) for port in probe_ports):
             return True
+        if time.time() >= deadline:
+            break
+        time.sleep(interval_seconds)
     return False
 
 
