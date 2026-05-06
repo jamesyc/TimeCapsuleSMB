@@ -647,6 +647,31 @@ class DeployModuleTests(unittest.TestCase):
         self.assertNotIn("wait_for_existing_data_root()", rendered)
         self.assertNotIn("wait_for_existing_volume_root()", rendered)
 
+    def test_render_start_script_tunes_kernel_memory_before_samba_runtime_setup(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(self._template_config(values))
+        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
+
+        tune_section = rendered[rendered.index("tune_kernel_memory()"):rendered.index("cleanup_old_runtime()")]
+        self.assertIn("SAMBA_VM_BUFCACHE=5", rendered)
+        self.assertIn("/sbin/sysctl -n vm.bufcache", tune_section)
+        self.assertIn('/sbin/sysctl -w "vm.bufcache=$SAMBA_VM_BUFCACHE"', tune_section)
+        self.assertIn('log "kernel memory tuning skipped; vm.bufcache unavailable"', tune_section)
+        self.assertIn('log "kernel memory tuning failed to set vm.bufcache=$SAMBA_VM_BUFCACHE; continuing"', tune_section)
+
+        main_section = rendered[rendered.index("\ncleanup_old_runtime\n"):]
+        self.assertLess(main_section.index("tune_kernel_memory"), main_section.index("prepare_locks_ramdisk"))
+        self.assertLess(main_section.index("tune_kernel_memory"), main_section.index("start_smbd ||"))
+
     def test_render_start_script_wait_refreshes_disk_candidates_each_poll(self) -> None:
         values = {
             "TC_PAYLOAD_DIR_NAME": "samba4",
@@ -732,7 +757,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
         }
         bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        main_section = rendered[rendered.index("\ncleanup_old_runtime\nif ! prepare_locks_ramdisk; then"):]
+        main_section = rendered[rendered.index("\ncleanup_old_runtime\n"):]
         smbd_start = main_section.index("start_smbd || {")
         smbd_ready = main_section.index('log "smbd startup complete: process observed"')
         final_mdns = main_section.index("start_mdns_advertiser")
@@ -752,7 +777,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
         }
         bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        main_section = rendered[rendered.index("\ncleanup_old_runtime\nif ! prepare_locks_ramdisk; then"):]
+        main_section = rendered[rendered.index("\ncleanup_old_runtime\n"):]
         smbd_ready = main_section.index('log "smbd startup complete: process observed"')
         nbns_start = main_section.index("start_nbns")
         self.assertLess(smbd_ready, nbns_start)
@@ -1010,7 +1035,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
         bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         nbns_start = rendered.index("start_nbns()")
-        nbns_end = rendered.index("\ncleanup_old_runtime\nif ! prepare_locks_ramdisk; then")
+        nbns_end = rendered.index("\ncleanup_old_runtime\n")
         nbns_section = rendered[nbns_start:nbns_end]
         self.assertIn('/usr/bin/pkill wcifsnd >/dev/null 2>&1 || true', nbns_section)
         self.assertIn('/usr/bin/pkill wcifsfs >/dev/null 2>&1 || true', nbns_section)

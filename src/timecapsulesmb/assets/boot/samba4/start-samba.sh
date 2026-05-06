@@ -33,6 +33,7 @@ MDNS_LOG_FILE=__MDNS_LOG_FILE__
 SHARE_USE_DISK_ROOT=__SHARE_USE_DISK_ROOT__
 APPLE_MOUNT_WAIT_SECONDS=__APPLE_MOUNT_WAIT_SECONDS__
 MDNS_BIN=/mnt/Flash/mdns-advertiser
+SAMBA_VM_BUFCACHE=5
 LEGACY_PREFIX_NETBSD7=/root/tc-netbsd7
 LEGACY_PREFIX_NETBSD4=/root/tc-netbsd4
 LEGACY_PREFIX_NETBSD4LE=/root/tc-netbsd4le
@@ -85,6 +86,30 @@ log_mdns_snapshot_age() {
         log "trusted Apple mDNS snapshot predates this boot run; accepting stale snapshot: $snapshot_path"
     fi
     return 0
+}
+
+tune_kernel_memory() {
+    current_bufcache=$(/sbin/sysctl -n vm.bufcache 2>/dev/null || true)
+    if [ -z "$current_bufcache" ]; then
+        log "kernel memory tuning skipped; vm.bufcache unavailable"
+        return 0
+    fi
+
+    if [ "$current_bufcache" = "$SAMBA_VM_BUFCACHE" ]; then
+        log "kernel memory tuning: vm.bufcache already $SAMBA_VM_BUFCACHE"
+        return 0
+    fi
+
+    # Samba 4.24 plus macOS metadata/xattr traffic can leave too little RAM
+    # for smbd when NetBSD's file buffer cache is allowed to grow normally.
+    # Cap it before Samba starts, but never block boot if the sysctl is absent
+    # or read-only on a firmware variant.
+    if /sbin/sysctl -w "vm.bufcache=$SAMBA_VM_BUFCACHE" >/dev/null 2>&1; then
+        new_bufcache=$(/sbin/sysctl -n vm.bufcache 2>/dev/null || echo "$SAMBA_VM_BUFCACHE")
+        log "kernel memory tuning: vm.bufcache $current_bufcache -> $new_bufcache"
+    else
+        log "kernel memory tuning failed to set vm.bufcache=$SAMBA_VM_BUFCACHE; continuing"
+    fi
 }
 
 cleanup_old_runtime() {
@@ -880,6 +905,7 @@ start_nbns() {
 }
 
 cleanup_old_runtime
+tune_kernel_memory
 if ! prepare_locks_ramdisk; then
     log "aborting startup because $LOCKS_ROOT is unavailable"
     exit 1
