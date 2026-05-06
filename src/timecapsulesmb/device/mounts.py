@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shlex
 
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import discover_mounted_volume_root_conn
 from timecapsulesmb.device.util import DISK_NAME_CANDIDATES_SH
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
@@ -103,7 +104,7 @@ exit 1
 def ensure_volume_root_mounted_conn(connection: SshConnection) -> str:
     try:
         return discover_mounted_volume_root_conn(connection)
-    except SystemExit:
+    except DeviceError:
         pass
 
     # Keep this fallback mount flow in sync with start-samba.sh's
@@ -113,5 +114,5 @@ def ensure_volume_root_mounted_conn(connection: SshConnection) -> str:
     lines = proc.stdout.strip().splitlines()
     volume = lines[-1].strip() if lines else ""
     if proc.returncode != 0 or not volume:
-        raise SystemExit("Failed to discover an AirPort volume root on the device.")
+        raise DeviceError("Failed to discover an AirPort volume root on the device.")
     return volume

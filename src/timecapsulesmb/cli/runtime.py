@@ -6,6 +6,7 @@ from pathlib import Path
 from timecapsulesmb.core.config import (
     DEFAULTS,
     AppConfig,
+    ConfigError,
     load_app_config,
     require_valid_app_config,
 )
@@ -79,7 +80,7 @@ def resolve_validated_managed_target(
     connection = resolve_env_connection(config)
     target = inspect_managed_connection(connection, config.require("TC_NET_IFACE"), include_probe=include_probe)
     if not target.interface_probe.exists:
-        raise SystemExit(
+        raise ConfigError(
             "TC_NET_IFACE is invalid. Run the `configure` command again.\n"
             f"{target.interface_probe.detail}."
         )

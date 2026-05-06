@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from timecapsulesmb.cli import runtime
 from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.core.errors import missing_dependency_message, system_exit_message
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.telemetry import build_device_os_version
 from timecapsulesmb.telemetry.debug import debug_summary, render_debug_mapping
 from timecapsulesmb.transport.errors import TransportError
@@ -140,7 +141,7 @@ class CommandContext:
             self.result = "cancelled"
             if not self.error_lines:
                 self.set_error("Cancelled by user")
-        elif isinstance(exc, (TransportError, ConfigError)):
+        elif isinstance(exc, (TransportError, ConfigError, DeviceError)):
             message = str(exc)
             self.result = "failure"
             if message and not self.error_lines:

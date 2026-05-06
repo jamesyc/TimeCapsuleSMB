@@ -205,7 +205,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     try:
         config = load_env_config()
-    except (OSError, SystemExit):
+    except OSError:
         config = AppConfig.missing()
     telemetry = TelemetryClient.from_config(config)
     with CommandContext(telemetry, "repair-xattrs", "repair_xattrs_started", "repair_xattrs_finished", config=config, args=args) as command_context:

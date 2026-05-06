@@ -47,6 +47,7 @@ from timecapsulesmb.checks.smb import (
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.device.compat import DeviceCompatibility
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import RemoteInterfaceProbeResult
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoveryDiagnostics,
@@ -499,8 +500,8 @@ class CheckTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertIs(result_diagnostics, diagnostics)
 
-    def test_discover_smb_services_detailed_returns_fail_when_discovery_backend_exits(self) -> None:
-        with mock.patch("timecapsulesmb.checks.bonjour.discover_snapshot_detailed", side_effect=SystemExit("zeroconf missing")):
+    def test_discover_smb_services_detailed_returns_fail_when_discovery_backend_errors(self) -> None:
+        with mock.patch("timecapsulesmb.checks.bonjour.discover_snapshot_detailed", side_effect=RuntimeError("zeroconf missing")):
             snapshot, error, diagnostics = discover_smb_services_detailed()
         self.assertIsNone(snapshot)
         self.assertIsNone(diagnostics)
@@ -681,7 +682,7 @@ class CheckTests(unittest.TestCase):
                             with mock.patch("timecapsulesmb.checks.doctor.read_active_smb_conf_conn", return_value=""):
                                 with mock.patch("timecapsulesmb.checks.doctor.check_xattr_tdb_persistence", return_value=mock.Mock(status="WARN", message="xattr skipped")):
                                     with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="SKIP", message="port skipped")):
-                                        with mock.patch("timecapsulesmb.checks.doctor.discover_mounted_volume_root_conn", side_effect=SystemExit("skip nbns")):
+                                        with mock.patch("timecapsulesmb.checks.doctor.discover_mounted_volume_root_conn", side_effect=DeviceError("skip nbns")):
                                             results, fatal = run_doctor_checks(
                                                 self.doctor_config(values),
                                                 repo_root=REPO_ROOT,
@@ -715,7 +716,7 @@ class CheckTests(unittest.TestCase):
                             with mock.patch("timecapsulesmb.checks.doctor.read_active_smb_conf_conn", return_value=""):
                                 with mock.patch("timecapsulesmb.checks.doctor.check_xattr_tdb_persistence", return_value=mock.Mock(status="WARN", message="xattr skipped")):
                                     with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="SKIP", message="port skipped")):
-                                        with mock.patch("timecapsulesmb.checks.doctor.discover_mounted_volume_root_conn", side_effect=SystemExit("skip nbns")):
+                                        with mock.patch("timecapsulesmb.checks.doctor.discover_mounted_volume_root_conn", side_effect=DeviceError("skip nbns")):
                                             results, fatal = run_doctor_checks(
                                                 self.doctor_config(values),
                                                 repo_root=REPO_ROOT,
@@ -748,7 +749,7 @@ class CheckTests(unittest.TestCase):
                             with mock.patch("timecapsulesmb.checks.doctor.read_active_smb_conf_conn", return_value=""):
                                 with mock.patch("timecapsulesmb.checks.doctor.check_xattr_tdb_persistence", return_value=mock.Mock(status="WARN", message="xattr skipped")):
                                     with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="SKIP", message="port skipped")):
-                                        with mock.patch("timecapsulesmb.checks.doctor.discover_mounted_volume_root_conn", side_effect=SystemExit("skip nbns")):
+                                        with mock.patch("timecapsulesmb.checks.doctor.discover_mounted_volume_root_conn", side_effect=DeviceError("skip nbns")):
                                             results, _fatal = run_doctor_checks(
                                                 self.doctor_config(values),
                                                 repo_root=REPO_ROOT,
@@ -876,7 +877,7 @@ class CheckTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.checks.doctor.read_active_smb_conf_conn", return_value=""):
                             with mock.patch("timecapsulesmb.checks.doctor.check_xattr_tdb_persistence", return_value=CheckResult("WARN", "xattr skipped")):
                                 with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=CheckResult("PASS", "445 ok")):
-                                    with mock.patch("timecapsulesmb.checks.doctor.discover_mounted_volume_root_conn", side_effect=SystemExit("skip nbns")):
+                                    with mock.patch("timecapsulesmb.checks.doctor.discover_mounted_volume_root_conn", side_effect=DeviceError("skip nbns")):
                                         with mock.patch("timecapsulesmb.checks.doctor.probe_remote_interface_conn") as interface_mock:
                                             results, fatal = run_doctor_checks(
                                                 self.doctor_config(values),
@@ -924,7 +925,7 @@ class CheckTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.checks.doctor.read_active_smb_conf_conn", return_value=""):
                             with mock.patch("timecapsulesmb.checks.doctor.check_xattr_tdb_persistence", return_value=CheckResult("WARN", "xattr skipped")):
                                 with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=CheckResult("PASS", "445 ok")):
-                                    with mock.patch("timecapsulesmb.checks.doctor.discover_mounted_volume_root_conn", side_effect=SystemExit("skip nbns")):
+                                    with mock.patch("timecapsulesmb.checks.doctor.discover_mounted_volume_root_conn", side_effect=DeviceError("skip nbns")):
                                         with mock.patch(
                                             "timecapsulesmb.checks.doctor.probe_remote_interface_conn",
                                             return_value=fresh_interface_probe,
@@ -2039,7 +2040,7 @@ class CheckTests(unittest.TestCase):
         nbns_result = next(result for result in results if result.status == "WARN" and result.message.startswith("NBNS check skipped:"))
         self.assertIn("volume probe failed", nbns_result.message)
 
-    def test_run_doctor_checks_warns_when_nbns_marker_probe_raises_system_exit(self) -> None:
+    def test_run_doctor_checks_warns_when_nbns_marker_probe_raises_transport_error(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",

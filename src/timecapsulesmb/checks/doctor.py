@@ -334,7 +334,7 @@ def _add_nbns_results(
                 add_result(check_nbns_name_resolution(config.require("TC_NETBIOS_NAME"), host, expected_ip))
         else:
             add_result(CheckResult("SKIP", "NBNS responder not enabled"))
-    except (Exception, SystemExit) as e:
+    except Exception as e:
         add_result(CheckResult("WARN", f"NBNS check skipped: {e}"))
 
 
@@ -374,7 +374,7 @@ def _add_authenticated_smb_results(
                     port=local_port,
                 ):
                     add_result(result)
-        except (Exception, SystemExit) as e:
+        except Exception as e:
             add_result(CheckResult("FAIL", f"authenticated SMB checks failed through SSH tunnel: {e}"))
         return
 
@@ -475,7 +475,7 @@ def _doctor_check_device_compatibility(context: DoctorRunContext) -> None:
             _add_sshpass_result_for_payload(context.add_result, compatibility.payload_family)
         else:
             context.add_result(CheckResult("FAIL", render_compatibility_message(compatibility)))
-    except (Exception, SystemExit) as e:
+    except Exception as e:
         context.add_result(CheckResult("FAIL", f"device compatibility check failed: {e}"))
 
 
@@ -518,7 +518,7 @@ def _doctor_check_active_smb_conf(context: DoctorRunContext) -> None:
         else:
             context.active_smb_conf_reason = ""
         context.add_result(check_xattr_tdb_persistence(context.connection))
-    except (Exception, SystemExit) as e:
+    except Exception as e:
         context.active_smb_conf_reason = str(e)
         context.add_result(CheckResult("WARN", f"xattr_tdb:file check skipped: {e}"))
 

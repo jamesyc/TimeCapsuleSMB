@@ -23,6 +23,7 @@ from timecapsulesmb.cli.context import (
 from timecapsulesmb.cli.runtime import ManagedTargetState
 from timecapsulesmb.core.config import AppConfig, ConfigError
 from timecapsulesmb.device.compat import DeviceCompatibility
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, RemoteInterfaceProbeResult
 from timecapsulesmb.discovery.bonjour import Discovered
 from timecapsulesmb.telemetry import MAX_SEND_ATTEMPTS, TelemetryClient
@@ -302,6 +303,35 @@ class TelemetryTests(unittest.TestCase):
         self.assertNotIn("ConfigError:", finished_payload["error"])
         self.assertIn("Debug context:", finished_payload["error"])
         self.assertIn(f"env_path={env_path}", finished_payload["error"])
+
+    def test_command_context_converts_device_error_to_system_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = telemetry_client_from_values(
+                    {
+                        "TC_HOST": "root@192.168.1.118",
+                        "TC_NET_IFACE": "bridge0",
+                    },
+                    bootstrap_path=bootstrap_path,
+                )
+                with mock.patch.object(client, "_dispatch_payload_async"):
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        with self.assertRaises(SystemExit) as raised:
+                            with CommandContext(client, "doctor", "doctor_started", "doctor_finished", values={
+                                "TC_HOST": "root@192.168.1.118",
+                                "TC_NET_IFACE": "bridge0",
+                            }):
+                                raise DeviceError("could not determine IPv4 for interface bridge0")
+        self.assertEqual(str(raised.exception), "could not determine IPv4 for interface bridge0")
+        self.assertIsInstance(raised.exception.__cause__, DeviceError)
+        finished_payload = send_mock.call_args.args[0]
+        self.assertEqual(finished_payload["result"], "failure")
+        self.assertIn("could not determine IPv4 for interface bridge0", finished_payload["error"])
+        self.assertNotIn("DeviceError:", finished_payload["error"])
+        self.assertIn("Debug context:", finished_payload["error"])
+        self.assertIn("TC_NET_IFACE=bridge0", finished_payload["error"])
 
     def test_command_context_failure_without_error_gets_fallback_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

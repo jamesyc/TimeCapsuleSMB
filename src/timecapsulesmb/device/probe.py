@@ -8,8 +8,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.device.compat import compatibility_from_probe_result
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.util import (
     DISK_NAME_CANDIDATES_SH,
     MOUNTED_VOLUME_DISCOVERY_SH,
@@ -286,11 +286,11 @@ def probe_device_conn(connection: SshConnection) -> ProbeResult:
         os_name, os_release, arch = _probe_remote_os_info_conn(connection)
         elf_endianness = _probe_remote_elf_endianness_conn(connection)
         airport_identity = probe_remote_airport_identity_conn(connection)
-    except (TransportError, SystemExit) as exc:
+    except (TransportError, DeviceError) as exc:
         return ProbeResult(
             ssh_port_reachable=True,
             ssh_authenticated=False,
-            error=system_exit_message(exc) or "SSH authentication failed.",
+            error=str(exc) or "SSH authentication failed.",
             os_name="",
             os_release="",
             arch="",
@@ -325,8 +325,8 @@ def probe_ssh_command_conn(
 ) -> SshCommandProbeResult:
     try:
         proc = run_ssh(connection, command, check=False, timeout=timeout)
-    except (TransportError, SystemExit) as exc:
-        return SshCommandProbeResult(ok=False, detail=system_exit_message(exc))
+    except TransportError as exc:
+        return SshCommandProbeResult(ok=False, detail=str(exc))
     if proc.returncode == 0:
         stdout = proc.stdout.strip()
         if expected_stdout_suffix is None or stdout.endswith(expected_stdout_suffix):
@@ -340,7 +340,7 @@ def _probe_remote_os_info_conn(connection: SshConnection) -> tuple[str, str, str
     proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}")
     lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
     if len(lines) < 3:
-        raise SystemExit("Failed to determine remote device OS compatibility.")
+        raise DeviceError("Failed to determine remote device OS compatibility.")
     return lines[0], lines[1], lines[2]
 
 
@@ -470,7 +470,7 @@ def discover_mounted_volume_conn(connection: SshConnection) -> MountedVolume:
     lines = proc.stdout.strip().splitlines()
     result = lines[-1].strip() if lines else ""
     if proc.returncode != 0 or not result:
-        raise SystemExit("Failed to discover a mounted AirPort HFS data volume on the device.")
+        raise DeviceError("Failed to discover a mounted AirPort HFS data volume on the device.")
     device, mountpoint = result.split(" ", 1)
     return MountedVolume(device=device, mountpoint=mountpoint)
 
@@ -629,7 +629,7 @@ def read_interface_ipv4_conn(connection: SshConnection, iface: str) -> str:
     )
     iface_ip = proc.stdout.strip()
     if not iface_ip:
-        raise SystemExit(f"could not determine IPv4 for interface {iface}")
+        raise DeviceError(f"could not determine IPv4 for interface {iface}")
     return iface_ip
 
 
@@ -846,7 +846,7 @@ def read_runtime_log_tails_conn(connection: SshConnection) -> dict[str, str]:
     for key, path in REMOTE_RUNTIME_LOG_PATHS.items():
         try:
             logs[key] = read_remote_log_tail_conn(connection, path)
-        except (Exception, SystemExit) as e:
+        except Exception as e:
             logs[key] = f"(unavailable: {e})"
     return logs
 
@@ -876,7 +876,7 @@ def wait_for_ssh_state_conn(
         try:
             proc = run_ssh(connection, "/bin/echo ok", check=False, timeout=10)
             is_up = proc.returncode == 0 and proc.stdout.strip().endswith("ok")
-        except (TransportError, SystemExit):
+        except TransportError:
             is_up = False
         if is_up == expected_up:
             return True

@@ -12,6 +12,7 @@ from timecapsulesmb.cli.runtime import load_env_config
 from timecapsulesmb.cli.util import color_green, color_red
 from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.core.errors import system_exit_message
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.errors import TransportError
@@ -83,7 +84,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     iface=config.require("TC_NET_IFACE"),
                     include_probe=True,
                 )
-            except (ConfigError, TransportError, SystemExit) as exc:
+            except (ConfigError, TransportError, DeviceError) as exc:
                 command_context.preflight_error = f"doctor pre-inspection failed: {system_exit_message(exc)}"
 
         doctor_debug: dict[str, object] = {}

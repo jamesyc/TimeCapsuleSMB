@@ -73,8 +73,6 @@ def discover_smb_services_detailed(
     try:
         snapshot, diagnostics = discover_snapshot_detailed(SMB_SERVICE, timeout=timeout)
         return snapshot, None, diagnostics
-    except SystemExit as e:
-        return None, CheckResult("FAIL", f"Bonjour check failed: {e}"), None
     except Exception as e:
         return None, CheckResult("FAIL", f"Bonjour check failed: {e}"), None
 
@@ -141,8 +139,6 @@ def select_resolved_smb_record(
 def resolve_smb_instance(instance: BonjourServiceInstance, timeout_ms: int = FINAL_PENDING_RESOLVE_TIMEOUT_MS) -> tuple[BonjourResolvedService | None, CheckResult | None]:
     try:
         record = resolve_service_instance(instance, timeout_ms=timeout_ms)
-    except SystemExit as e:
-        return None, CheckResult("FAIL", f"Bonjour check failed: {e}")
     except Exception as e:
         return None, CheckResult("FAIL", f"Bonjour check failed: {e}")
     if record is None:
