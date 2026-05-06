@@ -350,10 +350,10 @@ class DeployModuleTests(unittest.TestCase):
         self.assertEqual(
             plan.pre_upload_actions,
             [
-                stop_process_full_action("[w]atchdog.sh"),
-                stop_process_action("smbd"),
-                stop_process_action("mdns-advertiser"),
-                stop_process_action("nbns-advertiser"),
+                stop_process_full_action("[w]atchdog.sh", force=True),
+                stop_process_action("smbd", force=True),
+                stop_process_action("mdns-advertiser", force=True),
+                stop_process_action("nbns-advertiser", force=True),
                 initialize_data_root_action("/Volumes/dk2/ShareRoot", "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported"),
                 prepare_dirs_action(plan.remote_directories, plan.legacy_symlinks),
             ],
@@ -625,9 +625,9 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('--save-all-snapshot "$ALL_MDNS_SNAPSHOT"', rendered)
         self.assertIn('--save-snapshot "$APPLE_MDNS_SNAPSHOT"', rendered)
         self.assertIn('--load-snapshot "$APPLE_MDNS_SNAPSHOT"', rendered)
-        self.assertIn('/usr/bin/pkill -f /mnt/Flash/watchdog.sh >/dev/null 2>&1 || true', rendered)
-        self.assertIn('/usr/bin/pkill "$MDNS_PROC_NAME" >/dev/null 2>&1 || true', rendered)
-        self.assertIn('/usr/bin/pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true', rendered)
+        self.assertIn('stop_runtime_process "watchdog" "/mnt/Flash/watchdog.sh" true', rendered)
+        self.assertIn('stop_runtime_process "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" false', rendered)
+        self.assertIn('stop_runtime_process "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" false', rendered)
         self.assertIn("valid users = $SMB_SAMBA_USER root", rendered)
         self.assertNotIn("__SMB_SAMBA_USER__", rendered)
         self.assertIn('if [ -f "$payload_dir/private/nbns.enabled" ]', rendered)
@@ -801,9 +801,32 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn('log "kernel memory tuning skipped; vm.bufcache unavailable"', tune_section)
         self.assertIn('log "kernel memory tuning failed to set vm.bufcache=$SAMBA_VM_BUFCACHE; continuing"', tune_section)
 
-        main_section = rendered[rendered.index("\ncleanup_old_runtime\n"):]
+        main_section = rendered[rendered.index("\nif ! cleanup_old_runtime; then\n"):]
         self.assertLess(main_section.index("tune_kernel_memory"), main_section.index("prepare_locks_ramdisk"))
         self.assertLess(main_section.index("tune_kernel_memory"), main_section.index("start_smbd ||"))
+
+    def test_render_start_script_force_stops_runtime_before_memory_cleanup(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(self._template_config(values))
+        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
+        cleanup_helpers = rendered[rendered.index("cleanup_old_runtime()"):rendered.index("locks_root_is_mounted()")]
+
+        self.assertIn('stop_runtime_process "watchdog" "/mnt/Flash/watchdog.sh" true || cleanup_status=1', cleanup_helpers)
+        self.assertIn('stop_runtime_process "smbd" "smbd" false || cleanup_status=1', cleanup_helpers)
+        self.assertIn('/usr/bin/pkill -9 -f "$pattern" >/dev/null 2>&1 || true', cleanup_helpers)
+        self.assertIn('/usr/bin/pkill -9 "$pattern" >/dev/null 2>&1 || true', cleanup_helpers)
+        self.assertIn('log "old managed runtime cleanup failed; refusing to delete /mnt/Memory/samba4"', cleanup_helpers)
+        self.assertLess(cleanup_helpers.index('if [ "$cleanup_status" -ne 0 ]; then'), cleanup_helpers.index("rm -rf /mnt/Memory/samba4"))
+        self.assertIn('log "aborting startup because old managed runtime could not be stopped safely"', rendered)
 
     def test_render_start_script_wait_refreshes_disk_candidates_each_poll(self) -> None:
         values = {
@@ -890,7 +913,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
         }
         bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        main_section = rendered[rendered.index("\ncleanup_old_runtime\n"):]
+        main_section = rendered[rendered.index("\nif ! cleanup_old_runtime; then\n"):]
         smbd_start = main_section.index("start_smbd || {")
         smbd_ready = main_section.index('log "smbd startup complete: process observed"')
         final_mdns = main_section.index("start_mdns_advertiser")
@@ -910,7 +933,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
         }
         bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        main_section = rendered[rendered.index("\ncleanup_old_runtime\n"):]
+        main_section = rendered[rendered.index("\nif ! cleanup_old_runtime; then\n"):]
         smbd_ready = main_section.index('log "smbd startup complete: process observed"')
         nbns_start = main_section.index("start_nbns")
         self.assertLess(smbd_ready, nbns_start)
@@ -1168,7 +1191,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
         bundle = build_template_bundle(self._template_config(values))
         rendered = render_template("start-samba.sh", bundle.start_script_replacements)
         nbns_start = rendered.index("start_nbns()")
-        nbns_end = rendered.index("\ncleanup_old_runtime\n")
+        nbns_end = rendered.index("\nif ! cleanup_old_runtime; then\n")
         nbns_section = rendered[nbns_start:nbns_end]
         self.assertIn('/usr/bin/pkill wcifsnd >/dev/null 2>&1 || true', nbns_section)
         self.assertIn('/usr/bin/pkill wcifsfs >/dev/null 2>&1 || true', nbns_section)
@@ -3217,11 +3240,11 @@ int main(void) {{
         self.assertEqual(
             plan.activation_actions,
             [
-                stop_process_full_action("[w]atchdog.sh"),
-                stop_process_action("smbd"),
-                stop_process_action("mdns-advertiser"),
-                stop_process_action("nbns-advertiser"),
-                stop_process_action("wcifsfs"),
+                stop_process_full_action("[w]atchdog.sh", force=True),
+                stop_process_action("smbd", force=True),
+                stop_process_action("mdns-advertiser", force=True),
+                stop_process_action("nbns-advertiser", force=True),
+                stop_process_action("wcifsfs", force=True),
                 run_script_action("/mnt/Flash/rc.local"),
             ],
         )
@@ -3365,6 +3388,10 @@ int main(void) {{
             remote_action_to_jsonable(stop_process_action("smbd")),
             {"kind": "stop_process", "args": ["smbd"]},
         )
+        self.assertEqual(
+            remote_action_to_jsonable(stop_process_action("smbd", force=True)),
+            {"kind": "stop_process", "args": ["smbd"], "force": True},
+        )
 
     def test_render_remote_action_rejects_unknown_action_object(self) -> None:
         with self.assertRaises(TypeError):
@@ -3389,13 +3416,28 @@ int main(void) {{
         self.assertIn("pkill mdns-advertiser >/dev/null 2>&1 || true;", command)
         self.assertIn("while /bin/sh -c 'found=1; if ps ax -o ucomm= >/tmp/tcapsule-ps.", command)
         self.assertIn('case \"$line\" in mdns-advertiser) found=1; break ;; esac;', command)
-        self.assertIn('if [ "$attempt" -ge 10 ]; then break; fi;', command)
+        self.assertIn('if [ "$attempt" -ge 5 ]; then break; fi;', command)
+        self.assertNotIn("pkill -9", command)
+
+    def test_render_force_stop_process_action_kills_and_fails_if_still_running(self) -> None:
+        command = render_remote_action(stop_process_action("smbd", force=True))
+        self.assertIn("pkill smbd >/dev/null 2>&1 || true;", command)
+        self.assertIn('if [ "$attempt" -ge 5 ]; then break; fi;', command)
+        self.assertIn("pkill -9 smbd >/dev/null 2>&1 || true;", command)
+        self.assertIn("echo 'process smbd did not stop' >&2; exit 1", command)
 
     def test_render_stop_process_full_action_waits_for_exit(self) -> None:
         command = render_remote_action(stop_process_full_action("[w]atchdog.sh"))
         self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true;", command)
         self.assertIn("while /bin/sh -c 'found=1; if ps ax -o command= >/tmp/tcapsule-ps.", command)
         self.assertIn('case "$line" in *[w]atchdog.sh*) found=1; break ;; esac;', command)
+        self.assertNotIn("pkill -9 -f", command)
+
+    def test_render_force_stop_process_full_action_kills_by_full_match(self) -> None:
+        command = render_remote_action(stop_process_full_action("[w]atchdog.sh", force=True))
+        self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true;", command)
+        self.assertIn("pkill -9 -f '[w]atchdog.sh' >/dev/null 2>&1 || true;", command)
+        self.assertIn("echo 'process [w]atchdog.sh did not stop' >&2; exit 1", command)
 
     def test_wait_for_ssh_state_uses_real_ssh_probe_for_expected_up(self) -> None:
         proc = mock.Mock(returncode=0, stdout="ok\n")

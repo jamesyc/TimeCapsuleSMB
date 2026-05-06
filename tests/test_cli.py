@@ -4797,10 +4797,10 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             actions_mock.call_args_list[0].args[1],
             [
-                stop_process_full_action("[w]atchdog.sh"),
-                stop_process_action("smbd"),
-                stop_process_action("mdns-advertiser"),
-                stop_process_action("nbns-advertiser"),
+                stop_process_full_action("[w]atchdog.sh", force=True),
+                stop_process_action("smbd", force=True),
+                stop_process_action("mdns-advertiser", force=True),
+                stop_process_action("nbns-advertiser", force=True),
                 initialize_data_root_action("/Volumes/dk2/ShareRoot", "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported"),
                 prepare_dirs_action(
                     [
@@ -5036,10 +5036,10 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             actions_mock.call_args_list[0].args[1],
             [
-                stop_process_full_action("[w]atchdog.sh"),
-                stop_process_action("smbd"),
-                stop_process_action("mdns-advertiser"),
-                stop_process_action("nbns-advertiser"),
+                stop_process_full_action("[w]atchdog.sh", force=True),
+                stop_process_action("smbd", force=True),
+                stop_process_action("mdns-advertiser", force=True),
+                stop_process_action("nbns-advertiser", force=True),
                 initialize_data_root_action("/Volumes/dk2/ShareRoot", "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported"),
                 prepare_dirs_action(
                     [
@@ -5091,11 +5091,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             result.mocks.run_remote_actions.call_args_list[2].args[1],
             [
-                stop_process_full_action("[w]atchdog.sh"),
-                stop_process_action("smbd"),
-                stop_process_action("mdns-advertiser"),
-                stop_process_action("nbns-advertiser"),
-                stop_process_action("wcifsfs"),
+                stop_process_full_action("[w]atchdog.sh", force=True),
+                stop_process_action("smbd", force=True),
+                stop_process_action("mdns-advertiser", force=True),
+                stop_process_action("nbns-advertiser", force=True),
+                stop_process_action("wcifsfs", force=True),
                 run_script_action("/mnt/Flash/rc.local"),
             ],
         )
@@ -5638,11 +5638,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             actions_mock.call_args.args[1],
             [
-                stop_process_full_action("[w]atchdog.sh"),
-                stop_process_action("smbd"),
-                stop_process_action("mdns-advertiser"),
-                stop_process_action("nbns-advertiser"),
-                stop_process_action("wcifsfs"),
+                stop_process_full_action("[w]atchdog.sh", force=True),
+                stop_process_action("smbd", force=True),
+                stop_process_action("mdns-advertiser", force=True),
+                stop_process_action("nbns-advertiser", force=True),
+                stop_process_action("wcifsfs", force=True),
                 run_script_action("/mnt/Flash/rc.local"),
             ],
         )

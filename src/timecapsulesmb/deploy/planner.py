@@ -124,11 +124,11 @@ def build_netbsd4_activation_actions() -> list[RemoteAction]:
     return [
         # NetBSD4 activation is re-runnable after deploy or reboot. Stop the
         # old watchdog first so it cannot race the fresh rc.local launch.
-        stop_process_full_action("[w]atchdog.sh"),
-        stop_process_action("smbd"),
-        stop_process_action("mdns-advertiser"),
-        stop_process_action("nbns-advertiser"),
-        stop_process_action("wcifsfs"),
+        stop_process_full_action("[w]atchdog.sh", force=True),
+        stop_process_action("smbd", force=True),
+        stop_process_action("mdns-advertiser", force=True),
+        stop_process_action("nbns-advertiser", force=True),
+        stop_process_action("wcifsfs", force=True),
         run_script_action("/mnt/Flash/rc.local"),
     ]
 
@@ -241,10 +241,10 @@ def build_deployment_plan(
             # Existing installs run mdns-advertiser directly from /mnt/Flash.
             # Stop the watchdog first so it does not restart daemons while
             # deploy is overwriting the payload and auth files.
-            stop_process_full_action("[w]atchdog.sh"),
-            stop_process_action("smbd"),
-            stop_process_action("mdns-advertiser"),
-            stop_process_action("nbns-advertiser"),
+            stop_process_full_action("[w]atchdog.sh", force=True),
+            stop_process_action("smbd", force=True),
+            stop_process_action("mdns-advertiser", force=True),
+            stop_process_action("nbns-advertiser", force=True),
             initialize_data_root_action(device_paths.data_root, device_paths.data_root_marker),
             prepare_dirs_action(remote_directories, legacy_symlinks),
         ],
@@ -284,10 +284,10 @@ def build_uninstall_plan(host: str, device_paths: DevicePaths, *, reboot_after_u
         flash_targets=flash_targets,
         verify_absent_targets=verify_absent_targets,
         remote_actions=[
-            stop_process_full_action("[w]atchdog.sh"),
-            stop_process_action("smbd"),
-            stop_process_action("mdns-advertiser"),
-            stop_process_action("nbns-advertiser"),
+            stop_process_full_action("[w]atchdog.sh", force=True),
+            stop_process_action("smbd", force=True),
+            stop_process_action("mdns-advertiser", force=True),
+            stop_process_action("nbns-advertiser", force=True),
             remove_path_action(payload_dir),
             remove_path_action(flash_targets["rc.local"]),
             remove_path_action(flash_targets["common.sh"]),

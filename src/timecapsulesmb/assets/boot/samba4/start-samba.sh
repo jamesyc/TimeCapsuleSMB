@@ -114,14 +114,93 @@ tune_kernel_memory() {
 }
 
 cleanup_old_runtime() {
+    cleanup_status=0
+
     log "cleaning old managed runtime processes and RAM state"
-    /usr/bin/pkill -f /mnt/Flash/watchdog.sh >/dev/null 2>&1 || true
-    /usr/bin/pkill smbd >/dev/null 2>&1 || true
-    /usr/bin/pkill "$MDNS_PROC_NAME" >/dev/null 2>&1 || true
-    /usr/bin/pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true
-    sleep 1
+    stop_runtime_process "watchdog" "/mnt/Flash/watchdog.sh" true || cleanup_status=1
+    stop_runtime_process "smbd" "smbd" false || cleanup_status=1
+    stop_runtime_process "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" false || cleanup_status=1
+    stop_runtime_process "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" false || cleanup_status=1
+
+    if [ "$cleanup_status" -ne 0 ]; then
+        log "old managed runtime cleanup failed; refusing to delete /mnt/Memory/samba4"
+        return 1
+    fi
+
     rm -rf /mnt/Memory/samba4
     log "old managed runtime cleanup complete"
+}
+
+runtime_process_present() {
+    pattern=$1
+    full_match=${2:-false}
+
+    if [ "$full_match" = "true" ]; then
+        if ps_out=$(/bin/ps axww -o command= 2>/dev/null); then
+            old_ifs=$IFS
+            IFS='
+'
+            for line in $ps_out; do
+                case "$line" in
+                    *"$pattern"*)
+                        IFS=$old_ifs
+                        return 0
+                        ;;
+                esac
+            done
+            IFS=$old_ifs
+        fi
+        return 1
+    fi
+
+    /usr/bin/pkill -0 "$pattern" >/dev/null 2>&1
+}
+
+wait_for_runtime_process_absent() {
+    pattern=$1
+    full_match=${2:-false}
+    max_attempts=${3:-5}
+    attempt=0
+
+    while runtime_process_present "$pattern" "$full_match"; do
+        if [ "$attempt" -ge "$max_attempts" ]; then
+            return 1
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+    return 0
+}
+
+stop_runtime_process() {
+    label=$1
+    pattern=$2
+    full_match=${3:-false}
+
+    log "stopping old $label"
+    if [ "$full_match" = "true" ]; then
+        /usr/bin/pkill -f "$pattern" >/dev/null 2>&1 || true
+    else
+        /usr/bin/pkill "$pattern" >/dev/null 2>&1 || true
+    fi
+
+    if wait_for_runtime_process_absent "$pattern" "$full_match" 5; then
+        return 0
+    fi
+
+    log "old $label still running after TERM; sending KILL"
+    if [ "$full_match" = "true" ]; then
+        /usr/bin/pkill -9 -f "$pattern" >/dev/null 2>&1 || true
+    else
+        /usr/bin/pkill -9 "$pattern" >/dev/null 2>&1 || true
+    fi
+
+    if wait_for_runtime_process_absent "$pattern" "$full_match" 5; then
+        return 0
+    fi
+
+    log "old $label survived KILL"
+    return 1
 }
 
 locks_root_is_mounted() {
@@ -909,7 +988,10 @@ start_nbns() {
     fi
 }
 
-cleanup_old_runtime
+if ! cleanup_old_runtime; then
+    log "aborting startup because old managed runtime could not be stopped safely"
+    exit 1
+fi
 tune_kernel_memory
 if ! prepare_locks_ramdisk; then
     log "aborting startup because $LOCKS_ROOT is unavailable"

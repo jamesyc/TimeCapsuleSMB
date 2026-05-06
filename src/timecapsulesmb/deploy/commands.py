@@ -38,11 +38,13 @@ class InstallPermissionsAction:
 @dataclass(frozen=True)
 class StopProcessAction:
     name: str
+    force: bool = False
 
 
 @dataclass(frozen=True)
 class StopProcessFullAction:
     pattern: str
+    force: bool = False
 
 
 @dataclass(frozen=True)
@@ -109,12 +111,12 @@ def install_permissions_action(permissions: Iterable[RemotePermission]) -> Remot
     return InstallPermissionsAction(tuple(permissions))
 
 
-def stop_process_action(name: str) -> RemoteAction:
-    return StopProcessAction(name)
+def stop_process_action(name: str, *, force: bool = False) -> RemoteAction:
+    return StopProcessAction(name, force)
 
 
-def stop_process_full_action(pattern: str) -> RemoteAction:
-    return StopProcessFullAction(pattern)
+def stop_process_full_action(pattern: str, *, force: bool = False) -> RemoteAction:
+    return StopProcessFullAction(pattern, force)
 
 
 def remove_path_action(path: str) -> RemoteAction:
@@ -125,30 +127,48 @@ def run_script_action(path: str) -> RemoteAction:
     return RunScriptAction(path)
 
 
-def _render_stop_process_action(action: StopProcessAction) -> str:
-    name = action.name
+def _render_wait_for_process_absent(pattern: str, *, full: bool, attempts: int) -> str:
     return (
-        f"pkill {shlex.quote(name)} >/dev/null 2>&1 || true; "
         "attempt=0; "
-        f"while /bin/sh -c {shlex.quote(_render_process_present(name, full=False))} >/dev/null 2>&1; do "
-        'if [ "$attempt" -ge 10 ]; then break; fi; '
+        f"while /bin/sh -c {shlex.quote(_render_process_present(pattern, full=full))} >/dev/null 2>&1; do "
+        f'if [ "$attempt" -ge {attempts} ]; then break; fi; '
         "attempt=$((attempt + 1)); "
         "sleep 1; "
         "done"
     )
+
+
+def _render_stop_process(
+    pattern: str,
+    *,
+    full: bool,
+    force: bool,
+) -> str:
+    pkill_flags = "-f " if full else ""
+    pkill_command = f"pkill {pkill_flags}{shlex.quote(pattern)} >/dev/null 2>&1 || true"
+    command = f"{pkill_command}; {_render_wait_for_process_absent(pattern, full=full, attempts=5)}"
+    if not force:
+        return command
+
+    kill_flags = "-9 -f " if full else "-9 "
+    kill_command = f"pkill {kill_flags}{shlex.quote(pattern)} >/dev/null 2>&1 || true"
+    process_present = f"/bin/sh -c {shlex.quote(_render_process_present(pattern, full=full))} >/dev/null 2>&1"
+    failure_message = shlex.quote(f"process {pattern} did not stop")
+    return (
+        f"{command}; "
+        f"if {process_present}; then "
+        f"{kill_command}; {_render_wait_for_process_absent(pattern, full=full, attempts=5)}; "
+        "fi; "
+        f"if {process_present}; then echo {failure_message} >&2; exit 1; fi"
+    )
+
+
+def _render_stop_process_action(action: StopProcessAction) -> str:
+    return _render_stop_process(action.name, full=False, force=action.force)
 
 
 def _render_stop_process_full_action(action: StopProcessFullAction) -> str:
-    pattern = action.pattern
-    return (
-        f"pkill -f {shlex.quote(pattern)} >/dev/null 2>&1 || true; "
-        "attempt=0; "
-        f"while /bin/sh -c {shlex.quote(_render_process_present(pattern, full=True))} >/dev/null 2>&1; do "
-        'if [ "$attempt" -ge 10 ]; then break; fi; '
-        "attempt=$((attempt + 1)); "
-        "sleep 1; "
-        "done"
-    )
+    return _render_stop_process(action.pattern, full=True, force=action.force)
 
 
 def _render_prepare_dirs_action(action: PrepareDirsAction) -> str:
@@ -227,9 +247,15 @@ def _action_json(kind: str, *args: str) -> dict[str, object]:
 
 def remote_action_to_jsonable(action: RemoteAction) -> dict[str, object]:
     if isinstance(action, StopProcessAction):
-        return _action_json("stop_process", action.name)
+        data = _action_json("stop_process", action.name)
+        if action.force:
+            data["force"] = True
+        return data
     if isinstance(action, StopProcessFullAction):
-        return _action_json("stop_process_full", action.pattern)
+        data = _action_json("stop_process_full", action.pattern)
+        if action.force:
+            data["force"] = True
+        return data
     if isinstance(action, PrepareDirsAction):
         return {
             "kind": "prepare_dirs",
