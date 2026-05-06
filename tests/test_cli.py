@@ -5605,7 +5605,52 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("AirPyrt", finished["error"])
         self.assertNotIn(ANSI_RED, finished["error"])
 
-    def test_set_ssh_disable_flow_warns_when_ssh_reopens(self) -> None:
+    def test_set_ssh_disable_fails_when_ssh_never_goes_down(self) -> None:
+        output = io.StringIO()
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
+                with mock.patch("builtins.input", return_value="y"):
+                    with mock.patch("timecapsulesmb.cli.set_ssh.disable_ssh_over_ssh"):
+                        with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_tcp_port_state", return_value=False) as wait_port_mock:
+                            with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_device_up") as wait_up_mock:
+                                with redirect_stdout(output):
+                                    rc = set_ssh.main([])
+        self.assertEqual(rc, 1)
+        wait_port_mock.assert_called_once_with("10.0.0.2", 22, expected_state=False, service_name="SSH port")
+        wait_up_mock.assert_not_called()
+        self.assertIn("SSH did not close after disable/reboot request; disable could not be verified.", output.getvalue())
+        finished = self.telemetry_payload("set_ssh_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["set_ssh_action"], "disable_ssh")
+        self.assertEqual(finished["ssh_final_reachable"], True)
+        self.assertEqual(finished["ssh_disable_persisted"], False)
+        self.assertEqual(finished["ssh_reboot_observed_down"], False)
+        self.assertIn("stage=wait_for_ssh_down", finished["error"])
+
+    def test_set_ssh_disable_fails_when_device_does_not_come_back(self) -> None:
+        output = io.StringIO()
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
+                with mock.patch("builtins.input", return_value="y"):
+                    with mock.patch("timecapsulesmb.cli.set_ssh.disable_ssh_over_ssh"):
+                        with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_tcp_port_state", return_value=True) as wait_port_mock:
+                            with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_device_up", return_value=False) as wait_up_mock:
+                                with redirect_stdout(output):
+                                    rc = set_ssh.main([])
+        self.assertEqual(rc, 1)
+        wait_port_mock.assert_called_once_with("10.0.0.2", 22, expected_state=False, service_name="SSH port")
+        wait_up_mock.assert_called_once_with("10.0.0.2")
+        self.assertIn("Device went down after disable request but did not come back within timeout.", output.getvalue())
+        finished = self.telemetry_payload("set_ssh_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["set_ssh_action"], "disable_ssh")
+        self.assertEqual(finished["ssh_reboot_observed_down"], True)
+        self.assertEqual(finished["device_recovered"], False)
+        self.assertIn("stage=wait_for_device_up", finished["error"])
+
+    def test_set_ssh_disable_fails_when_ssh_reopens(self) -> None:
         output = io.StringIO()
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw", "TC_SSH_OPTS": "-o ProxyJump=bastion"}
         with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
@@ -5613,22 +5658,25 @@ class CliTests(unittest.TestCase):
                 with mock.patch("builtins.input", return_value="y"):
                     with mock.patch("timecapsulesmb.cli.set_ssh.disable_ssh_over_ssh") as disable_ssh_mock:
                         with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_tcp_port_state", side_effect=[True, False]):
-                            with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_device_up"):
+                            with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_device_up", return_value=True):
                                 with redirect_stdout(output):
                                     rc = set_ssh.main([])
-        self.assertEqual(rc, 0)
+        self.assertEqual(rc, 1)
         disable_ssh_mock.assert_called_once_with(
             SshConnection("root@10.0.0.2", "pw", "-o ProxyJump=bastion"),
             reboot_device=True,
             log=print,
         )
-        self.assertIn("Warning: SSH reopened after reboot", output.getvalue())
+        self.assertIn("SSH reopened after reboot. Disable did not persist.", output.getvalue())
         finished = self.telemetry_payload("set_ssh_finished")
-        self.assertEqual(finished["result"], "success")
+        self.assertEqual(finished["result"], "failure")
         self.assertEqual(finished["set_ssh_action"], "disable_ssh")
         self.assertEqual(finished["ssh_initially_reachable"], True)
+        self.assertEqual(finished["ssh_reboot_observed_down"], True)
+        self.assertEqual(finished["device_recovered"], True)
         self.assertEqual(finished["ssh_final_reachable"], True)
         self.assertEqual(finished["ssh_disable_persisted"], False)
+        self.assertIn("stage=verify_ssh_disabled", finished["error"])
 
     def test_set_ssh_disable_flow_confirms_ssh_disabled(self) -> None:
         output = io.StringIO()
@@ -5638,7 +5686,7 @@ class CliTests(unittest.TestCase):
                 with mock.patch("builtins.input", return_value="y"):
                     with mock.patch("timecapsulesmb.cli.set_ssh.disable_ssh_over_ssh"):
                         with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_tcp_port_state", side_effect=[True, True]):
-                            with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_device_up"):
+                            with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_device_up", return_value=True):
                                 with redirect_stdout(output):
                                     rc = set_ssh.main([])
         self.assertEqual(rc, 0)
@@ -5646,6 +5694,8 @@ class CliTests(unittest.TestCase):
         finished = self.telemetry_payload("set_ssh_finished")
         self.assertEqual(finished["result"], "success")
         self.assertEqual(finished["set_ssh_action"], "disable_ssh")
+        self.assertEqual(finished["ssh_reboot_observed_down"], True)
+        self.assertEqual(finished["device_recovered"], True)
         self.assertEqual(finished["ssh_final_reachable"], False)
         self.assertEqual(finished["ssh_disable_persisted"], True)
 
