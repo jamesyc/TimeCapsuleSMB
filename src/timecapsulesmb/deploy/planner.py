@@ -15,7 +15,7 @@ from timecapsulesmb.deploy.commands import (
     stop_process_action,
 )
 from timecapsulesmb.deploy.templates import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
-from timecapsulesmb.device.probe import DevicePaths
+from timecapsulesmb.device.util import DevicePaths
 
 
 @dataclass(frozen=True)

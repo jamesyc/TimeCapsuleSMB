@@ -12,7 +12,8 @@ from timecapsulesmb.deploy.dry_run import format_uninstall_plan, uninstall_plan_
 from timecapsulesmb.deploy.executor import remote_uninstall_payload
 from timecapsulesmb.deploy.planner import build_uninstall_plan
 from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
-from timecapsulesmb.device.probe import build_device_paths, discover_volume_root_conn
+from timecapsulesmb.device.mounts import ensure_volume_root_mounted_conn
+from timecapsulesmb.device.util import build_device_paths, build_unknown_mount_device_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.telemetry import TelemetryClient
 
@@ -52,10 +53,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         command_context.set_stage("resolve_connection")
         connection = command_context.resolve_env_connection(allow_empty_password=True)
 
-        command_context.set_stage("discover_volume_root")
-        volume_root = discover_volume_root_conn(connection)
-        command_context.update_fields(volume_root=volume_root)
-        device_paths = build_device_paths(volume_root, config.require("TC_PAYLOAD_DIR_NAME"))
+        if args.dry_run:
+            device_paths = build_unknown_mount_device_paths(config.require("TC_PAYLOAD_DIR_NAME"))
+        else:
+            command_context.set_stage("ensure_volume_root_mounted")
+            volume_root = ensure_volume_root_mounted_conn(connection)
+            device_paths = build_device_paths(volume_root, config.require("TC_PAYLOAD_DIR_NAME"))
+        command_context.update_fields(volume_root=device_paths.volume_root)
         command_context.set_stage("build_uninstall_plan")
         plan = build_uninstall_plan(connection.host, device_paths, reboot_after_uninstall=not args.no_reboot)
         command_context.update_fields(payload_dir=plan.payload_dir)

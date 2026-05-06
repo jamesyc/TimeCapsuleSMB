@@ -64,7 +64,7 @@ from timecapsulesmb.device.probe import (
     ManagedSmbdProbeResult,
     build_device_paths,
     discover_mounted_volume_conn,
-    discover_volume_root_conn,
+    discover_mounted_volume_root_conn,
     extract_airport_identity_from_acp_output,
     extract_airport_identity_from_text,
     probe_device_conn,
@@ -74,6 +74,7 @@ from timecapsulesmb.device.probe import (
     probe_remote_airport_identity_conn,
     wait_for_ssh_state_conn,
 )
+from timecapsulesmb.device.mounts import ensure_volume_root_mounted_conn
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
 
@@ -2607,43 +2608,44 @@ int main(void) {{
             self.assertEqual(run.returncode, 2)
             self.assertIn("15 bytes or fewer", run.stderr)
 
-    def test_discover_volume_root_raises_when_no_output(self) -> None:
-        proc = mock.Mock(stdout="\n")
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
-            with self.assertRaises(SystemExit):
-                discover_volume_root_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
+    def test_ensure_volume_root_mounted_raises_when_no_output(self) -> None:
+        proc = mock.Mock(stdout="\n", returncode=1)
+        with mock.patch("timecapsulesmb.device.mounts.discover_mounted_volume_root_conn", side_effect=SystemExit("no mounted volume")):
+            with mock.patch("timecapsulesmb.device.mounts.run_ssh", return_value=proc):
+                with self.assertRaises(SystemExit):
+                    ensure_volume_root_mounted_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
 
-    def test_discover_volume_root_prefers_existing_share_root(self) -> None:
-        proc = mock.Mock(stdout="/Volumes/dk3\n")
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
-            self.assertEqual(discover_volume_root_conn(SshConnection("root@10.0.0.2", "pw", "-o foo")), "/Volumes/dk3")
+    def test_ensure_volume_root_mounted_returns_fallback_mount(self) -> None:
+        proc = mock.Mock(stdout="/Volumes/dk3\n", returncode=0)
+        with mock.patch("timecapsulesmb.device.mounts.discover_mounted_volume_root_conn", side_effect=SystemExit("no mounted volume")):
+            with mock.patch("timecapsulesmb.device.mounts.run_ssh", return_value=proc):
+                self.assertEqual(ensure_volume_root_mounted_conn(SshConnection("root@10.0.0.2", "pw", "-o foo")), "/Volumes/dk3")
 
-    def test_discover_volume_root_uses_discover_mounted_volume_first(self) -> None:
-        mounted = mock.Mock(mountpoint="/Volumes/dk2")
-        with mock.patch("timecapsulesmb.device.probe.discover_mounted_volume_conn", return_value=mounted) as mounted_mock:
-            with mock.patch("timecapsulesmb.device.probe.run_ssh") as run_ssh_mock:
-                volume = discover_volume_root_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
+    def test_ensure_volume_root_mounted_uses_discover_mounted_volume_first(self) -> None:
+        with mock.patch("timecapsulesmb.device.mounts.discover_mounted_volume_root_conn", return_value="/Volumes/dk2") as mounted_mock:
+            with mock.patch("timecapsulesmb.device.mounts.run_ssh") as run_ssh_mock:
+                volume = ensure_volume_root_mounted_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
         self.assertEqual(volume, "/Volumes/dk2")
         self.assertEqual(mounted_mock.call_args.args[0], SshConnection("root@10.0.0.2", "pw", "-o foo"))
         run_ssh_mock.assert_not_called()
 
-    def test_discover_volume_root_falls_back_when_no_volume_is_mounted(self) -> None:
-        proc = mock.Mock(stdout="/Volumes/dk3\n")
-        with mock.patch("timecapsulesmb.device.probe.discover_mounted_volume_conn", side_effect=SystemExit("no mounted volume")):
-            with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
-                volume = discover_volume_root_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
+    def test_ensure_volume_root_mounted_falls_back_when_no_volume_is_mounted(self) -> None:
+        proc = mock.Mock(stdout="/Volumes/dk3\n", returncode=0)
+        with mock.patch("timecapsulesmb.device.mounts.discover_mounted_volume_root_conn", side_effect=SystemExit("no mounted volume")):
+            with mock.patch("timecapsulesmb.device.mounts.run_ssh", return_value=proc) as run_ssh_mock:
+                volume = ensure_volume_root_mounted_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
         self.assertEqual(volume, "/Volumes/dk3")
         run_ssh_mock.assert_called_once()
 
-    def test_discover_volume_root_checks_existing_mounts_before_mounting_candidates(self) -> None:
-        proc = mock.Mock(stdout="/Volumes/dk2\n")
-        with mock.patch("timecapsulesmb.device.probe.discover_mounted_volume_conn", side_effect=SystemExit("no mounted volume")):
-            with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
-                discover_volume_root_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
+    def test_ensure_volume_root_mounted_uses_shared_candidate_order_before_mounting_candidates(self) -> None:
+        proc = mock.Mock(stdout="/Volumes/dk2\n", returncode=0)
+        with mock.patch("timecapsulesmb.device.mounts.discover_mounted_volume_root_conn", side_effect=SystemExit("no mounted volume")):
+            with mock.patch("timecapsulesmb.device.mounts.run_ssh", return_value=proc) as run_ssh_mock:
+                ensure_volume_root_mounted_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
         cmd = run_ssh_mock.call_args.args[1]
         self.assertIn('volume="/Volumes/$dev"', cmd)
-        self.assertIn('if [ ! -d "$volume" ]; then\n    mkdir -p "$volume"\n    created_mountpoint=1\n  fi', cmd)
-        self.assertIn('df_line=$(/bin/df -k "$volume" 2>/dev/null | /usr/bin/tail -n +2 || true)', cmd)
+        self.assertIn('mkdir -p "$volume_root"', cmd)
+        self.assertIn('df_line=$(/bin/df -k "$volume_root" 2>/dev/null | /usr/bin/tail -n +2 || true)', cmd)
         self.assertIn("disk_name_candidates()", cmd)
         self.assertIn("APdata", cmd)
         self.assertIn("APconfig", cmd)
@@ -2652,15 +2654,21 @@ int main(void) {{
         self.assertNotIn("is_metadata_wedge()", cmd)
         self.assertIn("for dev in $(disk_name_candidates); do", cmd)
 
-    def test_discover_volume_root_cleans_up_unused_mountpoint_after_failed_fallback_mount(self) -> None:
-        proc = mock.Mock(stdout="/Volumes/dk2\n")
-        with mock.patch("timecapsulesmb.device.probe.discover_mounted_volume_conn", side_effect=SystemExit("no mounted volume")):
-            with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
-                discover_volume_root_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
+    def test_ensure_volume_root_mounted_cleans_up_unused_mountpoint_after_failed_fallback_mount(self) -> None:
+        proc = mock.Mock(stdout="/Volumes/dk2\n", returncode=0)
+        with mock.patch("timecapsulesmb.device.mounts.discover_mounted_volume_root_conn", side_effect=SystemExit("no mounted volume")):
+            with mock.patch("timecapsulesmb.device.mounts.run_ssh", return_value=proc) as run_ssh_mock:
+                ensure_volume_root_mounted_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
         cmd = run_ssh_mock.call_args.args[1]
         self.assertIn('created_mountpoint=0', cmd)
         self.assertIn('created_mountpoint=1', cmd)
-        self.assertIn('/bin/rmdir "$volume" >/dev/null 2>&1 || true', cmd)
+        self.assertIn('[ -w "$volume_root" ]', cmd)
+        self.assertIn('/bin/rmdir "$volume_root" >/dev/null 2>&1 || true', cmd)
+
+    def test_discover_mounted_volume_root_returns_mounted_mountpoint(self) -> None:
+        mounted = mock.Mock(mountpoint="/Volumes/dk2")
+        with mock.patch("timecapsulesmb.device.probe.discover_mounted_volume_conn", return_value=mounted):
+            self.assertEqual(discover_mounted_volume_root_conn(SshConnection("root@10.0.0.2", "pw", "-o foo")), "/Volumes/dk2")
 
     def test_discover_mounted_volume_returns_active_device_and_mountpoint(self) -> None:
         proc = mock.Mock(stdout="/dev/dk2 /Volumes/dk2\n", returncode=0)

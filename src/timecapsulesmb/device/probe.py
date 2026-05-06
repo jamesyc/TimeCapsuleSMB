@@ -6,11 +6,17 @@ import time
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.device.compat import compatibility_from_probe_result
+from timecapsulesmb.device.util import (
+    DISK_NAME_CANDIDATES_SH,
+    DevicePaths,
+    MOUNTED_VOLUME_DISCOVERY_SH,
+    MountedVolume,
+    build_device_paths,
+)
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, ssh_opts_use_proxy
@@ -184,65 +190,6 @@ describe_managed_mdns_status() {{
     fi
     return "$status"
 }}
-'''
-
-
-@dataclass(frozen=True)
-class DevicePaths:
-    volume_root: str
-    payload_dir: str
-    disk_key: str
-    data_root: str
-    data_root_marker: str
-
-
-@dataclass(frozen=True)
-class MountedVolume:
-    device: str
-    mountpoint: str
-
-
-DISK_NAME_CANDIDATES_SH = r'''
-append_candidate() {
-  candidate=$1
-  case " $candidates " in
-    *" $candidate "*)
-      ;;
-    *)
-      candidates="$candidates $candidate"
-      ;;
-  esac
-}
-
-disk_name_candidates() {
-  candidates=""
-  dmesg_disk_lines=$(/sbin/dmesg 2>/dev/null | /usr/bin/sed -n '/^dk[0-9][0-9]* at /p' || true)
-  metadata_wedges=""
-  for dev in $(echo "$dmesg_disk_lines" | /usr/bin/sed -n 's/^\(dk[0-9][0-9]*\) at .*: APconfig$/\1/p;s/^\(dk[0-9][0-9]*\) at .*: APswap$/\1/p'); do
-    metadata_wedges="$metadata_wedges $dev"
-  done
-
-  for dev in $(echo "$dmesg_disk_lines" | /usr/bin/sed -n 's/^\(dk[0-9][0-9]*\) at .*: APdata$/\1/p'); do
-    append_candidate "$dev"
-  done
-  for dev in $(/sbin/sysctl -n hw.disknames 2>/dev/null); do
-    case "$dev" in
-      dk[0-9]*)
-        case " $metadata_wedges " in
-          *" $dev "*)
-            ;;
-          *)
-            append_candidate "$dev"
-            ;;
-        esac
-        ;;
-    esac
-  done
-  if [ -z "$candidates" ]; then
-    candidates=" dk2 dk3"
-  fi
-  echo "$candidates"
-}
 '''
 
 
@@ -520,24 +467,7 @@ fi
 
 
 def discover_mounted_volume_conn(connection: SshConnection) -> MountedVolume:
-    script = DISK_NAME_CANDIDATES_SH + r'''
-for dev in $(disk_name_candidates); do
-  volume="/Volumes/$dev"
-  if [ ! -d "$volume" ]; then
-    continue
-  fi
-
-  df_line=$(/bin/df -k "$volume" 2>/dev/null | /usr/bin/tail -n +2 || true)
-  case "$df_line" in
-    /dev/$dev*" $volume")
-      echo "/dev/$dev $volume"
-      exit 0
-      ;;
-  esac
-done
-
-exit 1
-    '''
+    script = DISK_NAME_CANDIDATES_SH + MOUNTED_VOLUME_DISCOVERY_SH
     proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False)
     lines = proc.stdout.strip().splitlines()
     result = lines[-1].strip() if lines else ""
@@ -545,6 +475,10 @@ exit 1
         raise SystemExit("Failed to discover a mounted AirPort HFS data volume on the device.")
     device, mountpoint = result.split(" ", 1)
     return MountedVolume(device=device, mountpoint=mountpoint)
+
+
+def discover_mounted_volume_root_conn(connection: SshConnection) -> str:
+    return discover_mounted_volume_conn(connection).mountpoint
 
 
 def probe_remote_interface_conn(connection: SshConnection, iface: str) -> RemoteInterfaceProbeResult:
@@ -931,70 +865,6 @@ def probe_paths_absent_conn(
         script_lines.append(f"if [ -e {quoted} ]; then echo PRESENT:{target}; missing=1; else echo ABSENT:{target}; fi")
     script_lines.append("exit \"$missing\"")
     return run_ssh(connection, f"/bin/sh -c {shlex.quote('; '.join(script_lines))}", check=False)
-
-
-def discover_volume_root_conn(connection: SshConnection) -> str:
-    try:
-        return discover_mounted_volume_conn(connection).mountpoint
-    except SystemExit:
-        pass
-
-    script = DISK_NAME_CANDIDATES_SH + r'''
-for dev in $(disk_name_candidates); do
-  if [ ! -b "/dev/$dev" ]; then
-    continue
-  fi
-
-  volume="/Volumes/$dev"
-  created_mountpoint=0
-  if [ ! -d "$volume" ]; then
-    mkdir -p "$volume"
-    created_mountpoint=1
-  fi
-
-  /sbin/mount_hfs "/dev/$dev" "$volume" >/dev/null 2>&1 || true
-
-  df_line=$(/bin/df -k "$volume" 2>/dev/null | /usr/bin/tail -n +2 || true)
-  case "$df_line" in
-    *" $volume")
-      :
-      ;;
-    *)
-      if [ "$created_mountpoint" -eq 1 ]; then
-        /bin/rmdir "$volume" >/dev/null 2>&1 || true
-      fi
-      continue
-      ;;
-  esac
-
-  if [ ! -w "$volume" ]; then
-    continue
-  fi
-
-  echo "$volume"
-  exit 0
-done
-
-exit 1
-    '''
-    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}")
-    lines = proc.stdout.strip().splitlines()
-    volume = lines[-1].strip() if lines else ""
-    if not volume:
-        raise SystemExit("Failed to discover an AirPort volume root on the device.")
-    return volume
-
-
-def build_device_paths(volume_root: str, payload_dir_name: str, *, share_use_disk_root: bool = False) -> DevicePaths:
-    disk_key = PurePosixPath(volume_root).name
-    data_root = volume_root if share_use_disk_root else f"{volume_root}/ShareRoot"
-    return DevicePaths(
-        volume_root=volume_root,
-        payload_dir=f"{volume_root}/{payload_dir_name}",
-        disk_key=disk_key,
-        data_root=data_root,
-        data_root_marker=f"{data_root}/.com.apple.timemachine.supported",
-    )
 
 
 def wait_for_ssh_state_conn(

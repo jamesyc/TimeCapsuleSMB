@@ -4365,7 +4365,7 @@ class CliTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2") as mount_mock:
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
                             with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload") as upload_mock:
@@ -4376,7 +4376,7 @@ class CliTests(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("Dry run: deployment plan", text)
         self.assertIn("host: root@10.0.0.2", text)
-        self.assertIn("volume root: /Volumes/dk2", text)
+        self.assertIn("volume root: unknown until mount", text)
         self.assertIn(f"Apple mount wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s", text)
         self.assertIn("generated smbpasswd", text)
         self.assertIn("request: attempt device reboot", text)
@@ -4391,13 +4391,14 @@ class CliTests(unittest.TestCase):
         actions_mock.assert_not_called()
         upload_mock.assert_not_called()
         auth_mock.assert_not_called()
+        mount_mock.assert_not_called()
 
     def test_deploy_dry_run_no_reboot_matches_no_reboot_execution_path(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
                         with redirect_stdout(output):
                             rc = deploy.main(["--dry-run", "--no-reboot"])
@@ -4429,7 +4430,7 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
                 with mock.patch("timecapsulesmb.cli.deploy.CommandContext", return_value=FakeCommandContext()):
                     with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
-                        with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                        with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                             with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
                                 with redirect_stdout(output):
                                     rc = deploy.main(["--dry-run"])
@@ -4580,7 +4581,7 @@ class CliTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
                             with mock.patch(
@@ -4608,7 +4609,7 @@ class CliTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
                 with mock.patch("timecapsulesmb.device.probe.probe_device_conn", return_value=self.make_probe_result_netbsd6()):
                     with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
-                        with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                        with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                             with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
                                 with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
                                     with mock.patch("timecapsulesmb.cli.deploy.build_template_bundle", return_value=template_bundle):
@@ -4648,7 +4649,7 @@ class CliTests(unittest.TestCase):
 
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
                             with mock.patch(
@@ -4728,7 +4729,7 @@ class CliTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
                             with mock.patch(
@@ -4755,7 +4756,7 @@ class CliTests(unittest.TestCase):
         with ExitStack() as stack:
             stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)))
             stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"))
+            stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"))
             stack.enter_context(mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()))
             stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"))
             stack.enter_context(
@@ -4796,7 +4797,7 @@ class CliTests(unittest.TestCase):
         with ExitStack() as stack:
             stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)))
             stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"))
+            stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"))
             stack.enter_context(mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()))
             stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"))
             stack.enter_context(
@@ -4838,7 +4839,7 @@ class CliTests(unittest.TestCase):
         with ExitStack() as stack:
             stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)))
             stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"))
+            stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"))
             stack.enter_context(mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()))
             stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"))
             stack.enter_context(
@@ -4878,7 +4879,7 @@ class CliTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
                             with mock.patch(
@@ -4919,7 +4920,7 @@ class CliTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
                             with mock.patch(
@@ -4957,7 +4958,7 @@ class CliTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
                             with mock.patch(
@@ -4994,7 +4995,7 @@ class CliTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
                             with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value="12345678-1234-1234-1234-123456789012"):
@@ -5027,13 +5028,13 @@ class CliTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
                         with redirect_stdout(output):
                             rc = deploy.main(["--dry-run"])
         self.assertEqual(rc, 0)
         text = output.getvalue()
-        payload_dir = f"/Volumes/dk2/{values['TC_PAYLOAD_DIR_NAME']}"
+        payload_dir = f"unknown until mount/{values['TC_PAYLOAD_DIR_NAME']}"
         self.assertIn(f"bin/nbns/nbns-advertiser -> {payload_dir}/nbns-advertiser", text)
         self.assertNotIn(f"generated nbns marker -> {payload_dir}/private/nbns.enabled", text)
 
@@ -5055,13 +5056,13 @@ class CliTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with redirect_stdout(output):
                             rc = deploy.main(["--dry-run"])
         self.assertEqual(rc, 0)
         text = output.getvalue()
-        payload_dir = f"/Volumes/dk2/{values['TC_PAYLOAD_DIR_NAME']}"
+        payload_dir = f"unknown until mount/{values['TC_PAYLOAD_DIR_NAME']}"
         self.assertIn("Detected supported device: NetBSD 4.0 (earmv4, little-endian).", text)
         self.assertIn("Using NetBSD 4 little-endian payload...", text)
         self.assertIn(f"bin/samba4-netbsd4le/smbd -> {payload_dir}/smbd", text)
@@ -5098,7 +5099,7 @@ class CliTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with mock.patch("builtins.input", return_value="n"):
                             with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
@@ -5130,7 +5131,7 @@ class CliTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with mock.patch("builtins.input", return_value="YES"):
                             with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
@@ -5166,7 +5167,7 @@ class CliTests(unittest.TestCase):
         )
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
                             with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
@@ -5212,7 +5213,7 @@ class CliTests(unittest.TestCase):
         )
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
                             with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
@@ -5246,7 +5247,7 @@ class CliTests(unittest.TestCase):
         )
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
                             with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
@@ -5275,7 +5276,7 @@ class CliTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
                             with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
@@ -5320,7 +5321,7 @@ class CliTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
                             with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
@@ -5354,7 +5355,7 @@ class CliTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
                             with mock.patch("timecapsulesmb.cli.deploy.remote_ensure_adisk_uuid", return_value=""):
@@ -5384,14 +5385,14 @@ class CliTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok"), ("mdns-advertiser-netbsd4le", True, "ok"), ("nbns-advertiser-netbsd4le", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with redirect_stdout(output):
                             rc = deploy.main(["--dry-run", "--install-nbns"])
         self.assertEqual(rc, 0)
         text = output.getvalue()
-        self.assertIn("bin/nbns-netbsd4le/nbns-advertiser -> /Volumes/dk2/samba4/nbns-advertiser", text)
-        self.assertIn("generated nbns marker -> /Volumes/dk2/samba4/private/nbns.enabled", text)
+        self.assertIn("bin/nbns-netbsd4le/nbns-advertiser -> unknown until mount/samba4/nbns-advertiser", text)
+        self.assertIn("generated nbns marker -> unknown until mount/samba4/private/nbns.enabled", text)
 
     def test_deploy_install_nbns_dry_run_mentions_marker(self) -> None:
         output = io.StringIO()
@@ -5411,12 +5412,12 @@ class CliTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
                         with redirect_stdout(output):
                             rc = deploy.main(["--dry-run", "--install-nbns"])
         self.assertEqual(rc, 0)
-        self.assertIn("generated nbns marker -> /Volumes/dk2/samba4/private/nbns.enabled", output.getvalue())
+        self.assertIn("generated nbns marker -> unknown until mount/samba4/private/nbns.enabled", output.getvalue())
 
     def test_deploy_rejects_unsupported_device(self) -> None:
         values = {
@@ -5445,7 +5446,7 @@ class CliTests(unittest.TestCase):
         )
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=unsupported):
                         with self.assertRaises(SystemExit) as ctx:
                             deploy.main(["--dry-run"])
@@ -5478,7 +5479,7 @@ class CliTests(unittest.TestCase):
         )
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=unsupported):
                         with self.assertRaises(SystemExit) as ctx:
                             deploy.main(["--dry-run", "--allow-unsupported"])
@@ -5665,17 +5666,17 @@ class CliTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
                         with redirect_stdout(output):
                             rc = deploy.main(["--dry-run", "--json"])
         self.assertEqual(rc, 0)
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["host"], "root@10.0.0.2")
-        self.assertEqual(payload["volume_root"], "/Volumes/dk2")
+        self.assertEqual(payload["volume_root"], "unknown until mount")
         self.assertEqual(payload["apple_mount_wait_seconds"], DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
         self.assertTrue(payload["nbns_path"].endswith("/bin/nbns/nbns-advertiser"))
-        self.assertEqual(payload["payload_targets"]["nbns-advertiser"], f"/Volumes/dk2/{values['TC_PAYLOAD_DIR_NAME']}/nbns-advertiser")
+        self.assertEqual(payload["payload_targets"]["nbns-advertiser"], f"unknown until mount/{values['TC_PAYLOAD_DIR_NAME']}/nbns-advertiser")
         self.assertEqual(
             payload["reboot_request"],
             {
@@ -5702,7 +5703,7 @@ class CliTests(unittest.TestCase):
         values = self.make_valid_env()
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
                         with redirect_stdout(output):
                             rc = deploy.main(["--dry-run", "--json", "--mount-wait", "123"])
@@ -5721,24 +5722,24 @@ class CliTests(unittest.TestCase):
         values = self.make_valid_env(TC_PAYLOAD_DIR_NAME=".samba4", TC_SHARE_USE_DISK_ROOT="false")
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
                         with redirect_stdout(output):
                             rc = deploy.main(["--dry-run", "--json"])
         self.assertEqual(rc, 0)
         payload = json.loads(output.getvalue())
-        self.assertEqual(payload["payload_dir"], "/Volumes/dk2/.samba4")
+        self.assertEqual(payload["payload_dir"], "unknown until mount/.samba4")
         self.assertIn(
             {
                 "kind": "initialize_data_root",
-                "args": ["/Volumes/dk2/ShareRoot", "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported"],
+                "args": ["unknown until mount/ShareRoot", "unknown until mount/ShareRoot/.com.apple.timemachine.supported"],
             },
             payload["pre_upload_actions"],
         )
         self.assertNotIn(
             {
                 "kind": "initialize_data_root",
-                "args": ["/Volumes/dk2", "/Volumes/dk2/.com.apple.timemachine.supported"],
+                "args": ["unknown until mount", "unknown until mount/.com.apple.timemachine.supported"],
             },
             payload["pre_upload_actions"],
         )
@@ -5748,24 +5749,24 @@ class CliTests(unittest.TestCase):
         values = self.make_valid_env(TC_PAYLOAD_DIR_NAME=".samba4", TC_SHARE_USE_DISK_ROOT="true")
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
                         with redirect_stdout(output):
                             rc = deploy.main(["--dry-run", "--json"])
         self.assertEqual(rc, 0)
         payload = json.loads(output.getvalue())
-        self.assertEqual(payload["payload_dir"], "/Volumes/dk2/.samba4")
+        self.assertEqual(payload["payload_dir"], "unknown until mount/.samba4")
         self.assertIn(
             {
                 "kind": "initialize_data_root",
-                "args": ["/Volumes/dk2", "/Volumes/dk2/.com.apple.timemachine.supported"],
+                "args": ["unknown until mount", "unknown until mount/.com.apple.timemachine.supported"],
             },
             payload["pre_upload_actions"],
         )
         self.assertNotIn(
             {
                 "kind": "initialize_data_root",
-                "args": ["/Volumes/dk2/ShareRoot", "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported"],
+                "args": ["unknown until mount/ShareRoot", "unknown until mount/ShareRoot/.com.apple.timemachine.supported"],
             },
             payload["pre_upload_actions"],
         )
@@ -5788,7 +5789,7 @@ class CliTests(unittest.TestCase):
         }
         with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
             with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.discover_volume_root_conn", return_value="/Volumes/dk2"):
+                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                     with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
                         with redirect_stdout(output):
                             rc = deploy.main(["--dry-run", "--json"])
@@ -5962,23 +5963,24 @@ class CliTests(unittest.TestCase):
             "TC_PAYLOAD_DIR_NAME": "samba4",
         }
         with mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root_conn", return_value="/Volumes/dk2"):
+            with mock.patch("timecapsulesmb.cli.uninstall.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2") as mount_mock:
                 with redirect_stdout(output):
                     rc = uninstall.main(["--dry-run"])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("Dry run: uninstall plan", text)
         self.assertIn("host: root@10.0.0.2", text)
-        self.assertIn(f"payload dir: /Volumes/dk2/{values['TC_PAYLOAD_DIR_NAME']}", text)
+        self.assertIn(f"payload dir: unknown until mount/{values['TC_PAYLOAD_DIR_NAME']}", text)
         self.assertIn("request: attempt device reboot", text)
         self.assertIn("follow-up: wait for SSH down, then SSH up", text)
         started = self.telemetry_payload("uninstall_started")
         finished = self.telemetry_payload("uninstall_finished")
         self.assertEqual(started["command_id"], finished["command_id"])
         self.assertEqual(finished["result"], "success")
-        self.assertEqual(finished["volume_root"], "/Volumes/dk2")
-        self.assertEqual(finished["payload_dir"], f"/Volumes/dk2/{values['TC_PAYLOAD_DIR_NAME']}")
+        self.assertEqual(finished["volume_root"], "unknown until mount")
+        self.assertEqual(finished["payload_dir"], f"unknown until mount/{values['TC_PAYLOAD_DIR_NAME']}")
         self.assertEqual(finished["reboot_was_attempted"], False)
+        mount_mock.assert_not_called()
 
     def test_uninstall_dry_run_no_reboot_matches_no_reboot_execution_path(self) -> None:
         output = io.StringIO()
@@ -5989,7 +5991,7 @@ class CliTests(unittest.TestCase):
             "TC_PAYLOAD_DIR_NAME": "samba4",
         }
         with mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root_conn", return_value="/Volumes/dk2"):
+            with mock.patch("timecapsulesmb.cli.uninstall.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                 with redirect_stdout(output):
                     rc = uninstall.main(["--dry-run", "--no-reboot"])
         self.assertEqual(rc, 0)
@@ -6007,7 +6009,7 @@ class CliTests(unittest.TestCase):
             "TC_MDNS_HOST_LABEL": "bad host label",
         }
         with mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root_conn", return_value="/Volumes/dk2"):
+            with mock.patch("timecapsulesmb.cli.uninstall.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                 with redirect_stdout(io.StringIO()):
                     rc = uninstall.main(["--dry-run"])
         self.assertEqual(rc, 0)
@@ -6033,13 +6035,13 @@ class CliTests(unittest.TestCase):
             "TC_PAYLOAD_DIR_NAME": "samba4",
         }
         with mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root_conn", return_value="/Volumes/dk2"):
+            with mock.patch("timecapsulesmb.cli.uninstall.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                 with redirect_stdout(output):
                     rc = uninstall.main(["--dry-run", "--json"])
         self.assertEqual(rc, 0)
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["host"], "root@10.0.0.2")
-        self.assertEqual(payload["volume_root"], "/Volumes/dk2")
+        self.assertEqual(payload["volume_root"], "unknown until mount")
         self.assertEqual(
             payload["reboot_request"],
             {
@@ -6066,7 +6068,7 @@ class CliTests(unittest.TestCase):
             "TC_PAYLOAD_DIR_NAME": "samba4",
         }
         with mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root_conn", return_value="/Volumes/dk2"):
+            with mock.patch("timecapsulesmb.cli.uninstall.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                 with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload") as uninstall_mock:
                     with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as run_ssh_mock:
                         with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
@@ -6093,7 +6095,7 @@ class CliTests(unittest.TestCase):
         values = self.make_valid_env()
         with ExitStack() as stack:
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root_conn", return_value="/Volumes/dk2"))
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"))
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
             stack.enter_context(
                 mock.patch(
@@ -6124,7 +6126,7 @@ class CliTests(unittest.TestCase):
         values = self.make_valid_env()
         with ExitStack() as stack:
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root_conn", return_value="/Volumes/dk2"))
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"))
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
             stack.enter_context(
                 mock.patch(
@@ -6160,7 +6162,7 @@ class CliTests(unittest.TestCase):
             "TC_PAYLOAD_DIR_NAME": "samba4",
         }
         with mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root_conn", return_value="/Volumes/dk2"):
+            with mock.patch("timecapsulesmb.cli.uninstall.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                 with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload") as uninstall_mock:
                     with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as run_ssh_mock:
                         with mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall") as verify_mock:
@@ -6189,7 +6191,7 @@ class CliTests(unittest.TestCase):
             return "n"
 
         with mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root_conn", return_value="/Volumes/dk2"):
+            with mock.patch("timecapsulesmb.cli.uninstall.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                 with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"):
                     with mock.patch("builtins.input", side_effect=fake_input):
                         with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as run_ssh_mock:
@@ -6212,7 +6214,7 @@ class CliTests(unittest.TestCase):
             "TC_PAYLOAD_DIR_NAME": "samba4",
         }
         with mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.uninstall.discover_volume_root_conn", return_value="/Volumes/dk2"):
+            with mock.patch("timecapsulesmb.cli.uninstall.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
                 with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"):
                     with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"):
                         with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]):

@@ -37,8 +37,7 @@ from timecapsulesmb.device.probe import (
     ProbedDeviceState,
     RemoteInterfaceProbeResult,
     RUNTIME_SMB_CONF,
-    build_device_paths,
-    discover_volume_root_conn,
+    discover_mounted_volume_root_conn,
     probe_connection_state,
     probe_managed_mdns_takeover_conn,
     probe_managed_smbd_conn,
@@ -48,6 +47,7 @@ from timecapsulesmb.device.probe import (
     read_interface_ipv4_conn,
     read_runtime_log_tails_conn,
 )
+from timecapsulesmb.device.util import build_device_paths
 from timecapsulesmb.discovery.native_dns_sd import browse_native_dns_sd
 from timecapsulesmb.transport.local import find_free_local_port
 from timecapsulesmb.transport.local import command_exists
@@ -285,7 +285,7 @@ def _add_nbns_results(
     add_result: Callable[[CheckResult], None],
 ) -> None:
     try:
-        volume_root = discover_volume_root_conn(connection)
+        volume_root = discover_mounted_volume_root_conn(connection)
         device_paths = build_device_paths(volume_root, config.require("TC_PAYLOAD_DIR_NAME"))
         if nbns_marker_enabled_conn(connection, device_paths.payload_dir):
             if proxied_ssh:

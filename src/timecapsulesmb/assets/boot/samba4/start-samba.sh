@@ -222,6 +222,7 @@ append_disk_candidate() {
 }
 
 disk_name_candidates() {
+    # Keep this candidate order in sync with src/timecapsulesmb/device/util.py.
     DISK_CANDIDATES=""
     dmesg_disk_lines=$(/sbin/dmesg 2>/dev/null | /usr/bin/sed -n '/^dk[0-9][0-9]* at /p' || true)
     metadata_wedges=""

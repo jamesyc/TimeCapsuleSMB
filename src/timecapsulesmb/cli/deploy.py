@@ -28,7 +28,8 @@ from timecapsulesmb.deploy.templates import (
     write_boot_asset,
 )
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, payload_family_description, render_compatibility_message
-from timecapsulesmb.device.probe import build_device_paths, discover_volume_root_conn
+from timecapsulesmb.device.mounts import ensure_volume_root_mounted_conn
+from timecapsulesmb.device.util import build_device_paths, build_unknown_mount_device_paths
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_green, color_red
 
@@ -112,18 +113,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not args.json:
             print(f"Using {payload_family_description(payload_family)} payload...")
         apple_mount_wait_seconds = args.mount_wait
-        command_context.set_stage("discover_volume_root")
-        volume_root = discover_volume_root_conn(connection)
         share_use_disk_root = parse_bool(config.get("TC_SHARE_USE_DISK_ROOT", "false"))
         resolved_artifacts = resolve_payload_artifacts(REPO_ROOT, payload_family)
         smbd_path = resolved_artifacts["smbd"].absolute_path
         mdns_path = resolved_artifacts["mdns-advertiser"].absolute_path
         nbns_path = resolved_artifacts["nbns-advertiser"].absolute_path
-        device_paths = build_device_paths(
-            volume_root,
-            config.require("TC_PAYLOAD_DIR_NAME"),
-            share_use_disk_root=share_use_disk_root,
-        )
+        if args.dry_run:
+            device_paths = build_unknown_mount_device_paths(
+                config.require("TC_PAYLOAD_DIR_NAME"),
+                share_use_disk_root=share_use_disk_root,
+            )
+        else:
+            command_context.set_stage("ensure_volume_root_mounted")
+            volume_root = ensure_volume_root_mounted_conn(connection)
+            device_paths = build_device_paths(
+                volume_root,
+                config.require("TC_PAYLOAD_DIR_NAME"),
+                share_use_disk_root=share_use_disk_root,
+            )
         command_context.set_stage("build_deployment_plan")
         plan = build_deployment_plan(
             host,
