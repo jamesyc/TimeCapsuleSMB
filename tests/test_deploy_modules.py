@@ -38,6 +38,7 @@ from timecapsulesmb.deploy.executor import (
     remote_request_reboot,
     remote_uninstall_payload,
     upload_deployment_payload,
+    upload_flash_file,
 )
 from timecapsulesmb.deploy.planner import build_deployment_plan, build_uninstall_plan
 from timecapsulesmb.deploy.templates import (
@@ -2555,16 +2556,17 @@ int main(void) {{
         plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
         connection = SshConnection("host", "pw", "-o foo")
         with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
-            upload_deployment_payload(
-                plan,
-                connection=connection,
-                rc_local=Path("/tmp/rc.local"),
-                common_sh=Path("/tmp/common.sh"),
-                rendered_start=Path("/tmp/start-samba.sh"),
-                rendered_dfree=Path("/tmp/dfree.sh"),
-                rendered_watchdog=Path("/tmp/watchdog.sh"),
-                rendered_smbconf=Path("/tmp/smb.conf.template"),
-            )
+            with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as ssh_mock:
+                upload_deployment_payload(
+                    plan,
+                    connection=connection,
+                    rc_local=Path("/tmp/rc.local"),
+                    common_sh=Path("/tmp/common.sh"),
+                    rendered_start=Path("/tmp/start-samba.sh"),
+                    rendered_dfree=Path("/tmp/dfree.sh"),
+                    rendered_watchdog=Path("/tmp/watchdog.sh"),
+                    rendered_smbconf=Path("/tmp/smb.conf.template"),
+                )
         self.assertEqual(scp_mock.call_count, 10)
         destinations = [call.args[2] for call in scp_mock.call_args_list]
         self.assertEqual(
@@ -2572,20 +2574,35 @@ int main(void) {{
             [
                 "/Volumes/dk2/samba4/smbd",
                 "/Volumes/dk2/samba4/mdns-advertiser",
-                "/mnt/Flash/mdns-advertiser",
+                "/mnt/Flash/.mdns-advertiser.tmp",
                 "/Volumes/dk2/samba4/nbns-advertiser",
-                "/mnt/Flash/rc.local",
-                "/mnt/Flash/common.sh",
-                "/mnt/Flash/start-samba.sh",
-                "/mnt/Flash/watchdog.sh",
-                "/mnt/Flash/dfree.sh",
+                "/mnt/Flash/.rc.local.tmp",
+                "/mnt/Flash/.common.sh.tmp",
+                "/mnt/Flash/.start-samba.sh.tmp",
+                "/mnt/Flash/.watchdog.sh.tmp",
+                "/mnt/Flash/.dfree.sh.tmp",
                 "/Volumes/dk2/samba4/smb.conf.template",
             ],
         )
         binary_upload_timeouts = [call.kwargs.get("timeout") for call in scp_mock.call_args_list[:4]]
         self.assertEqual(binary_upload_timeouts, [180, 180, 180, 180])
         text_upload_timeouts = [call.kwargs.get("timeout") for call in scp_mock.call_args_list[4:]]
-        self.assertEqual(text_upload_timeouts, [None, None, None, None, None, None])
+        self.assertEqual(text_upload_timeouts, [120, 120, 120, 120, 120, None])
+        self.assertEqual(ssh_mock.call_count, 12)
+
+    def test_upload_flash_file_uploads_tmp_then_installs_with_rename_and_cleanup(self) -> None:
+        connection = SshConnection("host", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
+            with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as ssh_mock:
+                upload_flash_file(connection, Path("/tmp/mdns-advertiser"), "/mnt/Flash/mdns-advertiser", timeout=180)
+
+        scp_mock.assert_called_once_with(connection, Path("/tmp/mdns-advertiser"), "/mnt/Flash/.mdns-advertiser.tmp", timeout=180)
+        ssh_commands = [call.args[1] for call in ssh_mock.call_args_list]
+        self.assertEqual(len(ssh_commands), 2)
+        self.assertIn("rm -f /mnt/Flash/.mdns-advertiser.tmp", ssh_commands[0])
+        self.assertIn("chmod 755 /mnt/Flash/.mdns-advertiser.tmp", ssh_commands[1])
+        self.assertIn("mv -f /mnt/Flash/.mdns-advertiser.tmp /mnt/Flash/mdns-advertiser", ssh_commands[1])
+        self.assertIn("rm -f /mnt/Flash/.mdns-advertiser.tmp", ssh_commands[1])
 
     def test_verify_managed_runtime_passes_when_runtime_probe_succeeds(self) -> None:
         result = ManagedRuntimeProbeResult(

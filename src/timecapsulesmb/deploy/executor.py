@@ -3,7 +3,7 @@ from __future__ import annotations
 import shlex
 import tempfile
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from timecapsulesmb.deploy.auth import render_smbpasswd
 from timecapsulesmb.deploy.commands import render_remote_actions
@@ -14,6 +14,27 @@ from timecapsulesmb.transport.ssh import SshConnection, run_scp, run_ssh
 DETACHED_REBOOT_COMMAND = "/bin/sh -c 'exec </dev/null >/dev/null 2>&1; (/bin/sleep 1; /sbin/reboot) & exit 0'"
 REBOOT_REQUEST_TIMEOUT_SECONDS = 30
 PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS = 180
+
+
+def _flash_upload_tmp_path(destination: str) -> str:
+    path = PurePosixPath(destination)
+    return str(path.with_name(f".{path.name}.tmp"))
+
+
+def upload_flash_file(connection: SshConnection, source: Path, destination: str, *, timeout: int = 120) -> None:
+    tmp_destination = _flash_upload_tmp_path(destination)
+    quoted_tmp = shlex.quote(tmp_destination)
+    quoted_destination = shlex.quote(destination)
+
+    run_ssh(connection, f"/bin/sh -c {shlex.quote(f'rm -f {quoted_tmp}')}")
+    run_scp(connection, source, tmp_destination, timeout=timeout)
+    install_script = (
+        "rc=0; "
+        f"chmod 755 {quoted_tmp} && mv -f {quoted_tmp} {quoted_destination} || rc=$?; "
+        f"rm -f {quoted_tmp}; "
+        'exit "$rc"'
+    )
+    run_ssh(connection, f"/bin/sh -c {shlex.quote(install_script)}")
 
 
 def remote_install_auth_files(connection: SshConnection, private_dir: str, samba_user: str, samba_password: str) -> None:
@@ -61,13 +82,13 @@ def upload_deployment_payload(
 ) -> None:
     run_scp(connection, plan.smbd_path, plan.payload_targets["smbd"], timeout=PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS)
     run_scp(connection, plan.mdns_path, plan.payload_targets["mdns-advertiser"], timeout=PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS)
-    run_scp(connection, plan.mdns_path, plan.flash_targets["mdns-advertiser"], timeout=PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS)
+    upload_flash_file(connection, plan.mdns_path, plan.flash_targets["mdns-advertiser"], timeout=PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS)
     run_scp(connection, plan.nbns_path, plan.payload_targets["nbns-advertiser"], timeout=PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS)
-    run_scp(connection, rc_local, plan.flash_targets["rc.local"])
-    run_scp(connection, common_sh, plan.flash_targets["common.sh"])
-    run_scp(connection, rendered_start, plan.flash_targets["start-samba.sh"])
-    run_scp(connection, rendered_watchdog, plan.flash_targets["watchdog.sh"])
-    run_scp(connection, rendered_dfree, plan.flash_targets["dfree.sh"])
+    upload_flash_file(connection, rc_local, plan.flash_targets["rc.local"])
+    upload_flash_file(connection, common_sh, plan.flash_targets["common.sh"])
+    upload_flash_file(connection, rendered_start, plan.flash_targets["start-samba.sh"])
+    upload_flash_file(connection, rendered_watchdog, plan.flash_targets["watchdog.sh"])
+    upload_flash_file(connection, rendered_dfree, plan.flash_targets["dfree.sh"])
     run_scp(connection, rendered_smbconf, plan.payload_targets["smb.conf.template"])
 
 
