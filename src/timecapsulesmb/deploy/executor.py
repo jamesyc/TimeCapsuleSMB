@@ -4,9 +4,10 @@ import shlex
 import tempfile
 import uuid
 from pathlib import Path, PurePosixPath
+from typing import Iterable
 
 from timecapsulesmb.deploy.auth import render_smbpasswd
-from timecapsulesmb.deploy.commands import render_remote_actions
+from timecapsulesmb.deploy.commands import RemoteAction, render_remote_actions
 from timecapsulesmb.deploy.planner import DeploymentPlan, UninstallPlan
 from timecapsulesmb.transport.ssh import SshConnection, run_scp, run_ssh
 
@@ -92,7 +93,7 @@ def upload_deployment_payload(
     run_scp(connection, rendered_smbconf, plan.payload_targets["smb.conf.template"])
 
 
-def run_remote_actions(connection: SshConnection, actions) -> None:
+def run_remote_actions(connection: SshConnection, actions: Iterable[RemoteAction]) -> None:
     for command in render_remote_actions(list(actions)):
         run_ssh(connection, command)
 

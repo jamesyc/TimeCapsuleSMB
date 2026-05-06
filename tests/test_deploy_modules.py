@@ -20,10 +20,19 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.deploy.auth import nt_hash_hex, render_smbpasswd
 from timecapsulesmb.deploy.commands import (
+    EnableNbnsAction,
+    InitializeDataRootAction,
+    InstallPermissionsAction,
+    PrepareDirsAction,
+    RemovePathAction,
+    RunScriptAction,
+    StopProcessAction,
+    StopProcessFullAction,
     enable_nbns_action,
     initialize_data_root_action,
     install_permissions_action,
     prepare_dirs_action,
+    remote_action_to_jsonable,
     remove_path_action,
     render_remote_action,
     run_script_action,
@@ -3009,12 +3018,15 @@ int main(void) {{
         )
         self.assertFalse(plan.reboot_required)
         self.assertEqual(
-            [action.kind for action in plan.activation_actions],
-            ["stop_process_full", "stop_process", "stop_process", "stop_process", "stop_process", "run_script"],
-        )
-        self.assertEqual(
-            [action.args[0] for action in plan.activation_actions],
-            ["[w]atchdog.sh", "smbd", "mdns-advertiser", "nbns-advertiser", "wcifsfs", "/mnt/Flash/rc.local"],
+            plan.activation_actions,
+            [
+                stop_process_full_action("[w]atchdog.sh"),
+                stop_process_action("smbd"),
+                stop_process_action("mdns-advertiser"),
+                stop_process_action("nbns-advertiser"),
+                stop_process_action("wcifsfs"),
+                run_script_action("/mnt/Flash/rc.local"),
+            ],
         )
 
         text = format_deployment_plan(plan)
@@ -3101,6 +3113,30 @@ int main(void) {{
         )
         self.assertIn("'/Volumes/dk2/Time Capsule ShareRoot'", initialize_cmd)
         self.assertIn("'/Volumes/dk2/Time Capsule ShareRoot/.com.apple.timemachine.supported'", initialize_cmd)
+
+    def test_remote_action_factories_return_typed_actions(self) -> None:
+        self.assertEqual(prepare_dirs_action("/payload"), PrepareDirsAction("/payload"))
+        self.assertEqual(initialize_data_root_action("/data", "/data/.marker"), InitializeDataRootAction("/data", "/data/.marker"))
+        self.assertEqual(install_permissions_action("/payload"), InstallPermissionsAction("/payload"))
+        self.assertEqual(enable_nbns_action("/payload/private"), EnableNbnsAction("/payload/private"))
+        self.assertEqual(stop_process_action("smbd"), StopProcessAction("smbd"))
+        self.assertEqual(stop_process_full_action("[w]atchdog.sh"), StopProcessFullAction("[w]atchdog.sh"))
+        self.assertEqual(remove_path_action("/payload"), RemovePathAction("/payload"))
+        self.assertEqual(run_script_action("/mnt/Flash/rc.local"), RunScriptAction("/mnt/Flash/rc.local"))
+
+    def test_remote_action_json_preserves_dry_run_shape(self) -> None:
+        self.assertEqual(
+            remote_action_to_jsonable(initialize_data_root_action("/data", "/data/.marker")),
+            {"kind": "initialize_data_root", "args": ["/data", "/data/.marker"]},
+        )
+        self.assertEqual(
+            remote_action_to_jsonable(stop_process_action("smbd")),
+            {"kind": "stop_process", "args": ["smbd"]},
+        )
+
+    def test_render_remote_action_rejects_unknown_action_object(self) -> None:
+        with self.assertRaises(TypeError):
+            render_remote_action(object())  # type: ignore[arg-type]
 
     def test_deployment_plan_uses_install_permissions_action(self) -> None:
         payload_dir = "/Volumes/dk2/Time Capsule Samba 4"

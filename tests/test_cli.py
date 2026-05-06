@@ -41,6 +41,14 @@ from timecapsulesmb.device.probe import (
     RemoteInterfaceProbeResult,
 )
 from timecapsulesmb.deploy.templates import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
+from timecapsulesmb.deploy.commands import (
+    enable_nbns_action,
+    initialize_data_root_action,
+    prepare_dirs_action,
+    run_script_action,
+    stop_process_action,
+    stop_process_full_action,
+)
 from timecapsulesmb.deploy.verify import VerificationResult
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourServiceInstance, Discovered
@@ -5004,10 +5012,17 @@ class CliTests(unittest.TestCase):
                                         rc = deploy.main(["--install-nbns", "--no-reboot"])
         self.assertEqual(rc, 0)
         self.assertEqual(actions_mock.call_count, 2)
-        pre_upload_action_kinds = [action.kind for action in actions_mock.call_args_list[0].args[1]]
         self.assertEqual(
-            pre_upload_action_kinds,
-            ["stop_process_full", "stop_process", "stop_process", "stop_process", "initialize_data_root", "prepare_dirs", "enable_nbns"],
+            actions_mock.call_args_list[0].args[1],
+            [
+                stop_process_full_action("[w]atchdog.sh"),
+                stop_process_action("smbd"),
+                stop_process_action("mdns-advertiser"),
+                stop_process_action("nbns-advertiser"),
+                initialize_data_root_action("/Volumes/dk2/ShareRoot", "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported"),
+                prepare_dirs_action("/Volumes/dk2/samba4"),
+                enable_nbns_action("/Volumes/dk2/samba4/private"),
+            ],
         )
 
     def test_deploy_dry_run_includes_nbns_upload_without_marker_by_default(self) -> None:
@@ -5235,8 +5250,17 @@ class CliTests(unittest.TestCase):
             "share_use_disk_root": False,
             "apple_mount_wait_seconds": DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
         })
-        rendered_actions = [action.kind for action in actions_mock.call_args_list[0].args[1]]
-        self.assertNotIn("prepare_log_dir", rendered_actions)
+        self.assertEqual(
+            actions_mock.call_args_list[0].args[1],
+            [
+                stop_process_full_action("[w]atchdog.sh"),
+                stop_process_action("smbd"),
+                stop_process_action("mdns-advertiser"),
+                stop_process_action("nbns-advertiser"),
+                initialize_data_root_action("/Volumes/dk2/ShareRoot", "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported"),
+                prepare_dirs_action("/Volumes/dk2/samba4"),
+            ],
+        )
 
     def test_deploy_mount_wait_passes_custom_mount_wait_to_template(self) -> None:
         values = self.make_valid_env()
@@ -5288,15 +5312,16 @@ class CliTests(unittest.TestCase):
                                                     rc = deploy.main(["--yes"])
         self.assertEqual(rc, 0)
         self.assertEqual(actions_mock.call_count, 3)
-        activation_action_kinds = [action.kind for action in actions_mock.call_args_list[2].args[1]]
-        activation_action_args = [action.args[0] for action in actions_mock.call_args_list[2].args[1]]
         self.assertEqual(
-            activation_action_kinds,
-            ["stop_process_full", "stop_process", "stop_process", "stop_process", "stop_process", "run_script"],
-        )
-        self.assertEqual(
-            activation_action_args,
-            ["[w]atchdog.sh", "smbd", "mdns-advertiser", "nbns-advertiser", "wcifsfs", "/mnt/Flash/rc.local"],
+            actions_mock.call_args_list[2].args[1],
+            [
+                stop_process_full_action("[w]atchdog.sh"),
+                stop_process_action("smbd"),
+                stop_process_action("mdns-advertiser"),
+                stop_process_action("nbns-advertiser"),
+                stop_process_action("wcifsfs"),
+                run_script_action("/mnt/Flash/rc.local"),
+            ],
         )
         self.assertEqual(actions_mock.call_args_list[2].kwargs, {})
         self.assertEqual(verify_mock.call_args.args[0].host, "root@10.0.0.2")
@@ -5911,15 +5936,16 @@ class CliTests(unittest.TestCase):
                                 rc = activate.main(["--yes"])
         self.assertEqual(rc, 0)
         actions_mock.assert_called_once()
-        action_kinds = [action.kind for action in actions_mock.call_args.args[1]]
-        action_args = [action.args[0] for action in actions_mock.call_args.args[1]]
         self.assertEqual(
-            action_kinds,
-            ["stop_process_full", "stop_process", "stop_process", "stop_process", "stop_process", "run_script"],
-        )
-        self.assertEqual(
-            action_args,
-            ["[w]atchdog.sh", "smbd", "mdns-advertiser", "nbns-advertiser", "wcifsfs", "/mnt/Flash/rc.local"],
+            actions_mock.call_args.args[1],
+            [
+                stop_process_full_action("[w]atchdog.sh"),
+                stop_process_action("smbd"),
+                stop_process_action("mdns-advertiser"),
+                stop_process_action("nbns-advertiser"),
+                stop_process_action("wcifsfs"),
+                run_script_action("/mnt/Flash/rc.local"),
+            ],
         )
         self.assertEqual(actions_mock.call_args.kwargs, {})
         self.assertEqual(verify_mock.call_args.args[0].host, "root@10.0.0.2")

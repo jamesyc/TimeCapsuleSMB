@@ -2,12 +2,60 @@ from __future__ import annotations
 
 import shlex
 from dataclasses import dataclass
+from typing import Union
 
 
 @dataclass(frozen=True)
-class RemoteAction:
-    kind: str
-    args: tuple[str, ...]
+class PrepareDirsAction:
+    payload_dir: str
+
+
+@dataclass(frozen=True)
+class InitializeDataRootAction:
+    data_root: str
+    marker_path: str
+
+
+@dataclass(frozen=True)
+class InstallPermissionsAction:
+    payload_dir: str
+
+
+@dataclass(frozen=True)
+class EnableNbnsAction:
+    private_dir: str
+
+
+@dataclass(frozen=True)
+class StopProcessAction:
+    name: str
+
+
+@dataclass(frozen=True)
+class StopProcessFullAction:
+    pattern: str
+
+
+@dataclass(frozen=True)
+class RemovePathAction:
+    path: str
+
+
+@dataclass(frozen=True)
+class RunScriptAction:
+    path: str
+
+
+RemoteAction = Union[
+    PrepareDirsAction,
+    InitializeDataRootAction,
+    InstallPermissionsAction,
+    EnableNbnsAction,
+    StopProcessAction,
+    StopProcessFullAction,
+    RemovePathAction,
+    RunScriptAction,
+]
 
 
 def _render_process_present(pattern: str, *, full: bool) -> str:
@@ -39,40 +87,40 @@ def _render_process_present(pattern: str, *, full: bool) -> str:
 
 
 def prepare_dirs_action(payload_dir: str) -> RemoteAction:
-    return RemoteAction("prepare_dirs", (payload_dir,))
+    return PrepareDirsAction(payload_dir)
 
 
 def initialize_data_root_action(data_root: str, marker_path: str) -> RemoteAction:
-    return RemoteAction("initialize_data_root", (data_root, marker_path))
+    return InitializeDataRootAction(data_root, marker_path)
 
 
 def install_permissions_action(payload_dir: str) -> RemoteAction:
-    return RemoteAction("install_permissions", (payload_dir,))
+    return InstallPermissionsAction(payload_dir)
 
 
 def enable_nbns_action(private_dir: str) -> RemoteAction:
-    return RemoteAction("enable_nbns", (private_dir,))
+    return EnableNbnsAction(private_dir)
 
 
 def stop_process_action(name: str) -> RemoteAction:
-    return RemoteAction("stop_process", (name,))
+    return StopProcessAction(name)
 
 
 def stop_process_full_action(pattern: str) -> RemoteAction:
-    return RemoteAction("stop_process_full", (pattern,))
+    return StopProcessFullAction(pattern)
 
 
 def remove_path_action(path: str) -> RemoteAction:
-    return RemoteAction("remove_path", (path,))
+    return RemovePathAction(path)
 
 
 def run_script_action(path: str) -> RemoteAction:
-    return RemoteAction("run_script", (path,))
+    return RunScriptAction(path)
 
 
 def render_remote_action(action: RemoteAction) -> str:
-    if action.kind == "stop_process":
-        name = action.args[0]
+    if isinstance(action, StopProcessAction):
+        name = action.name
         return (
             f"pkill {shlex.quote(name)} >/dev/null 2>&1 || true; "
             "attempt=0; "
@@ -83,8 +131,8 @@ def render_remote_action(action: RemoteAction) -> str:
             "done"
         )
 
-    if action.kind == "stop_process_full":
-        pattern = action.args[0]
+    if isinstance(action, StopProcessFullAction):
+        pattern = action.pattern
         return (
             f"pkill -f {shlex.quote(pattern)} >/dev/null 2>&1 || true; "
             "attempt=0; "
@@ -95,8 +143,8 @@ def render_remote_action(action: RemoteAction) -> str:
             "done"
         )
 
-    if action.kind == "prepare_dirs":
-        payload_dir = action.args[0]
+    if isinstance(action, PrepareDirsAction):
+        payload_dir = action.payload_dir
         return (
             "mkdir -p {} {} {} {} {} {} && "
             "rm -rf {} {} {} {} && "
@@ -125,15 +173,16 @@ def render_remote_action(action: RemoteAction) -> str:
             shlex.quote("/root/tc-netbsd7"),
         )
 
-    if action.kind == "initialize_data_root":
-        data_root, marker_path = action.args
+    if isinstance(action, InitializeDataRootAction):
+        data_root = action.data_root
+        marker_path = action.marker_path
         return (
             f"mkdir -p {shlex.quote(data_root)} && "
             f"/bin/sh -c {shlex.quote(f': > {shlex.quote(marker_path)}')}"
         )
 
-    if action.kind == "install_permissions":
-        payload_dir = action.args[0]
+    if isinstance(action, InstallPermissionsAction):
+        payload_dir = action.payload_dir
         private_dir = f"{payload_dir}/private"
         return (
             f"chmod 755 {shlex.quote(payload_dir + '/smbd')} "
@@ -155,19 +204,47 @@ def render_remote_action(action: RemoteAction) -> str:
             f"fi"
         )
 
-    if action.kind == "enable_nbns":
-        private_dir = action.args[0]
+    if isinstance(action, EnableNbnsAction):
+        private_dir = action.private_dir
         marker_path = private_dir + "/nbns.enabled"
         return f"/bin/sh -c {shlex.quote(f': > {shlex.quote(marker_path)}')}"
 
-    if action.kind == "remove_path":
-        return f"rm -rf {shlex.quote(action.args[0])}"
+    if isinstance(action, RemovePathAction):
+        return f"rm -rf {shlex.quote(action.path)}"
 
-    if action.kind == "run_script":
-        return f"/bin/sh {shlex.quote(action.args[0])}"
+    if isinstance(action, RunScriptAction):
+        return f"/bin/sh {shlex.quote(action.path)}"
 
-    raise ValueError(f"Unknown remote action kind: {action.kind}")
+    raise TypeError(f"Unsupported remote action: {action!r}")
 
 
 def render_remote_actions(actions: list[RemoteAction]) -> list[str]:
     return [render_remote_action(action) for action in actions]
+
+
+def _action_json(kind: str, *args: str) -> dict[str, object]:
+    return {"kind": kind, "args": list(args)}
+
+
+def remote_action_to_jsonable(action: RemoteAction) -> dict[str, object]:
+    if isinstance(action, StopProcessAction):
+        return _action_json("stop_process", action.name)
+    if isinstance(action, StopProcessFullAction):
+        return _action_json("stop_process_full", action.pattern)
+    if isinstance(action, PrepareDirsAction):
+        return _action_json("prepare_dirs", action.payload_dir)
+    if isinstance(action, InitializeDataRootAction):
+        return _action_json("initialize_data_root", action.data_root, action.marker_path)
+    if isinstance(action, InstallPermissionsAction):
+        return _action_json("install_permissions", action.payload_dir)
+    if isinstance(action, EnableNbnsAction):
+        return _action_json("enable_nbns", action.private_dir)
+    if isinstance(action, RemovePathAction):
+        return _action_json("remove_path", action.path)
+    if isinstance(action, RunScriptAction):
+        return _action_json("run_script", action.path)
+    raise TypeError(f"Unsupported remote action: {action!r}")
+
+
+def remote_actions_to_jsonable(actions: list[RemoteAction]) -> list[dict[str, object]]:
+    return [remote_action_to_jsonable(action) for action in actions]

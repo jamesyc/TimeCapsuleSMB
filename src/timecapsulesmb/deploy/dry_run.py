@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 
 from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE
-from timecapsulesmb.deploy.commands import render_remote_actions
+from timecapsulesmb.deploy.commands import remote_actions_to_jsonable, render_remote_actions
 from timecapsulesmb.deploy.planner import ActivationPlan, DeploymentPlan, UninstallPlan
 
 
@@ -79,6 +79,9 @@ def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
     data["smbd_path"] = str(plan.smbd_path)
     data["mdns_path"] = str(plan.mdns_path)
     data["nbns_path"] = str(plan.nbns_path)
+    data["pre_upload_actions"] = remote_actions_to_jsonable(plan.pre_upload_actions)
+    data["post_auth_actions"] = remote_actions_to_jsonable(plan.post_auth_actions)
+    data["activation_actions"] = remote_actions_to_jsonable(plan.activation_actions)
     _add_reboot_request_json(data, plan.reboot_required)
     return data
 
@@ -131,5 +134,6 @@ def format_uninstall_plan(plan: UninstallPlan) -> str:
 
 def uninstall_plan_to_jsonable(plan: UninstallPlan) -> dict[str, object]:
     data = asdict(plan)
+    data["remote_actions"] = remote_actions_to_jsonable(plan.remote_actions)
     _add_reboot_request_json(data, plan.reboot_required)
     return data
