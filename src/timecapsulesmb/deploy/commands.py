@@ -69,13 +69,21 @@ RemoteAction = Union[
 
 
 def _render_process_present(pattern: str, *, full: bool) -> str:
+    ps_command = "ps axww -o stat= -o ucomm= -o command= >/tmp/tcapsule-ps.$$ 2>/dev/null"
+    line_setup = (
+        "while IFS= read line; do "
+        '[ -n "$line" ] || continue; '
+        "set -- $line; "
+        '[ "$#" -ge 2 ] || continue; '
+        'case "$1" in Z*) continue ;; esac; '
+    )
     if full:
         ps_match = f"*{pattern}*"
         return (
             "found=1; "
-            "if ps ax -o command= >/tmp/tcapsule-ps.$$ 2>/dev/null; then "
+            f"if {ps_command}; then "
             "found=0; "
-            "while IFS= read line; do "
+            f"{line_setup}"
             f'case "$line" in {ps_match}) found=1; break ;; esac; '
             "done </tmp/tcapsule-ps.$$; "
             "rm -f /tmp/tcapsule-ps.$$; "
@@ -85,10 +93,10 @@ def _render_process_present(pattern: str, *, full: bool) -> str:
 
     return (
         "found=1; "
-        "if ps ax -o ucomm= >/tmp/tcapsule-ps.$$ 2>/dev/null; then "
+        f"if {ps_command}; then "
         "found=0; "
-        "while IFS= read line; do "
-        f'case \"$line\" in {shlex.quote(pattern)}) found=1; break ;; esac; '
+        f"{line_setup}"
+        f'if [ "$2" = {shlex.quote(pattern)} ]; then found=1; break; fi; '
         "done </tmp/tcapsule-ps.$$; "
         "rm -f /tmp/tcapsule-ps.$$; "
         "fi; "

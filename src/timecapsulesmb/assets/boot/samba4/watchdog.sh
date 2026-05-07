@@ -84,7 +84,7 @@ sleep_with_mount_checks() {
 }
 
 start_smbd_if_needed() {
-    if /usr/bin/pkill -0 smbd >/dev/null 2>&1; then
+    if runtime_process_present smbd false; then
         return 0
     fi
 
@@ -187,16 +187,16 @@ nbns_enabled() {
 }
 
 all_managed_services_healthy() {
-    if ! /usr/bin/pkill -0 smbd >/dev/null 2>&1; then
+    if ! runtime_process_present smbd false; then
         return 1
     fi
 
-    if ! /usr/bin/pkill -0 "$MDNS_PROC_NAME" >/dev/null 2>&1; then
+    if ! runtime_process_present "$MDNS_PROC_NAME" false; then
         return 1
     fi
 
     if nbns_enabled; then
-        if ! /usr/bin/pkill -0 "$NBNS_PROC_NAME" >/dev/null 2>&1; then
+        if ! runtime_process_present "$NBNS_PROC_NAME" false; then
             return 1
         fi
     fi
@@ -215,13 +215,13 @@ while :; do
         log "watchdog recovery: smbd restart skipped because data volume is unavailable"
     fi
 
-    if /usr/bin/pkill -0 "$MDNS_PROC_NAME" >/dev/null 2>&1; then
+    if runtime_process_present "$MDNS_PROC_NAME" false; then
         :
     else
         restart_mdns
     fi
 
-    if /usr/bin/pkill -0 "$NBNS_PROC_NAME" >/dev/null 2>&1; then
+    if runtime_process_present "$NBNS_PROC_NAME" false; then
         :
     else
         restart_nbns

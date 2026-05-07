@@ -55,7 +55,7 @@ wait_for_process() {
     max_attempts=${2:-10}
     attempt=0
     while [ "$attempt" -lt "$max_attempts" ]; do
-        if /usr/bin/pkill -0 "$proc_name" >/dev/null 2>&1; then
+        if runtime_process_present "$proc_name" false; then
             return 0
         fi
         attempt=$((attempt + 1))
@@ -68,25 +68,45 @@ runtime_process_present() {
     pattern=$1
     full_match=${2:-false}
 
-    if [ "$full_match" = "true" ]; then
-        if ps_out=$(/bin/ps axww -o command= 2>/dev/null); then
-            old_ifs=$IFS
-            IFS='
+    if ps_out=$(/bin/ps axww -o stat= -o ucomm= -o command= 2>/dev/null); then
+        old_ifs=$IFS
+        IFS='
 '
-            for line in $ps_out; do
+        for line in $ps_out; do
+            [ -n "$line" ] || continue
+            line_ifs=$IFS
+            IFS=' 	'
+            set -- $line
+            IFS=$line_ifs
+            [ "$#" -ge 2 ] || continue
+
+            # NetBSD leaves killed Apple CIFS helpers as zombies until init
+            # reaps them. Zombies do not hold UDP 137, so they must not block
+            # the managed NBNS responder takeover path.
+            case "$1" in
+                Z*)
+                    continue
+                    ;;
+            esac
+
+            if [ "$full_match" = "true" ]; then
                 case "$line" in
                     *"$pattern"*)
                         IFS=$old_ifs
                         return 0
                         ;;
                 esac
-            done
-            IFS=$old_ifs
-        fi
-        return 1
+            else
+                if [ "$2" = "$pattern" ]; then
+                    IFS=$old_ifs
+                    return 0
+                fi
+            fi
+        done
+        IFS=$old_ifs
     fi
 
-    /usr/bin/pkill -0 "$pattern" >/dev/null 2>&1
+    return 1
 }
 
 wait_for_runtime_process_absent() {

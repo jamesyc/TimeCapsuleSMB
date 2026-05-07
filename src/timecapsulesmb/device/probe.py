@@ -49,6 +49,9 @@ smbd_parent_process_present() {{
         [ -n "$line" ] || continue
         set -- $line
         [ "$#" -ge 5 ] || continue
+        case "$3" in
+            Z*) continue ;;
+        esac
         if [ "$5" = "smbd" ]; then
             smbd_pids="$smbd_pids $1"
         fi
@@ -60,6 +63,9 @@ EOF
         [ -n "$line" ] || continue
         set -- $line
         [ "$#" -ge 5 ] || continue
+        case "$3" in
+            Z*) continue ;;
+        esac
         if [ "$5" = "smbd" ]; then
             case " $smbd_pids " in
                 *" $2 "*) ;;
@@ -78,6 +84,9 @@ mdns_process_present() {{
         [ -n "$line" ] || continue
         set -- $line
         [ "$#" -ge 5 ] || continue
+        case "$3" in
+            Z*) continue ;;
+        esac
         if [ "$5" = "mdns-advertiser" ]; then
             return 0
         fi

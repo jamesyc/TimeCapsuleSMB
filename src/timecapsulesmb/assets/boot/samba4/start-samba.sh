@@ -709,7 +709,7 @@ start_watchdog() {
         return 0
     fi
 
-    if /usr/bin/pkill -0 -f /mnt/Flash/watchdog.sh >/dev/null 2>&1; then
+    if runtime_process_present "/mnt/Flash/watchdog.sh" true; then
         log "watchdog already running"
         return 0
     fi

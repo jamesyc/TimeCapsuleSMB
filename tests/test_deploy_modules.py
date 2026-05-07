@@ -90,12 +90,14 @@ from timecapsulesmb.deploy.verify import (
     verify_managed_runtime,
     verify_post_uninstall,
 )
+from timecapsulesmb.deploy import commands as deploy_commands
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import (
     ManagedMdnsTakeoverProbeResult,
     ManagedRuntimeProbeResult,
     ManagedSmbdProbeResult,
+    SMBD_STATUS_HELPERS,
     discover_mounted_volume_conn,
     discover_mounted_volume_root_conn,
     extract_airport_identity_from_acp_output,
@@ -471,6 +473,48 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("get_airport_syvs()", content)
         self.assertIn("sed -n 's/^\\([0-9]\\)\\([0-9]\\)\\([0-9]\\).*/\\1.\\2.\\3/p'", content)
 
+    def test_common_runtime_process_present_ignores_zombies(self) -> None:
+        common = load_boot_asset_text("common.sh").replace(
+            "/bin/ps axww -o stat= -o ucomm= -o command= 2>/dev/null",
+            'cat "$PS_FIXTURE"',
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "ps.txt"
+            script = Path(tmp) / "check.sh"
+            fixture.write_text(
+                "\n".join(
+                    [
+                        "Z    wcifsnd         (wcifsnd)",
+                        "Z    wcifsfs         (wcifsfs)",
+                        "S    nbns-advertiser /mnt/Memory/samba4/sbin/nbns-advertiser --name TimeCapsule",
+                        "S    sh              /bin/sh /mnt/Flash/watchdog.sh /dev/dk2 /Volumes/dk2 /Volumes/dk2/ShareRoot",
+                    ]
+                )
+                + "\n"
+            )
+            script.write_text(
+                common
+                + f"\nPS_FIXTURE={shlex.quote(str(fixture))}\n"
+                + """
+runtime_process_present wcifsnd false; echo "zombie-name=$?"
+runtime_process_present nbns-advertiser false; echo "live-name=$?"
+runtime_process_present /mnt/Flash/watchdog.sh true; echo "live-full=$?"
+runtime_process_present wcifsfs true; echo "zombie-full=$?"
+wait_for_process nbns-advertiser 1; echo "live-wait=$?"
+wait_for_process wcifsnd 1; echo "zombie-wait=$?"
+"""
+            )
+
+            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("zombie-name=1", result.stdout)
+        self.assertIn("live-name=0", result.stdout)
+        self.assertIn("live-full=0", result.stdout)
+        self.assertIn("zombie-full=1", result.stdout)
+        self.assertIn("live-wait=0", result.stdout)
+        self.assertIn("zombie-wait=1", result.stdout)
+
     def test_extract_airport_identity_from_text_finds_time_capsule_model(self) -> None:
         result = extract_airport_identity_from_text("prefix\x00psyAM\x00pTimeCapsule6,113\x00suffix")
         self.assertEqual(result.model, "TimeCapsule6,113")
@@ -569,6 +613,46 @@ class DeployModuleTests(unittest.TestCase):
         self.assertNotIn("get_radio_mac()", watchdog)
         self.assertNotIn("get_airport_srcv()", watchdog)
         self.assertNotIn("get_airport_syvs()", watchdog)
+
+    def test_start_script_uses_zombie_aware_watchdog_liveness(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(self._template_config(values))
+        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
+        watchdog_start = rendered.index("start_watchdog()")
+        watchdog_section = rendered[watchdog_start:rendered.index("\nif ! cleanup_old_runtime; then\n")]
+
+        self.assertIn('if runtime_process_present "/mnt/Flash/watchdog.sh" true; then', watchdog_section)
+        self.assertNotIn("pkill -0 -f /mnt/Flash/watchdog.sh", watchdog_section)
+
+    def test_watchdog_script_uses_zombie_aware_service_liveness(self) -> None:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
+            "TC_SAMBA_USER": "admin",
+        }
+        bundle = build_template_bundle(self._template_config(values))
+        rendered = render_template("watchdog.sh", bundle.watchdog_replacements)
+
+        self.assertIn("runtime_process_present smbd false", rendered)
+        self.assertIn('runtime_process_present "$MDNS_PROC_NAME" false', rendered)
+        self.assertIn('runtime_process_present "$NBNS_PROC_NAME" false', rendered)
+        self.assertNotIn("/usr/bin/pkill -0 smbd", rendered)
+        self.assertNotIn('/usr/bin/pkill -0 "$MDNS_PROC_NAME"', rendered)
+        self.assertNotIn('/usr/bin/pkill -0 "$NBNS_PROC_NAME"', rendered)
 
     def test_rc_local_leaves_watchdog_launch_to_start_samba(self) -> None:
         content = load_boot_asset_text("rc.local")
@@ -1831,7 +1915,7 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
         rendered = render_template("watchdog.sh", bundle.watchdog_replacements)
         self.assertIn("nbns_enabled()", rendered)
         self.assertIn('if nbns_enabled; then', rendered)
-        self.assertIn('if ! /usr/bin/pkill -0 "$NBNS_PROC_NAME" >/dev/null 2>&1; then', rendered)
+        self.assertIn('if ! runtime_process_present "$NBNS_PROC_NAME" false; then', rendered)
 
     def test_render_watchdog_script_stops_apple_cifs_before_nbns_restart(self) -> None:
         values = {
@@ -3155,6 +3239,48 @@ int main(void) {{
         self.assertNotIn("sleep 5", remote_command)
         self.assertNotIn("nbns-advertiser", remote_command)
 
+    def test_probe_status_helpers_ignore_zombie_processes(self) -> None:
+        helpers = SMBD_STATUS_HELPERS.replace(
+            '/usr/bin/fstat -p "$1" 2>/dev/null || true',
+            'echo "fstat:$1"',
+        )
+        script = (
+            helpers
+            + r'''
+zombie_smbd="100 1 Z 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd"
+live_smbd="101 1 S 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd"
+zombie_mdns="200 1 Z 0:00.00 mdns-advertiser /mnt/Flash/mdns-advertiser"
+live_mdns="201 1 S 0:00.00 mdns-advertiser /mnt/Flash/mdns-advertiser"
+zombie_apple="300 1 Z 0:00.00 mDNSResponder /usr/sbin/mDNSResponder"
+live_apple="301 1 S 0:00.00 mDNSResponder /usr/sbin/mDNSResponder"
+mixed_smbd=$(cat <<'EOF'
+100 1 Z 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd
+101 1 S 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd
+EOF
+)
+
+smbd_parent_process_present "$zombie_smbd"; echo "zombie-smbd=$?"
+smbd_parent_process_present "$live_smbd"; echo "live-smbd=$?"
+mdns_process_present "$zombie_mdns"; echo "zombie-mdns=$?"
+mdns_process_present "$live_mdns"; echo "live-mdns=$?"
+apple_mdns_present "$zombie_apple"; echo "zombie-apple=$?"
+apple_mdns_present "$live_apple"; echo "live-apple=$?"
+capture_fstat_for_ucomm "$mixed_smbd" smbd
+'''
+        )
+
+        result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("zombie-smbd=1", result.stdout)
+        self.assertIn("live-smbd=0", result.stdout)
+        self.assertIn("zombie-mdns=1", result.stdout)
+        self.assertIn("live-mdns=0", result.stdout)
+        self.assertIn("zombie-apple=1", result.stdout)
+        self.assertIn("live-apple=0", result.stdout)
+        self.assertNotIn("fstat:100", result.stdout)
+        self.assertIn("fstat:101", result.stdout)
+
     def test_probe_managed_smbd_returns_detail_when_not_ready(self) -> None:
         with mock.patch(
             "timecapsulesmb.device.probe.run_ssh",
@@ -3475,11 +3601,31 @@ int main(void) {{
             remote_uninstall_payload(connection, plan)
         self.assertEqual([call.args[1] for call in run_ssh_mock.call_args_list], expected)
 
+    def test_render_process_present_ignores_zombies_for_name_and_full_matches(self) -> None:
+        def process_present(pattern: str, *, full: bool, ps_lines: list[str]) -> bool:
+            command = deploy_commands._render_process_present(pattern, full=full)
+            with tempfile.TemporaryDirectory() as tmp:
+                fixture = Path(tmp) / "ps.txt"
+                fixture.write_text("\n".join(ps_lines) + "\n")
+                command = command.replace(
+                    "ps axww -o stat= -o ucomm= -o command= >/tmp/tcapsule-ps.$$ 2>/dev/null",
+                    f"cat {shlex.quote(str(fixture))} >/tmp/tcapsule-ps.$$",
+                )
+                result = subprocess.run(["/bin/sh", "-c", command], check=False, text=True, capture_output=True)
+            self.assertEqual(result.stderr, "")
+            return result.returncode == 0
+
+        self.assertFalse(process_present("wcifsnd", full=False, ps_lines=["Z    wcifsnd         (wcifsnd)"]))
+        self.assertTrue(process_present("wcifsnd", full=False, ps_lines=["S    wcifsnd         wcifsnd"]))
+        self.assertFalse(process_present("/mnt/Flash/watchdog.sh", full=True, ps_lines=["Z    sh              /bin/sh /mnt/Flash/watchdog.sh"]))
+        self.assertTrue(process_present("/mnt/Flash/watchdog.sh", full=True, ps_lines=["S    sh              /bin/sh /mnt/Flash/watchdog.sh"]))
+
     def test_render_stop_process_action_waits_for_exit(self) -> None:
         command = render_remote_action(stop_process_action("mdns-advertiser"))
         self.assertIn("pkill mdns-advertiser >/dev/null 2>&1 || true;", command)
-        self.assertIn("while /bin/sh -c 'found=1; if ps ax -o ucomm= >/tmp/tcapsule-ps.", command)
-        self.assertIn('case \"$line\" in mdns-advertiser) found=1; break ;; esac;', command)
+        self.assertIn("while /bin/sh -c 'found=1; if ps axww -o stat= -o ucomm= -o command= >/tmp/tcapsule-ps.", command)
+        self.assertIn('case \"$1\" in Z*) continue ;; esac;', command)
+        self.assertIn('if [ \"$2\" = mdns-advertiser ]; then found=1; break; fi;', command)
         self.assertIn('if [ "$attempt" -ge 5 ]; then break; fi;', command)
         self.assertNotIn("pkill -9", command)
 
@@ -3493,7 +3639,8 @@ int main(void) {{
     def test_render_stop_process_full_action_waits_for_exit(self) -> None:
         command = render_remote_action(stop_process_full_action("[w]atchdog.sh"))
         self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true;", command)
-        self.assertIn("while /bin/sh -c 'found=1; if ps ax -o command= >/tmp/tcapsule-ps.", command)
+        self.assertIn("while /bin/sh -c 'found=1; if ps axww -o stat= -o ucomm= -o command= >/tmp/tcapsule-ps.", command)
+        self.assertIn('case \"$1\" in Z*) continue ;; esac;', command)
         self.assertIn('case "$line" in *[w]atchdog.sh*) found=1; break ;; esac;', command)
         self.assertNotIn("pkill -9 -f", command)
 
