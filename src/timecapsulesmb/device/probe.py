@@ -404,6 +404,7 @@ class RemoteInterfaceCandidatesProbeResult:
     candidates: tuple[RemoteInterfaceCandidate, ...]
     preferred_iface: str | None
     detail: str
+    target_ip_matches: tuple[RemoteInterfaceCandidate, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -731,7 +732,8 @@ def _parse_ifconfig_candidates(output: str) -> tuple[RemoteInterfaceCandidate, .
 
 
 def _interface_preference_key(candidate: RemoteInterfaceCandidate, target_ips: Iterable[str] = ()) -> tuple[int, int, int, int, int, int, int]:
-    target_ip_set = {value for value in target_ips if value}
+    target_ip_tuple = tuple(value for value in target_ips if value)
+    target_ip_set = set(target_ip_tuple)
     non_loopback_ipv4 = tuple(addr for addr in candidate.ipv4_addrs if not _is_loopback_ipv4(addr))
     non_link_local_ipv4 = tuple(addr for addr in non_loopback_ipv4 if not _is_link_local_ipv4(addr))
     private_non_link_local_ipv4 = tuple(addr for addr in non_link_local_ipv4 if _is_private_ipv4(addr))
@@ -756,11 +758,16 @@ def preferred_interface_name(
     eligible = [candidate for candidate in candidates if not candidate.loopback and candidate.ipv4_addrs]
     if not eligible:
         return None
-    best = max(eligible, key=lambda candidate: (_interface_preference_key(candidate, target_ips), candidate.name))
+    target_ip_tuple = tuple(value for value in target_ips if value)
+    best = max(eligible, key=lambda candidate: (_interface_preference_key(candidate, target_ip_tuple), candidate.name))
     return best.name
 
 
-def probe_remote_interface_candidates_conn(connection: SshConnection) -> RemoteInterfaceCandidatesProbeResult:
+def probe_remote_interface_candidates_conn(
+    connection: SshConnection,
+    *,
+    target_ips: Iterable[str] = (),
+) -> RemoteInterfaceCandidatesProbeResult:
     proc = run_ssh(connection, "/sbin/ifconfig -a", check=False, timeout=30)
     if proc.returncode != 0:
         return RemoteInterfaceCandidatesProbeResult(
@@ -769,17 +776,26 @@ def probe_remote_interface_candidates_conn(connection: SshConnection) -> RemoteI
             detail=f"ifconfig -a failed: rc={proc.returncode}",
         )
     candidates = _parse_ifconfig_candidates(proc.stdout)
-    preferred_iface = preferred_interface_name(candidates)
+    target_ip_tuple = tuple(value for value in target_ips if value)
+    target_ip_set = set(target_ip_tuple)
+    target_ip_matches = tuple(
+        candidate
+        for candidate in candidates
+        if not candidate.loopback and target_ip_set.intersection(candidate.ipv4_addrs)
+    )
+    preferred_iface = preferred_interface_name(candidates, target_ips=target_ip_tuple)
     if preferred_iface is None:
         return RemoteInterfaceCandidatesProbeResult(
             candidates=candidates,
             preferred_iface=None,
             detail="no non-loopback IPv4 interface candidates found",
+            target_ip_matches=target_ip_matches,
         )
     return RemoteInterfaceCandidatesProbeResult(
         candidates=candidates,
         preferred_iface=preferred_iface,
         detail=f"preferred interface {preferred_iface}",
+        target_ip_matches=target_ip_matches,
     )
 
 

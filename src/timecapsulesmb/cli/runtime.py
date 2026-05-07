@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from timecapsulesmb.core.config import (
     DEFAULTS,
     AppConfig,
     ConfigError,
+    extract_host,
     load_app_config,
     require_valid_app_config,
 )
@@ -15,8 +17,11 @@ from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.device.compat import DeviceCompatibility, require_compatibility
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
+    RemoteInterfaceCandidate,
+    RemoteInterfaceCandidatesProbeResult,
     RemoteInterfaceProbeResult,
     probe_connection_state,
+    probe_remote_interface_candidates_conn,
     probe_remote_interface_conn,
 )
 from timecapsulesmb.transport.ssh import SshConnection
@@ -91,6 +96,44 @@ def inspect_managed_connection(
     return ManagedTargetState(connection=connection, interface_probe=interface_probe, probe_state=probe_state)
 
 
+def _ipv4_literal(value: str) -> str | None:
+    value = value.strip()
+    try:
+        parsed = ipaddress.ip_address(value)
+    except ValueError:
+        return None
+    if parsed.version != 4:
+        return None
+    return str(parsed)
+
+
+def _format_remote_interface(candidate: RemoteInterfaceCandidate) -> str:
+    ipv4_text = "/".join(candidate.ipv4_addrs) if candidate.ipv4_addrs else "no IPv4"
+    return f"{candidate.name}={ipv4_text}"
+
+
+def _format_remote_interface_candidates(result: RemoteInterfaceCandidatesProbeResult) -> str:
+    candidates = tuple(candidate for candidate in result.candidates if not candidate.loopback)
+    if not candidates:
+        return "Found remote interfaces: none."
+    return "Found remote interfaces: " + ", ".join(_format_remote_interface(candidate) for candidate in candidates) + "."
+
+
+def _invalid_interface_message(
+    *,
+    connection: SshConnection,
+    detail: str,
+) -> str:
+    target_ip = _ipv4_literal(extract_host(connection.host))
+    target_ips = (target_ip,) if target_ip is not None else ()
+    candidates_probe = probe_remote_interface_candidates_conn(connection, target_ips=target_ips)
+    return (
+        "TC_NET_IFACE is invalid. Run the `configure` command again.\n"
+        f"{detail}.\n"
+        f"{_format_remote_interface_candidates(candidates_probe)}"
+    )
+
+
 def resolve_validated_managed_target(
     config: AppConfig,
     *,
@@ -103,8 +146,10 @@ def resolve_validated_managed_target(
     target = inspect_managed_connection(connection, config.require("TC_NET_IFACE"), include_probe=include_probe)
     if not target.interface_probe.exists:
         raise ConfigError(
-            "TC_NET_IFACE is invalid. Run the `configure` command again.\n"
-            f"{target.interface_probe.detail}."
+            _invalid_interface_message(
+                connection=connection,
+                detail=target.interface_probe.detail,
+            )
         )
     return target
 

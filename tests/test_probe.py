@@ -173,6 +173,24 @@ bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu
         self.assertEqual(result.preferred_iface, "bridge0")
         self.assertEqual(preferred_interface_name(result.candidates, target_ips=("10.0.1.1",)), "bcmeth1")
 
+    def test_probe_remote_interface_candidates_reports_target_ip_matches(self) -> None:
+        ifconfig_output = """
+bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+\tinet 192.168.168.111 netmask 0xffffff00 broadcast 192.168.168.255
+\tstatus: active
+bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+\tinet 169.254.117.175 netmask 0xffff0000 broadcast 169.254.255.255
+\tstatus: active
+lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> metric 0 mtu 33172
+\tinet 127.0.0.1 netmask 0xff000000
+"""
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=ifconfig_output)
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            result = probe_remote_interface_candidates_conn(connection, target_ips=("192.168.168.111",))
+        self.assertEqual(result.preferred_iface, "bcmeth1")
+        self.assertEqual([candidate.name for candidate in result.target_ip_matches], ["bcmeth1"])
+
     def test_preferred_interface_name_private_ipv4_beats_link_local_without_target_ip(self) -> None:
         ifconfig_output = """
 bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500

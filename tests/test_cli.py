@@ -4336,6 +4336,17 @@ class CliTests(unittest.TestCase):
 
     def test_deploy_rejects_missing_remote_interface(self) -> None:
         values = self.make_valid_env()
+        candidates = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.0.2",), up=True, active=True, loopback=False),
+                RemoteInterfaceCandidate(name="bridge1", ipv4_addrs=("169.254.1.2",), up=True, active=True, loopback=False),
+            ),
+            preferred_iface="bcmeth1",
+            detail="preferred interface bcmeth1",
+            target_ip_matches=(
+                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.0.2",), up=True, active=True, loopback=False),
+            ),
+        )
         with self.assertRaises(SystemExit) as ctx:
             with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
                 with mock.patch(
@@ -4346,9 +4357,16 @@ class CliTests(unittest.TestCase):
                         detail="interface bridge0 was not found on the device",
                     ),
                 ):
-                    deploy.main(["--dry-run"])
+                    with mock.patch(
+                        "timecapsulesmb.cli.runtime.probe_remote_interface_candidates_conn",
+                        return_value=candidates,
+                    ) as candidates_mock:
+                        deploy.main(["--dry-run"])
         self.assertIn("TC_NET_IFACE is invalid", str(ctx.exception))
         self.assertIn("bridge0 was not found", str(ctx.exception))
+        self.assertIn("Found remote interfaces: bcmeth1=10.0.0.2, bridge1=169.254.1.2.", str(ctx.exception))
+        candidates_mock.assert_called_once()
+        self.assertEqual(candidates_mock.call_args.kwargs["target_ips"], ("10.0.0.2",))
 
     def test_deploy_no_reboot_stops_after_upload_phase(self) -> None:
         result = self.run_deploy_cli(
@@ -5589,6 +5607,16 @@ class CliTests(unittest.TestCase):
 
     def test_activate_rejects_missing_remote_interface(self) -> None:
         values = self.make_valid_env()
+        candidates = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.0.2",), up=True, active=True, loopback=False),
+            ),
+            preferred_iface="bcmeth1",
+            detail="preferred interface bcmeth1",
+            target_ip_matches=(
+                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.0.2",), up=True, active=True, loopback=False),
+            ),
+        )
         with self.assertRaises(SystemExit) as ctx:
             with mock.patch("timecapsulesmb.cli.activate.load_env_config", return_value=self.make_app_config(values)):
                 with mock.patch(
@@ -5599,9 +5627,14 @@ class CliTests(unittest.TestCase):
                         detail="interface bridge0 was not found on the device",
                     ),
                 ):
-                    activate.main(["--dry-run"])
+                    with mock.patch(
+                        "timecapsulesmb.cli.runtime.probe_remote_interface_candidates_conn",
+                        return_value=candidates,
+                    ):
+                        activate.main(["--dry-run"])
         self.assertIn("TC_NET_IFACE is invalid", str(ctx.exception))
         self.assertIn("bridge0 was not found", str(ctx.exception))
+        self.assertIn("Found remote interfaces: bcmeth1=10.0.0.2.", str(ctx.exception))
 
     def test_activate_prompt_decline_cancels_before_remote_actions(self) -> None:
         output = io.StringIO()
