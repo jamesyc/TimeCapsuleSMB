@@ -1361,11 +1361,14 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
         nbns_start = rendered.index("start_nbns()")
         nbns_end = rendered.index("\nif ! cleanup_old_runtime; then\n")
         nbns_section = rendered[nbns_start:nbns_end]
+        apple_conflict_start = common.index("stop_apple_nbns_conflicts()")
         conflict_start = common.index("stop_nbns_conflicts()")
         conflict_end = common.index("is_volume_root_mounted()")
+        apple_conflict_section = common[apple_conflict_start:conflict_start]
         conflict_section = common[conflict_start:conflict_end]
-        self.assertIn('stop_runtime_process "wcifsnd" "wcifsnd" false || cleanup_status=1', conflict_section)
-        self.assertIn('stop_runtime_process "wcifsfs" "wcifsfs" false || cleanup_status=1', conflict_section)
+        self.assertIn('stop_runtime_process "wcifsnd" "wcifsnd" false || cleanup_status=1', apple_conflict_section)
+        self.assertIn('stop_runtime_process "wcifsfs" "wcifsfs" false || cleanup_status=1', apple_conflict_section)
+        self.assertIn("stop_apple_nbns_conflicts || cleanup_status=1", conflict_section)
         self.assertIn('stop_runtime_process "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" false || cleanup_status=1', conflict_section)
         self.assertIn('if ! stop_nbns_conflicts; then', nbns_section)
         self.assertIn('log "nbns responder launch skipped; conflicting Apple CIFS/NBNS processes still running"', nbns_section)
@@ -2042,6 +2045,12 @@ stage_runtime "$PAYLOAD_DIR" "$PAYLOAD_DIR/smbd" ""
         self.assertIn('rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true', rendered)
         self.assertNotIn('if [ ! -f "$RAM_PRIVATE/nbns.enabled" ]; then\n        return 0\n    fi\n\n    if [ ! -x "$NBNS_BIN" ]; then\n        log_msg "NBNS restart skipped; missing $NBNS_BIN"\n        return 0\n    fi\n\n    iface_ip="$(get_iface_ipv4 "$NET_IFACE")"\n    if [ -z "$iface_ip" ]; then\n        log_msg "NBNS restart skipped; missing IPv4 for $NET_IFACE"\n        return 0\n    fi\n\n    pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true\n    "$NBNS_BIN"', rendered)
 
+    def test_watchdog_mdns_restart_does_not_kill_existing_advertiser(self) -> None:
+        restart_mdns = self._extract_shell_function(self._render_default_watchdog(), "restart_mdns")
+
+        self.assertNotIn("pkill", restart_mdns)
+        self.assertIn('"$@" >/dev/null 2>&1 &', restart_mdns)
+
     def test_render_watchdog_script_uses_fast_recovery_poll_before_steady_state(self) -> None:
         values = {
             "TC_PAYLOAD_DIR_NAME": "samba4",
@@ -2184,15 +2193,15 @@ echo "status=$?" >> "$TRACE"
         restart_end = rendered.index("nbns_enabled()")
         restart_section = rendered[restart_start:restart_end]
         common = load_boot_asset_text("common.sh")
+        apple_conflict_start = common.index("stop_apple_nbns_conflicts()")
         conflict_start = common.index("stop_nbns_conflicts()")
-        conflict_end = common.index("is_volume_root_mounted()")
-        conflict_section = common[conflict_start:conflict_end]
-        self.assertIn('stop_runtime_process "wcifsnd" "wcifsnd" false || cleanup_status=1', conflict_section)
-        self.assertIn('stop_runtime_process "wcifsfs" "wcifsfs" false || cleanup_status=1', conflict_section)
-        self.assertIn('stop_runtime_process "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" false || cleanup_status=1', conflict_section)
-        self.assertIn('if ! stop_nbns_conflicts; then', restart_section)
+        apple_conflict_section = common[apple_conflict_start:conflict_start]
+        self.assertIn('stop_runtime_process "wcifsnd" "wcifsnd" false || cleanup_status=1', apple_conflict_section)
+        self.assertIn('stop_runtime_process "wcifsfs" "wcifsfs" false || cleanup_status=1', apple_conflict_section)
+        self.assertNotIn('stop_runtime_process "$NBNS_PROC_NAME"', restart_section)
+        self.assertIn('if ! stop_apple_nbns_conflicts; then', restart_section)
         self.assertIn('log "watchdog recovery: nbns restart skipped because conflicting Apple CIFS/NBNS processes still running"', restart_section)
-        self.assertLess(restart_section.index('if ! stop_nbns_conflicts; then'), restart_section.index('"$NBNS_BIN" \\'))
+        self.assertLess(restart_section.index('if ! stop_apple_nbns_conflicts; then'), restart_section.index('"$NBNS_BIN" \\'))
 
     def test_build_template_bundle_accepts_adisk_values(self) -> None:
         values = {

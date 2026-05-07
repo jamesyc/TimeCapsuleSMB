@@ -156,11 +156,19 @@ stop_runtime_process() {
     return 1
 }
 
-stop_nbns_conflicts() {
+stop_apple_nbns_conflicts() {
     cleanup_status=0
 
     stop_runtime_process "wcifsnd" "wcifsnd" false || cleanup_status=1
     stop_runtime_process "wcifsfs" "wcifsfs" false || cleanup_status=1
+
+    return "$cleanup_status"
+}
+
+stop_nbns_conflicts() {
+    cleanup_status=0
+
+    stop_apple_nbns_conflicts || cleanup_status=1
     stop_runtime_process "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" false || cleanup_status=1
 
     return "$cleanup_status"

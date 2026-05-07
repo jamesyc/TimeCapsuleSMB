@@ -114,9 +114,6 @@ restart_mdns() {
         return 0
     fi
 
-    /usr/bin/pkill "$MDNS_PROC_NAME" >/dev/null 2>&1 || true
-    sleep 1
-
     set -- "$MDNS_BIN" \
         --load-snapshot "$APPLE_MDNS_SNAPSHOT" \
         --instance "$MDNS_INSTANCE_NAME" \
@@ -170,7 +167,7 @@ restart_nbns() {
         return 0
     fi
 
-    if ! stop_nbns_conflicts; then
+    if ! stop_apple_nbns_conflicts; then
         log "watchdog recovery: nbns restart skipped because conflicting Apple CIFS/NBNS processes still running"
         return 0
     fi
