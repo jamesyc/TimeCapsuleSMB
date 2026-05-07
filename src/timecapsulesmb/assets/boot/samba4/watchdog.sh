@@ -23,12 +23,14 @@ AIRPORT_SYAP=__AIRPORT_SYAP__
 ADISK_DISK_KEY=__ADISK_DISK_KEY__
 ADISK_DISK_ADVF=0x82
 ADISK_UUID=__ADISK_UUID__
+VOLUME_DEVICE=${1:-}
+VOLUME_ROOT=${2:-}
+DATA_ROOT=${3:-}
 
 RECOVERY_POLL_SECONDS=10
+MOUNT_POLL_SECONDS=30
 STEADY_POLL_SECONDS=300
-INITIAL_STARTUP_DELAY_SECONDS=${1:-30}
-SNAPSHOT_BOOTSTRAP_GRACE_SECONDS=120
-WATCHDOG_START_TS=$(/bin/date +%s)
+INITIAL_STARTUP_DELAY_SECONDS=${4:-0}
 
 log() {
     log_dir=${WATCHDOG_LOG%/*}
@@ -43,6 +45,42 @@ log() {
         echo "$line"
     } >"$tmp_log"
     mv "$tmp_log" "$WATCHDOG_LOG"
+}
+
+ensure_data_volume_mounted() {
+    if [ -z "$VOLUME_DEVICE" ] || [ -z "$VOLUME_ROOT" ]; then
+        return 0
+    fi
+
+    if is_volume_root_mounted "$VOLUME_ROOT"; then
+        return 0
+    fi
+
+    log "watchdog recovery: data volume $VOLUME_ROOT is unmounted; mounting $VOLUME_DEVICE"
+    if mount_hfs_bounded "$VOLUME_DEVICE" "$VOLUME_ROOT" 30 "watchdog recovery"; then
+        log "watchdog recovery: mounted $VOLUME_DEVICE at $VOLUME_ROOT"
+        return 0
+    else
+        log "watchdog recovery: failed to mount $VOLUME_DEVICE at $VOLUME_ROOT"
+        return 1
+    fi
+}
+
+sleep_with_mount_checks() {
+    total_sleep=$1
+    slept=0
+
+    while [ "$slept" -lt "$total_sleep" ]; do
+        sleep_seconds=$MOUNT_POLL_SECONDS
+        remaining=$((total_sleep - slept))
+        if [ "$remaining" -lt "$sleep_seconds" ]; then
+            sleep_seconds=$remaining
+        fi
+
+        sleep "$sleep_seconds"
+        slept=$((slept + sleep_seconds))
+        ensure_data_volume_mounted || true
+    done
 }
 
 start_smbd_if_needed() {
@@ -65,11 +103,6 @@ restart_mdns() {
         return 0
     fi
 
-    if [ ! -f "$APPLE_MDNS_SNAPSHOT" ] && [ "$elapsed" -lt "$SNAPSHOT_BOOTSTRAP_GRACE_SECONDS" ]; then
-        log "watchdog recovery: mdns restart deferred while startup snapshot capture may still be running"
-        return 0
-    fi
-
     iface_ip=$(get_iface_ipv4 "$NET_IFACE" || true)
     iface_mac=$(get_iface_mac "$NET_IFACE" || true)
     if [ -z "$iface_ip" ] || [ "$iface_ip" = "0.0.0.0" ]; then
@@ -85,17 +118,10 @@ restart_mdns() {
     sleep 1
 
     set -- "$MDNS_BIN" \
+        --load-snapshot "$APPLE_MDNS_SNAPSHOT" \
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
         --device-model "$MDNS_DEVICE_MODEL"
-    if [ -f "$APPLE_MDNS_SNAPSHOT" ]; then
-        set -- "$@" --load-snapshot "$APPLE_MDNS_SNAPSHOT"
-    else
-        set -- "$@" \
-            --save-all-snapshot "$ALL_MDNS_SNAPSHOT" \
-            --save-snapshot "$APPLE_MDNS_SNAPSHOT" \
-            --load-snapshot "$APPLE_MDNS_SNAPSHOT"
-    fi
     if derive_airport_fields "$iface_mac"; then
         set -- "$@" \
             --airport-wama "$AIRPORT_WAMA" \
@@ -144,10 +170,10 @@ restart_nbns() {
         return 0
     fi
 
-    /usr/bin/pkill wcifsnd >/dev/null 2>&1 || true
-    /usr/bin/pkill wcifsfs >/dev/null 2>&1 || true
-    /usr/bin/pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true
-    sleep 1
+    if ! stop_nbns_conflicts; then
+        log "watchdog recovery: nbns restart skipped because conflicting Apple CIFS/NBNS processes still running"
+        return 0
+    fi
 
     "$NBNS_BIN" \
         --name "$SMB_NETBIOS_NAME" \
@@ -178,14 +204,16 @@ all_managed_services_healthy() {
     return 0
 }
 
-elapsed=0
 log "watchdog startup beginning; initial recovery delay ${INITIAL_STARTUP_DELAY_SECONDS}s"
+log "watchdog mount context: device=${VOLUME_DEVICE:-none} root=${VOLUME_ROOT:-none} data=${DATA_ROOT:-none}"
 sleep "$INITIAL_STARTUP_DELAY_SECONDS"
 
 while :; do
-    now_ts=$(/bin/date +%s)
-    elapsed=$((now_ts - WATCHDOG_START_TS))
-    start_smbd_if_needed
+    if ensure_data_volume_mounted; then
+        start_smbd_if_needed
+    else
+        log "watchdog recovery: smbd restart skipped because data volume is unavailable"
+    fi
 
     if /usr/bin/pkill -0 "$MDNS_PROC_NAME" >/dev/null 2>&1; then
         :
@@ -200,7 +228,7 @@ while :; do
     fi
 
     if all_managed_services_healthy; then
-        sleep "$STEADY_POLL_SECONDS"
+        sleep_with_mount_checks "$STEADY_POLL_SECONDS"
     else
         sleep "$RECOVERY_POLL_SECONDS"
     fi

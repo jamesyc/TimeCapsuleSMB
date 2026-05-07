@@ -10,8 +10,8 @@
     guest account = nobody
     null passwords = no
     ea support = yes
-    passdb backend = smbpasswd:__PAYLOAD_DIR__/private/smbpasswd
-    username map = __PAYLOAD_DIR__/private/username.map
+    passdb backend = smbpasswd:/mnt/Memory/samba4/private/smbpasswd
+    username map = /mnt/Memory/samba4/private/username.map
     dos charset = ASCII
     min protocol = SMB2
     max protocol = SMB3

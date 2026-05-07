@@ -131,78 +131,6 @@ cleanup_old_runtime() {
     log "old managed runtime cleanup complete"
 }
 
-runtime_process_present() {
-    pattern=$1
-    full_match=${2:-false}
-
-    if [ "$full_match" = "true" ]; then
-        if ps_out=$(/bin/ps axww -o command= 2>/dev/null); then
-            old_ifs=$IFS
-            IFS='
-'
-            for line in $ps_out; do
-                case "$line" in
-                    *"$pattern"*)
-                        IFS=$old_ifs
-                        return 0
-                        ;;
-                esac
-            done
-            IFS=$old_ifs
-        fi
-        return 1
-    fi
-
-    /usr/bin/pkill -0 "$pattern" >/dev/null 2>&1
-}
-
-wait_for_runtime_process_absent() {
-    pattern=$1
-    full_match=${2:-false}
-    max_attempts=${3:-5}
-    attempt=0
-
-    while runtime_process_present "$pattern" "$full_match"; do
-        if [ "$attempt" -ge "$max_attempts" ]; then
-            return 1
-        fi
-        attempt=$((attempt + 1))
-        sleep 1
-    done
-    return 0
-}
-
-stop_runtime_process() {
-    label=$1
-    pattern=$2
-    full_match=${3:-false}
-
-    log "stopping old $label"
-    if [ "$full_match" = "true" ]; then
-        /usr/bin/pkill -f "$pattern" >/dev/null 2>&1 || true
-    else
-        /usr/bin/pkill "$pattern" >/dev/null 2>&1 || true
-    fi
-
-    if wait_for_runtime_process_absent "$pattern" "$full_match" 5; then
-        return 0
-    fi
-
-    log "old $label still running after TERM; sending KILL"
-    if [ "$full_match" = "true" ]; then
-        /usr/bin/pkill -9 -f "$pattern" >/dev/null 2>&1 || true
-    else
-        /usr/bin/pkill -9 "$pattern" >/dev/null 2>&1 || true
-    fi
-
-    if wait_for_runtime_process_absent "$pattern" "$full_match" 5; then
-        return 0
-    fi
-
-    log "old $label survived KILL"
-    return 1
-}
-
 locks_root_is_mounted() {
     df_line=$(/bin/df -k "$LOCKS_ROOT" 2>/dev/null | /usr/bin/tail -n +2 || true)
     case "$df_line" in
@@ -290,162 +218,6 @@ wait_for_bind_interfaces() {
     return 1
 }
 
-append_disk_candidate() {
-    candidate=$1
-    case " $DISK_CANDIDATES " in
-        *" $candidate "*)
-            ;;
-        *)
-            DISK_CANDIDATES="$DISK_CANDIDATES $candidate"
-            ;;
-    esac
-}
-
-disk_name_candidates() {
-    # Keep this candidate order in sync with src/timecapsulesmb/device/util.py.
-    DISK_CANDIDATES=""
-    dmesg_disk_lines=$(/sbin/dmesg 2>/dev/null | /usr/bin/sed -n '/^dk[0-9][0-9]* at /p' || true)
-    metadata_wedges=""
-    for dev in $(echo "$dmesg_disk_lines" | /usr/bin/sed -n 's/^\(dk[0-9][0-9]*\) at .*: APconfig$/\1/p;s/^\(dk[0-9][0-9]*\) at .*: APswap$/\1/p'); do
-        metadata_wedges="$metadata_wedges $dev"
-    done
-
-    for dev in $(echo "$dmesg_disk_lines" | /usr/bin/sed -n 's/^\(dk[0-9][0-9]*\) at .*: APdata$/\1/p'); do
-        append_disk_candidate "$dev"
-    done
-
-    for dev in $(/sbin/sysctl -n hw.disknames 2>/dev/null); do
-        case "$dev" in
-            dk[0-9]*)
-                case " $metadata_wedges " in
-                    *" $dev "*)
-                        ;;
-                    *)
-                        append_disk_candidate "$dev"
-                        ;;
-                esac
-                ;;
-        esac
-    done
-
-    if [ -z "$DISK_CANDIDATES" ]; then
-        DISK_CANDIDATES=" dk2 dk3"
-    fi
-
-    echo "$DISK_CANDIDATES"
-}
-
-volume_root_candidates() {
-    roots=""
-    for dev in "$@"; do
-        roots="$roots /Volumes/$dev"
-    done
-    echo "$roots"
-}
-
-mount_candidates() {
-    candidates=""
-    for dev in "$@"; do
-        candidates="$candidates /dev/$dev:/Volumes/$dev"
-    done
-    echo "$candidates"
-}
-
-log_disk_discovery_state() {
-    disk_candidates=$1
-
-    disk_names=$(/sbin/sysctl -n hw.disknames 2>/dev/null || true)
-    if [ -n "$disk_names" ]; then
-        log "disk discovery: hw.disknames=$disk_names"
-    else
-        log "disk discovery: hw.disknames unavailable"
-    fi
-
-    disk_lines=$(/sbin/dmesg 2>/dev/null | /usr/bin/sed -n '/^wd[0-9]/p;/^sd[0-9]/p;/^ld[0-9]/p;/^dk[0-9]/p' || true)
-    if [ -n "$disk_lines" ]; then
-        old_ifs=$IFS
-        IFS='
-'
-        for disk_line in $disk_lines; do
-            log "disk discovery: dmesg: $disk_line"
-        done
-        IFS=$old_ifs
-    else
-        log "disk discovery: no wd/sd/ld/dk dmesg lines available"
-    fi
-
-    volume_candidates=$(volume_root_candidates $disk_candidates)
-    mount_candidate_list=$(mount_candidates $disk_candidates)
-    log "disk discovery: disk candidates:${disk_candidates:- none}"
-    log "disk discovery: volume root candidates:${volume_candidates:- none}"
-    log "disk discovery: mount candidates:${mount_candidate_list:- none}"
-}
-
-find_existing_data_root() {
-    disk_candidates=$1
-    for volume_root in $(volume_root_candidates $disk_candidates); do
-        if is_volume_root_mounted "$volume_root" && data_root=$(find_data_root_under_volume "$volume_root"); then
-            echo "$data_root"
-            return 0
-        fi
-    done
-
-    return 1
-}
-
-find_existing_volume_root() {
-    disk_candidates=$1
-    for volume_root in $(volume_root_candidates $disk_candidates); do
-        if is_volume_root_mounted "$volume_root"; then
-            echo "$volume_root"
-            return 0
-        fi
-    done
-
-    return 1
-}
-
-is_volume_root_mounted() {
-    volume_root=$1
-    df_line=$(/bin/df -k "$volume_root" 2>/dev/null | /usr/bin/tail -n +2 || true)
-    case "$df_line" in
-        *" $volume_root")
-            return 0
-            ;;
-    esac
-    return 1
-}
-
-find_data_root_under_volume() {
-    volume_root=$1
-
-    if [ -f "$volume_root/ShareRoot/.com.apple.timemachine.supported" ]; then
-        log "data root match: $volume_root/ShareRoot marker"
-        echo "$volume_root/ShareRoot"
-        return 0
-    fi
-
-    if [ -f "$volume_root/Shared/.com.apple.timemachine.supported" ]; then
-        log "data root match: $volume_root/Shared marker"
-        echo "$volume_root/Shared"
-        return 0
-    fi
-
-    if [ -d "$volume_root/ShareRoot" ]; then
-        log "data root match: $volume_root/ShareRoot directory"
-        echo "$volume_root/ShareRoot"
-        return 0
-    fi
-
-    if [ -d "$volume_root/Shared" ]; then
-        log "data root match: $volume_root/Shared directory"
-        echo "$volume_root/Shared"
-        return 0
-    fi
-
-    return 1
-}
-
 initialize_data_root_under_volume() {
     volume_root=$1
     data_root="$volume_root/ShareRoot"
@@ -454,61 +226,6 @@ initialize_data_root_under_volume() {
     mkdir -p "$data_root"
     : >"$marker"
     echo "$data_root"
-}
-
-mount_device_if_possible() {
-    dev_path=$1
-    volume_root=$2
-    created_mountpoint=0
-
-    if [ ! -b "$dev_path" ]; then
-        log "mount candidate skipped; missing block device $dev_path"
-        return 1
-    fi
-
-    if [ ! -d "$volume_root" ]; then
-        mkdir -p "$volume_root"
-        created_mountpoint=1
-        log "created mountpoint $volume_root for $dev_path"
-    fi
-
-    log "launching mount_hfs for $dev_path at $volume_root"
-    /sbin/mount_hfs "$dev_path" "$volume_root" >/dev/null 2>&1 &
-    mount_pid=$!
-    attempt=0
-    while kill -0 "$mount_pid" >/dev/null 2>&1; do
-        if [ "$attempt" -ge 30 ]; then
-            kill "$mount_pid" >/dev/null 2>&1 || true
-            sleep 1
-            kill -9 "$mount_pid" >/dev/null 2>&1 || true
-            wait "$mount_pid" >/dev/null 2>&1 || true
-            log "mount_hfs command did not exit promptly for $dev_path at $volume_root; re-checking mount state"
-            if is_volume_root_mounted "$volume_root"; then
-                log "mount_hfs command timed out, but volume is mounted"
-                return 0
-            fi
-            if [ "$created_mountpoint" -eq 1 ]; then
-                /bin/rmdir "$volume_root" >/dev/null 2>&1 || true
-            fi
-            log "mount_hfs timed out for $dev_path at $volume_root and volume was not mounted at the immediate re-check, will try manual mount"
-            return 1
-        fi
-        attempt=$((attempt + 1))
-        sleep 1
-    done
-    wait "$mount_pid" >/dev/null 2>&1 || true
-
-    if is_volume_root_mounted "$volume_root"; then
-        log "mounted $dev_path at $volume_root after ${attempt}s"
-        return 0
-    fi
-
-    if [ "$created_mountpoint" -eq 1 ]; then
-        /bin/rmdir "$volume_root" >/dev/null 2>&1 || true
-    fi
-
-    log "mount_hfs exited for $dev_path at $volume_root, but volume is not mounted"
-    return 1
 }
 
 discover_preexisting_data_root() {
@@ -570,26 +287,6 @@ wait_for_existing_mount_target() {
         sleep 1
     done
     log "$target_name was not mounted after ${attempt}s"
-    return 1
-}
-
-try_mount_candidate() {
-    dev_path=$1
-    volume_root=$2
-
-    if is_volume_root_mounted "$volume_root"; then
-        echo "$volume_root"
-        return 0
-    fi
-
-    mount_device_if_possible "$dev_path" "$volume_root" || true
-    if is_volume_root_mounted "$volume_root"; then
-        log "mount candidate succeeded: $dev_path at $volume_root"
-        echo "$volume_root"
-        return 0
-    fi
-
-    log "mount candidate failed: $dev_path at $volume_root"
     return 1
 }
 
@@ -697,6 +394,24 @@ stage_runtime() {
     cp "$smbd_src" "$RAM_SBIN/smbd"
     chmod 755 "$RAM_SBIN/smbd"
 
+    if [ ! -f "$payload_dir/private/smbpasswd" ]; then
+        log "required Samba auth file missing: $payload_dir/private/smbpasswd"
+        return 1
+    fi
+    if [ ! -f "$payload_dir/private/username.map" ]; then
+        log "required Samba username map missing: $payload_dir/private/username.map"
+        return 1
+    fi
+    cp "$payload_dir/private/smbpasswd" "$RAM_PRIVATE/smbpasswd"
+    chmod 600 "$RAM_PRIVATE/smbpasswd"
+    cp "$payload_dir/private/username.map" "$RAM_PRIVATE/username.map"
+    chmod 600 "$RAM_PRIVATE/username.map"
+    if [ -f "$payload_dir/private/adisk.uuid" ]; then
+        cp "$payload_dir/private/adisk.uuid" "$RAM_PRIVATE/adisk.uuid"
+        chmod 600 "$RAM_PRIVATE/adisk.uuid"
+    fi
+    log "staged Samba auth files into RAM private directory"
+
     if [ -f "$payload_dir/private/nbns.enabled" ] && [ -n "$nbns_src" ] && [ -x "$nbns_src" ]; then
         cp "$nbns_src" "$RAM_SBIN/nbns-advertiser"
         chmod 755 "$RAM_SBIN/nbns-advertiser"
@@ -734,8 +449,8 @@ stage_runtime() {
     guest account = nobody
     null passwords = no
     ea support = yes
-    passdb backend = smbpasswd:$PAYLOAD_DIR/private/smbpasswd
-    username map = $PAYLOAD_DIR/private/username.map
+    passdb backend = smbpasswd:$RAM_PRIVATE/smbpasswd
+    username map = $RAM_PRIVATE/username.map
     dos charset = ASCII
     min protocol = SMB2
     max protocol = SMB3
@@ -971,10 +686,10 @@ start_nbns() {
         return 0
     fi
 
-    /usr/bin/pkill wcifsnd >/dev/null 2>&1 || true
-    /usr/bin/pkill wcifsfs >/dev/null 2>&1 || true
-    /usr/bin/pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true
-    sleep 1
+    if ! stop_nbns_conflicts; then
+        log "nbns responder launch skipped; conflicting Apple CIFS/NBNS processes still running"
+        return 0
+    fi
 
     log "starting nbns responder for $SMB_NETBIOS_NAME at $NET_IFACE_IP"
     "$RAM_SBIN/nbns-advertiser" \
@@ -986,6 +701,23 @@ start_nbns() {
     else
         log "nbns responder failed to stay running"
     fi
+}
+
+start_watchdog() {
+    if [ -z "${VOLUME_DEVICE:-}" ] || [ -z "${VOLUME_ROOT:-}" ] || [ -z "${DATA_ROOT:-}" ]; then
+        log "watchdog launch skipped; mount context incomplete"
+        return 0
+    fi
+
+    if /usr/bin/pkill -0 -f /mnt/Flash/watchdog.sh >/dev/null 2>&1; then
+        log "watchdog already running"
+        return 0
+    fi
+
+    log "starting watchdog for $VOLUME_DEVICE at $VOLUME_ROOT"
+    /mnt/Flash/watchdog.sh "$VOLUME_DEVICE" "$VOLUME_ROOT" "$DATA_ROOT" </dev/null >/dev/null 2>&1 &
+    watchdog_pid=$!
+    log "watchdog launched as pid $watchdog_pid"
 }
 
 if ! cleanup_old_runtime; then
@@ -1030,6 +762,14 @@ else
     log "data root resolved after manual mount: $DATA_ROOT"
 fi
 
+if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then
+    VOLUME_ROOT=$DATA_ROOT
+else
+    VOLUME_ROOT=${DATA_ROOT%/*}
+fi
+VOLUME_DEVICE="/dev/${VOLUME_ROOT##*/}"
+log "managed volume selected: $VOLUME_DEVICE at $VOLUME_ROOT"
+
 PAYLOAD_DIR=$(find_payload_dir "$DATA_ROOT") || {
     log "payload discovery failed: missing payload directory under mounted volume"
     exit 1
@@ -1061,5 +801,6 @@ log "smbd startup complete: process observed"
 
 start_mdns_advertiser
 start_nbns
+start_watchdog
 
 exit 0
