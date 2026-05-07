@@ -1,0 +1,33 @@
+diff --git a/source3/modules/vfs_fruit.c b/source3/modules/vfs_fruit.c
+index 60d0b0d..e46f7bc 100644
+--- a/source3/modules/vfs_fruit.c
++++ b/source3/modules/vfs_fruit.c
+@@ -3251,7 +3251,13 @@ static int fruit_fstatat_meta(struct vfs_handle_struct *handle,
+ 	{
+ 		/* Populate the stat struct with info from the base file. */
+ 
+-		struct smb_filename base_name = *smb_relname;
++		/*
++		 * macOS clients stat AFP_AfpInfo streams during Finder copies
++		 * and Time Machine sparsebundle work. smb_relname is allocated
++		 * below for the Netatalk xattr lookup, so use the caller's
++		 * stream filename until that no-stream copy exists.
++		 */
++		struct smb_filename base_name = *_smb_relname;
+ 		base_name.stream_name = NULL;
+ 
+ 		ret = SMB_VFS_NEXT_FSTATAT(
+@@ -3262,11 +3268,11 @@ static int fruit_fstatat_meta(struct vfs_handle_struct *handle,
+ 		goto fail;
+ 	}
+ 
+-	ino = hash_inode(sbuf, smb_relname->stream_name);
++	ino = hash_inode(sbuf, _smb_relname->stream_name);
+ 
+ 	if (config->meta == FRUIT_META_STREAM) {
+ 		ret = SMB_VFS_NEXT_FSTATAT(
+-			handle, dirfsp, smb_relname, sbuf, flags);
++			handle, dirfsp, _smb_relname, sbuf, flags);
+ 		if (ret == -1) {
+ 			goto fail;
+ 		}

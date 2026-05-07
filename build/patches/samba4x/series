@@ -70,3 +70,8 @@
 # Time Capsule kernels can hang in native NetBSD getifaddrs(); force Samba's
 # interface enumeration through libreplace's ioctl-based fallback.
 0020-netbsd-getifaddrs-fallback.patch|force ioctl-based interface enumeration on NetBSD
+# macOS Finder and Time Machine stat AFP_AfpInfo streams during ordinary copy
+# and sparsebundle work. Samba 4.24's fruit fstatat path accidentally
+# dereferences the yet-to-be-created no-stream filename copy, crashing the smbd
+# client process. Keep this until upstream fixes vfs_fruit.
+0021-vfs-fruit-fstatat-meta-stream-name.patch|fix vfs_fruit AFP_AfpInfo fstatat NULL filename crash

@@ -457,7 +457,7 @@ stage_runtime() {
     server multi channel support = no
     load printers = no
     disable spoolss = yes
-    dfree command = /bin/sh /mnt/Flash/dfree.sh
+    dfree command = /mnt/Flash/dfree.sh
     pid directory = $RAM_VAR
     lock directory = $LOCKS_ROOT
     state directory = $RAM_VAR
@@ -486,6 +486,9 @@ stage_runtime() {
     valid users = $SMB_SAMBA_USER root
     vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb
     acl_xattr:ignore system acls = yes
+    # Samba 4.24's streams_xattr default leaves no extension xattr slots,
+    # which can make AFP_AfpInfo creation fail on 32-bit Time Capsule builds.
+    streams_xattr:max xattrs per stream = 2
     fruit:resource = file
     fruit:metadata = stream
     fruit:encoding = native
@@ -744,6 +747,8 @@ INITIAL_CANDIDATES=$(disk_name_candidates)
 log_disk_discovery_state "$INITIAL_CANDIDATES"
 
 start_mdns_capture
+log "pausing 10s after mDNS snapshot capture launch"
+sleep 10
 
 log "disk discovery: waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume before manual mount fallback"
 
