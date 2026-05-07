@@ -118,6 +118,56 @@ class DeployModuleTests(unittest.TestCase):
     def _template_config(self, values: dict[str, str]) -> AppConfig:
         return AppConfig.from_values(values)
 
+    def _default_template_config(self, overrides: dict[str, str] | None = None) -> AppConfig:
+        values = {
+            "TC_PAYLOAD_DIR_NAME": ".samba4",
+            "TC_SHARE_NAME": "Data",
+            "TC_NETBIOS_NAME": "TimeCapsule",
+            "TC_NET_IFACE": "bridge0",
+            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+            "TC_AIRPORT_SYAP": "119",
+            "TC_SAMBA_USER": "admin",
+        }
+        if overrides:
+            values.update(overrides)
+        return AppConfig.from_values(values)
+
+    def _render_default_start_script(self, overrides: dict[str, str] | None = None) -> str:
+        bundle = build_template_bundle(self._default_template_config(overrides))
+        return render_template("start-samba.sh", bundle.start_script_replacements)
+
+    def _render_default_watchdog(self, overrides: dict[str, str] | None = None) -> str:
+        bundle = build_template_bundle(self._default_template_config(overrides))
+        return render_template("watchdog.sh", bundle.watchdog_replacements)
+
+    def _extract_shell_function(self, source: str, name: str) -> str:
+        marker = f"{name}()"
+        start = source.index(marker)
+        brace_start = source.index("{", start)
+        depth = 0
+        for offset, char in enumerate(source[brace_start:], start=brace_start):
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return source[start : offset + 1]
+        self.fail(f"function {name} did not terminate")
+
+    def _start_script_stage_runtime_section(self) -> str:
+        rendered = self._render_default_start_script()
+        return rendered[rendered.index("stage_runtime()"):rendered.index("prepare_local_hostname_resolution()")]
+
+    def _smb_conf_value(self, smb_conf: str, key: str) -> str | None:
+        for raw_line in smb_conf.splitlines():
+            line = raw_line.strip()
+            lhs, separator, rhs = line.partition("=")
+            if separator and lhs.strip().lower() == key.lower():
+                return rhs.strip()
+        return None
+
     def _compile_and_run_c_helper(self, source: str, bin_name: str, args: list[str] | None = None) -> subprocess.CompletedProcess[str]:
         if shutil.which("cc") is None:
             self.skipTest("cc not available")
@@ -1387,6 +1437,20 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
         self.assertIn("force create mode = 0666", rendered)
         self.assertIn("force directory mode = 0777", rendered)
 
+    def test_rendered_payload_smb_conf_keeps_auth_in_ram_and_xattr_on_disk(self) -> None:
+        bundle = build_template_bundle(self._default_template_config())
+        payload_template = render_checked_template(
+            "smb.conf.template",
+            bundle.smbconf_replacements,
+            allowed_unresolved_tokens=SMBCONF_RUNTIME_TOKENS,
+        )
+        active_conf = render_runtime_smbconf_text(payload_template)
+
+        self.assertEqual(self._smb_conf_value(active_conf, "passdb backend"), "smbpasswd:/mnt/Memory/samba4/private/smbpasswd")
+        self.assertEqual(self._smb_conf_value(active_conf, "username map"), "/mnt/Memory/samba4/private/username.map")
+        self.assertEqual(self._smb_conf_value(active_conf, "private dir"), "/mnt/Memory/samba4/private")
+        self.assertEqual(self._smb_conf_value(active_conf, "xattr_tdb:file"), "/Volumes/dk2/ShareRoot/.samba4/private/xattr.tdb")
+
     def test_render_start_script_stages_auth_files_into_ram_private(self) -> None:
         values = {
             "TC_PAYLOAD_DIR_NAME": "samba4",
@@ -1412,6 +1476,110 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
         self.assertIn('cp "$payload_dir/private/adisk.uuid" "$RAM_PRIVATE/adisk.uuid"', stage_section)
         self.assertIn('log "staged Samba auth files into RAM private directory"', stage_section)
         self.assertNotIn('cp "$payload_dir/private/xattr.tdb"', stage_section)
+
+    def test_stage_runtime_copies_private_runtime_files_to_ram(self) -> None:
+        stage_section = self._start_script_stage_runtime_section()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            payload = tmp / "Volumes" / "dk2" / ".samba4"
+            private = payload / "private"
+            ram_root = tmp / "mnt" / "Memory" / "samba4"
+            for path in (private, ram_root / "sbin", ram_root / "etc", ram_root / "private", ram_root / "var", tmp / "mnt" / "Locks"):
+                path.mkdir(parents=True, exist_ok=True)
+            (payload / "smbd").write_text("smbd")
+            (payload / "smbd").chmod(0o755)
+            (payload / "nbns-advertiser").write_text("nbns")
+            (payload / "nbns-advertiser").chmod(0o755)
+            (private / "smbpasswd").write_text("smbpasswd-content")
+            (private / "username.map").write_text("username-map-content")
+            (private / "adisk.uuid").write_text("uuid-content")
+            (private / "nbns.enabled").write_text("enabled")
+
+            script = tmp / "stage-runtime.sh"
+            script.write_text(
+                f"""#!/bin/sh
+set -eu
+RAM_ROOT={shlex.quote(str(ram_root))}
+RAM_SBIN="$RAM_ROOT/sbin"
+RAM_ETC="$RAM_ROOT/etc"
+RAM_VAR="$RAM_ROOT/var"
+RAM_PRIVATE="$RAM_ROOT/private"
+LOCKS_ROOT={shlex.quote(str(tmp / "mnt" / "Locks"))}
+PAYLOAD_TEMPLATE_NAME=smb.conf.template
+PAYLOAD_DIR={shlex.quote(str(payload))}
+DATA_ROOT={shlex.quote(str(tmp / "Volumes" / "dk2" / "ShareRoot"))}
+BIND_INTERFACES="127.0.0.1/8 192.168.1.2/24"
+SMB_NETBIOS_NAME=TimeCapsule
+SMB_SHARE_NAME=Data
+SMB_SAMBA_USER=admin
+CACHE_DIRECTORY="$RAM_VAR"
+SMBD_LOG="$RAM_VAR/log.smbd"
+log() {{ :; }}
+{stage_section}
+stage_runtime "$PAYLOAD_DIR" "$PAYLOAD_DIR/smbd" "$PAYLOAD_DIR/nbns-advertiser"
+""",
+                encoding="utf-8",
+            )
+
+            proc = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True, check=False)
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual((ram_root / "private" / "smbpasswd").read_text(), "smbpasswd-content")
+            self.assertEqual((ram_root / "private" / "username.map").read_text(), "username-map-content")
+            self.assertEqual((ram_root / "private" / "adisk.uuid").read_text(), "uuid-content")
+            self.assertEqual((ram_root / "private" / "nbns.enabled").read_text(), "enabled")
+            self.assertEqual((ram_root / "sbin" / "nbns-advertiser").read_text(), "nbns")
+            self.assertEqual((ram_root / "private" / "smbpasswd").stat().st_mode & 0o777, 0o600)
+            self.assertEqual((ram_root / "private" / "username.map").stat().st_mode & 0o777, 0o600)
+            self.assertFalse((ram_root / "private" / "xattr.tdb").exists())
+            smb_conf = (ram_root / "etc" / "smb.conf").read_text()
+            self.assertIn(f"passdb backend = smbpasswd:{ram_root}/private/smbpasswd", smb_conf)
+            self.assertIn(f"username map = {ram_root}/private/username.map", smb_conf)
+            self.assertIn(f"xattr_tdb:file = {payload}/private/xattr.tdb", smb_conf)
+
+    def test_stage_runtime_fails_when_required_auth_file_is_missing(self) -> None:
+        stage_section = self._start_script_stage_runtime_section()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            payload = tmp / "Volumes" / "dk2" / ".samba4"
+            private = payload / "private"
+            ram_root = tmp / "mnt" / "Memory" / "samba4"
+            for path in (private, ram_root / "sbin", ram_root / "etc", ram_root / "private", ram_root / "var", tmp / "mnt" / "Locks"):
+                path.mkdir(parents=True, exist_ok=True)
+            (payload / "smbd").write_text("smbd")
+            (private / "smbpasswd").write_text("smbpasswd-content")
+
+            script = tmp / "stage-runtime-missing-auth.sh"
+            script.write_text(
+                f"""#!/bin/sh
+set -u
+RAM_ROOT={shlex.quote(str(ram_root))}
+RAM_SBIN="$RAM_ROOT/sbin"
+RAM_ETC="$RAM_ROOT/etc"
+RAM_VAR="$RAM_ROOT/var"
+RAM_PRIVATE="$RAM_ROOT/private"
+LOCKS_ROOT={shlex.quote(str(tmp / "mnt" / "Locks"))}
+PAYLOAD_TEMPLATE_NAME=smb.conf.template
+PAYLOAD_DIR={shlex.quote(str(payload))}
+DATA_ROOT={shlex.quote(str(tmp / "Volumes" / "dk2" / "ShareRoot"))}
+BIND_INTERFACES="127.0.0.1/8 192.168.1.2/24"
+SMB_NETBIOS_NAME=TimeCapsule
+SMB_SHARE_NAME=Data
+SMB_SAMBA_USER=admin
+CACHE_DIRECTORY="$RAM_VAR"
+SMBD_LOG="$RAM_VAR/log.smbd"
+log() {{ echo "$*" >> {shlex.quote(str(tmp / "stage.log"))}; }}
+{stage_section}
+stage_runtime "$PAYLOAD_DIR" "$PAYLOAD_DIR/smbd" ""
+""",
+                encoding="utf-8",
+            )
+
+            proc = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True, check=False)
+
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertFalse((ram_root / "etc" / "smb.conf").exists())
+            self.assertIn("required Samba username map missing", (tmp / "stage.log").read_text())
 
     def test_render_start_script_fallback_smb_conf_uses_configured_samba_user(self) -> None:
         values = {
@@ -1900,14 +2068,87 @@ printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
         self.assertIn('sleep "$sleep_seconds"', rendered)
         self.assertIn("slept=$((slept + sleep_seconds))", rendered)
         self.assertIn("ensure_data_volume_mounted || true", rendered)
+        iteration_section = rendered[rendered.index("watchdog_iteration()"):rendered.index('log "watchdog startup beginning')]
+        self.assertIn("if ensure_data_volume_mounted; then", iteration_section)
+        self.assertIn("start_smbd_if_needed", iteration_section)
+        self.assertIn('log "watchdog recovery: smbd restart skipped because data volume is unavailable"', iteration_section)
+        self.assertNotIn("ensure_data_volume_mounted || true\n    start_smbd_if_needed", iteration_section)
         main_loop = rendered[rendered.index("while :; do"):]
-        self.assertIn("if ensure_data_volume_mounted; then", main_loop)
-        self.assertIn("start_smbd_if_needed", main_loop)
-        self.assertIn('log "watchdog recovery: smbd restart skipped because data volume is unavailable"', main_loop)
-        self.assertNotIn("ensure_data_volume_mounted || true\n    start_smbd_if_needed", main_loop)
+        self.assertIn("if watchdog_iteration; then", main_loop)
+        self.assertNotIn("start_smbd_if_needed", main_loop)
         self.assertIn('sleep "$RECOVERY_POLL_SECONDS"', rendered)
         self.assertIn('sleep_with_mount_checks "$STEADY_POLL_SECONDS"', rendered)
         self.assertNotIn('sleep "$STEADY_POLL_SECONDS"', rendered)
+
+    def test_watchdog_iteration_skips_smbd_restart_when_volume_remount_fails(self) -> None:
+        iteration = self._extract_shell_function(self._render_default_watchdog(), "watchdog_iteration")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            trace = Path(tmpdir) / "trace.log"
+            script = Path(tmpdir) / "watchdog-iteration.sh"
+            script.write_text(
+                f"""#!/bin/sh
+set -eu
+TRACE={shlex.quote(str(trace))}
+MDNS_PROC_NAME=mdns-advertiser
+NBNS_PROC_NAME=nbns-advertiser
+log() {{ echo "log:$*" >> "$TRACE"; }}
+{iteration}
+ensure_data_volume_mounted() {{ echo ensure-mount >> "$TRACE"; return 1; }}
+start_smbd_if_needed() {{ echo start-smbd >> "$TRACE"; }}
+runtime_process_present() {{ return 0; }}
+restart_mdns() {{ echo restart-mdns >> "$TRACE"; }}
+restart_nbns() {{ echo restart-nbns >> "$TRACE"; }}
+all_managed_services_healthy() {{ return 0; }}
+watchdog_iteration
+echo "status=$?" >> "$TRACE"
+""",
+                encoding="utf-8",
+            )
+
+            proc = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True, check=False)
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            trace_lines = trace.read_text().splitlines()
+            self.assertIn("ensure-mount", trace_lines)
+            self.assertIn("log:watchdog recovery: smbd restart skipped because data volume is unavailable", trace_lines)
+            self.assertNotIn("start-smbd", trace_lines)
+            self.assertNotIn("restart-mdns", trace_lines)
+            self.assertNotIn("restart-nbns", trace_lines)
+            self.assertIn("status=0", trace_lines)
+
+    def test_watchdog_iteration_remounts_before_restarting_smbd(self) -> None:
+        iteration = self._extract_shell_function(self._render_default_watchdog(), "watchdog_iteration")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            trace = Path(tmpdir) / "trace.log"
+            script = Path(tmpdir) / "watchdog-iteration-remount.sh"
+            script.write_text(
+                f"""#!/bin/sh
+set -eu
+TRACE={shlex.quote(str(trace))}
+MDNS_PROC_NAME=mdns-advertiser
+NBNS_PROC_NAME=nbns-advertiser
+log() {{ echo "log:$*" >> "$TRACE"; }}
+{iteration}
+ensure_data_volume_mounted() {{ echo ensure-mount >> "$TRACE"; return 0; }}
+start_smbd_if_needed() {{ echo start-smbd >> "$TRACE"; }}
+runtime_process_present() {{ return 0; }}
+restart_mdns() {{ echo restart-mdns >> "$TRACE"; }}
+restart_nbns() {{ echo restart-nbns >> "$TRACE"; }}
+all_managed_services_healthy() {{ return 0; }}
+watchdog_iteration
+echo "status=$?" >> "$TRACE"
+""",
+                encoding="utf-8",
+            )
+
+            proc = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True, check=False)
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            trace_lines = trace.read_text().splitlines()
+            self.assertLess(trace_lines.index("ensure-mount"), trace_lines.index("start-smbd"))
+            self.assertNotIn("restart-mdns", trace_lines)
+            self.assertNotIn("restart-nbns", trace_lines)
+            self.assertIn("status=0", trace_lines)
 
     def test_render_watchdog_script_requires_nbns_only_when_enabled(self) -> None:
         values = {
@@ -3243,7 +3484,6 @@ int main(void) {{
         self.assertNotIn("capture_ps_lstart_out()", remote_command)
         self.assertNotIn("normalize_lstart_fields()", remote_command)
         self.assertNotIn("smbd_log_has_fresh_daemon_ready()", remote_command)
-        self.assertNotIn("/usr/bin/tail", remote_command)
         self.assertNotIn("max_attempts", remote_command)
         self.assertNotIn("sleep 5", remote_command)
         self.assertNotIn("nbns-advertiser", remote_command)
@@ -3289,6 +3529,132 @@ capture_fstat_for_ucomm "$mixed_smbd" smbd
         self.assertIn("live-apple=0", result.stdout)
         self.assertNotIn("fstat:100", result.stdout)
         self.assertIn("fstat:101", result.stdout)
+
+    def test_smbd_status_helpers_pass_only_with_live_ram_auth_mount_and_watchdog(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            ram_root = tmp / "mnt" / "Memory" / "samba4"
+            persistent_prefix = tmp / "Volumes"
+            volume_root = persistent_prefix / "dk2"
+            data_root = volume_root / "ShareRoot"
+            payload_private = volume_root / ".samba4" / "private"
+            for path in (ram_root / "sbin", ram_root / "private", ram_root / "etc", data_root, payload_private):
+                path.mkdir(parents=True, exist_ok=True)
+            (ram_root / "sbin" / "smbd").write_text("smbd")
+            (ram_root / "sbin" / "smbd").chmod(0o755)
+            (ram_root / "private" / "smbpasswd").write_text("smbpasswd")
+            (ram_root / "private" / "username.map").write_text("username map")
+            smb_conf = ram_root / "etc" / "smb.conf"
+            smb_conf.write_text(
+                f"""[global]
+    passdb backend = smbpasswd:{ram_root}/private/smbpasswd
+    username map = {ram_root}/private/username.map
+    xattr_tdb:file = {payload_private}/xattr.tdb
+[Data]
+    path = {data_root}
+""",
+                encoding="utf-8",
+            )
+            ps_out = (
+                "101 1 S 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd -D -s /mnt/Memory/samba4/etc/smb.conf\n"
+                f"202 1 S 0:00.00 sh /bin/sh /mnt/Flash/watchdog.sh /dev/dk2 {volume_root} {data_root}\n"
+            )
+            script = f"""
+RUNTIME_RAM_ROOT={shlex.quote(str(ram_root))}
+RUNTIME_SMB_CONF_PATH={shlex.quote(str(smb_conf))}
+RUNTIME_PERSISTENT_ROOT_PREFIX={shlex.quote(str(persistent_prefix) + "/")}
+{SMBD_STATUS_HELPERS}
+capture_df_for_volume_root() {{ echo "/dev/dk2 100 10 90 10% $1"; }}
+ps_out={shlex.quote(ps_out)}
+fstat_out='root smbd 101 10 internet stream tcp 0x0 *:445'
+describe_managed_smbd_status "$ps_out" "$fstat_out"
+printf 'status=%s\\n' "$?"
+"""
+
+            result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("PASS:managed runtime smbd binary present", result.stdout)
+        self.assertIn("PASS:active smb.conf passdb backend uses RAM smbpasswd", result.stdout)
+        self.assertIn("PASS:active smb.conf username map uses RAM username.map", result.stdout)
+        self.assertIn("PASS:active smb.conf xattr_tdb:file is persistent", result.stdout)
+        self.assertIn("PASS:managed data volume is mounted", result.stdout)
+        self.assertIn("PASS:watchdog is running for managed data volume", result.stdout)
+        self.assertIn("PASS:smbd bound to TCP 445", result.stdout)
+        self.assertIn("status=0", result.stdout)
+
+    def test_smbd_status_helpers_fail_for_disk_auth_unmounted_volume_and_missing_watchdog(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            ram_root = tmp / "mnt" / "Memory" / "samba4"
+            persistent_prefix = tmp / "Volumes"
+            volume_root = persistent_prefix / "dk2"
+            data_root = volume_root / "ShareRoot"
+            payload_private = volume_root / ".samba4" / "private"
+            for path in (ram_root / "sbin", ram_root / "private", ram_root / "etc", data_root, payload_private):
+                path.mkdir(parents=True, exist_ok=True)
+            (ram_root / "sbin" / "smbd").write_text("smbd")
+            (ram_root / "sbin" / "smbd").chmod(0o755)
+            smb_conf = ram_root / "etc" / "smb.conf"
+            smb_conf.write_text(
+                f"""[global]
+    passdb backend = smbpasswd:{payload_private}/smbpasswd
+    username map = {payload_private}/username.map
+    xattr_tdb:file = {ram_root}/private/xattr.tdb
+[Data]
+    path = {data_root}
+""",
+                encoding="utf-8",
+            )
+            script = f"""
+RUNTIME_RAM_ROOT={shlex.quote(str(ram_root))}
+RUNTIME_SMB_CONF_PATH={shlex.quote(str(smb_conf))}
+RUNTIME_PERSISTENT_ROOT_PREFIX={shlex.quote(str(persistent_prefix) + "/")}
+{SMBD_STATUS_HELPERS}
+capture_df_for_volume_root() {{ echo "/dev/md0a 100 10 90 10% /"; }}
+ps_out='101 1 S 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd -D -s /mnt/Memory/samba4/etc/smb.conf'
+fstat_out='root smbd 101 10 internet stream tcp 0x0 *:445'
+if describe_managed_smbd_status "$ps_out" "$fstat_out"; then
+    echo status=0
+else
+    echo status=$?
+fi
+"""
+
+            result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("FAIL:active smb.conf passdb backend is not staged in RAM", result.stdout)
+        self.assertIn("FAIL:active smb.conf username map is not staged in RAM", result.stdout)
+        self.assertIn("FAIL:active smb.conf xattr_tdb:file is not persistent disk storage", result.stdout)
+        self.assertIn("FAIL:managed data volume is not mounted", result.stdout)
+        self.assertIn("FAIL:watchdog is not running for managed data volume", result.stdout)
+        self.assertIn("status=1", result.stdout)
+
+    def test_probe_managed_smbd_reports_runtime_invariant_failures(self) -> None:
+        stdout = "\n".join(
+            [
+                "FAIL:managed runtime smbd binary missing",
+                "FAIL:active smb.conf passdb backend is not staged in RAM",
+                "FAIL:managed data volume is not mounted",
+            ]
+        )
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(returncode=1, stdout=stdout)):
+            result = probe_managed_smbd_conn(SshConnection("host", "pw", "-o foo"), timeout_seconds=12)
+
+        self.assertFalse(result.ready)
+        self.assertEqual(
+            result.detail,
+            "managed runtime smbd binary missing; active smb.conf passdb backend is not staged in RAM; managed data volume is not mounted",
+        )
+        self.assertEqual(
+            result.lines,
+            (
+                "FAIL:managed runtime smbd binary missing",
+                "FAIL:active smb.conf passdb backend is not staged in RAM",
+                "FAIL:managed data volume is not mounted",
+            ),
+        )
 
     def test_probe_managed_smbd_returns_detail_when_not_ready(self) -> None:
         with mock.patch(

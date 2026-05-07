@@ -34,8 +34,92 @@ REMOTE_RUNTIME_LOG_PATHS = {
     "remote_mdns_log_tail": "/mnt/Memory/samba4/var/mdns.log",
 }
 SMBD_STATUS_HELPERS = rf'''
+RUNTIME_RAM_ROOT=${{RUNTIME_RAM_ROOT:-/mnt/Memory/samba4}}
+RUNTIME_RAM_SBIN="$RUNTIME_RAM_ROOT/sbin"
+RUNTIME_RAM_PRIVATE="$RUNTIME_RAM_ROOT/private"
+RUNTIME_SMB_CONF_PATH=${{RUNTIME_SMB_CONF_PATH:-{RUNTIME_SMB_CONF}}}
+RUNTIME_PERSISTENT_ROOT_PREFIX=${{RUNTIME_PERSISTENT_ROOT_PREFIX:-/Volumes/}}
+
 runtime_smb_conf_present() {{
-    [ -f {RUNTIME_SMB_CONF} ]
+    [ -f "$RUNTIME_SMB_CONF_PATH" ]
+}}
+
+runtime_smbd_binary_present() {{
+    [ -x "$RUNTIME_RAM_SBIN/smbd" ]
+}}
+
+read_smb_conf_value() {{
+    key=$1
+    if ! runtime_smb_conf_present; then
+        return 1
+    fi
+    /usr/bin/sed -n "s/^[[:space:]]*$key[[:space:]]*=[[:space:]]*//p" "$RUNTIME_SMB_CONF_PATH" | /usr/bin/sed -n '1p'
+}}
+
+runtime_passdb_path() {{
+    passdb_backend=$(read_smb_conf_value "passdb backend" || true)
+    case "$passdb_backend" in
+        smbpasswd:*)
+            printf '%s\n' "${{passdb_backend#smbpasswd:}}"
+            return 0
+            ;;
+    esac
+    return 1
+}}
+
+runtime_username_map_path() {{
+    read_smb_conf_value "username map"
+}}
+
+runtime_xattr_tdb_path() {{
+    read_smb_conf_value "xattr_tdb:file"
+}}
+
+runtime_data_root_path() {{
+    read_smb_conf_value "path"
+}}
+
+runtime_volume_root() {{
+    data_root=$(runtime_data_root_path || true)
+    case "$data_root" in
+        "$RUNTIME_PERSISTENT_ROOT_PREFIX"*)
+            rest=${{data_root#"$RUNTIME_PERSISTENT_ROOT_PREFIX"}}
+            device_name=${{rest%%/*}}
+            if [ -n "$device_name" ]; then
+                printf '%s%s\n' "$RUNTIME_PERSISTENT_ROOT_PREFIX" "$device_name"
+                return 0
+            fi
+            ;;
+    esac
+    return 1
+}}
+
+runtime_volume_device() {{
+    volume_root=$(runtime_volume_root || true)
+    if [ -n "$volume_root" ]; then
+        printf '/dev/%s\n' "${{volume_root##*/}}"
+        return 0
+    fi
+    return 1
+}}
+
+capture_df_for_volume_root() {{
+    volume_root=$1
+    /bin/df -k "$volume_root" 2>/dev/null | /usr/bin/tail -n +2 || true
+}}
+
+runtime_volume_mounted() {{
+    volume_root=$(runtime_volume_root || true)
+    if [ -z "$volume_root" ]; then
+        return 1
+    fi
+    df_line=$(capture_df_for_volume_root "$volume_root")
+    case "$df_line" in
+        *" $volume_root")
+            return 0
+            ;;
+    esac
+    return 1
 }}
 
 capture_ps_out() {{
@@ -114,6 +198,32 @@ EOF
     return 1
 }}
 
+watchdog_process_present_for_volume() {{
+    ps_out=$1
+    data_root=$(runtime_data_root_path || true)
+    volume_root=$(runtime_volume_root || true)
+    volume_device=$(runtime_volume_device || true)
+    if [ -z "$data_root" ] || [ -z "$volume_root" ] || [ -z "$volume_device" ]; then
+        return 1
+    fi
+    expected="/mnt/Flash/watchdog.sh $volume_device $volume_root $data_root"
+
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        set -- $line
+        [ "$#" -ge 5 ] || continue
+        case "$3" in
+            Z*) continue ;;
+        esac
+        case "$line" in
+            *"$expected"*) return 0 ;;
+        esac
+    done <<EOF
+$ps_out
+EOF
+    return 1
+}}
+
 capture_fstat_for_ucomm() {{
     ps_out=$1
     ucomm=$2
@@ -152,10 +262,58 @@ describe_managed_smbd_status() {{
     ps_out=$1
     fstat_out=$2
     status=0
+    if runtime_smbd_binary_present; then
+        echo "PASS:managed runtime smbd binary present"
+    else
+        echo "FAIL:managed runtime smbd binary missing"
+        status=1
+    fi
     if runtime_smb_conf_present; then
         echo "PASS:managed runtime smb.conf present"
     else
         echo "FAIL:managed runtime smb.conf missing"
+        status=1
+    fi
+    passdb_path=$(runtime_passdb_path || true)
+    if [ "$passdb_path" = "$RUNTIME_RAM_PRIVATE/smbpasswd" ] && [ -f "$passdb_path" ]; then
+        echo "PASS:active smb.conf passdb backend uses RAM smbpasswd"
+    else
+        echo "FAIL:active smb.conf passdb backend is not staged in RAM"
+        status=1
+    fi
+    username_map_path=$(runtime_username_map_path || true)
+    if [ "$username_map_path" = "$RUNTIME_RAM_PRIVATE/username.map" ] && [ -f "$username_map_path" ]; then
+        echo "PASS:active smb.conf username map uses RAM username.map"
+    else
+        echo "FAIL:active smb.conf username map is not staged in RAM"
+        status=1
+    fi
+    xattr_tdb_path=$(runtime_xattr_tdb_path || true)
+    case "$xattr_tdb_path" in
+        "$RUNTIME_PERSISTENT_ROOT_PREFIX"*)
+            xattr_tdb_parent=${{xattr_tdb_path%/*}}
+            if [ -d "$xattr_tdb_parent" ]; then
+                echo "PASS:active smb.conf xattr_tdb:file is persistent"
+            else
+                echo "FAIL:active smb.conf xattr_tdb:file parent is missing"
+                status=1
+            fi
+            ;;
+        *)
+            echo "FAIL:active smb.conf xattr_tdb:file is not persistent disk storage"
+            status=1
+            ;;
+    esac
+    if runtime_volume_mounted; then
+        echo "PASS:managed data volume is mounted"
+    else
+        echo "FAIL:managed data volume is not mounted"
+        status=1
+    fi
+    if watchdog_process_present_for_volume "$ps_out"; then
+        echo "PASS:watchdog is running for managed data volume"
+    else
+        echo "FAIL:watchdog is not running for managed data volume"
         status=1
     fi
     if smbd_parent_process_present "$ps_out"; then

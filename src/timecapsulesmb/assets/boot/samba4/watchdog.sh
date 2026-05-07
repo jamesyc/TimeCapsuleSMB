@@ -204,11 +204,7 @@ all_managed_services_healthy() {
     return 0
 }
 
-log "watchdog startup beginning; initial recovery delay ${INITIAL_STARTUP_DELAY_SECONDS}s"
-log "watchdog mount context: device=${VOLUME_DEVICE:-none} root=${VOLUME_ROOT:-none} data=${DATA_ROOT:-none}"
-sleep "$INITIAL_STARTUP_DELAY_SECONDS"
-
-while :; do
+watchdog_iteration() {
     if ensure_data_volume_mounted; then
         start_smbd_if_needed
     else
@@ -227,7 +223,15 @@ while :; do
         restart_nbns
     fi
 
-    if all_managed_services_healthy; then
+    all_managed_services_healthy
+}
+
+log "watchdog startup beginning; initial recovery delay ${INITIAL_STARTUP_DELAY_SECONDS}s"
+log "watchdog mount context: device=${VOLUME_DEVICE:-none} root=${VOLUME_ROOT:-none} data=${DATA_ROOT:-none}"
+sleep "$INITIAL_STARTUP_DELAY_SECONDS"
+
+while :; do
+    if watchdog_iteration; then
         sleep_with_mount_checks "$STEADY_POLL_SECONDS"
     else
         sleep "$RECOVERY_POLL_SECONDS"
