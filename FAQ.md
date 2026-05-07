@@ -54,6 +54,13 @@ Once deployment is complete, you can connect via:
 
 ## Troubleshooting
 
+#### I'm not sure what went wrong
+
+1. Reboot the device
+2. Do a fresh `deploy` on top of the (maybe corrupt) old deploy
+
+A reboot and clean deploy will fix 90% of issues. This is especially true for old Gen 1-4 devices, because we deploy the files by copying them via `cat` over `ssh`. This is not very stable and can lead to corrupt files; however, the older devices do not support `scp`, so we just assume it is possible for deployed files to get mangled.
+
 #### Time Machine backups are broken on certain macOS versions
 
 Time Machine backups on macOS 26.4.x and 15.7.5 is currently broken. See [this article](https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups) for details.
