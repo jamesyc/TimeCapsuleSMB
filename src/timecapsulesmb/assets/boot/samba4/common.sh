@@ -347,9 +347,10 @@ tc_emit_mast_volume() {
 tc_flush_mast_disk() {
     flush_pending_file=$1
     flush_out_file=$2
+    flush_disk_builtin=$3
     [ -s "$flush_pending_file" ] || return 0
     while IFS="$TC_TAB" read -r pending_disk pending_part pending_root pending_name pending_uuid; do
-        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$pending_disk" "$disk_builtin" "$pending_part" "$pending_root" "$pending_name" "$pending_uuid" >>"$flush_out_file"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$pending_disk" "$flush_disk_builtin" "$pending_part" "$pending_root" "$pending_name" "$pending_uuid" >>"$flush_out_file"
     done <"$flush_pending_file"
     : >"$flush_pending_file"
 }
@@ -390,7 +391,7 @@ tc_read_mast_volumes_to() {
                     part_device=$value
                 else
                     if [ -n "$disk_device" ]; then
-                        tc_flush_mast_disk "$pending_file" "$out_file"
+                        tc_flush_mast_disk "$pending_file" "$out_file" "$disk_builtin"
                     fi
                     disk_device=$value
                     disk_builtin=0
@@ -419,7 +420,7 @@ tc_read_mast_volumes_to() {
                     part_format=
                     part_uuid=
                 elif [ -n "$disk_device" ]; then
-                    tc_flush_mast_disk "$pending_file" "$out_file"
+                    tc_flush_mast_disk "$pending_file" "$out_file" "$disk_builtin"
                     disk_device=
                     disk_builtin=0
                 fi
@@ -431,7 +432,7 @@ tc_read_mast_volumes_to() {
     done <"$raw_file"
 
     if [ -n "$disk_device" ]; then
-        tc_flush_mast_disk "$pending_file" "$out_file"
+        tc_flush_mast_disk "$pending_file" "$out_file" "$disk_builtin"
     fi
     rm -f "$pending_file"
     [ -s "$out_file" ]
