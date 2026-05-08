@@ -468,7 +468,7 @@ class StorageRuntimeTests(unittest.TestCase):
         self.assertIn("marker=yes\n", proc.stdout)
 
     def test_common_build_share_state_bounds_names_to_adisk_txt_budget(self) -> None:
-        long_name = "A" * 250
+        long_name = "é" * 100
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)

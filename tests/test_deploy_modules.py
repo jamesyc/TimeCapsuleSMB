@@ -322,6 +322,7 @@ wait_for_process wcifsnd 1; echo "zombie-wait=$?"
                 + f"\nSAMPLE={shlex.quote(str(sample))}\n"
                 + """
 echo "byte-len=$(tc_byte_len 'AirPort Disk')"
+echo "utf8-byte-len=$(tc_byte_len 'éé')"
 echo "file-size=$(tc_log_file_size "$SAMPLE")"
 """
             )
@@ -330,6 +331,7 @@ echo "file-size=$(tc_log_file_size "$SAMPLE")"
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("byte-len=12", result.stdout)
+        self.assertIn("utf8-byte-len=4", result.stdout)
         self.assertIn("file-size=12", result.stdout)
 
     def test_common_watchdog_process_helper_does_not_self_match_literal(self) -> None:

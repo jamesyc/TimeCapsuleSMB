@@ -660,10 +660,11 @@ tc_sanitize_share_name() {
     echo "$sanitized"
 }
 
-tc_byte_len() {
+tc_byte_len() (
+    LC_ALL=C
     byte_value=$1
     echo ${#byte_value}
-}
+)
 
 tc_truncate_to_bytes() {
     truncate_value=$1
