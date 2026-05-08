@@ -59,6 +59,24 @@ INTERNAL_ARCHIVE = MaStVolume(
     True,
     "hfs",
 )
+INTERNAL_ADVERSARIAL = MaStVolume(
+    "wd0",
+    "dk2",
+    "/Volumes/dk2",
+    "builtin=true Data=Backup",
+    "01234567-89ab-cdef-0123-456789abcdef",
+    True,
+    "hfs",
+)
+EXTERNAL_ADVERSARIAL = MaStVolume(
+    "sd0",
+    "dk3",
+    "/Volumes/dk3",
+    "uuid = fake",
+    "fedcba98-7654-3210-fedc-ba9876543210",
+    False,
+    "hfs",
+)
 
 
 MAST_FIXTURES: tuple[MaStFixture, ...] = (
@@ -162,6 +180,41 @@ MaSt = (
         expected=(INTERNAL_DATA, EXTERNAL_UNTITLED),
     ),
     MaStFixture(
+        name="native_acp_array_internal_external",
+        raw="""\
+[
+    {
+        deviceName="wd0"
+        partitions=
+        [
+            {
+                deviceName="dk2"
+                name="Data"
+                format="hfs"
+                uuid=f42bdb83 c2655522 a0872560 6a4d0abf |binary| (16 bytes)
+            }
+        ]
+        builtin=true
+    }
+    {
+        deviceName="sd0"
+        partitions=
+        [
+            {
+                deviceName="dk3"
+                name="Untitled"
+                format="hfs"
+                uuid=51f93e6f dc69524d 986dcee4 d7cb3573 |binary| (16 bytes)
+            }
+        ]
+    }
+]
+
+MaSt=
+""",
+        expected=(INTERNAL_DATA, EXTERNAL_UNTITLED),
+    ),
+    MaStFixture(
         name="openstep_duplicate_internal_external_names",
         raw="""\
 MaSt = (
@@ -232,6 +285,43 @@ MaSt = (
 );
 """,
         expected=(INTERNAL_DATA,),
+    ),
+    MaStFixture(
+        name="openstep_adversarial_names_and_keys",
+        raw="""\
+MaSt = (
+    {
+        deviceName = "wd0";
+        builtin = true;
+        notbuiltin = false;
+        partitions = (
+            {
+                deviceName = "dk2";
+                name = "builtin=true Data=Backup";
+                some_name = "Not the real name";
+                format = "hfs";
+                format_hint = "msdos";
+                uuid = <01234567 89abcdef 01234567 89abcdef>;
+                uuid_hint = <00000000 00000000 00000000 00000000>;
+            }
+        );
+    },
+    {
+        deviceName = "sd0";
+        builtin = false;
+        some_builtin = true;
+        partitions = (
+            {
+                deviceName = "dk3";
+                name = "uuid = fake";
+                format = "hfs";
+                uuid = <fedcba98 76543210 fedcba98 76543210>;
+            }
+        );
+    }
+);
+""",
+        expected=(INTERNAL_ADVERSARIAL, EXTERNAL_ADVERSARIAL),
     ),
     MaStFixture(
         name="openstep_skips_unusable_partitions",

@@ -132,11 +132,21 @@ class StorageRuntimeTests(unittest.TestCase):
     def mapped_volume_root(self, volume: MaStVolume, volumes_root: Path) -> str:
         return volume.volume_root.replace("/Volumes", str(volumes_root), 1)
 
+    def sanitize_share_base(self, volume: MaStVolume) -> str:
+        base = volume.name.strip()
+        sanitized = "".join(
+            "_"
+            if ord(char) < 32 or char in '/\\:*?"<>|,=[]'
+            else char
+            for char in base
+        ).strip()
+        return sanitized or f"Disk {volume.partition_device}"
+
     def unique_share_names(self, volumes: tuple[MaStVolume, ...]) -> list[str]:
         names: list[str] = []
         used: set[str] = set()
         for volume in volumes:
-            base = volume.name.strip() or f"Disk {volume.partition_device}"
+            base = self.sanitize_share_base(volume)
             candidate = base
             suffix = 1
             if candidate in used:

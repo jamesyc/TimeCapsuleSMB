@@ -67,6 +67,10 @@ def _uuid_from_value(value: object) -> str:
         text = value.hex()
     else:
         text = str(value or "").strip()
+    text = text.split("|", 1)[0].strip()
+    leading_hex = re.match(r"^<?\s*([0-9A-Fa-f][0-9A-Fa-f\s-]*)", text)
+    if leading_hex:
+        text = leading_hex.group(1)
     text = text.replace("<", "").replace(">", "").replace(" ", "").replace("-", "")
     if len(text) != 32:
         return ""
@@ -120,7 +124,7 @@ def _openstep_object_close(line: str) -> bool:
 
 
 def _openstep_collection_close(line: str) -> bool:
-    return re.fullmatch(r"\)\s*[;,]?", line) is not None
+    return re.fullmatch(r"[\)\]]\s*[;,]?", line) is not None
 
 
 def _volumes_from_plist_root(root: object) -> tuple[MaStVolume, ...]:

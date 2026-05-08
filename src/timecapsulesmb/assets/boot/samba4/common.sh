@@ -493,17 +493,33 @@ tc_wake_or_mount_volume() {
     mount_hfs_bounded "$device_path" "$volume_root" 30 "MaSt volume $volume_root"
 }
 
-tc_extract_plist_string() {
-    echo "$1" | /usr/bin/sed -n 's/.*=[[:space:]]*"\(.*\)"[;]*.*/\1/p'
+tc_plist_key() {
+    printf '%s\n' "$1" | /usr/bin/sed -n 's/^[[:space:]]*\([A-Za-z][A-Za-z0-9_]*\)[[:space:]]*=.*/\1/p'
 }
 
-tc_extract_plist_bool() {
-    value=$(echo "$1" | /usr/bin/sed -n -e 's/.*=[[:space:]]*\(true\)[;]*.*/\1/p' -e 's/.*=[[:space:]]*\(false\)[;]*.*/\1/p')
+tc_extract_plist_string_key() {
+    extract_key=$1
+    extract_line=$2
+    printf '%s\n' "$extract_line" | /usr/bin/sed -n 's/^[[:space:]]*'"$extract_key"'[[:space:]]*=[[:space:]]*"\(.*\)"[[:space:]]*[;,]*[[:space:]]*$/\1/p'
+}
+
+tc_extract_plist_bool_key() {
+    extract_key=$1
+    extract_line=$2
+    value=$(printf '%s\n' "$extract_line" | /usr/bin/sed -n \
+        -e 's/^[[:space:]]*'"$extract_key"'[[:space:]]*=[[:space:]]*\(true\)[[:space:]]*[;,]*[[:space:]]*$/\1/p' \
+        -e 's/^[[:space:]]*'"$extract_key"'[[:space:]]*=[[:space:]]*\(false\)[[:space:]]*[;,]*[[:space:]]*$/\1/p')
     [ "$value" = "true" ] && echo 1 || echo 0
 }
 
-tc_format_uuid_line() {
-    hex=$(echo "$1" | /usr/bin/sed -n -e 's/.*<\([^>]*\)>.*/\1/p' -e 's/.*uuid=[[:space:]]*\([0-9A-Fa-f][0-9A-Fa-f ]*\).*/\1/p' | /usr/bin/sed 's/[[:space:]]//g')
+tc_format_uuid_key() {
+    extract_key=$1
+    extract_line=$2
+    hex=$(printf '%s\n' "$extract_line" | /usr/bin/sed -n \
+        -e 's/^[[:space:]]*'"$extract_key"'[[:space:]]*=[[:space:]]*<\([^>]*\)>[[:space:]]*[;,]*[[:space:]]*$/\1/p' \
+        -e 's/^[[:space:]]*'"$extract_key"'[[:space:]]*=[[:space:]]*"\([0-9A-Fa-f-]*\)"[[:space:]]*[;,]*[[:space:]]*$/\1/p' \
+        -e 's/^[[:space:]]*'"$extract_key"'[[:space:]]*=[[:space:]]*\([0-9A-Fa-f][0-9A-Fa-f -]*\).*/\1/p' \
+        | /usr/bin/sed 's/[[:space:]-]//g')
     echo "$hex" | /usr/bin/sed -n 's/^\([0-9A-Fa-f]\{8\}\)\([0-9A-Fa-f]\{4\}\)\([0-9A-Fa-f]\{4\}\)\([0-9A-Fa-f]\{4\}\)\([0-9A-Fa-f]\{12\}\)$/\1-\2-\3-\4-\5/p' | /usr/bin/sed 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/'
 }
 
@@ -553,39 +569,6 @@ tc_read_mast_volumes_to() {
 
     while read -r line; do
         case "$line" in
-            *builtin*"="*)
-                disk_builtin=$(tc_extract_plist_bool "$line")
-                ;;
-            *partitions*"="*"("*|*partitions*"="*)
-                in_partitions=1
-                ;;
-            *deviceName*"="*)
-                value=$(tc_extract_plist_string "$line")
-                if [ "$in_partitions" -eq 1 ]; then
-                    part_device=$value
-                else
-                    if [ -n "$disk_device" ]; then
-                        tc_flush_mast_disk "$pending_file" "$out_file" "$disk_builtin"
-                    fi
-                    disk_device=$value
-                    disk_builtin=0
-                fi
-                ;;
-            *name*"="*)
-                if [ "$in_partitions" -eq 1 ]; then
-                    part_name=$(tc_extract_plist_string "$line")
-                fi
-                ;;
-            *format*"="*)
-                if [ "$in_partitions" -eq 1 ]; then
-                    part_format=$(tc_extract_plist_string "$line" | /usr/bin/sed 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/')
-                fi
-                ;;
-            *uuid*"="*)
-                if [ "$in_partitions" -eq 1 ]; then
-                    part_uuid=$(tc_format_uuid_line "$line")
-                fi
-                ;;
             "}"|"};"*|"},"*)
                 if [ "$in_partitions" -eq 1 ] && [ -n "$part_device" ]; then
                     tc_emit_mast_volume "$pending_file"
@@ -601,6 +584,45 @@ tc_read_mast_volumes_to() {
                 ;;
             "]"|"];"*|");"|");"*)
                 in_partitions=0
+                ;;
+        esac
+
+        key=$(tc_plist_key "$line")
+        case "$key" in
+            builtin)
+                if [ "$in_partitions" -eq 0 ]; then
+                    disk_builtin=$(tc_extract_plist_bool_key builtin "$line")
+                fi
+                ;;
+            partitions)
+                in_partitions=1
+                ;;
+            deviceName)
+                value=$(tc_extract_plist_string_key deviceName "$line")
+                if [ "$in_partitions" -eq 1 ]; then
+                    part_device=$value
+                else
+                    if [ -n "$disk_device" ]; then
+                        tc_flush_mast_disk "$pending_file" "$out_file" "$disk_builtin"
+                    fi
+                    disk_device=$value
+                    disk_builtin=0
+                fi
+                ;;
+            name)
+                if [ "$in_partitions" -eq 1 ]; then
+                    part_name=$(tc_extract_plist_string_key name "$line")
+                fi
+                ;;
+            format)
+                if [ "$in_partitions" -eq 1 ]; then
+                    part_format=$(tc_extract_plist_string_key format "$line" | /usr/bin/sed 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/')
+                fi
+                ;;
+            uuid)
+                if [ "$in_partitions" -eq 1 ]; then
+                    part_uuid=$(tc_format_uuid_key uuid "$line")
+                fi
                 ;;
         esac
     done <"$raw_file"
