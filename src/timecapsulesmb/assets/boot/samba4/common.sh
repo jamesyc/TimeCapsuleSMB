@@ -479,8 +479,7 @@ tc_read_mast_volumes_to() {
     part_format=
     part_uuid=
 
-    while IFS= read -r raw_line; do
-        line=$(echo "$raw_line" | /usr/bin/sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    while read -r line; do
         case "$line" in
             *builtin*"="*)
                 disk_builtin=$(tc_extract_plist_bool "$line")
