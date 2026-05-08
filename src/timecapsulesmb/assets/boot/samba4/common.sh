@@ -35,6 +35,10 @@ TC_MDNS_LOG_FILE="$RAM_VAR/mdns.log"
 TC_MDNS_LOG_ENABLED=0
 TC_SMBD_DISK_LOGGING_ENABLED=0
 TC_ADISK_DISK_ADVF=0x1093
+TC_ADISK_TXT_MAX_BYTES=255
+TC_ADISK_TXT_ADVF_PREFIX_BYTES=6
+TC_ADISK_TXT_ADVN_MID_BYTES=6
+TC_ADISK_TXT_ADVU_PREFIX_BYTES=6
 TC_SAMBA_VM_BUFCACHE=5
 TC_MDNS_CAPTURE_PID=
 TC_APPLE_MDNS_SNAPSHOT_START=
@@ -464,6 +468,63 @@ tc_sanitize_share_name() {
     echo "$sanitized"
 }
 
+tc_byte_len() {
+    printf '%s' "$1" | /usr/bin/wc -c | /usr/bin/tr -d '[:space:]'
+}
+
+tc_truncate_to_bytes() {
+    truncate_value=$1
+    truncate_max=$2
+
+    if [ "$truncate_max" -le 0 ]; then
+        echo ""
+        return 0
+    fi
+    if [ "$(tc_byte_len "$truncate_value")" -le "$truncate_max" ]; then
+        echo "$truncate_value"
+        return 0
+    fi
+    printf '%s' "$truncate_value" | /bin/dd bs=1 count="$truncate_max" 2>/dev/null
+    echo ""
+}
+
+tc_adisk_share_name_budget() {
+    disk_key=$1
+    adisk_uuid=$2
+    adisk_disk_advf=$3
+
+    budget=$((TC_ADISK_TXT_MAX_BYTES - $(tc_byte_len "$disk_key") - TC_ADISK_TXT_ADVF_PREFIX_BYTES - $(tc_byte_len "$adisk_disk_advf") - TC_ADISK_TXT_ADVN_MID_BYTES - TC_ADISK_TXT_ADVU_PREFIX_BYTES - $(tc_byte_len "$adisk_uuid")))
+    if [ "$budget" -lt 1 ]; then
+        budget=1
+    fi
+    echo "$budget"
+}
+
+tc_bound_share_name() {
+    bound_base=$1
+    bound_max=$2
+    bound_value=$(tc_truncate_to_bytes "$bound_base" "$bound_max")
+    if [ -z "$bound_value" ]; then
+        bound_value=$(tc_truncate_to_bytes "Disk" "$bound_max")
+    fi
+    echo "$bound_value"
+}
+
+tc_share_name_with_suffix() {
+    suffix_base=$1
+    suffix_text=$2
+    suffix_max=$3
+    suffix_len=$(tc_byte_len "$suffix_text")
+    prefix_max=$((suffix_max - suffix_len))
+
+    if [ "$prefix_max" -le 0 ]; then
+        tc_bound_share_name "$suffix_text" "$suffix_max"
+        return 0
+    fi
+    prefix=$(tc_bound_share_name "$suffix_base" "$prefix_max")
+    echo "${prefix}${suffix_text}"
+}
+
 tc_share_name_exists() {
     wanted=$1
     [ -f "$TC_USED_SHARE_NAMES_FILE" ] || return 1
@@ -476,13 +537,14 @@ tc_share_name_exists() {
 tc_unique_share_name() {
     base=$1
     device=$2
-    candidate=$base
+    max_bytes=$3
+    candidate=$(tc_bound_share_name "$base" "$max_bytes")
     suffix=1
     if tc_share_name_exists "$candidate"; then
-        candidate="$base ($device)"
+        candidate=$(tc_share_name_with_suffix "$base" " ($device)" "$max_bytes")
     fi
     while tc_share_name_exists "$candidate"; do
-        candidate="$base ($device-$suffix)"
+        candidate=$(tc_share_name_with_suffix "$base" " ($device-$suffix)" "$max_bytes")
         suffix=$((suffix + 1))
     done
     echo "$candidate" >>"$TC_USED_SHARE_NAMES_FILE"
@@ -533,7 +595,8 @@ tc_build_share_state() {
             share_path=$volume_root
         fi
         base_name=$(tc_sanitize_share_name "$part_name" "$part_device")
-        share_name=$(tc_unique_share_name "$base_name" "$part_device")
+        share_name_budget=$(tc_adisk_share_name_budget "$part_device" "$part_uuid" "$TC_ADISK_DISK_ADVF")
+        share_name=$(tc_unique_share_name "$base_name" "$part_device" "$share_name_budget")
         printf '%s\t%s\t%s\t%s\t%s\n' "$share_name" "$share_path" "$part_device" "$builtin" "$part_uuid" >>"$TC_SHARES_TSV"
         printf '%s\t%s\t%s\t%s\n' "$share_name" "$part_device" "$part_uuid" "$TC_ADISK_DISK_ADVF" >>"$TC_ADISK_TSV"
         tc_log "share prepared: $share_name -> $share_path uuid=$part_uuid builtin=$builtin"

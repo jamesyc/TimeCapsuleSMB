@@ -127,6 +127,75 @@ class MultiVolumeDeployTests(unittest.TestCase):
             ),
         )
 
+    def test_parse_mast_plist_accepts_openstep_mast_assignment(self) -> None:
+        raw = textwrap.dedent(
+            """\
+            MaSt = (
+                {
+                    deviceName = "wd0";
+                    builtin = true;
+                    partitions = (
+                        {
+                            deviceName = "dk2";
+                            name = "Data";
+                            format = "hfs";
+                            uuid = <f42bdb83 c2655522 a0872560 6a4d0abf>;
+                        }
+                    );
+                },
+                {
+                    deviceName = "sd0";
+                    builtin = false;
+                    partitions = (
+                        {
+                            deviceName = "dk3";
+                            name = "Untitled";
+                            format = "hfs";
+                            uuid = <51f93e6f dc69524d 986dcee4 d7cb3573>;
+                        }
+                    );
+                }
+            );
+            """
+        )
+
+        volumes = parse_mast_plist(raw)
+
+        self.assertEqual(
+            volumes,
+            (
+                MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs"),
+                MaStVolume("sd0", "dk3", "/Volumes/dk3", "Untitled", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs"),
+            ),
+        )
+
+    def test_parse_mast_plist_accepts_spaced_mast_prefix_before_xml_plist(self) -> None:
+        raw = "MaSt = " + plistlib.dumps(
+            [
+                {
+                    "deviceName": "wd0",
+                    "builtin": True,
+                    "partitions": [
+                        {
+                            "deviceName": "dk2",
+                            "name": "Data",
+                            "format": "hfs",
+                            "uuid": "f42bdb83-c265-5522-a087-25606a4d0abf",
+                        },
+                    ],
+                },
+            ]
+        ).decode("utf-8")
+
+        volumes = parse_mast_plist(raw)
+
+        self.assertEqual(
+            volumes,
+            (
+                MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs"),
+            ),
+        )
+
     def test_select_payload_home_prefers_writable_internal_volume(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")
         internal = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
@@ -353,6 +422,48 @@ class MultiVolumeDeployTests(unittest.TestCase):
         self.assertIn("Data\tdk2\taaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\t0x1093\n", proc.stdout)
         self.assertIn("Data (dk3)\tdk3\tbbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\t0x1093\n", proc.stdout)
         self.assertIn("marker=yes\n", proc.stdout)
+
+    def test_common_build_share_state_bounds_names_to_adisk_txt_budget(self) -> None:
+        long_name = "A" * 250
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            (volumes / "dk2").mkdir()
+            (volumes / "dk3").mkdir()
+            script = tmp_path / "build-long-shares.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    tc_wake_or_mount_volume() {{ return 0; }}
+                    cat >"$TC_VOLUMES_TSV" <<'EOF'
+                    wd0	1	dk2	{volumes}/dk2	{long_name}	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    sd0	0	dk3	{volumes}/dk3	{long_name}	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+                    EOF
+                    tc_build_share_state "$TC_VOLUMES_TSV"
+                    cat "$TC_ADISK_TSV"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        rows = [line.split("\t") for line in proc.stdout.splitlines()]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows[0][0].encode("utf-8")), 192)
+        self.assertEqual(len(rows[1][0].encode("utf-8")), 192)
+        self.assertTrue(rows[1][0].endswith(" (dk3)"))
+        for share_name, disk_key, adisk_uuid, advf in rows:
+            txt = f"{disk_key}=adVF={advf},adVN={share_name},adVU={adisk_uuid}"
+            self.assertLessEqual(len(txt.encode("utf-8")), 255)
 
     def test_common_payload_recovery_writes_resolved_state_for_watchdog(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 import plistlib
+import re
 import shlex
 import uuid
 
@@ -87,18 +88,42 @@ def _plist_root_items(root: object) -> list[dict[str, object]]:
     return []
 
 
-def parse_mast_plist(content: str | bytes) -> tuple[MaStVolume, ...]:
-    if isinstance(content, bytes):
-        data = content
-    else:
-        text = content.strip()
-        xml_start = text.find("<?xml")
-        if xml_start >= 0:
-            text = text[xml_start:]
-        elif text.startswith("MaSt="):
-            text = text.split("=", 1)[1]
-        data = text.encode("utf-8", errors="replace")
-    root = plistlib.loads(data)
+def _strip_mast_assignment_prefix(text: str) -> str:
+    return re.sub(r"^\s*MaSt\s*=\s*", "", text.strip(), count=1)
+
+
+def _openstep_assignment_value(line: str, key: str) -> str | None:
+    match = re.match(rf"^{re.escape(key)}\s*=\s*(.+?)\s*;?\s*,?$", line)
+    if not match:
+        return None
+    value = match.group(1).strip()
+    value = value.rstrip(",").rstrip(";").strip()
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        return value[1:-1].replace(r"\"", '"').replace(r"\\", "\\")
+    return value
+
+
+def _openstep_bool_assignment(line: str, key: str) -> bool | None:
+    value = _openstep_assignment_value(line, key)
+    if value is None:
+        return None
+    lowered = value.lower()
+    if lowered in {"true", "yes", "1"}:
+        return True
+    if lowered in {"false", "no", "0"}:
+        return False
+    return None
+
+
+def _openstep_object_close(line: str) -> bool:
+    return re.fullmatch(r"\}\s*[;,]?", line) is not None
+
+
+def _openstep_collection_close(line: str) -> bool:
+    return re.fullmatch(r"\)\s*[;,]?", line) is not None
+
+
+def _volumes_from_plist_root(root: object) -> tuple[MaStVolume, ...]:
     volumes: list[MaStVolume] = []
     for disk in _plist_root_items(root):
         disk_device = str(disk.get("deviceName") or "")
@@ -131,6 +156,124 @@ def parse_mast_plist(content: str | bytes) -> tuple[MaStVolume, ...]:
                 )
             )
     return tuple(volumes)
+
+
+def _parse_mast_openstep(content: str) -> tuple[MaStVolume, ...]:
+    text = _strip_mast_assignment_prefix(content)
+    volumes: list[MaStVolume] = []
+    pending_partitions: list[tuple[str, str, str, str]] = []
+    disk_device = ""
+    disk_builtin = False
+    in_partitions = False
+    part_device = ""
+    part_name = ""
+    part_format = ""
+    part_uuid = ""
+
+    def emit_pending_partition() -> None:
+        nonlocal part_device, part_name, part_format, part_uuid
+        fmt = part_format.lower()
+        adisk_uuid = _uuid_from_value(part_uuid)
+        if part_device.startswith("dk") and fmt == "hfs" and part_name and adisk_uuid:
+            pending_partitions.append((part_device, part_name, adisk_uuid, fmt))
+        part_device = ""
+        part_name = ""
+        part_format = ""
+        part_uuid = ""
+
+    def flush_disk() -> None:
+        nonlocal pending_partitions
+        if not disk_device:
+            pending_partitions = []
+            return
+        for pending_device, pending_name, pending_uuid, pending_format in pending_partitions:
+            volumes.append(
+                MaStVolume(
+                    disk_device=disk_device,
+                    partition_device=pending_device,
+                    volume_root=f"/Volumes/{pending_device}",
+                    name=pending_name,
+                    adisk_uuid=pending_uuid,
+                    builtin=disk_builtin,
+                    format=pending_format,
+                )
+            )
+        pending_partitions = []
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line == "(":
+            continue
+        if re.match(r"^partitions\s*=", line):
+            in_partitions = True
+            continue
+        if _openstep_collection_close(line):
+            in_partitions = False
+            continue
+        if _openstep_object_close(line):
+            if in_partitions and part_device:
+                emit_pending_partition()
+            elif disk_device:
+                flush_disk()
+                disk_device = ""
+                disk_builtin = False
+            continue
+
+        device_name = _openstep_assignment_value(line, "deviceName")
+        if device_name is not None:
+            if in_partitions:
+                part_device = device_name
+            else:
+                if disk_device:
+                    flush_disk()
+                disk_device = device_name
+                disk_builtin = False
+            continue
+
+        builtin = _openstep_bool_assignment(line, "builtin")
+        if builtin is not None and not in_partitions:
+            disk_builtin = builtin
+            continue
+
+        if in_partitions:
+            name = _openstep_assignment_value(line, "name")
+            if name is not None:
+                part_name = name
+                continue
+            fmt = _openstep_assignment_value(line, "format")
+            if fmt is not None:
+                part_format = fmt
+                continue
+            raw_uuid = _openstep_assignment_value(line, "uuid")
+            if raw_uuid is not None:
+                part_uuid = raw_uuid
+                continue
+
+    if part_device:
+        emit_pending_partition()
+    if disk_device:
+        flush_disk()
+    return tuple(volumes)
+
+
+def parse_mast_plist(content: str | bytes) -> tuple[MaStVolume, ...]:
+    text: str | None = None
+    if isinstance(content, bytes):
+        data = content
+    else:
+        text = content.strip()
+        xml_start = text.find("<?xml")
+        if xml_start >= 0:
+            text = text[xml_start:]
+        else:
+            text = _strip_mast_assignment_prefix(text)
+        data = text.encode("utf-8", errors="replace")
+    try:
+        return _volumes_from_plist_root(plistlib.loads(data))
+    except plistlib.InvalidFileException:
+        if text is None:
+            text = content.decode("utf-8", errors="replace")
+        return _parse_mast_openstep(text)
 
 
 def read_mast_volumes_conn(connection: SshConnection) -> tuple[MaStVolume, ...]:
