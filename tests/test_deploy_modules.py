@@ -2015,7 +2015,7 @@ fi
         payload_dir_name = "samba4"
         payload_dir = f"/Volumes/dk2/{payload_dir_name}"
         paths = self._payload_home("/Volumes/dk2", payload_dir_name)
-        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), install_nbns=True)
+        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
         text = format_deployment_plan(plan)
         self.assertIn("volume root: /Volumes/dk2", text)
         self.assertIn(f"Apple mount wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s", text)

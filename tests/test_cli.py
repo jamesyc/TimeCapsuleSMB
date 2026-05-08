@@ -4496,7 +4496,7 @@ class CliTests(unittest.TestCase):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
-            ["--install-nbns", "--debug-logging", "--no-reboot"],
+            ["--debug-logging", "--no-reboot"],
             values=self.make_valid_env(TC_SAMBA_USER="admin"),
             patch_actions=True,
             patch_upload=True,
@@ -4522,6 +4522,32 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("PAYLOAD_DEVICE_HINT", flash_config)
         self.assertNotIn("PAYLOAD_INSTALL_ID", flash_config)
         self.assertNotIn("TC_SHARE_NAME", flash_config)
+
+    def test_deploy_no_nbns_writes_disabled_flash_config(self) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_upload(_plan, *, connection, source_resolver):
+            captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
+
+        result = self.run_deploy_cli(
+            ["--no-nbns", "--no-reboot"],
+            patch_actions=True,
+            patch_upload=True,
+            upload_side_effect=fake_upload,
+        )
+
+        self.assertEqual(result.rc, 0)
+        self.assertIn("NBNS_ENABLED=0\n", captured["flash_config"])
+        finished = self.telemetry_payload("deploy_finished")
+        self.assertFalse(finished["nbns_enabled"])
+
+    def test_deploy_rejects_removed_install_nbns_flag(self) -> None:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as raised:
+                deploy.main(["--install-nbns", "--dry-run"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("unrecognized arguments: --install-nbns", stderr.getvalue())
 
     def test_deploy_exits_when_no_writable_persistent_volume_exists(self) -> None:
         result = self.run_deploy_cli(

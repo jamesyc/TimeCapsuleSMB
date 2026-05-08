@@ -64,7 +64,7 @@ def render_flash_runtime_config(
     config: AppConfig,
     payload_home: PayloadHome,
     *,
-    install_nbns: bool,
+    nbns_enabled: bool,
     debug_logging: bool,
     apple_mount_wait_seconds: int = DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
 ) -> str:
@@ -87,7 +87,7 @@ def render_flash_runtime_config(
         ("AIRPORT_SYAP", config.get("TC_AIRPORT_SYAP", DEFAULTS["TC_AIRPORT_SYAP"])),
         ("INTERNAL_SHARE_USE_DISK_ROOT", 1 if parse_bool(internal_root_default) else 0),
         ("APPLE_MOUNT_WAIT_SECONDS", apple_mount_wait_seconds),
-        ("NBNS_ENABLED", 1 if install_nbns else 0),
+        ("NBNS_ENABLED", 1 if nbns_enabled else 0),
         ("SMBD_DEBUG_LOGGING", 1 if debug_logging else 0),
         ("MDNS_DEBUG_LOGGING", 1 if debug_logging else 0),
     ]
@@ -112,7 +112,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="Print actions without making changes")
     parser.add_argument("--json", action="store_true", help="Output the dry-run deployment plan as JSON")
     parser.add_argument("--allow-unsupported", action="store_true", help="Proceed even if the detected device is not currently supported")
-    parser.add_argument("--install-nbns", action="store_true", help="Enable the bundled NBNS responder on the next boot")
+    parser.add_argument("--no-nbns", action="store_true", help="Disable the bundled NBNS responder on the next boot")
     parser.add_argument(
         "--mount-wait",
         type=_non_negative_int,
@@ -129,13 +129,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not args.json:
         print("Deploying...")
 
+    nbns_enabled = not args.no_nbns
     ensure_install_id()
     app_paths = resolve_app_paths(config_path=args.config)
     config = load_env_config(env_path=args.config)
-    telemetry = TelemetryClient.from_config(config, nbns_enabled=args.install_nbns)
+    telemetry = TelemetryClient.from_config(config, nbns_enabled=nbns_enabled)
     with CommandContext(telemetry, "deploy", "deploy_started", "deploy_finished", config=config, args=args) as command_context:
         command_context.update_fields(
-            nbns_enabled=args.install_nbns,
+            nbns_enabled=nbns_enabled,
             reboot_was_attempted=False,
             device_came_back_after_reboot=False,
         )
@@ -196,7 +197,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             smbd_path,
             mdns_path,
             nbns_path,
-            install_nbns=args.install_nbns,
             activate_netbsd4=is_netbsd4,
             reboot_after_deploy=not args.no_reboot,
             apple_mount_wait_seconds=apple_mount_wait_seconds,
@@ -226,7 +226,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         flash_config_text = render_flash_runtime_config(
             config,
             payload_home,
-            install_nbns=args.install_nbns,
+            nbns_enabled=nbns_enabled,
             debug_logging=args.debug_logging,
             apple_mount_wait_seconds=apple_mount_wait_seconds,
         )

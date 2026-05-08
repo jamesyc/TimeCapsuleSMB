@@ -256,7 +256,7 @@ class StorageRuntimeTests(unittest.TestCase):
         rendered = render_flash_runtime_config(
             config,
             PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
-            install_nbns=True,
+            nbns_enabled=True,
             debug_logging=True,
             apple_mount_wait_seconds=12,
         )
@@ -290,7 +290,7 @@ class StorageRuntimeTests(unittest.TestCase):
         rendered = render_flash_runtime_config(
             config,
             PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
-            install_nbns=False,
+            nbns_enabled=False,
             debug_logging=False,
         )
 
@@ -304,7 +304,6 @@ class StorageRuntimeTests(unittest.TestCase):
             Path("/tmp/smbd"),
             Path("/tmp/mdns-advertiser"),
             Path("/tmp/nbns-advertiser"),
-            install_nbns=True,
         )
         source_ids = {upload.source_id for upload in plan.uploads}
 

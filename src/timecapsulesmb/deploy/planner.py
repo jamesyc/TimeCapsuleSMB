@@ -144,7 +144,6 @@ def build_deployment_plan(
     mdns_path: Path,
     nbns_path: Path,
     *,
-    install_nbns: bool = False,
     activate_netbsd4: bool = False,
     reboot_after_deploy: bool = True,
     apple_mount_wait_seconds: int = DEFAULT_APPLE_MOUNT_WAIT_SECONDS,

@@ -12,9 +12,9 @@ What is working now:
 - static Samba 4.8.x built from NetBSD 7 sources for NetBSD 6-era AirPort storage devices
 - static Samba 4.8.x built from NetBSD 4 sources for older NetBSD 4-era AirPort storage devices
 - static tiny SMB / Time Machine mDNS advertiser
-- optional static NBNS responder for NetBIOS name discovery
+- static NBNS responder for NetBIOS name discovery
 - boot-time runtime staging via `/mnt/Flash/rc.local`
-- boot-time watchdog for `smbd`, the mDNS helper, and the optional NBNS helper
+- boot-time watchdog for `smbd`, the mDNS helper, and the NBNS helper when enabled
 - direct SMB service on port `445`
 - Bonjour advertisement for:
   - managed `_smb._tcp`
@@ -444,7 +444,7 @@ Current persistent auth files live in the selected payload home:
 - `/Volumes/dkX/.samba4/private/smbpasswd`
 - `/Volumes/dkX/.samba4/private/username.map`
 
-Current optional NBNS binary also lives in the selected payload home:
+Current NBNS binary also lives in the selected payload home:
 - `/Volumes/dkX/.samba4/nbns-advertiser`
 
 NBNS runtime enablement lives in flash config:
@@ -548,7 +548,7 @@ Current validation and behavior notes:
 
 ## NBNS Responder Details
 
-The optional NBNS helper is:
+The NBNS helper is:
 - [bin/nbns/nbns-advertiser](bin/nbns/nbns-advertiser)
 
 It is built from:
@@ -559,8 +559,8 @@ Important properties:
 - static NetBSD 7 `earmv4` binary for the NetBSD 6 payload
 - static NetBSD 4 little-endian `earmv4` binary for the NetBSD 4 little-endian payload
 - static NetBSD 4 big-endian `armeb` binary for the NetBSD 4 big-endian payload
-- not enabled by default at runtime
-- always deployed to the HDD payload, but only staged into RAM when explicitly enabled
+- enabled by default at runtime
+- always deployed to the HDD payload, but only staged into RAM when enabled
 
 Current behavior:
 - binds UDP port `137`
@@ -574,9 +574,9 @@ Enablement model:
 - the binary is uploaded to `/Volumes/dkX/.samba4/nbns-advertiser` on every deploy
 - runtime enablement is controlled by:
   - `NBNS_ENABLED=1` in `/mnt/Flash/tcapsulesmb.conf`
-- `tcapsule deploy --install-nbns` writes that flash config value
-- `--install-nbns` is supported on both NetBSD 6 and NetBSD 4
-- plain `deploy` writes `NBNS_ENABLED=0`
+- plain `tcapsule deploy` writes that flash config value
+- `--no-nbns` writes `NBNS_ENABLED=0`
+- `--no-nbns` is supported on both NetBSD 6 and NetBSD 4
 - `uninstall` removes both the binary and flash runtime config
 
 ## Current User-Facing Workflow
@@ -630,8 +630,8 @@ Coverage entry points:
 - `make coverage-html` writes the browsable report to `htmlcov/index.html`
 
 Optional deploy flag:
-- `--install-nbns`
-  - enables the bundled NBNS responder on the next boot by writing `NBNS_ENABLED=1` to `/mnt/Flash/tcapsulesmb.conf`
+- `--no-nbns`
+  - disables the bundled NBNS responder on the next boot by writing `NBNS_ENABLED=0` to `/mnt/Flash/tcapsulesmb.conf`
 
 Current defaults:
 - `TC_SAMBA_USER=admin`
@@ -717,7 +717,7 @@ It checks:
 - active Samba share names
 - SMB reachability
 - `_smb._tcp` browse and resolve
-- optional NBNS name resolution when `/mnt/Flash/tcapsulesmb.conf` has `NBNS_ENABLED=1`
+- NBNS name resolution unless `/mnt/Flash/tcapsulesmb.conf` has `NBNS_ENABLED=0`
 - authenticated `smbclient -L` listing
 - authenticated SMB CRUD operations via `smbclient`
 - that at least one active Samba share is present in the authenticated SMB listing
@@ -841,8 +841,8 @@ Current deploy flow:
 - generates and installs:
   - `private/smbpasswd`
   - `private/username.map`
-- optionally enables:
-  - `NBNS_ENABLED=1` in flash config when `--install-nbns` is used
+- enables NBNS by default:
+  - `NBNS_ENABLED=1` in flash config unless `--no-nbns` is used
 - applies the required permissions on files and directories
 - reboots by default
 - waits for managed `smbd` readiness after reboot
