@@ -14,7 +14,14 @@ MOUNT_POLL_SECONDS=30
 STEADY_POLL_SECONDS=300
 
 tc_log "watchdog startup beginning"
-tc_read_payload_state || true
+if tc_read_payload_state; then
+    tc_set_payload_log_dir "$TC_PAYLOAD_DIR" "$TC_PAYLOAD_VOLUME"
+    tc_set_payload_append_log "$TC_PAYLOAD_LOG_DIR/watchdog.log" "watchdog" "$TC_PAYLOAD_VOLUME" "$RAM_VAR/watchdog.log"
+else
+    TC_PAYLOAD_DIR=
+    TC_PAYLOAD_VOLUME=
+    TC_PAYLOAD_DEVICE=
+fi
 tc_log "watchdog payload: device=${TC_PAYLOAD_DEVICE:-none} root=${TC_PAYLOAD_VOLUME:-none} dir=${TC_PAYLOAD_DIR:-none}"
 
 while :; do

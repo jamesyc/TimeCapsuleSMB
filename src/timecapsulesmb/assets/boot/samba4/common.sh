@@ -27,12 +27,19 @@ TC_TAB=$(printf '\t')
 
 TC_LOG_FILE="$TC_STATE_DIR/runtime.log"
 TC_LOG_PREFIX=runtime
+TC_LOG_MODE=ram_rewrite
+TC_LOG_FALLBACK_FILE=
+TC_LOG_VOLUME=
+TC_LOG_MAX_BYTES=131072
 TC_MDNS_BIN=/mnt/Flash/mdns-advertiser
 TC_NBNS_BIN="$RAM_SBIN/nbns-advertiser"
 TC_SMBD_BIN="$RAM_SBIN/smbd"
 TC_SMBD_CONF="$RAM_ETC/smb.conf"
 TC_MDNS_LOG_FILE="$RAM_VAR/mdns.log"
-TC_MDNS_LOG_ENABLED=0
+TC_NBNS_LOG_FILE="$RAM_VAR/nbns.log"
+TC_PAYLOAD_LOG_DIR=
+TC_PAYLOAD_LOG_VOLUME=
+TC_RUNTIME_LOG_MAX_BYTES=131072
 TC_SMBD_DISK_LOGGING_ENABLED=0
 TC_ADISK_DISK_ADVF=0x1093
 TC_ADISK_TXT_MAX_BYTES=255
@@ -52,28 +59,120 @@ tc_init_runtime_env() {
     APPLE_MOUNT_WAIT_SECONDS=${APPLE_MOUNT_WAIT_SECONDS:-30}
     INTERNAL_SHARE_USE_DISK_ROOT=${INTERNAL_SHARE_USE_DISK_ROOT:-0}
     NBNS_ENABLED=${NBNS_ENABLED:-0}
-    TC_MDNS_LOG_ENABLED=${TC_MDNS_LOG_ENABLED:-${MDNS_DEBUG_LOGGING:-0}}
-    TC_SMBD_DISK_LOGGING_ENABLED=${TC_SMBD_DISK_LOGGING_ENABLED:-${SMBD_DEBUG_LOGGING:-0}}
+    TC_SMBD_DISK_LOGGING_ENABLED=${SMBD_DEBUG_LOGGING:-0}
 }
 
 tc_set_log() {
     TC_LOG_FILE=$1
     TC_LOG_PREFIX=$2
+    TC_LOG_MODE=ram_rewrite
+    TC_LOG_FALLBACK_FILE=
+    TC_LOG_VOLUME=
+    TC_LOG_MAX_BYTES=131072
 }
 
-tc_log() {
-    log_dir=${TC_LOG_FILE%/*}
-    tmp_log="$TC_LOG_FILE.tmp.$$"
-    line="$(date '+%Y-%m-%d %H:%M:%S') $TC_LOG_PREFIX: $*"
+tc_set_payload_append_log() {
+    TC_LOG_FILE=$1
+    TC_LOG_PREFIX=$2
+    TC_LOG_VOLUME=$3
+    TC_LOG_FALLBACK_FILE=$4
+    TC_LOG_MODE=payload_append
+    TC_LOG_MAX_BYTES=$(tc_runtime_log_max_bytes)
+}
+
+tc_runtime_logs_unbounded() {
+    [ "${SMBD_DEBUG_LOGGING:-0}" = "1" ] || [ "${MDNS_DEBUG_LOGGING:-0}" = "1" ]
+}
+
+tc_runtime_log_max_bytes() {
+    if tc_runtime_logs_unbounded; then
+        echo 0
+    else
+        echo "$TC_RUNTIME_LOG_MAX_BYTES"
+    fi
+}
+
+tc_smbd_max_log_size() {
+    if [ "$TC_SMBD_DISK_LOGGING_ENABLED" = "1" ]; then
+        echo 0
+    else
+        echo 128
+    fi
+}
+
+tc_log_file_size() {
+    log_path=$1
+    [ -f "$log_path" ] || {
+        echo 0
+        return 0
+    }
+    /usr/bin/wc -c <"$log_path" 2>/dev/null | sed 's/[^0-9]//g'
+}
+
+tc_trim_log_file_if_needed() {
+    trim_log_path=$1
+    trim_log_bytes=$2
+    trim_log_tmp="${trim_log_path}.tmp.$$"
+
+    [ "$trim_log_bytes" -gt 0 ] || return 0
+    [ -f "$trim_log_path" ] || return 0
+    current_size=$(tc_log_file_size "$trim_log_path")
+    [ -n "$current_size" ] || current_size=0
+    [ "$current_size" -gt "$trim_log_bytes" ] || return 0
+
+    /usr/bin/tail -c "$trim_log_bytes" "$trim_log_path" >"$trim_log_tmp" 2>/dev/null || /bin/cat "$trim_log_path" >"$trim_log_tmp" 2>/dev/null || true
+    mv "$trim_log_tmp" "$trim_log_path"
+}
+
+tc_append_bounded_log_line() {
+    log_path=$1
+    max_bytes=$2
+    line=$3
+
+    ensure_parent_dir "$log_path"
+    printf '%s\n' "$line" >>"$log_path" || return 1
+    tc_trim_log_file_if_needed "$log_path" "$max_bytes"
+}
+
+tc_payload_append_log_line() {
+    line=$1
+
+    [ -n "$TC_LOG_FILE" ] || return 1
+    [ -n "$TC_LOG_VOLUME" ] || return 1
+    is_volume_root_mounted "$TC_LOG_VOLUME" || return 1
+    tc_append_bounded_log_line "$TC_LOG_FILE" "$TC_LOG_MAX_BYTES" "$line"
+}
+
+tc_ram_rewrite_log_line() {
+    log_path=$1
+    line=$2
+    log_dir=${log_path%/*}
+    tmp_log="$log_path.tmp.$$"
 
     [ -d "$log_dir" ] || mkdir -p "$log_dir"
     {
-        if [ -f "$TC_LOG_FILE" ]; then
-            /usr/bin/tail -n 255 "$TC_LOG_FILE" 2>/dev/null || true
+        if [ -f "$log_path" ]; then
+            /usr/bin/tail -n 255 "$log_path" 2>/dev/null || true
         fi
         echo "$line"
     } >"$tmp_log"
-    mv "$tmp_log" "$TC_LOG_FILE"
+    mv "$tmp_log" "$log_path"
+}
+
+tc_log() {
+    line="$(date '+%Y-%m-%d %H:%M:%S') $TC_LOG_PREFIX: $*"
+
+    if [ "$TC_LOG_MODE" = "payload_append" ]; then
+        if tc_payload_append_log_line "$line"; then
+            return 0
+        fi
+        if [ -n "$TC_LOG_FALLBACK_FILE" ]; then
+            tc_ram_rewrite_log_line "$TC_LOG_FALLBACK_FILE" "$line"
+            return 0
+        fi
+    fi
+
+    tc_ram_rewrite_log_line "$TC_LOG_FILE" "$line"
 }
 
 get_iface_ipv4() {
@@ -737,6 +836,44 @@ tc_select_cache_directory() {
     esac
 }
 
+tc_set_payload_log_dir() {
+    payload_dir=$1
+    payload_volume=$2
+
+    TC_PAYLOAD_LOG_DIR="$payload_dir/logs"
+    TC_PAYLOAD_LOG_VOLUME="$payload_volume"
+    TC_MDNS_LOG_FILE="$TC_PAYLOAD_LOG_DIR/mdns.log"
+    TC_NBNS_LOG_FILE="$TC_PAYLOAD_LOG_DIR/nbns.log"
+}
+
+tc_payload_log_dir_ready() {
+    [ -n "$TC_PAYLOAD_LOG_DIR" ] || return 1
+    [ -n "$TC_PAYLOAD_LOG_VOLUME" ] || return 1
+    is_volume_root_mounted "$TC_PAYLOAD_LOG_VOLUME" || return 1
+    mkdir -p "$TC_PAYLOAD_LOG_DIR" || return 1
+    chmod 755 "$TC_PAYLOAD_LOG_DIR" >/dev/null 2>&1 || true
+}
+
+tc_prepare_runtime_log_file() {
+    log_path=$1
+    max_bytes=$(tc_runtime_log_max_bytes)
+
+    case "$log_path" in
+        "$TC_PAYLOAD_LOG_DIR"/*)
+            if [ -n "$TC_PAYLOAD_LOG_DIR" ]; then
+                tc_payload_log_dir_ready || return 1
+            else
+                ensure_parent_dir "$log_path"
+            fi
+            ;;
+        *)
+            ensure_parent_dir "$log_path"
+            ;;
+    esac
+    : >>"$log_path" || return 1
+    tc_trim_log_file_if_needed "$log_path" "$max_bytes"
+}
+
 tc_stage_runtime() {
     payload_dir=$1
     smbd_src=$2
@@ -768,17 +905,18 @@ tc_generate_smb_conf() {
     payload_dir=$1
     bind_interfaces=$2
     cache_directory=$(tc_select_cache_directory "$payload_dir")
-    smbd_log="$RAM_VAR/log.smbd"
-    smbd_max_log_size=256
+    smbd_log="$payload_dir/logs/log.smbd"
+    smbd_max_log_size=$(tc_smbd_max_log_size)
     smbd_log_level_line=
 
+    mkdir -p "$payload_dir/logs"
+    chmod 755 "$payload_dir/logs" >/dev/null 2>&1 || true
     if [ "$TC_SMBD_DISK_LOGGING_ENABLED" = "1" ]; then
-        mkdir -p "$payload_dir/logs"
-        chmod 755 "$payload_dir/logs" >/dev/null 2>&1 || true
-        smbd_log="$payload_dir/logs/log.smbd"
-        smbd_max_log_size=1048576
         smbd_log_level_line="    log level = 5 vfs:8 fruit:8"
+        : >>"$smbd_log" || true
         tc_log "smbd debug logging enabled at $smbd_log"
+    else
+        trim_log_file "$smbd_log" "$TC_RUNTIME_LOG_MAX_BYTES"
     fi
 
     {
@@ -1094,13 +1232,16 @@ tc_start_mdns_capture() {
         fi
     fi
 
-    if [ "$TC_MDNS_LOG_ENABLED" = "1" ]; then
-        tc_log "mdns capture: debug logging enabled at $TC_MDNS_LOG_FILE"
-        trim_log_file "$TC_MDNS_LOG_FILE" 131072
+    if tc_prepare_runtime_log_file "$TC_MDNS_LOG_FILE"; then
+        if tc_runtime_logs_unbounded; then
+            tc_log "mdns capture: debug logging enabled at $TC_MDNS_LOG_FILE"
+        else
+            tc_log "mdns capture: logging at $TC_MDNS_LOG_FILE"
+        fi
         printf '%s %s: launching mdns-advertiser capture\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$TC_LOG_PREFIX" >>"$TC_MDNS_LOG_FILE"
         "$@" >>"$TC_MDNS_LOG_FILE" 2>&1 &
     else
-        tc_log "mdns capture: debug logging disabled"
+        tc_log "mdns capture: log unavailable at $TC_MDNS_LOG_FILE"
         "$@" >/dev/null 2>&1 &
     fi
     TC_MDNS_CAPTURE_PID=$!
@@ -1186,13 +1327,16 @@ tc_launch_mdns_advertiser() {
     fi
     set -- "$@" --ipv4 "$iface_ip"
 
-    if [ "$TC_MDNS_LOG_ENABLED" = "1" ]; then
-        tc_log "$context: debug logging enabled at $TC_MDNS_LOG_FILE"
-        trim_log_file "$TC_MDNS_LOG_FILE" 131072
+    if tc_prepare_runtime_log_file "$TC_MDNS_LOG_FILE"; then
+        if tc_runtime_logs_unbounded; then
+            tc_log "$context: debug logging enabled at $TC_MDNS_LOG_FILE"
+        else
+            tc_log "$context: logging at $TC_MDNS_LOG_FILE"
+        fi
         printf '%s %s: launching mdns-advertiser\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$TC_LOG_PREFIX" >>"$TC_MDNS_LOG_FILE"
         "$@" >>"$TC_MDNS_LOG_FILE" 2>&1 &
     else
-        tc_log "$context: debug logging disabled"
+        tc_log "$context: log unavailable at $TC_MDNS_LOG_FILE"
         "$@" >/dev/null 2>&1 &
     fi
     mdns_launch_pid=$!
@@ -1250,10 +1394,21 @@ tc_launch_nbns() {
     fi
 
     tc_log "$context: starting nbns responder for $SMB_NETBIOS_NAME at $iface_ip"
-    "$TC_NBNS_BIN" \
+    set -- "$TC_NBNS_BIN" \
         --name "$SMB_NETBIOS_NAME" \
-        --ipv4 "$iface_ip" \
-        >/dev/null 2>&1 &
+        --ipv4 "$iface_ip"
+    if tc_prepare_runtime_log_file "$TC_NBNS_LOG_FILE"; then
+        if tc_runtime_logs_unbounded; then
+            tc_log "$context: nbns debug logging enabled at $TC_NBNS_LOG_FILE"
+        else
+            tc_log "$context: nbns logging at $TC_NBNS_LOG_FILE"
+        fi
+        printf '%s %s: launching nbns-advertiser\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$TC_LOG_PREFIX" >>"$TC_NBNS_LOG_FILE"
+        "$@" >>"$TC_NBNS_LOG_FILE" 2>&1 &
+    else
+        tc_log "$context: nbns log unavailable at $TC_NBNS_LOG_FILE"
+        "$@" >/dev/null 2>&1 &
+    fi
     if [ "$wait_attempts" -gt 0 ]; then
         if wait_for_process "$NBNS_PROC_NAME" "$wait_attempts"; then
             tc_log "$context: nbns responder launch requested"

@@ -21,14 +21,20 @@ if TYPE_CHECKING:
 
 RUNTIME_SMB_CONF = "/mnt/Memory/samba4/etc/smb.conf"
 RUNTIME_SHARES_TSV = "/mnt/Memory/samba4/var/shares.tsv"
+RUNTIME_PAYLOAD_TSV = "/mnt/Memory/samba4/var/payload.tsv"
 FLASH_RUNTIME_CONFIG = "/mnt/Flash/tcapsulesmb.conf"
 REMOTE_STATE_PROBE_TIMEOUT_SECONDS = 10
 REMOTE_LOG_TAIL_LINES = 80
 REMOTE_LOG_TAIL_MAX_CHARS = 8192
 REMOTE_LOG_TAIL_TIMEOUT_SECONDS = 10
-REMOTE_RUNTIME_LOG_PATHS = {
+REMOTE_RUNTIME_RAM_LOG_PATHS = {
     "remote_rc_local_log_tail": "/mnt/Memory/samba4/var/rc.local.log",
-    "remote_mdns_log_tail": "/mnt/Memory/samba4/var/mdns.log",
+}
+REMOTE_PAYLOAD_LOG_FILENAMES = {
+    "remote_watchdog_log_tail": "watchdog.log",
+    "remote_mdns_log_tail": "mdns.log",
+    "remote_nbns_log_tail": "nbns.log",
+    "remote_smbd_log_tail": "log.smbd",
 }
 SMBD_STATUS_HELPERS = rf'''
 RUNTIME_RAM_ROOT=${{RUNTIME_RAM_ROOT:-/mnt/Memory/samba4}}
@@ -1062,13 +1068,54 @@ def read_remote_log_tail_conn(connection: SshConnection, path: str) -> str:
     return _limit_remote_log_tail(text)
 
 
+def read_runtime_payload_dir_conn(connection: SshConnection) -> str | None:
+    script = (
+        f"payload_tsv={shlex.quote(RUNTIME_PAYLOAD_TSV)}; "
+        'if [ -s "$payload_tsv" ]; then '
+        "IFS=$(printf '\\t') read -r payload_dir payload_volume payload_device <\"$payload_tsv\"; "
+        'if [ -n "$payload_dir" ]; then printf "%s\\n" "$payload_dir"; exit 0; fi; '
+        "fi; exit 1"
+    )
+    proc = run_ssh(
+        connection,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=REMOTE_LOG_TAIL_TIMEOUT_SECONDS,
+    )
+    if proc.returncode != 0:
+        return None
+    stdout = (proc.stdout or "").strip()
+    if not stdout:
+        return None
+    return stdout.splitlines()[0]
+
+
 def read_runtime_log_tails_conn(connection: SshConnection) -> dict[str, str]:
     logs: dict[str, str] = {}
-    for key, path in REMOTE_RUNTIME_LOG_PATHS.items():
+    for key, path in REMOTE_RUNTIME_RAM_LOG_PATHS.items():
         try:
             logs[key] = read_remote_log_tail_conn(connection, path)
         except Exception as e:
             logs[key] = f"(unavailable: {e})"
+    try:
+        payload_dir = read_runtime_payload_dir_conn(connection)
+    except Exception as e:
+        payload_dir = None
+        logs["remote_payload_log_dir"] = f"(unavailable: {e})"
+    if payload_dir:
+        logs["remote_payload_log_dir"] = payload_dir
+        for key, filename in REMOTE_PAYLOAD_LOG_FILENAMES.items():
+            path = f"{payload_dir.rstrip('/')}/logs/{filename}"
+            try:
+                logs[key] = read_remote_log_tail_conn(connection, path)
+            except Exception as e:
+                logs[key] = f"(unavailable: {e})"
+    else:
+        logs.setdefault("remote_payload_log_dir", f"(missing {RUNTIME_PAYLOAD_TSV})")
+        try:
+            logs["remote_watchdog_log_tail"] = read_remote_log_tail_conn(connection, "/mnt/Memory/samba4/var/watchdog.log")
+        except Exception as e:
+            logs["remote_watchdog_log_tail"] = f"(unavailable: {e})"
     return logs
 
 

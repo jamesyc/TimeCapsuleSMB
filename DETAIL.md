@@ -317,7 +317,7 @@ The boot logic lives in:
 
 ### `rc.local`
 
-`rc.local` is intentionally tiny. It just backgrounds `start-samba.sh` and `watchdog.sh`.
+`rc.local` is intentionally tiny. It just backgrounds `start-samba.sh`.
 
 This matters because:
 - boot ordering is messy
@@ -335,32 +335,39 @@ This matters because:
 5. waits for the device IP on the configured network interface
    - default: `bridge0`
    - timeout: `60` seconds after an initial `1` second delay
-6. starts the mDNS snapshot capture phase without taking over UDP 5353 yet
-7. reads valid HFS partitions from `/usr/bin/acp -A MaSt`
-8. wakes or mounts every valid `MaSt` volume:
+6. reads valid HFS partitions from `/usr/bin/acp -A MaSt`
+7. wakes or mounts every valid `MaSt` volume:
    - first asks Apple `diskd.useVolume`
    - waits `APPLE_MOUNT_WAIT_SECONDS` seconds from flash config, default `30`
    - then falls back to a bounded `mount_hfs` attempt with a `30` second command timeout
-9. builds RAM state files under `/mnt/Memory/samba4/var`:
+8. builds RAM state files under `/mnt/Memory/samba4/var`:
    - `volumes.tsv`
    - `shares.tsv`
    - `adisk.tsv`
    - `topology.signature`
-10. applies share path rules:
+9. applies share path rules:
    - external volumes always share `/Volumes/dkN`
    - internal volumes share `/Volumes/dkN/ShareRoot` unless `INTERNAL_SHARE_USE_DISK_ROOT=1`
    - internal `ShareRoot` is created when needed
-11. resolves the persistent payload by scanning `MaSt` volumes in internal-first order for `<PAYLOAD_DIR_NAME>`
-12. writes `payload.tsv` so the watchdog can find the selected payload volume/device later
-13. copies `smbd`, auth files, and optional `nbns-advertiser` into RAM
-14. generates `/mnt/Memory/samba4/etc/smb.conf` directly from runtime state
-15. starts `smbd` and waits up to `15` seconds for the process to appear
-16. starts the final `mdns-advertiser` phase, which takes over UDP 5353 and advertises every generated share plus the captured Apple records when available
-17. starts the NBNS responder if `NBNS_ENABLED=1`
-18. starts `watchdog.sh` with no disk/root positional arguments
+10. resolves the persistent payload by scanning `MaSt` volumes in internal-first order for `<PAYLOAD_DIR_NAME>`
+11. writes `payload.tsv` so the watchdog can find the selected payload volume/device later
+12. configures payload runtime logs under `<payload>/logs/`
+13. starts the mDNS snapshot capture phase without taking over UDP 5353 yet, then waits `10` seconds
+14. copies `smbd`, auth files, and optional `nbns-advertiser` into RAM
+15. generates `/mnt/Memory/samba4/etc/smb.conf` directly from runtime state
+16. starts `smbd` and waits up to `15` seconds for the process to appear
+17. starts the final `mdns-advertiser` phase, which takes over UDP 5353 and advertises every generated share plus the captured Apple records when available
+18. starts the NBNS responder if `NBNS_ENABLED=1`
+19. starts `watchdog.sh` with no disk/root positional arguments
 
 The boot log is written to:
 - `/mnt/Memory/samba4/var/rc.local.log`
+
+Long-running process logs are written under:
+- `<payload>/logs/watchdog.log`
+- `<payload>/logs/mdns.log`
+- `<payload>/logs/nbns.log`
+- `<payload>/logs/log.smbd`
 
 Important bug lessons from getting this stable:
 - the script cannot assume `/dev/dk2` exists immediately
@@ -410,7 +417,8 @@ This is intentionally simple:
 - disk topology changes restart through the same path as boot, so share generation, mDNS, and smbd config stay coherent
 
 The watchdog log is written to:
-- `/mnt/Memory/samba4/var/watchdog.log`
+- `<payload>/logs/watchdog.log` when the payload volume is mounted
+- `/mnt/Memory/samba4/var/watchdog.log` as a RAM fallback while the payload volume is unavailable
 
 Important implementation detail:
 - `mdns-advertiser` is short enough to match directly with `pkill`
@@ -470,7 +478,8 @@ Current rendered Samba config characteristics:
 - `cache directory = /mnt/Memory/samba4/var` on NetBSD 6
 - `cache directory = /Volumes/dkX/.samba4/cache` on NetBSD 4
 - `private dir = /mnt/Memory/samba4/private`
-- `max log size = 256` in the normal generated config
+- `log file = /Volumes/dkX/.samba4/logs/log.smbd`
+- `max log size = 128` in the normal generated config
 - `deadtime = 60`
 - `vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb`
 - `fruit:resource = file`
@@ -874,7 +883,8 @@ The dry-run modes are intended for users who want to inspect the exact remote ac
 
 Hidden operator mode:
 - `tcapsule deploy --debug-logging` writes `SMBD_DEBUG_LOGGING=1` and `MDNS_DEBUG_LOGGING=1` to flash config.
-- at runtime, Samba writes `log.smbd` under `<payload>/logs/`, sets `max log size = 1048576`, and enables `log level = 5 vfs:8 fruit:8`.
+- at runtime, Samba writes `log.smbd` under `<payload>/logs/`, sets `max log size = 0`, and enables `log level = 5 vfs:8 fruit:8`.
+- managed runtime logs under `<payload>/logs/` are normally capped around `128 KiB`; `--debug-logging` leaves them unbounded.
 - this flag is intentionally not documented in the normal command help because it is for active debugging, not normal installs.
 
 ## Client Telemetry

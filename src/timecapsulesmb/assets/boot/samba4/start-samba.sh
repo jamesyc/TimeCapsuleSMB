@@ -45,8 +45,7 @@ if ! tc_read_mast_volumes_to "$TC_VOLUMES_TSV" "$TC_MAST_RAW"; then
 fi
 /bin/cat "$TC_VOLUMES_TSV" >"$TC_TOPOLOGY_SIGNATURE"
 
-tc_start_mdns_capture
-tc_log "pausing 10s after mDNS snapshot capture launch"
+tc_log "pausing 10s before loading share volumes"
 sleep 10
 
 if ! tc_build_share_state "$TC_VOLUMES_TSV"; then
@@ -60,6 +59,14 @@ if ! tc_resolve_payload "$TC_VOLUMES_TSV"; then
 fi
 PAYLOAD_DIR=$TC_RESOLVED_PAYLOAD_DIR
 tc_write_payload_state "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME" "$TC_RESOLVED_PAYLOAD_DEVICE"
+tc_set_payload_log_dir "$PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME"
+if tc_payload_log_dir_ready; then
+    tc_log "payload runtime logs enabled at $TC_PAYLOAD_LOG_DIR"
+else
+    tc_log "payload runtime log directory unavailable at $TC_PAYLOAD_LOG_DIR"
+fi
+
+tc_start_mdns_capture
 
 SMBD_SRC=$(tc_find_payload_smbd "$PAYLOAD_DIR") || {
     tc_log "payload discovery failed: missing smbd binary in $PAYLOAD_DIR"

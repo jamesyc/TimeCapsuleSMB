@@ -541,6 +541,172 @@ class MultiVolumeDeployTests(unittest.TestCase):
         self.assertEqual(proc.stdout.count("veto files = /.samba4/"), 2)
         self.assertIn(f"path = {volumes}/dk2/ShareRoot", proc.stdout)
         self.assertIn(f"path = {volumes}/dk3", proc.stdout)
+        self.assertIn(f"log file = {payload}/logs/log.smbd", proc.stdout)
+        self.assertIn("max log size = 128", proc.stdout)
+        self.assertNotIn("log level = 5", proc.stdout)
+
+    def test_common_generate_smb_conf_makes_smbd_debug_log_unbounded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            (payload / "private").mkdir(parents=True)
+            script = tmp_path / "smb-conf-debug.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    SMBD_DEBUG_LOGGING=1
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_ETC" "$RAM_VAR"
+                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                    tc_generate_smb_conf {payload} "127.0.0.1/8 192.168.1.2/24"
+                    cat "$TC_SMBD_CONF"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn(f"log file = {payload}/logs/log.smbd", proc.stdout)
+        self.assertIn("max log size = 0", proc.stdout)
+        self.assertIn("log level = 5 vfs:8 fruit:8", proc.stdout)
+
+    def test_common_payload_append_log_uses_payload_disk_and_bounds_normal_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            payload.mkdir(parents=True)
+            script = tmp_path / "payload-log.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    TC_RUNTIME_LOG_MAX_BYTES=120
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    is_volume_root_mounted() {{ [ "$1" = "{volumes}/dk2" ]; }}
+                    tc_set_payload_log_dir {payload} {volumes}/dk2
+                    mkdir -p "$TC_PAYLOAD_LOG_DIR"
+                    printf 'old-old-old-old-old-old-old-old-old-old-old-old-old-old-old-old-old-old\\n' >"$TC_PAYLOAD_LOG_DIR/watchdog.log"
+                    tc_set_payload_append_log "$TC_PAYLOAD_LOG_DIR/watchdog.log" watchdog {volumes}/dk2 "$RAM_VAR/watchdog.log"
+                    tc_log "final payload line"
+                    size=$(/usr/bin/wc -c <"$TC_PAYLOAD_LOG_DIR/watchdog.log" | sed 's/[^0-9]//g')
+                    printf 'size=%s\\n' "$size"
+                    printf 'ram=%s\\n' "$([ -f "$RAM_VAR/watchdog.log" ] && echo yes || echo no)"
+                    cat "$TC_PAYLOAD_LOG_DIR/watchdog.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        first_line = proc.stdout.splitlines()[0]
+        self.assertTrue(first_line.startswith("size="), proc.stdout)
+        self.assertLessEqual(int(first_line.removeprefix("size=")), 120)
+        self.assertIn("ram=no\n", proc.stdout)
+        self.assertIn("final payload line", proc.stdout)
+
+    def test_common_payload_append_log_falls_back_to_ram_when_payload_unmounted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            payload.mkdir(parents=True)
+            script = tmp_path / "payload-log-fallback.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    is_volume_root_mounted() {{ return 1; }}
+                    tc_set_payload_log_dir {payload} {volumes}/dk2
+                    tc_set_payload_append_log "$TC_PAYLOAD_LOG_DIR/watchdog.log" watchdog {volumes}/dk2 "$RAM_VAR/watchdog.log"
+                    tc_log "fallback line"
+                    printf 'payload=%s\\n' "$([ -f "$TC_PAYLOAD_LOG_DIR/watchdog.log" ] && echo yes || echo no)"
+                    cat "$RAM_VAR/watchdog.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("payload=no\n", proc.stdout)
+        self.assertIn("fallback line", proc.stdout)
+
+    def test_common_mdns_and_nbns_write_payload_logs_in_normal_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            payload.mkdir(parents=True)
+            (flash / "mdns-advertiser").write_text("#!/bin/sh\necho mdns-stdout\necho mdns-stderr >&2\n")
+            (flash / "mdns-advertiser").chmod(0o755)
+            nbns_bin = memory / "samba4/sbin/nbns-advertiser"
+            nbns_bin.parent.mkdir(parents=True)
+            nbns_bin.write_text("#!/bin/sh\necho nbns-stdout\necho nbns-stderr >&2\n")
+            nbns_bin.chmod(0o755)
+            script = tmp_path / "process-logs.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    NBNS_ENABLED=1
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    is_volume_root_mounted() {{ [ "$1" = "{volumes}/dk2" ]; }}
+                    get_iface_mac() {{ echo 80:EA:96:E6:58:68; }}
+                    get_radio_mac() {{ return 1; }}
+                    get_airport_srcv() {{ return 1; }}
+                    stop_nbns_conflicts() {{ return 0; }}
+                    TC_NET_IFACE_IP=192.168.1.2
+                    tc_set_payload_log_dir {payload} {volumes}/dk2
+                    tc_start_mdns_capture
+                    wait "$TC_MDNS_CAPTURE_PID" || true
+                    tc_launch_nbns "nbns test" 0
+                    sleep 1
+                    printf 'mdns\\n'
+                    cat "$TC_MDNS_LOG_FILE"
+                    printf 'nbns\\n'
+                    cat "$TC_NBNS_LOG_FILE"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("mdns\n", proc.stdout)
+        self.assertIn("launching mdns-advertiser capture", proc.stdout)
+        self.assertIn("mdns-stdout", proc.stdout)
+        self.assertIn("mdns-stderr", proc.stdout)
+        self.assertIn("nbns\n", proc.stdout)
+        self.assertIn("launching nbns-advertiser", proc.stdout)
+        self.assertIn("nbns-stdout", proc.stdout)
+        self.assertIn("nbns-stderr", proc.stdout)
 
     def test_common_wake_or_mount_uses_apple_diskd_before_mount_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

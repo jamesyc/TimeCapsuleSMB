@@ -52,7 +52,7 @@ class ProbeTests(unittest.TestCase):
 
         self.assertEqual(result, [])
 
-    def test_read_runtime_log_tails_conn_fetches_rc_local_and_mdns_with_short_timeout(self) -> None:
+    def test_read_runtime_log_tails_conn_fetches_ram_boot_and_payload_logs_with_short_timeout(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
 
         def fake_run_ssh(
@@ -60,18 +60,30 @@ class ProbeTests(unittest.TestCase):
             remote_cmd: str,
             **_kwargs: object,
         ) -> subprocess.CompletedProcess[str]:
+            if "payload.tsv" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="/Volumes/dk2/.samba4\n", stderr="")
             if "rc.local.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rc log\n", stderr="")
+            if "watchdog.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="watchdog log\n", stderr="")
             if "mdns.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="mdns log\n", stderr="")
+            if "nbns.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="nbns log\n", stderr="")
+            if "log.smbd" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="smbd log\n", stderr="")
             self.fail(f"unexpected remote command: {remote_cmd}")
 
         with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=fake_run_ssh) as run_ssh_mock:
             logs = read_runtime_log_tails_conn(connection)
 
         self.assertEqual(logs["remote_rc_local_log_tail"], "rc log")
+        self.assertEqual(logs["remote_payload_log_dir"], "/Volumes/dk2/.samba4")
+        self.assertEqual(logs["remote_watchdog_log_tail"], "watchdog log")
         self.assertEqual(logs["remote_mdns_log_tail"], "mdns log")
-        self.assertEqual(run_ssh_mock.call_count, 2)
+        self.assertEqual(logs["remote_nbns_log_tail"], "nbns log")
+        self.assertEqual(logs["remote_smbd_log_tail"], "smbd log")
+        self.assertEqual(run_ssh_mock.call_count, 6)
         for call in run_ssh_mock.call_args_list:
             args, kwargs = call
             self.assertEqual(args[0], connection)
