@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import subprocess
 import tempfile
 import textwrap
@@ -22,7 +23,7 @@ from timecapsulesmb.device.storage import (
     select_payload_home_conn,
 )
 from timecapsulesmb.transport.ssh import SshConnection
-from tests.storage_fixtures import MAST_FIXTURES, SHELL_MAST_FIXTURES, MaStFixture
+from tests.storage_fixtures import INTERNAL_DATA, MAST_FIXTURES, SHELL_MAST_FIXTURES, MaStFixture
 
 
 class StorageRuntimeTests(unittest.TestCase):
@@ -100,10 +101,13 @@ class StorageRuntimeTests(unittest.TestCase):
             )
         return "\n".join(lines) + ("\n" if lines else "")
 
-    def write_fake_acp(self, tmp_path: Path, raw: str | bytes) -> Path:
+    def write_fake_acp(self, tmp_path: Path, raw: str | bytes, *, final_newline: bool = True) -> Path:
         acp = tmp_path / "acp"
         raw_text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
-        acp.write_text("#!/bin/sh\ncat <<'OUT'\n" + raw_text + "\nOUT\n")
+        if final_newline:
+            acp.write_text("#!/bin/sh\ncat <<'OUT'\n" + raw_text + "\nOUT\n")
+        else:
+            acp.write_text("#!/bin/sh\nprintf %s " + shlex.quote(raw_text) + "\n")
         acp.chmod(0o755)
         return acp
 
@@ -369,6 +373,96 @@ class StorageRuntimeTests(unittest.TestCase):
                 self.assertEqual(proc.returncode, expected_rc, proc.stderr)
                 self.assertEqual(proc.stdout, expected_stdout)
                 self.assertEqual(self.parse_topology_tsv(proc.stdout, volumes), parse_mast_plist(fixture.raw))
+
+    def test_start_samba_signature_mode_handles_mast_without_final_newline(self) -> None:
+        raw = textwrap.dedent(
+            """\
+            [
+                {
+                    deviceName="wd0"
+                    builtin=true
+                    partitions=
+                    [
+                        {
+                            deviceName="dk2"
+                            name="Data"
+                            format="hfs"
+                            uuid=f42bdb83 c2655522 a0872560 6a4d0abf |binary| (16 bytes)
+                        }"""
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            start_path = flash / "start-samba.sh"
+            self.write_fake_acp(tmp_path, raw, final_newline=False)
+
+            proc = subprocess.run(
+                ["/bin/sh", str(start_path), "--print-topology-signature"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        fixture = MaStFixture("no_final_newline", raw, (INTERNAL_DATA,))
+        expected_stdout = self.expected_topology_tsv(fixture, volumes)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, expected_stdout)
+
+    def test_common_build_share_state_handles_volumes_tsv_without_final_newline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            volume_root = self.mapped_volume_root(INTERNAL_DATA, volumes)
+            Path(volume_root).mkdir(parents=True, exist_ok=True)
+            row = "\t".join(
+                (
+                    INTERNAL_DATA.disk_device,
+                    "1",
+                    INTERNAL_DATA.partition_device,
+                    volume_root,
+                    INTERNAL_DATA.name,
+                    INTERNAL_DATA.adisk_uuid,
+                )
+            )
+            script = tmp_path / "share-state-no-final-newline.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    tc_wake_or_mount_volume() {{ return 0; }}
+                    printf %s {shlex.quote(row)} >"$TC_VOLUMES_TSV"
+                    tc_build_share_state "$TC_VOLUMES_TSV"
+                    printf 'shares\\n'
+                    cat "$TC_SHARES_TSV"
+                    printf 'adisk\\n'
+                    cat "$TC_ADISK_TSV"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run(
+                ["/bin/sh", str(script)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        expected_shares, expected_adisk = self.expected_share_state(
+            MaStFixture("no_final_newline_volumes", "", (INTERNAL_DATA,)),
+            volumes,
+            internal_share_use_disk_root=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, f"shares\n{expected_shares}adisk\n{expected_adisk}")
 
     def test_common_share_state_matches_python_policy_for_shell_supported_mast_fixtures(self) -> None:
         for fixture in SHELL_MAST_FIXTURES:

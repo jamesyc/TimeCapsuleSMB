@@ -497,6 +497,10 @@ tc_plist_key() {
     printf '%s\n' "$1" | /usr/bin/sed -n 's/^[[:space:]]*\([A-Za-z][A-Za-z0-9_]*\)[[:space:]]*=.*/\1/p'
 }
 
+tc_trim_plist_line() {
+    printf '%s\n' "$1" | /usr/bin/sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
 tc_extract_plist_string_key() {
     extract_key=$1
     extract_line=$2
@@ -567,8 +571,9 @@ tc_read_mast_volumes_to() {
     part_format=
     part_uuid=
 
-    while read -r line; do
-        case "$line" in
+    while IFS= read -r line || [ -n "$line" ]; do
+        trimmed_line=$(tc_trim_plist_line "$line")
+        case "$trimmed_line" in
             "}"|"};"*|"},"*)
                 if [ "$in_partitions" -eq 1 ] && [ -n "$part_device" ]; then
                     tc_emit_mast_volume "$pending_file"
@@ -771,7 +776,14 @@ tc_build_share_state() {
     : >"$TC_ADISK_TSV"
     : >"$TC_USED_SHARE_NAMES_FILE"
 
-    while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid; do
+    disk_device=
+    builtin=
+    part_device=
+    volume_root=
+    part_name=
+    part_uuid=
+    while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid ||
+        [ -n "$disk_device$builtin$part_device$volume_root$part_name$part_uuid" ]; do
         [ -n "$part_device" ] || continue
         device_path="/dev/$part_device"
         if ! tc_wake_or_mount_volume "$device_path" "$volume_root"; then
