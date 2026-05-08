@@ -2207,6 +2207,15 @@ fi
         plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
         self.assertIn(install_permissions_action(plan.permissions), plan.post_upload_actions)
 
+    def test_deployment_plan_marks_uploaded_payload_binaries_executable(self) -> None:
+        paths = self._payload_home("/Volumes/dk2", "samba4")
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
+        executable_permissions = {permission.path for permission in plan.permissions if permission.mode == "755"}
+
+        self.assertIn("/Volumes/dk2/samba4/smbd", executable_permissions)
+        self.assertIn("/Volumes/dk2/samba4/mdns-advertiser", executable_permissions)
+        self.assertIn("/Volumes/dk2/samba4/nbns-advertiser", executable_permissions)
+
     def test_remote_uninstall_payload_runs_actions_sequentially(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
         expected = [render_remote_action(action) for action in plan.remote_actions]
