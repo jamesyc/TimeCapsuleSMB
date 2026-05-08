@@ -1,0 +1,105 @@
+diff --git a/lib/util/talloc_stack.c b/lib/util/talloc_stack.c
+index 0148b11..5f62932 100644
+--- a/lib/util/talloc_stack.c
++++ b/lib/util/talloc_stack.c
+@@ -92,7 +92,9 @@ static void talloc_stackframe_init(void)
+ #else /* ! HAVE_PTHREAD */
+ static void talloc_stackframe_atexit(void)
+ {
+-	talloc_stackframe_destructor(global_ts);
++	if (global_ts != NULL) {
++		talloc_stackframe_destructor(global_ts);
++	}
+ }
+ 
+ static void talloc_stackframe_init(void)
+@@ -159,6 +161,47 @@ static struct talloc_stackframe *talloc_stackframe_get(void)
+ 	return ts;
+ }
+ 
++void talloc_stackframe_reinit_after_fork(void)
++{
++#ifndef HAVE_PTHREAD
++	/*
++	 * The appliance build intentionally removes pthread support. In that
++	 * mode Samba stores the talloc stack in process-global state instead
++	 * of thread-local state. A forked smbd child inherits a copy of the
++	 * parent's active event-loop stackframes, and freeing those copied
++	 * frames in the child can run parent-side destructors in the wrong
++	 * process.
++	 *
++	 * Drop only the stack tracking. The copied parent allocations are
++	 * process-private after fork and will be reclaimed when the child
++	 * exits. The child will create its own first stackframe when normal
++	 * request handling starts.
++	 */
++	global_ts = NULL;
++#endif
++}
++
++void talloc_stackframe_cleanup_for_exit(void)
++{
++#ifndef HAVE_PTHREAD
++	struct talloc_stackframe *ts = global_ts;
++
++	if (ts == NULL) {
++		return;
++	}
++
++	/*
++	 * Normal smbd shutdown can happen from inside a tevent callback, before
++	 * the matching AFTER_LOOP_ONCE trace hook frees the active stackframe.
++	 * The process is exiting, so avoid running late destructors here; just
++	 * disarm the no-pthread atexit diagnostic for these intentional
++	 * process-exit frames. Abnormal exits still skip this path and keep the
++	 * diagnostic breadcrumbs.
++	 */
++	ts->talloc_stacksize = 0;
++#endif
++}
++
+ static int talloc_pop(TALLOC_CTX *frame)
+ {
+ 	struct talloc_stackframe *ts = talloc_stackframe_get_existing();
+diff --git a/lib/util/talloc_stack.h b/lib/util/talloc_stack.h
+index 89bf6ab..1f81655 100644
+--- a/lib/util/talloc_stack.h
++++ b/lib/util/talloc_stack.h
+@@ -50,6 +50,9 @@ TALLOC_CTX *_talloc_stackframe_pool(const char *location, size_t poolsize);
+ #define talloc_tos() _talloc_tos(__location__)
+ TALLOC_CTX *_talloc_tos(const char *location);
+ 
++void talloc_stackframe_reinit_after_fork(void);
++void talloc_stackframe_cleanup_for_exit(void);
++
+ /*
+  * return true if a talloc stackframe exists
+  * this can be used to prevent memory leaks for code that can
+diff --git a/source3/smbd/server_exit.c b/source3/smbd/server_exit.c
+index 0944b5c..97a7770 100644
+--- a/source3/smbd/server_exit.c
++++ b/source3/smbd/server_exit.c
+@@ -231,7 +231,8 @@ static void exit_server_common(enum server_exit_reason how,
+ 	DBG_NOTICE("Server exit (%s)\n", reason ? reason : "normal exit");
+ 	if (am_parent) {
+ 		pidfile_unlink(lp_pid_directory(), "smbd");
+ 	}
+ 
++	talloc_stackframe_cleanup_for_exit();
+ 	exit(0);
+ }
+@@ -257,6 +258,14 @@ NTSTATUS smbd_reinit_after_fork(struct messaging_context *msg_ctx,
+ 	NTSTATUS ret;
+ 	am_parent = NULL;
+ 	ret = reinit_after_fork(msg_ctx, ev_ctx, parent_longlived);
+ 	initialize_password_db(true, ev_ctx);
++	/*
++	 * In the static no-pthread appliance build, the talloc stack is
++	 * process-global and was copied from the parent across fork. Drop that
++	 * inherited tracking after the generic fork reinit has finished, before
++	 * the child enters request handling and installs its own tevent trace
++	 * stackframes.
++	 */
++	talloc_stackframe_reinit_after_fork();
+ 	return ret;
+ }

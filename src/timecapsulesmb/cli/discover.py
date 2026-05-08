@@ -4,6 +4,8 @@ import argparse
 import json
 from typing import Optional
 
+from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.cli.runtime import load_optional_env_config
 from timecapsulesmb.discovery.bonjour import (
     DEFAULT_BROWSE_TIMEOUT_SEC,
     BonjourResolvedService,
@@ -12,6 +14,8 @@ from timecapsulesmb.discovery.bonjour import (
     discovery_record_to_jsonable,
     service_instance_to_jsonable,
 )
+from timecapsulesmb.identity import ensure_install_id
+from timecapsulesmb.telemetry import TelemetryClient
 
 
 def print_instance_table(instances: list[BonjourServiceInstance]) -> None:
@@ -69,18 +73,31 @@ def print_table(records: list[BonjourResolvedService]) -> None:
         print(fmt(row))
 
 
-def run_cli(argv: Optional[list[str]] = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Discover Apple AirPort storage devices via mDNS/Bonjour")
     parser.add_argument("--timeout", type=float, default=DEFAULT_BROWSE_TIMEOUT_SEC, help="Browse time in seconds (default: 6)")
     parser.add_argument("--json", action="store_true", help="Output results as JSON")
     parser.add_argument("--select", action="store_true", help="Interactively select one and print selection")
-    args = parser.parse_args(argv)
+    return parser
 
+
+def _run_discover(args: argparse.Namespace, command_context: CommandContext | None = None) -> int:
     try:
+        if command_context is not None:
+            command_context.set_stage("bonjour_discovery")
         snapshot = discover_snapshot(timeout=args.timeout)
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
     records = snapshot.resolved
+    if command_context is not None:
+        command_context.update_fields(
+            timeout_seconds=args.timeout,
+            json_output=args.json,
+            interactive_select=args.select,
+            bonjour_instance_count=len(snapshot.instances),
+            bonjour_resolved_count=len(records),
+        )
+        command_context.add_debug_fields(discovery_snapshot=snapshot)
     if args.json:
         print(
             json.dumps(
@@ -92,8 +109,12 @@ def run_cli(argv: Optional[list[str]] = None) -> int:
                 sort_keys=True,
             )
         )
+        if command_context is not None:
+            command_context.succeed()
         return 0
 
+    if command_context is not None:
+        command_context.set_stage("render_results")
     print("Browse Results")
     print_instance_table(snapshot.instances)
     print()
@@ -101,13 +122,20 @@ def run_cli(argv: Optional[list[str]] = None) -> int:
     print_table(records)
 
     if args.select and records:
+        if command_context is not None:
+            command_context.set_stage("interactive_select")
         while True:
             try:
                 raw = input("Select device number (q to quit): ").strip()
             except (EOFError, KeyboardInterrupt):
                 print()
+                if command_context is not None:
+                    command_context.cancel_with_error("Cancelled during discovery selection.")
                 return 1
             if raw.lower() in {"q", "quit", "exit"}:
+                if command_context is not None:
+                    command_context.update_fields(selection_cancelled=True)
+                    command_context.succeed()
                 return 0
             if not raw.isdigit():
                 print("Please enter a valid number.")
@@ -117,10 +145,36 @@ def run_cli(argv: Optional[list[str]] = None) -> int:
                 print("Out of range.")
                 continue
             print(records[idx - 1].prefer_host())
+            if command_context is not None:
+                command_context.update_fields(selected_index=idx)
+                command_context.succeed()
             return 0
 
+    if command_context is not None:
+        command_context.succeed()
     return 0
 
 
+def run_cli(argv: Optional[list[str]] = None, command_context: CommandContext | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    return _run_discover(args, command_context=command_context)
+
+
 def main(argv: Optional[list[str]] = None) -> int:
-    return run_cli(argv)
+    args = build_parser().parse_args(argv)
+    ensure_install_id()
+    config = load_optional_env_config()
+    telemetry = TelemetryClient.from_config(config)
+    with CommandContext(
+        telemetry,
+        "discover",
+        "discover_started",
+        "discover_finished",
+        config=config,
+        args=args,
+        timeout_seconds=args.timeout,
+        json_output=args.json,
+        interactive_select=args.select,
+    ) as command_context:
+        return _run_discover(args, command_context=command_context)
+    return 1

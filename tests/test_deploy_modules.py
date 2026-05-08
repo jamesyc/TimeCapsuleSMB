@@ -20,7 +20,6 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.deploy.auth import nt_hash_hex, render_smbpasswd
 from timecapsulesmb.deploy.commands import (
-    InitializeDataRootAction,
     InstallPermissionsAction,
     PrepareDirsAction,
     RemotePermission,
@@ -28,22 +27,16 @@ from timecapsulesmb.deploy.commands import (
     RemovePathAction,
     RunScriptAction,
     StopProcessAction,
-    StopProcessFullAction,
-    initialize_data_root_action,
+    StopWatchdogAction,
     install_permissions_action,
     prepare_dirs_action,
     remote_action_to_jsonable,
-    remove_path_action,
     render_remote_action,
-    run_script_action,
-    stop_process_action,
-    stop_process_full_action,
 )
 from timecapsulesmb.deploy.dry_run import format_deployment_plan
 from timecapsulesmb.deploy.executor import (
     DETACHED_REBOOT_COMMAND,
     REBOOT_REQUEST_TIMEOUT_SECONDS,
-    remote_read_adisk_uuid,
     remote_request_reboot,
     remote_uninstall_payload,
     upload_deployment_payload,
@@ -53,34 +46,22 @@ from timecapsulesmb.deploy.planner import (
     BINARY_MDNS_SOURCE,
     BINARY_NBNS_SOURCE,
     BINARY_SMBD_SOURCE,
+    DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
     FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS,
-    GENERATED_ADISK_UUID_SOURCE,
-    GENERATED_NBNS_MARKER_SOURCE,
+    GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_SMBPASSWD_SOURCE,
     GENERATED_USERNAME_MAP_SOURCE,
     PACKAGED_COMMON_SH_SOURCE,
     PACKAGED_DFREE_SH_SOURCE,
     PACKAGED_RC_LOCAL_SOURCE,
+    PACKAGED_START_SAMBA_SOURCE,
+    PACKAGED_WATCHDOG_SOURCE,
     PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS,
-    RENDERED_SMB_CONF_SOURCE,
-    RENDERED_START_SAMBA_SOURCE,
-    RENDERED_WATCHDOG_SOURCE,
     build_deployment_plan,
     build_uninstall_plan,
 )
-from timecapsulesmb.deploy.templates import (
-    DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
-    SMBCONF_RUNTIME_TOKENS,
-    TemplateRenderError,
-    build_template_bundle,
-    cache_directory_replacements,
+from timecapsulesmb.deploy.boot_assets import (
     load_boot_asset_text,
-    render_checked_template,
-    render_checked_template_text,
-    render_runtime_smbconf_text,
-    render_template,
-    render_template_text,
-    unresolved_template_tokens,
 )
 from timecapsulesmb.deploy.verify import (
     VerificationResult,
@@ -90,16 +71,13 @@ from timecapsulesmb.deploy.verify import (
     verify_managed_runtime,
     verify_post_uninstall,
 )
-from timecapsulesmb.deploy import commands as deploy_commands
 from timecapsulesmb.core.config import AppConfig
-from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.device.processes import render_process_present
 from timecapsulesmb.device.probe import (
     ManagedMdnsTakeoverProbeResult,
     ManagedRuntimeProbeResult,
     ManagedSmbdProbeResult,
     SMBD_STATUS_HELPERS,
-    discover_mounted_volume_conn,
-    discover_mounted_volume_root_conn,
     extract_airport_identity_from_acp_output,
     extract_airport_identity_from_text,
     probe_device_conn,
@@ -109,38 +87,32 @@ from timecapsulesmb.device.probe import (
     probe_remote_airport_identity_conn,
     wait_for_ssh_state_conn,
 )
-from timecapsulesmb.device.util import build_device_paths
-from timecapsulesmb.device.mounts import ensure_volume_root_mounted_conn
+from timecapsulesmb.device.storage import MaStVolume, PayloadHome, mounted_mast_volumes_conn
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
 
 class DeployModuleTests(unittest.TestCase):
-    def _template_config(self, values: dict[str, str]) -> AppConfig:
-        return AppConfig.from_values(values)
+    def _payload_home(self, volume_root: str = "/Volumes/dk2", payload_dir_name: str = "samba4") -> PayloadHome:
+        disk_key = volume_root.rstrip("/").rsplit("/", 1)[-1]
+        return PayloadHome(volume_root, f"/dev/{disk_key}", payload_dir_name)
 
-    def _default_template_config(self, overrides: dict[str, str] | None = None) -> AppConfig:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": ".samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
-            "TC_SAMBA_USER": "admin",
-        }
-        if overrides:
-            values.update(overrides)
-        return AppConfig.from_values(values)
-
-    def _render_default_start_script(self, overrides: dict[str, str] | None = None) -> str:
-        bundle = build_template_bundle(self._default_template_config(overrides))
-        return render_template("start-samba.sh", bundle.start_script_replacements)
-
-    def _render_default_watchdog(self, overrides: dict[str, str] | None = None) -> str:
-        bundle = build_template_bundle(self._default_template_config(overrides))
-        return render_template("watchdog.sh", bundle.watchdog_replacements)
+    def _mast_volume(
+        self,
+        partition_device: str = "dk2",
+        *,
+        disk_device: str = "wd0",
+        name: str = "Data",
+        builtin: bool = True,
+    ) -> MaStVolume:
+        return MaStVolume(
+            disk_device,
+            partition_device,
+            f"/Volumes/{partition_device}",
+            name,
+            "12345678-1234-1234-1234-123456789012",
+            builtin,
+            "hfs",
+        )
 
     def _extract_shell_function(self, source: str, name: str) -> str:
         marker = f"{name}()"
@@ -155,18 +127,6 @@ class DeployModuleTests(unittest.TestCase):
                 if depth == 0:
                     return source[start : offset + 1]
         self.fail(f"function {name} did not terminate")
-
-    def _start_script_stage_runtime_section(self) -> str:
-        rendered = self._render_default_start_script()
-        return rendered[rendered.index("stage_runtime()"):rendered.index("prepare_local_hostname_resolution()")]
-
-    def _smb_conf_value(self, smb_conf: str, key: str) -> str | None:
-        for raw_line in smb_conf.splitlines():
-            line = raw_line.strip()
-            lhs, separator, rhs = line.partition("=")
-            if separator and lhs.strip().lower() == key.lower():
-                return rhs.strip()
-        return None
 
     def _compile_and_run_c_helper(self, source: str, bin_name: str, args: list[str] | None = None) -> subprocess.CompletedProcess[str]:
         if shutil.which("cc") is None:
@@ -267,228 +227,6 @@ class DeployModuleTests(unittest.TestCase):
             timeout=REBOOT_REQUEST_TIMEOUT_SECONDS,
         )
 
-    def test_build_template_bundle_contains_expected_keys(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
-            "TC_AIRPORT_SYAP": "119",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        self.assertIn("__SMB_SHARE_NAME__", bundle.start_script_replacements)
-        self.assertIn("__SMB_SAMBA_USER__", bundle.start_script_replacements)
-        self.assertIn("__SMB_SAMBA_USER__", bundle.smbconf_replacements)
-        self.assertIn("__CACHE_DIRECTORY__", bundle.start_script_replacements)
-        self.assertIn("__CACHE_DIRECTORY__", bundle.smbconf_replacements)
-        self.assertIn("__SMBD_LOG_FILE__", bundle.smbconf_replacements)
-        self.assertIn("__SMBD_MAX_LOG_SIZE__", bundle.smbconf_replacements)
-        self.assertIn("__SMBD_LOG_LEVEL_LINE__", bundle.smbconf_replacements)
-        self.assertIn("__MDNS_DEVICE_MODEL__", bundle.smbconf_replacements)
-        self.assertEqual(bundle.start_script_replacements["__MDNS_DEVICE_MODEL__"], "TimeCapsule")
-        self.assertEqual(bundle.smbconf_replacements["__MDNS_DEVICE_MODEL__"], "TimeCapsule")
-        self.assertEqual(bundle.start_script_replacements["__AIRPORT_SYAP__"], "119")
-        self.assertEqual(bundle.start_script_replacements["__ADISK_DISK_KEY__"], "dk0")
-        self.assertEqual(bundle.start_script_replacements["__ADISK_UUID__"], "''")
-        self.assertEqual(bundle.start_script_replacements["__SMBD_DISK_LOGGING_ENABLED__"], "0")
-
-    def test_build_template_bundle_defaults_mdns_device_model(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        self.assertEqual(bundle.start_script_replacements["__MDNS_DEVICE_MODEL__"], "TimeCapsule")
-        self.assertEqual(bundle.start_script_replacements["__AIRPORT_SYAP__"], "''")
-
-    def test_checked_template_rendering_rejects_unexpected_leftover_token(self) -> None:
-        with self.assertRaises(TemplateRenderError) as ctx:
-            render_checked_template_text("x=__KNOWN__ y=__LEFTOVER__", {"__KNOWN__": "ok"})
-
-        self.assertIn("__LEFTOVER__", str(ctx.exception))
-
-    def test_checked_start_script_and_watchdog_render_without_deploy_time_tokens(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-
-        start_script = render_checked_template("start-samba.sh", bundle.start_script_replacements)
-        watchdog = render_checked_template("watchdog.sh", bundle.watchdog_replacements)
-
-        self.assertEqual(unresolved_template_tokens(start_script), ())
-        self.assertEqual(unresolved_template_tokens(watchdog), ())
-
-    def test_checked_smbconf_allows_only_runtime_tokens_then_runtime_render_is_clean(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-
-        smbconf = render_checked_template(
-            "smb.conf.template",
-            bundle.smbconf_replacements,
-            allowed_unresolved_tokens=SMBCONF_RUNTIME_TOKENS,
-        )
-        self.assertEqual(set(unresolved_template_tokens(smbconf)), set(SMBCONF_RUNTIME_TOKENS))
-        self.assertEqual(unresolved_template_tokens(render_runtime_smbconf_text(smbconf)), ())
-
-    def test_cache_directory_replacements_default_unknown_family_to_ram_cache(self) -> None:
-        self.assertEqual(
-            cache_directory_replacements("unknown_future_family"),
-            ("/mnt/Memory/samba4/var", "/mnt/Memory/samba4/var"),
-        )
-
-    def test_cache_directory_replacements_keep_netbsd4_start_expression_unquoted(self) -> None:
-        start_cache, smbconf_cache = cache_directory_replacements("netbsd4le_samba4")
-        self.assertEqual(start_cache, "$PAYLOAD_DIR/cache")
-        self.assertEqual(smbconf_cache, "__PAYLOAD_DIR__/cache")
-        self.assertFalse(start_cache.startswith("'"))
-        self.assertFalse(start_cache.endswith("'"))
-
-    def test_build_deployment_plan_uses_device_paths(self) -> None:
-        payload_dir_name = "samba4"
-        paths = build_device_paths("/Volumes/dk2", payload_dir_name)
-        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
-        payload_dir = f"/Volumes/dk2/{payload_dir_name}"
-        self.assertEqual(plan.payload_dir, payload_dir)
-        self.assertEqual(plan.private_dir, f"{payload_dir}/private")
-        self.assertEqual(plan.volume_root, "/Volumes/dk2")
-        self.assertEqual(plan.disk_key, "dk2")
-        self.assertEqual(paths.data_root, "/Volumes/dk2/ShareRoot")
-        self.assertEqual(paths.data_root_marker, "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported")
-        self.assertEqual(plan.remote_directories[0], payload_dir)
-        self.assertIn(f"{payload_dir}/cache", plan.remote_directories)
-        self.assertIn("/root", plan.remote_directories)
-        self.assertIn("/mnt/Memory/samba4", plan.remote_directories)
-        self.assertNotIn(f"{payload_dir}/libexec", plan.remote_directories)
-        self.assertEqual(
-            plan.legacy_symlinks,
-            [
-                RemoteSymlink("/root/tc-netbsd4", "/mnt/Memory/samba4"),
-                RemoteSymlink("/root/tc-netbsd4le", "/mnt/Memory/samba4"),
-                RemoteSymlink("/root/tc-netbsd4be", "/mnt/Memory/samba4"),
-                RemoteSymlink("/root/tc-netbsd7", "/mnt/Memory/samba4"),
-            ],
-        )
-        self.assertNotIn("samba-dcerpcd", plan.payload_targets)
-        self.assertNotIn("rpcd_classic", plan.payload_targets)
-        self.assertEqual(plan.payload_targets["nbns-advertiser"], f"{payload_dir}/nbns-advertiser")
-        self.assertEqual(
-            plan.pre_upload_actions,
-            [
-                stop_process_full_action("[w]atchdog.sh", force=True),
-                stop_process_action("smbd", force=True),
-                stop_process_action("mdns-advertiser", force=True),
-                stop_process_action("nbns-advertiser", force=True),
-                initialize_data_root_action("/Volumes/dk2/ShareRoot", "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported"),
-                prepare_dirs_action(plan.remote_directories, plan.legacy_symlinks),
-            ],
-        )
-        self.assertEqual(plan.post_upload_actions, [install_permissions_action(plan.permissions)])
-
-    def test_build_device_paths_uses_shareroot_when_disk_root_false(self) -> None:
-        paths = build_device_paths("/Volumes/dk2", ".samba4", share_use_disk_root=False)
-        self.assertEqual(paths.volume_root, "/Volumes/dk2")
-        self.assertEqual(paths.payload_dir, "/Volumes/dk2/.samba4")
-        self.assertEqual(paths.data_root, "/Volumes/dk2/ShareRoot")
-        self.assertEqual(paths.data_root_marker, "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported")
-
-    def test_build_device_paths_can_use_disk_root_as_share_path(self) -> None:
-        paths = build_device_paths("/Volumes/dk2", ".samba4", share_use_disk_root=True)
-        self.assertEqual(paths.volume_root, "/Volumes/dk2")
-        self.assertEqual(paths.payload_dir, "/Volumes/dk2/.samba4")
-        self.assertEqual(paths.data_root, "/Volumes/dk2")
-        self.assertEqual(paths.data_root_marker, "/Volumes/dk2/.com.apple.timemachine.supported")
-
-    def test_shareroot_deployment_plan_initializes_shareroot_marker_when_disk_root_false(self) -> None:
-        paths = build_device_paths("/Volumes/dk2", ".samba4", share_use_disk_root=False)
-        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
-        self.assertIn(
-            initialize_data_root_action("/Volumes/dk2/ShareRoot", "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported"),
-            plan.pre_upload_actions,
-        )
-        self.assertNotIn(
-            initialize_data_root_action("/Volumes/dk2", "/Volumes/dk2/.com.apple.timemachine.supported"),
-            plan.pre_upload_actions,
-        )
-
-    def test_disk_root_deployment_plan_initializes_volume_root_marker(self) -> None:
-        paths = build_device_paths("/Volumes/dk2", ".samba4", share_use_disk_root=True)
-        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
-        self.assertEqual(plan.payload_dir, "/Volumes/dk2/.samba4")
-        self.assertIn(
-            initialize_data_root_action("/Volumes/dk2", "/Volumes/dk2/.com.apple.timemachine.supported"),
-            plan.pre_upload_actions,
-        )
-        self.assertNotIn(
-            initialize_data_root_action("/Volumes/dk2/ShareRoot", "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported"),
-            plan.pre_upload_actions,
-        )
-
-    def test_build_deployment_plan_folds_generated_files_into_uploads(self) -> None:
-        paths = build_device_paths("/Volumes/dk2", "samba4")
-        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
-
-        generated_uploads = [upload for upload in plan.uploads if upload.mode == "generated"]
-        self.assertEqual(
-            [upload.source_id for upload in generated_uploads],
-            [GENERATED_SMBPASSWD_SOURCE, GENERATED_USERNAME_MAP_SOURCE, GENERATED_ADISK_UUID_SOURCE],
-        )
-        self.assertEqual(
-            [upload.destination for upload in generated_uploads],
-            [
-                "/Volumes/dk2/samba4/private/smbpasswd",
-                "/Volumes/dk2/samba4/private/username.map",
-                "/Volumes/dk2/samba4/private/adisk.uuid",
-            ],
-        )
-
-    def test_build_deployment_plan_adds_nbns_marker_only_when_requested(self) -> None:
-        paths = build_device_paths("/Volumes/dk2", "samba4")
-        default_plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
-        nbns_plan = build_deployment_plan(
-            "root@10.0.0.2",
-            paths,
-            Path("bin/smbd"),
-            Path("bin/mdns"),
-            Path("bin/nbns"),
-            install_nbns=True,
-        )
-
-        self.assertNotIn(GENERATED_NBNS_MARKER_SOURCE, [upload.source_id for upload in default_plan.uploads])
-        self.assertIn(GENERATED_NBNS_MARKER_SOURCE, [upload.source_id for upload in nbns_plan.uploads])
-        self.assertNotIn(remove_path_action("/Volumes/dk2/samba4/private/nbns.enabled"), default_plan.pre_upload_actions)
-        self.assertIn(RemotePermission("/Volumes/dk2/samba4/private/nbns.enabled", "600", optional=True), default_plan.permissions)
-
-    def test_render_template_text_replaces_tokens(self) -> None:
-        self.assertEqual(render_template_text("hello __TOKEN__", {"__TOKEN__": "world"}), "hello world")
-
     def test_load_boot_asset_text_reads_packaged_asset(self) -> None:
         content = load_boot_asset_text("rc.local")
         self.assertIn("/mnt/Flash/start-samba.sh", content)
@@ -497,6 +235,8 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("ether[[:space:]]", common)
         self.assertIn("address[[:space:]]", common)
         self.assertNotIn("tr '[:lower:]' '[:upper:]'", common)
+        self.assertNotIn("/usr/bin/wc", common)
+        self.assertNotIn("/usr/bin/tr", common)
 
     def test_common_sh_contains_shared_network_and_airport_helpers(self) -> None:
         content = load_boot_asset_text("common.sh")
@@ -523,9 +263,9 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("get_airport_syvs()", content)
         self.assertIn("sed -n 's/^\\([0-9]\\)\\([0-9]\\)\\([0-9]\\).*/\\1.\\2.\\3/p'", content)
 
-    def test_common_runtime_process_present_ignores_zombies(self) -> None:
+    def test_common_process_helpers_ignore_zombies(self) -> None:
         common = load_boot_asset_text("common.sh").replace(
-            "/bin/ps axww -o stat= -o ucomm= -o command= 2>/dev/null",
+            "/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null",
             'cat "$PS_FIXTURE"',
         )
         with tempfile.TemporaryDirectory() as tmp:
@@ -534,10 +274,11 @@ class DeployModuleTests(unittest.TestCase):
             fixture.write_text(
                 "\n".join(
                     [
-                        "Z    wcifsnd         (wcifsnd)",
-                        "Z    wcifsfs         (wcifsfs)",
-                        "S    nbns-advertiser /mnt/Memory/samba4/sbin/nbns-advertiser --name TimeCapsule",
-                        "S    sh              /bin/sh /mnt/Flash/watchdog.sh /dev/dk2 /Volumes/dk2 /Volumes/dk2/ShareRoot",
+                        "101 Z    wcifsnd         (wcifsnd)",
+                        "102 Z    wcifsfs         (wcifsfs)",
+                        "103 S    nbns-advertiser /mnt/Memory/samba4/sbin/nbns-advertiser --name TimeCapsule",
+                        "104 S    sh              /bin/sh /mnt/Flash/watchdog.sh",
+                        "105 S    sh              /bin/sh -c probe=/mnt/Flash/watchdog.sh",
                     ]
                 )
                 + "\n"
@@ -546,10 +287,12 @@ class DeployModuleTests(unittest.TestCase):
                 common
                 + f"\nPS_FIXTURE={shlex.quote(str(fixture))}\n"
                 + """
-runtime_process_present wcifsnd false; echo "zombie-name=$?"
-runtime_process_present nbns-advertiser false; echo "live-name=$?"
-runtime_process_present /mnt/Flash/watchdog.sh true; echo "live-full=$?"
-runtime_process_present wcifsfs true; echo "zombie-full=$?"
+runtime_process_present_by_ucomm wcifsnd; echo "zombie-name=$?"
+runtime_process_present_by_ucomm nbns-advertiser; echo "live-name=$?"
+runtime_watchdog_present; echo "live-full=$?"
+runtime_watchdog_present < /dev/null; echo "live-full-repeat=$?"
+echo "watchdog-pids=$(runtime_watchdog_pids)"
+runtime_process_present_by_ucomm wcifsfs; echo "zombie-full=$?"
 wait_for_process nbns-advertiser 1; echo "live-wait=$?"
 wait_for_process wcifsnd 1; echo "zombie-wait=$?"
 """
@@ -561,9 +304,125 @@ wait_for_process wcifsnd 1; echo "zombie-wait=$?"
         self.assertIn("zombie-name=1", result.stdout)
         self.assertIn("live-name=0", result.stdout)
         self.assertIn("live-full=0", result.stdout)
+        self.assertIn("live-full-repeat=0", result.stdout)
+        self.assertIn("watchdog-pids=104", result.stdout)
         self.assertIn("zombie-full=1", result.stdout)
         self.assertIn("live-wait=0", result.stdout)
         self.assertIn("zombie-wait=1", result.stdout)
+
+    def test_common_size_helpers_do_not_require_netbsd_missing_tools(self) -> None:
+        common = load_boot_asset_text("common.sh")
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            sample = tmp_path / "sample.txt"
+            sample.write_text("AirPort Disk")
+            script = tmp_path / "check.sh"
+            script.write_text(
+                common
+                + f"\nSAMPLE={shlex.quote(str(sample))}\n"
+                + """
+echo "byte-len=$(tc_byte_len 'AirPort Disk')"
+echo "utf8-byte-len=$(tc_byte_len 'éé')"
+echo "file-size=$(tc_log_file_size "$SAMPLE")"
+"""
+            )
+
+            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("byte-len=12", result.stdout)
+        self.assertIn("utf8-byte-len=4", result.stdout)
+        self.assertIn("file-size=12", result.stdout)
+
+    def test_common_hostname_resolution_update_is_idempotent(self) -> None:
+        common = (
+            load_boot_asset_text("common.sh")
+            .replace("/etc/hosts", '"$HOSTS_FIXTURE"')
+            .replace("$(/bin/hostname 2>/dev/null || true)", "airport-base")
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            hosts = tmp_path / "hosts"
+            log = tmp_path / "runtime.log"
+            script = tmp_path / "check.sh"
+            hosts.write_text("127.0.0.1\tlocalhost airport-base-old\n")
+            script.write_text(
+                common
+                + f"\nHOSTS_FIXTURE={shlex.quote(str(hosts))}\n"
+                + f"TC_LOG_FILE={shlex.quote(str(log))}\n"
+                + """
+tc_prepare_local_hostname_resolution
+tc_prepare_local_hostname_resolution
+"""
+            )
+
+            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
+
+            hosts_text = hosts.read_text()
+            log_text = log.read_text()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(hosts_text.count("127.0.0.1\tairport-base airport-base.local\n"), 1)
+        self.assertIn("127.0.0.1\tlocalhost airport-base-old\n", hosts_text)
+        self.assertIn("local hostname resolution prepared for airport-base", log_text)
+        self.assertIn("local hostname resolution already present for airport-base", log_text)
+
+    def test_common_watchdog_process_helper_does_not_self_match_literal(self) -> None:
+        common = load_boot_asset_text("common.sh").replace(
+            "/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null",
+            'cat "$PS_FIXTURE"',
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "ps.txt"
+            script = Path(tmp) / "check.sh"
+            fixture.write_text(
+                "\n".join(
+                    [
+                        "101 S    sh              /bin/sh -c probe=/mnt/Flash/watchdog.sh",
+                        "102 S    sh              sh -c /bin/sh -c 'probe=/mnt/Flash/watchdog.sh'",
+                    ]
+                )
+                + "\n"
+            )
+            script.write_text(
+                common
+                + f"\nPS_FIXTURE={shlex.quote(str(fixture))}\n"
+                + """
+runtime_watchdog_present; echo "watchdog=$?"
+echo "watchdog-pids=$(runtime_watchdog_pids)"
+"""
+            )
+
+            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("watchdog=1", result.stdout)
+        self.assertIn("watchdog-pids=", result.stdout)
+
+    def test_common_watchdog_kill_helper_targets_only_detected_pids(self) -> None:
+        common = load_boot_asset_text("common.sh").replace("/bin/kill", "record_kill")
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "check.sh"
+            kill_log = Path(tmp) / "kill.log"
+            script.write_text(
+                common
+                + f"\nKILL_LOG={shlex.quote(str(kill_log))}\n"
+                + """
+record_kill() { echo "kill:$*" >> "$KILL_LOG"; }
+runtime_watchdog_pids() { printf '%s\\n' 111 222; }
+kill_watchdog_pids TERM
+kill_watchdog_pids KILL
+"""
+            )
+
+            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
+            kill_lines = kill_log.read_text().splitlines()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            kill_lines,
+            ["kill:111", "kill:222", "kill:-9 111", "kill:-9 222"],
+        )
 
     def test_extract_airport_identity_from_text_finds_time_capsule_model(self) -> None:
         result = extract_airport_identity_from_text("prefix\x00psyAM\x00pTimeCapsule6,113\x00suffix")
@@ -664,46 +523,6 @@ wait_for_process wcifsnd 1; echo "zombie-wait=$?"
         self.assertNotIn("get_airport_srcv()", watchdog)
         self.assertNotIn("get_airport_syvs()", watchdog)
 
-    def test_start_script_uses_zombie_aware_watchdog_liveness(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        watchdog_start = rendered.index("start_watchdog()")
-        watchdog_section = rendered[watchdog_start:rendered.index("\nif ! cleanup_old_runtime; then\n")]
-
-        self.assertIn('if runtime_process_present "/mnt/Flash/watchdog.sh" true; then', watchdog_section)
-        self.assertNotIn("pkill -0 -f /mnt/Flash/watchdog.sh", watchdog_section)
-
-    def test_watchdog_script_uses_zombie_aware_service_liveness(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("watchdog.sh", bundle.watchdog_replacements)
-
-        self.assertIn("runtime_process_present smbd false", rendered)
-        self.assertIn('runtime_process_present "$MDNS_PROC_NAME" false', rendered)
-        self.assertIn('runtime_process_present "$NBNS_PROC_NAME" false', rendered)
-        self.assertNotIn("/usr/bin/pkill -0 smbd", rendered)
-        self.assertNotIn('/usr/bin/pkill -0 "$MDNS_PROC_NAME"', rendered)
-        self.assertNotIn('/usr/bin/pkill -0 "$NBNS_PROC_NAME"', rendered)
-
     def test_rc_local_leaves_watchdog_launch_to_start_samba(self) -> None:
         content = load_boot_asset_text("rc.local")
         self.assertIn("/mnt/Flash/start-samba.sh </dev/null >/dev/null 2>&1 &", content)
@@ -714,1509 +533,11 @@ wait_for_process wcifsnd 1; echo "zombie-wait=$?"
         content = load_boot_asset_text("rc.local")
         self.assertIn("/mnt/Flash/start-samba.sh </dev/null >/dev/null 2>&1 &", content)
 
-    def test_watchdog_accepts_initial_sleep_argument(self) -> None:
-        content = load_boot_asset_text("watchdog.sh")
-        self.assertIn("INITIAL_STARTUP_DELAY_SECONDS=${4:-0}", content)
-        self.assertIn('log "watchdog startup beginning; initial recovery delay ${INITIAL_STARTUP_DELAY_SECONDS}s"', content)
-        self.assertIn('log "watchdog mount context: device=${VOLUME_DEVICE:-none} root=${VOLUME_ROOT:-none} data=${DATA_ROOT:-none}"', content)
-
-    def test_render_start_script_includes_device_model_flag(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_AIRPORT_SYAP": "119",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn('MDNS_DEVICE_MODEL=AirPortTimeCapsule', rendered)
-        self.assertIn("SMB_SAMBA_USER=admin", rendered)
-        self.assertIn("AIRPORT_SYAP=119", rendered)
-        self.assertIn('--device-model "$MDNS_DEVICE_MODEL"', rendered)
-        self.assertIn('. /mnt/Flash/common.sh', rendered)
-        self.assertIn('--airport-wama "$AIRPORT_WAMA"', rendered)
-        self.assertIn('--airport-rama "$AIRPORT_RAMA"', rendered)
-        self.assertIn('--airport-ram2 "$AIRPORT_RAM2"', rendered)
-        self.assertIn('--airport-syap "$AIRPORT_SYAP"', rendered)
-        self.assertIn('--airport-syvs "$AIRPORT_SYVS"', rendered)
-        self.assertIn('--airport-srcv "$AIRPORT_SRCV"', rendered)
-        self.assertIn('airport clone fields incomplete; skipping _airport._tcp advertisement', rendered)
-        self.assertIn('ADISK_DISK_KEY=dk0', rendered)
-        self.assertIn('ADISK_DISK_ADVF=0x82', rendered)
-        self.assertIn("ADISK_UUID=''", rendered)
-        self.assertIn('--adisk-disk-key "$ADISK_DISK_KEY"', rendered)
-        self.assertIn('--adisk-disk-advf "$ADISK_DISK_ADVF"', rendered)
-        self.assertIn('--adisk-uuid "$ADISK_UUID"', rendered)
-        self.assertIn('--adisk-sys-wama "$iface_mac"', rendered)
-        self.assertIn('MDNS_CAPTURE_PID=', rendered)
-        self.assertNotIn('IFACE_MAC=', rendered)
-        self.assertIn('--save-all-snapshot "$ALL_MDNS_SNAPSHOT"', rendered)
-        self.assertIn('--save-snapshot "$APPLE_MDNS_SNAPSHOT"', rendered)
-        self.assertIn('--load-snapshot "$APPLE_MDNS_SNAPSHOT"', rendered)
-        self.assertIn('stop_runtime_process "watchdog" "/mnt/Flash/watchdog.sh" true', rendered)
-        self.assertIn('stop_runtime_process "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" false', rendered)
-        self.assertIn('stop_runtime_process "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" false', rendered)
-        self.assertIn("valid users = $SMB_SAMBA_USER root", rendered)
-        self.assertNotIn("__SMB_SAMBA_USER__", rendered)
-        self.assertIn('if [ -f "$payload_dir/private/nbns.enabled" ]', rendered)
-        self.assertIn('cp "$nbns_src" "$RAM_SBIN/nbns-advertiser"', rendered)
-        self.assertIn('"$RAM_SBIN/nbns-advertiser" \\', rendered)
-        self.assertIn("CACHE_DIRECTORY=/mnt/Memory/samba4/var", rendered)
-        self.assertIn("cache directory = $CACHE_DIRECTORY", rendered)
-        self.assertLess(rendered.rindex("start_mdns_capture"), rendered.index('waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume'))
-        self.assertIn('start_mdns_capture\nlog "pausing 10s after mDNS snapshot capture launch"\nsleep 10\n\nlog "disk discovery:', rendered)
-        self.assertLess(rendered.rindex("start_smbd ||"), rendered.rindex("start_mdns_advertiser"))
-        self.assertLess(rendered.rindex("start_mdns_advertiser"), rendered.rindex("start_nbns"))
-
-    def test_render_start_script_splits_mdns_capture_from_advertising(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_AIRPORT_SYAP": "119",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        common = load_boot_asset_text("common.sh")
-        capture_start = rendered.index("start_mdns_capture()")
-        capture_end = rendered.index("wait_for_mdns_capture()")
-        capture_section = rendered[capture_start:capture_end]
-        advertise_start = rendered.index("start_mdns_advertiser()")
-        advertise_end = rendered.index("start_nbns()")
-        advertise_section = rendered[advertise_start:advertise_end]
-        self.assertIn('--save-all-snapshot "$ALL_MDNS_SNAPSHOT"', capture_section)
-        self.assertIn('--save-snapshot "$APPLE_MDNS_SNAPSHOT"', capture_section)
-        self.assertNotIn('--load-snapshot "$APPLE_MDNS_SNAPSHOT"', capture_section)
-        self.assertNotIn('--instance "$MDNS_INSTANCE_NAME"', capture_section)
-        self.assertNotIn('--host "$MDNS_HOST_LABEL"', capture_section)
-        self.assertIn('--ipv4 "$NET_IFACE_IP"', capture_section)
-        self.assertIn('--load-snapshot "$APPLE_MDNS_SNAPSHOT"', advertise_section)
-        self.assertIn('--instance "$MDNS_INSTANCE_NAME"', advertise_section)
-        self.assertIn('--host "$MDNS_HOST_LABEL"', advertise_section)
-        self.assertIn('--ipv4 "$NET_IFACE_IP"', advertise_section)
-        self.assertIn("wait_for_mdns_capture", advertise_section)
-        wait_start = rendered.index("wait_for_mdns_capture()")
-        wait_end = rendered.index("start_mdns_advertiser()")
-        wait_section = rendered[wait_start:wait_end]
-        self.assertIn('if ! kill -0 "$MDNS_CAPTURE_PID" >/dev/null 2>&1; then', wait_section)
-        self.assertIn('if [ -f "$APPLE_MDNS_SNAPSHOT" ]; then', wait_section)
-        self.assertIn('log "mDNS snapshot capture already finished; trusted snapshot is available"', wait_section)
-        self.assertIn('log "mDNS snapshot capture already finished before wait; no trusted snapshot is available"', wait_section)
-        self.assertNotIn("log_mdns_snapshot_age", wait_section)
-        self.assertIn("log_mdns_snapshot_age()", rendered)
-        self.assertIn('APPLE_MDNS_SNAPSHOT_START=$(/bin/ls -lnT "$APPLE_MDNS_SNAPSHOT" 2>/dev/null || true)', rendered)
-        self.assertIn('snapshot_current=$(/bin/ls -lnT "$snapshot_path" 2>/dev/null || true)', rendered)
-        self.assertIn('if [ -z "$APPLE_MDNS_SNAPSHOT_START" ]; then', rendered)
-        self.assertIn('elif [ "$snapshot_current" != "$APPLE_MDNS_SNAPSHOT_START" ]; then', rendered)
-        self.assertIn('trusted Apple mDNS snapshot was created during this boot run: $snapshot_path', rendered)
-        self.assertIn('trusted Apple mDNS snapshot was updated during this boot run: $snapshot_path', rendered)
-        self.assertIn('trusted Apple mDNS snapshot predates this boot run; accepting stale snapshot: $snapshot_path', rendered)
-        self.assertNotIn("file_mtime_key()", rendered)
-        self.assertNotIn("START_KEY", rendered)
-        self.assertNotIn("START_MARKER", rendered)
-        self.assertNotIn("trap remove_start_marker", rendered)
-        self.assertIn("lock directory = $LOCKS_ROOT", rendered)
-        self.assertIn("state directory = $RAM_VAR", rendered)
-        self.assertIn("prepare_locks_ramdisk()", rendered)
-        self.assertIn('if locks_root_is_mounted; then', rendered)
-        self.assertIn('rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true', rendered)
-        self.assertIn('/sbin/mount_tmpfs -s 9m tmpfs "$LOCKS_ROOT" >/dev/null 2>&1', rendered)
-        self.assertIn('/sbin/mount_mfs -s 18432 swap "$LOCKS_ROOT" >/dev/null 2>&1', rendered)
-        self.assertIn('log "mounted $LOCKS_ROOT tmpfs for Samba lock directory"', rendered)
-        self.assertIn('log "failed to mount $LOCKS_ROOT tmpfs; using plain directory fallback"', rendered)
-        self.assertIn('log "mounted $LOCKS_ROOT mfs for Samba lock directory"', rendered)
-        self.assertIn('log "failed to mount $LOCKS_ROOT mfs; refusing rootfs fallback"', rendered)
-        self.assertIn('log "aborting startup because $LOCKS_ROOT is unavailable"', rendered)
-        self.assertNotIn('cp "$nbns_src" "$RAM_SBIN/nbns-advertiser"\n    chmod 755 "$RAM_SBIN/nbns-advertiser"', rendered)
-        self.assertIn("discover_preexisting_data_root()", rendered)
-        self.assertIn("mount_fallback_volume()", rendered)
-        self.assertIn("resolve_data_root_on_mounted_volume()", rendered)
-        self.assertIn('INITIAL_CANDIDATES=$(disk_name_candidates)', rendered)
-        self.assertIn('if DATA_ROOT=$(discover_preexisting_data_root); then', rendered)
-        self.assertIn('DISK_CANDIDATES=$(disk_name_candidates)', rendered)
-        self.assertIn('VOLUME_ROOT=$(mount_fallback_volume "$DISK_CANDIDATES") || {', rendered)
-        self.assertIn('DATA_ROOT=$(resolve_data_root_on_mounted_volume "$VOLUME_ROOT") || {', rendered)
-        self.assertIn("disk_name_candidates()", common)
-        self.assertIn("volume_root_candidates()", common)
-        self.assertIn("mount_candidates()", common)
-        self.assertIn("APdata", common)
-        self.assertIn("APconfig", common)
-        self.assertIn("APswap", common)
-        self.assertIn("/sbin/sysctl -n hw.disknames", common)
-        self.assertNotIn("is_metadata_wedge()", common)
-        self.assertIn("log_disk_discovery_state()", common)
-        self.assertIn('log "disk discovery: hw.disknames=$disk_names"', common)
-        self.assertIn('log "disk discovery: dmesg: $disk_line"', common)
-        self.assertIn('log "disk discovery: disk candidates:${disk_candidates:- none}"', common)
-        self.assertIn('log "disk discovery: volume root candidates:${volume_candidates:- none}"', common)
-        self.assertIn('log "disk discovery: mount candidates:${mount_candidate_list:- none}"', common)
-        self.assertIn('for mount_candidate in $(mount_candidates $disk_candidates); do', rendered)
-        self.assertIn('try_mount_candidate "$dev_path" "$volume_root"', rendered)
-        self.assertIn('resolve_data_root_on_mounted_volume "$VOLUME_ROOT"', rendered)
-        self.assertIn('is_volume_root_mounted()', common)
-        self.assertIn('df_line=$(/bin/df -k "$volume_root" 2>/dev/null | /usr/bin/tail -n +2 || true)', common)
-        self.assertIn('case "$df_line" in', common)
-        self.assertIn('*" $volume_root")', common)
-        self.assertIn('if is_volume_root_mounted "$volume_root"; then', rendered)
-        self.assertIn('initialize_data_root_under_volume "$volume_root"', rendered)
-        self.assertIn(': >"$marker"', rendered)
-        self.assertIn('log "disk discovery: waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume before manual mount fallback"', rendered)
-        self.assertIn('log "no Apple-mounted usable volume found; falling back to manual mount"', rendered)
-        self.assertIn('log "data root resolved after manual mount: $DATA_ROOT"', rendered)
-        self.assertIn('log "starting nbns responder for $SMB_NETBIOS_NAME at $NET_IFACE_IP"', rendered)
-        self.assertNotIn("wait_for_process()", rendered)
-        self.assertNotIn("wait_for_smbd_ready()", rendered)
-
-    def test_render_start_script_waits_for_existing_mounts_before_manual_mount(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        main_start = rendered.index("cleanup_old_runtime")
-        main_section = rendered[main_start:]
-        self.assertLess(main_section.index("prepare_locks_ramdisk"), main_section.index("prepare_ram_root"))
-        self.assertLess(main_section.index("INITIAL_CANDIDATES=$(disk_name_candidates)"), main_section.index('log_disk_discovery_state "$INITIAL_CANDIDATES"'))
-        self.assertLess(main_section.index('log_disk_discovery_state "$INITIAL_CANDIDATES"'), main_section.rindex("\nstart_mdns_capture\n"))
-        self.assertLess(main_section.rindex("\nstart_mdns_capture\n"), main_section.index("\nsleep 10\n"))
-        self.assertLess(main_section.index("\nsleep 10\n"), main_section.index('waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume'))
-        self.assertLess(main_section.index('start_mdns'), main_section.index('waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume'))
-        self.assertLess(main_section.index('waiting up to ${APPLE_MOUNT_WAIT_SECONDS}s for Apple-mounted data volume'), main_section.index('if DATA_ROOT=$(discover_preexisting_data_root); then'))
-        self.assertLess(main_section.index('if DATA_ROOT=$(discover_preexisting_data_root); then'), main_section.index('DISK_CANDIDATES=$(disk_name_candidates)'))
-        self.assertLess(main_section.index('DISK_CANDIDATES=$(disk_name_candidates)'), main_section.index('VOLUME_ROOT=$(mount_fallback_volume "$DISK_CANDIDATES") || {'))
-        self.assertLess(main_section.index('log "smbd startup complete: process observed"'), main_section.rindex('start_mdns_advertiser'))
-        self.assertLess(main_section.rindex('start_mdns_advertiser'), main_section.rindex('start_nbns'))
-        discover_body = rendered[rendered.index("discover_preexisting_data_root()"):rendered.index("resolve_data_root_on_mounted_volume()")]
-        self.assertIn('wait_for_existing_mount_target "data root" find_existing_data_root', discover_body)
-        wait_section = rendered[rendered.index("wait_for_existing_mount_target()"):rendered.index("mount_fallback_volume()")]
-        self.assertIn(f"APPLE_MOUNT_WAIT_SECONDS={DEFAULT_APPLE_MOUNT_WAIT_SECONDS}", rendered)
-        self.assertIn('while [ "$attempt" -lt "$APPLE_MOUNT_WAIT_SECONDS" ]; do', wait_section)
-        self.assertIn('disk_candidates=$(disk_name_candidates)', wait_section)
-        self.assertIn('if target=$($finder "$disk_candidates"); then', wait_section)
-        self.assertIn('log "$target_name was mounted after ${attempt}s"', wait_section)
-        self.assertIn('log "$target_name was not mounted after ${attempt}s"', wait_section)
-        self.assertIn('wait_for_existing_mount_target "data root" find_existing_data_root', rendered)
-        self.assertIn('wait_for_existing_mount_target "disk root" find_existing_volume_root', rendered)
-        self.assertNotIn("wait_for_existing_data_root()", rendered)
-        self.assertNotIn("wait_for_existing_volume_root()", rendered)
-
-    def test_render_start_script_launches_watchdog_after_runtime_with_mount_context(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        main_start = rendered.index("if ! cleanup_old_runtime; then")
-        main_section = rendered[main_start:]
-        self.assertIn('VOLUME_ROOT=${DATA_ROOT%/*}', main_section)
-        self.assertIn('VOLUME_DEVICE="/dev/${VOLUME_ROOT##*/}"', main_section)
-        self.assertIn('log "managed volume selected: $VOLUME_DEVICE at $VOLUME_ROOT"', main_section)
-        self.assertIn("start_watchdog()", rendered)
-        self.assertIn('if [ -z "${VOLUME_DEVICE:-}" ] || [ -z "${VOLUME_ROOT:-}" ] || [ -z "${DATA_ROOT:-}" ]; then', rendered)
-        self.assertIn('/mnt/Flash/watchdog.sh "$VOLUME_DEVICE" "$VOLUME_ROOT" "$DATA_ROOT" </dev/null >/dev/null 2>&1 &', rendered)
-        self.assertLess(main_section.index('log "managed volume selected: $VOLUME_DEVICE at $VOLUME_ROOT"'), main_section.index('stage_runtime "$PAYLOAD_DIR" "$SMBD_SRC" "$NBNS_SRC"'))
-        self.assertLess(main_section.index('log "smbd startup complete: process observed"'), main_section.rindex('start_mdns_advertiser'))
-        self.assertLess(main_section.rindex('start_mdns_advertiser'), main_section.rindex('start_nbns'))
-        self.assertLess(main_section.rindex('start_nbns'), main_section.rindex('start_watchdog'))
-
-    def test_render_start_script_tunes_kernel_memory_before_samba_runtime_setup(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-
-        tune_section = rendered[rendered.index("tune_kernel_memory()"):rendered.index("cleanup_old_runtime()")]
-        self.assertIn("SAMBA_VM_BUFCACHE=5", rendered)
-        self.assertIn("/sbin/sysctl -n vm.bufcache", tune_section)
-        self.assertIn('/sbin/sysctl -w "vm.bufcache=$SAMBA_VM_BUFCACHE"', tune_section)
-        self.assertIn('log "kernel memory tuning skipped; vm.bufcache unavailable"', tune_section)
-        self.assertIn('log "kernel memory tuning failed to set vm.bufcache=$SAMBA_VM_BUFCACHE; continuing"', tune_section)
-
-        main_section = rendered[rendered.index("\nif ! cleanup_old_runtime; then\n"):]
-        self.assertLess(main_section.index("tune_kernel_memory"), main_section.index("prepare_locks_ramdisk"))
-        self.assertLess(main_section.index("tune_kernel_memory"), main_section.index("start_smbd ||"))
-
-    def test_render_start_script_force_stops_runtime_before_memory_cleanup(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        cleanup_helpers = rendered[rendered.index("cleanup_old_runtime()"):rendered.index("locks_root_is_mounted()")]
-        common = load_boot_asset_text("common.sh")
-        process_helpers = common[common.index("runtime_process_present()"):common.index("is_volume_root_mounted()")]
-
-        self.assertIn('stop_runtime_process "watchdog" "/mnt/Flash/watchdog.sh" true || cleanup_status=1', cleanup_helpers)
-        self.assertIn('stop_runtime_process "smbd" "smbd" false || cleanup_status=1', cleanup_helpers)
-        self.assertIn('/usr/bin/pkill -9 -f "$pattern" >/dev/null 2>&1 || true', process_helpers)
-        self.assertIn('/usr/bin/pkill -9 "$pattern" >/dev/null 2>&1 || true', process_helpers)
-        self.assertIn('if wait_for_runtime_process_absent "$pattern" "$full_match" 5; then', process_helpers)
-        self.assertIn('log "old managed runtime cleanup failed; refusing to delete /mnt/Memory/samba4"', cleanup_helpers)
-        self.assertLess(cleanup_helpers.index('if [ "$cleanup_status" -ne 0 ]; then'), cleanup_helpers.index("rm -rf /mnt/Memory/samba4"))
-        self.assertIn('log "aborting startup because old managed runtime could not be stopped safely"', rendered)
-
-    def test_render_start_script_wait_refreshes_disk_candidates_each_poll(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        wait_section = rendered[rendered.index("wait_for_existing_mount_target()"):rendered.index("mount_fallback_volume()")]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            count_path = Path(tmpdir) / "candidate-count"
-            script_path = Path(tmpdir) / "wait-refresh-test.sh"
-            script_path.write_text(
-                f"""#!/bin/sh
-set -eu
-APPLE_MOUNT_WAIT_SECONDS=3
-COUNT_FILE={shlex.quote(str(count_path))}
-log() {{ :; }}
-sleep() {{ :; }}
-disk_name_candidates() {{
-    count=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
-    count=$((count + 1))
-    echo "$count" >"$COUNT_FILE"
-    if [ "$count" -eq 1 ]; then
-        echo " dk0 dk1"
-    else
-        echo " dk2"
-    fi
-}}
-find_existing_data_root() {{
-    disk_candidates=$1
-    case " $disk_candidates " in
-        *" dk2 "*)
-            echo "/Volumes/dk2/ShareRoot"
-            return 0
-            ;;
-    esac
-    return 1
-}}
-{wait_section}
-result=$(wait_for_existing_mount_target "data root" find_existing_data_root)
-printf '%s\\n' "$result"
-printf 'calls=%s\\n' "$(cat "$COUNT_FILE")"
-""",
-                encoding="utf-8",
-            )
-            proc = subprocess.run(["/bin/sh", str(script_path)], capture_output=True, text=True, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout.splitlines(), ["/Volumes/dk2/ShareRoot", "calls=2"])
-
-    def test_render_start_script_custom_disk_delay_extends_apple_mount_wait(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values), apple_mount_wait_seconds=123)
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn("APPLE_MOUNT_WAIT_SECONDS=123", rendered)
-
-    def test_render_start_script_starts_final_mdns_after_smbd_process_observed(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        main_section = rendered[rendered.index("\nif ! cleanup_old_runtime; then\n"):]
-        smbd_start = main_section.index("start_smbd || {")
-        smbd_ready = main_section.index('log "smbd startup complete: process observed"')
-        final_mdns = main_section.index("start_mdns_advertiser")
-        self.assertLess(smbd_start, smbd_ready)
-        self.assertLess(smbd_ready, final_mdns)
-
-    def test_render_start_script_starts_nbns_after_smbd_process_observed(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        main_section = rendered[rendered.index("\nif ! cleanup_old_runtime; then\n"):]
-        smbd_ready = main_section.index('log "smbd startup complete: process observed"')
-        nbns_start = main_section.index("start_nbns")
-        self.assertLess(smbd_ready, nbns_start)
-
-    def test_render_start_script_separates_mount_fallback_from_data_root_recovery(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn("mount_fallback_volume()", rendered)
-        self.assertIn("resolve_data_root_on_mounted_volume()", rendered)
-        main_start = rendered.index("cleanup_old_runtime")
-        main_section = rendered[main_start:]
-        self.assertLess(main_section.index('VOLUME_ROOT=$(mount_fallback_volume "$DISK_CANDIDATES") || {'), main_section.index('DATA_ROOT=$(resolve_data_root_on_mounted_volume "$VOLUME_ROOT") || {'))
-
-    def test_render_start_script_does_not_initialize_share_root_in_pre_mount_phase(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        pre_mount_start = rendered.index("discover_preexisting_data_root()")
-        pre_mount_end = rendered.index("resolve_data_root_on_mounted_volume()")
-        pre_mount_section = rendered[pre_mount_start:pre_mount_end]
-        self.assertNotIn("initialize_data_root_under_volume", pre_mount_section)
-
-    def test_render_start_script_only_accepts_existing_data_root_from_mounted_volumes(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        common = load_boot_asset_text("common.sh")
-        start = common.index("find_existing_data_root() {")
-        end = common.index("\nfind_existing_volume_root() {")
-        section = common[start:end]
-        self.assertIn('for volume_root in $(volume_root_candidates $disk_candidates); do', section)
-        self.assertIn('is_volume_root_mounted "$volume_root"', section)
-        self.assertIn('data_root=$(find_data_root_under_volume "$volume_root")', section)
-        self.assertNotIn("VOLUME_ROOT_CANDIDATES=", rendered)
-        self.assertNotIn("mount_hfs", section)
-
-    def test_render_start_script_initializes_share_root_only_after_confirmed_mount(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        mounted_check = rendered.index('if is_volume_root_mounted "$volume_root"; then')
-        initialize = rendered.index('initialize_data_root_under_volume "$volume_root"')
-        self.assertLess(mounted_check, initialize)
-
-    def test_render_start_script_prefers_existing_share_root_marker_before_plain_dir(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        common = load_boot_asset_text("common.sh")
-        share_marker = common.index('if [ -f "$volume_root/ShareRoot/.com.apple.timemachine.supported" ]; then')
-        shared_marker = common.index('if [ -f "$volume_root/Shared/.com.apple.timemachine.supported" ]; then')
-        share_dir = common.index('if [ -d "$volume_root/ShareRoot" ]; then')
-        shared_dir = common.index('if [ -d "$volume_root/Shared" ]; then')
-        self.assertLess(share_marker, shared_marker)
-        self.assertLess(shared_marker, share_dir)
-        self.assertLess(share_dir, shared_dir)
-
-    def test_render_start_script_discovers_mount_candidates_from_remote_disk_names(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        mount_start = rendered.index("mount_fallback_volume()")
-        mount_section = rendered[mount_start:rendered.index("\nfind_payload_dir()")]
-        self.assertIn('for mount_candidate in $(mount_candidates $disk_candidates); do', mount_section)
-        self.assertIn('dev_path=${mount_candidate%%:*}', mount_section)
-        self.assertIn('volume_root=${mount_candidate#*:}', mount_section)
-        self.assertIn('try_mount_candidate "$dev_path" "$volume_root"', mount_section)
-
-    def test_render_start_script_logs_mount_fallback_transition(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn('log "no Apple-mounted usable volume found; falling back to manual mount"', rendered)
-
-    def test_render_start_script_logs_discovered_data_root_after_mount(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn('log "data root resolved after manual mount: $DATA_ROOT"', rendered)
-
-    def test_render_start_script_logs_share_root_initialization(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn('log "initialized ShareRoot under $volume_root"', rendered)
-
-    def test_render_start_script_logs_found_apple_mounted_data_root(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn('log "found Apple-mounted data root: $data_root"', rendered)
-
-    def test_render_start_script_waits_longer_for_bind_interface(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn('while [ "$attempt" -lt 60 ]; do', rendered)
-
-    def test_render_start_script_logs_mdns_skip_when_mac_missing(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn('log "mdns skipped; missing $NET_IFACE MAC address"', rendered)
-        self.assertIn('log "mdns advertiser failed to stay running"', rendered)
-
-    def test_render_start_script_logs_nbns_skip_when_marker_missing(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn('log "nbns responder skipped; marker missing"', rendered)
-
-    def test_render_start_script_logs_nbns_skip_when_runtime_binary_missing(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn('log "nbns responder launch skipped; missing runtime binary"', rendered)
-        self.assertIn('log "nbns responder failed to stay running"', rendered)
-
-    def test_render_start_script_stops_apple_cifs_before_nbns_launch(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        common = load_boot_asset_text("common.sh")
-        nbns_start = rendered.index("start_nbns()")
-        nbns_end = rendered.index("\nif ! cleanup_old_runtime; then\n")
-        nbns_section = rendered[nbns_start:nbns_end]
-        apple_conflict_start = common.index("stop_apple_nbns_conflicts()")
-        conflict_start = common.index("stop_nbns_conflicts()")
-        conflict_end = common.index("is_volume_root_mounted()")
-        apple_conflict_section = common[apple_conflict_start:conflict_start]
-        conflict_section = common[conflict_start:conflict_end]
-        self.assertIn('stop_runtime_process "wcifsnd" "wcifsnd" false || cleanup_status=1', apple_conflict_section)
-        self.assertIn('stop_runtime_process "wcifsfs" "wcifsfs" false || cleanup_status=1', apple_conflict_section)
-        self.assertIn("stop_apple_nbns_conflicts || cleanup_status=1", conflict_section)
-        self.assertIn('stop_runtime_process "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" false || cleanup_status=1', conflict_section)
-        self.assertIn('if ! stop_nbns_conflicts; then', nbns_section)
-        self.assertIn('log "nbns responder launch skipped; conflicting Apple CIFS/NBNS processes still running"', nbns_section)
-        self.assertLess(nbns_section.index('if ! stop_nbns_conflicts; then'), nbns_section.index('"$RAM_SBIN/nbns-advertiser" \\'))
-
-    def test_render_start_script_logs_payload_and_smbd_failures(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn('log "payload discovery failed: missing payload directory under mounted volume"', rendered)
-        self.assertIn('log "payload discovery failed: missing smbd binary in $PAYLOAD_DIR"', rendered)
-        self.assertIn('log "smbd startup failed: process was not observed"', rendered)
-
-    def test_render_start_script_prefers_root_level_payload_dir_with_share_root_fallback(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        payload_start = rendered.index("find_payload_dir()")
-        payload_end = rendered.index("find_payload_smbd()")
-        payload_section = rendered[payload_start:payload_end]
-        self.assertIn('volume_root=${data_root%/*}', payload_section)
-        self.assertIn('payload_dir="$volume_root/$PAYLOAD_DIR_NAME"', payload_section)
-        self.assertIn('payload_dir="$data_root/$PAYLOAD_DIR_NAME"', payload_section)
-        self.assertLess(
-            payload_section.index('payload_dir="$volume_root/$PAYLOAD_DIR_NAME"'),
-            payload_section.index('payload_dir="$data_root/$PAYLOAD_DIR_NAME"'),
-        )
-
-    def test_render_start_script_fallback_smb_conf_uses_root_level_payload_private_paths(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn("passdb backend = smbpasswd:$RAM_PRIVATE/smbpasswd", rendered)
-        self.assertIn("username map = $RAM_PRIVATE/username.map", rendered)
-        self.assertIn("xattr_tdb:file = $PAYLOAD_DIR/private/xattr.tdb", rendered)
-        self.assertIn("streams_xattr:max xattrs per stream = 2", rendered)
-        self.assertIn("dfree command = /mnt/Flash/dfree.sh", rendered)
-        self.assertNotIn("dfree command = /bin/sh /mnt/Flash/dfree.sh", rendered)
-        self.assertIn("server multi channel support = no", rendered)
-        self.assertIn("create mask = 0666", rendered)
-        self.assertIn("directory mask = 0777", rendered)
-        self.assertIn("force create mode = 0666", rendered)
-        self.assertIn("force directory mode = 0777", rendered)
-
-    def test_rendered_payload_smb_conf_keeps_auth_in_ram_and_xattr_on_disk(self) -> None:
-        bundle = build_template_bundle(self._default_template_config())
-        payload_template = render_checked_template(
-            "smb.conf.template",
-            bundle.smbconf_replacements,
-            allowed_unresolved_tokens=SMBCONF_RUNTIME_TOKENS,
-        )
-        active_conf = render_runtime_smbconf_text(payload_template)
-
-        self.assertEqual(self._smb_conf_value(active_conf, "passdb backend"), "smbpasswd:/mnt/Memory/samba4/private/smbpasswd")
-        self.assertEqual(self._smb_conf_value(active_conf, "username map"), "/mnt/Memory/samba4/private/username.map")
-        self.assertEqual(self._smb_conf_value(active_conf, "private dir"), "/mnt/Memory/samba4/private")
-        self.assertEqual(self._smb_conf_value(active_conf, "xattr_tdb:file"), "/Volumes/dk2/ShareRoot/.samba4/private/xattr.tdb")
-
-    def test_render_start_script_stages_auth_files_into_ram_private(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        stage_start = rendered.index("stage_runtime()")
-        stage_end = rendered.index("prepare_local_hostname_resolution()")
-        stage_section = rendered[stage_start:stage_end]
-        self.assertIn('if [ ! -f "$payload_dir/private/smbpasswd" ]; then', stage_section)
-        self.assertIn('if [ ! -f "$payload_dir/private/username.map" ]; then', stage_section)
-        self.assertIn('cp "$payload_dir/private/smbpasswd" "$RAM_PRIVATE/smbpasswd"', stage_section)
-        self.assertIn('chmod 600 "$RAM_PRIVATE/smbpasswd"', stage_section)
-        self.assertIn('cp "$payload_dir/private/username.map" "$RAM_PRIVATE/username.map"', stage_section)
-        self.assertIn('chmod 600 "$RAM_PRIVATE/username.map"', stage_section)
-        self.assertIn('cp "$payload_dir/private/adisk.uuid" "$RAM_PRIVATE/adisk.uuid"', stage_section)
-        self.assertIn('log "staged Samba auth files into RAM private directory"', stage_section)
-        self.assertNotIn('cp "$payload_dir/private/xattr.tdb"', stage_section)
-
-    def test_stage_runtime_copies_private_runtime_files_to_ram(self) -> None:
-        stage_section = self._start_script_stage_runtime_section()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            payload = tmp / "Volumes" / "dk2" / ".samba4"
-            private = payload / "private"
-            ram_root = tmp / "mnt" / "Memory" / "samba4"
-            for path in (private, ram_root / "sbin", ram_root / "etc", ram_root / "private", ram_root / "var", tmp / "mnt" / "Locks"):
-                path.mkdir(parents=True, exist_ok=True)
-            (payload / "smbd").write_text("smbd")
-            (payload / "smbd").chmod(0o755)
-            (payload / "nbns-advertiser").write_text("nbns")
-            (payload / "nbns-advertiser").chmod(0o755)
-            (private / "smbpasswd").write_text("smbpasswd-content")
-            (private / "username.map").write_text("username-map-content")
-            (private / "adisk.uuid").write_text("uuid-content")
-            (private / "nbns.enabled").write_text("enabled")
-
-            script = tmp / "stage-runtime.sh"
-            script.write_text(
-                f"""#!/bin/sh
-set -eu
-RAM_ROOT={shlex.quote(str(ram_root))}
-RAM_SBIN="$RAM_ROOT/sbin"
-RAM_ETC="$RAM_ROOT/etc"
-RAM_VAR="$RAM_ROOT/var"
-RAM_PRIVATE="$RAM_ROOT/private"
-LOCKS_ROOT={shlex.quote(str(tmp / "mnt" / "Locks"))}
-PAYLOAD_TEMPLATE_NAME=smb.conf.template
-PAYLOAD_DIR={shlex.quote(str(payload))}
-DATA_ROOT={shlex.quote(str(tmp / "Volumes" / "dk2" / "ShareRoot"))}
-BIND_INTERFACES="127.0.0.1/8 192.168.1.2/24"
-SMB_NETBIOS_NAME=TimeCapsule
-SMB_SHARE_NAME=Data
-SMB_SAMBA_USER=admin
-CACHE_DIRECTORY="$RAM_VAR"
-SMBD_LOG="$RAM_VAR/log.smbd"
-log() {{ :; }}
-{stage_section}
-stage_runtime "$PAYLOAD_DIR" "$PAYLOAD_DIR/smbd" "$PAYLOAD_DIR/nbns-advertiser"
-""",
-                encoding="utf-8",
-            )
-
-            proc = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True, check=False)
-
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertEqual((ram_root / "private" / "smbpasswd").read_text(), "smbpasswd-content")
-            self.assertEqual((ram_root / "private" / "username.map").read_text(), "username-map-content")
-            self.assertEqual((ram_root / "private" / "adisk.uuid").read_text(), "uuid-content")
-            self.assertEqual((ram_root / "private" / "nbns.enabled").read_text(), "enabled")
-            self.assertEqual((ram_root / "sbin" / "nbns-advertiser").read_text(), "nbns")
-            self.assertEqual((ram_root / "private" / "smbpasswd").stat().st_mode & 0o777, 0o600)
-            self.assertEqual((ram_root / "private" / "username.map").stat().st_mode & 0o777, 0o600)
-            self.assertFalse((ram_root / "private" / "xattr.tdb").exists())
-            smb_conf = (ram_root / "etc" / "smb.conf").read_text()
-            self.assertIn(f"passdb backend = smbpasswd:{ram_root}/private/smbpasswd", smb_conf)
-            self.assertIn(f"username map = {ram_root}/private/username.map", smb_conf)
-            self.assertIn(f"xattr_tdb:file = {payload}/private/xattr.tdb", smb_conf)
-
-    def test_stage_runtime_fails_when_required_auth_file_is_missing(self) -> None:
-        stage_section = self._start_script_stage_runtime_section()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            payload = tmp / "Volumes" / "dk2" / ".samba4"
-            private = payload / "private"
-            ram_root = tmp / "mnt" / "Memory" / "samba4"
-            for path in (private, ram_root / "sbin", ram_root / "etc", ram_root / "private", ram_root / "var", tmp / "mnt" / "Locks"):
-                path.mkdir(parents=True, exist_ok=True)
-            (payload / "smbd").write_text("smbd")
-            (private / "smbpasswd").write_text("smbpasswd-content")
-
-            script = tmp / "stage-runtime-missing-auth.sh"
-            script.write_text(
-                f"""#!/bin/sh
-set -u
-RAM_ROOT={shlex.quote(str(ram_root))}
-RAM_SBIN="$RAM_ROOT/sbin"
-RAM_ETC="$RAM_ROOT/etc"
-RAM_VAR="$RAM_ROOT/var"
-RAM_PRIVATE="$RAM_ROOT/private"
-LOCKS_ROOT={shlex.quote(str(tmp / "mnt" / "Locks"))}
-PAYLOAD_TEMPLATE_NAME=smb.conf.template
-PAYLOAD_DIR={shlex.quote(str(payload))}
-DATA_ROOT={shlex.quote(str(tmp / "Volumes" / "dk2" / "ShareRoot"))}
-BIND_INTERFACES="127.0.0.1/8 192.168.1.2/24"
-SMB_NETBIOS_NAME=TimeCapsule
-SMB_SHARE_NAME=Data
-SMB_SAMBA_USER=admin
-CACHE_DIRECTORY="$RAM_VAR"
-SMBD_LOG="$RAM_VAR/log.smbd"
-log() {{ echo "$*" >> {shlex.quote(str(tmp / "stage.log"))}; }}
-{stage_section}
-stage_runtime "$PAYLOAD_DIR" "$PAYLOAD_DIR/smbd" ""
-""",
-                encoding="utf-8",
-            )
-
-            proc = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True, check=False)
-
-            self.assertNotEqual(proc.returncode, 0)
-            self.assertFalse((ram_root / "etc" / "smb.conf").exists())
-            self.assertIn("required Samba username map missing", (tmp / "stage.log").read_text())
-
-    def test_render_start_script_fallback_smb_conf_uses_configured_samba_user(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "archive-admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-
-        rendered = render_checked_template("start-samba.sh", bundle.start_script_replacements)
-
-        self.assertIn("SMB_SAMBA_USER=archive-admin", rendered)
-        self.assertIn('valid users = $SMB_SAMBA_USER root', rendered)
-        self.assertNotIn("__SMB_SAMBA_USER__", rendered)
-
-    def test_render_start_script_logs_mount_and_recovery_failures(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn('log "disk discovery failed: no fallback data volume mounted"', rendered)
-        self.assertIn('log "data root resolution failed on mounted volume $VOLUME_ROOT"', rendered)
-
-    def test_render_start_script_mount_phase_does_not_initialize_share_root(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        mount_start = rendered.index("mount_fallback_volume()")
-        mount_end = rendered.index("find_payload_dir()")
-        mount_section = rendered[mount_start:mount_end]
-        self.assertNotIn("initialize_data_root_under_volume", mount_section)
-
-    def test_render_start_script_recovery_phase_does_not_call_mount_hfs(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        recovery_start = rendered.index("resolve_data_root_on_mounted_volume()")
-        recovery_end = rendered.index("wait_for_existing_mount_target()")
-        recovery_section = rendered[recovery_start:recovery_end]
-        self.assertNotIn("mount_hfs", recovery_section)
-
-    def test_common_try_mount_candidate_confirms_mount_after_attempt(self) -> None:
-        common = load_boot_asset_text("common.sh")
-        candidate_start = common.index("try_mount_candidate()")
-        candidate_end = common.index("ensure_parent_dir()")
-        candidate_section = common[candidate_start:candidate_end]
-        self.assertIn('if is_volume_root_mounted "$volume_root"; then', candidate_section)
-        self.assertIn('mount_hfs_bounded "$dev_path" "$volume_root" 30 "mount candidate" || true', candidate_section)
-        self.assertLess(candidate_section.index('if is_volume_root_mounted "$volume_root"; then'), candidate_section.index('mount_hfs_bounded "$dev_path" "$volume_root" 30 "mount candidate" || true'))
-
-    def test_common_mount_hfs_bounded_uses_background_timeout(self) -> None:
-        common = load_boot_asset_text("common.sh")
-        mount_start = common.index("mount_hfs_bounded()")
-        mount_end = common.index("try_mount_candidate()")
-        mount_section = common[mount_start:mount_end]
-        self.assertIn('/sbin/mount_hfs "$dev_path" "$volume_root" >/dev/null 2>&1 &', mount_section)
-        self.assertIn("mount_pid=$!", mount_section)
-        self.assertIn('while kill -0 "$mount_pid" >/dev/null 2>&1; do', mount_section)
-        self.assertIn("timeout_seconds=${3:-30}", mount_section)
-        self.assertIn("mount_context=${4:-mount candidate}", mount_section)
-        self.assertIn('if [ "$attempt" -ge "$timeout_seconds" ]; then', mount_section)
-        self.assertIn('kill "$mount_pid" >/dev/null 2>&1 || true', mount_section)
-        self.assertIn('kill -9 "$mount_pid" >/dev/null 2>&1 || true', mount_section)
-        self.assertIn('created_mountpoint=0', mount_section)
-        self.assertIn('created_mountpoint=1', mount_section)
-        self.assertIn('/bin/rmdir "$volume_root" >/dev/null 2>&1 || true', mount_section)
-        self.assertIn('log "mount_hfs command did not exit promptly for $dev_path at $volume_root; re-checking mount state"', mount_section)
-        self.assertIn('log "mount_hfs command timed out, but volume is mounted"', mount_section)
-        self.assertIn('log "mount_hfs timed out for $dev_path at $volume_root and volume was not mounted at the immediate re-check"', mount_section)
-
-    def test_render_start_script_waits_for_smbd_process_after_launch(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn('"$RAM_SBIN/smbd" -D -s "$RAM_ETC/smb.conf"', rendered)
-        self.assertIn('if wait_for_process smbd 15; then', rendered)
-        self.assertNotIn('get_smbd_log_path_from_config', rendered)
-        self.assertNotIn('wait_for_smbd_ready', rendered)
-        self.assertNotIn('daemon_ready', rendered)
-        self.assertNotIn("SMBD_READY_MARKER", rendered)
-        self.assertIn('if wait_for_process "$MDNS_PROC_NAME" 100; then', rendered)
-        self.assertIn('log "smbd startup complete: process observed"', rendered)
-
-    def test_render_start_script_does_not_stage_rpc_helpers_from_disk(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertNotIn("stage_runtime_helper", rendered)
-        self.assertNotIn("find_payload_runtime_helper", rendered)
-        self.assertNotIn("ln -s \"$helper_src\"", rendered)
-        self.assertNotIn("/mnt/Memory/samba4/var/run/ncalrpc/np/srvsvc", rendered)
-
-    def test_render_start_script_prepares_local_hostname_resolution_after_network_detection(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        helper_start = rendered.index("prepare_local_hostname_resolution()")
-        helper_end = rendered.index("start_smbd()")
-        helper_section = rendered[helper_start:helper_end]
-        self.assertIn('device_hostname=$(/bin/hostname 2>/dev/null || true)', helper_section)
-        self.assertIn("printf '127.0.0.1\\t%s %s.local\\n'", helper_section)
-        self.assertNotIn("grep", helper_section)
-        self.assertNotIn("awk", helper_section)
-
-        network_detection = rendered.index("NET_IFACE_IP=${NET_IFACE_IP%%/*}")
-        hostname_call = rendered.index("\nprepare_local_hostname_resolution\n", network_detection)
-        mdns_capture = rendered.index("\nstart_mdns_capture\n", network_detection)
-        smbd_start = rendered.index("\nstart_smbd ||", network_detection)
-        self.assertLess(network_detection, hostname_call)
-        self.assertLess(hostname_call, mdns_capture)
-        self.assertLess(hostname_call, smbd_start)
-
     def test_common_script_has_no_smbd_daemon_ready_helpers(self) -> None:
         common = (REPO_ROOT / "src/timecapsulesmb/assets/boot/samba4/common.sh").read_text()
         self.assertNotIn("get_smbd_log_path_from_config()", common)
         self.assertNotIn("wait_for_smbd_ready()", common)
         self.assertNotIn("daemon_ready", common)
-
-    def test_render_smb_conf_uses_ram_cache_directory_by_default(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("smb.conf.template", bundle.smbconf_replacements)
-        self.assertIn("cache directory = /mnt/Memory/samba4/var", rendered)
-        self.assertIn("lock directory = /mnt/Locks", rendered)
-        self.assertIn("state directory = /mnt/Memory/samba4/var", rendered)
-        self.assertIn("private dir = /mnt/Memory/samba4/private", rendered)
-        self.assertIn("dbwrap_tdb_max_dead:* = 0", rendered)
-        self.assertIn("streams_xattr:max xattrs per stream = 2", rendered)
-        self.assertIn("dfree command = /mnt/Flash/dfree.sh", rendered)
-        self.assertNotIn("dfree command = /bin/sh /mnt/Flash/dfree.sh", rendered)
-        self.assertIn("log file = /mnt/Memory/samba4/var/log.smbd", rendered)
-        self.assertIn("max log size = 256", rendered)
-        self.assertIn("server multi channel support = no", rendered)
-        self.assertIn("valid users = admin root", rendered)
-        self.assertIn("max log size = 256\n    smb ports = 445", rendered)
-        self.assertNotIn("log level =", rendered)
-        self.assertIn("reset on zero vc = yes", rendered)
-        self.assertIn("create mask = 0666", rendered)
-        self.assertIn("directory mask = 0777", rendered)
-        self.assertIn("force create mode = 0666", rendered)
-        self.assertIn("force directory mode = 0777", rendered)
-
-    def test_render_smb_conf_uses_disk_logging_when_debug_logging_enabled(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values), debug_logging=True)
-        rendered = render_template("smb.conf.template", bundle.smbconf_replacements)
-        self.assertIn("log file = __DATA_ROOT__/samba4-logs/log.smbd", rendered)
-        self.assertIn("max log size = 1048576", rendered)
-        self.assertIn("log level = 5 vfs:8 fruit:8", rendered)
-        self.assertIn("max log size = 1048576\n    log level = 5 vfs:8 fruit:8\n    smb ports = 445", rendered)
-
-    def test_render_start_script_prepares_smbd_disk_logging_only_when_debug_logging_enabled(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        normal_bundle = build_template_bundle(self._template_config(values))
-        normal_rendered = render_template("start-samba.sh", normal_bundle.start_script_replacements)
-        self.assertIn("SMBD_DISK_LOGGING_ENABLED=0", normal_rendered)
-        debug_bundle = build_template_bundle(self._template_config(values), debug_logging=True, data_root="/Volumes/dk2/ShareRoot")
-        debug_rendered = render_template("start-samba.sh", debug_bundle.start_script_replacements)
-
-        self.assertIn("SMBD_DISK_LOGGING_ENABLED=1", debug_rendered)
-        self.assertIn('if [ "$SMBD_DISK_LOGGING_ENABLED" != "1" ]; then', debug_rendered)
-        self.assertIn('log_dir="$DATA_ROOT/samba4-logs"', debug_rendered)
-        self.assertIn('mkdir -p "$log_dir"', debug_rendered)
-        self.assertIn('chmod 777 "$log_dir" >/dev/null 2>&1 || true', debug_rendered)
-        self.assertIn('log "smbd debug logging directory ready: $log_dir"', debug_rendered)
-
-    def test_render_start_script_prepares_smbd_disk_logging_after_data_root_before_runtime_staging(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values), debug_logging=True, data_root="/Volumes/dk2/ShareRoot")
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        main_section = rendered[rendered.index("cleanup_old_runtime"):]
-
-        self.assertLess(main_section.index('log "data root selected: $DATA_ROOT"'), main_section.index("prepare_smbd_disk_logging || true"))
-        self.assertLess(main_section.index("prepare_smbd_disk_logging || true"), main_section.index('stage_runtime "$PAYLOAD_DIR" "$SMBD_SRC" "$NBNS_SRC"'))
-
-    def test_render_smb_conf_uses_persistent_cache_directory_for_netbsd4(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values), payload_family="netbsd4le_samba4")
-        rendered = render_template("smb.conf.template", bundle.smbconf_replacements)
-        self.assertIn("cache directory = __PAYLOAD_DIR__/cache", rendered)
-        self.assertIn("lock directory = /mnt/Locks", rendered)
-        self.assertIn("state directory = /mnt/Memory/samba4/var", rendered)
-        self.assertIn("private dir = /mnt/Memory/samba4/private", rendered)
-        self.assertIn("server multi channel support = no", rendered)
-        self.assertIn("reset on zero vc = yes", rendered)
-
-    def test_render_start_script_uses_persistent_cache_directory_for_netbsd4_fallback(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values), payload_family="netbsd4le_samba4")
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn("CACHE_DIRECTORY=$PAYLOAD_DIR/cache", rendered)
-        self.assertIn("cache directory = $CACHE_DIRECTORY", rendered)
-        self.assertIn("dbwrap_tdb_max_dead:* = 0", rendered)
-        self.assertIn("server multi channel support = no", rendered)
-        self.assertIn("reset on zero vc = yes", rendered)
-
-    def test_render_start_script_defaults_to_shareroot_mode(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn("SHARE_USE_DISK_ROOT=false", rendered)
-        discover_start = rendered.index("discover_preexisting_data_root()")
-        discover_end = rendered.index("\nresolve_data_root_on_mounted_volume()")
-        discover_section = rendered[discover_start:discover_end]
-        self.assertIn('if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then', discover_section)
-        self.assertLess(
-            discover_section.index('if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then'),
-            discover_section.index('if data_root=$(wait_for_existing_mount_target "data root" find_existing_data_root); then'),
-        )
-        resolve_start = rendered.index("resolve_data_root_on_mounted_volume()")
-        resolve_end = rendered.index("\nwait_for_existing_mount_target()")
-        resolve_section = rendered[resolve_start:resolve_end]
-        self.assertIn('if data_root=$(find_data_root_under_volume "$volume_root"); then', resolve_section)
-        self.assertLess(
-            resolve_section.index('if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then'),
-            resolve_section.index('if data_root=$(find_data_root_under_volume "$volume_root"); then'),
-        )
-
-    def test_render_start_script_disk_root_mode_polls_for_apple_mounted_volume_root(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values), share_use_disk_root=True)
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        self.assertIn("SHARE_USE_DISK_ROOT=true", rendered)
-        discover_start = rendered.index("discover_preexisting_data_root()")
-        discover_end = rendered.index("\nresolve_data_root_on_mounted_volume()")
-        discover_section = rendered[discover_start:discover_end]
-        self.assertIn('if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then', discover_section)
-        self.assertIn('if volume_root=$(wait_for_existing_mount_target "disk root" find_existing_volume_root); then', discover_section)
-        self.assertIn('log "found Apple-mounted disk root: $volume_root"', discover_section)
-        self.assertIn('echo "$volume_root"', discover_section)
-        self.assertNotIn('sleep "$APPLE_MOUNT_WAIT_SECONDS"', discover_section)
-        self.assertLess(
-            discover_section.index('if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then'),
-            discover_section.index('if data_root=$(wait_for_existing_mount_target "data root" find_existing_data_root); then'),
-        )
-        resolve_start = rendered.index("resolve_data_root_on_mounted_volume()")
-        resolve_end = rendered.index("\nwait_for_existing_mount_target()")
-        resolve_section = rendered[resolve_start:resolve_end]
-        self.assertIn('log "disk-root share mode: using mounted volume root $volume_root"', resolve_section)
-        self.assertIn('echo "$volume_root"', resolve_section)
-        self.assertLess(
-            resolve_section.index('if [ "$SHARE_USE_DISK_ROOT" = "true" ]; then'),
-            resolve_section.index('if data_root=$(find_data_root_under_volume "$volume_root"); then'),
-        )
-
-    def test_render_start_script_defers_netbsd4_cache_assignment_until_data_root_exists(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values), payload_family="netbsd4le_samba4")
-        rendered = render_template("start-samba.sh", bundle.start_script_replacements)
-        data_root_index = rendered.index('if DATA_ROOT=$(discover_preexisting_data_root); then')
-        payload_index = rendered.index('PAYLOAD_DIR=$(find_payload_dir "$DATA_ROOT") || {')
-        cache_index = rendered.index("CACHE_DIRECTORY=$PAYLOAD_DIR/cache")
-        self.assertGreater(payload_index, data_root_index)
-        self.assertGreater(cache_index, payload_index)
-
-    def test_render_smb_conf_uses_custom_persistent_cache_directory_for_netbsd4(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4-test",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values), payload_family="netbsd4le_samba4")
-        rendered = render_template("smb.conf.template", bundle.smbconf_replacements)
-        self.assertIn("cache directory = __PAYLOAD_DIR__/cache", rendered)
-        self.assertNotIn("__CACHE_DIRECTORY__", rendered)
-        self.assertNotIn("__PAYLOAD_DIR_NAME__", rendered)
-
-    def test_render_watchdog_script_includes_device_model_flag(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_AIRPORT_SYAP": "119",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("watchdog.sh", bundle.watchdog_replacements)
-        self.assertIn('MDNS_DEVICE_MODEL=AirPortTimeCapsule', rendered)
-        self.assertIn('AIRPORT_SYAP=119', rendered)
-        self.assertIn('--device-model "$MDNS_DEVICE_MODEL"', rendered)
-        self.assertIn('. /mnt/Flash/common.sh', rendered)
-        self.assertIn('--airport-wama "$AIRPORT_WAMA"', rendered)
-        self.assertIn('--airport-rama "$AIRPORT_RAMA"', rendered)
-        self.assertIn('--airport-ram2 "$AIRPORT_RAM2"', rendered)
-        self.assertIn('--airport-syap "$AIRPORT_SYAP"', rendered)
-        self.assertIn('--airport-syvs "$AIRPORT_SYVS"', rendered)
-        self.assertIn('--airport-srcv "$AIRPORT_SRCV"', rendered)
-        self.assertIn('airport syAP missing; advertising _airport._tcp without syAP', rendered)
-        self.assertIn('airport clone fields incomplete; skipping _airport._tcp advertisement', rendered)
-        self.assertIn('ADISK_DISK_KEY=dk0', rendered)
-        self.assertIn('ADISK_DISK_ADVF=0x82', rendered)
-        self.assertIn("ADISK_UUID=''", rendered)
-        self.assertIn('--adisk-disk-key "$ADISK_DISK_KEY"', rendered)
-        self.assertIn('--adisk-disk-advf "$ADISK_DISK_ADVF"', rendered)
-        self.assertIn('--load-snapshot "$APPLE_MDNS_SNAPSHOT"', rendered)
-        self.assertNotIn('SNAPSHOT_BOOTSTRAP_GRACE_SECONDS', rendered)
-        self.assertNotIn('watchdog recovery: mdns restart deferred while startup snapshot capture may still be running', rendered)
-        self.assertNotIn('--save-all-snapshot "$ALL_MDNS_SNAPSHOT"', rendered)
-        self.assertNotIn('--save-snapshot "$APPLE_MDNS_SNAPSHOT"', rendered)
-        self.assertIn('--adisk-uuid "$ADISK_UUID"', rendered)
-        self.assertIn('--adisk-sys-wama "$iface_mac"', rendered)
-        self.assertIn("VOLUME_DEVICE=${1:-}", rendered)
-        self.assertIn("VOLUME_ROOT=${2:-}", rendered)
-        self.assertIn("DATA_ROOT=${3:-}", rendered)
-        self.assertIn("ensure_data_volume_mounted()", rendered)
-        self.assertIn('if is_volume_root_mounted "$VOLUME_ROOT"; then', rendered)
-        self.assertIn('mount_hfs_bounded "$VOLUME_DEVICE" "$VOLUME_ROOT" 30 "watchdog recovery"', rendered)
-        self.assertNotIn('/sbin/mount_hfs "$VOLUME_DEVICE" "$VOLUME_ROOT"', rendered)
-        self.assertIn('if [ ! -f "$RAM_PRIVATE/nbns.enabled" ]; then', rendered)
-        self.assertIn('"$NBNS_BIN" \\', rendered)
-        self.assertIn('--name "$SMB_NETBIOS_NAME"', rendered)
-        self.assertIn('rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true', rendered)
-        self.assertNotIn('if [ ! -f "$RAM_PRIVATE/nbns.enabled" ]; then\n        return 0\n    fi\n\n    if [ ! -x "$NBNS_BIN" ]; then\n        log_msg "NBNS restart skipped; missing $NBNS_BIN"\n        return 0\n    fi\n\n    iface_ip="$(get_iface_ipv4 "$NET_IFACE")"\n    if [ -z "$iface_ip" ]; then\n        log_msg "NBNS restart skipped; missing IPv4 for $NET_IFACE"\n        return 0\n    fi\n\n    pkill "$NBNS_PROC_NAME" >/dev/null 2>&1 || true\n    "$NBNS_BIN"', rendered)
-
-    def test_watchdog_mdns_restart_does_not_kill_existing_advertiser(self) -> None:
-        restart_mdns = self._extract_shell_function(self._render_default_watchdog(), "restart_mdns")
-
-        self.assertNotIn("pkill", restart_mdns)
-        self.assertIn('"$@" >/dev/null 2>&1 &', restart_mdns)
-
-    def test_render_watchdog_script_uses_fast_recovery_poll_before_steady_state(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("watchdog.sh", bundle.watchdog_replacements)
-        self.assertIn("RECOVERY_POLL_SECONDS=10", rendered)
-        self.assertIn("MOUNT_POLL_SECONDS=30", rendered)
-        self.assertIn("STEADY_POLL_SECONDS=300", rendered)
-        self.assertIn("INITIAL_STARTUP_DELAY_SECONDS=${4:-0}", rendered)
-        self.assertNotIn("WATCHDOG_START_TS", rendered)
-        self.assertIn('sleep "$INITIAL_STARTUP_DELAY_SECONDS"', rendered)
-        self.assertIn("all_managed_services_healthy()", rendered)
-        self.assertNotIn("elapsed=", rendered)
-        self.assertIn("ensure_data_volume_mounted", rendered)
-        self.assertIn("sleep_with_mount_checks()", rendered)
-        self.assertIn('sleep "$sleep_seconds"', rendered)
-        self.assertIn("slept=$((slept + sleep_seconds))", rendered)
-        self.assertIn("ensure_data_volume_mounted || true", rendered)
-        iteration_section = rendered[rendered.index("watchdog_iteration()"):rendered.index('log "watchdog startup beginning')]
-        self.assertIn("if ensure_data_volume_mounted; then", iteration_section)
-        self.assertIn("start_smbd_if_needed", iteration_section)
-        self.assertIn('log "watchdog recovery: smbd restart skipped because data volume is unavailable"', iteration_section)
-        self.assertNotIn("ensure_data_volume_mounted || true\n    start_smbd_if_needed", iteration_section)
-        main_loop = rendered[rendered.index("while :; do"):]
-        self.assertIn("if watchdog_iteration; then", main_loop)
-        self.assertNotIn("start_smbd_if_needed", main_loop)
-        self.assertIn('sleep "$RECOVERY_POLL_SECONDS"', rendered)
-        self.assertIn('sleep_with_mount_checks "$STEADY_POLL_SECONDS"', rendered)
-        self.assertNotIn('sleep "$STEADY_POLL_SECONDS"', rendered)
-
-    def test_watchdog_iteration_skips_smbd_restart_when_volume_remount_fails(self) -> None:
-        iteration = self._extract_shell_function(self._render_default_watchdog(), "watchdog_iteration")
-        with tempfile.TemporaryDirectory() as tmpdir:
-            trace = Path(tmpdir) / "trace.log"
-            script = Path(tmpdir) / "watchdog-iteration.sh"
-            script.write_text(
-                f"""#!/bin/sh
-set -eu
-TRACE={shlex.quote(str(trace))}
-MDNS_PROC_NAME=mdns-advertiser
-NBNS_PROC_NAME=nbns-advertiser
-log() {{ echo "log:$*" >> "$TRACE"; }}
-{iteration}
-ensure_data_volume_mounted() {{ echo ensure-mount >> "$TRACE"; return 1; }}
-start_smbd_if_needed() {{ echo start-smbd >> "$TRACE"; }}
-runtime_process_present() {{ return 0; }}
-restart_mdns() {{ echo restart-mdns >> "$TRACE"; }}
-restart_nbns() {{ echo restart-nbns >> "$TRACE"; }}
-all_managed_services_healthy() {{ return 0; }}
-watchdog_iteration
-echo "status=$?" >> "$TRACE"
-""",
-                encoding="utf-8",
-            )
-
-            proc = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True, check=False)
-
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            trace_lines = trace.read_text().splitlines()
-            self.assertIn("ensure-mount", trace_lines)
-            self.assertIn("log:watchdog recovery: smbd restart skipped because data volume is unavailable", trace_lines)
-            self.assertNotIn("start-smbd", trace_lines)
-            self.assertNotIn("restart-mdns", trace_lines)
-            self.assertNotIn("restart-nbns", trace_lines)
-            self.assertIn("status=0", trace_lines)
-
-    def test_watchdog_iteration_remounts_before_restarting_smbd(self) -> None:
-        iteration = self._extract_shell_function(self._render_default_watchdog(), "watchdog_iteration")
-        with tempfile.TemporaryDirectory() as tmpdir:
-            trace = Path(tmpdir) / "trace.log"
-            script = Path(tmpdir) / "watchdog-iteration-remount.sh"
-            script.write_text(
-                f"""#!/bin/sh
-set -eu
-TRACE={shlex.quote(str(trace))}
-MDNS_PROC_NAME=mdns-advertiser
-NBNS_PROC_NAME=nbns-advertiser
-log() {{ echo "log:$*" >> "$TRACE"; }}
-{iteration}
-ensure_data_volume_mounted() {{ echo ensure-mount >> "$TRACE"; return 0; }}
-start_smbd_if_needed() {{ echo start-smbd >> "$TRACE"; }}
-runtime_process_present() {{ return 0; }}
-restart_mdns() {{ echo restart-mdns >> "$TRACE"; }}
-restart_nbns() {{ echo restart-nbns >> "$TRACE"; }}
-all_managed_services_healthy() {{ return 0; }}
-watchdog_iteration
-echo "status=$?" >> "$TRACE"
-""",
-                encoding="utf-8",
-            )
-
-            proc = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True, check=False)
-
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            trace_lines = trace.read_text().splitlines()
-            self.assertLess(trace_lines.index("ensure-mount"), trace_lines.index("start-smbd"))
-            self.assertNotIn("restart-mdns", trace_lines)
-            self.assertNotIn("restart-nbns", trace_lines)
-            self.assertIn("status=0", trace_lines)
-
-    def test_render_watchdog_script_requires_nbns_only_when_enabled(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("watchdog.sh", bundle.watchdog_replacements)
-        self.assertIn("nbns_enabled()", rendered)
-        self.assertIn('if nbns_enabled; then', rendered)
-        self.assertIn('if ! runtime_process_present "$NBNS_PROC_NAME" false; then', rendered)
-
-    def test_render_watchdog_script_stops_apple_cifs_before_nbns_restart(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values))
-        rendered = render_template("watchdog.sh", bundle.watchdog_replacements)
-        restart_start = rendered.index("restart_nbns()")
-        restart_end = rendered.index("nbns_enabled()")
-        restart_section = rendered[restart_start:restart_end]
-        common = load_boot_asset_text("common.sh")
-        apple_conflict_start = common.index("stop_apple_nbns_conflicts()")
-        conflict_start = common.index("stop_nbns_conflicts()")
-        apple_conflict_section = common[apple_conflict_start:conflict_start]
-        self.assertIn('stop_runtime_process "wcifsnd" "wcifsnd" false || cleanup_status=1', apple_conflict_section)
-        self.assertIn('stop_runtime_process "wcifsfs" "wcifsfs" false || cleanup_status=1', apple_conflict_section)
-        self.assertNotIn('stop_runtime_process "$NBNS_PROC_NAME"', restart_section)
-        self.assertIn('if ! stop_apple_nbns_conflicts; then', restart_section)
-        self.assertIn('log "watchdog recovery: nbns restart skipped because conflicting Apple CIFS/NBNS processes still running"', restart_section)
-        self.assertLess(restart_section.index('if ! stop_apple_nbns_conflicts; then'), restart_section.index('"$NBNS_BIN" \\'))
-
-    def test_build_template_bundle_accepts_adisk_values(self) -> None:
-        values = {
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "AirPortTimeCapsule",
-            "TC_SAMBA_USER": "admin",
-        }
-        bundle = build_template_bundle(self._template_config(values), adisk_disk_key="dk3", adisk_uuid="12345678-1234-1234-1234-123456789012")
-        self.assertEqual(bundle.start_script_replacements["__ADISK_DISK_KEY__"], "dk3")
-        self.assertEqual(bundle.start_script_replacements["__ADISK_UUID__"], "12345678-1234-1234-1234-123456789012")
 
     def test_mdns_advertiser_accepts_lowercase_wama_and_normalizes_output(self) -> None:
         if shutil.which("cc") is None:
@@ -2253,7 +574,7 @@ int main(void) {{
             self.assertEqual(proc.returncode, 0, proc.stderr)
             run = subprocess.run([str(bin_path)], capture_output=True, text=True, check=False)
             self.assertEqual(run.returncode, 0, run.stderr)
-            self.assertEqual(run.stdout.strip(), "sys=waMA=80:EA:96:E6:58:68,adVF=0x1100")
+            self.assertEqual(run.stdout.strip(), "sys=waMA=80:EA:96:E6:58:68,adVF=0x1010")
 
     def test_mdns_advertiser_adisk_disk_txt_defaults_to_cloned_advf(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
@@ -2302,6 +623,45 @@ int main(void) {{
             run.stdout.strip(),
             "dk2=adVF=0x82,adVN=Data,adVU=12345678-1234-1234-1234-123456789012",
         )
+
+    def test_mdns_advertiser_rejects_extra_adisk_share_fields(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <stdio.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+int main(void) {{
+    struct config cfg;
+    char path[] = "/tmp/tcapsulesmb-adisk-extra-XXXXXX";
+    int fd;
+    FILE *fp;
+    int rc;
+
+    memset(&cfg, 0, sizeof(cfg));
+    fd = mkstemp(path);
+    if (fd < 0) {{
+        return 1;
+    }}
+    fp = fdopen(fd, "w");
+    if (fp == NULL) {{
+        close(fd);
+        unlink(path);
+        return 2;
+    }}
+    fputs("Data\\tdk2\\t12345678-1234-1234-1234-123456789012\\t0x1093\\textra\\n", fp);
+    fclose(fp);
+
+    rc = parse_adisk_shares_file(&cfg, path);
+    unlink(path);
+    return rc == 0 ? 3 : 0;
+}}
+'''.format(mdns_source=mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_adisk_extra_fields")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("has extra fields", run.stderr)
 
     def test_mdns_advertiser_normalizes_airport_mac_fields_to_apple_style(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
@@ -3190,82 +1550,32 @@ int main(void) {{
             self.assertEqual(run.returncode, 2)
             self.assertIn("15 bytes or fewer", run.stderr)
 
-    def test_ensure_volume_root_mounted_raises_when_no_output(self) -> None:
-        proc = mock.Mock(stdout="\n", returncode=1)
-        with mock.patch("timecapsulesmb.device.mounts.discover_mounted_volume_root_conn", side_effect=DeviceError("no mounted volume")):
-            with mock.patch("timecapsulesmb.device.mounts.run_ssh", return_value=proc):
-                with self.assertRaises(DeviceError) as exc:
-                    ensure_volume_root_mounted_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
-        self.assertNotIsInstance(exc.exception, SystemExit)
+    def test_mounted_mast_volumes_mounts_each_volume_and_returns_successes(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        internal = self._mast_volume("dk2", name="Internal", builtin=True)
+        external = self._mast_volume("dk5", disk_device="sd0", name="External", builtin=False)
 
-    def test_ensure_volume_root_mounted_returns_fallback_mount(self) -> None:
-        proc = mock.Mock(stdout="/Volumes/dk3\n", returncode=0)
-        with mock.patch("timecapsulesmb.device.mounts.discover_mounted_volume_root_conn", side_effect=DeviceError("no mounted volume")):
-            with mock.patch("timecapsulesmb.device.mounts.run_ssh", return_value=proc):
-                self.assertEqual(ensure_volume_root_mounted_conn(SshConnection("root@10.0.0.2", "pw", "-o foo")), "/Volumes/dk3")
+        with mock.patch("timecapsulesmb.device.storage.ensure_mast_volume_mounted_conn", side_effect=[True, False]) as mount_mock:
+            mounted = mounted_mast_volumes_conn(connection, (internal, external), wait_seconds=17)
 
-    def test_ensure_volume_root_mounted_uses_discover_mounted_volume_first(self) -> None:
-        with mock.patch("timecapsulesmb.device.mounts.discover_mounted_volume_root_conn", return_value="/Volumes/dk2") as mounted_mock:
-            with mock.patch("timecapsulesmb.device.mounts.run_ssh") as run_ssh_mock:
-                volume = ensure_volume_root_mounted_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
-        self.assertEqual(volume, "/Volumes/dk2")
-        self.assertEqual(mounted_mock.call_args.args[0], SshConnection("root@10.0.0.2", "pw", "-o foo"))
-        run_ssh_mock.assert_not_called()
+        self.assertEqual(mounted, (internal,))
+        self.assertEqual(
+            mount_mock.call_args_list,
+            [
+                mock.call(connection, internal, wait_seconds=17),
+                mock.call(connection, external, wait_seconds=17),
+            ],
+        )
 
-    def test_ensure_volume_root_mounted_falls_back_when_no_volume_is_mounted(self) -> None:
-        proc = mock.Mock(stdout="/Volumes/dk3\n", returncode=0)
-        with mock.patch("timecapsulesmb.device.mounts.discover_mounted_volume_root_conn", side_effect=DeviceError("no mounted volume")):
-            with mock.patch("timecapsulesmb.device.mounts.run_ssh", return_value=proc) as run_ssh_mock:
-                volume = ensure_volume_root_mounted_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
-        self.assertEqual(volume, "/Volumes/dk3")
-        run_ssh_mock.assert_called_once()
+    def test_mounted_mast_volumes_returns_empty_when_no_volume_mounts(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        internal = self._mast_volume("dk2", name="Internal", builtin=True)
+        external = self._mast_volume("dk5", disk_device="sd0", name="External", builtin=False)
 
-    def test_ensure_volume_root_mounted_uses_shared_candidate_order_before_mounting_candidates(self) -> None:
-        proc = mock.Mock(stdout="/Volumes/dk2\n", returncode=0)
-        with mock.patch("timecapsulesmb.device.mounts.discover_mounted_volume_root_conn", side_effect=DeviceError("no mounted volume")):
-            with mock.patch("timecapsulesmb.device.mounts.run_ssh", return_value=proc) as run_ssh_mock:
-                ensure_volume_root_mounted_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
-        cmd = run_ssh_mock.call_args.args[1]
-        self.assertIn('volume="/Volumes/$dev"', cmd)
-        self.assertIn('mkdir -p "$volume_root"', cmd)
-        self.assertIn('df_line=$(/bin/df -k "$volume_root" 2>/dev/null | /usr/bin/tail -n +2 || true)', cmd)
-        self.assertIn("disk_name_candidates()", cmd)
-        self.assertIn("APdata", cmd)
-        self.assertIn("APconfig", cmd)
-        self.assertIn("APswap", cmd)
-        self.assertIn("/sbin/sysctl -n hw.disknames", cmd)
-        self.assertNotIn("is_metadata_wedge()", cmd)
-        self.assertIn("for dev in $(disk_name_candidates); do", cmd)
+        with mock.patch("timecapsulesmb.device.storage.ensure_mast_volume_mounted_conn", return_value=False):
+            mounted = mounted_mast_volumes_conn(connection, (internal, external), wait_seconds=30)
 
-    def test_ensure_volume_root_mounted_cleans_up_unused_mountpoint_after_failed_fallback_mount(self) -> None:
-        proc = mock.Mock(stdout="/Volumes/dk2\n", returncode=0)
-        with mock.patch("timecapsulesmb.device.mounts.discover_mounted_volume_root_conn", side_effect=DeviceError("no mounted volume")):
-            with mock.patch("timecapsulesmb.device.mounts.run_ssh", return_value=proc) as run_ssh_mock:
-                ensure_volume_root_mounted_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
-        cmd = run_ssh_mock.call_args.args[1]
-        self.assertIn('created_mountpoint=0', cmd)
-        self.assertIn('created_mountpoint=1', cmd)
-        self.assertIn('[ -w "$volume_root" ]', cmd)
-        self.assertIn('/bin/rmdir "$volume_root" >/dev/null 2>&1 || true', cmd)
-
-    def test_discover_mounted_volume_root_returns_mounted_mountpoint(self) -> None:
-        mounted = mock.Mock(mountpoint="/Volumes/dk2")
-        with mock.patch("timecapsulesmb.device.probe.discover_mounted_volume_conn", return_value=mounted):
-            self.assertEqual(discover_mounted_volume_root_conn(SshConnection("root@10.0.0.2", "pw", "-o foo")), "/Volumes/dk2")
-
-    def test_discover_mounted_volume_returns_active_device_and_mountpoint(self) -> None:
-        proc = mock.Mock(stdout="/dev/dk2 /Volumes/dk2\n", returncode=0)
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
-            mounted = discover_mounted_volume_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
-        self.assertEqual(mounted.device, "/dev/dk2")
-        self.assertEqual(mounted.mountpoint, "/Volumes/dk2")
-
-    def test_discover_mounted_volume_raises_when_no_candidate_is_mounted(self) -> None:
-        proc = mock.Mock(stdout="", returncode=1)
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
-            with self.assertRaises(DeviceError) as exc:
-                discover_mounted_volume_conn(SshConnection("root@10.0.0.2", "pw", "-o foo"))
-        self.assertNotIsInstance(exc.exception, SystemExit)
+        self.assertEqual(mounted, ())
 
     def test_probe_device_skips_direct_tcp_check_for_proxy_ssh_options(self) -> None:
         with mock.patch("timecapsulesmb.device.probe.tcp_open", side_effect=AssertionError("direct TCP probe should be skipped")):
@@ -3289,24 +1599,8 @@ int main(void) {{
         self.assertFalse(result.ssh_authenticated)
         self.assertEqual(result.error, "SSH is not reachable yet.")
 
-    def test_remote_read_adisk_uuid_returns_existing_file(self) -> None:
-        connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh", return_value=mock.Mock(stdout="12345678-1234-1234-1234-123456789012\n")):
-            with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
-                result = remote_read_adisk_uuid(connection, "/Volumes/dk2/samba4/private")
-        self.assertEqual(result, "12345678-1234-1234-1234-123456789012")
-        scp_mock.assert_not_called()
-
-    def test_remote_read_adisk_uuid_returns_none_when_missing(self) -> None:
-        connection = SshConnection("host", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh", return_value=mock.Mock(stdout="\n")):
-            with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
-                result = remote_read_adisk_uuid(connection, "/Volumes/dk2/samba4/private")
-        self.assertIsNone(result)
-        scp_mock.assert_not_called()
-
     def test_upload_deployment_payload_uploads_all_expected_files(self) -> None:
-        paths = build_device_paths("/Volumes/dk2", "samba4")
+        paths = self._payload_home("/Volumes/dk2", "samba4")
         plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
         connection = SshConnection("host", "pw", "-o foo")
         source_resolver = {
@@ -3315,13 +1609,12 @@ int main(void) {{
             BINARY_NBNS_SOURCE: Path("/tmp/nbns-advertiser"),
             GENERATED_SMBPASSWD_SOURCE: Path("/tmp/smbpasswd"),
             GENERATED_USERNAME_MAP_SOURCE: Path("/tmp/username.map"),
-            GENERATED_ADISK_UUID_SOURCE: Path("/tmp/adisk.uuid"),
+            GENERATED_FLASH_CONFIG_SOURCE: Path("/tmp/tcapsulesmb.conf"),
             PACKAGED_RC_LOCAL_SOURCE: Path("/tmp/rc.local"),
             PACKAGED_COMMON_SH_SOURCE: Path("/tmp/common.sh"),
             PACKAGED_DFREE_SH_SOURCE: Path("/tmp/dfree.sh"),
-            RENDERED_START_SAMBA_SOURCE: Path("/tmp/start-samba.sh"),
-            RENDERED_WATCHDOG_SOURCE: Path("/tmp/watchdog.sh"),
-            RENDERED_SMB_CONF_SOURCE: Path("/tmp/smb.conf.template"),
+            PACKAGED_START_SAMBA_SOURCE: Path("/tmp/start-samba.sh"),
+            PACKAGED_WATCHDOG_SOURCE: Path("/tmp/watchdog.sh"),
         }
         with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
             with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as ssh_mock:
@@ -3330,7 +1623,7 @@ int main(void) {{
                     connection=connection,
                     source_resolver=source_resolver,
                 )
-        self.assertEqual(scp_mock.call_count, 13)
+        self.assertEqual(scp_mock.call_count, 12)
         sources = [call.args[1] for call in scp_mock.call_args_list]
         self.assertEqual(
             sources,
@@ -3344,10 +1637,9 @@ int main(void) {{
                 Path("/tmp/start-samba.sh"),
                 Path("/tmp/watchdog.sh"),
                 Path("/tmp/dfree.sh"),
-                Path("/tmp/smb.conf.template"),
+                Path("/tmp/tcapsulesmb.conf"),
                 Path("/tmp/smbpasswd"),
                 Path("/tmp/username.map"),
-                Path("/tmp/adisk.uuid"),
             ],
         )
         destinations = [call.args[2] for call in scp_mock.call_args_list]
@@ -3363,37 +1655,36 @@ int main(void) {{
                 "/mnt/Flash/.start-samba.sh.tmp",
                 "/mnt/Flash/.watchdog.sh.tmp",
                 "/mnt/Flash/.dfree.sh.tmp",
-                "/Volumes/dk2/samba4/smb.conf.template",
+                "/mnt/Flash/.tcapsulesmb.conf.tmp",
                 "/Volumes/dk2/samba4/private/smbpasswd",
                 "/Volumes/dk2/samba4/private/username.map",
-                "/Volumes/dk2/samba4/private/adisk.uuid",
             ],
         )
         binary_upload_timeouts = [call.kwargs.get("timeout") for call in scp_mock.call_args_list[:4]]
         self.assertEqual(binary_upload_timeouts, [PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS] * 4)
         text_upload_timeouts = [call.kwargs.get("timeout") for call in scp_mock.call_args_list[4:]]
-        self.assertEqual(text_upload_timeouts, [FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS] * 5 + [None] * 4)
-        self.assertEqual(ssh_mock.call_count, 12)
+        self.assertEqual(text_upload_timeouts, [FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS] * 6 + [None] * 2)
+        self.assertEqual(ssh_mock.call_count, 14)
 
     def test_upload_deployment_payload_consumes_plan_uploads_directly(self) -> None:
-        paths = build_device_paths("/Volumes/dk2", "samba4")
+        paths = self._payload_home("/Volumes/dk2", "samba4")
         plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
         custom_plan = replace(plan, uploads=[plan.uploads[8], plan.uploads[9]])
         connection = SshConnection("host", "pw", "-o foo")
         source_resolver = {
             PACKAGED_DFREE_SH_SOURCE: Path("/tmp/dfree.sh"),
-            RENDERED_SMB_CONF_SOURCE: Path("/tmp/smb.conf.template"),
+            GENERATED_FLASH_CONFIG_SOURCE: Path("/tmp/tcapsulesmb.conf"),
         }
         with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
             with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as ssh_mock:
                 upload_deployment_payload(custom_plan, connection=connection, source_resolver=source_resolver)
 
-        self.assertEqual([call.args[1] for call in scp_mock.call_args_list], [Path("/tmp/dfree.sh"), Path("/tmp/smb.conf.template")])
-        self.assertEqual([call.args[2] for call in scp_mock.call_args_list], ["/mnt/Flash/.dfree.sh.tmp", "/Volumes/dk2/samba4/smb.conf.template"])
-        self.assertEqual(ssh_mock.call_count, 2)
+        self.assertEqual([call.args[1] for call in scp_mock.call_args_list], [Path("/tmp/dfree.sh"), Path("/tmp/tcapsulesmb.conf")])
+        self.assertEqual([call.args[2] for call in scp_mock.call_args_list], ["/mnt/Flash/.dfree.sh.tmp", "/mnt/Flash/.tcapsulesmb.conf.tmp"])
+        self.assertEqual(ssh_mock.call_count, 4)
 
     def test_upload_deployment_payload_fails_for_missing_planned_source(self) -> None:
-        paths = build_device_paths("/Volumes/dk2", "samba4")
+        paths = self._payload_home("/Volumes/dk2", "samba4")
         plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
         connection = SshConnection("host", "pw", "-o foo")
         with self.assertRaisesRegex(KeyError, "No local source for planned transfer 'binary:smbd'"):
@@ -3539,15 +1830,38 @@ capture_fstat_for_ucomm "$mixed_smbd" smbd
         self.assertNotIn("fstat:100", result.stdout)
         self.assertIn("fstat:101", result.stdout)
 
+    def test_probe_status_helpers_do_not_count_probe_shell_body_as_watchdog(self) -> None:
+        script = (
+            SMBD_STATUS_HELPERS
+            + r'''
+real_watchdog="202 1 S 0:00.00 sh /bin/sh /mnt/Flash/watchdog.sh"
+self_match_watchdog=$(cat <<'EOF'
+3308 11745 S 0:00.01 sh /bin/sh -c probe=/mnt/Flash/watchdog.sh
+11745 11677 Ss 0:00.01 sh sh -c /bin/sh -c 'probe=/mnt/Flash/watchdog.sh'
+EOF
+)
+watchdog_process_present_for_volume "$real_watchdog"; echo "real=$?"
+watchdog_process_present_for_volume "$self_match_watchdog"; echo "self=$?"
+'''
+        )
+
+        result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("real=0", result.stdout)
+        self.assertIn("self=1", result.stdout)
+
     def test_smbd_status_helpers_pass_only_with_live_ram_auth_mount_and_watchdog(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             ram_root = tmp / "mnt" / "Memory" / "samba4"
             persistent_prefix = tmp / "Volumes"
             volume_root = persistent_prefix / "dk2"
+            external_volume_root = persistent_prefix / "dk3"
             data_root = volume_root / "ShareRoot"
+            external_data_root = external_volume_root
             payload_private = volume_root / ".samba4" / "private"
-            for path in (ram_root / "sbin", ram_root / "private", ram_root / "etc", data_root, payload_private):
+            for path in (ram_root / "sbin", ram_root / "private", ram_root / "etc", ram_root / "var", data_root, external_data_root, payload_private):
                 path.mkdir(parents=True, exist_ok=True)
             (ram_root / "sbin" / "smbd").write_text("smbd")
             (ram_root / "sbin" / "smbd").chmod(0o755)
@@ -3564,13 +1878,20 @@ capture_fstat_for_ucomm "$mixed_smbd" smbd
 """,
                 encoding="utf-8",
             )
+            shares_tsv = ram_root / "var" / "shares.tsv"
+            shares_tsv.write_text(
+                f"Data\t{data_root}\tdk2\t1\taaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n"
+                f"USB\t{external_data_root}\tdk3\t0\tbbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\n",
+                encoding="utf-8",
+            )
             ps_out = (
                 "101 1 S 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd -D -s /mnt/Memory/samba4/etc/smb.conf\n"
-                f"202 1 S 0:00.00 sh /bin/sh /mnt/Flash/watchdog.sh /dev/dk2 {volume_root} {data_root}\n"
+                "202 1 S 0:00.00 sh /bin/sh /mnt/Flash/watchdog.sh\n"
             )
             script = f"""
 RUNTIME_RAM_ROOT={shlex.quote(str(ram_root))}
 RUNTIME_SMB_CONF_PATH={shlex.quote(str(smb_conf))}
+RUNTIME_SHARES_TSV_PATH={shlex.quote(str(shares_tsv))}
 RUNTIME_PERSISTENT_ROOT_PREFIX={shlex.quote(str(persistent_prefix) + "/")}
 {SMBD_STATUS_HELPERS}
 capture_df_for_volume_root() {{ echo "/dev/dk2 100 10 90 10% $1"; }}
@@ -3587,8 +1908,8 @@ printf 'status=%s\\n' "$?"
         self.assertIn("PASS:active smb.conf passdb backend uses RAM smbpasswd", result.stdout)
         self.assertIn("PASS:active smb.conf username map uses RAM username.map", result.stdout)
         self.assertIn("PASS:active smb.conf xattr_tdb:file is persistent", result.stdout)
-        self.assertIn("PASS:managed data volume is mounted", result.stdout)
-        self.assertIn("PASS:watchdog is running for managed data volume", result.stdout)
+        self.assertIn("PASS:all managed share volumes are mounted", result.stdout)
+        self.assertIn("PASS:watchdog is running for managed runtime", result.stdout)
         self.assertIn("PASS:smbd bound to TCP 445", result.stdout)
         self.assertIn("status=0", result.stdout)
 
@@ -3636,8 +1957,8 @@ fi
         self.assertIn("FAIL:active smb.conf passdb backend is not staged in RAM", result.stdout)
         self.assertIn("FAIL:active smb.conf username map is not staged in RAM", result.stdout)
         self.assertIn("FAIL:active smb.conf xattr_tdb:file is not persistent disk storage", result.stdout)
-        self.assertIn("FAIL:managed data volume is not mounted", result.stdout)
-        self.assertIn("FAIL:watchdog is not running for managed data volume", result.stdout)
+        self.assertIn("FAIL:one or more managed share volumes are not mounted", result.stdout)
+        self.assertIn("FAIL:watchdog is not running for managed runtime", result.stdout)
         self.assertIn("status=1", result.stdout)
 
     def test_probe_managed_smbd_reports_runtime_invariant_failures(self) -> None:
@@ -3645,7 +1966,7 @@ fi
             [
                 "FAIL:managed runtime smbd binary missing",
                 "FAIL:active smb.conf passdb backend is not staged in RAM",
-                "FAIL:managed data volume is not mounted",
+                "FAIL:one or more managed share volumes are not mounted",
             ]
         )
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(returncode=1, stdout=stdout)):
@@ -3654,14 +1975,14 @@ fi
         self.assertFalse(result.ready)
         self.assertEqual(
             result.detail,
-            "managed runtime smbd binary missing; active smb.conf passdb backend is not staged in RAM; managed data volume is not mounted",
+            "managed runtime smbd binary missing; active smb.conf passdb backend is not staged in RAM; one or more managed share volumes are not mounted",
         )
         self.assertEqual(
             result.lines,
             (
                 "FAIL:managed runtime smbd binary missing",
                 "FAIL:active smb.conf passdb backend is not staged in RAM",
-                "FAIL:managed data volume is not mounted",
+                "FAIL:one or more managed share volumes are not mounted",
             ),
         )
 
@@ -3781,19 +2102,20 @@ fi
     def test_format_deployment_plan_contains_concrete_actions(self) -> None:
         payload_dir_name = "samba4"
         payload_dir = f"/Volumes/dk2/{payload_dir_name}"
-        paths = build_device_paths("/Volumes/dk2", payload_dir_name)
-        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"), install_nbns=True)
+        paths = self._payload_home("/Volumes/dk2", payload_dir_name)
+        plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
         text = format_deployment_plan(plan)
         self.assertIn("volume root: /Volumes/dk2", text)
         self.assertIn(f"Apple mount wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s", text)
-        self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill mdns-advertiser >/dev/null 2>&1 || true", text)
-        self.assertIn("mkdir -p /Volumes/dk2/ShareRoot", text)
-        self.assertIn("/bin/sh -c ': > /Volumes/dk2/ShareRoot/.com.apple.timemachine.supported'", text)
+        self.assertIn("tc_kill_watchdog_pids TERM", text)
+        self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", text)
+        self.assertIn("/usr/bin/pkill '^mdns-advertiser$' >/dev/null 2>&1 || true", text)
         self.assertIn(f"mkdir -p {payload_dir} {payload_dir}/private {payload_dir}/cache /mnt/Flash", text)
+        self.assertIn(f"rm -rf {payload_dir}/smb.conf.template", text)
+        self.assertIn(f"rm -rf {payload_dir}/private/adisk.uuid", text)
+        self.assertIn(f"rm -rf {payload_dir}/private/nbns.enabled", text)
         self.assertIn(f"generated smbpasswd (generated:smbpasswd, generated) -> {payload_dir}/private/smbpasswd", text)
-        self.assertIn(f"generated adisk UUID (generated:adisk.uuid, generated) -> {payload_dir}/private/adisk.uuid", text)
-        self.assertIn(f"generated nbns marker (generated:nbns.enabled, generated) -> {payload_dir}/private/nbns.enabled", text)
+        self.assertIn("generated flash runtime config (generated:tcapsulesmb.conf, flash_atomic, timeout 120s) -> /mnt/Flash/tcapsulesmb.conf", text)
         self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4", text)
         self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4le", text)
         self.assertIn("ln -s /mnt/Memory/samba4 /root/tc-netbsd4be", text)
@@ -3801,7 +2123,7 @@ fi
         self.assertIn(f"chmod 700 {payload_dir}/private", text)
 
     def test_netbsd4_activation_plan_contains_no_reboot_actions(self) -> None:
-        paths = build_device_paths("/Volumes/dk2", "samba4")
+        paths = self._payload_home("/Volumes/dk2", "samba4")
         plan = build_deployment_plan(
             "root@10.0.0.2",
             paths,
@@ -3814,22 +2136,23 @@ fi
         self.assertEqual(
             plan.activation_actions,
             [
-                stop_process_full_action("[w]atchdog.sh", force=True),
-                stop_process_action("smbd", force=True),
-                stop_process_action("mdns-advertiser", force=True),
-                stop_process_action("nbns-advertiser", force=True),
-                stop_process_action("wcifsfs", force=True),
-                run_script_action("/mnt/Flash/rc.local"),
+                StopWatchdogAction(),
+                StopProcessAction("smbd"),
+                StopProcessAction("mdns-advertiser"),
+                StopProcessAction("nbns-advertiser"),
+                StopProcessAction("wcifsfs"),
+                RunScriptAction("/mnt/Flash/rc.local"),
             ],
         )
 
         text = format_deployment_plan(plan)
         self.assertIn("Remote actions (NetBSD4 activation):", text)
-        self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill smbd >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill mdns-advertiser >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill nbns-advertiser >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill wcifsfs >/dev/null 2>&1 || true", text)
+        self.assertIn("tc_kill_watchdog_pids TERM", text)
+        self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", text)
+        self.assertIn("/usr/bin/pkill '^smbd$' >/dev/null 2>&1 || true", text)
+        self.assertIn("/usr/bin/pkill '^mdns-advertiser$' >/dev/null 2>&1 || true", text)
+        self.assertIn("/usr/bin/pkill '^nbns-advertiser$' >/dev/null 2>&1 || true", text)
+        self.assertIn("/usr/bin/pkill '^wcifsfs$' >/dev/null 2>&1 || true", text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
         self.assertIn("Deploy will activate Samba immediately without rebooting.", text)
         self.assertIn("NetBSD 4 devices cannot auto-run Samba after a reboot.", text)
@@ -3839,7 +2162,7 @@ fi
         self.assertIn("mdns-advertiser is bound to UDP 5353", text)
 
     def test_netbsd6_no_reboot_plan_has_no_reboot_checks(self) -> None:
-        paths = build_device_paths("/Volumes/dk2", "samba4")
+        paths = self._payload_home("/Volumes/dk2", "samba4")
         plan = build_deployment_plan(
             "root@10.0.0.2",
             paths,
@@ -3855,27 +2178,44 @@ fi
         self.assertIn("Post-deploy checks:\n  none", text)
 
     def test_build_uninstall_plan_stops_nbns_process(self) -> None:
-        paths = build_device_paths("/Volumes/dk2", "samba4")
-        plan = build_uninstall_plan("root@10.0.0.2", paths)
+        plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
         rendered = [render_remote_action(action) for action in plan.remote_actions]
-        self.assertTrue(any(command.startswith("pkill nbns-advertiser >/dev/null 2>&1 || true;") for command in rendered))
+        self.assertTrue(any(command.startswith("/usr/bin/pkill '^nbns-advertiser$' >/dev/null 2>&1 || true;") for command in rendered))
 
     def test_build_uninstall_plan_stops_watchdog_first(self) -> None:
-        paths = build_device_paths("/Volumes/dk2", "samba4")
-        plan = build_uninstall_plan("root@10.0.0.2", paths)
+        plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
         rendered = [render_remote_action(action) for action in plan.remote_actions]
-        self.assertTrue(rendered[0].startswith("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true;"))
+        self.assertTrue(rendered[0].startswith("tc_watchdog_pids() { "))
+        self.assertIn("tc_kill_watchdog_pids TERM", rendered[0])
+        self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", rendered[0])
 
     def test_build_uninstall_plan_removes_mdns_snapshots(self) -> None:
-        paths = build_device_paths("/Volumes/dk2", "samba4")
-        plan = build_uninstall_plan("root@10.0.0.2", paths)
+        plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
 
         self.assertEqual(plan.flash_targets["allmdns.txt"], "/mnt/Flash/allmdns.txt")
         self.assertEqual(plan.flash_targets["applemdns.txt"], "/mnt/Flash/applemdns.txt")
+        self.assertEqual(plan.flash_targets["tcapsulesmb.conf"], "/mnt/Flash/tcapsulesmb.conf")
         self.assertIn("/mnt/Flash/allmdns.txt", plan.verify_absent_targets)
         self.assertIn("/mnt/Flash/applemdns.txt", plan.verify_absent_targets)
-        self.assertIn(remove_path_action("/mnt/Flash/allmdns.txt"), plan.remote_actions)
-        self.assertIn(remove_path_action("/mnt/Flash/applemdns.txt"), plan.remote_actions)
+        self.assertIn("/mnt/Flash/tcapsulesmb.conf", plan.verify_absent_targets)
+        self.assertIn(RemovePathAction("/mnt/Flash/allmdns.txt"), plan.remote_actions)
+        self.assertIn(RemovePathAction("/mnt/Flash/applemdns.txt"), plan.remote_actions)
+        self.assertIn(RemovePathAction("/mnt/Flash/tcapsulesmb.conf"), plan.remote_actions)
+
+    def test_build_uninstall_plan_removes_each_payload_home_once(self) -> None:
+        plan = build_uninstall_plan(
+            "root@10.0.0.2",
+            ["/Volumes/dk2", "/Volumes/dk5", "/Volumes/dk2"],
+            ["/Volumes/dk2/samba4", "/Volumes/dk5/samba4", "/Volumes/dk2/samba4"],
+        )
+
+        self.assertEqual(plan.volume_roots, ["/Volumes/dk2", "/Volumes/dk5"])
+        self.assertEqual(plan.payload_dirs, ["/Volumes/dk2/samba4", "/Volumes/dk5/samba4"])
+        self.assertEqual(
+            [action for action in plan.remote_actions if action == RemovePathAction("/Volumes/dk2/samba4")],
+            [RemovePathAction("/Volumes/dk2/samba4")],
+        )
+        self.assertIn(RemovePathAction("/Volumes/dk5/samba4"), plan.remote_actions)
 
     def test_render_remove_path_refuses_flash_root(self) -> None:
         unsafe_paths = [
@@ -3888,10 +2228,10 @@ fi
         for unsafe_path in unsafe_paths:
             with self.subTest(path=unsafe_path):
                 with self.assertRaisesRegex(ValueError, "Refusing to remove flash root path"):
-                    render_remote_action(remove_path_action(unsafe_path))
+                    render_remote_action(RemovePathAction(unsafe_path))
 
         self.assertEqual(
-            render_remote_action(remove_path_action("/mnt/Flash/rc.local")),
+            render_remote_action(RemovePathAction("/mnt/Flash/rc.local")),
             "rm -rf /mnt/Flash/rc.local",
         )
 
@@ -3908,7 +2248,7 @@ fi
                 [
                     RemotePermission(f"{payload_dir}/cache", "755"),
                     RemotePermission(f"{payload_dir}/nbns-advertiser", "755"),
-                    RemotePermission(f"{payload_dir}/private/nbns.enabled", "600", optional=True),
+                    RemotePermission(f"{payload_dir}/private/smbpasswd", "600"),
                 ]
             )
         )
@@ -3920,51 +2260,34 @@ fi
         self.assertNotIn("'/Volumes/dk2/Time Capsule Samba 4/libexec", permissions_cmd)
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/cache'", permissions_cmd)
         self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/nbns-advertiser'", permissions_cmd)
-        self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/private/nbns.enabled'", permissions_cmd)
-        self.assertIn("if [ -e '/Volumes/dk2/Time Capsule Samba 4/private/nbns.enabled' ]; then", permissions_cmd)
+        self.assertIn("'/Volumes/dk2/Time Capsule Samba 4/private/smbpasswd'", permissions_cmd)
+        self.assertNotIn("if [ -e ", permissions_cmd)
         self.assertNotIn("|| chmod 600", permissions_cmd)
         self.assertNotIn("|| true", permissions_cmd)
-        self.assertEqual(render_remote_action(run_script_action("/mnt/Flash/rc.local")), "/bin/sh /mnt/Flash/rc.local")
+        self.assertEqual(render_remote_action(RunScriptAction("/mnt/Flash/rc.local")), "/bin/sh /mnt/Flash/rc.local")
         self.assertEqual(
-            render_remote_action(run_script_action("/mnt/Flash/Time Capsule SMB/rc.local")),
+            render_remote_action(RunScriptAction("/mnt/Flash/Time Capsule SMB/rc.local")),
             "/bin/sh '/mnt/Flash/Time Capsule SMB/rc.local'",
         )
-        initialize_cmd = render_remote_action(
-            initialize_data_root_action(
-                "/Volumes/dk2/Time Capsule ShareRoot",
-                "/Volumes/dk2/Time Capsule ShareRoot/.com.apple.timemachine.supported",
-            )
-        )
-        self.assertIn("'/Volumes/dk2/Time Capsule ShareRoot'", initialize_cmd)
-        self.assertIn("'/Volumes/dk2/Time Capsule ShareRoot/.com.apple.timemachine.supported'", initialize_cmd)
 
-    def test_remote_action_factories_return_typed_actions(self) -> None:
+    def test_collection_action_factories_normalize_to_tuples(self) -> None:
         self.assertEqual(
             prepare_dirs_action(["/payload"], [RemoteSymlink("/root/tc-netbsd7", "/mnt/Memory/samba4")]),
             PrepareDirsAction(("/payload",), (RemoteSymlink("/root/tc-netbsd7", "/mnt/Memory/samba4"),)),
         )
-        self.assertEqual(initialize_data_root_action("/data", "/data/.marker"), InitializeDataRootAction("/data", "/data/.marker"))
         self.assertEqual(
             install_permissions_action([RemotePermission("/payload/private", "700")]),
             InstallPermissionsAction((RemotePermission("/payload/private", "700"),)),
         )
-        self.assertEqual(stop_process_action("smbd"), StopProcessAction("smbd"))
-        self.assertEqual(stop_process_full_action("[w]atchdog.sh"), StopProcessFullAction("[w]atchdog.sh"))
-        self.assertEqual(remove_path_action("/payload"), RemovePathAction("/payload"))
-        self.assertEqual(run_script_action("/mnt/Flash/rc.local"), RunScriptAction("/mnt/Flash/rc.local"))
 
     def test_remote_action_json_preserves_dry_run_shape(self) -> None:
         self.assertEqual(
-            remote_action_to_jsonable(initialize_data_root_action("/data", "/data/.marker")),
-            {"kind": "initialize_data_root", "args": ["/data", "/data/.marker"]},
-        )
-        self.assertEqual(
-            remote_action_to_jsonable(stop_process_action("smbd")),
+            remote_action_to_jsonable(StopProcessAction("smbd")),
             {"kind": "stop_process", "args": ["smbd"]},
         )
         self.assertEqual(
-            remote_action_to_jsonable(stop_process_action("smbd", force=True)),
-            {"kind": "stop_process", "args": ["smbd"], "force": True},
+            remote_action_to_jsonable(StopWatchdogAction()),
+            {"kind": "stop_watchdog", "args": []},
         )
 
     def test_render_remote_action_rejects_unknown_action_object(self) -> None:
@@ -3972,13 +2295,21 @@ fi
             render_remote_action(object())  # type: ignore[arg-type]
 
     def test_deployment_plan_uses_install_permissions_action(self) -> None:
-        paths = build_device_paths("/Volumes/dk2", "Time Capsule Samba 4")
+        paths = self._payload_home("/Volumes/dk2", "Time Capsule Samba 4")
         plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
         self.assertIn(install_permissions_action(plan.permissions), plan.post_upload_actions)
 
+    def test_deployment_plan_marks_uploaded_payload_binaries_executable(self) -> None:
+        paths = self._payload_home("/Volumes/dk2", "samba4")
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
+        executable_permissions = {permission.path for permission in plan.permissions if permission.mode == "755"}
+
+        self.assertIn("/Volumes/dk2/samba4/smbd", executable_permissions)
+        self.assertIn("/Volumes/dk2/samba4/mdns-advertiser", executable_permissions)
+        self.assertIn("/Volumes/dk2/samba4/nbns-advertiser", executable_permissions)
+
     def test_remote_uninstall_payload_runs_actions_sequentially(self) -> None:
-        paths = build_device_paths("/Volumes/dk2", "samba4")
-        plan = build_uninstall_plan("root@10.0.0.2", paths)
+        plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
         expected = [render_remote_action(action) for action in plan.remote_actions]
         connection = SshConnection("host", "pw", "-o foo")
         with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
@@ -3987,7 +2318,7 @@ fi
 
     def test_render_process_present_ignores_zombies_for_name_and_full_matches(self) -> None:
         def process_present(pattern: str, *, full: bool, ps_lines: list[str]) -> bool:
-            command = deploy_commands._render_process_present(pattern, full=full)
+            command = render_process_present(pattern, full=full)
             with tempfile.TemporaryDirectory() as tmp:
                 fixture = Path(tmp) / "ps.txt"
                 fixture.write_text("\n".join(ps_lines) + "\n")
@@ -4003,36 +2334,55 @@ fi
         self.assertTrue(process_present("wcifsnd", full=False, ps_lines=["S    wcifsnd         wcifsnd"]))
         self.assertFalse(process_present("/mnt/Flash/watchdog.sh", full=True, ps_lines=["Z    sh              /bin/sh /mnt/Flash/watchdog.sh"]))
         self.assertTrue(process_present("/mnt/Flash/watchdog.sh", full=True, ps_lines=["S    sh              /bin/sh /mnt/Flash/watchdog.sh"]))
+        self.assertFalse(
+            process_present(
+                "/mnt/Flash/watchdog.sh",
+                full=True,
+                ps_lines=[
+                    "S    sh              /bin/sh -c probe=/mnt/Flash/watchdog.sh",
+                    "S    sh              sh -c /bin/sh -c 'probe=/mnt/Flash/watchdog.sh'",
+                ],
+            )
+        )
+
+    def test_render_process_present_rejects_generic_full_substring_matches(self) -> None:
+        with self.assertRaises(ValueError):
+            render_process_present("smbd", full=True)
+        with self.assertRaises(ValueError):
+            render_remote_action(StopProcessAction("smbd;rm"))
 
     def test_render_stop_process_action_waits_for_exit(self) -> None:
-        command = render_remote_action(stop_process_action("mdns-advertiser"))
-        self.assertIn("pkill mdns-advertiser >/dev/null 2>&1 || true;", command)
+        command = render_remote_action(StopProcessAction("mdns-advertiser"))
+        self.assertIn("/usr/bin/pkill '^mdns-advertiser$' >/dev/null 2>&1 || true;", command)
         self.assertIn("while /bin/sh -c 'found=1; if ps axww -o stat= -o ucomm= -o command= >/tmp/tcapsule-ps.", command)
         self.assertIn('case \"$1\" in Z*) continue ;; esac;', command)
         self.assertIn('if [ \"$2\" = mdns-advertiser ]; then found=1; break; fi;', command)
         self.assertIn('if [ "$attempt" -ge 5 ]; then break; fi;', command)
-        self.assertNotIn("pkill -9", command)
+        self.assertIn("/usr/bin/pkill -9 '^mdns-advertiser$' >/dev/null 2>&1 || true;", command)
 
-    def test_render_force_stop_process_action_kills_and_fails_if_still_running(self) -> None:
-        command = render_remote_action(stop_process_action("smbd", force=True))
-        self.assertIn("pkill smbd >/dev/null 2>&1 || true;", command)
+    def test_render_stop_process_action_kills_and_fails_if_still_running(self) -> None:
+        command = render_remote_action(StopProcessAction("smbd"))
+        self.assertIn("/usr/bin/pkill '^smbd$' >/dev/null 2>&1 || true;", command)
         self.assertIn('if [ "$attempt" -ge 5 ]; then break; fi;', command)
-        self.assertIn("pkill -9 smbd >/dev/null 2>&1 || true;", command)
+        self.assertIn("/usr/bin/pkill -9 '^smbd$' >/dev/null 2>&1 || true;", command)
         self.assertIn("echo 'process smbd did not stop' >&2; exit 1", command)
 
-    def test_render_stop_process_full_action_waits_for_exit(self) -> None:
-        command = render_remote_action(stop_process_full_action("[w]atchdog.sh"))
-        self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true;", command)
+    def test_render_stop_watchdog_action_waits_for_exit(self) -> None:
+        command = render_remote_action(StopWatchdogAction())
+        self.assertIn("tc_watchdog_pids() {", command)
+        self.assertIn("tc_kill_watchdog_pids TERM;", command)
         self.assertIn("while /bin/sh -c 'found=1; if ps axww -o stat= -o ucomm= -o command= >/tmp/tcapsule-ps.", command)
         self.assertIn('case \"$1\" in Z*) continue ;; esac;', command)
-        self.assertIn('case "$line" in *[w]atchdog.sh*) found=1; break ;; esac;', command)
-        self.assertNotIn("pkill -9 -f", command)
+        self.assertIn('[ "$2" = sh ] || continue;', command)
+        self.assertIn("tc_kill_watchdog_pids KILL;", command)
+        self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", command)
+        self.assertNotIn("/usr/bin/pkill -9 -f", command)
 
-    def test_render_force_stop_process_full_action_kills_by_full_match(self) -> None:
-        command = render_remote_action(stop_process_full_action("[w]atchdog.sh", force=True))
-        self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true;", command)
-        self.assertIn("pkill -9 -f '[w]atchdog.sh' >/dev/null 2>&1 || true;", command)
-        self.assertIn("echo 'process [w]atchdog.sh did not stop' >&2; exit 1", command)
+    def test_render_stop_watchdog_action_kills_by_full_match(self) -> None:
+        command = render_remote_action(StopWatchdogAction())
+        self.assertIn('if [ "${1:-}" = /bin/sh ] || [ "${1:-}" = sh ]; then', command)
+        self.assertIn('/bin/kill -9 "$tc_watchdog_pid" >/dev/null 2>&1 || true', command)
+        self.assertIn("echo 'process watchdog did not stop' >&2; exit 1", command)
 
     def test_wait_for_ssh_state_uses_real_ssh_probe_for_expected_up(self) -> None:
         proc = mock.Mock(returncode=0, stdout="ok\n")

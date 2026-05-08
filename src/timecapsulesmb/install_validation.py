@@ -4,7 +4,6 @@ import importlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from timecapsulesmb.core.config import AppConfig, DEFAULTS
 from timecapsulesmb.core.paths import (
     AppPaths,
     artifact_manifest_source,
@@ -12,12 +11,9 @@ from timecapsulesmb.core.paths import (
     validate_distribution_root,
 )
 from timecapsulesmb.deploy.artifacts import load_artifact_manifest, validate_artifacts
-from timecapsulesmb.deploy.templates import (
-    SMBCONF_RUNTIME_TOKENS,
-    build_template_bundle,
+from timecapsulesmb.deploy.boot_assets import (
     load_boot_asset_text,
-    render_checked_template,
-    render_runtime_smbconf_text,
+    require_no_unresolved_asset_tokens,
 )
 
 
@@ -28,7 +24,6 @@ BOOT_ASSET_NAMES = (
     "start-samba.sh",
     "watchdog.sh",
     "dfree.sh",
-    "smb.conf.template",
 )
 
 
@@ -135,21 +130,13 @@ def validate_artifact_hashes(app_paths: AppPaths) -> InstallCheckResult:
     return InstallCheckResult("artifact_hashes", True, "all payload artifact hashes match")
 
 
-def validate_templates(app_paths: AppPaths) -> InstallCheckResult:
-    config = AppConfig.from_values(dict(DEFAULTS), path=app_paths.config_path)
-    bundle = build_template_bundle(config)
+def validate_boot_script_tokens(app_paths: AppPaths) -> InstallCheckResult:
     try:
-        render_checked_template("start-samba.sh", bundle.start_script_replacements)
-        render_checked_template("watchdog.sh", bundle.watchdog_replacements)
-        smbconf_text = render_checked_template(
-            "smb.conf.template",
-            bundle.smbconf_replacements,
-            allowed_unresolved_tokens=SMBCONF_RUNTIME_TOKENS,
-        )
-        render_runtime_smbconf_text(smbconf_text)
+        require_no_unresolved_asset_tokens(load_boot_asset_text("start-samba.sh"))
+        require_no_unresolved_asset_tokens(load_boot_asset_text("watchdog.sh"))
     except Exception as exc:
-        return InstallCheckResult("templates", False, f"template validation failed: {exc}")
-    return InstallCheckResult("templates", True, "deployment templates render without unexpected tokens")
+        return InstallCheckResult("boot_script_tokens", False, f"boot script validation failed: {exc}")
+    return InstallCheckResult("boot_script_tokens", True, "managed boot scripts have no unresolved tokens")
 
 
 def validate_install(app_paths: AppPaths | None = None) -> list[InstallCheckResult]:
@@ -159,7 +146,7 @@ def validate_install(app_paths: AppPaths | None = None) -> list[InstallCheckResu
         validate_boot_assets(),
         validate_distribution(resolved_paths),
         validate_artifact_hashes(resolved_paths),
-        validate_templates(resolved_paths),
+        validate_boot_script_tokens(resolved_paths),
     ]
 
 

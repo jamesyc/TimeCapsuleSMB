@@ -156,24 +156,25 @@ def default_share_path_from_config(
     errors = validate_app_config(config, profile="repair_xattrs")
     if errors:
         raise RuntimeError(errors[0].format_for_cli())
-    share_name = config.get("TC_SHARE_NAME")
     target_host = ssh_target_host(config.get("TC_HOST"))
-    if not share_name or not target_host:
+    if not target_host:
         return None
 
     available_shares = mounted_smb_shares() if shares is None else shares
     candidates = [
         share
         for share in available_shares
-        if share.share == share_name and path_exists_func(share.mountpoint)
+        if path_exists_func(share.mountpoint)
     ]
-    for share in candidates:
-        if share.server.lower() == target_host.lower():
-            return share.mountpoint
+    target_matches = [share for share in candidates if share.server.lower() == target_host.lower()]
+    if len(target_matches) == 1:
+        return target_matches[0].mountpoint
+    if len(target_matches) > 1:
+        raise RuntimeError(f"Found multiple mounted SMB shares from {target_host}; pass --path explicitly.")
     if len(candidates) == 1:
         return candidates[0].mountpoint
     if len(candidates) > 1:
-        raise RuntimeError(f"Found multiple mounted SMB shares named {share_name!r}; pass --path explicitly.")
+        raise RuntimeError(f"Found multiple mounted SMB shares; pass --path explicitly.")
     return None
 
 

@@ -109,8 +109,18 @@ def format_uninstall_plan(plan: UninstallPlan) -> str:
     lines.append("")
     lines.append("Target:")
     lines.append(f"  host: {plan.host}")
-    lines.append(f"  volume root: {plan.volume_root}")
-    lines.append(f"  payload dir: {plan.payload_dir}")
+    lines.append("  volume roots:")
+    if plan.volume_roots:
+        for volume_root in plan.volume_roots:
+            lines.append(f"    {volume_root}")
+    else:
+        lines.append("    none")
+    lines.append("  payload dirs:")
+    if plan.payload_dirs:
+        for payload_dir in plan.payload_dirs:
+            lines.append(f"    {payload_dir}")
+    else:
+        lines.append("    none")
     lines.append("")
     lines.append("Remote actions:")
     for command in render_remote_actions(plan.remote_actions):

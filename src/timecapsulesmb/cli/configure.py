@@ -7,7 +7,6 @@ from typing import Optional
 
 from timecapsulesmb.configure_defaults import (
     ConfigureValueChoice,
-    apply_device_storage_defaults,
     derived_name_defaults,
     derived_prompt_defaults,
     interface_candidate_for_ip,
@@ -59,7 +58,6 @@ NO_SAVED_VALUE_HINT_KEYS = {"TC_PASSWORD", *HIDDEN_CONFIG_KEYS}
 REQUIRED_PYTHON_MODULES = ("zeroconf", "pexpect", "ifaddr")
 CONFIGURE_DETAIL_FIELDS = [
     ("TC_NET_IFACE", "Network interface on the device", DEFAULTS["TC_NET_IFACE"], False),
-    ("TC_SHARE_NAME", "SMB share name", DEFAULTS["TC_SHARE_NAME"], False),
     ("TC_SAMBA_USER", "Samba username", DEFAULTS["TC_SAMBA_USER"], False),
     ("TC_NETBIOS_NAME", "Samba NetBIOS name", DEFAULTS["TC_NETBIOS_NAME"], False),
     ("TC_PAYLOAD_DIR_NAME", "Persistent payload directory name", DEFAULTS["TC_PAYLOAD_DIR_NAME"], False),
@@ -289,16 +287,25 @@ def enable_ssh_and_reprobe_for_configure(
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Create or update the local TimeCapsuleSMB .env configuration.")
     add_config_argument(parser)
-    parser.add_argument("--share-use-disk-root", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--internal-share-use-disk-root", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--share-use-disk-root", dest="internal_share_use_disk_root", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     ensure_install_id()
     env_path = resolve_app_paths(config_path=args.config).config_path
+    env_exists = env_path.exists()
     existing = parse_env_file(env_path)
     configure_id = str(uuid.uuid4())
     telemetry_values = dict(existing)
     telemetry_values["TC_CONFIGURE_ID"] = configure_id
-    telemetry = TelemetryClient.from_config(AppConfig.from_values(telemetry_values, path=env_path))
+    telemetry = TelemetryClient.from_config(
+        AppConfig.from_values(
+            telemetry_values,
+            path=env_path,
+            exists=env_exists,
+            file_values=existing if env_exists else {},
+        )
+    )
     values: dict[str, str] = {}
     discovered_airport_syap: Optional[str] = None
     probed_device: DeviceCompatibility | None = None
@@ -331,8 +338,15 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         ssh_opts = existing.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"])
         values["TC_SSH_OPTS"] = ssh_opts
-        existing_share_use_disk_root = parse_bool(existing.get("TC_SHARE_USE_DISK_ROOT", DEFAULTS["TC_SHARE_USE_DISK_ROOT"]))
-        values["TC_SHARE_USE_DISK_ROOT"] = "true" if args.share_use_disk_root or existing_share_use_disk_root else "false"
+        existing_internal_share_use_disk_root = parse_bool(
+            existing.get(
+                "TC_INTERNAL_SHARE_USE_DISK_ROOT",
+                existing.get("TC_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"]),
+            )
+        )
+        values["TC_INTERNAL_SHARE_USE_DISK_ROOT"] = (
+            "true" if args.internal_share_use_disk_root or existing_internal_share_use_disk_root else "false"
+        )
         command_context.set_stage("bonjour_discovery")
         try:
             discovered_record = discover_default_record(existing)
@@ -590,7 +604,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                 continue
             values[key] = prompt_config_value(existing, key, label, default, secret=secret)
 
-        apply_device_storage_defaults(values)
         values["TC_CONFIGURE_ID"] = configure_id
         command_context.set_stage("write_env")
         write_env_file(env_path, values)

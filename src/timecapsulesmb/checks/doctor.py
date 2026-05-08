@@ -37,17 +37,16 @@ from timecapsulesmb.device.probe import (
     ProbedDeviceState,
     RemoteInterfaceProbeResult,
     RUNTIME_SMB_CONF,
-    discover_mounted_volume_root_conn,
+    nbns_flash_config_enabled_conn,
     probe_connection_state,
     probe_managed_mdns_takeover_conn,
     probe_managed_smbd_conn,
-    nbns_marker_enabled_conn,
     probe_remote_interface_conn,
     read_active_smb_conf_conn,
     read_interface_ipv4_conn,
+    read_runtime_share_names_conn,
     read_runtime_log_tails_conn,
 )
-from timecapsulesmb.device.util import build_device_paths
 from timecapsulesmb.discovery.native_dns_sd import browse_native_dns_sd
 from timecapsulesmb.transport.local import find_free_local_port
 from timecapsulesmb.transport.local import command_exists
@@ -315,6 +314,19 @@ def _add_bonjour_results(
     )
 
 
+def _doctor_share_name(connection: SshConnection, active_smb_conf: str | None) -> str:
+    try:
+        runtime_share_names = read_runtime_share_names_conn(connection)
+    except Exception:
+        runtime_share_names = []
+    if runtime_share_names:
+        return runtime_share_names[0]
+    active_share_names = parse_active_share_names(active_smb_conf or "")
+    if active_share_names:
+        return active_share_names[0]
+    raise RuntimeError("could not determine active Samba share name")
+
+
 def _add_nbns_results(
     connection: SshConnection,
     config: AppConfig,
@@ -324,9 +336,7 @@ def _add_nbns_results(
     add_result: Callable[[CheckResult], None],
 ) -> None:
     try:
-        volume_root = discover_mounted_volume_root_conn(connection)
-        device_paths = build_device_paths(volume_root, config.require("TC_PAYLOAD_DIR_NAME"))
-        if nbns_marker_enabled_conn(connection, device_paths.payload_dir):
+        if nbns_flash_config_enabled_conn(connection):
             if proxied_ssh:
                 add_result(CheckResult("SKIP", "NBNS check skipped for SSH-proxied target; UDP/137 is not reachable through the SSH jump host"))
             else:
@@ -346,8 +356,14 @@ def _add_authenticated_smb_results(
     host: str,
     smb_password: str,
     proxied_ssh: bool,
+    active_smb_conf: str | None,
     add_result: Callable[[CheckResult], None],
 ) -> None:
+    try:
+        share_name = _doctor_share_name(connection, active_smb_conf)
+    except RuntimeError as exc:
+        add_result(CheckResult("FAIL", str(exc)))
+        return
     if proxied_ssh:
         local_port = find_free_local_port()
         try:
@@ -362,7 +378,7 @@ def _add_authenticated_smb_results(
                         config.require("TC_SAMBA_USER"),
                         smb_password,
                         "127.0.0.1",
-                        expected_share_name=config.require("TC_SHARE_NAME"),
+                        expected_share_name=share_name,
                         port=local_port,
                     )
                 )
@@ -370,7 +386,7 @@ def _add_authenticated_smb_results(
                     config.require("TC_SAMBA_USER"),
                     smb_password,
                     "127.0.0.1",
-                    config.require("TC_SHARE_NAME"),
+                    share_name,
                     port=local_port,
                 ):
                     add_result(result)
@@ -383,7 +399,7 @@ def _add_authenticated_smb_results(
         config.require("TC_SAMBA_USER"),
         smb_password,
         smb_servers,
-        expected_share_name=config.require("TC_SHARE_NAME"),
+        expected_share_name=share_name,
     )
     add_result(listing_result)
     if listing_result.status != "PASS":
@@ -397,7 +413,7 @@ def _add_authenticated_smb_results(
         config.require("TC_SAMBA_USER"),
         smb_password,
         smb_server,
-        config.require("TC_SHARE_NAME"),
+        share_name,
     ):
         add_result(result)
 
@@ -598,6 +614,7 @@ def _doctor_check_authenticated_smb(context: DoctorRunContext) -> None:
         host=context.host,
         smb_password=context.smb_password,
         proxied_ssh=context.proxied_ssh,
+        active_smb_conf=context.active_smb_conf,
         add_result=context.add_result,
     )
 

@@ -69,7 +69,6 @@ DEFAULTS = {
     "TC_HOST": "root@192.168.1.101",
     "TC_SSH_OPTS": "-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
     "TC_NET_IFACE": "bridge0",
-    "TC_SHARE_NAME": "Data",
     "TC_SAMBA_USER": "admin",
     "TC_NETBIOS_NAME": "TimeCapsule",
     "TC_PAYLOAD_DIR_NAME": ".samba4",
@@ -77,7 +76,7 @@ DEFAULTS = {
     "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
     "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
     "TC_AIRPORT_SYAP": "",
-    "TC_SHARE_USE_DISK_ROOT": "false",
+    "TC_INTERNAL_SHARE_USE_DISK_ROOT": "false",
 }
 
 ENV_FILE_KEYS = [
@@ -85,7 +84,6 @@ ENV_FILE_KEYS = [
     "TC_PASSWORD",
     "TC_SSH_OPTS",
     "TC_NET_IFACE",
-    "TC_SHARE_NAME",
     "TC_SAMBA_USER",
     "TC_NETBIOS_NAME",
     "TC_PAYLOAD_DIR_NAME",
@@ -93,7 +91,7 @@ ENV_FILE_KEYS = [
     "TC_MDNS_HOST_LABEL",
     "TC_MDNS_DEVICE_MODEL",
     "TC_AIRPORT_SYAP",
-    "TC_SHARE_USE_DISK_ROOT",
+    "TC_INTERNAL_SHARE_USE_DISK_ROOT",
     "TC_CONFIGURE_ID",
 ]
 
@@ -344,27 +342,6 @@ def validate_mdns_host_label(value: str, field_name: str) -> Optional[str]:
     return None
 
 
-def validate_adisk_share_name(value: str, field_name: str) -> Optional[str]:
-    if not value:
-        return f"{field_name} cannot be blank."
-    if build_adisk_share_txt(value) is None:
-        max_share_bytes = (
-            MAX_DNS_TXT_BYTES
-            - len(ADISK_DEFAULT_DISK_KEY.encode("utf-8"))
-            - len(ADISK_DISK_TXT_ADVF_PREFIX.encode("utf-8"))
-            - len(ADISK_MANAGED_DISK_ADVF.encode("utf-8"))
-            - len(ADISK_DISK_TXT_ADVN_MID.encode("utf-8"))
-            - len(ADISK_DISK_TXT_SUFFIX.encode("utf-8"))
-            - len(ADISK_DISK_UUID_EXAMPLE.encode("utf-8"))
-        )
-        return f"{field_name} must be {max_share_bytes} bytes or fewer."
-    if _contains_invalid_control_character(value):
-        return f"{field_name} contains an invalid control character."
-    if any(ch in value for ch in '/\\[]:*?"<>|,='):
-        return f"{field_name} contains a character that is not safe for Samba/adisk."
-    return None
-
-
 def validate_netbios_name(value: str, field_name: str) -> Optional[str]:
     if not value:
         return f"{field_name} cannot be blank."
@@ -479,7 +456,6 @@ def validate_mdns_device_model_matches_syap(syap: str, device_model: str) -> Opt
 CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
     "TC_HOST": validate_ssh_target,
     "TC_NET_IFACE": validate_net_iface,
-    "TC_SHARE_NAME": validate_adisk_share_name,
     "TC_SAMBA_USER": validate_samba_user,
     "TC_NETBIOS_NAME": validate_netbios_name,
     "TC_PAYLOAD_DIR_NAME": validate_payload_dir_name,
@@ -487,7 +463,7 @@ CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
     "TC_MDNS_HOST_LABEL": validate_mdns_host_label,
     "TC_AIRPORT_SYAP": validate_airport_syap,
     "TC_MDNS_DEVICE_MODEL": validate_mdns_device_model,
-    "TC_SHARE_USE_DISK_ROOT": validate_bool,
+    "TC_INTERNAL_SHARE_USE_DISK_ROOT": validate_bool,
 }
 
 
@@ -502,7 +478,6 @@ class ConfigProfile:
 
 CONFIGURE_VALIDATED_KEYS = (
     "TC_NET_IFACE",
-    "TC_SHARE_NAME",
     "TC_SAMBA_USER",
     "TC_NETBIOS_NAME",
     "TC_PAYLOAD_DIR_NAME",
@@ -510,12 +485,11 @@ CONFIGURE_VALIDATED_KEYS = (
     "TC_MDNS_HOST_LABEL",
     "TC_MDNS_DEVICE_MODEL",
     "TC_AIRPORT_SYAP",
-    "TC_SHARE_USE_DISK_ROOT",
+    "TC_INTERNAL_SHARE_USE_DISK_ROOT",
 )
 MANAGED_VALIDATED_KEYS = (
     "TC_HOST",
     "TC_NET_IFACE",
-    "TC_SHARE_NAME",
     "TC_SAMBA_USER",
     "TC_NETBIOS_NAME",
     "TC_PAYLOAD_DIR_NAME",
@@ -523,12 +497,11 @@ MANAGED_VALIDATED_KEYS = (
     "TC_MDNS_HOST_LABEL",
     "TC_MDNS_DEVICE_MODEL",
     "TC_AIRPORT_SYAP",
-    "TC_SHARE_USE_DISK_ROOT",
+    "TC_INTERNAL_SHARE_USE_DISK_ROOT",
 )
 MANAGED_REQUIRED_FILE_KEYS = (
     "TC_HOST",
     "TC_NET_IFACE",
-    "TC_SHARE_NAME",
     "TC_SAMBA_USER",
     "TC_NETBIOS_NAME",
     "TC_PAYLOAD_DIR_NAME",
@@ -571,8 +544,8 @@ CONFIG_PROFILES: dict[str, ConfigProfile] = {
         validated_keys=("TC_HOST",),
     ),
     "repair_xattrs": ConfigProfile(
-        required_values=("TC_SHARE_NAME",),
-        validated_keys=("TC_SHARE_NAME",),
+        required_values=("TC_HOST",),
+        validated_keys=("TC_HOST",),
         require_env_file=False,
     ),
 }

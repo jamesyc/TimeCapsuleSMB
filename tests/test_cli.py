@@ -34,6 +34,7 @@ from timecapsulesmb.cli import (
     uninstall,
     validate_install,
 )
+from timecapsulesmb.cli import runtime as cli_runtime
 from timecapsulesmb.cli.main import main
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.core.config import (
@@ -45,7 +46,6 @@ from timecapsulesmb.core.config import (
 from timecapsulesmb.core.paths import AppPaths
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
 from timecapsulesmb.device.probe import (
-    MountedVolume,
     ManagedMdnsTakeoverProbeResult,
     ManagedRuntimeProbeResult,
     ManagedSmbdProbeResult,
@@ -55,19 +55,15 @@ from timecapsulesmb.device.probe import (
     RemoteInterfaceCandidatesProbeResult,
     RemoteInterfaceProbeResult,
 )
-from timecapsulesmb.deploy.templates import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
-from timecapsulesmb.deploy.templates import build_template_bundle as build_real_template_bundle
+from timecapsulesmb.device.storage import NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE, MaStVolume, PayloadHome
 from timecapsulesmb.deploy.commands import (
-    RemoteSymlink,
-    initialize_data_root_action,
-    prepare_dirs_action,
-    run_script_action,
-    stop_process_action,
-    stop_process_full_action,
+    RunScriptAction,
+    StopProcessAction,
+    StopWatchdogAction,
 )
 from timecapsulesmb.deploy.planner import (
-    GENERATED_ADISK_UUID_SOURCE,
-    GENERATED_NBNS_MARKER_SOURCE,
+    DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+    GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_SMBPASSWD_SOURCE,
     GENERATED_USERNAME_MAP_SOURCE,
 )
@@ -179,6 +175,43 @@ class FakeCommandContext:
 
 
 class CliTests(unittest.TestCase):
+    def _payload_home(self, volume_root: str = "/Volumes/dk2", payload_dir_name: str = "samba4") -> PayloadHome:
+        disk_key = volume_root.rstrip("/").rsplit("/", 1)[-1]
+        return PayloadHome(volume_root, f"/dev/{disk_key}", payload_dir_name)
+
+    def _mast_volume(
+        self,
+        partition_device: str = "dk2",
+        *,
+        disk_device: str = "wd0",
+        name: str = "Data",
+        builtin: bool = True,
+    ) -> MaStVolume:
+        return MaStVolume(
+            disk_device,
+            partition_device,
+            f"/Volumes/{partition_device}",
+            name,
+            "12345678-1234-1234-1234-123456789012",
+            builtin,
+            "hfs",
+        )
+
+    def _patch_mast_volume_flow(
+        self,
+        stack: ExitStack,
+        module: str,
+        *,
+        mounted_volumes: tuple[MaStVolume, ...] | None = None,
+        read_volumes: tuple[MaStVolume, ...] | None = None,
+    ) -> SimpleNamespace:
+        mounted = mounted_volumes if mounted_volumes is not None else (self._mast_volume("dk2"),)
+        read = read_volumes if read_volumes is not None else mounted
+        return SimpleNamespace(
+            read_mast_volumes_conn=stack.enter_context(mock.patch(f"timecapsulesmb.cli.{module}.read_mast_volumes_conn", return_value=read)),
+            mounted_mast_volumes_conn=stack.enter_context(mock.patch(f"timecapsulesmb.cli.{module}.mounted_mast_volumes_conn", return_value=mounted)),
+        )
+
     def managed_runtime_probe(self, ready: bool) -> ManagedRuntimeProbeResult:
         status = "PASS" if ready else "FAIL"
         detail = "managed runtime is ready" if ready else "managed runtime is not ready"
@@ -199,10 +232,15 @@ class CliTests(unittest.TestCase):
             "timecapsulesmb.cli.configure.TelemetryClient.from_config",
             "timecapsulesmb.cli.deploy.TelemetryClient.from_config",
             "timecapsulesmb.cli.activate.TelemetryClient.from_config",
+            "timecapsulesmb.cli.bootstrap.TelemetryClient.from_config",
+            "timecapsulesmb.cli.discover.TelemetryClient.from_config",
             "timecapsulesmb.cli.doctor.TelemetryClient.from_config",
             "timecapsulesmb.cli.fsck.TelemetryClient.from_config",
+            "timecapsulesmb.cli.paths.TelemetryClient.from_config",
+            "timecapsulesmb.cli.repair_xattrs.TelemetryClient.from_config",
             "timecapsulesmb.cli.set_ssh.TelemetryClient.from_config",
             "timecapsulesmb.cli.uninstall.TelemetryClient.from_config",
+            "timecapsulesmb.cli.validate_install.TelemetryClient.from_config",
         ):
             self._exit_stack.enter_context(mock.patch(target, return_value=self._telemetry_client))
         self._exit_stack.enter_context(
@@ -599,8 +637,8 @@ class CliTests(unittest.TestCase):
         patch_actions: bool = False,
         patch_upload: bool = False,
         upload_side_effect=None,
-        adisk_uuid=None,
-        template_bundle=None,
+        mast_volumes: tuple[MaStVolume, ...] | None = None,
+        select_payload_home_side_effect=None,
         verify_runtime=None,
         reboot_side_effect=None,
         wait_side_effect=None,
@@ -612,18 +650,30 @@ class CliTests(unittest.TestCase):
         raised = None
         if artifacts is None:
             artifacts = [("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]
+        config_values = values or self.make_valid_env()
+        payload_home = self._payload_home(mount_root, config_values.get("TC_PAYLOAD_DIR_NAME", DEFAULTS["TC_PAYLOAD_DIR_NAME"]))
+        if mast_volumes is None:
+            mast_volumes = (self._mast_volume(mount_root.rstrip("/").rsplit("/", 1)[-1]),)
         with ExitStack() as stack:
             if ensure_install_id:
                 mocks.ensure_install_id = stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.ensure_install_id"))
             mocks.load_env_config = stack.enter_context(
-                mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values or self.make_valid_env()))
+                mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(config_values))
             )
             if command_context is not None:
                 mocks.command_context = stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.CommandContext", return_value=command_context))
             mocks.validate_artifacts = stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=artifacts))
-            mocks.ensure_volume_root_mounted_conn = stack.enter_context(
-                mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value=mount_root)
+            mocks.read_mast_volumes_conn = stack.enter_context(
+                mock.patch("timecapsulesmb.cli.deploy.read_mast_volumes_conn", return_value=mast_volumes)
             )
+            if select_payload_home_side_effect is None:
+                mocks.select_payload_home_conn = stack.enter_context(
+                    mock.patch("timecapsulesmb.cli.deploy.select_payload_home_conn", return_value=payload_home)
+                )
+            else:
+                mocks.select_payload_home_conn = stack.enter_context(
+                    mock.patch("timecapsulesmb.cli.deploy.select_payload_home_conn", side_effect=select_payload_home_side_effect)
+                )
             mocks.require_compatibility = stack.enter_context(
                 mock.patch(
                     "timecapsulesmb.cli.context.CommandContext.require_compatibility",
@@ -635,14 +685,6 @@ class CliTests(unittest.TestCase):
             if patch_upload:
                 mocks.upload_deployment_payload = stack.enter_context(
                     mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload", side_effect=upload_side_effect)
-                )
-            if adisk_uuid is not None:
-                mocks.remote_read_adisk_uuid = stack.enter_context(
-                    mock.patch("timecapsulesmb.cli.deploy.remote_read_adisk_uuid", return_value=adisk_uuid)
-                )
-            if template_bundle is not None:
-                mocks.build_template_bundle = stack.enter_context(
-                    mock.patch("timecapsulesmb.cli.deploy.build_template_bundle", return_value=template_bundle)
                 )
             if verify_runtime is not None:
                 mocks.verify_managed_runtime = stack.enter_context(
@@ -783,16 +825,23 @@ class CliTests(unittest.TestCase):
                 }
             ],
         }
-        with mock.patch("timecapsulesmb.cli.paths.resolve_app_paths", return_value=app_paths):
-            with mock.patch("timecapsulesmb.cli.paths.paths_to_jsonable", return_value=data):
-                with redirect_stdout(output):
-                    rc = paths.main(["--json"])
+        with mock.patch("timecapsulesmb.cli.paths.ensure_install_id"):
+            with mock.patch("timecapsulesmb.cli.paths.resolve_app_paths", return_value=app_paths):
+                with mock.patch("timecapsulesmb.cli.paths.paths_to_jsonable", return_value=data):
+                    with redirect_stdout(output):
+                        rc = paths.main(["--json"])
 
         self.assertEqual(rc, 0)
         rendered = json.loads(output.getvalue())
         self.assertEqual(rendered["distribution_root"], str(REPO_ROOT))
         self.assertEqual(rendered["config_path"], str(REPO_ROOT / ".env"))
         self.assertEqual(rendered["artifacts"][0]["name"], "smbd")
+        started = self.telemetry_payload("paths_started")
+        finished = self.telemetry_payload("paths_finished")
+        self.assertTrue(started["json_output"])
+        self.assertEqual(finished["result"], "success")
+        self.assertEqual(finished["artifact_count"], 1)
+        self.assertEqual(finished["missing_artifact_count"], 0)
 
     def test_validate_install_json_command_returns_failure_when_check_fails(self) -> None:
         app_paths = AppPaths(
@@ -806,45 +855,52 @@ class CliTests(unittest.TestCase):
             InstallCheckResult("artifact_hashes", False, "artifact validation failed", {"failures": ["missing bin/smbd"]}),
         ]
         output = io.StringIO()
-        with mock.patch("timecapsulesmb.cli.validate_install.resolve_app_paths", return_value=app_paths):
-            with mock.patch("timecapsulesmb.cli.validate_install.validate_install", return_value=checks):
-                with redirect_stdout(output):
-                    rc = validate_install.main(["--json"])
+        with mock.patch("timecapsulesmb.cli.validate_install.ensure_install_id"):
+            with mock.patch("timecapsulesmb.cli.validate_install.resolve_app_paths", return_value=app_paths):
+                with mock.patch("timecapsulesmb.cli.validate_install.validate_install", return_value=checks):
+                    with redirect_stdout(output):
+                        rc = validate_install.main(["--json"])
 
         self.assertEqual(rc, 1)
         rendered = json.loads(output.getvalue())
         self.assertFalse(rendered["ok"])
         self.assertEqual(rendered["checks"][1]["id"], "artifact_hashes")
         self.assertEqual(rendered["checks"][1]["details"]["failures"], ["missing bin/smbd"])
+        finished = self.telemetry_payload("validate_install_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["install_ok"], False)
+        self.assertEqual(finished["failed_check_ids"], ["artifact_hashes"])
+        self.assertIn("install validation failed", finished["error"])
 
     def test_validate_install_text_command_prints_summary(self) -> None:
-        checks = [InstallCheckResult("templates", True, "deployment templates render without unexpected tokens")]
+        checks = [InstallCheckResult("boot_script_tokens", True, "managed boot scripts have no unresolved tokens")]
         output = io.StringIO()
-        with mock.patch("timecapsulesmb.cli.validate_install.resolve_app_paths"):
-            with mock.patch("timecapsulesmb.cli.validate_install.validate_install", return_value=checks):
-                with redirect_stdout(output):
-                    rc = validate_install.main([])
+        with mock.patch("timecapsulesmb.cli.validate_install.ensure_install_id"):
+            with mock.patch("timecapsulesmb.cli.validate_install.resolve_app_paths"):
+                with mock.patch("timecapsulesmb.cli.validate_install.validate_install", return_value=checks):
+                    with redirect_stdout(output):
+                        rc = validate_install.main([])
 
         self.assertEqual(rc, 0)
-        self.assertIn("PASS deployment templates render without unexpected tokens", output.getvalue())
+        self.assertIn("PASS managed boot scripts have no unresolved tokens", output.getvalue())
         self.assertIn("Summary: install validation passed.", output.getvalue())
 
     def test_config_arg_is_passed_to_shared_config_loaders(self) -> None:
         commands = [
-            ("activate", activate, None),
-            ("doctor", doctor, None),
-            ("uninstall", uninstall, None),
-            ("fsck", fsck, None),
-            ("set_ssh", set_ssh, {"defaults": {}}),
-            ("repair_xattrs", repair_xattrs, None),
+            ("activate", activate, "load_env_config", None),
+            ("doctor", doctor, "load_env_config", None),
+            ("uninstall", uninstall, "load_env_config", None),
+            ("fsck", fsck, "load_env_config", None),
+            ("set_ssh", set_ssh, "load_env_config", {"defaults": {}}),
+            ("repair_xattrs", repair_xattrs, "load_optional_env_config", None),
         ]
         sentinel = RuntimeError("stop after config load")
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / "shared.env"
-            for _name, command_module, extra_kwargs in commands:
+            for _name, command_module, loader_name, extra_kwargs in commands:
                 with self.subTest(command=command_module.__name__):
                     patches = [
-                        mock.patch(f"{command_module.__name__}.load_env_config", side_effect=sentinel),
+                        mock.patch(f"{command_module.__name__}.{loader_name}", side_effect=sentinel),
                     ]
                     if hasattr(command_module, "ensure_install_id"):
                         patches.append(mock.patch(f"{command_module.__name__}.ensure_install_id"))
@@ -861,6 +917,55 @@ class CliTests(unittest.TestCase):
                     if extra_kwargs is not None:
                         expected_kwargs.update(extra_kwargs)
                     load_mock.assert_called_once_with(**expected_kwargs)
+
+    def test_optional_env_config_uses_missing_config_when_env_is_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            app_paths = AppPaths(
+                distribution_root=Path(tmp),
+                config_path=env_path,
+                state_dir=Path(tmp),
+                package_root=SRC_ROOT / "timecapsulesmb",
+            )
+            with mock.patch("timecapsulesmb.cli.runtime.resolve_app_paths", return_value=app_paths):
+                config = cli_runtime.load_optional_env_config()
+
+        self.assertFalse(config.exists)
+        self.assertEqual(config.path, env_path)
+        self.assertEqual(config.values, {})
+
+    def test_optional_env_config_reads_env_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("TC_HOST='root@10.0.0.2'\nTC_CONFIGURE_ID='cfg-1'\n")
+            app_paths = AppPaths(
+                distribution_root=Path(tmp),
+                config_path=env_path,
+                state_dir=Path(tmp),
+                package_root=SRC_ROOT / "timecapsulesmb",
+            )
+            with mock.patch("timecapsulesmb.cli.runtime.resolve_app_paths", return_value=app_paths):
+                config = cli_runtime.load_optional_env_config()
+
+        self.assertTrue(config.exists)
+        self.assertEqual(config.path, env_path)
+        self.assertEqual(config.get("TC_HOST"), "root@10.0.0.2")
+        self.assertEqual(config.get("TC_CONFIGURE_ID"), "cfg-1")
+
+    def test_repair_xattrs_non_macos_emits_platform_check_telemetry(self) -> None:
+        with mock.patch("timecapsulesmb.cli.repair_xattrs.ensure_install_id"):
+            with mock.patch(
+                "timecapsulesmb.cli.repair_xattrs.load_optional_env_config",
+                return_value=self.make_app_config({}, exists=False),
+            ):
+                with mock.patch("sys.platform", "linux"):
+                    with self.assertRaises(SystemExit):
+                        repair_xattrs.main(["--path", "/Volumes/Home"])
+
+        finished = self.telemetry_payload("repair_xattrs_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["host_platform"], "linux")
+        self.assertIn("stage=platform_check", finished["error"])
 
     def test_bootstrap_prints_full_next_steps(self) -> None:
         output = io.StringIO()
@@ -881,6 +986,11 @@ class CliTests(unittest.TestCase):
         self.assertIn("doctor", text)
         self.assertIn("activate", text)
         self.assertNotIn("set-ssh", text)
+        started = self.telemetry_payload("bootstrap_started")
+        finished = self.telemetry_payload("bootstrap_finished")
+        self.assertEqual(started["python_executable"], sys.executable)
+        self.assertEqual(finished["result"], "success")
+        self.assertEqual(finished["host_platform_label"], "macOS")
 
     def test_bootstrap_prints_same_core_next_steps_on_linux(self) -> None:
         output = io.StringIO()
@@ -914,10 +1024,15 @@ class CliTests(unittest.TestCase):
     def test_bootstrap_returns_error_when_requirements_missing(self) -> None:
         stderr = io.StringIO()
         with mock.patch("pathlib.Path.exists", return_value=False):
-            with redirect_stderr(stderr):
-                rc = bootstrap.main([])
+            with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
+                with redirect_stderr(stderr):
+                    rc = bootstrap.main([])
         self.assertEqual(rc, 1)
         self.assertIn("Missing", stderr.getvalue())
+        finished = self.telemetry_payload("bootstrap_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["requirements_present"], False)
+        self.assertIn("stage=validate_requirements", finished["error"])
 
     def test_bootstrap_installs_smbclient_via_homebrew_on_macos(self) -> None:
         output = io.StringIO()
@@ -1022,8 +1137,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "pw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -1042,7 +1156,7 @@ class CliTests(unittest.TestCase):
         fake_values = result.values
         self.assertEqual(result.rc, 0)
         self.assertEqual(fake_values["TC_SAMBA_USER"], "admin")
-        self.assertEqual(fake_values["TC_SHARE_USE_DISK_ROOT"], "false")
+        self.assertEqual(fake_values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "false")
         uuid.UUID(fake_values["TC_CONFIGURE_ID"])
         telemetry_values = result.mocks.telemetry_factory.call_args.args[0].values
         self.assertEqual(telemetry_values["TC_CONFIGURE_ID"], fake_values["TC_CONFIGURE_ID"])
@@ -1065,8 +1179,7 @@ class CliTests(unittest.TestCase):
                 "root@10.0.0.2",
                 "pw",
                 "bridge0",
-                "Data",
-                "admin",
+                                "admin",
                 "TimeCapsule",
                 "samba4",
                 "Time Capsule Samba 4",
@@ -1093,8 +1206,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "pw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -1110,9 +1222,9 @@ class CliTests(unittest.TestCase):
             command_context=FakeCommandContext(),
         )
         self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_SHARE_USE_DISK_ROOT"], "true")
+        self.assertEqual(result.values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "true")
 
-    def test_configure_airport_extreme_sets_share_use_disk_root_true(self) -> None:
+    def test_configure_airport_extreme_keeps_hidden_internal_share_root_default(self) -> None:
         def fake_prompt(label, default, _secret):
             if label == "Device root password":
                 return "rootpw"
@@ -1139,15 +1251,14 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_AIRPORT_SYAP"], "120")
         self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "AirPort7,120")
-        self.assertEqual(result.values["TC_SHARE_USE_DISK_ROOT"], "true")
+        self.assertEqual(result.values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "false")
 
     def test_configure_plain_rerun_preserves_existing_share_use_disk_root_true(self) -> None:
         prompt_values = iter([
             "root@10.0.0.2",
             "pw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -1163,15 +1274,14 @@ class CliTests(unittest.TestCase):
             command_context=FakeCommandContext(),
         )
         self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_SHARE_USE_DISK_ROOT"], "true")
+        self.assertEqual(result.values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "true")
 
     def test_configure_ensures_install_id_before_telemetry(self) -> None:
         prompt_values = iter([
             "root@10.0.0.2",
             "pw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -1366,7 +1476,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Debug context:", error)
         self.assertIn("command=configure", error)
         self.assertIn("stage=bonjour_discovery", error)
-        self.assertIn("TC_SHARE_USE_DISK_ROOT=false", error)
+        self.assertIn("TC_INTERNAL_SHARE_USE_DISK_ROOT=false", error)
 
     def test_configure_telemetry_records_acp_enable_branch_on_later_failure(self) -> None:
         self.run_configure_cli(
@@ -1466,8 +1576,7 @@ class CliTests(unittest.TestCase):
         prompt_values = iter([
             "pw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -1497,8 +1606,7 @@ class CliTests(unittest.TestCase):
         prompt_values = iter([
             "rootpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -1940,8 +2048,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "rootpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2077,8 +2184,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "rootpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2123,8 +2229,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "rootpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2163,8 +2268,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "rootpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2191,8 +2295,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "rootpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2225,8 +2328,7 @@ class CliTests(unittest.TestCase):
         prompt_values = iter([
             "rootpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2264,8 +2366,7 @@ class CliTests(unittest.TestCase):
         prompt_values = iter([
             "rootpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2304,8 +2405,7 @@ class CliTests(unittest.TestCase):
         prompt_values = iter([
             "rootpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2347,8 +2447,7 @@ class CliTests(unittest.TestCase):
         prompt_values = iter([
             "rootpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2422,8 +2521,7 @@ class CliTests(unittest.TestCase):
         prompt_values = iter([
             "rootpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2466,8 +2564,7 @@ class CliTests(unittest.TestCase):
         prompt_values = iter([
             "rootpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2510,8 +2607,7 @@ class CliTests(unittest.TestCase):
         prompt_values = iter([
             "rootpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2568,8 +2664,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2605,8 +2700,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2627,8 +2721,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_AIRPORT_SYAP"], "116")
         self.assertIn("Using TC_AIRPORT_SYAP from .env: 116", result.text)
 
-    def test_configure_prints_found_saved_value_for_valid_existing_share_name(self) -> None:
-        share_defaults: list[str] = []
+    def test_configure_ignores_legacy_existing_share_name(self) -> None:
         existing = {
             "TC_SHARE_NAME": "Archive Data",
         }
@@ -2636,7 +2729,6 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "goodpw",
             "bridge0",
-            "Archive Data",
             "admin",
             "TimeCapsule",
             "samba4",
@@ -2646,8 +2738,7 @@ class CliTests(unittest.TestCase):
         ])
 
         def fake_prompt(_label, default, _secret):
-            if _label == "SMB share name":
-                share_defaults.append(default)
+            self.assertNotEqual(_label, "SMB share name")
             return next(prompt_values)
 
         self.force_configure_acp_reprobe_auth_failed()
@@ -2658,9 +2749,8 @@ class CliTests(unittest.TestCase):
             confirm=True,
         )
         self.assertEqual(result.rc, 0)
-        self.assertEqual(share_defaults, ["Archive Data"])
-        self.assertEqual(result.values["TC_SHARE_NAME"], "Archive Data")
-        self.assertIn("Found saved value: Archive Data", result.text)
+        self.assertNotIn("TC_SHARE_NAME", result.values)
+        self.assertNotIn("SMB share name", result.text)
 
     def test_configure_invalid_ssh_inferred_model_falls_back_to_existing_syap_model(self) -> None:
         existing = {
@@ -2671,8 +2761,7 @@ class CliTests(unittest.TestCase):
         prompt_values = iter([
             "rootpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2707,8 +2796,7 @@ class CliTests(unittest.TestCase):
         prompt_values = iter([
             "rootpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2746,8 +2834,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2782,8 +2869,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2819,8 +2905,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2857,8 +2942,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2890,8 +2974,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2923,8 +3006,7 @@ class CliTests(unittest.TestCase):
         input_values = iter([
             "root@10.0.0.2",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2950,8 +3032,7 @@ class CliTests(unittest.TestCase):
         input_values = iter([
             "root@10.0.0.2",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -2980,8 +3061,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.3",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -3020,8 +3100,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -3050,8 +3129,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "badpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -3083,8 +3161,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.3",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -3146,8 +3223,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time.Capsule",
@@ -3183,8 +3259,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -3215,8 +3290,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -3244,8 +3318,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -3275,8 +3348,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -3302,82 +3374,12 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("mDNS device model hint", seen_defaults)
         self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,116")
 
-    def test_configure_reprompts_invalid_share_name(self) -> None:
-        share_defaults: list[str] = []
-        prompt_values = iter([
-            "root@10.0.0.2",
-            "goodpw",
-            "bridge0",
-            "a" * 237,
-            "Data",
-            "admin",
-            "TimeCapsule",
-            "samba4",
-            "Time Capsule Samba 4",
-            "timecapsulesamba4",
-            "119",
-        ])
-
-        def fake_prompt(_label, _default, _secret):
-            label = _label
-            default = _default
-            if label == "SMB share name":
-                share_defaults.append(default)
-            if label == "mDNS device model hint":
-                return default
-            return next(prompt_values)
-
-        result = self.run_configure_cli(
-            prompt_side_effect=fake_prompt,
-            probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
-        )
-        self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_SHARE_NAME"], "Data")
-        self.assertEqual(share_defaults, ["Data", "Data"])
-        self.assertIn("SMB share name must be 194 bytes or fewer.", result.text)
-        self.assertNotIn("Found saved value:", result.text)
-
-    def test_configure_invalid_existing_share_name_falls_back_to_default_prompt(self) -> None:
-        share_defaults: list[str] = []
-        existing = {
-            "TC_SHARE_NAME": "daara/..",
-        }
-        prompt_values = iter([
-            "root@10.0.0.2",
-            "goodpw",
-            "bridge0",
-            "Data",
-            "admin",
-            "TimeCapsule",
-            "samba4",
-            "Time Capsule Samba 4",
-            "timecapsulesamba4",
-            "119",
-        ])
-
-        def fake_prompt(_label, default, _secret):
-            if _label == "SMB share name":
-                share_defaults.append(default)
-            return next(prompt_values)
-
-        result = self.run_configure_cli(
-            existing_values=existing,
-            prompt_side_effect=fake_prompt,
-            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
-            confirm=True,
-        )
-        self.assertEqual(result.rc, 0)
-        self.assertEqual(share_defaults, ["Data"])
-        self.assertEqual(result.values["TC_SHARE_NAME"], "Data")
-        self.assertNotIn("Found saved value: daara/..", result.text)
-
     def test_configure_reprompts_invalid_netbios_name(self) -> None:
         prompt_values = iter([
             "root@10.0.0.2",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "ABCDEFGHIJKLMNOP",
             "TimeCapsule",
             "samba4",
@@ -3408,8 +3410,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.0.2",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -3439,8 +3440,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.1.7",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule007",
             ".samba4",
             "Time Capsule Samba 007",
@@ -3480,8 +3480,7 @@ class CliTests(unittest.TestCase):
             "root@010.000.001.007",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule007",
             ".samba4",
             "Time Capsule Samba 007",
@@ -3521,8 +3520,7 @@ class CliTests(unittest.TestCase):
             "root@capsule.local",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule072",
             ".samba4",
             "Time Capsule Samba 072",
@@ -3559,8 +3557,7 @@ class CliTests(unittest.TestCase):
             "root@capsule.local",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule217",
             ".samba4",
             "Time Capsule Samba 217",
@@ -3609,8 +3606,7 @@ class CliTests(unittest.TestCase):
             "root@169.254.1.7",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             ".samba4",
             "Time Capsule Samba 4",
@@ -3640,8 +3636,7 @@ class CliTests(unittest.TestCase):
             "root@capsule.local",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             ".samba4",
             "Time Capsule Samba 4",
@@ -3671,8 +3666,7 @@ class CliTests(unittest.TestCase):
             "root@fe80::1",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             ".samba4",
             "Time Capsule Samba 4",
@@ -3702,8 +3696,7 @@ class CliTests(unittest.TestCase):
             "root@capsule.local",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule",
             ".samba4",
             "Time Capsule Samba 4",
@@ -3746,8 +3739,7 @@ class CliTests(unittest.TestCase):
             "root@192.168.1.217",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "KitchenCapsule",
             ".samba4",
             "Kitchen Samba",
@@ -3814,8 +3806,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.1.7",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "KitchenCapsule",
             ".samba4",
             "Kitchen Samba",
@@ -3865,8 +3856,7 @@ class CliTests(unittest.TestCase):
             "root@10.0.1.7",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule007",
             ".samba4",
             "Time Capsule Samba 007",
@@ -3915,8 +3905,7 @@ class CliTests(unittest.TestCase):
             "root@capsule.local",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule072",
             ".samba4",
             "Time Capsule Samba 072",
@@ -3965,8 +3954,7 @@ class CliTests(unittest.TestCase):
             "root@capsule.local",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule072",
             ".samba4",
             "Time Capsule Samba 072",
@@ -4000,8 +3988,7 @@ class CliTests(unittest.TestCase):
             "root@192.168.1.217",
             "goodpw",
             "bridge0",
-            "Data",
-            "admin",
+                        "admin",
             "TimeCapsule217",
             ".samba4",
             "Time Capsule Samba 217",
@@ -4175,347 +4162,6 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("INFO advertised Bonjour instance: Home-Samba", output.getvalue())
 
-    def test_deploy_dry_run_prints_target_host(self) -> None:
-        result = self.run_deploy_cli(
-            ["--dry-run"],
-            artifacts=[("smbd", True, "ok"), ("mdns", True, "ok")],
-            patch_actions=True,
-            patch_upload=True,
-        )
-        self.assertEqual(result.rc, 0)
-        text = result.text
-        self.assertIn("Dry run: deployment plan", text)
-        self.assertIn("host: root@10.0.0.2", text)
-        self.assertIn("volume root: unknown until mount", text)
-        self.assertIn(f"Apple mount wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s", text)
-        self.assertIn("checked-in smbd (binary:smbd, scp, timeout 180s)", text)
-        self.assertIn("flash mdns-advertiser (binary:mdns-advertiser, flash_atomic, timeout 180s)", text)
-        self.assertIn("generated smbpasswd", text)
-        self.assertIn("request: attempt device reboot", text)
-        self.assertIn("follow-up: wait for SSH down, then SSH up", text)
-        self.assertIn("SSH goes down after reboot request", text)
-        self.assertIn("SSH returns after reboot", text)
-        self.assertIn("managed runtime smb.conf is present", text)
-        self.assertIn("managed smbd parent process is running", text)
-        self.assertIn("smbd is bound to TCP 445", text)
-        self.assertIn("managed mDNS takeover becomes ready", text)
-        self.assertIn("authenticated SMB listing", text)
-        result.mocks.run_remote_actions.assert_not_called()
-        result.mocks.upload_deployment_payload.assert_not_called()
-        result.mocks.ensure_volume_root_mounted_conn.assert_not_called()
-
-    def test_deploy_dry_run_no_reboot_matches_no_reboot_execution_path(self) -> None:
-        result = self.run_deploy_cli(["--dry-run", "--no-reboot"])
-        self.assertEqual(result.rc, 0)
-        text = result.text
-        self.assertIn("Reboot:\n  no", text)
-        self.assertIn("Post-deploy checks:\n  none", text)
-        self.assertNotIn("detached_ssh", text)
-        self.assertNotIn("SSH returns after reboot", text)
-        self.assertNotIn("smbd is bound to TCP 445", text)
-
-    def test_deploy_ensures_install_id_before_telemetry(self) -> None:
-        result = self.run_deploy_cli(
-            ["--dry-run"],
-            artifacts=[("smbd", True, "ok"), ("mdns", True, "ok")],
-            command_context=FakeCommandContext(),
-            ensure_install_id=True,
-        )
-        self.assertEqual(result.rc, 0)
-        result.mocks.ensure_install_id.assert_called_once_with()
-
-    def test_deploy_exits_on_artifact_validation_failure(self) -> None:
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
-            "TC_SAMBA_USER": "admin",
-        }
-        with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", False, "checksum mismatch")]):
-                with self.assertRaises(SystemExit):
-                    deploy.main([])
-
-    def test_deploy_requires_nonempty_airport_syap(self) -> None:
-        for values in (
-            {
-                "TC_HOST": "root@10.0.0.2",
-                "TC_PASSWORD": "pw",
-                "TC_SSH_OPTS": "-o foo",
-                "TC_PAYLOAD_DIR_NAME": "samba4",
-                "TC_SHARE_NAME": "Data",
-                "TC_NETBIOS_NAME": "TimeCapsule",
-                "TC_NET_IFACE": "bridge0",
-                "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-                "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-                "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
-                "TC_SAMBA_USER": "admin",
-            },
-            {
-                "TC_HOST": "root@10.0.0.2",
-                "TC_PASSWORD": "pw",
-                "TC_SSH_OPTS": "-o foo",
-                "TC_PAYLOAD_DIR_NAME": "samba4",
-                "TC_SHARE_NAME": "Data",
-                "TC_NETBIOS_NAME": "TimeCapsule",
-                "TC_NET_IFACE": "bridge0",
-                "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-                "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-                "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
-                "TC_AIRPORT_SYAP": "",
-                "TC_SAMBA_USER": "admin",
-            },
-        ):
-            with self.assertRaises(SystemExit) as ctx:
-                with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
-                    deploy.main(["--dry-run"])
-            self.assertEqual(
-                str(ctx.exception),
-                f"Missing required setting in {REPO_ROOT / '.env'}: TC_AIRPORT_SYAP\n"
-                "Please run the `configure` command before running `deploy`.",
-            )
-
-    def test_deploy_rejects_invalid_airport_syap(self) -> None:
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
-            "TC_AIRPORT_SYAP": "999",
-            "TC_SAMBA_USER": "admin",
-        }
-        with self.assertRaises(SystemExit) as ctx:
-            with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
-                deploy.main(["--dry-run"])
-        self.assertEqual(
-            str(ctx.exception),
-            f"TC_AIRPORT_SYAP is invalid in {REPO_ROOT / '.env'}. Run the `configure` command again.\n"
-            "The configured syAP is invalid.\n"
-            "Please run the `configure` command before running `deploy`.",
-        )
-
-    def test_deploy_rejects_device_model_that_does_not_match_airport_syap(self) -> None:
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
-            "TC_AIRPORT_SYAP": "119",
-            "TC_SAMBA_USER": "admin",
-        }
-        with self.assertRaises(SystemExit) as ctx:
-            with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
-                deploy.main(["--dry-run"])
-        self.assertEqual(
-            str(ctx.exception),
-            f"TC_MDNS_DEVICE_MODEL is invalid in {REPO_ROOT / '.env'}. Run the `configure` command again.\n"
-            'TC_MDNS_DEVICE_MODEL "TimeCapsule" must match the configured '
-            'syAP expected value "TimeCapsule8,119".\n'
-            "Please run the `configure` command before running `deploy`."
-        )
-
-    def test_deploy_rejects_missing_remote_interface(self) -> None:
-        values = self.make_valid_env()
-        candidates = RemoteInterfaceCandidatesProbeResult(
-            candidates=(
-                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.0.2",), up=True, active=True, loopback=False),
-                RemoteInterfaceCandidate(name="bridge1", ipv4_addrs=("169.254.1.2",), up=True, active=True, loopback=False),
-            ),
-            preferred_iface="bcmeth1",
-            detail="preferred interface bcmeth1",
-            target_ip_matches=(
-                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.0.2",), up=True, active=True, loopback=False),
-            ),
-        )
-        with self.assertRaises(SystemExit) as ctx:
-            with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
-                with mock.patch(
-                    "timecapsulesmb.cli.runtime.probe_remote_interface_conn",
-                    return_value=RemoteInterfaceProbeResult(
-                        iface="bridge0",
-                        exists=False,
-                        detail="interface bridge0 was not found on the device",
-                    ),
-                ):
-                    with mock.patch(
-                        "timecapsulesmb.cli.runtime.probe_remote_interface_candidates_conn",
-                        return_value=candidates,
-                    ) as candidates_mock:
-                        deploy.main(["--dry-run"])
-        self.assertIn("TC_NET_IFACE is invalid", str(ctx.exception))
-        self.assertIn("bridge0 was not found", str(ctx.exception))
-        self.assertIn("Found remote interfaces: bcmeth1=10.0.0.2, bridge1=169.254.1.2.", str(ctx.exception))
-        candidates_mock.assert_called_once()
-        self.assertEqual(candidates_mock.call_args.kwargs["target_ips"], ("10.0.0.2",))
-
-    def test_deploy_no_reboot_stops_after_upload_phase(self) -> None:
-        result = self.run_deploy_cli(
-            ["--no-reboot"],
-            artifacts=[("smbd", True, "ok"), ("mdns", True, "ok")],
-            patch_actions=True,
-            patch_upload=True,
-            adisk_uuid="12345678-1234-1234-1234-123456789012",
-            reboot_side_effect=lambda *_args, **_kwargs: None,
-        )
-        self.assertEqual(result.rc, 0)
-        result.mocks.remote_request_reboot.assert_not_called()
-        self.assertIn("Skipping reboot.", result.text)
-
-    def test_deploy_upload_source_resolver_includes_generated_files(self) -> None:
-        captured: dict[str, object] = {}
-
-        def fake_upload(_plan, *, connection, source_resolver):
-            captured["host"] = connection.host
-            captured["source_ids"] = set(source_resolver)
-            captured["smbpasswd"] = source_resolver[GENERATED_SMBPASSWD_SOURCE].read_text()
-            captured["username_map"] = source_resolver[GENERATED_USERNAME_MAP_SOURCE].read_text()
-            captured["adisk_uuid"] = source_resolver[GENERATED_ADISK_UUID_SOURCE].read_text()
-            captured["nbns_marker"] = source_resolver[GENERATED_NBNS_MARKER_SOURCE].read_text()
-
-        result = self.run_deploy_cli(
-            ["--install-nbns", "--no-reboot"],
-            values=self.make_valid_env(TC_SAMBA_USER="admin"),
-            patch_actions=True,
-            patch_upload=True,
-            upload_side_effect=fake_upload,
-            adisk_uuid="12345678-1234-1234-1234-123456789012",
-        )
-
-        self.assertEqual(result.rc, 0)
-        self.assertEqual(captured["host"], "root@10.0.0.2")
-        self.assertIn(GENERATED_SMBPASSWD_SOURCE, captured["source_ids"])
-        self.assertIn("root:0:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX:", captured["smbpasswd"])
-        self.assertEqual(captured["username_map"], "!root = root\nroot = *\n")
-        self.assertEqual(captured["adisk_uuid"], "12345678-1234-1234-1234-123456789012\n")
-        self.assertEqual(captured["nbns_marker"], "")
-
-    def test_deploy_config_arg_loads_selected_config_for_dry_run(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            env_path = Path(tmp) / "deploy.env"
-            result = self.run_deploy_cli(
-                ["--config", str(env_path), "--dry-run"],
-                artifacts=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")],
-            )
-
-        self.assertEqual(result.rc, 0)
-        result.mocks.load_env_config.assert_called_once_with(env_path=env_path)
-
-    def test_deploy_failure_telemetry_includes_current_stage(self) -> None:
-        output = io.StringIO()
-        values = self.make_valid_env()
-        with self.assertRaises(RuntimeError):
-            with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
-                with mock.patch("timecapsulesmb.device.probe.probe_device_conn", return_value=self.make_probe_result_netbsd6()):
-                    with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
-                        with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
-                            with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
-                                with mock.patch("timecapsulesmb.cli.deploy.remote_read_adisk_uuid", return_value=""):
-                                    with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload", side_effect=RuntimeError("upload exploded")):
-                                        with redirect_stdout(output):
-                                            deploy.main(["--yes", "--no-reboot"])
-        finished_calls = [
-            call for call in self._telemetry_client.emit.call_args_list
-            if call.args and call.args[0] == "deploy_finished"
-        ]
-        self.assertTrue(finished_calls)
-        telemetry_error = finished_calls[-1].kwargs["error"]
-        self.assertIn("RuntimeError: upload exploded", telemetry_error)
-        self.assertIn("stage=upload_payload", telemetry_error)
-
-    def test_deploy_declined_reboot_returns_without_rebooting(self) -> None:
-        output = io.StringIO()
-        prompt_text = []
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
-            "TC_SAMBA_USER": "admin",
-        }
-
-        def fake_input(prompt: str) -> str:
-            prompt_text.append(prompt)
-            return "n"
-
-        with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
-                        with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
-                            with mock.patch(
-                                "timecapsulesmb.cli.deploy.remote_read_adisk_uuid",
-                                return_value="12345678-1234-1234-1234-123456789012",
-                            ):
-                                with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
-                                    with mock.patch("builtins.input", side_effect=fake_input):
-                                        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as run_ssh_mock:
-                                            with redirect_stdout(output):
-                                                rc = deploy.main([])
-        self.assertEqual(rc, 0)
-        run_ssh_mock.assert_not_called()
-        self.assertEqual(prompt_text, ["This will reboot the Time Capsule now. Continue? [Y/n]: "])
-        self.assertIn("Deployment complete without reboot.", output.getvalue())
-
-    def test_deploy_reboot_prompt_names_airport_extreme_from_configured_identity(self) -> None:
-        self.assertEqual(
-            airport_family_display_name_from_config(
-                AppConfig.from_values({
-                    "TC_AIRPORT_SYAP": "120",
-                    "TC_MDNS_DEVICE_MODEL": "AirPort7,120",
-                })
-            ),
-            "AirPort Extreme",
-        )
-
-    def test_deploy_reboot_prompt_names_time_capsule_from_configured_identity(self) -> None:
-        self.assertEqual(
-            airport_family_display_name_from_config(
-                AppConfig.from_values({
-                    "TC_AIRPORT_SYAP": "119",
-                    "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-                })
-            ),
-            "Time Capsule",
-        )
-
-    def test_deploy_reboot_prompt_uses_generic_name_without_known_identity(self) -> None:
-        self.assertEqual(
-            airport_family_display_name_from_config(
-                AppConfig.from_values({
-                    "TC_AIRPORT_SYAP": "",
-                    "TC_MDNS_DEVICE_MODEL": "",
-                })
-            ),
-            "AirPort storage device",
-        )
-
     def test_exact_device_display_name_uses_configured_identity(self) -> None:
         self.assertEqual(
             airport_exact_display_name_from_config(
@@ -4526,699 +4172,6 @@ class CliTests(unittest.TestCase):
             ),
             "AirPort Extreme 6th generation",
         )
-
-    def test_deploy_reboot_timeout_returns_failure(self) -> None:
-        output = io.StringIO()
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
-            "TC_SAMBA_USER": "admin",
-        }
-        with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
-                        with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
-                            with mock.patch(
-                                "timecapsulesmb.cli.deploy.remote_read_adisk_uuid",
-                                return_value="12345678-1234-1234-1234-123456789012",
-                            ):
-                                with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
-                                    with mock.patch("builtins.input", return_value="y"):
-                                        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"):
-                                            with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, False]) as wait_mock:
-                                                with redirect_stdout(output):
-                                                    rc = deploy.main([])
-        self.assertEqual(rc, 1)
-        self.assertEqual(wait_mock.call_args_list[0].args[0].host, "root@10.0.0.2")
-        self.assertEqual(wait_mock.call_args_list[0].kwargs, {"expected_up": False, "timeout_seconds": 60})
-        self.assertEqual(wait_mock.call_args_list[1].args[0].host, "root@10.0.0.2")
-        self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 240})
-        self.assertIn("Timed out waiting for SSH after reboot.", output.getvalue())
-
-    def test_deploy_reboot_request_timeout_continues_when_device_reboots(self) -> None:
-        output = io.StringIO()
-        values = self.make_valid_env()
-        with ExitStack() as stack:
-            stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"))
-            stack.enter_context(
-                mock.patch(
-                    "timecapsulesmb.cli.deploy.remote_read_adisk_uuid",
-                    return_value="12345678-1234-1234-1234-123456789012",
-                )
-            )
-            stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"))
-            stack.enter_context(mock.patch("builtins.input", return_value="y"))
-            stack.enter_context(
-                mock.patch(
-                    "timecapsulesmb.cli.flows.remote_request_reboot",
-                    side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot"),
-                )
-            )
-            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]))
-            verify_runtime_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(True)))
-            with redirect_stdout(output):
-                rc = deploy.main([])
-
-        self.assertEqual(rc, 0)
-        self.assertEqual(wait_mock.call_args_list[0].kwargs, {"expected_up": False, "timeout_seconds": 60})
-        self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 240})
-        verify_runtime_mock.assert_called_once()
-        text = output.getvalue()
-        self.assertIn("SSH reboot request timed out; checking whether the device is rebooting...", text)
-        self.assertIn("Device is back online.", text)
-        finished = self.telemetry_payload("deploy_finished")
-        self.assertEqual(finished["result"], "success")
-        self.assertEqual(finished["reboot_was_attempted"], True)
-        self.assertEqual(finished["device_came_back_after_reboot"], True)
-
-    def test_deploy_reboot_request_timeout_fails_when_device_never_goes_down(self) -> None:
-        output = io.StringIO()
-        values = self.make_valid_env()
-        with ExitStack() as stack:
-            stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"))
-            stack.enter_context(
-                mock.patch(
-                    "timecapsulesmb.cli.deploy.remote_read_adisk_uuid",
-                    return_value="12345678-1234-1234-1234-123456789012",
-                )
-            )
-            stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"))
-            stack.enter_context(mock.patch("builtins.input", return_value="y"))
-            stack.enter_context(
-                mock.patch(
-                    "timecapsulesmb.cli.flows.remote_request_reboot",
-                    side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot"),
-                )
-            )
-            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", return_value=False))
-            verify_runtime_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime"))
-            with redirect_stdout(output):
-                rc = deploy.main([])
-
-        self.assertEqual(rc, 1)
-        wait_mock.assert_called_once()
-        verify_runtime_mock.assert_not_called()
-        text = output.getvalue()
-        self.assertIn("Reboot was requested but the device did not go down.", text)
-        self.assertIn("The deploy stopped the managed runtime before reboot; power-cycle or rerun deploy.", text)
-        finished = self.telemetry_payload("deploy_finished")
-        self.assertEqual(finished["result"], "failure")
-        self.assertEqual(finished["reboot_was_attempted"], True)
-        self.assertEqual(finished["device_came_back_after_reboot"], False)
-        self.assertIn("stage=wait_for_reboot_down", finished["error"])
-        self.assertIn("ssh_reboot_timed_out=true", finished["error"])
-
-    def test_deploy_reboot_request_non_timeout_error_observes_reboot_state(self) -> None:
-        output = io.StringIO()
-        values = self.make_valid_env()
-        with ExitStack() as stack:
-            stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"))
-            stack.enter_context(
-                mock.patch(
-                    "timecapsulesmb.cli.deploy.remote_read_adisk_uuid",
-                    return_value="12345678-1234-1234-1234-123456789012",
-                )
-            )
-            stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"))
-            stack.enter_context(mock.patch("builtins.input", return_value="y"))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=SshError("ssh command failed")))
-            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(True)))
-            with redirect_stdout(output):
-                rc = deploy.main([])
-
-        self.assertEqual(rc, 0)
-        self.assertEqual(wait_mock.call_count, 2)
-        self.assertIn("SSH reboot request failed; checking whether the device is rebooting anyway...", output.getvalue())
-
-    def test_deploy_waits_for_managed_smbd_before_verifying(self) -> None:
-        output = io.StringIO()
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
-            "TC_SAMBA_USER": "admin",
-        }
-        with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
-                        with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
-                            with mock.patch(
-                                "timecapsulesmb.cli.deploy.remote_read_adisk_uuid",
-                                return_value="12345678-1234-1234-1234-123456789012",
-                            ):
-                                with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
-                                    with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"):
-                                        with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]):
-                                            with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(True)) as verify_runtime_mock:
-                                                with mock.patch("builtins.input", return_value="y"):
-                                                    with redirect_stdout(output):
-                                                        rc = deploy.main([])
-        self.assertEqual(rc, 0)
-        self.assertEqual(verify_runtime_mock.call_args.args[0].host, "root@10.0.0.2")
-        text = output.getvalue()
-        self.assertIn("Device is back online.", text)
-        self.assertIn("Waiting for managed runtime to finish starting...", text)
-        self.assertIn("Deploy Finished.", text)
-        self.assertEqual(verify_runtime_mock.call_args.kwargs["timeout_seconds"], 240)
-
-    def test_deploy_returns_failure_when_managed_smbd_never_becomes_ready(self) -> None:
-        output = io.StringIO()
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
-            "TC_SAMBA_USER": "admin",
-        }
-        with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
-                        with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
-                            with mock.patch(
-                                "timecapsulesmb.cli.deploy.remote_read_adisk_uuid",
-                                return_value="12345678-1234-1234-1234-123456789012",
-                            ):
-                                with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
-                                    with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"):
-                                        with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]):
-                                            with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(False)) as verify_runtime_mock:
-                                                with mock.patch("builtins.input", return_value="y"):
-                                                    with redirect_stdout(output):
-                                                        rc = deploy.main([])
-        self.assertEqual(rc, 1)
-        self.assertEqual(verify_runtime_mock.call_args.args[0].host, "root@10.0.0.2")
-        self.assertEqual(verify_runtime_mock.call_args.kwargs["timeout_seconds"], 240)
-        self.assertIn("Managed runtime did not become ready after reboot.", output.getvalue())
-
-    def test_deploy_returns_failure_when_managed_mdns_never_becomes_ready(self) -> None:
-        output = io.StringIO()
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
-            "TC_SAMBA_USER": "admin",
-        }
-        with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
-                        with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
-                            with mock.patch(
-                                "timecapsulesmb.cli.deploy.remote_read_adisk_uuid",
-                                return_value="12345678-1234-1234-1234-123456789012",
-                            ):
-                                with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
-                                    with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"):
-                                        with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]):
-                                            with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(False)) as verify_runtime_mock:
-                                                with mock.patch("builtins.input", return_value="y"):
-                                                    with redirect_stdout(output):
-                                                        rc = deploy.main([])
-        self.assertEqual(rc, 1)
-        self.assertEqual(verify_runtime_mock.call_args.args[0].host, "root@10.0.0.2")
-        self.assertEqual(verify_runtime_mock.call_args.kwargs["timeout_seconds"], 240)
-        self.assertIn("Managed runtime did not become ready after reboot.", output.getvalue())
-
-    def test_deploy_install_nbns_touches_marker(self) -> None:
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
-            "TC_SAMBA_USER": "admin",
-        }
-        with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
-                        with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
-                            with mock.patch("timecapsulesmb.cli.deploy.remote_read_adisk_uuid", return_value="12345678-1234-1234-1234-123456789012"):
-                                with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
-                                    rc = deploy.main(["--install-nbns", "--no-reboot"])
-        self.assertEqual(rc, 0)
-        self.assertEqual(actions_mock.call_count, 2)
-        self.assertEqual(
-            actions_mock.call_args_list[0].args[1],
-            [
-                stop_process_full_action("[w]atchdog.sh", force=True),
-                stop_process_action("smbd", force=True),
-                stop_process_action("mdns-advertiser", force=True),
-                stop_process_action("nbns-advertiser", force=True),
-                initialize_data_root_action("/Volumes/dk2/ShareRoot", "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported"),
-                prepare_dirs_action(
-                    [
-                        "/Volumes/dk2/samba4",
-                        "/Volumes/dk2/samba4/private",
-                        "/Volumes/dk2/samba4/cache",
-                        "/mnt/Flash",
-                        "/root",
-                        "/mnt/Memory/samba4",
-                    ],
-                    [
-                        RemoteSymlink("/root/tc-netbsd4", "/mnt/Memory/samba4"),
-                        RemoteSymlink("/root/tc-netbsd4le", "/mnt/Memory/samba4"),
-                        RemoteSymlink("/root/tc-netbsd4be", "/mnt/Memory/samba4"),
-                        RemoteSymlink("/root/tc-netbsd7", "/mnt/Memory/samba4"),
-                    ],
-                ),
-            ],
-        )
-
-    def test_deploy_dry_run_includes_nbns_upload_without_marker_by_default(self) -> None:
-        output = io.StringIO()
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
-            "TC_SAMBA_USER": "admin",
-        }
-        with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
-                        with redirect_stdout(output):
-                            rc = deploy.main(["--dry-run"])
-        self.assertEqual(rc, 0)
-        text = output.getvalue()
-        payload_dir = f"unknown until mount/{values['TC_PAYLOAD_DIR_NAME']}"
-        self.assertIn(f"checked-in nbns-advertiser (binary:nbns-advertiser, scp, timeout 180s) -> {payload_dir}/nbns-advertiser", text)
-        self.assertNotIn(f"generated nbns marker (generated:nbns.enabled, generated) -> {payload_dir}/private/nbns.enabled", text)
-
-    def test_deploy_dry_run_uses_netbsd4_artifact_set_for_netbsd4_device(self) -> None:
-        output = io.StringIO()
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
-            "TC_SAMBA_USER": "admin",
-        }
-        with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
-                        with redirect_stdout(output):
-                            rc = deploy.main(["--dry-run"])
-        self.assertEqual(rc, 0)
-        text = output.getvalue()
-        payload_dir = f"unknown until mount/{values['TC_PAYLOAD_DIR_NAME']}"
-        self.assertIn("Detected supported device: NetBSD 4.0 (earmv4, little-endian).", text)
-        self.assertIn("Using NetBSD 4 little-endian payload...", text)
-        self.assertIn(f"checked-in smbd (binary:smbd, scp, timeout 180s) -> {payload_dir}/smbd", text)
-        self.assertIn(f"checked-in mdns-advertiser (binary:mdns-advertiser, scp, timeout 180s) -> {payload_dir}/mdns-advertiser", text)
-        self.assertIn("flash mdns-advertiser (binary:mdns-advertiser, flash_atomic, timeout 180s) -> /mnt/Flash/mdns-advertiser", text)
-        self.assertIn(f"checked-in nbns-advertiser (binary:nbns-advertiser, scp, timeout 180s) -> {payload_dir}/nbns-advertiser", text)
-        self.assertIn("Remote actions (NetBSD4 activation):", text)
-        self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill smbd >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill mdns-advertiser >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill nbns-advertiser >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill wcifsfs >/dev/null 2>&1 || true", text)
-        self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
-        self.assertIn("Deploy will activate Samba immediately without rebooting.", text)
-        self.assertIn("NetBSD 4 devices cannot auto-run Samba after a reboot.", text)
-        self.assertIn("Run `activate` after a reboot if the device did not auto-start Samba.", text)
-
-    def test_deploy_netbsd4_prompt_decline_cancels_before_remote_actions(self) -> None:
-        output = io.StringIO()
-        command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_compatibility())
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
-            "TC_SAMBA_USER": "admin",
-        }
-        with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
-                        with mock.patch("builtins.input", return_value="n"):
-                            with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
-                                with mock.patch("timecapsulesmb.cli.deploy.CommandContext", return_value=command_context):
-                                    with redirect_stdout(output):
-                                        rc = deploy.main([])
-        self.assertEqual(rc, 0)
-        actions_mock.assert_not_called()
-        self.assertIn("Deployment cancelled.", output.getvalue())
-        command_context.finish.assert_called_once()
-        self.assertEqual(command_context.finish.call_args.kwargs["result"], "cancelled")
-        self.assertIn("Cancelled by user at NetBSD4 deploy confirmation prompt.", command_context.finish.call_args.kwargs["error"])
-
-    def test_deploy_netbsd4_prompt_accepts_uppercase_yes(self) -> None:
-        output = io.StringIO()
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
-            "TC_SAMBA_USER": "admin",
-        }
-        with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
-                        with mock.patch("builtins.input", return_value="YES"):
-                            with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
-                                with mock.patch("timecapsulesmb.cli.deploy.remote_read_adisk_uuid", return_value=""):
-                                    with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
-                                        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(True)):
-                                            with redirect_stdout(output):
-                                                rc = deploy.main([])
-        self.assertEqual(rc, 0)
-        self.assertEqual(actions_mock.call_count, 3)
-        self.assertIn("Run `activate` after a reboot if the device did not auto-start Samba.", output.getvalue())
-
-    def test_deploy_renders_templates_with_netbsd4_payload_family(self) -> None:
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
-            "TC_SAMBA_USER": "admin",
-        }
-        with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd-netbsd4le", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
-                        with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
-                            with mock.patch("timecapsulesmb.cli.deploy.remote_read_adisk_uuid", return_value="12345678-1234-1234-1234-123456789012"):
-                                with mock.patch("timecapsulesmb.cli.deploy.build_template_bundle", side_effect=build_real_template_bundle) as template_mock:
-                                    with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
-                                        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(True)):
-                                            rc = deploy.main(["--yes", "--no-reboot"])
-        self.assertEqual(rc, 0)
-        template_mock.assert_called_once()
-        template_config = template_mock.call_args.args[0]
-        self.assertIsInstance(template_config, AppConfig)
-        self.assertEqual(template_config.values, values)
-        self.assertEqual(template_mock.call_args.kwargs, {
-            "adisk_disk_key": "dk2",
-            "adisk_uuid": "12345678-1234-1234-1234-123456789012",
-            "payload_family": "netbsd4le_samba4",
-            "debug_logging": False,
-            "data_root": "/Volumes/dk2/ShareRoot",
-            "share_use_disk_root": False,
-            "apple_mount_wait_seconds": DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
-        })
-
-    def test_deploy_debug_logging_renders_disk_logging_template(self) -> None:
-        values = {
-            "TC_HOST": "root@10.0.0.2",
-            "TC_PASSWORD": "pw",
-            "TC_SSH_OPTS": "-o foo",
-            "TC_PAYLOAD_DIR_NAME": "samba4",
-            "TC_SHARE_NAME": "Data",
-            "TC_NETBIOS_NAME": "TimeCapsule",
-            "TC_NET_IFACE": "bridge0",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
-            "TC_AIRPORT_SYAP": "119",
-            "TC_SAMBA_USER": "admin",
-        }
-        with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
-                        with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions") as actions_mock:
-                            with mock.patch("timecapsulesmb.cli.deploy.remote_read_adisk_uuid", return_value="12345678-1234-1234-1234-123456789012"):
-                                with mock.patch("timecapsulesmb.cli.deploy.build_template_bundle", side_effect=build_real_template_bundle) as template_mock:
-                                    with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
-                                        rc = deploy.main(["--yes", "--no-reboot", "--debug-logging"])
-        self.assertEqual(rc, 0)
-        template_mock.assert_called_once()
-        template_config = template_mock.call_args.args[0]
-        self.assertIsInstance(template_config, AppConfig)
-        self.assertEqual(template_config.values, values)
-        self.assertEqual(template_mock.call_args.kwargs, {
-            "adisk_disk_key": "dk2",
-            "adisk_uuid": "12345678-1234-1234-1234-123456789012",
-            "payload_family": "netbsd6_samba4",
-            "debug_logging": True,
-            "data_root": "/Volumes/dk2/ShareRoot",
-            "share_use_disk_root": False,
-            "apple_mount_wait_seconds": DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
-        })
-        self.assertEqual(
-            actions_mock.call_args_list[0].args[1],
-            [
-                stop_process_full_action("[w]atchdog.sh", force=True),
-                stop_process_action("smbd", force=True),
-                stop_process_action("mdns-advertiser", force=True),
-                stop_process_action("nbns-advertiser", force=True),
-                initialize_data_root_action("/Volumes/dk2/ShareRoot", "/Volumes/dk2/ShareRoot/.com.apple.timemachine.supported"),
-                prepare_dirs_action(
-                    [
-                        "/Volumes/dk2/samba4",
-                        "/Volumes/dk2/samba4/private",
-                        "/Volumes/dk2/samba4/cache",
-                        "/mnt/Flash",
-                        "/root",
-                        "/mnt/Memory/samba4",
-                    ],
-                    [
-                        RemoteSymlink("/root/tc-netbsd4", "/mnt/Memory/samba4"),
-                        RemoteSymlink("/root/tc-netbsd4le", "/mnt/Memory/samba4"),
-                        RemoteSymlink("/root/tc-netbsd4be", "/mnt/Memory/samba4"),
-                        RemoteSymlink("/root/tc-netbsd7", "/mnt/Memory/samba4"),
-                    ],
-                ),
-            ],
-        )
-
-    def test_deploy_mount_wait_passes_custom_mount_wait_to_template(self) -> None:
-        values = self.make_valid_env()
-        with mock.patch("timecapsulesmb.cli.deploy.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=[("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]):
-                with mock.patch("timecapsulesmb.cli.deploy.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
-                    with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_compatibility()):
-                        with mock.patch("timecapsulesmb.cli.deploy.run_remote_actions"):
-                            with mock.patch("timecapsulesmb.cli.deploy.remote_read_adisk_uuid", return_value="12345678-1234-1234-1234-123456789012"):
-                                with mock.patch("timecapsulesmb.cli.deploy.build_template_bundle", side_effect=build_real_template_bundle) as template_mock:
-                                    with mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload"):
-                                        rc = deploy.main(["--yes", "--no-reboot", "--mount-wait", "123"])
-        self.assertEqual(rc, 0)
-        self.assertEqual(template_mock.call_args.kwargs["apple_mount_wait_seconds"], 123)
-
-    def test_deploy_netbsd4_yes_runs_activation_and_skips_reboot(self) -> None:
-        result = self.run_deploy_cli(
-            ["--yes"],
-            values=self.make_valid_env(TC_PAYLOAD_DIR_NAME="samba4"),
-            artifacts=[("smbd-netbsd4le", True, "ok")],
-            compatibility=self.make_supported_netbsd4_compatibility(),
-            patch_actions=True,
-            patch_upload=True,
-            adisk_uuid="",
-            verify_runtime=self.managed_runtime_probe(True),
-            reboot_side_effect=AssertionError("NetBSD4 activation should not request a reboot"),
-        )
-        self.assertEqual(result.rc, 0)
-        self.assertEqual(result.mocks.run_remote_actions.call_count, 3)
-        self.assertEqual(
-            result.mocks.run_remote_actions.call_args_list[2].args[1],
-            [
-                stop_process_full_action("[w]atchdog.sh", force=True),
-                stop_process_action("smbd", force=True),
-                stop_process_action("mdns-advertiser", force=True),
-                stop_process_action("nbns-advertiser", force=True),
-                stop_process_action("wcifsfs", force=True),
-                run_script_action("/mnt/Flash/rc.local"),
-            ],
-        )
-        self.assertEqual(result.mocks.run_remote_actions.call_args_list[2].kwargs, {})
-        self.assertEqual(result.mocks.verify_managed_runtime.call_args.args[0].host, "root@10.0.0.2")
-        result.mocks.remote_request_reboot.assert_not_called()
-        self.assertIn("Activating NetBSD4 payload without reboot.", result.text)
-
-    def test_deploy_netbsd4_no_reboot_still_runs_activation(self) -> None:
-        result = self.run_deploy_cli(
-            ["--yes", "--no-reboot"],
-            values=self.make_valid_env(TC_PAYLOAD_DIR_NAME="samba4"),
-            artifacts=[("smbd-netbsd4le", True, "ok")],
-            compatibility=self.make_supported_netbsd4_compatibility(),
-            patch_actions=True,
-            patch_upload=True,
-            adisk_uuid="",
-            verify_runtime=self.managed_runtime_probe(True),
-            reboot_side_effect=AssertionError("NetBSD4 activation should not request a reboot"),
-        )
-        self.assertEqual(result.rc, 0)
-        self.assertEqual(result.mocks.run_remote_actions.call_count, 3)
-        result.mocks.remote_request_reboot.assert_not_called()
-        self.assertNotIn("Skipping reboot.", result.text)
-        self.assertIn("Activating NetBSD4 payload without reboot.", result.text)
-
-    def test_deploy_netbsd4_activation_failure_returns_nonzero(self) -> None:
-        result = self.run_deploy_cli(
-            ["--yes"],
-            values=self.make_valid_env(TC_PAYLOAD_DIR_NAME="samba4"),
-            artifacts=[("smbd-netbsd4le", True, "ok")],
-            compatibility=self.make_supported_netbsd4_compatibility(),
-            patch_actions=True,
-            patch_upload=True,
-            adisk_uuid="",
-            verify_runtime=self.managed_runtime_probe(False),
-        )
-        self.assertEqual(result.rc, 1)
-        self.assertIn("NetBSD4 activation failed.", result.text)
-
-    def test_deploy_install_nbns_dry_run_mentions_marker_for_netbsd4(self) -> None:
-        result = self.run_deploy_cli(
-            ["--dry-run", "--install-nbns"],
-            values=self.make_valid_env(TC_PAYLOAD_DIR_NAME="samba4"),
-            artifacts=[
-                ("smbd-netbsd4le", True, "ok"),
-                ("mdns-advertiser-netbsd4le", True, "ok"),
-                ("nbns-advertiser-netbsd4le", True, "ok"),
-            ],
-            compatibility=self.make_supported_netbsd4_compatibility(),
-        )
-        self.assertEqual(result.rc, 0)
-        text = result.text
-        self.assertIn("checked-in nbns-advertiser (binary:nbns-advertiser, scp, timeout 180s) -> unknown until mount/samba4/nbns-advertiser", text)
-        self.assertIn("generated nbns marker (generated:nbns.enabled, generated) -> unknown until mount/samba4/private/nbns.enabled", text)
-
-    def test_deploy_install_nbns_dry_run_mentions_marker(self) -> None:
-        result = self.run_deploy_cli(
-            ["--dry-run", "--install-nbns"],
-            values=self.make_valid_env(TC_PAYLOAD_DIR_NAME="samba4"),
-        )
-        self.assertEqual(result.rc, 0)
-        self.assertIn("generated nbns marker (generated:nbns.enabled, generated) -> unknown until mount/samba4/private/nbns.enabled", result.text)
-
-    def test_deploy_rejects_unsupported_device(self) -> None:
-        unsupported = DeviceCompatibility(
-            os_name="Linux",
-            os_release="6.8",
-            arch="armv7",
-            elf_endianness="unknown",
-            payload_family=None,
-            device_generation="unknown",
-            supported=False,
-            reason_code="unsupported_os",
-        )
-        result = self.run_deploy_cli(
-            ["--dry-run"],
-            values=self.make_valid_env(TC_PAYLOAD_DIR_NAME="samba4"),
-            artifacts=[("smbd", True, "ok"), ("mdns", True, "ok")],
-            compatibility=unsupported,
-            raises=SystemExit,
-        )
-        self.assertIn("Linux", str(result.exception))
-
-    def test_deploy_allow_unsupported_still_fails_without_payload_family(self) -> None:
-        unsupported = DeviceCompatibility(
-            os_name="Linux",
-            os_release="6.8",
-            arch="armv7",
-            elf_endianness="unknown",
-            payload_family=None,
-            device_generation="unknown",
-            supported=False,
-            reason_code="unsupported_os",
-        )
-        result = self.run_deploy_cli(
-            ["--dry-run", "--allow-unsupported"],
-            values=self.make_valid_env(TC_PAYLOAD_DIR_NAME="samba4"),
-            artifacts=[("smbd", True, "ok"), ("mdns", True, "ok")],
-            compatibility=unsupported,
-            raises=SystemExit,
-        )
-        text = str(result.exception)
-        self.assertIn("Linux", text)
-        self.assertIn("No deployable payload is available", text)
 
     def test_set_ssh_returns_error_when_env_missing(self) -> None:
         output = io.StringIO()
@@ -5431,36 +4384,56 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         ensure_mock.assert_called_once_with()
 
-    def test_deploy_dry_run_json_outputs_plan(self) -> None:
+    def test_deploy_dry_run_prints_mast_payload_placeholder(self) -> None:
+        result = self.run_deploy_cli(
+            ["--dry-run"],
+            artifacts=[("smbd", True, "ok"), ("mdns", True, "ok")],
+            patch_actions=True,
+            patch_upload=True,
+        )
+
+        self.assertEqual(result.rc, 0)
+        text = result.text
+        self.assertIn("Dry run: deployment plan", text)
+        self.assertIn("host: root@10.0.0.2", text)
+        self.assertIn("volume root: resolved from MaSt at deploy time", text)
+        self.assertIn("payload dir: resolved from MaSt at deploy time/.samba4", text)
+        self.assertIn(f"Apple mount wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s", text)
+        self.assertIn("generated flash runtime config", text)
+        self.assertIn("generated smbpasswd", text)
+        self.assertNotIn("rendered:smb.conf.template", text)
+        self.assertNotIn("generated adisk", text)
+        self.assertNotIn("generated nbns marker", text)
+        result.mocks.run_remote_actions.assert_not_called()
+        result.mocks.upload_deployment_payload.assert_not_called()
+        result.mocks.read_mast_volumes_conn.assert_not_called()
+        result.mocks.select_payload_home_conn.assert_not_called()
+
+    def test_deploy_dry_run_json_outputs_modern_multivolume_plan(self) -> None:
         values = self.make_valid_env()
         result = self.run_deploy_cli(["--dry-run", "--json"], values=values)
+
         self.assertEqual(result.rc, 0)
         payload = json.loads(result.text)
         self.assertEqual(payload["host"], "root@10.0.0.2")
-        self.assertEqual(payload["volume_root"], "unknown until mount")
+        self.assertEqual(payload["volume_root"], "resolved from MaSt at deploy time")
+        self.assertEqual(payload["payload_dir"], "resolved from MaSt at deploy time/.samba4")
         self.assertEqual(payload["apple_mount_wait_seconds"], DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
-        self.assertTrue(payload["nbns_path"].endswith("/bin/nbns/nbns-advertiser"))
-        self.assertEqual(payload["payload_targets"]["nbns-advertiser"], f"unknown until mount/{values['TC_PAYLOAD_DIR_NAME']}/nbns-advertiser")
-        self.assertEqual(
-            payload["uploads"][0],
+        self.assertEqual(payload["payload_targets"]["nbns-advertiser"], "resolved from MaSt at deploy time/.samba4/nbns-advertiser")
+        self.assertIn(
             {
-                "source_id": "binary:smbd",
-                "destination": f"unknown until mount/{values['TC_PAYLOAD_DIR_NAME']}/smbd",
-                "mode": "scp",
-                "timeout_seconds": 180,
-                "description": "checked-in smbd",
+                "source_id": GENERATED_FLASH_CONFIG_SOURCE,
+                "destination": "/mnt/Flash/tcapsulesmb.conf",
+                "mode": "flash_atomic",
+                "timeout_seconds": 120,
+                "description": "generated flash runtime config",
             },
+            payload["uploads"],
         )
-        self.assertEqual(payload["uploads"][2]["mode"], "flash_atomic")
-        self.assertEqual(payload["uploads"][2]["timeout_seconds"], 180)
-        self.assertEqual(
-            payload["reboot_request"],
-            {
-                "mode": "device_reboot",
-                "strategy": "acp_then_ssh",
-                "follow_up": ["wait_for_ssh_down", "wait_for_ssh_up"],
-            },
-        )
+        self.assertNotIn("rendered:smb.conf.template", {upload["source_id"] for upload in payload["uploads"]})
+        self.assertNotIn("generated:adisk.uuid", {upload["source_id"] for upload in payload["uploads"]})
+        self.assertNotIn("generated:nbns.enabled", {upload["source_id"] for upload in payload["uploads"]})
+        self.assertNotIn("initialize_data_root", {action["kind"] for action in payload["pre_upload_actions"]})
         self.assertEqual(
             [check["id"] for check in payload["post_deploy_checks"]],
             [
@@ -5475,11 +4448,9 @@ class CliTests(unittest.TestCase):
         )
 
     def test_deploy_mount_wait_dry_run_json_uses_custom_value(self) -> None:
-        values = self.make_valid_env()
-        result = self.run_deploy_cli(["--dry-run", "--json", "--mount-wait", "123"], values=values)
+        result = self.run_deploy_cli(["--dry-run", "--json", "--mount-wait", "123"], values=self.make_valid_env())
         self.assertEqual(result.rc, 0)
-        payload = json.loads(result.text)
-        self.assertEqual(payload["apple_mount_wait_seconds"], 123)
+        self.assertEqual(json.loads(result.text)["apple_mount_wait_seconds"], 123)
 
     def test_deploy_mount_wait_rejects_negative_values(self) -> None:
         with redirect_stderr(io.StringIO()):
@@ -5487,47 +4458,167 @@ class CliTests(unittest.TestCase):
                 deploy.main(["--dry-run", "--mount-wait", "-1"])
         self.assertEqual(raised.exception.code, 2)
 
-    def test_deploy_dry_run_json_uses_shareroot_when_disk_root_false(self) -> None:
-        values = self.make_valid_env(TC_PAYLOAD_DIR_NAME=".samba4", TC_SHARE_USE_DISK_ROOT="false")
-        result = self.run_deploy_cli(["--dry-run", "--json"], values=values)
-        self.assertEqual(result.rc, 0)
-        payload = json.loads(result.text)
-        self.assertEqual(payload["payload_dir"], "unknown until mount/.samba4")
-        self.assertIn(
-            {
-                "kind": "initialize_data_root",
-                "args": ["unknown until mount/ShareRoot", "unknown until mount/ShareRoot/.com.apple.timemachine.supported"],
-            },
-            payload["pre_upload_actions"],
+    def test_deploy_selects_payload_home_from_mast_for_real_deploy(self) -> None:
+        volumes = (
+            self._mast_volume("dk3", disk_device="sd0", name="USB", builtin=False),
+            self._mast_volume("dk2", disk_device="wd0", name="Data", builtin=True),
         )
-        self.assertNotIn(
-            {
-                "kind": "initialize_data_root",
-                "args": ["unknown until mount", "unknown until mount/.com.apple.timemachine.supported"],
-            },
-            payload["pre_upload_actions"],
+        result = self.run_deploy_cli(
+            ["--yes", "--no-reboot", "--mount-wait", "7"],
+            mast_volumes=volumes,
+            mount_root="/Volumes/dk2",
+            patch_actions=True,
+            patch_upload=True,
         )
 
-    def test_deploy_dry_run_json_uses_disk_root_when_configured(self) -> None:
-        values = self.make_valid_env(TC_PAYLOAD_DIR_NAME=".samba4", TC_SHARE_USE_DISK_ROOT="true")
-        result = self.run_deploy_cli(["--dry-run", "--json"], values=values)
         self.assertEqual(result.rc, 0)
-        payload = json.loads(result.text)
-        self.assertEqual(payload["payload_dir"], "unknown until mount/.samba4")
-        self.assertIn(
-            {
-                "kind": "initialize_data_root",
-                "args": ["unknown until mount", "unknown until mount/.com.apple.timemachine.supported"],
-            },
-            payload["pre_upload_actions"],
+        result.mocks.read_mast_volumes_conn.assert_called_once()
+        result.mocks.select_payload_home_conn.assert_called_once_with(
+            result.mocks.read_mast_volumes_conn.call_args.args[0],
+            volumes,
+            ".samba4",
+            wait_seconds=7,
         )
-        self.assertNotIn(
-            {
-                "kind": "initialize_data_root",
-                "args": ["unknown until mount/ShareRoot", "unknown until mount/ShareRoot/.com.apple.timemachine.supported"],
-            },
-            payload["pre_upload_actions"],
+        self.assertEqual(result.mocks.run_remote_actions.call_count, 2)
+        result.mocks.upload_deployment_payload.assert_called_once()
+        self.assertIn("Deployed Samba payload to /Volumes/dk2/.samba4", result.text)
+        self.assertIn("Updated /mnt/Flash boot files.", result.text)
+        self.assertIn("Skipping reboot.", result.text)
+
+    def test_deploy_upload_source_resolver_contains_flash_config_and_no_legacy_generated_files(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_upload(_plan, *, connection, source_resolver):
+            captured["host"] = connection.host
+            captured["source_ids"] = set(source_resolver)
+            captured["smbpasswd"] = source_resolver[GENERATED_SMBPASSWD_SOURCE].read_text()
+            captured["username_map"] = source_resolver[GENERATED_USERNAME_MAP_SOURCE].read_text()
+            captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
+
+        result = self.run_deploy_cli(
+            ["--debug-logging", "--no-reboot"],
+            values=self.make_valid_env(TC_SAMBA_USER="admin"),
+            patch_actions=True,
+            patch_upload=True,
+            upload_side_effect=fake_upload,
         )
+
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(captured["host"], "root@10.0.0.2")
+        self.assertIn(GENERATED_SMBPASSWD_SOURCE, captured["source_ids"])
+        self.assertIn(GENERATED_USERNAME_MAP_SOURCE, captured["source_ids"])
+        self.assertIn(GENERATED_FLASH_CONFIG_SOURCE, captured["source_ids"])
+        self.assertNotIn("rendered:smb.conf.template", captured["source_ids"])
+        self.assertNotIn("generated:adisk.uuid", captured["source_ids"])
+        self.assertNotIn("generated:nbns.enabled", captured["source_ids"])
+        self.assertIn("root:0:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX:", captured["smbpasswd"])
+        self.assertEqual(captured["username_map"], "!root = root\nroot = *\n")
+        flash_config = str(captured["flash_config"])
+        self.assertIn("TC_CONFIG_VERSION=1\n", flash_config)
+        self.assertIn("PAYLOAD_DIR_NAME=.samba4\n", flash_config)
+        self.assertIn("NBNS_ENABLED=1\n", flash_config)
+        self.assertIn("SMBD_DEBUG_LOGGING=1\n", flash_config)
+        self.assertNotIn("PAYLOAD_VOLUME_HINT", flash_config)
+        self.assertNotIn("PAYLOAD_DEVICE_HINT", flash_config)
+        self.assertNotIn("PAYLOAD_INSTALL_ID", flash_config)
+        self.assertNotIn("TC_SHARE_NAME", flash_config)
+
+    def test_deploy_no_nbns_writes_disabled_flash_config(self) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_upload(_plan, *, connection, source_resolver):
+            captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
+
+        result = self.run_deploy_cli(
+            ["--no-nbns", "--no-reboot"],
+            patch_actions=True,
+            patch_upload=True,
+            upload_side_effect=fake_upload,
+        )
+
+        self.assertEqual(result.rc, 0)
+        self.assertIn("NBNS_ENABLED=0\n", captured["flash_config"])
+        finished = self.telemetry_payload("deploy_finished")
+        self.assertFalse(finished["nbns_enabled"])
+
+    def test_deploy_rejects_removed_install_nbns_flag(self) -> None:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as raised:
+                deploy.main(["--install-nbns", "--dry-run"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("unrecognized arguments: --install-nbns", stderr.getvalue())
+
+    def test_deploy_exits_when_no_writable_persistent_volume_exists(self) -> None:
+        result = self.run_deploy_cli(
+            ["--yes"],
+            patch_actions=True,
+            patch_upload=True,
+            select_payload_home_side_effect=RuntimeError(NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE),
+            raises=SystemExit,
+        )
+
+        self.assertEqual(str(result.exception), NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE)
+        result.mocks.run_remote_actions.assert_not_called()
+        result.mocks.upload_deployment_payload.assert_not_called()
+
+    def test_deploy_no_reboot_stops_after_upload_phase(self) -> None:
+        result = self.run_deploy_cli(
+            ["--no-reboot"],
+            artifacts=[("smbd", True, "ok"), ("mdns", True, "ok")],
+            patch_actions=True,
+            patch_upload=True,
+            reboot_side_effect=AssertionError("deploy --no-reboot should not request a reboot"),
+        )
+
+        self.assertEqual(result.rc, 0)
+        result.mocks.remote_request_reboot.assert_not_called()
+        self.assertIn("Skipping reboot.", result.text)
+
+    def test_deploy_declined_reboot_returns_without_rebooting(self) -> None:
+        result = self.run_deploy_cli(
+            [],
+            artifacts=[("smbd", True, "ok"), ("mdns", True, "ok")],
+            patch_actions=True,
+            patch_upload=True,
+            reboot_side_effect=AssertionError("declined deploy should not request a reboot"),
+            input_side_effect=["n"],
+        )
+
+        self.assertEqual(result.rc, 0)
+        self.assertIn("Deployment complete without reboot.", result.text)
+        result.mocks.remote_request_reboot.assert_not_called()
+
+    def test_deploy_reboot_timeout_returns_failure(self) -> None:
+        result = self.run_deploy_cli(
+            ["--yes"],
+            artifacts=[("smbd", True, "ok"), ("mdns", True, "ok")],
+            patch_actions=True,
+            patch_upload=True,
+            reboot_side_effect=SshCommandTimeout("reboot timed out"),
+            wait_side_effect=[False],
+            verify_runtime=self.managed_runtime_probe(True),
+        )
+
+        self.assertEqual(result.rc, 1)
+        self.assertIn("SSH reboot request timed out; checking whether the device is rebooting...", result.text)
+        self.assertIn(deploy.REBOOT_NO_DOWN_MESSAGE, result.text)
+        result.mocks.verify_managed_runtime.assert_not_called()
+
+    def test_deploy_failure_telemetry_includes_current_stage(self) -> None:
+        result = self.run_deploy_cli(
+            ["--yes"],
+            patch_actions=True,
+            patch_upload=True,
+            upload_side_effect=RuntimeError("scp failed"),
+            raises=RuntimeError,
+        )
+
+        self.assertEqual(str(result.exception), "scp failed")
+        finished = self.telemetry_payload("deploy_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertIn("stage=upload_payload", finished["error"])
+        self.assertIn("RuntimeError: scp failed", finished["error"])
 
     def test_deploy_netbsd4_dry_run_json_outputs_activation_plan(self) -> None:
         result = self.run_deploy_cli(
@@ -5540,11 +4631,11 @@ class CliTests(unittest.TestCase):
         self.assertFalse(payload["reboot_required"])
         self.assertEqual(
             [action["kind"] for action in payload["activation_actions"]],
-            ["stop_process_full", "stop_process", "stop_process", "stop_process", "stop_process", "run_script"],
+            ["stop_watchdog", "stop_process", "stop_process", "stop_process", "stop_process", "run_script"],
         )
         self.assertEqual(
-            [action["args"][0] for action in payload["activation_actions"]],
-            ["[w]atchdog.sh", "smbd", "mdns-advertiser", "nbns-advertiser", "wcifsfs", "/mnt/Flash/rc.local"],
+            [action["args"] for action in payload["activation_actions"]],
+            [[], ["smbd"], ["mdns-advertiser"], ["nbns-advertiser"], ["wcifsfs"], ["/mnt/Flash/rc.local"]],
         )
         self.assertEqual(
             [check["id"] for check in payload["post_deploy_checks"]],
@@ -5555,6 +4646,68 @@ class CliTests(unittest.TestCase):
                 "netbsd4_mdns_bound_5353",
             ],
         )
+
+    def test_deploy_netbsd4_yes_runs_activation_and_skips_reboot(self) -> None:
+        result = self.run_deploy_cli(
+            ["--yes"],
+            values=self.make_valid_env(TC_PAYLOAD_DIR_NAME="samba4"),
+            artifacts=[("smbd-netbsd4le", True, "ok")],
+            compatibility=self.make_supported_netbsd4_compatibility(),
+            patch_actions=True,
+            patch_upload=True,
+            verify_runtime=self.managed_runtime_probe(True),
+            reboot_side_effect=AssertionError("NetBSD4 activation should not request a reboot"),
+        )
+
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.mocks.run_remote_actions.call_count, 3)
+        result.mocks.remote_request_reboot.assert_not_called()
+        self.assertIn("Activating NetBSD4 payload without reboot.", result.text)
+        self.assertIn("NetBSD4 activation complete.", result.text)
+
+    def test_deploy_rejects_unsupported_device(self) -> None:
+        unsupported = DeviceCompatibility(
+            os_name="Linux",
+            os_release="6.8",
+            arch="armv7",
+            elf_endianness="unknown",
+            payload_family=None,
+            device_generation="unknown",
+            supported=False,
+            reason_code="unsupported_os",
+        )
+        result = self.run_deploy_cli(
+            ["--dry-run"],
+            values=self.make_valid_env(TC_PAYLOAD_DIR_NAME="samba4"),
+            artifacts=[("smbd", True, "ok"), ("mdns", True, "ok")],
+            compatibility=unsupported,
+            raises=SystemExit,
+        )
+
+        self.assertIn("Linux", str(result.exception))
+
+    def test_deploy_allow_unsupported_still_fails_without_payload_family(self) -> None:
+        unsupported = DeviceCompatibility(
+            os_name="Linux",
+            os_release="6.8",
+            arch="armv7",
+            elf_endianness="unknown",
+            payload_family=None,
+            device_generation="unknown",
+            supported=False,
+            reason_code="unsupported_os",
+        )
+        result = self.run_deploy_cli(
+            ["--dry-run", "--allow-unsupported"],
+            values=self.make_valid_env(TC_PAYLOAD_DIR_NAME="samba4"),
+            artifacts=[("smbd", True, "ok"), ("mdns", True, "ok")],
+            compatibility=unsupported,
+            raises=SystemExit,
+        )
+
+        text = str(result.exception)
+        self.assertIn("Linux", text)
+        self.assertIn("No deployable payload is available", text)
 
     def test_activate_dry_run_prints_netbsd4_activation_plan(self) -> None:
         output = io.StringIO()
@@ -5568,11 +4721,12 @@ class CliTests(unittest.TestCase):
         actions_mock.assert_not_called()
         text = output.getvalue()
         self.assertIn("Dry run: NetBSD4 activation plan", text)
-        self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill smbd >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill mdns-advertiser >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill nbns-advertiser >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill wcifsfs >/dev/null 2>&1 || true", text)
+        self.assertIn("tc_kill_watchdog_pids TERM", text)
+        self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", text)
+        self.assertIn("/usr/bin/pkill '^smbd$' >/dev/null 2>&1 || true", text)
+        self.assertIn("/usr/bin/pkill '^mdns-advertiser$' >/dev/null 2>&1 || true", text)
+        self.assertIn("/usr/bin/pkill '^nbns-advertiser$' >/dev/null 2>&1 || true", text)
+        self.assertIn("/usr/bin/pkill '^wcifsfs$' >/dev/null 2>&1 || true", text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
         self.assertIn("skip rc.local if NetBSD4 payload is already healthy", text)
         self.assertIn("managed runtime smb.conf is present", text)
@@ -5671,12 +4825,12 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             actions_mock.call_args.args[1],
             [
-                stop_process_full_action("[w]atchdog.sh", force=True),
-                stop_process_action("smbd", force=True),
-                stop_process_action("mdns-advertiser", force=True),
-                stop_process_action("nbns-advertiser", force=True),
-                stop_process_action("wcifsfs", force=True),
-                run_script_action("/mnt/Flash/rc.local"),
+                StopWatchdogAction(),
+                StopProcessAction("smbd"),
+                StopProcessAction("mdns-advertiser"),
+                StopProcessAction("nbns-advertiser"),
+                StopProcessAction("wcifsfs"),
+                RunScriptAction("/mnt/Flash/rc.local"),
             ],
         )
         self.assertEqual(actions_mock.call_args.kwargs, {})
@@ -5720,25 +4874,28 @@ class CliTests(unittest.TestCase):
             "TC_SSH_OPTS": "-o foo",
             "TC_PAYLOAD_DIR_NAME": "samba4",
         }
-        with mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.uninstall.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2") as mount_mock:
-                with redirect_stdout(output):
-                    rc = uninstall.main(["--dry-run"])
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+            mast_mocks = self._patch_mast_volume_flow(stack, "uninstall")
+            with redirect_stdout(output):
+                rc = uninstall.main(["--dry-run"])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("Dry run: uninstall plan", text)
         self.assertIn("host: root@10.0.0.2", text)
-        self.assertIn(f"payload dir: unknown until mount/{values['TC_PAYLOAD_DIR_NAME']}", text)
+        self.assertIn("volume roots:\n    resolved from MaSt at uninstall time", text)
+        self.assertIn(f"payload dirs:\n    resolved from MaSt at uninstall time/{values['TC_PAYLOAD_DIR_NAME']}", text)
         self.assertIn("request: attempt device reboot", text)
         self.assertIn("follow-up: wait for SSH down, then SSH up", text)
         started = self.telemetry_payload("uninstall_started")
         finished = self.telemetry_payload("uninstall_finished")
         self.assertEqual(started["command_id"], finished["command_id"])
         self.assertEqual(finished["result"], "success")
-        self.assertEqual(finished["volume_root"], "unknown until mount")
-        self.assertEqual(finished["payload_dir"], f"unknown until mount/{values['TC_PAYLOAD_DIR_NAME']}")
+        self.assertEqual(finished["volume_roots"], ["resolved from MaSt at uninstall time"])
+        self.assertEqual(finished["payload_dirs"], [f"resolved from MaSt at uninstall time/{values['TC_PAYLOAD_DIR_NAME']}"])
         self.assertEqual(finished["reboot_was_attempted"], False)
-        mount_mock.assert_not_called()
+        mast_mocks.read_mast_volumes_conn.assert_not_called()
+        mast_mocks.mounted_mast_volumes_conn.assert_not_called()
 
     def test_uninstall_dry_run_no_reboot_matches_no_reboot_execution_path(self) -> None:
         output = io.StringIO()
@@ -5748,10 +4905,11 @@ class CliTests(unittest.TestCase):
             "TC_SSH_OPTS": "-o foo",
             "TC_PAYLOAD_DIR_NAME": "samba4",
         }
-        with mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.uninstall.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
-                with redirect_stdout(output):
-                    rc = uninstall.main(["--dry-run", "--no-reboot"])
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "uninstall")
+            with redirect_stdout(output):
+                rc = uninstall.main(["--dry-run", "--no-reboot"])
         self.assertEqual(rc, 0)
         text = output.getvalue()
         self.assertIn("Reboot:\n  no", text)
@@ -5766,10 +4924,11 @@ class CliTests(unittest.TestCase):
             "TC_PAYLOAD_DIR_NAME": "samba4",
             "TC_MDNS_HOST_LABEL": "bad host label",
         }
-        with mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.uninstall.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
-                with redirect_stdout(io.StringIO()):
-                    rc = uninstall.main(["--dry-run"])
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "uninstall")
+            with redirect_stdout(io.StringIO()):
+                rc = uninstall.main(["--dry-run"])
         self.assertEqual(rc, 0)
 
     def test_uninstall_rejects_unsafe_payload_dir(self) -> None:
@@ -5792,14 +4951,16 @@ class CliTests(unittest.TestCase):
             "TC_SSH_OPTS": "-o foo",
             "TC_PAYLOAD_DIR_NAME": "samba4",
         }
-        with mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.uninstall.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
-                with redirect_stdout(output):
-                    rc = uninstall.main(["--dry-run", "--json"])
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "uninstall")
+            with redirect_stdout(output):
+                rc = uninstall.main(["--dry-run", "--json"])
         self.assertEqual(rc, 0)
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["host"], "root@10.0.0.2")
-        self.assertEqual(payload["volume_root"], "unknown until mount")
+        self.assertEqual(payload["volume_roots"], ["resolved from MaSt at uninstall time"])
+        self.assertEqual(payload["payload_dirs"], ["resolved from MaSt at uninstall time/samba4"])
         self.assertEqual(
             payload["reboot_request"],
             {
@@ -5825,14 +4986,15 @@ class CliTests(unittest.TestCase):
             "TC_SSH_OPTS": "-o foo",
             "TC_PAYLOAD_DIR_NAME": "samba4",
         }
-        with mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.uninstall.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
-                with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload") as uninstall_mock:
-                    with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as run_ssh_mock:
-                        with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
-                            with mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall", return_value=VerificationResult(True, ())) as verify_mock:
-                                with redirect_stdout(output):
-                                    rc = uninstall.main(["--yes"])
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "uninstall")
+            uninstall_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
+            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"))
+            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]))
+            verify_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall", return_value=VerificationResult(True, ())))
+            with redirect_stdout(output):
+                rc = uninstall.main(["--yes"])
         self.assertEqual(rc, 0)
         uninstall_mock.assert_called_once()
         run_ssh_mock.assert_called_once()
@@ -5853,7 +5015,7 @@ class CliTests(unittest.TestCase):
         values = self.make_valid_env()
         with ExitStack() as stack:
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"))
+            self._patch_mast_volume_flow(stack, "uninstall")
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
             stack.enter_context(
                 mock.patch(
@@ -5884,7 +5046,7 @@ class CliTests(unittest.TestCase):
         values = self.make_valid_env()
         with ExitStack() as stack:
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
-            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"))
+            self._patch_mast_volume_flow(stack, "uninstall")
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
             stack.enter_context(
                 mock.patch(
@@ -5919,18 +5081,36 @@ class CliTests(unittest.TestCase):
             "TC_SSH_OPTS": "-o foo",
             "TC_PAYLOAD_DIR_NAME": "samba4",
         }
-        with mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.uninstall.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
-                with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload") as uninstall_mock:
-                    with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as run_ssh_mock:
-                        with mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall") as verify_mock:
-                            with redirect_stdout(output):
-                                rc = uninstall.main(["--no-reboot"])
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "uninstall")
+            uninstall_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
+            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"))
+            verify_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall"))
+            with redirect_stdout(output):
+                rc = uninstall.main(["--no-reboot"])
         self.assertEqual(rc, 0)
         uninstall_mock.assert_called_once()
         run_ssh_mock.assert_not_called()
         verify_mock.assert_not_called()
         self.assertIn("Skipping reboot.", output.getvalue())
+
+    def test_uninstall_without_mounted_hfs_volumes_removes_flash_and_runtime_only(self) -> None:
+        output = io.StringIO()
+        values = self.make_valid_env(TC_PAYLOAD_DIR_NAME="samba4")
+
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "uninstall", mounted_volumes=(), read_volumes=(self._mast_volume("dk5", builtin=False),))
+            uninstall_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
+            with redirect_stdout(output):
+                rc = uninstall.main(["--no-reboot"])
+
+        self.assertEqual(rc, 0)
+        plan = uninstall_mock.call_args.args[1]
+        self.assertEqual(plan.volume_roots, [])
+        self.assertEqual(plan.payload_dirs, [])
+        self.assertIn("No mounted HFS volumes found; removing flash hooks and runtime state only.", output.getvalue())
 
     def test_uninstall_declined_reboot_skips_reboot_and_returns_success(self) -> None:
         output = io.StringIO()
@@ -5948,13 +5128,14 @@ class CliTests(unittest.TestCase):
             prompt_text.append(prompt)
             return "n"
 
-        with mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.uninstall.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
-                with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"):
-                    with mock.patch("builtins.input", side_effect=fake_input):
-                        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as run_ssh_mock:
-                            with redirect_stdout(output):
-                                rc = uninstall.main([])
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "uninstall")
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
+            stack.enter_context(mock.patch("builtins.input", side_effect=fake_input))
+            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"))
+            with redirect_stdout(output):
+                rc = uninstall.main([])
         self.assertEqual(rc, 0)
         run_ssh_mock.assert_not_called()
         self.assertEqual(prompt_text, ["This will reboot the AirPort Extreme 6th generation now. Continue? [Y/n]: "])
@@ -5971,14 +5152,15 @@ class CliTests(unittest.TestCase):
             "TC_SSH_OPTS": "-o foo",
             "TC_PAYLOAD_DIR_NAME": "samba4",
         }
-        with mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.uninstall.ensure_volume_root_mounted_conn", return_value="/Volumes/dk2"):
-                with mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"):
-                    with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"):
-                        with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]):
-                            with mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall", return_value=VerificationResult(False, ())):
-                                with redirect_stdout(output):
-                                    rc = uninstall.main(["--yes"])
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "uninstall")
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
+            stack.enter_context(mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"))
+            stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]))
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall", return_value=VerificationResult(False, ())))
+            with redirect_stdout(output):
+                rc = uninstall.main(["--yes"])
         self.assertEqual(rc, 1)
         self.assertIn("Managed TimeCapsuleSMB files are still present after reboot.", output.getvalue())
         finished = self.telemetry_payload("uninstall_finished")
@@ -5991,22 +5173,24 @@ class CliTests(unittest.TestCase):
     def test_fsck_yes_reboots_and_waits_by_default(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
-        mounted = MountedVolume(device="/dev/dk2", mountpoint="/Volumes/dk2")
         run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\n--- reboot ---\n", returncode=255)
-        with mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume_conn", return_value=mounted):
-                with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result) as run_ssh_mock:
-                    with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
-                        with redirect_stdout(output):
-                            rc = fsck.main(["--yes"])
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
+            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result))
+            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]))
+            with redirect_stdout(output):
+                rc = fsck.main(["--yes"])
         self.assertEqual(rc, 0)
         run_ssh_mock.assert_called_once()
         remote_cmd = run_ssh_mock.call_args.args[1]
-        self.assertIn("pkill -f [w]atchdog.sh", remote_cmd)
-        self.assertIn("pkill smbd", remote_cmd)
-        self.assertIn("pkill afpserver", remote_cmd)
-        self.assertIn("pkill wcifsnd", remote_cmd)
-        self.assertIn("pkill wcifsfs", remote_cmd)
+        self.assertIn("tc_kill_watchdog_pids KILL", remote_cmd)
+        self.assertIn("/mnt/Flash/watchdog.sh", remote_cmd)
+        self.assertNotIn("pkill -9 -f", remote_cmd)
+        self.assertIn("^smbd$", remote_cmd)
+        self.assertIn("^afpserver$", remote_cmd)
+        self.assertIn("^wcifsnd$", remote_cmd)
+        self.assertIn("^wcifsfs$", remote_cmd)
         self.assertIn("umount -f /Volumes/dk2", remote_cmd)
         self.assertIn("fsck_hfs -fy /dev/dk2", remote_cmd)
         self.assertIn("/sbin/reboot", remote_cmd)
@@ -6033,13 +5217,13 @@ class CliTests(unittest.TestCase):
             "TC_SSH_OPTS": "-o foo",
             "TC_PAYLOAD_DIR_NAME": "../bad",
         }
-        mounted = MountedVolume(device="/dev/dk2", mountpoint="/Volumes/dk2")
         run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\n", returncode=0)
-        with mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume_conn", return_value=mounted):
-                with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result):
-                    with redirect_stdout(output):
-                        rc = fsck.main(["--yes", "--no-reboot"])
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result))
+            with redirect_stdout(output):
+                rc = fsck.main(["--yes", "--no-reboot"])
         self.assertEqual(rc, 0)
 
     def test_fsck_no_wait_skips_ssh_waits(self) -> None:
@@ -6049,14 +5233,14 @@ class CliTests(unittest.TestCase):
             "TC_PASSWORD": "pw",
             "TC_SSH_OPTS": "-o foo",
         }
-        mounted = MountedVolume(device="/dev/dk2", mountpoint="/Volumes/dk2")
         run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\n--- reboot ---\n", returncode=255)
-        with mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume_conn", return_value=mounted):
-                with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result):
-                    with mock.patch("timecapsulesmb.cli.fsck.observe_reboot_cycle") as observe_mock:
-                        with redirect_stdout(output):
-                            rc = fsck.main(["--yes", "--no-wait"])
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result))
+            observe_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.observe_reboot_cycle"))
+            with redirect_stdout(output):
+                rc = fsck.main(["--yes", "--no-wait"])
         self.assertEqual(rc, 0)
         observe_mock.assert_not_called()
 
@@ -6067,14 +5251,14 @@ class CliTests(unittest.TestCase):
             "TC_PASSWORD": "pw",
             "TC_SSH_OPTS": "-o foo",
         }
-        mounted = MountedVolume(device="/dev/dk2", mountpoint="/Volumes/dk2")
         run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\n", returncode=0)
-        with mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume_conn", return_value=mounted):
-                with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result) as run_ssh_mock:
-                    with mock.patch("timecapsulesmb.cli.fsck.observe_reboot_cycle") as observe_mock:
-                        with redirect_stdout(output):
-                            rc = fsck.main(["--yes", "--no-reboot"])
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
+            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result))
+            observe_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.observe_reboot_cycle"))
+            with redirect_stdout(output):
+                rc = fsck.main(["--yes", "--no-reboot"])
         self.assertEqual(rc, 0)
         observe_mock.assert_not_called()
         self.assertNotIn("/sbin/reboot", run_ssh_mock.call_args.args[1])
@@ -6089,18 +5273,17 @@ class CliTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "120",
             "TC_MDNS_DEVICE_MODEL": "AirPort7,120",
         }
-        mounted = MountedVolume(device="/dev/dk2", mountpoint="/Volumes/dk2")
-
         def fake_input(prompt: str) -> str:
             prompt_text.append(prompt)
             return "n"
 
-        with mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume_conn", return_value=mounted):
-                with mock.patch("builtins.input", side_effect=fake_input):
-                    with mock.patch("timecapsulesmb.cli.fsck.run_ssh") as run_ssh_mock:
-                        with redirect_stdout(output):
-                            rc = fsck.main([])
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
+            stack.enter_context(mock.patch("builtins.input", side_effect=fake_input))
+            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.run_ssh"))
+            with redirect_stdout(output):
+                rc = fsck.main([])
         self.assertEqual(rc, 0)
         run_ssh_mock.assert_not_called()
         self.assertEqual(
@@ -6112,17 +5295,95 @@ class CliTests(unittest.TestCase):
         self.assertEqual(finished["result"], "cancelled")
         self.assertIn("Cancelled by user at fsck confirmation prompt.", finished["error"])
 
+    def test_fsck_no_mounted_hfs_volumes_exits_with_clear_message(self) -> None:
+        output = io.StringIO()
+        values = self.make_valid_env()
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=())
+            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.run_ssh"))
+            with self.assertRaises(SystemExit) as ctx:
+                with redirect_stdout(output):
+                    fsck.main(["--yes"])
+
+        self.assertEqual(str(ctx.exception), "no mounted HFS volumes found")
+        run_ssh_mock.assert_not_called()
+        self.assertNotIn("MaSt", str(ctx.exception))
+
+    def test_fsck_prompts_for_volume_when_multiple_hfs_volumes_are_mounted(self) -> None:
+        output = io.StringIO()
+        values = self.make_valid_env()
+        internal = self._mast_volume("dk2", name="Internal", builtin=True)
+        external = self._mast_volume("dk5", disk_device="sd0", name="External", builtin=False)
+        run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk5 ---\nOK\n", returncode=0)
+
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(internal, external))
+            stack.enter_context(mock.patch("builtins.input", side_effect=["2", "y"]))
+            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result))
+            with redirect_stdout(output):
+                rc = fsck.main(["--no-reboot"])
+
+        self.assertEqual(rc, 0)
+        remote_cmd = run_ssh_mock.call_args.args[1]
+        self.assertIn("umount -f /Volumes/dk5", remote_cmd)
+        self.assertIn("fsck_hfs -fy /dev/dk5", remote_cmd)
+        text = output.getvalue()
+        self.assertIn("Mounted HFS volumes:", text)
+        self.assertIn("2. /dev/dk5 on /Volumes/dk5 (External, external)", text)
+        self.assertIn("Mounted HFS volume: /dev/dk5 on /Volumes/dk5", text)
+
+    def test_fsck_yes_with_multiple_hfs_volumes_requires_selector(self) -> None:
+        output = io.StringIO()
+        values = self.make_valid_env()
+        internal = self._mast_volume("dk2", name="Internal", builtin=True)
+        external = self._mast_volume("dk5", disk_device="sd0", name="External", builtin=False)
+
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(internal, external))
+            input_mock = stack.enter_context(mock.patch("builtins.input", side_effect=AssertionError("fsck --yes should not prompt")))
+            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.run_ssh"))
+            with self.assertRaises(SystemExit) as ctx:
+                with redirect_stdout(output):
+                    fsck.main(["--yes", "--no-reboot"])
+
+        self.assertEqual(str(ctx.exception), "multiple mounted HFS volumes found; specify --volume to select one")
+        input_mock.assert_not_called()
+        run_ssh_mock.assert_not_called()
+        self.assertNotIn("Mounted HFS volumes:", output.getvalue())
+
+    def test_fsck_volume_selector_skips_multiple_volume_prompt(self) -> None:
+        output = io.StringIO()
+        values = self.make_valid_env()
+        internal = self._mast_volume("dk2", name="Internal", builtin=True)
+        external = self._mast_volume("dk5", disk_device="sd0", name="External", builtin=False)
+        run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk5 ---\nOK\n", returncode=0)
+
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(internal, external))
+            stack.enter_context(mock.patch("builtins.input", side_effect=AssertionError("volume prompt should not run")))
+            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result))
+            with redirect_stdout(output):
+                rc = fsck.main(["--yes", "--no-reboot", "--volume", "dk5"])
+
+        self.assertEqual(rc, 0)
+        self.assertIn("fsck_hfs -fy /dev/dk5", run_ssh_mock.call_args.args[1])
+        self.assertNotIn("Mounted HFS volumes:", output.getvalue())
+
     def test_fsck_reboot_no_down_emits_failure_stage(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
-        mounted = MountedVolume(device="/dev/dk2", mountpoint="/Volumes/dk2")
         run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\n--- reboot ---\n", returncode=255)
-        with mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume_conn", return_value=mounted):
-                with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result):
-                    with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", return_value=False) as wait_mock:
-                        with redirect_stdout(output):
-                            rc = fsck.main(["--yes"])
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result))
+            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", return_value=False))
+            with redirect_stdout(output):
+                rc = fsck.main(["--yes"])
         self.assertEqual(rc, 1)
         wait_mock.assert_called_once()
         self.assertIn("fsck requested reboot from the device, but SSH did not go down.", output.getvalue())
@@ -6135,14 +5396,14 @@ class CliTests(unittest.TestCase):
     def test_fsck_reboot_timeout_emits_failure_stage(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
-        mounted = MountedVolume(device="/dev/dk2", mountpoint="/Volumes/dk2")
         run_result = mock.Mock(stdout="--- fsck_hfs /dev/dk2 ---\nOK\n--- reboot ---\n", returncode=255)
-        with mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)):
-            with mock.patch("timecapsulesmb.cli.fsck.discover_mounted_volume_conn", return_value=mounted):
-                with mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result):
-                    with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, False]):
-                        with redirect_stdout(output):
-                            rc = fsck.main(["--yes"])
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result))
+            stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, False]))
+            with redirect_stdout(output):
+                rc = fsck.main(["--yes"])
         self.assertEqual(rc, 1)
         self.assertIn("Timed out waiting for SSH after reboot.", output.getvalue())
         finished = self.telemetry_payload("fsck_finished")
@@ -6167,13 +5428,23 @@ class CliTests(unittest.TestCase):
             ],
             resolved=[record],
         )
-        with mock.patch("timecapsulesmb.cli.discover.discover_snapshot", return_value=snapshot):
-            with redirect_stdout(output):
-                rc = discover.main(["--json"])
+        with mock.patch("timecapsulesmb.cli.discover.ensure_install_id"):
+            with mock.patch("timecapsulesmb.cli.discover.discover_snapshot", return_value=snapshot):
+                with redirect_stdout(output):
+                    rc = discover.main(["--json"])
         self.assertEqual(rc, 0)
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["instances"][0]["name"], "Time Capsule")
         self.assertEqual(payload["resolved"][0]["name"], "Time Capsule")
+        started = self.telemetry_payload("discover_started")
+        finished = self.telemetry_payload("discover_finished")
+        self.assertTrue(started["json_output"])
+        self.assertEqual(finished["result"], "success")
+        self.assertEqual(finished["bonjour_instance_count"], 1)
+        self.assertEqual(finished["bonjour_resolved_count"], 1)
+
+
+
 
 
 if __name__ == "__main__":

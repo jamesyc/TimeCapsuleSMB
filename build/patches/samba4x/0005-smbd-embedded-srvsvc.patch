@@ -15,7 +15,7 @@ index b9e2676..3f2caef 100644
  #include "librpc/ndr/ndr_table.h"
  
  #undef DBGC_CLASS
-@@ -48,6 +54,184 @@ bool fsp_is_np(struct files_struct *fsp)
+@@ -48,6 +54,196 @@ bool fsp_is_np(struct files_struct *fsp)
  	return (type == FAKE_FILE_TYPE_NAMED_PIPE_PROXY);
  }
  
@@ -24,6 +24,8 @@ index b9e2676..3f2caef 100644
 +{
 +	struct dcesrv_context *dce_ctx = *_dce_ctx;
 +	const struct dcesrv_endpoint_server *ep_server = srvsvc_get_ep_server();
++	static bool ep_server_registered;
++	static struct dcesrv_context *initialized_dce_ctx;
 +	NTSTATUS status;
 +
 +	/*
@@ -36,12 +38,21 @@ index b9e2676..3f2caef 100644
 +		dce_ctx = global_dcesrv_context();
 +	}
 +
-+	status = dcerpc_register_ep_server(ep_server);
-+	if (!NT_STATUS_IS_OK(status) &&
-+	    !NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_COLLISION)) {
-+		DBG_ERR("Failed to register embedded srvsvc endpoint: %s\n",
-+			nt_errstr(status));
-+		return status;
++	if (initialized_dce_ctx == dce_ctx) {
++		*_dce_ctx = dce_ctx;
++		return NT_STATUS_OK;
++	}
++
++	if (!ep_server_registered) {
++		status = dcerpc_register_ep_server(ep_server);
++		if (!NT_STATUS_IS_OK(status) &&
++		    !NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_COLLISION)) {
++			DBG_ERR("Failed to register embedded srvsvc endpoint: "
++				"%s\n",
++				nt_errstr(status));
++			return status;
++		}
++		ep_server_registered = true;
 +	}
 +
 +	status = dcesrv_init_ep_server(dce_ctx, ep_server->name);
@@ -63,6 +74,7 @@ index b9e2676..3f2caef 100644
 +		}
 +	}
 +
++	initialized_dce_ctx = dce_ctx;
 +	*_dce_ctx = dce_ctx;
 +	return NT_STATUS_OK;
 +}
@@ -200,7 +212,7 @@ index b9e2676..3f2caef 100644
  NTSTATUS np_open(TALLOC_CTX *mem_ctx, const char *name,
  		 const struct tsocket_address *remote_client_address,
  		 const struct tsocket_address *local_server_address,
-@@ -60,6 +244,9 @@ NTSTATUS np_open(TALLOC_CTX *mem_ctx, const char *name,
+@@ -60,6 +256,9 @@ NTSTATUS np_open(TALLOC_CTX *mem_ctx, const char *name,
  	struct fake_file_handle *handle;
  	struct npa_state *npa = NULL;
  	int ret;
@@ -210,7 +222,7 @@ index b9e2676..3f2caef 100644
  
  	handle = talloc(mem_ctx, struct fake_file_handle);
  	if (handle == NULL) {
-@@ -76,6 +263,28 @@ NTSTATUS np_open(TALLOC_CTX *mem_ctx, const char *name,
+@@ -76,6 +275,28 @@ NTSTATUS np_open(TALLOC_CTX *mem_ctx, const char *name,
  		.private_data = npa,
  	};
  

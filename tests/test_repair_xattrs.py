@@ -27,6 +27,8 @@ class RecordingCommandContext:
         self.result = "failure"
         self.error: str | None = None
         self.finished = False
+        self.fields: dict[str, object] = {}
+        self.stages: list[str] = []
         RecordingCommandContext.instances.append(self)
 
     def __enter__(self) -> "RecordingCommandContext":
@@ -46,6 +48,12 @@ class RecordingCommandContext:
     def fail_with_error(self, message: str) -> None:
         self.result = "failure"
         self.error = message
+
+    def update_fields(self, **fields: object) -> None:
+        self.fields.update(fields)
+
+    def set_stage(self, stage: str) -> None:
+        self.stages.append(stage)
 
 
 UNSET = object()
@@ -115,6 +123,9 @@ class RepairXattrsTests(unittest.TestCase):
         self.telemetry_patch = mock.patch("timecapsulesmb.cli.repair_xattrs.TelemetryClient.from_config", return_value=mock.Mock())
         self.telemetry_patch.start()
         self.addCleanup(self.telemetry_patch.stop)
+        self.ensure_install_id_patch = mock.patch("timecapsulesmb.cli.repair_xattrs.ensure_install_id")
+        self.ensure_install_id_patch.start()
+        self.addCleanup(self.ensure_install_id_patch.stop)
         self.path_guard_patch = mock.patch(
             "timecapsulesmb.cli.repair_xattrs.validate_repair_root_under_volumes",
             side_effect=lambda path: path.expanduser(),
@@ -840,8 +851,8 @@ class RepairXattrsTests(unittest.TestCase):
 
         self.assertEqual(shares, [repair_xattrs.MountedSmbShare("timecapsulesamba4.local", "Data", Path("/Volumes/Data"))])
 
-    def test_default_share_path_uses_env_host_and_share_name_when_smb_mounted(self) -> None:
-        env = {"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}
+    def test_default_share_path_uses_env_host_when_smb_mounted(self) -> None:
+        env = {"TC_HOST": "root@192.168.1.217"}
         shares = [
             repair_xattrs.MountedSmbShare("10.0.0.2", "Data", Path("/Volumes/WrongData")),
             repair_xattrs.MountedSmbShare("192.168.1.217", "Data", Path("/Volumes/Data")),
@@ -856,7 +867,7 @@ class RepairXattrsTests(unittest.TestCase):
         )
 
     def test_default_share_path_uses_unique_matching_smb_share_when_host_label_differs(self) -> None:
-        env = {"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}
+        env = {"TC_HOST": "root@192.168.1.217"}
         shares = [repair_xattrs.MountedSmbShare("timecapsulesamba4.local", "Data", Path("/Volumes/Data-1"))]
         self.assertEqual(
             repair_xattrs_domain.default_share_path_from_config(
@@ -868,13 +879,13 @@ class RepairXattrsTests(unittest.TestCase):
         )
 
     def test_default_share_path_ignores_afp_mount_with_matching_volume_name(self) -> None:
-        env = {"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}
+        env = {"TC_HOST": "root@192.168.1.217"}
         mount_output = "//James%20Chang@AirPort._afpovertcp._tcp.local/Data on /Volumes/Data (afpfs, nodev)\n"
         with mock.patch("timecapsulesmb.repair_xattrs.run_capture", return_value=mock.Mock(returncode=0, stdout=mount_output)):
             self.assertIsNone(repair_xattrs_domain.default_share_path_from_config(self.app_config(env)))
 
     def test_default_share_path_ignores_inaccessible_smb_mountpoints(self) -> None:
-        env = {"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}
+        env = {"TC_HOST": "root@192.168.1.217"}
         shares = [
             repair_xattrs.MountedSmbShare("Time Capsule Samba 4._smb._tcp.local", "Data", Path("/Volumes/.timemachine/Data")),
             repair_xattrs.MountedSmbShare("192.168.1.217", "Data", Path("/Volumes/Data")),
@@ -895,7 +906,7 @@ class RepairXattrsTests(unittest.TestCase):
         )
 
     def test_default_share_path_rejects_ambiguous_matching_smb_shares(self) -> None:
-        env = {"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}
+        env = {"TC_HOST": "root@192.168.1.217"}
         shares = [
             repair_xattrs.MountedSmbShare("timecapsule-a.local", "Data", Path("/Volumes/Data")),
             repair_xattrs.MountedSmbShare("timecapsule-b.local", "Data", Path("/Volumes/Data-1")),
@@ -911,18 +922,18 @@ class RepairXattrsTests(unittest.TestCase):
     def test_default_share_path_returns_none_when_share_missing(self) -> None:
         self.assertIsNone(
             repair_xattrs_domain.default_share_path_from_config(
-                self.app_config({"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}),
+                self.app_config({"TC_HOST": "root@192.168.1.217"}),
                 shares=[],
             )
         )
 
-    def test_default_share_path_rejects_invalid_env_share_name(self) -> None:
+    def test_default_share_path_rejects_invalid_env_host(self) -> None:
         with self.assertRaises(RuntimeError) as cm:
             repair_xattrs_domain.default_share_path_from_config(
-                self.app_config({"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Bad/Share"}),
+                self.app_config({"TC_HOST": "not a host"}),
                 shares=[],
             )
-        self.assertIn("TC_SHARE_NAME is invalid", str(cm.exception))
+        self.assertIn("TC_HOST is invalid", str(cm.exception))
 
     def test_explicit_repair_path_does_not_require_valid_env_share_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1000,8 +1011,8 @@ class RepairXattrsTests(unittest.TestCase):
     def test_missing_default_path_is_rejected(self) -> None:
         with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
             with mock.patch(
-                "timecapsulesmb.cli.repair_xattrs.load_env_config",
-                return_value=self.app_config({"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"}),
+                "timecapsulesmb.cli.repair_xattrs.load_optional_env_config",
+                return_value=self.app_config({"TC_HOST": "root@192.168.1.217"}),
             ):
                 with mock.patch("timecapsulesmb.cli.repair_xattrs.mounted_smb_shares", return_value=[]):
                     with self.assertRaises(SystemExit) as cm:

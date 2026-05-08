@@ -12,34 +12,47 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.device import probe
+import timecapsulesmb.device.probe as probe
 from timecapsulesmb.device.probe import (
-    nbns_marker_enabled_conn,
     preferred_interface_name,
     probe_remote_interface_candidates_conn,
     probe_remote_interface_conn,
+    read_runtime_share_names_conn,
     read_runtime_log_tails_conn,
 )
 from timecapsulesmb.transport.ssh import SshConnection
 
 
 class ProbeTests(unittest.TestCase):
-    def test_nbns_marker_enabled_conn_uses_short_timeout_for_disk_path_probe(self) -> None:
+    def test_read_runtime_share_names_conn_parses_shares_tsv(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
-        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="enabled\n")
+        proc = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="AirPort Disk\t/Volumes/dk2/ShareRoot\nBackup (dk3)\t/Volumes/dk3\n",
+        )
 
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
-            result = nbns_marker_enabled_conn(connection, "/Volumes/dk2/.samba4")
+            result = read_runtime_share_names_conn(connection)
 
-        self.assertTrue(result)
+        self.assertEqual(result, ["AirPort Disk", "Backup (dk3)"])
         run_ssh_mock.assert_called_once()
         args, kwargs = run_ssh_mock.call_args
         self.assertEqual(args[0], connection)
-        self.assertIn("/Volumes/dk2/.samba4/private/nbns.enabled", args[1])
+        self.assertIn(probe.RUNTIME_SHARES_TSV, args[1])
         self.assertFalse(kwargs["check"])
-        self.assertEqual(kwargs["timeout"], probe.NBNS_MARKER_PROBE_TIMEOUT_SECONDS)
+        self.assertEqual(kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
 
-    def test_read_runtime_log_tails_conn_fetches_rc_local_and_mdns_with_short_timeout(self) -> None:
+    def test_read_runtime_share_names_conn_ignores_non_tsv_output(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="enabled\n\n")
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            result = read_runtime_share_names_conn(connection)
+
+        self.assertEqual(result, [])
+
+    def test_read_runtime_log_tails_conn_fetches_ram_boot_and_payload_logs_with_short_timeout(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
 
         def fake_run_ssh(
@@ -47,18 +60,30 @@ class ProbeTests(unittest.TestCase):
             remote_cmd: str,
             **_kwargs: object,
         ) -> subprocess.CompletedProcess[str]:
+            if "payload.tsv" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="/Volumes/dk2/.samba4\n", stderr="")
             if "rc.local.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rc log\n", stderr="")
+            if "watchdog.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="watchdog log\n", stderr="")
             if "mdns.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="mdns log\n", stderr="")
+            if "nbns.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="nbns log\n", stderr="")
+            if "log.smbd" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="smbd log\n", stderr="")
             self.fail(f"unexpected remote command: {remote_cmd}")
 
         with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=fake_run_ssh) as run_ssh_mock:
             logs = read_runtime_log_tails_conn(connection)
 
         self.assertEqual(logs["remote_rc_local_log_tail"], "rc log")
+        self.assertEqual(logs["remote_payload_log_dir"], "/Volumes/dk2/.samba4")
+        self.assertEqual(logs["remote_watchdog_log_tail"], "watchdog log")
         self.assertEqual(logs["remote_mdns_log_tail"], "mdns log")
-        self.assertEqual(run_ssh_mock.call_count, 2)
+        self.assertEqual(logs["remote_nbns_log_tail"], "nbns log")
+        self.assertEqual(logs["remote_smbd_log_tail"], "smbd log")
+        self.assertEqual(run_ssh_mock.call_count, 6)
         for call in run_ssh_mock.call_args_list:
             args, kwargs = call
             self.assertEqual(args[0], connection)

@@ -29,9 +29,9 @@
 # Host long-lived notifyd/cleanupd/scavenger work in the smbd parent event loop
 # and avoid helper forks that hit raw abort paths on these targets.
 0008-no-pthread-smbd-daemons-in-parent.patch|host smbd helper services in the parent event loop
-# Avoid pthreadpool-backed messaging paths and watched SMBX DB wrappers that
-# depend on filtered-reader invalidation machinery unsafe in this build.
-0009-no-pthread-messaging-and-db-fallbacks.patch|no-pthread messaging and SMBX DB fallbacks
+# Avoid pthreadpool-backed messaging paths while preserving Samba's watched
+# SMBX database wrappers; client/session callers still require watched records.
+0009-no-pthread-messaging-and-db-fallbacks.patch|no-pthread messaging fallbacks
 # The static appliance build does not launch winbindd; keep local mappings and
 # skip libwbclient lookups for the remaining Windows SIDs during startup.
 0010-no-pthread-local-sid-to-unixids.patch|local SID mapping without winbindd
@@ -44,6 +44,10 @@
 # Configure may see pthread/TLS on the VM before the target cache is scrubbed;
 # make the final no-pthread build use process-global storage for __thread uses.
 0013-no-pthread-tls-fallbacks.patch|no-pthread TLS configure and __thread fallback
+# The no-pthread talloc stack is process-global, so forked smbd children inherit
+# parent event-loop stack tracking. Drop inherited tracking after fork and
+# disarm normal-exit diagnostics once smbd has completed clean shutdown.
+0022-no-pthread-talloc-stack-fork-exit-cleanup.patch|no-pthread talloc stack fork and exit cleanup
 
 # Static build compile fixes.
 # This reduced nonshared build can expose duplicate typedefs through multiple

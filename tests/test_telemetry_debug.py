@@ -294,12 +294,12 @@ class TelemetryDebugTests(unittest.TestCase):
                 "TC_HOST": "root@192.168.1.217",
                 "TC_PASSWORD": "secret",
                 "TC_CONFIGURE_ID": "config-id",
-                "TC_SHARE_USE_DISK_ROOT": "true",
+                "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
             },
             blacklist={"TC_PASSWORD", "TC_CONFIGURE_ID"},
         )
 
-        self.assertEqual(lines, ["TC_HOST=root@192.168.1.217", "TC_SHARE_USE_DISK_ROOT=true"])
+        self.assertEqual(lines, ["TC_HOST=root@192.168.1.217", "TC_INTERNAL_SHARE_USE_DISK_ROOT=true"])
 
     def test_render_debug_value_summarizes_registered_objects(self) -> None:
         record = Discovered(

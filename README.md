@@ -135,7 +135,7 @@ By default, `tcapsule deploy` reboots NetBSD 6 devices after deployment and then
 .venv/bin/tcapsule deploy --yes
 ```
 
-There are also other flags such as `--install-nbns`, `--no-reboot` and `--dry-run`, but leave those alone unless you have a specific reason to use them.
+There are also other flags such as `--no-nbns`, `--no-reboot` and `--dry-run`, but leave those alone unless you have a specific reason to use them.
 
 If you want a machine-readable deployment plan without changing the device, use:
 
@@ -174,7 +174,7 @@ This is a non-destructive diagnostic command. `tcapsule doctor` checks:
 - that the managed runtime is up:
   - `smbd` is running and bound to TCP 445
   - the managed mDNS takeover is active
-  - the optional NBNS responder is checked when enabled
+  - the NBNS responder is checked unless disabled
 - what the box is currently advertising and serving for:
   - Bonjour instance name
   - Bonjour host label

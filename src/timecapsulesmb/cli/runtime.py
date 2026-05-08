@@ -60,6 +60,23 @@ def load_env_config(*, env_path: Path | None = None, defaults: dict[str, str] | 
     return load_app_config(resolved_path, defaults=defaults)
 
 
+def load_optional_env_config(
+    *,
+    env_path: Path | None = None,
+    defaults: dict[str, str] | None = None,
+) -> AppConfig:
+    try:
+        resolved_path = resolve_app_paths(config_path=env_path).config_path
+    except Exception:
+        return AppConfig.missing(path=env_path or Path.cwd() / ".env")
+    if not resolved_path.exists():
+        return AppConfig.missing(path=resolved_path)
+    try:
+        return load_app_config(resolved_path, defaults=defaults)
+    except OSError:
+        return AppConfig.missing(path=resolved_path)
+
+
 def resolve_ssh_credentials(
     config: AppConfig,
     *,
