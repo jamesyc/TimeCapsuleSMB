@@ -398,7 +398,7 @@ class TelemetryTests(unittest.TestCase):
                                     "TC_HOST": "root@192.168.1.217",
                                     "TC_PASSWORD": "secret-password",
                                     "TC_SSH_OPTS": "-o ProxyJump=bastion",
-                                    "TC_SHARE_USE_DISK_ROOT": "true",
+                                    "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
                                 },
                             ) as command:
                                 command.set_stage("ssh_probe")
@@ -407,7 +407,7 @@ class TelemetryTests(unittest.TestCase):
         self.assertIn("stage=ssh_probe", finished_payload["error"])
         self.assertIn("TC_HOST=root@192.168.1.217", finished_payload["error"])
         self.assertIn("TC_SSH_OPTS=-o ProxyJump=bastion", finished_payload["error"])
-        self.assertIn("TC_SHARE_USE_DISK_ROOT=true", finished_payload["error"])
+        self.assertIn("TC_INTERNAL_SHARE_USE_DISK_ROOT=true", finished_payload["error"])
         self.assertNotIn("TC_PASSWORD", finished_payload["error"])
         self.assertNotIn("secret-password", finished_payload["error"])
 
@@ -499,12 +499,12 @@ class TelemetryTests(unittest.TestCase):
                 "TC_HOST": "root@192.168.1.217",
                 "TC_PASSWORD": "secret",
                 "TC_CONFIGURE_ID": "config-id",
-                "TC_SHARE_USE_DISK_ROOT": "true",
+                "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
             },
             blacklist=COMMAND_VALUE_BLACKLIST,
         )
 
-        self.assertEqual(lines, ["TC_HOST=root@192.168.1.217", "TC_SHARE_USE_DISK_ROOT=true"])
+        self.assertEqual(lines, ["TC_HOST=root@192.168.1.217", "TC_INTERNAL_SHARE_USE_DISK_ROOT=true"])
 
         lines = render_debug_mapping(
             {
@@ -538,7 +538,7 @@ class TelemetryTests(unittest.TestCase):
                 "TC_HOST": "root@192.168.1.101",
                 "TC_PASSWORD": "secret",
                 "TC_SSH_OPTS": "-o ProxyJump=old",
-                "TC_SHARE_USE_DISK_ROOT": "true",
+                "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
                 "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             },
             preflight_error="preflight failed",
@@ -558,7 +558,7 @@ class TelemetryTests(unittest.TestCase):
         self.assertIn("host=root@192.168.1.217", lines)
         self.assertIn("ssh_opts=-o ProxyJump=bastion", lines)
         self.assertIn("TC_HOST=root@192.168.1.101", lines)
-        self.assertIn("TC_SHARE_USE_DISK_ROOT=true", lines)
+        self.assertIn("TC_INTERNAL_SHARE_USE_DISK_ROOT=true", lines)
         self.assertIn("preflight_error=preflight failed", lines)
         self.assertIn("custom_finish=kept", lines)
         self.assertIn("probe_ssh_port_reachable=true", lines)

@@ -15,19 +15,12 @@ class RemoteSymlink:
 class RemotePermission:
     path: str
     mode: str
-    optional: bool = False
 
 
 @dataclass(frozen=True)
 class PrepareDirsAction:
     directories: tuple[str, ...]
     recreated_symlinks: tuple[RemoteSymlink, ...]
-
-
-@dataclass(frozen=True)
-class InitializeDataRootAction:
-    data_root: str
-    marker_path: str
 
 
 @dataclass(frozen=True)
@@ -59,7 +52,6 @@ class RunScriptAction:
 
 RemoteAction = Union[
     PrepareDirsAction,
-    InitializeDataRootAction,
     InstallPermissionsAction,
     StopProcessAction,
     StopProcessFullAction,
@@ -109,10 +101,6 @@ def prepare_dirs_action(
     recreated_symlinks: Iterable[RemoteSymlink] = (),
 ) -> RemoteAction:
     return PrepareDirsAction(tuple(directories), tuple(recreated_symlinks))
-
-
-def initialize_data_root_action(data_root: str, marker_path: str) -> RemoteAction:
-    return InitializeDataRootAction(data_root, marker_path)
 
 
 def install_permissions_action(permissions: Iterable[RemotePermission]) -> RemoteAction:
@@ -192,23 +180,10 @@ def _render_prepare_dirs_action(action: PrepareDirsAction) -> str:
     return " && ".join(commands) if commands else "true"
 
 
-def _render_initialize_data_root_action(action: InitializeDataRootAction) -> str:
-    data_root = action.data_root
-    marker_path = action.marker_path
-    return (
-        f"mkdir -p {shlex.quote(data_root)} && "
-        f"/bin/sh -c {shlex.quote(f': > {shlex.quote(marker_path)}')}"
-    )
-
-
 def _render_install_permissions_action(action: InstallPermissionsAction) -> str:
     commands: list[str] = []
     for permission in action.permissions:
-        chmod = f"chmod {shlex.quote(permission.mode)} {shlex.quote(permission.path)}"
-        if permission.optional:
-            commands.append(f"if [ -e {shlex.quote(permission.path)} ]; then {chmod}; fi")
-        else:
-            commands.append(chmod)
+        commands.append(f"chmod {shlex.quote(permission.mode)} {shlex.quote(permission.path)}")
     return " && ".join(commands) if commands else "true"
 
 
@@ -234,8 +209,6 @@ def render_remote_action(action: RemoteAction) -> str:
         return _render_stop_process_full_action(action)
     if isinstance(action, PrepareDirsAction):
         return _render_prepare_dirs_action(action)
-    if isinstance(action, InitializeDataRootAction):
-        return _render_initialize_data_root_action(action)
     if isinstance(action, InstallPermissionsAction):
         return _render_install_permissions_action(action)
     if isinstance(action, RemovePathAction):
@@ -273,13 +246,11 @@ def remote_action_to_jsonable(action: RemoteAction) -> dict[str, object]:
                 for link in action.recreated_symlinks
             ],
         }
-    if isinstance(action, InitializeDataRootAction):
-        return _action_json("initialize_data_root", action.data_root, action.marker_path)
     if isinstance(action, InstallPermissionsAction):
         return {
             "kind": "install_permissions",
             "permissions": [
-                {"path": permission.path, "mode": permission.mode, "optional": permission.optional}
+                {"path": permission.path, "mode": permission.mode}
                 for permission in action.permissions
             ],
         }
