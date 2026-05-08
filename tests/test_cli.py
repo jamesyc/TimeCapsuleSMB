@@ -5292,10 +5292,10 @@ class CliTests(unittest.TestCase):
         with ExitStack() as stack:
             stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(internal, external))
-            stack.enter_context(mock.patch("builtins.input", return_value="2"))
+            stack.enter_context(mock.patch("builtins.input", side_effect=["2", "y"]))
             run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.run_ssh", return_value=run_result))
             with redirect_stdout(output):
-                rc = fsck.main(["--yes", "--no-reboot"])
+                rc = fsck.main(["--no-reboot"])
 
         self.assertEqual(rc, 0)
         remote_cmd = run_ssh_mock.call_args.args[1]
@@ -5305,6 +5305,26 @@ class CliTests(unittest.TestCase):
         self.assertIn("Mounted HFS volumes:", text)
         self.assertIn("2. /dev/dk5 on /Volumes/dk5 (External, external)", text)
         self.assertIn("Mounted HFS volume: /dev/dk5 on /Volumes/dk5", text)
+
+    def test_fsck_yes_with_multiple_hfs_volumes_requires_selector(self) -> None:
+        output = io.StringIO()
+        values = self.make_valid_env()
+        internal = self._mast_volume("dk2", name="Internal", builtin=True)
+        external = self._mast_volume("dk5", disk_device="sd0", name="External", builtin=False)
+
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(internal, external))
+            input_mock = stack.enter_context(mock.patch("builtins.input", side_effect=AssertionError("fsck --yes should not prompt")))
+            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.run_ssh"))
+            with self.assertRaises(SystemExit) as ctx:
+                with redirect_stdout(output):
+                    fsck.main(["--yes", "--no-reboot"])
+
+        self.assertEqual(str(ctx.exception), "multiple mounted HFS volumes found; specify --volume to select one")
+        input_mock.assert_not_called()
+        run_ssh_mock.assert_not_called()
+        self.assertNotIn("Mounted HFS volumes:", output.getvalue())
 
     def test_fsck_volume_selector_skips_multiple_volume_prompt(self) -> None:
         output = io.StringIO()

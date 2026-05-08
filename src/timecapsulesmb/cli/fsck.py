@@ -19,6 +19,7 @@ from timecapsulesmb.transport.ssh import run_ssh
 
 FSCK_REBOOT_NO_DOWN_MESSAGE = "fsck requested reboot from the device, but SSH did not go down."
 NO_MOUNTED_HFS_VOLUMES_MESSAGE = "no mounted HFS volumes found"
+MULTIPLE_MOUNTED_HFS_VOLUMES_MESSAGE = "multiple mounted HFS volumes found; specify --volume to select one"
 
 
 @dataclass(frozen=True)
@@ -45,7 +46,7 @@ def _normalize_volume_selector(selector: str) -> str:
     return selector
 
 
-def select_fsck_target(targets: tuple[FsckTarget, ...], selector: str | None) -> FsckTarget:
+def select_fsck_target(targets: tuple[FsckTarget, ...], selector: str | None, *, prompt: bool = True) -> FsckTarget:
     if not targets:
         raise RuntimeError(NO_MOUNTED_HFS_VOLUMES_MESSAGE)
     if selector:
@@ -56,6 +57,8 @@ def select_fsck_target(targets: tuple[FsckTarget, ...], selector: str | None) ->
         raise RuntimeError(f"HFS volume not found: {selector}")
     if len(targets) == 1:
         return targets[0]
+    if not prompt:
+        raise RuntimeError(MULTIPLE_MOUNTED_HFS_VOLUMES_MESSAGE)
 
     print("Mounted HFS volumes:")
     for index, target in enumerate(targets, start=1):
@@ -127,7 +130,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         command_context.set_stage("select_fsck_volume")
         try:
-            target = select_fsck_target(tuple(_target_from_volume(volume) for volume in mounted_volumes), args.volume)
+            target = select_fsck_target(
+                tuple(_target_from_volume(volume) for volume in mounted_volumes),
+                args.volume,
+                prompt=not args.yes,
+            )
         except RuntimeError as exc:
             raise SystemExit(str(exc)) from exc
         command_context.update_fields(fsck_device=target.device, fsck_mountpoint=target.mountpoint)
