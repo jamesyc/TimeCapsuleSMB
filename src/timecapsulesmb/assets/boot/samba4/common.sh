@@ -106,7 +106,11 @@ tc_log_file_size() {
         echo 0
         return 0
     }
-    /usr/bin/wc -c <"$log_path" 2>/dev/null | sed 's/[^0-9]//g'
+    set -- $(/bin/ls -ln "$log_path" 2>/dev/null)
+    case "${5:-}" in
+        ""|*[!0123456789]*) echo 0 ;;
+        *) echo "$5" ;;
+    esac
 }
 
 tc_trim_log_file_if_needed() {
@@ -228,34 +232,7 @@ wait_for_process() {
 
 runtime_process_present_by_ucomm() {
     proc_name=$1
-    if ps_out=$(/bin/ps axww -o stat= -o ucomm= -o command= 2>/dev/null); then
-        old_ifs=$IFS
-        IFS='
-'
-        for line in $ps_out; do
-            [ -n "$line" ] || continue
-            line_ifs=$IFS
-            IFS=' 	'
-            set -- $line
-            IFS=$line_ifs
-            [ "$#" -ge 2 ] || continue
-            case "$1" in
-                Z*) continue ;;
-            esac
-
-            if [ "$2" = "$proc_name" ]; then
-                IFS=$old_ifs
-                return 0
-            fi
-        done
-        IFS=$old_ifs
-    fi
-
-    return 1
-}
-
-runtime_watchdog_present() {
-    if ps_out=$(/bin/ps axww -o stat= -o ucomm= -o command= 2>/dev/null); then
+    if ps_out=$(/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null); then
         old_ifs=$IFS
         IFS='
 '
@@ -266,25 +243,66 @@ runtime_watchdog_present() {
             set -- $line
             IFS=$line_ifs
             [ "$#" -ge 3 ] || continue
-            case "$1" in
+            case "$2" in
                 Z*) continue ;;
             esac
-            [ "$2" = "sh" ] || continue
-            if [ "${3:-}" = "/mnt/Flash/watchdog.sh" ]; then
+
+            if [ "$3" = "$proc_name" ]; then
                 IFS=$old_ifs
                 return 0
-            fi
-            if [ "${3:-}" = "/bin/sh" ] || [ "${3:-}" = "sh" ]; then
-                if [ "${4:-}" = "/mnt/Flash/watchdog.sh" ]; then
-                    IFS=$old_ifs
-                    return 0
-                fi
             fi
         done
         IFS=$old_ifs
     fi
 
     return 1
+}
+
+runtime_watchdog_pids() {
+    if ps_out=$(/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null); then
+        old_ifs=$IFS
+        IFS='
+'
+        for line in $ps_out; do
+            [ -n "$line" ] || continue
+            line_ifs=$IFS
+            IFS=' 	'
+            set -- $line
+            IFS=$line_ifs
+            [ "$#" -ge 4 ] || continue
+            watchdog_pid=$1
+            watchdog_stat=$2
+            watchdog_ucomm=$3
+            shift 3
+            case "$watchdog_stat" in
+                Z*) continue ;;
+            esac
+            [ "$watchdog_ucomm" = "sh" ] || continue
+            if [ "${1:-}" = "/mnt/Flash/watchdog.sh" ]; then
+                printf '%s\n' "$watchdog_pid"
+                continue
+            fi
+            if [ "${1:-}" = "/bin/sh" ] || [ "${1:-}" = "sh" ]; then
+                [ "${2:-}" = "/mnt/Flash/watchdog.sh" ] && printf '%s\n' "$watchdog_pid"
+            fi
+        done
+        IFS=$old_ifs
+    fi
+}
+
+runtime_watchdog_present() {
+    [ -n "$(runtime_watchdog_pids)" ]
+}
+
+kill_watchdog_pids() {
+    watchdog_signal=$1
+    for watchdog_pid in $(runtime_watchdog_pids); do
+        case "$watchdog_signal" in
+            KILL) /bin/kill -9 "$watchdog_pid" >/dev/null 2>&1 || true ;;
+            TERM|"") /bin/kill "$watchdog_pid" >/dev/null 2>&1 || true ;;
+            *) return 1 ;;
+        esac
+    done
 }
 
 wait_for_runtime_process_absent_by_ucomm() {
@@ -347,14 +365,14 @@ stop_runtime_process_by_ucomm() {
 
 stop_watchdog_process() {
     tc_log "stopping old watchdog"
-    /usr/bin/pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true
+    kill_watchdog_pids TERM
 
     if wait_for_watchdog_absent 5; then
         return 0
     fi
 
     tc_log "old watchdog still running after TERM; sending KILL"
-    /usr/bin/pkill -9 -f '[w]atchdog.sh' >/dev/null 2>&1 || true
+    kill_watchdog_pids KILL
 
     if wait_for_watchdog_absent 5; then
         return 0
@@ -621,7 +639,8 @@ tc_sanitize_share_name() {
 }
 
 tc_byte_len() {
-    printf '%s' "$1" | /usr/bin/wc -c | /usr/bin/tr -d '[:space:]'
+    byte_value=$1
+    echo ${#byte_value}
 }
 
 tc_truncate_to_bytes() {

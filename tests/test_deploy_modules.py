@@ -235,6 +235,8 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("ether[[:space:]]", common)
         self.assertIn("address[[:space:]]", common)
         self.assertNotIn("tr '[:lower:]' '[:upper:]'", common)
+        self.assertNotIn("/usr/bin/wc", common)
+        self.assertNotIn("/usr/bin/tr", common)
 
     def test_common_sh_contains_shared_network_and_airport_helpers(self) -> None:
         content = load_boot_asset_text("common.sh")
@@ -263,7 +265,7 @@ class DeployModuleTests(unittest.TestCase):
 
     def test_common_process_helpers_ignore_zombies(self) -> None:
         common = load_boot_asset_text("common.sh").replace(
-            "/bin/ps axww -o stat= -o ucomm= -o command= 2>/dev/null",
+            "/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null",
             'cat "$PS_FIXTURE"',
         )
         with tempfile.TemporaryDirectory() as tmp:
@@ -272,11 +274,11 @@ class DeployModuleTests(unittest.TestCase):
             fixture.write_text(
                 "\n".join(
                     [
-                        "Z    wcifsnd         (wcifsnd)",
-                        "Z    wcifsfs         (wcifsfs)",
-                        "S    nbns-advertiser /mnt/Memory/samba4/sbin/nbns-advertiser --name TimeCapsule",
-                        "S    sh              /bin/sh /mnt/Flash/watchdog.sh",
-                        "S    sh              /bin/sh -c probe=/mnt/Flash/watchdog.sh",
+                        "101 Z    wcifsnd         (wcifsnd)",
+                        "102 Z    wcifsfs         (wcifsfs)",
+                        "103 S    nbns-advertiser /mnt/Memory/samba4/sbin/nbns-advertiser --name TimeCapsule",
+                        "104 S    sh              /bin/sh /mnt/Flash/watchdog.sh",
+                        "105 S    sh              /bin/sh -c probe=/mnt/Flash/watchdog.sh",
                     ]
                 )
                 + "\n"
@@ -289,6 +291,7 @@ runtime_process_present_by_ucomm wcifsnd; echo "zombie-name=$?"
 runtime_process_present_by_ucomm nbns-advertiser; echo "live-name=$?"
 runtime_watchdog_present; echo "live-full=$?"
 runtime_watchdog_present < /dev/null; echo "live-full-repeat=$?"
+echo "watchdog-pids=$(runtime_watchdog_pids)"
 runtime_process_present_by_ucomm wcifsfs; echo "zombie-full=$?"
 wait_for_process nbns-advertiser 1; echo "live-wait=$?"
 wait_for_process wcifsnd 1; echo "zombie-wait=$?"
@@ -302,13 +305,36 @@ wait_for_process wcifsnd 1; echo "zombie-wait=$?"
         self.assertIn("live-name=0", result.stdout)
         self.assertIn("live-full=0", result.stdout)
         self.assertIn("live-full-repeat=0", result.stdout)
+        self.assertIn("watchdog-pids=104", result.stdout)
         self.assertIn("zombie-full=1", result.stdout)
         self.assertIn("live-wait=0", result.stdout)
         self.assertIn("zombie-wait=1", result.stdout)
 
+    def test_common_size_helpers_do_not_require_netbsd_missing_tools(self) -> None:
+        common = load_boot_asset_text("common.sh")
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            sample = tmp_path / "sample.txt"
+            sample.write_text("AirPort Disk")
+            script = tmp_path / "check.sh"
+            script.write_text(
+                common
+                + f"\nSAMPLE={shlex.quote(str(sample))}\n"
+                + """
+echo "byte-len=$(tc_byte_len 'AirPort Disk')"
+echo "file-size=$(tc_log_file_size "$SAMPLE")"
+"""
+            )
+
+            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("byte-len=12", result.stdout)
+        self.assertIn("file-size=12", result.stdout)
+
     def test_common_watchdog_process_helper_does_not_self_match_literal(self) -> None:
         common = load_boot_asset_text("common.sh").replace(
-            "/bin/ps axww -o stat= -o ucomm= -o command= 2>/dev/null",
+            "/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null",
             'cat "$PS_FIXTURE"',
         )
         with tempfile.TemporaryDirectory() as tmp:
@@ -317,8 +343,8 @@ wait_for_process wcifsnd 1; echo "zombie-wait=$?"
             fixture.write_text(
                 "\n".join(
                     [
-                        "S    sh              /bin/sh -c probe=/mnt/Flash/watchdog.sh",
-                        "S    sh              sh -c /bin/sh -c 'probe=/mnt/Flash/watchdog.sh'",
+                        "101 S    sh              /bin/sh -c probe=/mnt/Flash/watchdog.sh",
+                        "102 S    sh              sh -c /bin/sh -c 'probe=/mnt/Flash/watchdog.sh'",
                     ]
                 )
                 + "\n"
@@ -328,6 +354,7 @@ wait_for_process wcifsnd 1; echo "zombie-wait=$?"
                 + f"\nPS_FIXTURE={shlex.quote(str(fixture))}\n"
                 + """
 runtime_watchdog_present; echo "watchdog=$?"
+echo "watchdog-pids=$(runtime_watchdog_pids)"
 """
             )
 
@@ -335,6 +362,32 @@ runtime_watchdog_present; echo "watchdog=$?"
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("watchdog=1", result.stdout)
+        self.assertIn("watchdog-pids=", result.stdout)
+
+    def test_common_watchdog_kill_helper_targets_only_detected_pids(self) -> None:
+        common = load_boot_asset_text("common.sh").replace("/bin/kill", "record_kill")
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "check.sh"
+            kill_log = Path(tmp) / "kill.log"
+            script.write_text(
+                common
+                + f"\nKILL_LOG={shlex.quote(str(kill_log))}\n"
+                + """
+record_kill() { echo "kill:$*" >> "$KILL_LOG"; }
+runtime_watchdog_pids() { printf '%s\\n' 111 222; }
+kill_watchdog_pids TERM
+kill_watchdog_pids KILL
+"""
+            )
+
+            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
+            kill_lines = kill_log.read_text().splitlines()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            kill_lines,
+            ["kill:111", "kill:222", "kill:-9 111", "kill:-9 222"],
+        )
 
     def test_extract_airport_identity_from_text_finds_time_capsule_model(self) -> None:
         result = extract_airport_identity_from_text("prefix\x00psyAM\x00pTimeCapsule6,113\x00suffix")
@@ -2019,7 +2072,8 @@ fi
         text = format_deployment_plan(plan)
         self.assertIn("volume root: /Volumes/dk2", text)
         self.assertIn(f"Apple mount wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s", text)
-        self.assertIn("/usr/bin/pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
+        self.assertIn("tc_kill_watchdog_pids TERM", text)
+        self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", text)
         self.assertIn("/usr/bin/pkill '^mdns-advertiser$' >/dev/null 2>&1 || true", text)
         self.assertIn(f"mkdir -p {payload_dir} {payload_dir}/private {payload_dir}/cache /mnt/Flash", text)
         self.assertIn(f"rm -rf {payload_dir}/smb.conf.template", text)
@@ -2058,7 +2112,8 @@ fi
 
         text = format_deployment_plan(plan)
         self.assertIn("Remote actions (NetBSD4 activation):", text)
-        self.assertIn("/usr/bin/pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
+        self.assertIn("tc_kill_watchdog_pids TERM", text)
+        self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", text)
         self.assertIn("/usr/bin/pkill '^smbd$' >/dev/null 2>&1 || true", text)
         self.assertIn("/usr/bin/pkill '^mdns-advertiser$' >/dev/null 2>&1 || true", text)
         self.assertIn("/usr/bin/pkill '^nbns-advertiser$' >/dev/null 2>&1 || true", text)
@@ -2095,7 +2150,9 @@ fi
     def test_build_uninstall_plan_stops_watchdog_first(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
         rendered = [render_remote_action(action) for action in plan.remote_actions]
-        self.assertTrue(rendered[0].startswith("/usr/bin/pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true;"))
+        self.assertTrue(rendered[0].startswith("tc_watchdog_pids() { "))
+        self.assertIn("tc_kill_watchdog_pids TERM", rendered[0])
+        self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", rendered[0])
 
     def test_build_uninstall_plan_removes_mdns_snapshots(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
@@ -2277,16 +2334,19 @@ fi
 
     def test_render_stop_watchdog_action_waits_for_exit(self) -> None:
         command = render_remote_action(StopWatchdogAction())
-        self.assertIn("/usr/bin/pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true;", command)
+        self.assertIn("tc_watchdog_pids() {", command)
+        self.assertIn("tc_kill_watchdog_pids TERM;", command)
         self.assertIn("while /bin/sh -c 'found=1; if ps axww -o stat= -o ucomm= -o command= >/tmp/tcapsule-ps.", command)
         self.assertIn('case \"$1\" in Z*) continue ;; esac;', command)
         self.assertIn('[ "$2" = sh ] || continue;', command)
-        self.assertIn('/usr/bin/pkill -9 -f', command)
+        self.assertIn("tc_kill_watchdog_pids KILL;", command)
+        self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", command)
+        self.assertNotIn("/usr/bin/pkill -9 -f", command)
 
     def test_render_stop_watchdog_action_kills_by_full_match(self) -> None:
         command = render_remote_action(StopWatchdogAction())
-        self.assertIn("/usr/bin/pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true;", command)
-        self.assertIn("/usr/bin/pkill -9 -f '[w]atchdog.sh' >/dev/null 2>&1 || true;", command)
+        self.assertIn('if [ "${1:-}" = /bin/sh ] || [ "${1:-}" = sh ]; then', command)
+        self.assertIn('/bin/kill -9 "$tc_watchdog_pid" >/dev/null 2>&1 || true', command)
         self.assertIn("echo 'process watchdog did not stop' >&2; exit 1", command)
 
     def test_wait_for_ssh_state_uses_real_ssh_probe_for_expected_up(self) -> None:

@@ -7,6 +7,7 @@ WATCHDOG_PATH = "/mnt/Flash/watchdog.sh"
 WATCHDOG_KILL_PATTERN = "[w]atchdog.sh"
 PS_TEMP_COMMAND = "ps axww -o stat= -o ucomm= -o command= >/tmp/tcapsule-ps.$$ 2>/dev/null"
 PS_CAPTURE_COMMAND = "/bin/ps axww -o pid= -o ppid= -o stat= -o time= -o ucomm= -o command= 2>/dev/null || true"
+WATCHDOG_PID_PS_COMMAND = "/bin/ps axww -o pid= -o stat= -o ucomm= -o command="
 
 
 def _ucomm_pkill_pattern(name: str) -> str:
@@ -76,6 +77,43 @@ def render_wait_for_process_absent(present_command: str, *, attempts: int) -> st
     )
 
 
+def render_watchdog_pid_helpers() -> str:
+    watchdog_path = shlex.quote(WATCHDOG_PATH)
+    return (
+        "tc_watchdog_pids() { "
+        "tc_watchdog_ps=/tmp/tcapsule-watchdog-ps.$$; "
+        f"if {WATCHDOG_PID_PS_COMMAND} >\"$tc_watchdog_ps\" 2>/dev/null; then "
+        "while IFS= read line; do "
+        '[ -n "$line" ] || continue; '
+        "set -- $line; "
+        '[ "$#" -ge 4 ] || continue; '
+        "tc_watchdog_pid=$1; "
+        "tc_watchdog_stat=$2; "
+        "tc_watchdog_ucomm=$3; "
+        "shift 3; "
+        'case "$tc_watchdog_stat" in Z*) continue ;; esac; '
+        '[ "$tc_watchdog_ucomm" = sh ] || continue; '
+        f'if [ "${{1:-}}" = {watchdog_path} ]; then printf "%s\\n" "$tc_watchdog_pid"; continue; fi; '
+        'if [ "${1:-}" = /bin/sh ] || [ "${1:-}" = sh ]; then '
+        f'[ "${{2:-}}" = {watchdog_path} ] && printf "%s\\n" "$tc_watchdog_pid"; '
+        "fi; "
+        "done <\"$tc_watchdog_ps\"; "
+        "fi; "
+        "rm -f \"$tc_watchdog_ps\"; "
+        "}; "
+        "tc_kill_watchdog_pids() { "
+        "tc_watchdog_signal=$1; "
+        "for tc_watchdog_pid in $(tc_watchdog_pids); do "
+        'case "$tc_watchdog_signal" in '
+        'KILL) /bin/kill -9 "$tc_watchdog_pid" >/dev/null 2>&1 || true ;; '
+        'TERM|"") /bin/kill "$tc_watchdog_pid" >/dev/null 2>&1 || true ;; '
+        "*) return 1 ;; "
+        "esac; "
+        "done; "
+        "}; "
+    )
+
+
 def _render_pkill_wait_pkill9(
     *,
     term_pattern: str,
@@ -115,13 +153,18 @@ def render_pkill_wait_pkill9_by_ucomm(name: str, *, attempts: int = 5) -> str:
 
 
 def render_pkill_wait_pkill9_watchdog(*, attempts: int = 5) -> str:
-    return _render_pkill_wait_pkill9(
-        term_pattern=WATCHDOG_KILL_PATTERN,
-        kill_pattern=WATCHDOG_KILL_PATTERN,
-        full=True,
-        present_command=render_watchdog_process_present(),
-        failure_label="watchdog",
-        attempts=attempts,
+    present_command = render_watchdog_process_present()
+    wait_command = render_wait_for_process_absent(present_command, attempts=attempts)
+    process_present = f"/bin/sh -c {shlex.quote(present_command)} >/dev/null 2>&1"
+    failure_message = shlex.quote("process watchdog did not stop")
+    return (
+        f"{render_watchdog_pid_helpers()}"
+        "tc_kill_watchdog_pids TERM; "
+        f"{wait_command}; "
+        f"if {process_present}; then "
+        f"tc_kill_watchdog_pids KILL; {wait_command}; "
+        "fi; "
+        f"if {process_present}; then echo {failure_message} >&2; exit 1; fi"
     )
 
 
@@ -138,7 +181,7 @@ def render_direct_pkill9_by_ucomm(name: str) -> str:
 
 
 def render_direct_pkill9_watchdog() -> str:
-    return f"/usr/bin/pkill -9 -f {shlex.quote(WATCHDOG_KILL_PATTERN)} >/dev/null 2>&1 || true"
+    return f"{render_watchdog_pid_helpers()}tc_kill_watchdog_pids KILL"
 
 
 PROBE_PROCESS_HELPERS = (
