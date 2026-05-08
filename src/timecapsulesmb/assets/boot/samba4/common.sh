@@ -8,10 +8,69 @@ RAM_ETC="$RAM_ROOT/etc"
 RAM_VAR="$RAM_ROOT/var"
 RAM_PRIVATE="$RAM_ROOT/private"
 LOCKS_ROOT=/mnt/Locks
+
 MDNS_PROC_NAME=mdns-advertiser
 NBNS_PROC_NAME=nbns-advertiser
 ALL_MDNS_SNAPSHOT=/mnt/Flash/allmdns.txt
 APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt
+
+TC_CONFIG_FILE=/mnt/Flash/tcapsulesmb.conf
+TC_STATE_DIR="$RAM_VAR"
+TC_MAST_RAW="$TC_STATE_DIR/mast.raw"
+TC_VOLUMES_TSV="$TC_STATE_DIR/volumes.tsv"
+TC_SHARES_TSV="$TC_STATE_DIR/shares.tsv"
+TC_ADISK_TSV="$TC_STATE_DIR/adisk.tsv"
+TC_PAYLOAD_TSV="$TC_STATE_DIR/payload.tsv"
+TC_TOPOLOGY_SIGNATURE="$TC_STATE_DIR/topology.signature"
+TC_USED_SHARE_NAMES_FILE="$TC_STATE_DIR/share-names.txt"
+TC_TAB=$(printf '\t')
+
+TC_LOG_FILE="$TC_STATE_DIR/runtime.log"
+TC_LOG_PREFIX=runtime
+TC_MDNS_BIN=/mnt/Flash/mdns-advertiser
+TC_NBNS_BIN="$RAM_SBIN/nbns-advertiser"
+TC_SMBD_BIN="$RAM_SBIN/smbd"
+TC_SMBD_CONF="$RAM_ETC/smb.conf"
+TC_MDNS_LOG_FILE="$RAM_VAR/mdns.log"
+TC_MDNS_LOG_ENABLED=0
+TC_SMBD_DISK_LOGGING_ENABLED=0
+TC_ADISK_DISK_ADVF=0x1093
+TC_SAMBA_VM_BUFCACHE=5
+TC_MDNS_CAPTURE_PID=
+TC_APPLE_MDNS_SNAPSHOT_START=
+
+LEGACY_PREFIX_NETBSD7=/root/tc-netbsd7
+LEGACY_PREFIX_NETBSD4=/root/tc-netbsd4
+LEGACY_PREFIX_NETBSD4LE=/root/tc-netbsd4le
+LEGACY_PREFIX_NETBSD4BE=/root/tc-netbsd4be
+
+tc_init_runtime_env() {
+    APPLE_MOUNT_WAIT_SECONDS=${APPLE_MOUNT_WAIT_SECONDS:-30}
+    INTERNAL_SHARE_USE_DISK_ROOT=${INTERNAL_SHARE_USE_DISK_ROOT:-0}
+    NBNS_ENABLED=${NBNS_ENABLED:-0}
+    TC_MDNS_LOG_ENABLED=${TC_MDNS_LOG_ENABLED:-${MDNS_DEBUG_LOGGING:-0}}
+    TC_SMBD_DISK_LOGGING_ENABLED=${TC_SMBD_DISK_LOGGING_ENABLED:-${SMBD_DEBUG_LOGGING:-0}}
+}
+
+tc_set_log() {
+    TC_LOG_FILE=$1
+    TC_LOG_PREFIX=$2
+}
+
+tc_log() {
+    log_dir=${TC_LOG_FILE%/*}
+    tmp_log="$TC_LOG_FILE.tmp.$$"
+    line="$(date '+%Y-%m-%d %H:%M:%S') $TC_LOG_PREFIX: $*"
+
+    [ -d "$log_dir" ] || mkdir -p "$log_dir"
+    {
+        if [ -f "$TC_LOG_FILE" ]; then
+            /usr/bin/tail -n 255 "$TC_LOG_FILE" 2>/dev/null || true
+        fi
+        echo "$line"
+    } >"$tmp_log"
+    mv "$tmp_log" "$TC_LOG_FILE"
+}
 
 get_iface_ipv4() {
     iface=$1
@@ -79,14 +138,8 @@ runtime_process_present() {
             set -- $line
             IFS=$line_ifs
             [ "$#" -ge 2 ] || continue
-
-            # NetBSD leaves killed Apple CIFS helpers as zombies until init
-            # reaps them. Zombies do not hold UDP 137, so they must not block
-            # the managed NBNS responder takeover path.
             case "$1" in
-                Z*)
-                    continue
-                    ;;
+                Z*) continue ;;
             esac
 
             if [ "$full_match" = "true" ]; then
@@ -96,11 +149,9 @@ runtime_process_present() {
                         return 0
                         ;;
                 esac
-            else
-                if [ "$2" = "$pattern" ]; then
-                    IFS=$old_ifs
-                    return 0
-                fi
+            elif [ "$2" = "$pattern" ]; then
+                IFS=$old_ifs
+                return 0
             fi
         done
         IFS=$old_ifs
@@ -130,7 +181,7 @@ stop_runtime_process() {
     pattern=$2
     full_match=${3:-false}
 
-    log "stopping old $label"
+    tc_log "stopping old $label"
     if [ "$full_match" = "true" ]; then
         /usr/bin/pkill -f "$pattern" >/dev/null 2>&1 || true
     else
@@ -141,7 +192,7 @@ stop_runtime_process() {
         return 0
     fi
 
-    log "old $label still running after TERM; sending KILL"
+    tc_log "old $label still running after TERM; sending KILL"
     if [ "$full_match" = "true" ]; then
         /usr/bin/pkill -9 -f "$pattern" >/dev/null 2>&1 || true
     else
@@ -152,7 +203,7 @@ stop_runtime_process() {
         return 0
     fi
 
-    log "old $label survived KILL"
+    tc_log "old $label survived KILL"
     return 1
 }
 
@@ -178,155 +229,8 @@ is_volume_root_mounted() {
     volume_root=$1
     df_line=$(/bin/df -k "$volume_root" 2>/dev/null | /usr/bin/tail -n +2 || true)
     case "$df_line" in
-        *" $volume_root")
-            return 0
-            ;;
+        *" $volume_root") return 0 ;;
     esac
-    return 1
-}
-
-append_disk_candidate() {
-    candidate=$1
-    case " $DISK_CANDIDATES " in
-        *" $candidate "*)
-            ;;
-        *)
-            DISK_CANDIDATES="$DISK_CANDIDATES $candidate"
-            ;;
-    esac
-}
-
-disk_name_candidates() {
-    # Keep this candidate order in sync with src/timecapsulesmb/device/util.py.
-    DISK_CANDIDATES=""
-    dmesg_disk_lines=$(/sbin/dmesg 2>/dev/null | /usr/bin/sed -n '/^dk[0-9][0-9]* at /p' || true)
-    metadata_wedges=""
-    for dev in $(echo "$dmesg_disk_lines" | /usr/bin/sed -n 's/^\(dk[0-9][0-9]*\) at .*: APconfig$/\1/p;s/^\(dk[0-9][0-9]*\) at .*: APswap$/\1/p'); do
-        metadata_wedges="$metadata_wedges $dev"
-    done
-
-    for dev in $(echo "$dmesg_disk_lines" | /usr/bin/sed -n 's/^\(dk[0-9][0-9]*\) at .*: APdata$/\1/p'); do
-        append_disk_candidate "$dev"
-    done
-
-    for dev in $(/sbin/sysctl -n hw.disknames 2>/dev/null); do
-        case "$dev" in
-            dk[0-9]*)
-                case " $metadata_wedges " in
-                    *" $dev "*)
-                        ;;
-                    *)
-                        append_disk_candidate "$dev"
-                        ;;
-                esac
-                ;;
-        esac
-    done
-
-    if [ -z "$DISK_CANDIDATES" ]; then
-        DISK_CANDIDATES=" dk2 dk3"
-    fi
-
-    echo "$DISK_CANDIDATES"
-}
-
-volume_root_candidates() {
-    roots=""
-    for dev in "$@"; do
-        roots="$roots /Volumes/$dev"
-    done
-    echo "$roots"
-}
-
-mount_candidates() {
-    candidates=""
-    for dev in "$@"; do
-        candidates="$candidates /dev/$dev:/Volumes/$dev"
-    done
-    echo "$candidates"
-}
-
-log_disk_discovery_state() {
-    disk_candidates=$1
-
-    disk_names=$(/sbin/sysctl -n hw.disknames 2>/dev/null || true)
-    if [ -n "$disk_names" ]; then
-        log "disk discovery: hw.disknames=$disk_names"
-    else
-        log "disk discovery: hw.disknames unavailable"
-    fi
-
-    disk_lines=$(/sbin/dmesg 2>/dev/null | /usr/bin/sed -n '/^wd[0-9]/p;/^sd[0-9]/p;/^ld[0-9]/p;/^dk[0-9]/p' || true)
-    if [ -n "$disk_lines" ]; then
-        old_ifs=$IFS
-        IFS='
-'
-        for disk_line in $disk_lines; do
-            log "disk discovery: dmesg: $disk_line"
-        done
-        IFS=$old_ifs
-    else
-        log "disk discovery: no wd/sd/ld/dk dmesg lines available"
-    fi
-
-    volume_candidates=$(volume_root_candidates $disk_candidates)
-    mount_candidate_list=$(mount_candidates $disk_candidates)
-    log "disk discovery: disk candidates:${disk_candidates:- none}"
-    log "disk discovery: volume root candidates:${volume_candidates:- none}"
-    log "disk discovery: mount candidates:${mount_candidate_list:- none}"
-}
-
-find_existing_data_root() {
-    disk_candidates=$1
-    for volume_root in $(volume_root_candidates $disk_candidates); do
-        if is_volume_root_mounted "$volume_root" && data_root=$(find_data_root_under_volume "$volume_root"); then
-            echo "$data_root"
-            return 0
-        fi
-    done
-
-    return 1
-}
-
-find_existing_volume_root() {
-    disk_candidates=$1
-    for volume_root in $(volume_root_candidates $disk_candidates); do
-        if is_volume_root_mounted "$volume_root"; then
-            echo "$volume_root"
-            return 0
-        fi
-    done
-
-    return 1
-}
-
-find_data_root_under_volume() {
-    volume_root=$1
-
-    if [ -f "$volume_root/ShareRoot/.com.apple.timemachine.supported" ]; then
-        log "data root match: $volume_root/ShareRoot marker"
-        echo "$volume_root/ShareRoot"
-        return 0
-    fi
-
-    if [ -f "$volume_root/Shared/.com.apple.timemachine.supported" ]; then
-        log "data root match: $volume_root/Shared marker"
-        echo "$volume_root/Shared"
-        return 0
-    fi
-
-    if [ -d "$volume_root/ShareRoot" ]; then
-        log "data root match: $volume_root/ShareRoot directory"
-        echo "$volume_root/ShareRoot"
-        return 0
-    fi
-
-    if [ -d "$volume_root/Shared" ]; then
-        log "data root match: $volume_root/Shared directory"
-        echo "$volume_root/Shared"
-        return 0
-    fi
-
     return 1
 }
 
@@ -338,17 +242,17 @@ mount_hfs_bounded() {
     created_mountpoint=0
 
     if [ ! -b "$dev_path" ]; then
-        log "$mount_context skipped; missing block device $dev_path"
+        tc_log "$mount_context skipped; missing block device $dev_path"
         return 1
     fi
 
     if [ ! -d "$volume_root" ]; then
         mkdir -p "$volume_root"
         created_mountpoint=1
-        log "created mountpoint $volume_root for $dev_path"
+        tc_log "created mountpoint $volume_root for $dev_path"
     fi
 
-    log "launching mount_hfs for $dev_path at $volume_root"
+    tc_log "launching mount_hfs for $dev_path at $volume_root"
     /sbin/mount_hfs "$dev_path" "$volume_root" >/dev/null 2>&1 &
     mount_pid=$!
     attempt=0
@@ -358,15 +262,15 @@ mount_hfs_bounded() {
             sleep 1
             kill -9 "$mount_pid" >/dev/null 2>&1 || true
             wait "$mount_pid" >/dev/null 2>&1 || true
-            log "mount_hfs command did not exit promptly for $dev_path at $volume_root; re-checking mount state"
+            tc_log "mount_hfs command did not exit promptly for $dev_path at $volume_root; re-checking mount state"
             if is_volume_root_mounted "$volume_root"; then
-                log "mount_hfs command timed out, but volume is mounted"
+                tc_log "mount_hfs command timed out, but volume is mounted"
                 return 0
             fi
             if [ "$created_mountpoint" -eq 1 ]; then
                 /bin/rmdir "$volume_root" >/dev/null 2>&1 || true
             fi
-            log "mount_hfs timed out for $dev_path at $volume_root and volume was not mounted at the immediate re-check"
+            tc_log "mount_hfs timed out for $dev_path at $volume_root and volume was not mounted at the immediate re-check"
             return 1
         fi
         attempt=$((attempt + 1))
@@ -375,7 +279,7 @@ mount_hfs_bounded() {
     wait "$mount_pid" >/dev/null 2>&1 || true
 
     if is_volume_root_mounted "$volume_root"; then
-        log "mounted $dev_path at $volume_root after ${attempt}s"
+        tc_log "mounted $dev_path at $volume_root after ${attempt}s"
         return 0
     fi
 
@@ -383,28 +287,643 @@ mount_hfs_bounded() {
         /bin/rmdir "$volume_root" >/dev/null 2>&1 || true
     fi
 
-    log "mount_hfs exited for $dev_path at $volume_root, but volume is not mounted"
+    tc_log "mount_hfs exited for $dev_path at $volume_root, but volume is not mounted"
     return 1
 }
 
-try_mount_candidate() {
-    dev_path=$1
+tc_wake_or_mount_volume() {
+    device_path=$1
     volume_root=$2
 
+    if [ -z "$device_path" ] || [ -z "$volume_root" ]; then
+        return 1
+    fi
+
     if is_volume_root_mounted "$volume_root"; then
-        echo "$volume_root"
         return 0
     fi
 
-    mount_hfs_bounded "$dev_path" "$volume_root" 30 "mount candidate" || true
-    if is_volume_root_mounted "$volume_root"; then
-        log "mount candidate succeeded: $dev_path at $volume_root"
-        echo "$volume_root"
+    mkdir -p "$volume_root"
+    /usr/bin/acp rpc diskd.useVolume path:s:"$volume_root" >/dev/null 2>&1 || true
+    attempt=0
+    while [ "$attempt" -lt "$APPLE_MOUNT_WAIT_SECONDS" ]; do
+        if is_volume_root_mounted "$volume_root"; then
+            tc_log "Apple mounted $volume_root after ${attempt}s"
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+
+    mount_hfs_bounded "$device_path" "$volume_root" 30 "MaSt volume $volume_root"
+}
+
+tc_extract_plist_string() {
+    echo "$1" | /usr/bin/sed -n 's/.*=[[:space:]]*"\(.*\)"[;]*.*/\1/p'
+}
+
+tc_extract_plist_bool() {
+    value=$(echo "$1" | /usr/bin/sed -n -e 's/.*=[[:space:]]*\(true\)[;]*.*/\1/p' -e 's/.*=[[:space:]]*\(false\)[;]*.*/\1/p')
+    [ "$value" = "true" ] && echo 1 || echo 0
+}
+
+tc_format_uuid_line() {
+    hex=$(echo "$1" | /usr/bin/sed -n -e 's/.*<\([^>]*\)>.*/\1/p' -e 's/.*uuid=[[:space:]]*\([0-9A-Fa-f][0-9A-Fa-f ]*\).*/\1/p' | /usr/bin/sed 's/[[:space:]]//g')
+    echo "$hex" | /usr/bin/sed -n 's/^\([0-9A-Fa-f]\{8\}\)\([0-9A-Fa-f]\{4\}\)\([0-9A-Fa-f]\{4\}\)\([0-9A-Fa-f]\{4\}\)\([0-9A-Fa-f]\{12\}\)$/\1-\2-\3-\4-\5/p' | /usr/bin/sed 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/'
+}
+
+tc_emit_mast_volume() {
+    emit_out_file=$1
+    if [ "$part_format" != "hfs" ] || [ -z "$part_device" ] || [ -z "$part_name" ] || [ -z "$part_uuid" ]; then
         return 0
     fi
+    case "$part_device" in
+        dk[0-9]*) ;;
+        *) return 0 ;;
+    esac
+    printf '%s\t%s\t%s\t%s\t%s\n' "$disk_device" "$part_device" "/Volumes/$part_device" "$part_name" "$part_uuid" >>"$emit_out_file"
+}
 
-    log "mount candidate failed: $dev_path at $volume_root"
+tc_flush_mast_disk() {
+    flush_pending_file=$1
+    flush_out_file=$2
+    [ -s "$flush_pending_file" ] || return 0
+    while IFS="$TC_TAB" read -r pending_disk pending_part pending_root pending_name pending_uuid; do
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$pending_disk" "$disk_builtin" "$pending_part" "$pending_root" "$pending_name" "$pending_uuid" >>"$flush_out_file"
+    done <"$flush_pending_file"
+    : >"$flush_pending_file"
+}
+
+tc_read_mast_volumes_to() {
+    out_file=$1
+    raw_file=$2
+    pending_file="$out_file.pending.$$"
+    : >"$out_file"
+    : >"$raw_file"
+    : >"$pending_file"
+
+    if ! /usr/bin/acp -A MaSt >"$raw_file" 2>/dev/null; then
+        rm -f "$pending_file"
+        return 1
+    fi
+
+    disk_device=
+    disk_builtin=0
+    in_partitions=0
+    part_device=
+    part_name=
+    part_format=
+    part_uuid=
+
+    while IFS= read -r raw_line; do
+        line=$(echo "$raw_line" | /usr/bin/sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        case "$line" in
+            *builtin*"="*)
+                disk_builtin=$(tc_extract_plist_bool "$line")
+                ;;
+            *partitions*"="*"("*|*partitions*"="*)
+                in_partitions=1
+                ;;
+            *deviceName*"="*)
+                value=$(tc_extract_plist_string "$line")
+                if [ "$in_partitions" -eq 1 ]; then
+                    part_device=$value
+                else
+                    if [ -n "$disk_device" ]; then
+                        tc_flush_mast_disk "$pending_file" "$out_file"
+                    fi
+                    disk_device=$value
+                    disk_builtin=0
+                fi
+                ;;
+            *name*"="*)
+                if [ "$in_partitions" -eq 1 ]; then
+                    part_name=$(tc_extract_plist_string "$line")
+                fi
+                ;;
+            *format*"="*)
+                if [ "$in_partitions" -eq 1 ]; then
+                    part_format=$(tc_extract_plist_string "$line" | /usr/bin/sed 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/')
+                fi
+                ;;
+            *uuid*"="*)
+                if [ "$in_partitions" -eq 1 ]; then
+                    part_uuid=$(tc_format_uuid_line "$line")
+                fi
+                ;;
+            "}"|"};"*)
+                if [ "$in_partitions" -eq 1 ] && [ -n "$part_device" ]; then
+                    tc_emit_mast_volume "$pending_file"
+                    part_device=
+                    part_name=
+                    part_format=
+                    part_uuid=
+                elif [ -n "$disk_device" ]; then
+                    tc_flush_mast_disk "$pending_file" "$out_file"
+                    disk_device=
+                    disk_builtin=0
+                fi
+                ;;
+            "]"|"];"*|");"|");"*)
+                in_partitions=0
+                ;;
+        esac
+    done <"$raw_file"
+
+    if [ -n "$disk_device" ]; then
+        tc_flush_mast_disk "$pending_file" "$out_file"
+    fi
+    rm -f "$pending_file"
+    [ -s "$out_file" ]
+}
+
+tc_print_topology_signature() {
+    tmp_dir="/tmp/tcapsulesmb-topology.$$"
+    mkdir -p "$tmp_dir"
+    if tc_read_mast_volumes_to "$tmp_dir/volumes.tsv" "$tmp_dir/mast.raw"; then
+        /bin/cat "$tmp_dir/volumes.tsv"
+        rm -rf "$tmp_dir"
+        return 0
+    fi
+    rm -rf "$tmp_dir"
     return 1
+}
+
+tc_sanitize_share_name() {
+    sanitized=$(printf '%s' "$1" \
+        | /usr/bin/sed \
+            -e 's/[[:cntrl:]]/_/g' \
+            -e 's/[\/\\:\*\?"<>|,=]/_/g' \
+            -e 's/[][]/_/g' \
+            -e 's/^[[:space:]]*//' \
+            -e 's/[[:space:]]*$//')
+    if [ -z "$sanitized" ]; then
+        sanitized="Disk $2"
+    fi
+    echo "$sanitized"
+}
+
+tc_share_name_exists() {
+    wanted=$1
+    [ -f "$TC_USED_SHARE_NAMES_FILE" ] || return 1
+    while IFS= read -r existing; do
+        [ "$existing" = "$wanted" ] && return 0
+    done <"$TC_USED_SHARE_NAMES_FILE"
+    return 1
+}
+
+tc_unique_share_name() {
+    base=$1
+    device=$2
+    candidate=$base
+    suffix=1
+    if tc_share_name_exists "$candidate"; then
+        candidate="$base ($device)"
+    fi
+    while tc_share_name_exists "$candidate"; do
+        candidate="$base ($device-$suffix)"
+        suffix=$((suffix + 1))
+    done
+    echo "$candidate" >>"$TC_USED_SHARE_NAMES_FILE"
+    echo "$candidate"
+}
+
+tc_volume_is_writable() {
+    volume_root=$1
+    test_dir="$volume_root/.tcapsulesmb-write-test.$$"
+    if mkdir "$test_dir" >/dev/null 2>&1; then
+        rmdir "$test_dir" >/dev/null 2>&1 || true
+        return 0
+    fi
+    return 1
+}
+
+tc_initialize_internal_share_root() {
+    volume_root=$1
+    data_root="$volume_root/ShareRoot"
+    marker="$data_root/.com.apple.timemachine.supported"
+
+    mkdir -p "$data_root"
+    : >"$marker"
+    echo "$data_root"
+}
+
+tc_build_share_state() {
+    volumes_file=${1:-$TC_VOLUMES_TSV}
+    : >"$TC_SHARES_TSV"
+    : >"$TC_ADISK_TSV"
+    : >"$TC_USED_SHARE_NAMES_FILE"
+
+    while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid; do
+        [ -n "$part_device" ] || continue
+        device_path="/dev/$part_device"
+        if ! tc_wake_or_mount_volume "$device_path" "$volume_root"; then
+            tc_log "share skipped: could not mount $device_path at $volume_root"
+            continue
+        fi
+        if ! tc_volume_is_writable "$volume_root"; then
+            tc_log "share skipped: $volume_root is not writable"
+            continue
+        fi
+
+        if [ "$builtin" = "1" ] && [ "$INTERNAL_SHARE_USE_DISK_ROOT" != "1" ]; then
+            share_path=$(tc_initialize_internal_share_root "$volume_root")
+        else
+            share_path=$volume_root
+        fi
+        base_name=$(tc_sanitize_share_name "$part_name" "$part_device")
+        share_name=$(tc_unique_share_name "$base_name" "$part_device")
+        printf '%s\t%s\t%s\t%s\t%s\n' "$share_name" "$share_path" "$part_device" "$builtin" "$part_uuid" >>"$TC_SHARES_TSV"
+        printf '%s\t%s\t%s\t%s\n' "$share_name" "$part_device" "$part_uuid" "$TC_ADISK_DISK_ADVF" >>"$TC_ADISK_TSV"
+        tc_log "share prepared: $share_name -> $share_path uuid=$part_uuid builtin=$builtin"
+    done <"$volumes_file"
+
+    [ -s "$TC_SHARES_TSV" ]
+}
+
+tc_mount_active_volumes_from_state() {
+    state_file=$TC_SHARES_TSV
+    status=0
+
+    if [ ! -s "$state_file" ]; then
+        state_file=$TC_VOLUMES_TSV
+    fi
+    [ -s "$state_file" ] || return 0
+
+    if [ "$state_file" = "$TC_SHARES_TSV" ]; then
+        while IFS="$TC_TAB" read -r share_name share_path part_device builtin part_uuid; do
+            [ -n "$part_device" ] || continue
+            if ! tc_wake_or_mount_volume "/dev/$part_device" "/Volumes/$part_device"; then
+                tc_log "active share volume unavailable: /dev/$part_device at /Volumes/$part_device"
+                status=1
+            fi
+        done <"$state_file"
+    else
+        while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid; do
+            [ -n "$part_device" ] || continue
+            if ! tc_wake_or_mount_volume "/dev/$part_device" "$volume_root"; then
+                tc_log "active MaSt volume unavailable: /dev/$part_device at $volume_root"
+                status=1
+            fi
+        done <"$state_file"
+    fi
+
+    return "$status"
+}
+
+tc_verify_payload_dir() {
+    payload_dir=$1
+
+    [ -d "$payload_dir" ] || return 1
+    [ -x "$payload_dir/smbd" ] || [ -x "$payload_dir/sbin/smbd" ] || return 1
+    [ -f "$payload_dir/private/smbpasswd" ] || return 1
+    [ -f "$payload_dir/private/username.map" ] || return 1
+}
+
+tc_resolve_payload() {
+    volumes_file=${1:-$TC_VOLUMES_TSV}
+    TC_RESOLVED_PAYLOAD_DIR=
+    TC_RESOLVED_PAYLOAD_VOLUME=
+    TC_RESOLVED_PAYLOAD_DEVICE=
+
+    for desired_builtin in 1 0; do
+        while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid; do
+            [ -n "$part_device" ] || continue
+            [ "$builtin" = "$desired_builtin" ] || continue
+            candidate="$volume_root/$PAYLOAD_DIR_NAME"
+            if tc_wake_or_mount_volume "/dev/$part_device" "$volume_root" && tc_verify_payload_dir "$candidate"; then
+                TC_RESOLVED_PAYLOAD_DIR=$candidate
+                TC_RESOLVED_PAYLOAD_VOLUME=$volume_root
+                TC_RESOLVED_PAYLOAD_DEVICE="/dev/$part_device"
+                tc_log "payload directory recovered from MaSt scan: $candidate"
+                return 0
+            fi
+        done <"$volumes_file"
+    done
+
+    tc_log "payload directory missing from MaSt volumes"
+    return 1
+}
+
+tc_write_payload_state() {
+    payload_dir=$1
+    volume_root=$2
+    device_path=$3
+    printf '%s\t%s\t%s\n' "$payload_dir" "$volume_root" "$device_path" >"$TC_PAYLOAD_TSV"
+}
+
+tc_read_payload_state() {
+    TC_PAYLOAD_DIR=
+    TC_PAYLOAD_VOLUME=
+    TC_PAYLOAD_DEVICE=
+
+    if [ -s "$TC_PAYLOAD_TSV" ]; then
+        IFS="$TC_TAB" read -r TC_PAYLOAD_DIR TC_PAYLOAD_VOLUME TC_PAYLOAD_DEVICE <"$TC_PAYLOAD_TSV"
+        if [ -n "$TC_PAYLOAD_DIR" ] && [ -n "$TC_PAYLOAD_VOLUME" ] && [ -n "$TC_PAYLOAD_DEVICE" ]; then
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+tc_payload_available() {
+    tc_read_payload_state || return 1
+    tc_wake_or_mount_volume "$TC_PAYLOAD_DEVICE" "$TC_PAYLOAD_VOLUME" && tc_verify_payload_dir "$TC_PAYLOAD_DIR"
+}
+
+tc_find_payload_smbd() {
+    payload_dir=$1
+
+    if [ -x "$payload_dir/smbd" ]; then
+        tc_log "selected smbd binary $payload_dir/smbd"
+        echo "$payload_dir/smbd"
+        return 0
+    fi
+
+    if [ -x "$payload_dir/sbin/smbd" ]; then
+        tc_log "selected smbd binary $payload_dir/sbin/smbd"
+        echo "$payload_dir/sbin/smbd"
+        return 0
+    fi
+
+    tc_log "no smbd binary found in $payload_dir"
+    return 1
+}
+
+tc_find_payload_nbns() {
+    payload_dir=$1
+
+    if [ -x "$payload_dir/nbns-advertiser" ]; then
+        tc_log "selected nbns binary $payload_dir/nbns-advertiser"
+        echo "$payload_dir/nbns-advertiser"
+        return 0
+    fi
+
+    tc_log "nbns binary not found in $payload_dir"
+    return 1
+}
+
+tc_select_cache_directory() {
+    payload_dir=$1
+    kernel_release=$(/usr/bin/uname -r 2>/dev/null || true)
+    case "$kernel_release" in
+        4.*) echo "$payload_dir/cache" ;;
+        *) echo "$RAM_VAR" ;;
+    esac
+}
+
+tc_stage_runtime() {
+    payload_dir=$1
+    smbd_src=$2
+    nbns_src=${3:-}
+
+    cp "$smbd_src" "$TC_SMBD_BIN"
+    chmod 755 "$TC_SMBD_BIN"
+
+    for required_file in smbpasswd username.map; do
+        if [ ! -f "$payload_dir/private/$required_file" ]; then
+            tc_log "required Samba private file missing: $payload_dir/private/$required_file"
+            return 1
+        fi
+        cp "$payload_dir/private/$required_file" "$RAM_PRIVATE/$required_file"
+    done
+    chmod 600 "$RAM_PRIVATE/smbpasswd" "$RAM_PRIVATE/username.map"
+    tc_log "staged Samba auth files into RAM private directory"
+
+    if [ "$NBNS_ENABLED" = "1" ] && [ -n "$nbns_src" ] && [ -x "$nbns_src" ]; then
+        cp "$nbns_src" "$TC_NBNS_BIN"
+        chmod 755 "$TC_NBNS_BIN"
+        tc_log "staged nbns runtime binary"
+    else
+        tc_log "nbns runtime staging skipped"
+    fi
+}
+
+tc_generate_smb_conf() {
+    payload_dir=$1
+    bind_interfaces=$2
+    cache_directory=$(tc_select_cache_directory "$payload_dir")
+    smbd_log="$RAM_VAR/log.smbd"
+    smbd_max_log_size=256
+    smbd_log_level_line=
+
+    if [ "$TC_SMBD_DISK_LOGGING_ENABLED" = "1" ]; then
+        mkdir -p "$payload_dir/logs"
+        chmod 755 "$payload_dir/logs" >/dev/null 2>&1 || true
+        smbd_log="$payload_dir/logs/log.smbd"
+        smbd_max_log_size=1048576
+        smbd_log_level_line="    log level = 5 vfs:8 fruit:8"
+        tc_log "smbd debug logging enabled at $smbd_log"
+    fi
+
+    {
+        cat <<EOF
+[global]
+    netbios name = $SMB_NETBIOS_NAME
+    workgroup = WORKGROUP
+    server string = Time Capsule Samba 4
+    interfaces = $bind_interfaces
+    bind interfaces only = yes
+    security = user
+    map to guest = Never
+    restrict anonymous = 2
+    guest account = nobody
+    null passwords = no
+    ea support = yes
+    passdb backend = smbpasswd:$RAM_PRIVATE/smbpasswd
+    username map = $RAM_PRIVATE/username.map
+    dos charset = ASCII
+    min protocol = SMB2
+    max protocol = SMB3
+    server multi channel support = no
+    load printers = no
+    disable spoolss = yes
+    dfree command = /mnt/Flash/dfree.sh
+    pid directory = $RAM_VAR
+    lock directory = $LOCKS_ROOT
+    state directory = $RAM_VAR
+    cache directory = $cache_directory
+    private dir = $RAM_PRIVATE
+    dbwrap_tdb_max_dead:* = 0
+    log file = $smbd_log
+    max log size = $smbd_max_log_size
+$smbd_log_level_line
+    smb ports = 445
+    deadtime = 60
+    reset on zero vc = yes
+    fruit:aapl = yes
+    fruit:model = MacSamba
+    fruit:advertise_fullsync = true
+    fruit:nfs_aces = no
+    fruit:veto_appledouble = yes
+    fruit:wipe_intentionally_left_blank_rfork = yes
+    fruit:delete_empty_adfiles = yes
+EOF
+
+        while IFS="$TC_TAB" read -r share_name share_path part_device builtin part_uuid; do
+            [ -n "$share_name" ] || continue
+            cat <<EOF
+
+[$share_name]
+    path = $share_path
+    browseable = yes
+    read only = no
+    guest ok = no
+    valid users = $SMB_SAMBA_USER root
+    veto files = /$PAYLOAD_DIR_NAME/
+    vfs objects = catia fruit streams_xattr acl_xattr xattr_tdb
+    acl_xattr:ignore system acls = yes
+    streams_xattr:max xattrs per stream = 2
+    fruit:resource = file
+    fruit:metadata = stream
+    fruit:encoding = native
+    fruit:time machine = yes
+    fruit:posix_rename = yes
+    xattr_tdb:file = $payload_dir/private/xattr.tdb
+    force user = root
+    force group = wheel
+    create mask = 0666
+    directory mask = 0777
+    force create mode = 0666
+    force directory mode = 0777
+EOF
+        done <"$TC_SHARES_TSV"
+    } >"$TC_SMBD_CONF"
+}
+
+tc_cleanup_old_runtime() {
+    cleanup_status=0
+
+    tc_log "cleaning old managed runtime processes and RAM state"
+    stop_runtime_process "watchdog" "/mnt/Flash/watchdog.sh" true || cleanup_status=1
+    stop_runtime_process "smbd" "smbd" false || cleanup_status=1
+    stop_runtime_process "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" false || cleanup_status=1
+    stop_runtime_process "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" false || cleanup_status=1
+
+    if [ "$cleanup_status" -ne 0 ]; then
+        tc_log "old managed runtime cleanup failed; refusing to delete /mnt/Memory/samba4"
+        return 1
+    fi
+
+    rm -rf /mnt/Memory/samba4
+    tc_log "old managed runtime cleanup complete"
+}
+
+tc_locks_root_is_mounted() {
+    df_line=$(/bin/df -k "$LOCKS_ROOT" 2>/dev/null | /usr/bin/tail -n +2 || true)
+    case "$df_line" in
+        *" $LOCKS_ROOT") return 0 ;;
+    esac
+    return 1
+}
+
+tc_prepare_locks_ramdisk() {
+    mkdir -p "$LOCKS_ROOT"
+
+    if tc_locks_root_is_mounted; then
+        rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true
+        tc_log "cleared existing $LOCKS_ROOT mount contents"
+        return 0
+    fi
+
+    kernel_release=$(/usr/bin/uname -r 2>/dev/null || true)
+    case "$kernel_release" in
+        6.*)
+            if /sbin/mount_tmpfs -s 9m tmpfs "$LOCKS_ROOT" >/dev/null 2>&1; then
+                rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true
+                tc_log "mounted $LOCKS_ROOT tmpfs for Samba lock directory"
+                return 0
+            fi
+            tc_log "failed to mount $LOCKS_ROOT tmpfs; using plain directory fallback"
+            rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true
+            return 0
+            ;;
+        *)
+            if /sbin/mount_mfs -s 18432 swap "$LOCKS_ROOT" >/dev/null 2>&1; then
+                rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true
+                tc_log "mounted $LOCKS_ROOT mfs for Samba lock directory"
+                return 0
+            fi
+            tc_log "failed to mount $LOCKS_ROOT mfs; refusing rootfs fallback"
+            return 1
+            ;;
+    esac
+}
+
+tc_prepare_legacy_prefix() {
+    mkdir -p /root
+    for legacy_prefix in \
+        "$LEGACY_PREFIX_NETBSD7" \
+        "$LEGACY_PREFIX_NETBSD4" \
+        "$LEGACY_PREFIX_NETBSD4LE" \
+        "$LEGACY_PREFIX_NETBSD4BE"
+    do
+        rm -rf "$legacy_prefix"
+        ln -s "$RAM_ROOT" "$legacy_prefix"
+    done
+}
+
+tc_prepare_ram_root() {
+    mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_VAR" "$RAM_ROOT/locks" "$RAM_PRIVATE"
+    mkdir -p "$RAM_VAR/run/ncalrpc" "$RAM_VAR/cores"
+    chmod 755 "$RAM_ROOT" "$RAM_SBIN" "$RAM_ETC" "$RAM_VAR" "$RAM_ROOT/locks" "$RAM_PRIVATE"
+    chmod 755 "$RAM_VAR/run" "$RAM_VAR/run/ncalrpc"
+    chmod 700 "$RAM_VAR/cores"
+}
+
+tc_tune_kernel_memory() {
+    current_bufcache=$(/sbin/sysctl -n vm.bufcache 2>/dev/null || true)
+    if [ -z "$current_bufcache" ]; then
+        tc_log "kernel memory tuning skipped; vm.bufcache unavailable"
+        return 0
+    fi
+
+    if [ "$current_bufcache" = "$TC_SAMBA_VM_BUFCACHE" ]; then
+        tc_log "kernel memory tuning: vm.bufcache already $TC_SAMBA_VM_BUFCACHE"
+        return 0
+    fi
+
+    if /sbin/sysctl -w "vm.bufcache=$TC_SAMBA_VM_BUFCACHE" >/dev/null 2>&1; then
+        new_bufcache=$(/sbin/sysctl -n vm.bufcache 2>/dev/null || echo "$TC_SAMBA_VM_BUFCACHE")
+        tc_log "kernel memory tuning: vm.bufcache $current_bufcache -> $new_bufcache"
+    else
+        tc_log "kernel memory tuning failed to set vm.bufcache=$TC_SAMBA_VM_BUFCACHE; continuing"
+    fi
+}
+
+tc_wait_for_bind_interfaces() {
+    attempt=0
+
+    sleep 1
+    while [ "$attempt" -lt 60 ]; do
+        iface_ip=$(get_iface_ipv4 "$NET_IFACE" || true)
+        if [ -n "$iface_ip" ] && [ "$iface_ip" != "0.0.0.0" ]; then
+            tc_log "network interface $NET_IFACE ready with IPv4 $iface_ip"
+            echo "127.0.0.1/8 $iface_ip/24"
+            return 0
+        fi
+
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+
+    tc_log "timed out waiting for IPv4 on $NET_IFACE"
+    return 1
+}
+
+tc_prepare_local_hostname_resolution() {
+    device_hostname=$(/bin/hostname 2>/dev/null || true)
+    if [ -z "$device_hostname" ]; then
+        tc_log "local hostname resolution skipped; hostname unavailable"
+        return 0
+    fi
+
+    if printf '127.0.0.1\t%s %s.local\n' "$device_hostname" "$device_hostname" >>/etc/hosts; then
+        tc_log "local hostname resolution prepared for $device_hostname"
+    else
+        tc_log "local hostname resolution could not update /etc/hosts"
+    fi
 }
 
 ensure_parent_dir() {
@@ -443,4 +962,391 @@ derive_airport_fields() {
         return 0
     fi
     return 1
+}
+
+tc_log_mdns_snapshot_age() {
+    snapshot_path=$1
+    if [ ! -f "$snapshot_path" ]; then
+        tc_log "trusted Apple mDNS snapshot missing at $snapshot_path"
+        return 1
+    fi
+
+    snapshot_current=$(/bin/ls -lnT "$snapshot_path" 2>/dev/null || true)
+    if [ -z "$TC_APPLE_MDNS_SNAPSHOT_START" ]; then
+        tc_log "trusted Apple mDNS snapshot was created during this boot run: $snapshot_path"
+    elif [ "$snapshot_current" != "$TC_APPLE_MDNS_SNAPSHOT_START" ]; then
+        tc_log "trusted Apple mDNS snapshot was updated during this boot run: $snapshot_path"
+    else
+        tc_log "trusted Apple mDNS snapshot predates this boot run; accepting stale snapshot: $snapshot_path"
+    fi
+    return 0
+}
+
+tc_prepare_mdns_identity() {
+    iface_mac=$1
+    context=$2
+
+    if [ ! -x "$TC_MDNS_BIN" ]; then
+        tc_log "$context: mdns skipped; missing $TC_MDNS_BIN"
+        return 1
+    fi
+
+    tc_log "$context: interface $NET_IFACE mac=${iface_mac:-missing}"
+    if [ -z "$iface_mac" ]; then
+        tc_log "$context: mdns skipped; missing $NET_IFACE MAC address"
+        return 1
+    fi
+
+    if derive_airport_fields "$iface_mac"; then
+        tc_log "$context: derived airport fields wama=${AIRPORT_WAMA:-missing} rama=${AIRPORT_RAMA:-missing} ram2=${AIRPORT_RAM2:-missing} syvs=${AIRPORT_SYVS:-missing} srcv=${AIRPORT_SRCV:-missing}"
+    else
+        tc_log "$context: airport clone fields incomplete; skipping _airport._tcp advertisement"
+    fi
+    return 0
+}
+
+tc_start_mdns_capture() {
+    iface_mac=$(get_iface_mac "$NET_IFACE" || true)
+    if ! tc_prepare_mdns_identity "$iface_mac" "mdns capture"; then
+        return 0
+    fi
+
+    tc_log "starting mDNS snapshot capture"
+    set -- "$TC_MDNS_BIN" \
+        --save-all-snapshot "$ALL_MDNS_SNAPSHOT" \
+        --save-snapshot "$APPLE_MDNS_SNAPSHOT" \
+        --ipv4 "$TC_NET_IFACE_IP"
+    if [ -n "${AIRPORT_WAMA:-}" ] || [ -n "${AIRPORT_RAMA:-}" ] || [ -n "${AIRPORT_RAM2:-}" ] || [ -n "${AIRPORT_SYVS:-}" ] || [ -n "${AIRPORT_SRCV:-}" ]; then
+        set -- "$@" \
+            --airport-wama "$AIRPORT_WAMA" \
+            --airport-rama "$AIRPORT_RAMA" \
+            --airport-ram2 "$AIRPORT_RAM2" \
+            --airport-syvs "$AIRPORT_SYVS" \
+            --airport-srcv "$AIRPORT_SRCV"
+        if [ -n "$AIRPORT_SYAP" ]; then
+            set -- "$@" --airport-syap "$AIRPORT_SYAP"
+        else
+            tc_log "airport syAP missing during mDNS capture"
+        fi
+    fi
+
+    if [ "$TC_MDNS_LOG_ENABLED" = "1" ]; then
+        tc_log "mdns capture: debug logging enabled at $TC_MDNS_LOG_FILE"
+        trim_log_file "$TC_MDNS_LOG_FILE" 131072
+        printf '%s %s: launching mdns-advertiser capture\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$TC_LOG_PREFIX" >>"$TC_MDNS_LOG_FILE"
+        "$@" >>"$TC_MDNS_LOG_FILE" 2>&1 &
+    else
+        tc_log "mdns capture: debug logging disabled"
+        "$@" >/dev/null 2>&1 &
+    fi
+    TC_MDNS_CAPTURE_PID=$!
+    tc_log "mDNS snapshot capture launched as pid $TC_MDNS_CAPTURE_PID"
+}
+
+tc_wait_for_mdns_capture() {
+    if [ -z "$TC_MDNS_CAPTURE_PID" ]; then
+        return 0
+    fi
+
+    tc_log "waiting for mDNS snapshot capture pid $TC_MDNS_CAPTURE_PID"
+    if ! kill -0 "$TC_MDNS_CAPTURE_PID" >/dev/null 2>&1; then
+        TC_MDNS_CAPTURE_PID=
+        return 0
+    fi
+
+    if wait "$TC_MDNS_CAPTURE_PID"; then
+        tc_log "mDNS snapshot capture finished"
+    else
+        tc_log "mDNS snapshot capture exited with failure; final advertiser will use generated records if needed"
+    fi
+    TC_MDNS_CAPTURE_PID=
+}
+
+tc_launch_mdns_advertiser() {
+    context=$1
+    wait_for_capture=$2
+    kill_prior=$3
+    wait_attempts=$4
+
+    iface_ip=${TC_NET_IFACE_IP:-}
+    if [ -z "$iface_ip" ]; then
+        iface_ip=$(get_iface_ipv4 "$NET_IFACE" || true)
+    fi
+    iface_mac=$(get_iface_mac "$NET_IFACE" || true)
+    if [ -z "$iface_ip" ] || [ "$iface_ip" = "0.0.0.0" ]; then
+        tc_log "$context: mdns launch skipped because $NET_IFACE has no IPv4 address"
+        return 0
+    fi
+    if ! tc_prepare_mdns_identity "$iface_mac" "$context"; then
+        return 0
+    fi
+
+    if [ "$wait_for_capture" = "1" ]; then
+        tc_wait_for_mdns_capture
+        if tc_log_mdns_snapshot_age "$APPLE_MDNS_SNAPSHOT"; then
+            :
+        else
+            tc_log "mdns advertiser will fall back to generated records"
+        fi
+    fi
+
+    if [ "$kill_prior" = "1" ]; then
+        tc_log "$context: killing prior $MDNS_PROC_NAME processes"
+        /usr/bin/pkill "$MDNS_PROC_NAME" >/dev/null 2>&1 || true
+        sleep 1
+    fi
+
+    tc_log "$context: starting mdns advertiser for $iface_ip on $NET_IFACE"
+    set -- "$TC_MDNS_BIN" \
+        --load-snapshot "$APPLE_MDNS_SNAPSHOT" \
+        --instance "$MDNS_INSTANCE_NAME" \
+        --host "$MDNS_HOST_LABEL" \
+        --device-model "$MDNS_DEVICE_MODEL"
+    if [ -n "${AIRPORT_WAMA:-}" ] || [ -n "${AIRPORT_RAMA:-}" ] || [ -n "${AIRPORT_RAM2:-}" ] || [ -n "${AIRPORT_SYVS:-}" ] || [ -n "${AIRPORT_SRCV:-}" ]; then
+        set -- "$@" \
+            --airport-wama "$AIRPORT_WAMA" \
+            --airport-rama "$AIRPORT_RAMA" \
+            --airport-ram2 "$AIRPORT_RAM2" \
+            --airport-syvs "$AIRPORT_SYVS" \
+            --airport-srcv "$AIRPORT_SRCV"
+        if [ -n "$AIRPORT_SYAP" ]; then
+            set -- "$@" --airport-syap "$AIRPORT_SYAP"
+        else
+            tc_log "airport syAP missing; advertising _airport._tcp without syAP"
+        fi
+    fi
+    if [ -s "$TC_ADISK_TSV" ]; then
+        set -- "$@" \
+            --adisk-shares-file "$TC_ADISK_TSV" \
+            --adisk-sys-wama "$iface_mac"
+    fi
+    set -- "$@" --ipv4 "$iface_ip"
+
+    if [ "$TC_MDNS_LOG_ENABLED" = "1" ]; then
+        tc_log "$context: debug logging enabled at $TC_MDNS_LOG_FILE"
+        trim_log_file "$TC_MDNS_LOG_FILE" 131072
+        printf '%s %s: launching mdns-advertiser\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$TC_LOG_PREFIX" >>"$TC_MDNS_LOG_FILE"
+        "$@" >>"$TC_MDNS_LOG_FILE" 2>&1 &
+    else
+        tc_log "$context: debug logging disabled"
+        "$@" >/dev/null 2>&1 &
+    fi
+    mdns_launch_pid=$!
+    tc_log "$context: launched background pid $mdns_launch_pid"
+    if [ "$wait_attempts" -gt 0 ]; then
+        if wait_for_process "$MDNS_PROC_NAME" "$wait_attempts"; then
+            tc_log "$context: mdns advertiser launch requested"
+        else
+            tc_log "$context: mdns advertiser failed to stay running"
+        fi
+    fi
+}
+
+tc_start_mdns_advertiser() {
+    tc_launch_mdns_advertiser "mdns startup" 1 1 100
+}
+
+tc_restart_mdns() {
+    tc_launch_mdns_advertiser "watchdog recovery" 0 0 0
+}
+
+tc_launch_nbns() {
+    context=$1
+    wait_attempts=$2
+
+    if [ "$NBNS_ENABLED" != "1" ]; then
+        tc_log "$context: nbns responder skipped; disabled in $TC_CONFIG_FILE"
+        return 0
+    fi
+
+    if [ ! -x "$TC_NBNS_BIN" ]; then
+        tc_log "$context: nbns responder launch skipped; missing runtime binary"
+        return 0
+    fi
+
+    iface_ip=${TC_NET_IFACE_IP:-}
+    if [ -z "$iface_ip" ]; then
+        iface_ip=$(get_iface_ipv4 "$NET_IFACE" || true)
+    fi
+    if [ -z "$iface_ip" ] || [ "$iface_ip" = "0.0.0.0" ]; then
+        tc_log "$context: nbns launch skipped because $NET_IFACE has no IPv4 address"
+        return 0
+    fi
+
+    if [ "$context" = "watchdog recovery" ]; then
+        stop_apple_nbns_conflicts || {
+            tc_log "$context: nbns responder launch skipped; conflicting Apple CIFS/NBNS processes still running"
+            return 0
+        }
+    else
+        stop_nbns_conflicts || {
+            tc_log "$context: nbns responder launch skipped; conflicting Apple CIFS/NBNS processes still running"
+            return 0
+        }
+    fi
+
+    tc_log "$context: starting nbns responder for $SMB_NETBIOS_NAME at $iface_ip"
+    "$TC_NBNS_BIN" \
+        --name "$SMB_NETBIOS_NAME" \
+        --ipv4 "$iface_ip" \
+        >/dev/null 2>&1 &
+    if [ "$wait_attempts" -gt 0 ]; then
+        if wait_for_process "$NBNS_PROC_NAME" "$wait_attempts"; then
+            tc_log "$context: nbns responder launch requested"
+        else
+            tc_log "$context: nbns responder failed to stay running"
+        fi
+    else
+        tc_log "$context: nbns restart requested"
+    fi
+}
+
+tc_start_nbns() {
+    tc_launch_nbns "nbns startup" 10
+}
+
+tc_restart_nbns() {
+    tc_launch_nbns "watchdog recovery" 0
+}
+
+tc_start_smbd() {
+    tc_log "starting smbd from $TC_SMBD_BIN with config $TC_SMBD_CONF"
+    "$TC_SMBD_BIN" -D -s "$TC_SMBD_CONF"
+    if wait_for_process smbd 15; then
+        return 0
+    fi
+    tc_log "smbd process was not observed after launch"
+    return 1
+}
+
+tc_start_smbd_if_needed() {
+    if runtime_process_present smbd false; then
+        return 0
+    fi
+
+    if [ ! -x "$TC_SMBD_BIN" ] || [ ! -f "$TC_SMBD_CONF" ]; then
+        tc_log "watchdog recovery: smbd is not running, but runtime is not staged yet"
+        return 0
+    fi
+
+    rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true
+    "$TC_SMBD_BIN" -D -s "$TC_SMBD_CONF" >/dev/null 2>&1 || true
+    tc_log "watchdog recovery: smbd restart requested"
+}
+
+tc_start_watchdog() {
+    if runtime_process_present "/mnt/Flash/watchdog.sh" true; then
+        tc_log "watchdog already running"
+        return 0
+    fi
+
+    tc_log "starting watchdog"
+    /mnt/Flash/watchdog.sh </dev/null >/dev/null 2>&1 &
+    watchdog_pid=$!
+    tc_log "watchdog launched as pid $watchdog_pid"
+}
+
+tc_stop_managed_services() {
+    stop_runtime_process "smbd" "smbd" false || true
+    stop_runtime_process "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" false || true
+    stop_runtime_process "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" false || true
+}
+
+tc_current_topology_signature() {
+    [ -f "$TC_TOPOLOGY_SIGNATURE" ] || return 1
+    /bin/cat "$TC_TOPOLOGY_SIGNATURE"
+}
+
+tc_fresh_topology_signature() {
+    /mnt/Flash/start-samba.sh --print-topology-signature 2>/dev/null
+}
+
+tc_topology_changed() {
+    current=$(tc_current_topology_signature || true)
+    fresh=$(tc_fresh_topology_signature || true)
+    if [ -z "$fresh" ]; then
+        tc_log "watchdog recovery: MaSt topology check failed"
+        return 1
+    fi
+    [ "$current" != "$fresh" ]
+}
+
+tc_exec_start_samba() {
+    reason=$1
+    tc_log "watchdog recovery: re-execing start-samba.sh: $reason"
+    exec /mnt/Flash/start-samba.sh --watchdog-restart
+}
+
+tc_nbns_enabled() {
+    [ "$NBNS_ENABLED" = "1" ]
+}
+
+tc_all_managed_services_healthy() {
+    if ! runtime_process_present smbd false; then
+        return 1
+    fi
+
+    if ! runtime_process_present "$MDNS_PROC_NAME" false; then
+        return 1
+    fi
+
+    if tc_nbns_enabled; then
+        if ! runtime_process_present "$NBNS_PROC_NAME" false; then
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+tc_watchdog_iteration() {
+    if tc_topology_changed; then
+        tc_exec_start_samba "MaSt topology changed"
+    fi
+
+    if tc_payload_available; then
+        if ! tc_mount_active_volumes_from_state; then
+            tc_exec_start_samba "active share volume unavailable"
+        fi
+        tc_start_smbd_if_needed
+    else
+        tc_log "watchdog recovery: payload unavailable; stopping managed services"
+        tc_stop_managed_services
+        return 1
+    fi
+
+    if runtime_process_present "$MDNS_PROC_NAME" false; then
+        :
+    else
+        tc_restart_mdns
+    fi
+
+    if tc_nbns_enabled; then
+        if runtime_process_present "$NBNS_PROC_NAME" false; then
+            :
+        else
+            tc_restart_nbns
+        fi
+    fi
+
+    tc_all_managed_services_healthy
+}
+
+tc_sleep_with_runtime_checks() {
+    total_sleep=$1
+    slept=0
+    mount_poll_seconds=${MOUNT_POLL_SECONDS:-30}
+
+    while [ "$slept" -lt "$total_sleep" ]; do
+        sleep_seconds=$mount_poll_seconds
+        remaining=$((total_sleep - slept))
+        if [ "$remaining" -lt "$sleep_seconds" ]; then
+            sleep_seconds=$remaining
+        fi
+
+        sleep "$sleep_seconds"
+        slept=$((slept + sleep_seconds))
+        tc_payload_available || true
+        tc_mount_active_volumes_from_state || true
+    done
 }

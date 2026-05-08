@@ -10,11 +10,6 @@ from typing import TYPE_CHECKING
 
 from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.device.errors import DeviceError
-from timecapsulesmb.device.util import (
-    DISK_NAME_CANDIDATES_SH,
-    MOUNTED_VOLUME_DISCOVERY_SH,
-    MountedVolume,
-)
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, ssh_opts_use_proxy
@@ -25,7 +20,9 @@ if TYPE_CHECKING:
 
 
 RUNTIME_SMB_CONF = "/mnt/Memory/samba4/etc/smb.conf"
-NBNS_MARKER_PROBE_TIMEOUT_SECONDS = 10
+RUNTIME_SHARES_TSV = "/mnt/Memory/samba4/var/shares.tsv"
+FLASH_RUNTIME_CONFIG = "/mnt/Flash/tcapsulesmb.conf"
+REMOTE_STATE_PROBE_TIMEOUT_SECONDS = 10
 REMOTE_LOG_TAIL_LINES = 80
 REMOTE_LOG_TAIL_MAX_CHARS = 8192
 REMOTE_LOG_TAIL_TIMEOUT_SECONDS = 10
@@ -38,7 +35,9 @@ RUNTIME_RAM_ROOT=${{RUNTIME_RAM_ROOT:-/mnt/Memory/samba4}}
 RUNTIME_RAM_SBIN="$RUNTIME_RAM_ROOT/sbin"
 RUNTIME_RAM_PRIVATE="$RUNTIME_RAM_ROOT/private"
 RUNTIME_SMB_CONF_PATH=${{RUNTIME_SMB_CONF_PATH:-{RUNTIME_SMB_CONF}}}
+RUNTIME_SHARES_TSV_PATH=${{RUNTIME_SHARES_TSV_PATH:-{RUNTIME_SHARES_TSV}}}
 RUNTIME_PERSISTENT_ROOT_PREFIX=${{RUNTIME_PERSISTENT_ROOT_PREFIX:-/Volumes/}}
+RUNTIME_TAB=$(printf '\t')
 
 runtime_smb_conf_present() {{
     [ -f "$RUNTIME_SMB_CONF_PATH" ]
@@ -103,6 +102,27 @@ runtime_volume_device() {{
     return 1
 }}
 
+runtime_share_volume_roots() {{
+    seen_roots=""
+    if [ -s "$RUNTIME_SHARES_TSV_PATH" ]; then
+        while IFS="$RUNTIME_TAB" read -r share_name share_path part_device builtin part_uuid; do
+            [ -n "$part_device" ] || continue
+            volume_root="$RUNTIME_PERSISTENT_ROOT_PREFIX$part_device"
+            case " $seen_roots " in
+                *" $volume_root "*) ;;
+                *)
+                    seen_roots="$seen_roots $volume_root"
+                    printf '%s\n' "$volume_root"
+                    ;;
+            esac
+        done <"$RUNTIME_SHARES_TSV_PATH"
+        if [ -n "$seen_roots" ]; then
+            return 0
+        fi
+    fi
+    runtime_volume_root
+}}
+
 capture_df_for_volume_root() {{
     volume_root=$1
     /bin/df -k "$volume_root" 2>/dev/null | /usr/bin/tail -n +2 || true
@@ -120,6 +140,21 @@ runtime_volume_mounted() {{
             ;;
     esac
     return 1
+}}
+
+runtime_share_volumes_mounted() {{
+    found=0
+    status=0
+    for volume_root in $(runtime_share_volume_roots); do
+        found=1
+        df_line=$(capture_df_for_volume_root "$volume_root")
+        case "$df_line" in
+            *" $volume_root") ;;
+            *) status=1 ;;
+        esac
+    done
+    [ "$found" -eq 1 ] || return 1
+    return "$status"
 }}
 
 capture_ps_out() {{
@@ -200,14 +235,6 @@ EOF
 
 watchdog_process_present_for_volume() {{
     ps_out=$1
-    data_root=$(runtime_data_root_path || true)
-    volume_root=$(runtime_volume_root || true)
-    volume_device=$(runtime_volume_device || true)
-    if [ -z "$data_root" ] || [ -z "$volume_root" ] || [ -z "$volume_device" ]; then
-        return 1
-    fi
-    expected="/mnt/Flash/watchdog.sh $volume_device $volume_root $data_root"
-
     while IFS= read -r line; do
         [ -n "$line" ] || continue
         set -- $line
@@ -216,7 +243,7 @@ watchdog_process_present_for_volume() {{
             Z*) continue ;;
         esac
         case "$line" in
-            *"$expected"*) return 0 ;;
+            *"/mnt/Flash/watchdog.sh"*) return 0 ;;
         esac
     done <<EOF
 $ps_out
@@ -304,16 +331,16 @@ describe_managed_smbd_status() {{
             status=1
             ;;
     esac
-    if runtime_volume_mounted; then
-        echo "PASS:managed data volume is mounted"
+    if runtime_share_volumes_mounted; then
+        echo "PASS:all managed share volumes are mounted"
     else
-        echo "FAIL:managed data volume is not mounted"
+        echo "FAIL:one or more managed share volumes are not mounted"
         status=1
     fi
     if watchdog_process_present_for_volume "$ps_out"; then
-        echo "PASS:watchdog is running for managed data volume"
+        echo "PASS:watchdog is running for managed runtime"
     else
-        echo "FAIL:watchdog is not running for managed data volume"
+        echo "FAIL:watchdog is not running for managed runtime"
         status=1
     fi
     if smbd_parent_process_present "$ps_out"; then
@@ -630,21 +657,6 @@ fi
     if not proc.stdout:
         return AirportIdentityProbeResult(model=None, syap=None, detail="AirPort identity unavailable: /usr/bin/acp missing or empty output")
     return extract_airport_identity_from_acp_output(proc.stdout)
-
-
-def discover_mounted_volume_conn(connection: SshConnection) -> MountedVolume:
-    script = DISK_NAME_CANDIDATES_SH + MOUNTED_VOLUME_DISCOVERY_SH
-    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False)
-    lines = proc.stdout.strip().splitlines()
-    result = lines[-1].strip() if lines else ""
-    if proc.returncode != 0 or not result:
-        raise DeviceError("Failed to discover a mounted AirPort HFS data volume on the device.")
-    device, mountpoint = result.split(" ", 1)
-    return MountedVolume(device=device, mountpoint=mountpoint)
-
-
-def discover_mounted_volume_root_conn(connection: SshConnection) -> str:
-    return discover_mounted_volume_conn(connection).mountpoint
 
 
 def probe_remote_interface_conn(connection: SshConnection, iface: str) -> RemoteInterfaceProbeResult:
@@ -979,17 +991,43 @@ def probe_managed_runtime_conn(
     )
 
 
-def nbns_marker_enabled_conn(connection: SshConnection, payload_dir: str) -> bool:
-    marker_path = f"{payload_dir}/private/nbns.enabled"
-    quoted_marker = shlex.quote(marker_path)
-    script = f"if [ -f {quoted_marker} ]; then echo enabled; fi"
+def nbns_flash_config_enabled_conn(connection: SshConnection) -> bool:
+    quoted_config = shlex.quote(FLASH_RUNTIME_CONFIG)
+    script = (
+        f"if [ -f {quoted_config} ]; then "
+        f". {quoted_config}; "
+        "if [ \"${NBNS_ENABLED:-0}\" = \"1\" ]; then echo enabled; fi; "
+        "fi"
+    )
     proc = run_ssh(
         connection,
         f"/bin/sh -c {shlex.quote(script)}",
         check=False,
-        timeout=NBNS_MARKER_PROBE_TIMEOUT_SECONDS,
+        timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
     )
     return proc.stdout.strip() == "enabled"
+
+
+def read_runtime_share_names_conn(connection: SshConnection) -> list[str]:
+    quoted_state = shlex.quote(RUNTIME_SHARES_TSV)
+    script = f"if [ -f {quoted_state} ]; then /bin/cat {quoted_state}; fi"
+    proc = run_ssh(
+        connection,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
+    )
+    names: list[str] = []
+    for raw_line in proc.stdout.splitlines():
+        line = raw_line.rstrip("\n")
+        if not line.strip():
+            continue
+        if "\t" not in line:
+            continue
+        name = line.split("\t", 1)[0].strip()
+        if name:
+            names.append(name)
+    return names
 
 
 def _limit_remote_log_tail(text: str) -> str:

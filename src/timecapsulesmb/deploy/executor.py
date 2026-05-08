@@ -18,33 +18,28 @@ def _flash_upload_tmp_path(destination: str) -> str:
     return str(path.with_name(f".{path.name}.tmp"))
 
 
-def upload_flash_file(connection: SshConnection, source: Path, destination: str, *, timeout: int = 120) -> None:
+def upload_flash_file(
+    connection: SshConnection,
+    source: Path,
+    destination: str,
+    *,
+    timeout: int = 120,
+    mode: str = "755",
+) -> None:
     tmp_destination = _flash_upload_tmp_path(destination)
     quoted_tmp = shlex.quote(tmp_destination)
     quoted_destination = shlex.quote(destination)
+    quoted_mode = shlex.quote(mode)
 
     run_ssh(connection, f"/bin/sh -c {shlex.quote(f'rm -f {quoted_tmp}')}")
     run_scp(connection, source, tmp_destination, timeout=timeout)
     install_script = (
         "rc=0; "
-        f"chmod 755 {quoted_tmp} && mv -f {quoted_tmp} {quoted_destination} || rc=$?; "
+        f"chmod {quoted_mode} {quoted_tmp} && mv -f {quoted_tmp} {quoted_destination} || rc=$?; "
         f"rm -f {quoted_tmp}; "
         'exit "$rc"'
     )
     run_ssh(connection, f"/bin/sh -c {shlex.quote(install_script)}")
-
-
-def remote_read_adisk_uuid(connection: SshConnection, private_dir: str) -> str | None:
-    remote_path = f"{private_dir}/adisk.uuid"
-    proc = run_ssh(
-        connection,
-        f"/bin/sh -c {shlex.quote(f'if [ -f {shlex.quote(remote_path)} ]; then cat {shlex.quote(remote_path)}; fi')}",
-        check=False,
-    )
-    existing = proc.stdout.strip()
-    if existing:
-        return existing
-    return None
 
 
 def _resolve_transfer_source(source_resolver: Mapping[str, Path], transfer: FileTransfer) -> Path:
@@ -67,13 +62,20 @@ def upload_deployment_payload(
     connection: SshConnection,
     source_resolver: Mapping[str, Path],
 ) -> None:
+    planned_modes = {permission.path: permission.mode for permission in plan.permissions}
     for transfer in plan.uploads:
         source = _resolve_transfer_source(source_resolver, transfer)
         if transfer.mode in {"scp", "generated"}:
             _scp_transfer(connection, source, transfer)
         elif transfer.mode == "flash_atomic":
             timeout = transfer.timeout_seconds if transfer.timeout_seconds is not None else FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS
-            upload_flash_file(connection, source, transfer.destination, timeout=timeout)
+            upload_flash_file(
+                connection,
+                source,
+                transfer.destination,
+                timeout=timeout,
+                mode=planned_modes.get(transfer.destination, "755"),
+            )
         else:
             raise ValueError(f"Unsupported deployment upload mode {transfer.mode!r} for {transfer.source_id!r}")
 

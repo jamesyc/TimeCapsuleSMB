@@ -12,7 +12,6 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.configure_defaults import (  # noqa: E402
     ConfigureValueChoice,
-    apply_device_storage_defaults,
     derived_name_defaults,
     derived_prompt_defaults,
     interface_candidate_for_ip,
@@ -110,14 +109,6 @@ class ConfigureDefaultsTests(unittest.TestCase):
 
         self.assertEqual(saved_syap_value_for_candidates(choice, ("119", "120")), "119")
         self.assertIsNone(saved_syap_value_for_candidates(choice, ("113",)))
-
-    def test_airport_extreme_defaults_to_disk_root_share(self) -> None:
-        values = {"TC_AIRPORT_SYAP": "120", "TC_MDNS_DEVICE_MODEL": "AirPort7,120"}
-
-        apply_device_storage_defaults(values)
-
-        self.assertEqual(values["TC_SHARE_USE_DISK_ROOT"], "true")
-
 
 if __name__ == "__main__":
     unittest.main()

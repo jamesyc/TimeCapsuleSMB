@@ -1,0 +1,477 @@
+from __future__ import annotations
+
+import plistlib
+import subprocess
+import tempfile
+import textwrap
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.cli.deploy import render_flash_runtime_config
+from timecapsulesmb.deploy.executor import upload_flash_file
+from timecapsulesmb.deploy.planner import (
+    GENERATED_FLASH_CONFIG_SOURCE,
+    build_deployment_plan,
+)
+from timecapsulesmb.device.storage import (
+    NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE,
+    MaStVolume,
+    PayloadHome,
+    parse_mast_plist,
+    select_payload_home_conn,
+)
+from timecapsulesmb.transport.ssh import SshConnection
+
+
+class MultiVolumeDeployTests(unittest.TestCase):
+    def write_runtime_harness(self, tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+        repo_root = Path(__file__).resolve().parent.parent
+        flash = tmp_path / "Flash"
+        memory = tmp_path / "Memory"
+        locks = tmp_path / "Locks"
+        volumes = tmp_path / "Volumes"
+        flash.mkdir()
+        memory.mkdir()
+        locks.mkdir()
+        volumes.mkdir()
+
+        common = (repo_root / "src/timecapsulesmb/assets/boot/samba4/common.sh").read_text()
+        start = (repo_root / "src/timecapsulesmb/assets/boot/samba4/start-samba.sh").read_text()
+        watchdog = (repo_root / "src/timecapsulesmb/assets/boot/samba4/watchdog.sh").read_text()
+        replacements = {
+            "/mnt/Flash": str(flash),
+            "/mnt/Memory": str(memory),
+            "/mnt/Locks": str(locks),
+            "/Volumes": str(volumes),
+            "/usr/bin/acp": str(tmp_path / "acp"),
+        }
+        for old, new in replacements.items():
+            common = common.replace(old, new)
+            start = start.replace(old, new)
+            watchdog = watchdog.replace(old, new)
+
+        (flash / "common.sh").write_text(common)
+        start_path = flash / "start-samba.sh"
+        start_path.write_text(start)
+        start_path.chmod(0o755)
+        watchdog_path = flash / "watchdog.sh"
+        watchdog_path.write_text(watchdog)
+        watchdog_path.chmod(0o755)
+        (flash / "tcapsulesmb.conf").write_text(
+            textwrap.dedent(
+                f"""\
+                TC_CONFIG_VERSION=1
+                PAYLOAD_DIR_NAME='.samba4'
+                NET_IFACE='bridge0'
+                SMB_SAMBA_USER='admin'
+                SMB_NETBIOS_NAME='TimeCapsule'
+                MDNS_INSTANCE_NAME='Time Capsule Samba 4'
+                MDNS_HOST_LABEL='timecapsulesamba4'
+                MDNS_DEVICE_MODEL='TimeCapsule6,106'
+                AIRPORT_SYAP='106'
+                INTERNAL_SHARE_USE_DISK_ROOT=0
+                APPLE_MOUNT_WAIT_SECONDS=0
+                NBNS_ENABLED=0
+                SMBD_DEBUG_LOGGING=0
+                MDNS_DEBUG_LOGGING=0
+                """
+            )
+        )
+        return flash, memory, locks, volumes
+
+    def test_parse_mast_plist_normalizes_hfs_partitions_and_uuid_data(self) -> None:
+        raw = plistlib.dumps(
+            [
+                {
+                    "deviceName": "wd0",
+                    "builtin": True,
+                    "partitions": [
+                        {
+                            "deviceName": "dk2",
+                            "name": "Data",
+                            "format": "hfs",
+                            "uuid": bytes.fromhex("f42bdb83c2655522a08725606a4d0abf"),
+                        },
+                        {
+                            "deviceName": "dk1",
+                            "name": "APconfig",
+                            "format": "msdos",
+                            "uuid": bytes.fromhex("00000000000000000000000000000000"),
+                        },
+                    ],
+                },
+                {
+                    "deviceName": "sd0",
+                    "builtin": False,
+                    "partitions": [
+                        {
+                            "deviceName": "dk3",
+                            "name": "Untitled",
+                            "format": "HFS",
+                            "uuid": "51f93e6f-dc69-524d-986d-cee4d7cb3573",
+                        }
+                    ],
+                },
+            ]
+        )
+
+        volumes = parse_mast_plist(raw)
+
+        self.assertEqual(
+            volumes,
+            (
+                MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs"),
+                MaStVolume("sd0", "dk3", "/Volumes/dk3", "Untitled", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs"),
+            ),
+        )
+
+    def test_select_payload_home_prefers_writable_internal_volume(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        internal = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
+        external = MaStVolume("sd0", "dk3", "/Volumes/dk3", "USB", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs")
+
+        with mock.patch("timecapsulesmb.device.storage.ensure_mast_volume_mounted_conn", return_value=True) as mount_mock:
+            with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", side_effect=[True]) as writable_mock:
+                home = select_payload_home_conn(connection, (external, internal), ".samba4", wait_seconds=30)
+
+        self.assertEqual(home, PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"))
+        mount_mock.assert_called_once_with(connection, internal, wait_seconds=30)
+        writable_mock.assert_called_once_with(connection, "/Volumes/dk2")
+
+    def test_select_payload_home_falls_back_to_external_and_fails_when_none_writable(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        internal = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
+        external = MaStVolume("sd0", "dk3", "/Volumes/dk3", "USB", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs")
+
+        with mock.patch("timecapsulesmb.device.storage.ensure_mast_volume_mounted_conn", return_value=True):
+            with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", side_effect=[False, True]):
+                home = select_payload_home_conn(connection, (internal, external), ".samba4", wait_seconds=30)
+        self.assertEqual(home, PayloadHome("/Volumes/dk3", "/dev/dk3", ".samba4"))
+
+        with mock.patch("timecapsulesmb.device.storage.ensure_mast_volume_mounted_conn", return_value=True):
+            with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", return_value=False):
+                with self.assertRaisesRegex(RuntimeError, NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE):
+                    select_payload_home_conn(connection, (internal, external), ".samba4", wait_seconds=30)
+
+    def test_flash_runtime_config_contains_runtime_settings_and_no_share_name(self) -> None:
+        config = AppConfig.from_values(
+            {
+                "TC_NET_IFACE": "bridge0",
+                "TC_SAMBA_USER": "admin",
+                "TC_NETBIOS_NAME": "TimeCapsule",
+                "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+                "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+                "TC_MDNS_DEVICE_MODEL": "TimeCapsule6,106",
+                "TC_AIRPORT_SYAP": "106",
+                "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
+            }
+        )
+
+        rendered = render_flash_runtime_config(
+            config,
+            PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+            install_nbns=True,
+            debug_logging=True,
+            apple_mount_wait_seconds=12,
+        )
+
+        self.assertIn("PAYLOAD_DIR_NAME=.samba4\n", rendered)
+        self.assertNotIn("PAYLOAD_VOLUME_HINT", rendered)
+        self.assertNotIn("PAYLOAD_DEVICE_HINT", rendered)
+        self.assertNotIn("PAYLOAD_INSTALL_ID", rendered)
+        self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=1\n", rendered)
+        self.assertIn("NBNS_ENABLED=1\n", rendered)
+        self.assertIn("SMBD_DEBUG_LOGGING=1\n", rendered)
+        self.assertNotIn("TC_SHARE_NAME", rendered)
+        self.assertNotIn("TC_SHARE_USE_DISK_ROOT", rendered)
+
+    def test_flash_runtime_config_migrates_legacy_hidden_share_root_key(self) -> None:
+        config = AppConfig.from_values(
+            {
+                "TC_NET_IFACE": "bridge0",
+                "TC_SAMBA_USER": "admin",
+                "TC_NETBIOS_NAME": "TimeCapsule",
+                "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
+                "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
+                "TC_MDNS_DEVICE_MODEL": "TimeCapsule6,106",
+                "TC_AIRPORT_SYAP": "106",
+                "TC_INTERNAL_SHARE_USE_DISK_ROOT": "false",
+                "TC_SHARE_USE_DISK_ROOT": "true",
+            },
+            file_values={"TC_SHARE_USE_DISK_ROOT": "true"},
+        )
+
+        rendered = render_flash_runtime_config(
+            config,
+            PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+            install_nbns=False,
+            debug_logging=False,
+        )
+
+        self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=1\n", rendered)
+        self.assertNotIn("TC_SHARE_USE_DISK_ROOT", rendered)
+
+    def test_deployment_plan_uses_flash_pointer_and_single_private_payload(self) -> None:
+        plan = build_deployment_plan(
+            "root@10.0.0.2",
+            PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+            Path("/tmp/smbd"),
+            Path("/tmp/mdns-advertiser"),
+            Path("/tmp/nbns-advertiser"),
+            install_nbns=True,
+        )
+        source_ids = {upload.source_id for upload in plan.uploads}
+
+        self.assertIn(GENERATED_FLASH_CONFIG_SOURCE, source_ids)
+        self.assertNotIn("rendered:smb.conf.template", source_ids)
+        self.assertNotIn("generated:adisk.uuid", source_ids)
+        self.assertNotIn("generated:nbns.enabled", source_ids)
+        self.assertNotIn("generated:install.id", source_ids)
+        self.assertEqual(plan.private_dir, "/Volumes/dk2/.samba4/private")
+        self.assertEqual(plan.flash_targets["tcapsulesmb.conf"], "/mnt/Flash/tcapsulesmb.conf")
+        self.assertIn("/Volumes/dk2/.samba4/smb.conf.template", {action.path for action in plan.pre_upload_actions if hasattr(action, "path")})
+        self.assertIn("/Volumes/dk2/.samba4/private/adisk.uuid", {action.path for action in plan.pre_upload_actions if hasattr(action, "path")})
+        self.assertIn("/Volumes/dk2/.samba4/private/nbns.enabled", {action.path for action in plan.pre_upload_actions if hasattr(action, "path")})
+        self.assertIn(
+            ("/mnt/Flash/tcapsulesmb.conf", "600"),
+            {(permission.path, permission.mode) for permission in plan.permissions},
+        )
+
+    def test_upload_flash_file_uses_requested_mode_before_atomic_rename(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "tcapsulesmb.conf"
+            source.write_text("TC_CONFIG_VERSION=1\n")
+
+            with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
+                with mock.patch("timecapsulesmb.deploy.executor.run_scp") as run_scp_mock:
+                    upload_flash_file(connection, source, "/mnt/Flash/tcapsulesmb.conf", mode="600")
+
+        run_scp_mock.assert_called_once_with(connection, source, "/mnt/Flash/.tcapsulesmb.conf.tmp", timeout=120)
+        install_command = run_ssh_mock.call_args_list[1].args[1]
+        self.assertIn("chmod 600 /mnt/Flash/.tcapsulesmb.conf.tmp", install_command)
+        self.assertIn("mv -f /mnt/Flash/.tcapsulesmb.conf.tmp /mnt/Flash/tcapsulesmb.conf", install_command)
+
+    def test_start_samba_signature_mode_parses_mast_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            start_path = flash / "start-samba.sh"
+            acp = tmp_path / "acp"
+            acp.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/bin/sh
+                    cat <<'OUT'
+                    (
+                        {
+                            deviceName = "wd0";
+                            builtin = true;
+                            partitions = (
+                                {
+                                    deviceName = "dk2";
+                                    name = "Data";
+                                    format = "hfs";
+                                    uuid = <f42bdb83 c2655522 a0872560 6a4d0abf>;
+                                }
+                            );
+                        },
+                        {
+                            deviceName = "sd0";
+                            builtin = false;
+                            partitions = (
+                                {
+                                    deviceName = "dk3";
+                                    name = "Untitled";
+                                    format = "hfs";
+                                    uuid = <51f93e6f dc69524d 986dcee4 d7cb3573>;
+                                }
+                            );
+                        }
+                    )
+                    OUT
+                    """
+                )
+            )
+            acp.chmod(0o755)
+
+            proc = subprocess.run(
+                ["/bin/sh", str(start_path), "--print-topology-signature"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            f"wd0\t1\tdk2\t{volumes}/dk2\tData\tf42bdb83-c265-5522-a087-25606a4d0abf\n"
+            f"sd0\t0\tdk3\t{volumes}/dk3\tUntitled\t51f93e6f-dc69-524d-986d-cee4d7cb3573\n",
+        )
+
+    def test_common_build_share_state_uses_modern_mast_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            (volumes / "dk2").mkdir()
+            (volumes / "dk3").mkdir()
+            script = tmp_path / "build-shares.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    tc_wake_or_mount_volume() {{ printf '%s %s\\n' "$1" "$2" >>{tmp_path}/mounts.log; return 0; }}
+                    cat >"$TC_VOLUMES_TSV" <<'EOF'
+                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    sd0	0	dk3	{volumes}/dk3	Data	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+                    EOF
+                    tc_build_share_state "$TC_VOLUMES_TSV"
+                    printf 'shares\\n'
+                    cat "$TC_SHARES_TSV"
+                    printf 'adisk\\n'
+                    cat "$TC_ADISK_TSV"
+                    printf 'marker=%s\\n' "$([ -f {volumes}/dk2/ShareRoot/.com.apple.timemachine.supported ] && echo yes || echo no)"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn(f"Data\t{volumes}/dk2/ShareRoot\tdk2\t1\taaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n", proc.stdout)
+        self.assertIn(f"Data (dk3)\t{volumes}/dk3\tdk3\t0\tbbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\n", proc.stdout)
+        self.assertIn("Data\tdk2\taaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\t0x1093\n", proc.stdout)
+        self.assertIn("Data (dk3)\tdk3\tbbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\t0x1093\n", proc.stdout)
+        self.assertIn("marker=yes\n", proc.stdout)
+
+    def test_common_payload_recovery_writes_resolved_state_for_watchdog(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            (volumes / "dk2").mkdir()
+            (volumes / "dk3/.samba4/private").mkdir(parents=True)
+            (volumes / "dk3/.samba4/smbd").write_text("")
+            (volumes / "dk3/.samba4/smbd").chmod(0o755)
+            (volumes / "dk3/.samba4/private/smbpasswd").write_text("")
+            (volumes / "dk3/.samba4/private/username.map").write_text("")
+            script = tmp_path / "payload-recovery.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    tc_wake_or_mount_volume() {{ return 0; }}
+                    cat >"$TC_VOLUMES_TSV" <<'EOF'
+                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    sd0	0	dk3	{volumes}/dk3	USB	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+                    EOF
+                    tc_resolve_payload "$TC_VOLUMES_TSV"
+                    tc_write_payload_state "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME" "$TC_RESOLVED_PAYLOAD_DEVICE"
+                    tc_read_payload_state
+                    printf '%s\\n%s\\n%s\\n' "$TC_PAYLOAD_DIR" "$TC_PAYLOAD_VOLUME" "$TC_PAYLOAD_DEVICE"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, f"{volumes}/dk3/.samba4\n{volumes}/dk3\n/dev/dk3\n")
+
+    def test_common_wake_or_mount_uses_apple_diskd_before_mount_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            acp = tmp_path / "acp"
+            acp.write_text("#!/bin/sh\necho \"$@\" >>'%s/acp.log'\n" % tmp_path)
+            acp.chmod(0o755)
+            script = tmp_path / "wake.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    APPLE_MOUNT_WAIT_SECONDS=2
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR" {volumes}/dk2
+                    is_volume_root_mounted() {{
+                        count=$(cat {tmp_path}/count 2>/dev/null || echo 0)
+                        count=$((count + 1))
+                        echo "$count" >{tmp_path}/count
+                        [ "$count" -ge 2 ]
+                    }}
+                    mount_hfs_bounded() {{ echo fallback >>{tmp_path}/fallback.log; return 1; }}
+                    tc_wake_or_mount_volume /dev/dk2 {volumes}/dk2
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            acp_log = (tmp_path / "acp.log").read_text()
+            fallback_exists = (tmp_path / "fallback.log").exists()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn(f"rpc diskd.useVolume path:s:{volumes}/dk2", acp_log)
+        self.assertFalse(fallback_exists)
+
+    def test_common_watchdog_iteration_mounts_active_share_volumes_before_process_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "watchdog-flow.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    USB	{volumes}/dk3	dk3	0	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+                    EOF
+                    tc_topology_changed() {{ return 1; }}
+                    tc_payload_available() {{ echo payload; return 0; }}
+                    tc_wake_or_mount_volume() {{ echo "mount $1 $2"; return 0; }}
+                    tc_start_smbd_if_needed() {{ echo smbd; }}
+                    runtime_process_present() {{ return 0; }}
+                    tc_watchdog_iteration
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            f"payload\nmount /dev/dk2 {volumes}/dk2\nmount /dev/dk3 {volumes}/dk3\nsmbd\n",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

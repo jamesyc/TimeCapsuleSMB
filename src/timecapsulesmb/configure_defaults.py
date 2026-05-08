@@ -7,7 +7,6 @@ from typing import Optional
 from timecapsulesmb.core.config import (
     CONFIG_VALIDATORS,
     DEFAULTS,
-    airport_identity_from_values,
     extract_host,
 )
 from timecapsulesmb.device.probe import (
@@ -65,12 +64,6 @@ def saved_syap_value_for_candidates(
     if candidate_syaps and saved_syap_choice.value not in candidate_syaps:
         return None
     return saved_syap_choice.value
-
-
-def apply_device_storage_defaults(values: dict[str, str]) -> None:
-    identity = airport_identity_from_values(values)
-    if identity is not None and identity.family == "airport_extreme":
-        values["TC_SHARE_USE_DISK_ROOT"] = "true"
 
 
 def ipv4_literal(value: str) -> str | None:

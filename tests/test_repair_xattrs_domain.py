@@ -28,7 +28,7 @@ class RepairXattrsDomainTests(unittest.TestCase):
         self.assertEqual(shares, [MountedSmbShare("timecapsule home.local", "Data Disk", Path("/Volumes/Data Disk"))])
 
     def test_default_share_path_prefers_exact_host_and_ignores_missing_mounts(self) -> None:
-        config = AppConfig.from_values({"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"})
+        config = AppConfig.from_values({"TC_HOST": "root@192.168.1.217"})
         shares = [
             MountedSmbShare("192.168.1.111", "Data", Path("/Volumes/Missing")),
             MountedSmbShare("192.168.1.217", "Data", Path("/Volumes/Data")),
@@ -43,8 +43,8 @@ class RepairXattrsDomainTests(unittest.TestCase):
             Path("/Volumes/Data"),
         )
 
-    def test_default_share_path_raises_when_same_share_has_multiple_existing_nonmatching_mounts(self) -> None:
-        config = AppConfig.from_values({"TC_HOST": "root@192.168.1.217", "TC_SHARE_NAME": "Data"})
+    def test_default_share_path_raises_when_multiple_existing_nonmatching_mounts(self) -> None:
+        config = AppConfig.from_values({"TC_HOST": "root@192.168.1.217"})
         shares = [
             MountedSmbShare("timecapsule-a.local", "Data", Path("/Volumes/Data")),
             MountedSmbShare("timecapsule-b.local", "Data", Path("/Volumes/Data-1")),

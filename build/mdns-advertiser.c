@@ -25,8 +25,9 @@
 #define ANNOUNCE_INTERVAL 30
 #define MODEL_TXT_PREFIX "model="
 #define ADISK_DEFAULT_DISK_KEY "dk0"
-#define ADISK_SYS_ADVF "0x1100"
+#define ADISK_SYS_ADVF "0x1010"
 #define ADISK_DEFAULT_DISK_ADVF "0x1093"
+#define ADISK_MAX_DISKS 16
 #define ADISK_DISK_UUID_LEN 36
 #define AIRPORT_SERVICE_TYPE "_airport._tcp.local."
 #define AIRPORT_DEFAULT_PORT 5009
@@ -88,6 +89,18 @@ enum exit_code {
     EXIT_INVALID_AIRPORT_TXT = 10
 };
 
+struct adisk_disk {
+    char share_name[MAX_NAME];
+    char disk_key[MAX_LABEL + 1];
+    char disk_advf[16];
+    char uuid[ADISK_DISK_UUID_LEN + 1];
+};
+
+struct adisk_disk_set {
+    struct adisk_disk disks[ADISK_MAX_DISKS];
+    size_t count;
+};
+
 struct config {
     char save_all_snapshot_path[MAX_NAME];
     char service_type[MAX_NAME];
@@ -99,7 +112,9 @@ struct config {
     char adisk_disk_key[MAX_LABEL + 1];
     char adisk_disk_advf[16];
     char adisk_uuid[ADISK_DISK_UUID_LEN + 1];
+    char adisk_shares_file[MAX_NAME];
     char adisk_sys_wama[18];
+    struct adisk_disk_set adisk_disks;
     char device_info_service_type[MAX_NAME];
     char device_model[MAX_NAME];
     char airport_service_type[MAX_NAME];
@@ -192,7 +207,7 @@ static void log_startup_config(const struct config *cfg, int shared_bind) {
             cfg->host_label[0] != '\0' ? cfg->host_label : "(empty)",
             ipv4_to_string(cfg->ipv4_addr, ipv4_buf, sizeof(ipv4_buf)),
             cfg->service_type[0] != '\0' ? cfg->service_type : "(empty)",
-            cfg->adisk_share_name[0] != '\0' ? "enabled" : "disabled",
+            cfg->adisk_disks.count > 0 ? "enabled" : "disabled",
             cfg->device_model[0] != '\0' ? cfg->device_model : "(empty)",
             is_airport_enabled(cfg) ? "enabled" : "disabled");
 }
@@ -221,10 +236,13 @@ static void log_served_records(const struct config *cfg, const struct service_re
         fprintf(stderr, "serving service: type=%s instance=%s model=%s\n",
                 cfg->device_info_service_type, cfg->instance_name, cfg->device_model);
     }
-    if (cfg->adisk_share_name[0] != '\0') {
-        fprintf(stderr, "serving service: type=%s instance=%s share=%s disk_key=%s uuid=%s\n",
-                cfg->adisk_service_type, cfg->instance_name, cfg->adisk_share_name,
-                cfg->adisk_disk_key, cfg->adisk_uuid);
+    if (cfg->adisk_disks.count > 0) {
+        size_t i;
+        for (i = 0; i < cfg->adisk_disks.count; i++) {
+            fprintf(stderr, "serving service: type=%s instance=%s share=%s disk_key=%s uuid=%s\n",
+                    cfg->adisk_service_type, cfg->instance_name, cfg->adisk_disks.disks[i].share_name,
+                    cfg->adisk_disks.disks[i].disk_key, cfg->adisk_disks.disks[i].uuid);
+        }
     }
     if (is_airport_enabled(cfg)) {
         fprintf(stderr, "serving service: type=%s instance=%s syAP=%s syVs=%s srcv=%s\n",
@@ -413,6 +431,7 @@ static void usage(const char *prog) {
             "  --shared-bind     Allow shared UDP 5353 binding instead of exclusive takeover\n"
             "  --service <type>   Service type (default: _smb._tcp.local.)\n"
             "  --adisk-share <n>  Also advertise _adisk._tcp for Time Machine\n"
+            "  --adisk-shares-file <p> Tab-separated share,disk-key,uuid,adVF rows\n"
             "  --adisk-disk-key <k> Disk key for _adisk TXT (default: dk0)\n"
             "  --adisk-disk-advf <v> Volume flags for _adisk TXT (default: 0x1093)\n"
             "  --adisk-uuid <u>   Stable UUID for _adisk TXT\n"
@@ -663,6 +682,107 @@ static int build_adisk_disk_txt(char *out, size_t out_len, const char *disk_key,
     }
 
     return 0;
+}
+
+static void trim_ascii_whitespace(char *value) {
+    char *start = value;
+    char *end;
+
+    while (*start != '\0' && isspace((unsigned char)*start)) {
+        start++;
+    }
+    if (start != value) {
+        memmove(value, start, strlen(start) + 1);
+    }
+
+    end = value + strlen(value);
+    while (end > value && isspace((unsigned char)*(end - 1))) {
+        end--;
+    }
+    *end = '\0';
+}
+
+static int add_adisk_disk_config(struct config *cfg, const char *share_name, const char *disk_key,
+                                 const char *adisk_uuid, const char *adisk_disk_advf) {
+    struct adisk_disk *disk;
+    char txt[256];
+
+    if (cfg->adisk_disks.count >= ADISK_MAX_DISKS) {
+        fprintf(stderr, "too many adisk disks; maximum is %d\n", ADISK_MAX_DISKS);
+        return -1;
+    }
+    if (build_adisk_disk_txt(txt, sizeof(txt), disk_key, share_name, adisk_uuid, adisk_disk_advf) != 0) {
+        return -1;
+    }
+
+    disk = &cfg->adisk_disks.disks[cfg->adisk_disks.count++];
+    memset(disk, 0, sizeof(*disk));
+    strncpy(disk->share_name, share_name, sizeof(disk->share_name) - 1);
+    strncpy(disk->disk_key, disk_key, sizeof(disk->disk_key) - 1);
+    strncpy(disk->disk_advf, adisk_disk_advf, sizeof(disk->disk_advf) - 1);
+    strncpy(disk->uuid, adisk_uuid, sizeof(disk->uuid) - 1);
+    return 0;
+}
+
+static int parse_adisk_shares_file(struct config *cfg, const char *path) {
+    FILE *fp;
+    char line[1024];
+    unsigned long line_no = 0;
+
+    fp = fopen(path, "r");
+    if (fp == NULL) {
+        fprintf(stderr, "could not open adisk shares file %s: %s\n", path, strerror(errno));
+        return -1;
+    }
+
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        char *fields[4];
+        char *cursor = line;
+        size_t i;
+        line_no++;
+
+        line[strcspn(line, "\r\n")] = '\0';
+        trim_ascii_whitespace(line);
+        if (line[0] == '\0' || line[0] == '#') {
+            continue;
+        }
+
+        for (i = 0; i < 4; i++) {
+            char *tab;
+            fields[i] = cursor;
+            tab = strchr(cursor, '\t');
+            if (tab == NULL) {
+                if (i != 3) {
+                    fprintf(stderr, "adisk shares file %s line %lu must have four tab-separated fields\n", path, line_no);
+                    fclose(fp);
+                    return -1;
+                }
+                break;
+            }
+            *tab = '\0';
+            cursor = tab + 1;
+        }
+        if (strchr(fields[3], '\t') != NULL) {
+            fprintf(stderr, "adisk shares file %s line %lu has extra fields\n", path, line_no);
+            fclose(fp);
+            return -1;
+        }
+        for (i = 0; i < 4; i++) {
+            trim_ascii_whitespace(fields[i]);
+        }
+        if (add_adisk_disk_config(cfg, fields[0], fields[1], fields[2], fields[3]) != 0) {
+            fprintf(stderr, "invalid adisk shares file %s line %lu\n", path, line_no);
+            fclose(fp);
+            return -1;
+        }
+    }
+
+    fclose(fp);
+    return 0;
+}
+
+static int adisk_enabled(const struct config *cfg) {
+    return cfg->adisk_disks.count > 0 && cfg->adisk_sys_wama[0] != '\0';
 }
 
 static int is_airport_enabled(const struct config *cfg) {
@@ -1992,10 +2112,11 @@ static int send_dns_packet(const char *stage, int sockfd, const uint8_t *buf, si
 static int add_adisk_records(uint8_t *buf, size_t *off, size_t cap, const struct config *cfg, int *answers) {
     char instance_fqdn[MAX_NAME];
     char txt1[128];
-    char txt2[256];
-    const char *txts[2];
+    char disk_txts[ADISK_MAX_DISKS][256];
+    const char *txts[ADISK_MAX_DISKS + 1];
+    size_t i;
 
-    if (cfg->adisk_share_name[0] == '\0' || cfg->adisk_uuid[0] == '\0' || cfg->adisk_sys_wama[0] == '\0') {
+    if (!adisk_enabled(cfg)) {
         return 0;
     }
 
@@ -2005,15 +2126,18 @@ static int add_adisk_records(uint8_t *buf, size_t *off, size_t cap, const struct
     if (build_adisk_system_txt(txt1, sizeof(txt1), cfg->adisk_sys_wama) != 0) {
         return -1;
     }
-    if (build_adisk_disk_txt(txt2, sizeof(txt2), cfg->adisk_disk_key, cfg->adisk_share_name, cfg->adisk_uuid, cfg->adisk_disk_advf) != 0) {
-        return -1;
-    }
     txts[0] = txt1;
-    txts[1] = txt2;
+    for (i = 0; i < cfg->adisk_disks.count; i++) {
+        const struct adisk_disk *disk = &cfg->adisk_disks.disks[i];
+        if (build_adisk_disk_txt(disk_txts[i], sizeof(disk_txts[i]), disk->disk_key, disk->share_name, disk->uuid, disk->disk_advf) != 0) {
+            return -1;
+        }
+        txts[i + 1] = disk_txts[i];
+    }
 
     if (add_rr_ptr(buf, off, cap, cfg->adisk_service_type, instance_fqdn, cfg->ttl) != 0 ||
         add_rr_srv(buf, off, cap, instance_fqdn, cfg->host_fqdn, cfg->adisk_port, cfg->ttl) != 0 ||
-        add_rr_txt_strings(buf, off, cap, instance_fqdn, cfg->ttl, txts, 2) != 0) {
+        add_rr_txt_strings(buf, off, cap, instance_fqdn, cfg->ttl, txts, cfg->adisk_disks.count + 1) != 0) {
         return -1;
     }
 
@@ -2281,7 +2405,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
         log_packet_build_failure("query_response", "build_instance_fqdn", off, answers, use_snapshot_records);
         return 0;
     }
-    if (cfg->adisk_share_name[0] != '\0' && cfg->adisk_uuid[0] != '\0' &&
+    if (cfg->adisk_disks.count > 0 &&
         build_instance_fqdn(adisk_instance_fqdn, sizeof(adisk_instance_fqdn), cfg->instance_name, cfg->adisk_service_type) != 0) {
         log_packet_build_failure("query_response", "build_adisk_instance_fqdn", off, answers, use_snapshot_records);
         return 0;
@@ -2317,7 +2441,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
 
         if (name_equals(qname, cfg->service_type) && (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
             want_ptr = 1;
-        } else if (cfg->adisk_share_name[0] != '\0' &&
+        } else if (cfg->adisk_disks.count > 0 &&
                    name_equals(qname, cfg->adisk_service_type) &&
                    (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
             want_adisk_ptr = 1;
@@ -2333,7 +2457,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
             want_srv = 1;
         } else if (name_equals(qname, instance_fqdn) && (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY)) {
             want_txt = 1;
-        } else if (cfg->adisk_share_name[0] != '\0' &&
+        } else if (cfg->adisk_disks.count > 0 &&
                    name_equals(qname, adisk_instance_fqdn)) {
             if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
                 want_adisk_srv = 1;
@@ -2431,19 +2555,23 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
     }
     if (want_adisk_ptr || want_adisk_srv || want_adisk_txt) {
         char txt1[128];
-        char txt2[256];
-        const char *txts[2];
+        char disk_txts[ADISK_MAX_DISKS][256];
+        const char *txts[ADISK_MAX_DISKS + 1];
+        size_t disk_i;
 
         if (build_adisk_system_txt(txt1, sizeof(txt1), cfg->adisk_sys_wama) != 0) {
             log_packet_build_failure("query_response", "build_adisk_system_txt", off, answers, use_snapshot_records);
             return -1;
         }
-        if (build_adisk_disk_txt(txt2, sizeof(txt2), cfg->adisk_disk_key, cfg->adisk_share_name, cfg->adisk_uuid, cfg->adisk_disk_advf) != 0) {
-            log_packet_build_failure("query_response", "build_adisk_disk_txt", off, answers, use_snapshot_records);
-            return -1;
-        }
         txts[0] = txt1;
-        txts[1] = txt2;
+        for (disk_i = 0; disk_i < cfg->adisk_disks.count; disk_i++) {
+            const struct adisk_disk *disk = &cfg->adisk_disks.disks[disk_i];
+            if (build_adisk_disk_txt(disk_txts[disk_i], sizeof(disk_txts[disk_i]), disk->disk_key, disk->share_name, disk->uuid, disk->disk_advf) != 0) {
+                log_packet_build_failure("query_response", "build_adisk_disk_txt", off, answers, use_snapshot_records);
+                return -1;
+            }
+            txts[disk_i + 1] = disk_txts[disk_i];
+        }
 
         if (want_adisk_ptr) {
             if (add_rr_ptr(reply, &off, sizeof(reply), cfg->adisk_service_type, adisk_instance_fqdn, cfg->ttl) != 0) {
@@ -2460,7 +2588,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
             answers++;
         }
         if (want_adisk_txt) {
-            if (add_rr_txt_strings(reply, &off, sizeof(reply), adisk_instance_fqdn, cfg->ttl, txts, 2) != 0) {
+            if (add_rr_txt_strings(reply, &off, sizeof(reply), adisk_instance_fqdn, cfg->ttl, txts, cfg->adisk_disks.count + 1) != 0) {
                 log_packet_build_failure("query_response", "add_adisk_txt", off, answers, use_snapshot_records);
                 return -1;
             }
@@ -2691,6 +2819,8 @@ int main(int argc, char **argv) {
             strncpy(cfg.service_type, argv[++i], sizeof(cfg.service_type) - 1);
         } else if (strcmp(argv[i], "--adisk-share") == 0 && i + 1 < argc) {
             strncpy(cfg.adisk_share_name, argv[++i], sizeof(cfg.adisk_share_name) - 1);
+        } else if (strcmp(argv[i], "--adisk-shares-file") == 0 && i + 1 < argc) {
+            strncpy(cfg.adisk_shares_file, argv[++i], sizeof(cfg.adisk_shares_file) - 1);
         } else if (strcmp(argv[i], "--adisk-disk-key") == 0 && i + 1 < argc) {
             strncpy(cfg.adisk_disk_key, argv[++i], sizeof(cfg.adisk_disk_key) - 1);
         } else if (strcmp(argv[i], "--adisk-disk-advf") == 0 && i + 1 < argc) {
@@ -2757,14 +2887,17 @@ int main(int argc, char **argv) {
     if (validate_dns_name(cfg.service_type, "service type") != 0) {
         return EXIT_INVALID_SERVICE_TYPE;
     }
-    if (cfg.adisk_share_name[0] != '\0') {
+    if (cfg.adisk_shares_file[0] != '\0' && parse_adisk_shares_file(&cfg, cfg.adisk_shares_file) != 0) {
+        return EXIT_INVALID_ADISK_DISK;
+    }
+    if (cfg.adisk_share_name[0] != '\0' &&
+        add_adisk_disk_config(&cfg, cfg.adisk_share_name, cfg.adisk_disk_key, cfg.adisk_uuid, cfg.adisk_disk_advf) != 0) {
+        return EXIT_INVALID_ADISK_DISK;
+    }
+    if (cfg.adisk_disks.count > 0) {
         char adisk_sys_txt[128];
-        char adisk_disk_txt[256];
         if (build_adisk_system_txt(adisk_sys_txt, sizeof(adisk_sys_txt), cfg.adisk_sys_wama) != 0) {
             return EXIT_INVALID_ADISK_SYSTEM;
-        }
-        if (build_adisk_disk_txt(adisk_disk_txt, sizeof(adisk_disk_txt), cfg.adisk_disk_key, cfg.adisk_share_name, cfg.adisk_uuid, cfg.adisk_disk_advf) != 0) {
-            return EXIT_INVALID_ADISK_DISK;
         }
     }
     if (cfg.device_model[0] != '\0') {

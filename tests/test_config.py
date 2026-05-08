@@ -28,7 +28,6 @@ from timecapsulesmb.core.config import (
     require_valid_app_config,
     render_env_text,
     validate_app_config,
-    validate_adisk_share_name,
     validate_airport_syap,
     validate_bool,
     validate_mdns_device_model_matches_syap,
@@ -57,10 +56,10 @@ class ConfigTests(unittest.TestCase):
     def test_load_app_config_applies_defaults_and_unquotes_file_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ".env"
-            path.write_text("TC_HOST='root@10.0.0.5'\nTC_SHARE_NAME='Archive Share'\n")
+            path.write_text("TC_HOST='root@10.0.0.5'\nTC_NETBIOS_NAME='ArchiveCapsule'\n")
             values = load_app_config(path).values
         self.assertEqual(values["TC_HOST"], "root@10.0.0.5")
-        self.assertEqual(values["TC_SHARE_NAME"], "Archive Share")
+        self.assertEqual(values["TC_NETBIOS_NAME"], "ArchiveCapsule")
         self.assertEqual(values["TC_MDNS_HOST_LABEL"], DEFAULTS["TC_MDNS_HOST_LABEL"])
 
     def test_parse_env_file_does_not_apply_defaults(self) -> None:
@@ -88,7 +87,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.file_values, {"TC_HOST": "root@10.0.0.5"})
         self.assertTrue(config.has_file_value("TC_HOST"))
         self.assertFalse(config.has_file_value("TC_SHARE_USE_DISK_ROOT"))
-        self.assertEqual(config.get("TC_SHARE_USE_DISK_ROOT"), DEFAULTS["TC_SHARE_USE_DISK_ROOT"])
+        self.assertEqual(config.get("TC_SHARE_USE_DISK_ROOT"), "")
 
     def test_validate_app_config_reports_missing_env_before_defaulted_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -113,7 +112,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(errors[0].kind, "missing_key")
         self.assertEqual(errors[0].key, "TC_AIRPORT_SYAP")
 
-    def test_validate_app_config_allows_defaulted_optional_share_use_disk_root(self) -> None:
+    def test_validate_app_config_ignores_absent_legacy_share_use_disk_root(self) -> None:
         file_values = self.valid_deploy_file_values()
         file_values.pop("TC_SHARE_USE_DISK_ROOT", None)
         values = dict(DEFAULTS)
@@ -162,7 +161,8 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("TC_MDNS_INSTANCE_NAME='Time Capsule Samba 4'", rendered)
         self.assertIn("TC_MDNS_DEVICE_MODEL=TimeCapsule", rendered)
         self.assertIn("TC_AIRPORT_SYAP=''", rendered)
-        self.assertIn("TC_SHARE_USE_DISK_ROOT=false", rendered)
+        self.assertIn("TC_INTERNAL_SHARE_USE_DISK_ROOT=false", rendered)
+        self.assertNotIn("TC_SHARE_USE_DISK_ROOT=", rendered)
         self.assertIn("TC_CONFIGURE_ID=12345678-1234-1234-1234-123456789012", rendered)
 
     def test_env_example_payload_dir_matches_default(self) -> None:
@@ -300,7 +300,6 @@ class ConfigTests(unittest.TestCase):
             "TC_HOST": "root@10.0.0.5",
             "TC_PASSWORD": "secret",
             "TC_NET_IFACE": "bridge0",
-            "TC_SHARE_NAME": "Data",
             "TC_SAMBA_USER": "admin",
             "TC_NETBIOS_NAME": "TimeCapsule",
             "TC_PAYLOAD_DIR_NAME": ".samba4",
@@ -383,24 +382,6 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertEqual(validate_mdns_host_label("-timecapsule", "mDNS host label"), "mDNS host label must not start or end with a hyphen.")
         self.assertEqual(validate_mdns_host_label("timecapsule-", "mDNS host label"), "mDNS host label must not start or end with a hyphen.")
-
-    def test_validate_adisk_share_name_rejects_long_values(self) -> None:
-        self.assertIsNone(validate_adisk_share_name("a" * 194, "SMB share name"))
-        self.assertEqual(
-            validate_adisk_share_name("a" * 195, "SMB share name"),
-            "SMB share name must be 194 bytes or fewer.",
-        )
-
-    def test_validate_adisk_share_name_accepts_spaces(self) -> None:
-        self.assertIsNone(validate_adisk_share_name("Data", "SMB share name"))
-        self.assertIsNone(validate_adisk_share_name("Time Machine Backups", "SMB share name"))
-
-    def test_validate_adisk_share_name_rejects_unsafe_characters(self) -> None:
-        for value in ("Bad/Share", "Bad\\Share", "Bad[Share]", "Bad,Share", "Bad=Share"):
-            self.assertEqual(
-                validate_adisk_share_name(value, "SMB share name"),
-                "SMB share name contains a character that is not safe for Samba/adisk.",
-            )
 
     def test_validate_netbios_name_rejects_long_values(self) -> None:
         self.assertEqual(

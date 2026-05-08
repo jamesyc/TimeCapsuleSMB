@@ -10,10 +10,13 @@ from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
 from timecapsulesmb.core.config import airport_exact_display_name_from_config
 from timecapsulesmb.deploy.dry_run import format_uninstall_plan, uninstall_plan_to_jsonable
 from timecapsulesmb.deploy.executor import remote_uninstall_payload
-from timecapsulesmb.deploy.planner import build_uninstall_plan
+from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS, build_uninstall_plan
 from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
-from timecapsulesmb.device.mounts import ensure_volume_root_mounted_conn
-from timecapsulesmb.device.util import build_device_paths, build_unknown_mount_device_paths
+from timecapsulesmb.device.storage import (
+    UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER,
+    mounted_mast_volumes_conn,
+    read_mast_volumes_conn,
+)
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.telemetry import TelemetryClient
 
@@ -54,16 +57,24 @@ def main(argv: Optional[list[str]] = None) -> int:
         command_context.set_stage("resolve_connection")
         connection = command_context.resolve_env_connection(allow_empty_password=True)
 
+        payload_dir_name = config.require("TC_PAYLOAD_DIR_NAME")
         if args.dry_run:
-            device_paths = build_unknown_mount_device_paths(config.require("TC_PAYLOAD_DIR_NAME"))
+            volume_roots = [UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER]
+            payload_dirs = [f"{UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER}/{payload_dir_name}"]
         else:
-            command_context.set_stage("ensure_volume_root_mounted")
-            volume_root = ensure_volume_root_mounted_conn(connection)
-            device_paths = build_device_paths(volume_root, config.require("TC_PAYLOAD_DIR_NAME"))
-        command_context.update_fields(volume_root=device_paths.volume_root)
+            command_context.set_stage("read_mast")
+            mast_volumes = read_mast_volumes_conn(connection)
+            command_context.set_stage("mount_mast_volumes")
+            mounted_volumes = mounted_mast_volumes_conn(
+                connection,
+                mast_volumes,
+                wait_seconds=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+            )
+            volume_roots = [volume.volume_root for volume in mounted_volumes]
+            payload_dirs = [f"{volume_root}/{payload_dir_name}" for volume_root in volume_roots]
+        command_context.update_fields(volume_roots=volume_roots, payload_dirs=payload_dirs)
         command_context.set_stage("build_uninstall_plan")
-        plan = build_uninstall_plan(connection.host, device_paths, reboot_after_uninstall=not args.no_reboot)
-        command_context.update_fields(payload_dir=plan.payload_dir)
+        plan = build_uninstall_plan(connection.host, volume_roots, payload_dirs, reboot_after_uninstall=not args.no_reboot)
 
         if args.dry_run:
             if args.json:
@@ -74,7 +85,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 0
 
         command_context.set_stage("uninstall_payload")
-        print(f"Removing managed TimeCapsuleSMB payload from {plan.payload_dir}")
+        if plan.payload_dirs:
+            print("Removing managed TimeCapsuleSMB payload from:")
+            for payload_dir in plan.payload_dirs:
+                print(f"  {payload_dir}")
+        else:
+            print("No mounted HFS volumes found; removing flash hooks and runtime state only.")
         remote_uninstall_payload(connection, plan)
         print("Removed managed payload, flash hooks, and runtime state.")
 
