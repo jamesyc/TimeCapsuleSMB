@@ -507,6 +507,45 @@ int main(void) {{
             "dk2=adVF=0x82,adVN=Data,adVU=12345678-1234-1234-1234-123456789012",
         )
 
+    def test_mdns_advertiser_rejects_extra_adisk_share_fields(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <stdio.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+int main(void) {{
+    struct config cfg;
+    char path[] = "/tmp/tcapsulesmb-adisk-extra-XXXXXX";
+    int fd;
+    FILE *fp;
+    int rc;
+
+    memset(&cfg, 0, sizeof(cfg));
+    fd = mkstemp(path);
+    if (fd < 0) {{
+        return 1;
+    }}
+    fp = fdopen(fd, "w");
+    if (fp == NULL) {{
+        close(fd);
+        unlink(path);
+        return 2;
+    }}
+    fputs("Data\\tdk2\\t12345678-1234-1234-1234-123456789012\\t0x1093\\textra\\n", fp);
+    fclose(fp);
+
+    rc = parse_adisk_shares_file(&cfg, path);
+    unlink(path);
+    return rc == 0 ? 3 : 0;
+}}
+'''.format(mdns_source=mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_adisk_extra_fields")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("has extra fields", run.stderr)
+
     def test_mdns_advertiser_normalizes_airport_mac_fields_to_apple_style(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
         source = '''

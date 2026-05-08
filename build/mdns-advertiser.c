@@ -759,13 +759,13 @@ static int parse_adisk_shares_file(struct config *cfg, const char *path) {
                 }
                 break;
             }
+            if (i == 3) {
+                fprintf(stderr, "adisk shares file %s line %lu has extra fields\n", path, line_no);
+                fclose(fp);
+                return -1;
+            }
             *tab = '\0';
             cursor = tab + 1;
-        }
-        if (strchr(fields[3], '\t') != NULL) {
-            fprintf(stderr, "adisk shares file %s line %lu has extra fields\n", path, line_no);
-            fclose(fp);
-            return -1;
         }
         for (i = 0; i < 4; i++) {
             trim_ascii_whitespace(fields[i]);
