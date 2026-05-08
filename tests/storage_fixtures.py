@@ -215,6 +215,38 @@ MaSt=
         expected=(INTERNAL_DATA, EXTERNAL_UNTITLED),
     ),
     MaStFixture(
+        name="openstep_reordered_disk_keys",
+        raw="""\
+MaSt = (
+    {
+        builtin = true;
+        partitions = (
+            {
+                deviceName = "dk2";
+                name = "Data";
+                format = "hfs";
+                uuid = <f42bdb83 c2655522 a0872560 6a4d0abf>;
+            }
+        );
+        deviceName = "wd0";
+    },
+    {
+        partitions = (
+            {
+                deviceName = "dk3";
+                name = "Untitled";
+                format = "hfs";
+                uuid = <51f93e6f dc69524d 986dcee4 d7cb3573>;
+            }
+        );
+        builtin = false;
+        deviceName = "sd0";
+    }
+);
+""",
+        expected=(INTERNAL_DATA, EXTERNAL_UNTITLED),
+    ),
+    MaStFixture(
         name="openstep_duplicate_internal_external_names",
         raw="""\
 MaSt = (

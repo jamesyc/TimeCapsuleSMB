@@ -230,8 +230,8 @@ def _parse_mast_openstep(content: str) -> tuple[MaStVolume, ...]:
             else:
                 if disk_device:
                     flush_disk()
+                    disk_builtin = False
                 disk_device = device_name
-                disk_builtin = False
             continue
 
         builtin = _openstep_bool_assignment(line, "builtin")
