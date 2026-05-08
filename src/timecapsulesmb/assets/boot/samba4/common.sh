@@ -217,7 +217,7 @@ wait_for_process() {
     max_attempts=${2:-10}
     attempt=0
     while [ "$attempt" -lt "$max_attempts" ]; do
-        if runtime_process_present "$proc_name" false; then
+        if runtime_process_present_by_ucomm "$proc_name"; then
             return 0
         fi
         attempt=$((attempt + 1))
@@ -226,10 +226,8 @@ wait_for_process() {
     return 1
 }
 
-runtime_process_present() {
-    pattern=$1
-    full_match=${2:-false}
-
+runtime_process_present_by_ucomm() {
+    proc_name=$1
     if ps_out=$(/bin/ps axww -o stat= -o ucomm= -o command= 2>/dev/null); then
         old_ifs=$IFS
         IFS='
@@ -245,14 +243,7 @@ runtime_process_present() {
                 Z*) continue ;;
             esac
 
-            if [ "$full_match" = "true" ]; then
-                case "$line" in
-                    *"$pattern"*)
-                        IFS=$old_ifs
-                        return 0
-                        ;;
-                esac
-            elif [ "$2" = "$pattern" ]; then
+            if [ "$2" = "$proc_name" ]; then
                 IFS=$old_ifs
                 return 0
             fi
@@ -263,13 +254,45 @@ runtime_process_present() {
     return 1
 }
 
-wait_for_runtime_process_absent() {
-    pattern=$1
-    full_match=${2:-false}
-    max_attempts=${3:-5}
+runtime_watchdog_present() {
+    if ps_out=$(/bin/ps axww -o stat= -o ucomm= -o command= 2>/dev/null); then
+        old_ifs=$IFS
+        IFS='
+'
+        for line in $ps_out; do
+            [ -n "$line" ] || continue
+            line_ifs=$IFS
+            IFS=' 	'
+            set -- $line
+            IFS=$line_ifs
+            [ "$#" -ge 3 ] || continue
+            case "$1" in
+                Z*) continue ;;
+            esac
+            [ "$2" = "sh" ] || continue
+            if [ "${3:-}" = "/mnt/Flash/watchdog.sh" ]; then
+                IFS=$old_ifs
+                return 0
+            fi
+            if [ "${3:-}" = "/bin/sh" ] || [ "${3:-}" = "sh" ]; then
+                if [ "${4:-}" = "/mnt/Flash/watchdog.sh" ]; then
+                    IFS=$old_ifs
+                    return 0
+                fi
+            fi
+        done
+        IFS=$old_ifs
+    fi
+
+    return 1
+}
+
+wait_for_runtime_process_absent_by_ucomm() {
+    proc_name=$1
+    max_attempts=${2:-5}
     attempt=0
 
-    while runtime_process_present "$pattern" "$full_match"; do
+    while runtime_process_present_by_ucomm "$proc_name"; do
         if [ "$attempt" -ge "$max_attempts" ]; then
             return 1
         fi
@@ -279,30 +302,42 @@ wait_for_runtime_process_absent() {
     return 0
 }
 
-stop_runtime_process() {
+wait_for_watchdog_absent() {
+    max_attempts=${1:-5}
+    attempt=0
+
+    while runtime_watchdog_present; do
+        if [ "$attempt" -ge "$max_attempts" ]; then
+            return 1
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+    return 0
+}
+
+stop_runtime_process_by_ucomm() {
     label=$1
-    pattern=$2
-    full_match=${3:-false}
+    proc_name=$2
+    case "$proc_name" in
+        ""|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-]*)
+            tc_log "refusing unsafe process name for $label: $proc_name"
+            return 1
+            ;;
+    esac
+    pkill_pattern="^$proc_name$"
 
     tc_log "stopping old $label"
-    if [ "$full_match" = "true" ]; then
-        /usr/bin/pkill -f "$pattern" >/dev/null 2>&1 || true
-    else
-        /usr/bin/pkill "$pattern" >/dev/null 2>&1 || true
-    fi
+    /usr/bin/pkill "$pkill_pattern" >/dev/null 2>&1 || true
 
-    if wait_for_runtime_process_absent "$pattern" "$full_match" 5; then
+    if wait_for_runtime_process_absent_by_ucomm "$proc_name" 5; then
         return 0
     fi
 
     tc_log "old $label still running after TERM; sending KILL"
-    if [ "$full_match" = "true" ]; then
-        /usr/bin/pkill -9 -f "$pattern" >/dev/null 2>&1 || true
-    else
-        /usr/bin/pkill -9 "$pattern" >/dev/null 2>&1 || true
-    fi
+    /usr/bin/pkill -9 "$pkill_pattern" >/dev/null 2>&1 || true
 
-    if wait_for_runtime_process_absent "$pattern" "$full_match" 5; then
+    if wait_for_runtime_process_absent_by_ucomm "$proc_name" 5; then
         return 0
     fi
 
@@ -310,11 +345,30 @@ stop_runtime_process() {
     return 1
 }
 
+stop_watchdog_process() {
+    tc_log "stopping old watchdog"
+    /usr/bin/pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true
+
+    if wait_for_watchdog_absent 5; then
+        return 0
+    fi
+
+    tc_log "old watchdog still running after TERM; sending KILL"
+    /usr/bin/pkill -9 -f '[w]atchdog.sh' >/dev/null 2>&1 || true
+
+    if wait_for_watchdog_absent 5; then
+        return 0
+    fi
+
+    tc_log "old watchdog survived KILL"
+    return 1
+}
+
 stop_apple_nbns_conflicts() {
     cleanup_status=0
 
-    stop_runtime_process "wcifsnd" "wcifsnd" false || cleanup_status=1
-    stop_runtime_process "wcifsfs" "wcifsfs" false || cleanup_status=1
+    stop_runtime_process_by_ucomm "wcifsnd" "wcifsnd" || cleanup_status=1
+    stop_runtime_process_by_ucomm "wcifsfs" "wcifsfs" || cleanup_status=1
 
     return "$cleanup_status"
 }
@@ -323,7 +377,7 @@ stop_nbns_conflicts() {
     cleanup_status=0
 
     stop_apple_nbns_conflicts || cleanup_status=1
-    stop_runtime_process "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" false || cleanup_status=1
+    stop_runtime_process_by_ucomm "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" || cleanup_status=1
 
     return "$cleanup_status"
 }
@@ -997,10 +1051,10 @@ tc_cleanup_old_runtime() {
     cleanup_status=0
 
     tc_log "cleaning old managed runtime processes and RAM state"
-    stop_runtime_process "watchdog" "/mnt/Flash/watchdog.sh" true || cleanup_status=1
-    stop_runtime_process "smbd" "smbd" false || cleanup_status=1
-    stop_runtime_process "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" false || cleanup_status=1
-    stop_runtime_process "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" false || cleanup_status=1
+    stop_watchdog_process || cleanup_status=1
+    stop_runtime_process_by_ucomm "smbd" "smbd" || cleanup_status=1
+    stop_runtime_process_by_ucomm "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" || cleanup_status=1
+    stop_runtime_process_by_ucomm "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" || cleanup_status=1
 
     if [ "$cleanup_status" -ne 0 ]; then
         tc_log "old managed runtime cleanup failed; refusing to delete /mnt/Memory/samba4"
@@ -1296,8 +1350,7 @@ tc_launch_mdns_advertiser() {
 
     if [ "$kill_prior" = "1" ]; then
         tc_log "$context: killing prior $MDNS_PROC_NAME processes"
-        /usr/bin/pkill "$MDNS_PROC_NAME" >/dev/null 2>&1 || true
-        sleep 1
+        stop_runtime_process_by_ucomm "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" || true
     fi
 
     tc_log "$context: starting mdns advertiser for $iface_ip on $NET_IFACE"
@@ -1438,7 +1491,7 @@ tc_start_smbd() {
 }
 
 tc_start_smbd_if_needed() {
-    if runtime_process_present smbd false; then
+    if runtime_process_present_by_ucomm smbd; then
         return 0
     fi
 
@@ -1453,7 +1506,7 @@ tc_start_smbd_if_needed() {
 }
 
 tc_start_watchdog() {
-    if runtime_process_present "/mnt/Flash/watchdog.sh" true; then
+    if runtime_watchdog_present; then
         tc_log "watchdog already running"
         return 0
     fi
@@ -1465,9 +1518,9 @@ tc_start_watchdog() {
 }
 
 tc_stop_managed_services() {
-    stop_runtime_process "smbd" "smbd" false || true
-    stop_runtime_process "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" false || true
-    stop_runtime_process "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" false || true
+    stop_runtime_process_by_ucomm "smbd" "smbd" || true
+    stop_runtime_process_by_ucomm "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" || true
+    stop_runtime_process_by_ucomm "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" || true
 }
 
 tc_current_topology_signature() {
@@ -1500,16 +1553,16 @@ tc_nbns_enabled() {
 }
 
 tc_all_managed_services_healthy() {
-    if ! runtime_process_present smbd false; then
+    if ! runtime_process_present_by_ucomm smbd; then
         return 1
     fi
 
-    if ! runtime_process_present "$MDNS_PROC_NAME" false; then
+    if ! runtime_process_present_by_ucomm "$MDNS_PROC_NAME"; then
         return 1
     fi
 
     if tc_nbns_enabled; then
-        if ! runtime_process_present "$NBNS_PROC_NAME" false; then
+        if ! runtime_process_present_by_ucomm "$NBNS_PROC_NAME"; then
             return 1
         fi
     fi
@@ -1533,14 +1586,14 @@ tc_watchdog_iteration() {
         return 1
     fi
 
-    if runtime_process_present "$MDNS_PROC_NAME" false; then
+    if runtime_process_present_by_ucomm "$MDNS_PROC_NAME"; then
         :
     else
         tc_restart_mdns
     fi
 
     if tc_nbns_enabled; then
-        if runtime_process_present "$NBNS_PROC_NAME" false; then
+        if runtime_process_present_by_ucomm "$NBNS_PROC_NAME"; then
             :
         else
             tc_restart_nbns

@@ -57,11 +57,9 @@ from timecapsulesmb.device.probe import (
 )
 from timecapsulesmb.device.storage import NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE, MaStVolume, PayloadHome
 from timecapsulesmb.deploy.commands import (
-    RemoteSymlink,
-    prepare_dirs_action,
-    run_script_action,
-    stop_process_action,
-    stop_process_full_action,
+    RunScriptAction,
+    StopProcessAction,
+    StopWatchdogAction,
 )
 from timecapsulesmb.deploy.planner import (
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
@@ -4607,11 +4605,11 @@ class CliTests(unittest.TestCase):
         self.assertFalse(payload["reboot_required"])
         self.assertEqual(
             [action["kind"] for action in payload["activation_actions"]],
-            ["stop_process_full", "stop_process", "stop_process", "stop_process", "stop_process", "run_script"],
+            ["stop_watchdog", "stop_process", "stop_process", "stop_process", "stop_process", "run_script"],
         )
         self.assertEqual(
-            [action["args"][0] for action in payload["activation_actions"]],
-            ["[w]atchdog.sh", "smbd", "mdns-advertiser", "nbns-advertiser", "wcifsfs", "/mnt/Flash/rc.local"],
+            [action["args"] for action in payload["activation_actions"]],
+            [[], ["smbd"], ["mdns-advertiser"], ["nbns-advertiser"], ["wcifsfs"], ["/mnt/Flash/rc.local"]],
         )
         self.assertEqual(
             [check["id"] for check in payload["post_deploy_checks"]],
@@ -4697,11 +4695,11 @@ class CliTests(unittest.TestCase):
         actions_mock.assert_not_called()
         text = output.getvalue()
         self.assertIn("Dry run: NetBSD4 activation plan", text)
-        self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill smbd >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill mdns-advertiser >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill nbns-advertiser >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill wcifsfs >/dev/null 2>&1 || true", text)
+        self.assertIn("/usr/bin/pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
+        self.assertIn("/usr/bin/pkill '^smbd$' >/dev/null 2>&1 || true", text)
+        self.assertIn("/usr/bin/pkill '^mdns-advertiser$' >/dev/null 2>&1 || true", text)
+        self.assertIn("/usr/bin/pkill '^nbns-advertiser$' >/dev/null 2>&1 || true", text)
+        self.assertIn("/usr/bin/pkill '^wcifsfs$' >/dev/null 2>&1 || true", text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
         self.assertIn("skip rc.local if NetBSD4 payload is already healthy", text)
         self.assertIn("managed runtime smb.conf is present", text)
@@ -4800,12 +4798,12 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             actions_mock.call_args.args[1],
             [
-                stop_process_full_action("[w]atchdog.sh", force=True),
-                stop_process_action("smbd", force=True),
-                stop_process_action("mdns-advertiser", force=True),
-                stop_process_action("nbns-advertiser", force=True),
-                stop_process_action("wcifsfs", force=True),
-                run_script_action("/mnt/Flash/rc.local"),
+                StopWatchdogAction(),
+                StopProcessAction("smbd"),
+                StopProcessAction("mdns-advertiser"),
+                StopProcessAction("nbns-advertiser"),
+                StopProcessAction("wcifsfs"),
+                RunScriptAction("/mnt/Flash/rc.local"),
             ],
         )
         self.assertEqual(actions_mock.call_args.kwargs, {})
@@ -5161,10 +5159,10 @@ class CliTests(unittest.TestCase):
         remote_cmd = run_ssh_mock.call_args.args[1]
         self.assertIn("pkill -9 -f", remote_cmd)
         self.assertIn("[w]atchdog.sh", remote_cmd)
-        self.assertIn("pkill -9 smbd", remote_cmd)
-        self.assertIn("pkill -9 afpserver", remote_cmd)
-        self.assertIn("pkill -9 wcifsnd", remote_cmd)
-        self.assertIn("pkill -9 wcifsfs", remote_cmd)
+        self.assertIn("^smbd$", remote_cmd)
+        self.assertIn("^afpserver$", remote_cmd)
+        self.assertIn("^wcifsnd$", remote_cmd)
+        self.assertIn("^wcifsfs$", remote_cmd)
         self.assertIn("umount -f /Volumes/dk2", remote_cmd)
         self.assertIn("fsck_hfs -fy /dev/dk2", remote_cmd)
         self.assertIn("/sbin/reboot", remote_cmd)

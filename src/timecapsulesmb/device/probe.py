@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.device.processes import PROBE_PROCESS_HELPERS
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, ssh_opts_use_proxy
@@ -163,119 +164,7 @@ runtime_share_volumes_mounted() {{
     return "$status"
 }}
 
-capture_ps_out() {{
-    /bin/ps axww -o pid= -o ppid= -o stat= -o time= -o ucomm= -o command= 2>/dev/null || true
-}}
-
-smbd_parent_process_present() {{
-    ps_out=$1
-    smbd_pids=""
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        set -- $line
-        [ "$#" -ge 5 ] || continue
-        case "$3" in
-            Z*) continue ;;
-        esac
-        if [ "$5" = "smbd" ]; then
-            smbd_pids="$smbd_pids $1"
-        fi
-    done <<EOF
-$ps_out
-EOF
-
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        set -- $line
-        [ "$#" -ge 5 ] || continue
-        case "$3" in
-            Z*) continue ;;
-        esac
-        if [ "$5" = "smbd" ]; then
-            case " $smbd_pids " in
-                *" $2 "*) ;;
-                *) return 0 ;;
-            esac
-        fi
-    done <<EOF
-$ps_out
-EOF
-    return 1
-}}
-
-mdns_process_present() {{
-    ps_out=$1
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        set -- $line
-        [ "$#" -ge 5 ] || continue
-        case "$3" in
-            Z*) continue ;;
-        esac
-        if [ "$5" = "mdns-advertiser" ]; then
-            return 0
-        fi
-    done <<EOF
-$ps_out
-EOF
-    return 1
-}}
-
-apple_mdns_present() {{
-    ps_out=$1
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        set -- $line
-        [ "$#" -ge 5 ] || continue
-        if [ "$5" = "mDNSResponder" ]; then
-            case "$3" in
-                Z*) ;;
-                *) return 0 ;;
-            esac
-        fi
-    done <<EOF
-$ps_out
-EOF
-    return 1
-}}
-
-watchdog_process_present_for_volume() {{
-    ps_out=$1
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        set -- $line
-        [ "$#" -ge 5 ] || continue
-        case "$3" in
-            Z*) continue ;;
-        esac
-        case "$line" in
-            *"/mnt/Flash/watchdog.sh"*) return 0 ;;
-        esac
-    done <<EOF
-$ps_out
-EOF
-    return 1
-}}
-
-capture_fstat_for_ucomm() {{
-    ps_out=$1
-    ucomm=$2
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        set -- $line
-        [ "$#" -ge 5 ] || continue
-        [ "$5" = "$ucomm" ] || continue
-        case "$3" in
-            Z*) continue ;;
-        esac
-        # NetBSD4 has fstat but not netstat/sockstat/lsof. Scope fstat to
-        # candidate PIDs so activation checks do not scan every open file on a
-        # busy Time Capsule.
-        /usr/bin/fstat -p "$1" 2>/dev/null || true
-    done <<EOF
-$ps_out
-EOF
-}}
+{PROBE_PROCESS_HELPERS}
 
 smbd_bound_445() {{
     case "$1" in

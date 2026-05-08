@@ -4,6 +4,11 @@ import shlex
 from dataclasses import dataclass
 from typing import Iterable, Union
 
+from timecapsulesmb.device.processes import (
+    render_pkill_wait_pkill9_by_ucomm,
+    render_pkill_wait_pkill9_watchdog,
+)
+
 
 @dataclass(frozen=True)
 class RemoteSymlink:
@@ -31,13 +36,11 @@ class InstallPermissionsAction:
 @dataclass(frozen=True)
 class StopProcessAction:
     name: str
-    force: bool = False
 
 
 @dataclass(frozen=True)
-class StopProcessFullAction:
-    pattern: str
-    force: bool = False
+class StopWatchdogAction:
+    pass
 
 
 @dataclass(frozen=True)
@@ -54,46 +57,10 @@ RemoteAction = Union[
     PrepareDirsAction,
     InstallPermissionsAction,
     StopProcessAction,
-    StopProcessFullAction,
+    StopWatchdogAction,
     RemovePathAction,
     RunScriptAction,
 ]
-
-
-def _render_process_present(pattern: str, *, full: bool) -> str:
-    ps_command = "ps axww -o stat= -o ucomm= -o command= >/tmp/tcapsule-ps.$$ 2>/dev/null"
-    line_setup = (
-        "while IFS= read line; do "
-        '[ -n "$line" ] || continue; '
-        "set -- $line; "
-        '[ "$#" -ge 2 ] || continue; '
-        'case "$1" in Z*) continue ;; esac; '
-    )
-    if full:
-        ps_match = f"*{pattern}*"
-        return (
-            "found=1; "
-            f"if {ps_command}; then "
-            "found=0; "
-            f"{line_setup}"
-            f'case "$line" in {ps_match}) found=1; break ;; esac; '
-            "done </tmp/tcapsule-ps.$$; "
-            "rm -f /tmp/tcapsule-ps.$$; "
-            "fi; "
-            '[ \"$found\" -eq 1 ]'
-        )
-
-    return (
-        "found=1; "
-        f"if {ps_command}; then "
-        "found=0; "
-        f"{line_setup}"
-        f'if [ "$2" = {shlex.quote(pattern)} ]; then found=1; break; fi; '
-        "done </tmp/tcapsule-ps.$$; "
-        "rm -f /tmp/tcapsule-ps.$$; "
-        "fi; "
-        '[ \"$found\" -eq 1 ]'
-    )
 
 
 def prepare_dirs_action(
@@ -105,66 +72,6 @@ def prepare_dirs_action(
 
 def install_permissions_action(permissions: Iterable[RemotePermission]) -> RemoteAction:
     return InstallPermissionsAction(tuple(permissions))
-
-
-def stop_process_action(name: str, *, force: bool = False) -> RemoteAction:
-    return StopProcessAction(name, force)
-
-
-def stop_process_full_action(pattern: str, *, force: bool = False) -> RemoteAction:
-    return StopProcessFullAction(pattern, force)
-
-
-def remove_path_action(path: str) -> RemoteAction:
-    return RemovePathAction(path)
-
-
-def run_script_action(path: str) -> RemoteAction:
-    return RunScriptAction(path)
-
-
-def _render_wait_for_process_absent(pattern: str, *, full: bool, attempts: int) -> str:
-    return (
-        "attempt=0; "
-        f"while /bin/sh -c {shlex.quote(_render_process_present(pattern, full=full))} >/dev/null 2>&1; do "
-        f'if [ "$attempt" -ge {attempts} ]; then break; fi; '
-        "attempt=$((attempt + 1)); "
-        "sleep 1; "
-        "done"
-    )
-
-
-def _render_stop_process(
-    pattern: str,
-    *,
-    full: bool,
-    force: bool,
-) -> str:
-    pkill_flags = "-f " if full else ""
-    pkill_command = f"pkill {pkill_flags}{shlex.quote(pattern)} >/dev/null 2>&1 || true"
-    command = f"{pkill_command}; {_render_wait_for_process_absent(pattern, full=full, attempts=5)}"
-    if not force:
-        return command
-
-    kill_flags = "-9 -f " if full else "-9 "
-    kill_command = f"pkill {kill_flags}{shlex.quote(pattern)} >/dev/null 2>&1 || true"
-    process_present = f"/bin/sh -c {shlex.quote(_render_process_present(pattern, full=full))} >/dev/null 2>&1"
-    failure_message = shlex.quote(f"process {pattern} did not stop")
-    return (
-        f"{command}; "
-        f"if {process_present}; then "
-        f"{kill_command}; {_render_wait_for_process_absent(pattern, full=full, attempts=5)}; "
-        "fi; "
-        f"if {process_present}; then echo {failure_message} >&2; exit 1; fi"
-    )
-
-
-def _render_stop_process_action(action: StopProcessAction) -> str:
-    return _render_stop_process(action.name, full=False, force=action.force)
-
-
-def _render_stop_process_full_action(action: StopProcessFullAction) -> str:
-    return _render_stop_process(action.pattern, full=True, force=action.force)
 
 
 def _render_prepare_dirs_action(action: PrepareDirsAction) -> str:
@@ -198,15 +105,11 @@ def _render_remove_path_action(action: RemovePathAction) -> str:
     return f"rm -rf {shlex.quote(path)}"
 
 
-def _render_run_script_action(action: RunScriptAction) -> str:
-    return f"/bin/sh {shlex.quote(action.path)}"
-
-
 def render_remote_action(action: RemoteAction) -> str:
     if isinstance(action, StopProcessAction):
-        return _render_stop_process_action(action)
-    if isinstance(action, StopProcessFullAction):
-        return _render_stop_process_full_action(action)
+        return render_pkill_wait_pkill9_by_ucomm(action.name, attempts=5)
+    if isinstance(action, StopWatchdogAction):
+        return render_pkill_wait_pkill9_watchdog(attempts=5)
     if isinstance(action, PrepareDirsAction):
         return _render_prepare_dirs_action(action)
     if isinstance(action, InstallPermissionsAction):
@@ -214,7 +117,7 @@ def render_remote_action(action: RemoteAction) -> str:
     if isinstance(action, RemovePathAction):
         return _render_remove_path_action(action)
     if isinstance(action, RunScriptAction):
-        return _render_run_script_action(action)
+        return f"/bin/sh {shlex.quote(action.path)}"
     raise TypeError(f"Unsupported remote action: {action!r}")
 
 
@@ -222,21 +125,11 @@ def render_remote_actions(actions: list[RemoteAction]) -> list[str]:
     return [render_remote_action(action) for action in actions]
 
 
-def _action_json(kind: str, *args: str) -> dict[str, object]:
-    return {"kind": kind, "args": list(args)}
-
-
 def remote_action_to_jsonable(action: RemoteAction) -> dict[str, object]:
     if isinstance(action, StopProcessAction):
-        data = _action_json("stop_process", action.name)
-        if action.force:
-            data["force"] = True
-        return data
-    if isinstance(action, StopProcessFullAction):
-        data = _action_json("stop_process_full", action.pattern)
-        if action.force:
-            data["force"] = True
-        return data
+        return {"kind": "stop_process", "args": [action.name]}
+    if isinstance(action, StopWatchdogAction):
+        return {"kind": "stop_watchdog", "args": []}
     if isinstance(action, PrepareDirsAction):
         return {
             "kind": "prepare_dirs",
@@ -255,9 +148,9 @@ def remote_action_to_jsonable(action: RemoteAction) -> dict[str, object]:
             ],
         }
     if isinstance(action, RemovePathAction):
-        return _action_json("remove_path", action.path)
+        return {"kind": "remove_path", "args": [action.path]}
     if isinstance(action, RunScriptAction):
-        return _action_json("run_script", action.path)
+        return {"kind": "run_script", "args": [action.path]}
     raise TypeError(f"Unsupported remote action: {action!r}")
 
 

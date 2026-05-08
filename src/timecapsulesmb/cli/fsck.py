@@ -10,6 +10,7 @@ from timecapsulesmb.cli.flows import observe_reboot_cycle
 from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
 from timecapsulesmb.core.config import airport_exact_display_name_from_config
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
+from timecapsulesmb.device.processes import render_direct_pkill9_by_ucomm, render_direct_pkill9_watchdog
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.device.storage import MaStVolume, mounted_mast_volumes_conn, read_mast_volumes_conn
 from timecapsulesmb.telemetry import TelemetryClient
@@ -71,11 +72,11 @@ def select_fsck_target(targets: tuple[FsckTarget, ...], selector: str | None) ->
 
 def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> str:
     lines = [
-        "/usr/bin/pkill -9 -f '[w]atchdog.sh' >/dev/null 2>&1 || true",
-        "/usr/bin/pkill -9 smbd >/dev/null 2>&1 || true",
-        "/usr/bin/pkill -9 afpserver >/dev/null 2>&1 || true",
-        "/usr/bin/pkill -9 wcifsnd >/dev/null 2>&1 || true",
-        "/usr/bin/pkill -9 wcifsfs >/dev/null 2>&1 || true",
+        render_direct_pkill9_watchdog(),
+        render_direct_pkill9_by_ucomm("smbd"),
+        render_direct_pkill9_by_ucomm("afpserver"),
+        render_direct_pkill9_by_ucomm("wcifsnd"),
+        render_direct_pkill9_by_ucomm("wcifsfs"),
         "sleep 2",
         f"/sbin/umount -f {shlex.quote(mountpoint)} >/dev/null 2>&1 || true",
         f"echo '--- fsck_hfs {device} ---'",

@@ -27,15 +27,11 @@ from timecapsulesmb.deploy.commands import (
     RemovePathAction,
     RunScriptAction,
     StopProcessAction,
-    StopProcessFullAction,
+    StopWatchdogAction,
     install_permissions_action,
     prepare_dirs_action,
     remote_action_to_jsonable,
-    remove_path_action,
     render_remote_action,
-    run_script_action,
-    stop_process_action,
-    stop_process_full_action,
 )
 from timecapsulesmb.deploy.dry_run import format_deployment_plan
 from timecapsulesmb.deploy.executor import (
@@ -75,8 +71,8 @@ from timecapsulesmb.deploy.verify import (
     verify_managed_runtime,
     verify_post_uninstall,
 )
-from timecapsulesmb.deploy import commands as deploy_commands
 from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.device.processes import render_process_present
 from timecapsulesmb.device.probe import (
     ManagedMdnsTakeoverProbeResult,
     ManagedRuntimeProbeResult,
@@ -265,7 +261,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("get_airport_syvs()", content)
         self.assertIn("sed -n 's/^\\([0-9]\\)\\([0-9]\\)\\([0-9]\\).*/\\1.\\2.\\3/p'", content)
 
-    def test_common_runtime_process_present_ignores_zombies(self) -> None:
+    def test_common_process_helpers_ignore_zombies(self) -> None:
         common = load_boot_asset_text("common.sh").replace(
             "/bin/ps axww -o stat= -o ucomm= -o command= 2>/dev/null",
             'cat "$PS_FIXTURE"',
@@ -280,6 +276,7 @@ class DeployModuleTests(unittest.TestCase):
                         "Z    wcifsfs         (wcifsfs)",
                         "S    nbns-advertiser /mnt/Memory/samba4/sbin/nbns-advertiser --name TimeCapsule",
                         "S    sh              /bin/sh /mnt/Flash/watchdog.sh",
+                        "S    sh              /bin/sh -c probe=/mnt/Flash/watchdog.sh",
                     ]
                 )
                 + "\n"
@@ -288,10 +285,11 @@ class DeployModuleTests(unittest.TestCase):
                 common
                 + f"\nPS_FIXTURE={shlex.quote(str(fixture))}\n"
                 + """
-runtime_process_present wcifsnd false; echo "zombie-name=$?"
-runtime_process_present nbns-advertiser false; echo "live-name=$?"
-runtime_process_present /mnt/Flash/watchdog.sh true; echo "live-full=$?"
-runtime_process_present wcifsfs true; echo "zombie-full=$?"
+runtime_process_present_by_ucomm wcifsnd; echo "zombie-name=$?"
+runtime_process_present_by_ucomm nbns-advertiser; echo "live-name=$?"
+runtime_watchdog_present; echo "live-full=$?"
+runtime_watchdog_present < /dev/null; echo "live-full-repeat=$?"
+runtime_process_present_by_ucomm wcifsfs; echo "zombie-full=$?"
 wait_for_process nbns-advertiser 1; echo "live-wait=$?"
 wait_for_process wcifsnd 1; echo "zombie-wait=$?"
 """
@@ -303,9 +301,40 @@ wait_for_process wcifsnd 1; echo "zombie-wait=$?"
         self.assertIn("zombie-name=1", result.stdout)
         self.assertIn("live-name=0", result.stdout)
         self.assertIn("live-full=0", result.stdout)
+        self.assertIn("live-full-repeat=0", result.stdout)
         self.assertIn("zombie-full=1", result.stdout)
         self.assertIn("live-wait=0", result.stdout)
         self.assertIn("zombie-wait=1", result.stdout)
+
+    def test_common_watchdog_process_helper_does_not_self_match_literal(self) -> None:
+        common = load_boot_asset_text("common.sh").replace(
+            "/bin/ps axww -o stat= -o ucomm= -o command= 2>/dev/null",
+            'cat "$PS_FIXTURE"',
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "ps.txt"
+            script = Path(tmp) / "check.sh"
+            fixture.write_text(
+                "\n".join(
+                    [
+                        "S    sh              /bin/sh -c probe=/mnt/Flash/watchdog.sh",
+                        "S    sh              sh -c /bin/sh -c 'probe=/mnt/Flash/watchdog.sh'",
+                    ]
+                )
+                + "\n"
+            )
+            script.write_text(
+                common
+                + f"\nPS_FIXTURE={shlex.quote(str(fixture))}\n"
+                + """
+runtime_watchdog_present; echo "watchdog=$?"
+"""
+            )
+
+            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("watchdog=1", result.stdout)
 
     def test_extract_airport_identity_from_text_finds_time_capsule_model(self) -> None:
         result = extract_airport_identity_from_text("prefix\x00psyAM\x00pTimeCapsule6,113\x00suffix")
@@ -1713,6 +1742,27 @@ capture_fstat_for_ucomm "$mixed_smbd" smbd
         self.assertNotIn("fstat:100", result.stdout)
         self.assertIn("fstat:101", result.stdout)
 
+    def test_probe_status_helpers_do_not_count_probe_shell_body_as_watchdog(self) -> None:
+        script = (
+            SMBD_STATUS_HELPERS
+            + r'''
+real_watchdog="202 1 S 0:00.00 sh /bin/sh /mnt/Flash/watchdog.sh"
+self_match_watchdog=$(cat <<'EOF'
+3308 11745 S 0:00.01 sh /bin/sh -c probe=/mnt/Flash/watchdog.sh
+11745 11677 Ss 0:00.01 sh sh -c /bin/sh -c 'probe=/mnt/Flash/watchdog.sh'
+EOF
+)
+watchdog_process_present_for_volume "$real_watchdog"; echo "real=$?"
+watchdog_process_present_for_volume "$self_match_watchdog"; echo "self=$?"
+'''
+        )
+
+        result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("real=0", result.stdout)
+        self.assertIn("self=1", result.stdout)
+
     def test_smbd_status_helpers_pass_only_with_live_ram_auth_mount_and_watchdog(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
@@ -1969,8 +2019,8 @@ fi
         text = format_deployment_plan(plan)
         self.assertIn("volume root: /Volumes/dk2", text)
         self.assertIn(f"Apple mount wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s", text)
-        self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill mdns-advertiser >/dev/null 2>&1 || true", text)
+        self.assertIn("/usr/bin/pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
+        self.assertIn("/usr/bin/pkill '^mdns-advertiser$' >/dev/null 2>&1 || true", text)
         self.assertIn(f"mkdir -p {payload_dir} {payload_dir}/private {payload_dir}/cache /mnt/Flash", text)
         self.assertIn(f"rm -rf {payload_dir}/smb.conf.template", text)
         self.assertIn(f"rm -rf {payload_dir}/private/adisk.uuid", text)
@@ -1997,22 +2047,22 @@ fi
         self.assertEqual(
             plan.activation_actions,
             [
-                stop_process_full_action("[w]atchdog.sh", force=True),
-                stop_process_action("smbd", force=True),
-                stop_process_action("mdns-advertiser", force=True),
-                stop_process_action("nbns-advertiser", force=True),
-                stop_process_action("wcifsfs", force=True),
-                run_script_action("/mnt/Flash/rc.local"),
+                StopWatchdogAction(),
+                StopProcessAction("smbd"),
+                StopProcessAction("mdns-advertiser"),
+                StopProcessAction("nbns-advertiser"),
+                StopProcessAction("wcifsfs"),
+                RunScriptAction("/mnt/Flash/rc.local"),
             ],
         )
 
         text = format_deployment_plan(plan)
         self.assertIn("Remote actions (NetBSD4 activation):", text)
-        self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill smbd >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill mdns-advertiser >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill nbns-advertiser >/dev/null 2>&1 || true", text)
-        self.assertIn("pkill wcifsfs >/dev/null 2>&1 || true", text)
+        self.assertIn("/usr/bin/pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true", text)
+        self.assertIn("/usr/bin/pkill '^smbd$' >/dev/null 2>&1 || true", text)
+        self.assertIn("/usr/bin/pkill '^mdns-advertiser$' >/dev/null 2>&1 || true", text)
+        self.assertIn("/usr/bin/pkill '^nbns-advertiser$' >/dev/null 2>&1 || true", text)
+        self.assertIn("/usr/bin/pkill '^wcifsfs$' >/dev/null 2>&1 || true", text)
         self.assertIn("/bin/sh /mnt/Flash/rc.local", text)
         self.assertIn("Deploy will activate Samba immediately without rebooting.", text)
         self.assertIn("NetBSD 4 devices cannot auto-run Samba after a reboot.", text)
@@ -2040,12 +2090,12 @@ fi
     def test_build_uninstall_plan_stops_nbns_process(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
         rendered = [render_remote_action(action) for action in plan.remote_actions]
-        self.assertTrue(any(command.startswith("pkill nbns-advertiser >/dev/null 2>&1 || true;") for command in rendered))
+        self.assertTrue(any(command.startswith("/usr/bin/pkill '^nbns-advertiser$' >/dev/null 2>&1 || true;") for command in rendered))
 
     def test_build_uninstall_plan_stops_watchdog_first(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
         rendered = [render_remote_action(action) for action in plan.remote_actions]
-        self.assertTrue(rendered[0].startswith("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true;"))
+        self.assertTrue(rendered[0].startswith("/usr/bin/pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true;"))
 
     def test_build_uninstall_plan_removes_mdns_snapshots(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
@@ -2056,9 +2106,9 @@ fi
         self.assertIn("/mnt/Flash/allmdns.txt", plan.verify_absent_targets)
         self.assertIn("/mnt/Flash/applemdns.txt", plan.verify_absent_targets)
         self.assertIn("/mnt/Flash/tcapsulesmb.conf", plan.verify_absent_targets)
-        self.assertIn(remove_path_action("/mnt/Flash/allmdns.txt"), plan.remote_actions)
-        self.assertIn(remove_path_action("/mnt/Flash/applemdns.txt"), plan.remote_actions)
-        self.assertIn(remove_path_action("/mnt/Flash/tcapsulesmb.conf"), plan.remote_actions)
+        self.assertIn(RemovePathAction("/mnt/Flash/allmdns.txt"), plan.remote_actions)
+        self.assertIn(RemovePathAction("/mnt/Flash/applemdns.txt"), plan.remote_actions)
+        self.assertIn(RemovePathAction("/mnt/Flash/tcapsulesmb.conf"), plan.remote_actions)
 
     def test_build_uninstall_plan_removes_each_payload_home_once(self) -> None:
         plan = build_uninstall_plan(
@@ -2070,10 +2120,10 @@ fi
         self.assertEqual(plan.volume_roots, ["/Volumes/dk2", "/Volumes/dk5"])
         self.assertEqual(plan.payload_dirs, ["/Volumes/dk2/samba4", "/Volumes/dk5/samba4"])
         self.assertEqual(
-            [action for action in plan.remote_actions if action == remove_path_action("/Volumes/dk2/samba4")],
-            [remove_path_action("/Volumes/dk2/samba4")],
+            [action for action in plan.remote_actions if action == RemovePathAction("/Volumes/dk2/samba4")],
+            [RemovePathAction("/Volumes/dk2/samba4")],
         )
-        self.assertIn(remove_path_action("/Volumes/dk5/samba4"), plan.remote_actions)
+        self.assertIn(RemovePathAction("/Volumes/dk5/samba4"), plan.remote_actions)
 
     def test_render_remove_path_refuses_flash_root(self) -> None:
         unsafe_paths = [
@@ -2086,10 +2136,10 @@ fi
         for unsafe_path in unsafe_paths:
             with self.subTest(path=unsafe_path):
                 with self.assertRaisesRegex(ValueError, "Refusing to remove flash root path"):
-                    render_remote_action(remove_path_action(unsafe_path))
+                    render_remote_action(RemovePathAction(unsafe_path))
 
         self.assertEqual(
-            render_remote_action(remove_path_action("/mnt/Flash/rc.local")),
+            render_remote_action(RemovePathAction("/mnt/Flash/rc.local")),
             "rm -rf /mnt/Flash/rc.local",
         )
 
@@ -2122,13 +2172,13 @@ fi
         self.assertNotIn("if [ -e ", permissions_cmd)
         self.assertNotIn("|| chmod 600", permissions_cmd)
         self.assertNotIn("|| true", permissions_cmd)
-        self.assertEqual(render_remote_action(run_script_action("/mnt/Flash/rc.local")), "/bin/sh /mnt/Flash/rc.local")
+        self.assertEqual(render_remote_action(RunScriptAction("/mnt/Flash/rc.local")), "/bin/sh /mnt/Flash/rc.local")
         self.assertEqual(
-            render_remote_action(run_script_action("/mnt/Flash/Time Capsule SMB/rc.local")),
+            render_remote_action(RunScriptAction("/mnt/Flash/Time Capsule SMB/rc.local")),
             "/bin/sh '/mnt/Flash/Time Capsule SMB/rc.local'",
         )
 
-    def test_remote_action_factories_return_typed_actions(self) -> None:
+    def test_collection_action_factories_normalize_to_tuples(self) -> None:
         self.assertEqual(
             prepare_dirs_action(["/payload"], [RemoteSymlink("/root/tc-netbsd7", "/mnt/Memory/samba4")]),
             PrepareDirsAction(("/payload",), (RemoteSymlink("/root/tc-netbsd7", "/mnt/Memory/samba4"),)),
@@ -2137,19 +2187,15 @@ fi
             install_permissions_action([RemotePermission("/payload/private", "700")]),
             InstallPermissionsAction((RemotePermission("/payload/private", "700"),)),
         )
-        self.assertEqual(stop_process_action("smbd"), StopProcessAction("smbd"))
-        self.assertEqual(stop_process_full_action("[w]atchdog.sh"), StopProcessFullAction("[w]atchdog.sh"))
-        self.assertEqual(remove_path_action("/payload"), RemovePathAction("/payload"))
-        self.assertEqual(run_script_action("/mnt/Flash/rc.local"), RunScriptAction("/mnt/Flash/rc.local"))
 
     def test_remote_action_json_preserves_dry_run_shape(self) -> None:
         self.assertEqual(
-            remote_action_to_jsonable(stop_process_action("smbd")),
+            remote_action_to_jsonable(StopProcessAction("smbd")),
             {"kind": "stop_process", "args": ["smbd"]},
         )
         self.assertEqual(
-            remote_action_to_jsonable(stop_process_action("smbd", force=True)),
-            {"kind": "stop_process", "args": ["smbd"], "force": True},
+            remote_action_to_jsonable(StopWatchdogAction()),
+            {"kind": "stop_watchdog", "args": []},
         )
 
     def test_render_remote_action_rejects_unknown_action_object(self) -> None:
@@ -2171,7 +2217,7 @@ fi
 
     def test_render_process_present_ignores_zombies_for_name_and_full_matches(self) -> None:
         def process_present(pattern: str, *, full: bool, ps_lines: list[str]) -> bool:
-            command = deploy_commands._render_process_present(pattern, full=full)
+            command = render_process_present(pattern, full=full)
             with tempfile.TemporaryDirectory() as tmp:
                 fixture = Path(tmp) / "ps.txt"
                 fixture.write_text("\n".join(ps_lines) + "\n")
@@ -2187,36 +2233,52 @@ fi
         self.assertTrue(process_present("wcifsnd", full=False, ps_lines=["S    wcifsnd         wcifsnd"]))
         self.assertFalse(process_present("/mnt/Flash/watchdog.sh", full=True, ps_lines=["Z    sh              /bin/sh /mnt/Flash/watchdog.sh"]))
         self.assertTrue(process_present("/mnt/Flash/watchdog.sh", full=True, ps_lines=["S    sh              /bin/sh /mnt/Flash/watchdog.sh"]))
+        self.assertFalse(
+            process_present(
+                "/mnt/Flash/watchdog.sh",
+                full=True,
+                ps_lines=[
+                    "S    sh              /bin/sh -c probe=/mnt/Flash/watchdog.sh",
+                    "S    sh              sh -c /bin/sh -c 'probe=/mnt/Flash/watchdog.sh'",
+                ],
+            )
+        )
+
+    def test_render_process_present_rejects_generic_full_substring_matches(self) -> None:
+        with self.assertRaises(ValueError):
+            render_process_present("smbd", full=True)
+        with self.assertRaises(ValueError):
+            render_remote_action(StopProcessAction("smbd;rm"))
 
     def test_render_stop_process_action_waits_for_exit(self) -> None:
-        command = render_remote_action(stop_process_action("mdns-advertiser"))
-        self.assertIn("pkill mdns-advertiser >/dev/null 2>&1 || true;", command)
+        command = render_remote_action(StopProcessAction("mdns-advertiser"))
+        self.assertIn("/usr/bin/pkill '^mdns-advertiser$' >/dev/null 2>&1 || true;", command)
         self.assertIn("while /bin/sh -c 'found=1; if ps axww -o stat= -o ucomm= -o command= >/tmp/tcapsule-ps.", command)
         self.assertIn('case \"$1\" in Z*) continue ;; esac;', command)
         self.assertIn('if [ \"$2\" = mdns-advertiser ]; then found=1; break; fi;', command)
         self.assertIn('if [ "$attempt" -ge 5 ]; then break; fi;', command)
-        self.assertNotIn("pkill -9", command)
+        self.assertIn("/usr/bin/pkill -9 '^mdns-advertiser$' >/dev/null 2>&1 || true;", command)
 
-    def test_render_force_stop_process_action_kills_and_fails_if_still_running(self) -> None:
-        command = render_remote_action(stop_process_action("smbd", force=True))
-        self.assertIn("pkill smbd >/dev/null 2>&1 || true;", command)
+    def test_render_stop_process_action_kills_and_fails_if_still_running(self) -> None:
+        command = render_remote_action(StopProcessAction("smbd"))
+        self.assertIn("/usr/bin/pkill '^smbd$' >/dev/null 2>&1 || true;", command)
         self.assertIn('if [ "$attempt" -ge 5 ]; then break; fi;', command)
-        self.assertIn("pkill -9 smbd >/dev/null 2>&1 || true;", command)
+        self.assertIn("/usr/bin/pkill -9 '^smbd$' >/dev/null 2>&1 || true;", command)
         self.assertIn("echo 'process smbd did not stop' >&2; exit 1", command)
 
-    def test_render_stop_process_full_action_waits_for_exit(self) -> None:
-        command = render_remote_action(stop_process_full_action("[w]atchdog.sh"))
-        self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true;", command)
+    def test_render_stop_watchdog_action_waits_for_exit(self) -> None:
+        command = render_remote_action(StopWatchdogAction())
+        self.assertIn("/usr/bin/pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true;", command)
         self.assertIn("while /bin/sh -c 'found=1; if ps axww -o stat= -o ucomm= -o command= >/tmp/tcapsule-ps.", command)
         self.assertIn('case \"$1\" in Z*) continue ;; esac;', command)
-        self.assertIn('case "$line" in *[w]atchdog.sh*) found=1; break ;; esac;', command)
-        self.assertNotIn("pkill -9 -f", command)
+        self.assertIn('[ "$2" = sh ] || continue;', command)
+        self.assertIn('/usr/bin/pkill -9 -f', command)
 
-    def test_render_force_stop_process_full_action_kills_by_full_match(self) -> None:
-        command = render_remote_action(stop_process_full_action("[w]atchdog.sh", force=True))
-        self.assertIn("pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true;", command)
-        self.assertIn("pkill -9 -f '[w]atchdog.sh' >/dev/null 2>&1 || true;", command)
-        self.assertIn("echo 'process [w]atchdog.sh did not stop' >&2; exit 1", command)
+    def test_render_stop_watchdog_action_kills_by_full_match(self) -> None:
+        command = render_remote_action(StopWatchdogAction())
+        self.assertIn("/usr/bin/pkill -f '[w]atchdog.sh' >/dev/null 2>&1 || true;", command)
+        self.assertIn("/usr/bin/pkill -9 -f '[w]atchdog.sh' >/dev/null 2>&1 || true;", command)
+        self.assertIn("echo 'process watchdog did not stop' >&2; exit 1", command)
 
     def test_wait_for_ssh_state_uses_real_ssh_probe_for_expected_up(self) -> None:
         proc = mock.Mock(returncode=0, stdout="ok\n")

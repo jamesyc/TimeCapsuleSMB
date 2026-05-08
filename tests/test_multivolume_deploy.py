@@ -771,7 +771,7 @@ class MultiVolumeDeployTests(unittest.TestCase):
                     tc_payload_available() {{ echo payload; return 0; }}
                     tc_wake_or_mount_volume() {{ echo "mount $1 $2"; return 0; }}
                     tc_start_smbd_if_needed() {{ echo smbd; }}
-                    runtime_process_present() {{ return 0; }}
+                    runtime_process_present_by_ucomm() {{ return 0; }}
                     tc_watchdog_iteration
                     """
                 )
