@@ -27,6 +27,8 @@ class RecordingCommandContext:
         self.result = "failure"
         self.error: str | None = None
         self.finished = False
+        self.fields: dict[str, object] = {}
+        self.stages: list[str] = []
         RecordingCommandContext.instances.append(self)
 
     def __enter__(self) -> "RecordingCommandContext":
@@ -46,6 +48,12 @@ class RecordingCommandContext:
     def fail_with_error(self, message: str) -> None:
         self.result = "failure"
         self.error = message
+
+    def update_fields(self, **fields: object) -> None:
+        self.fields.update(fields)
+
+    def set_stage(self, stage: str) -> None:
+        self.stages.append(stage)
 
 
 UNSET = object()
@@ -115,6 +123,9 @@ class RepairXattrsTests(unittest.TestCase):
         self.telemetry_patch = mock.patch("timecapsulesmb.cli.repair_xattrs.TelemetryClient.from_config", return_value=mock.Mock())
         self.telemetry_patch.start()
         self.addCleanup(self.telemetry_patch.stop)
+        self.ensure_install_id_patch = mock.patch("timecapsulesmb.cli.repair_xattrs.ensure_install_id")
+        self.ensure_install_id_patch.start()
+        self.addCleanup(self.ensure_install_id_patch.stop)
         self.path_guard_patch = mock.patch(
             "timecapsulesmb.cli.repair_xattrs.validate_repair_root_under_volumes",
             side_effect=lambda path: path.expanduser(),
@@ -1000,7 +1011,7 @@ class RepairXattrsTests(unittest.TestCase):
     def test_missing_default_path_is_rejected(self) -> None:
         with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
             with mock.patch(
-                "timecapsulesmb.cli.repair_xattrs.load_env_config",
+                "timecapsulesmb.cli.repair_xattrs.load_optional_env_config",
                 return_value=self.app_config({"TC_HOST": "root@192.168.1.217"}),
             ):
                 with mock.patch("timecapsulesmb.cli.repair_xattrs.mounted_smb_shares", return_value=[]):

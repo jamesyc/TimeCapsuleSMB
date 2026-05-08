@@ -34,6 +34,7 @@ from timecapsulesmb.cli import (
     uninstall,
     validate_install,
 )
+from timecapsulesmb.cli import runtime as cli_runtime
 from timecapsulesmb.cli.main import main
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.core.config import (
@@ -233,10 +234,15 @@ class CliTests(unittest.TestCase):
             "timecapsulesmb.cli.configure.TelemetryClient.from_config",
             "timecapsulesmb.cli.deploy.TelemetryClient.from_config",
             "timecapsulesmb.cli.activate.TelemetryClient.from_config",
+            "timecapsulesmb.cli.bootstrap.TelemetryClient.from_config",
+            "timecapsulesmb.cli.discover.TelemetryClient.from_config",
             "timecapsulesmb.cli.doctor.TelemetryClient.from_config",
             "timecapsulesmb.cli.fsck.TelemetryClient.from_config",
+            "timecapsulesmb.cli.paths.TelemetryClient.from_config",
+            "timecapsulesmb.cli.repair_xattrs.TelemetryClient.from_config",
             "timecapsulesmb.cli.set_ssh.TelemetryClient.from_config",
             "timecapsulesmb.cli.uninstall.TelemetryClient.from_config",
+            "timecapsulesmb.cli.validate_install.TelemetryClient.from_config",
         ):
             self._exit_stack.enter_context(mock.patch(target, return_value=self._telemetry_client))
         self._exit_stack.enter_context(
@@ -821,16 +827,23 @@ class CliTests(unittest.TestCase):
                 }
             ],
         }
-        with mock.patch("timecapsulesmb.cli.paths.resolve_app_paths", return_value=app_paths):
-            with mock.patch("timecapsulesmb.cli.paths.paths_to_jsonable", return_value=data):
-                with redirect_stdout(output):
-                    rc = paths.main(["--json"])
+        with mock.patch("timecapsulesmb.cli.paths.ensure_install_id"):
+            with mock.patch("timecapsulesmb.cli.paths.resolve_app_paths", return_value=app_paths):
+                with mock.patch("timecapsulesmb.cli.paths.paths_to_jsonable", return_value=data):
+                    with redirect_stdout(output):
+                        rc = paths.main(["--json"])
 
         self.assertEqual(rc, 0)
         rendered = json.loads(output.getvalue())
         self.assertEqual(rendered["distribution_root"], str(REPO_ROOT))
         self.assertEqual(rendered["config_path"], str(REPO_ROOT / ".env"))
         self.assertEqual(rendered["artifacts"][0]["name"], "smbd")
+        started = self.telemetry_payload("paths_started")
+        finished = self.telemetry_payload("paths_finished")
+        self.assertTrue(started["json_output"])
+        self.assertEqual(finished["result"], "success")
+        self.assertEqual(finished["artifact_count"], 1)
+        self.assertEqual(finished["missing_artifact_count"], 0)
 
     def test_validate_install_json_command_returns_failure_when_check_fails(self) -> None:
         app_paths = AppPaths(
@@ -844,24 +857,31 @@ class CliTests(unittest.TestCase):
             InstallCheckResult("artifact_hashes", False, "artifact validation failed", {"failures": ["missing bin/smbd"]}),
         ]
         output = io.StringIO()
-        with mock.patch("timecapsulesmb.cli.validate_install.resolve_app_paths", return_value=app_paths):
-            with mock.patch("timecapsulesmb.cli.validate_install.validate_install", return_value=checks):
-                with redirect_stdout(output):
-                    rc = validate_install.main(["--json"])
+        with mock.patch("timecapsulesmb.cli.validate_install.ensure_install_id"):
+            with mock.patch("timecapsulesmb.cli.validate_install.resolve_app_paths", return_value=app_paths):
+                with mock.patch("timecapsulesmb.cli.validate_install.validate_install", return_value=checks):
+                    with redirect_stdout(output):
+                        rc = validate_install.main(["--json"])
 
         self.assertEqual(rc, 1)
         rendered = json.loads(output.getvalue())
         self.assertFalse(rendered["ok"])
         self.assertEqual(rendered["checks"][1]["id"], "artifact_hashes")
         self.assertEqual(rendered["checks"][1]["details"]["failures"], ["missing bin/smbd"])
+        finished = self.telemetry_payload("validate_install_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["install_ok"], False)
+        self.assertEqual(finished["failed_check_ids"], ["artifact_hashes"])
+        self.assertIn("install validation failed", finished["error"])
 
     def test_validate_install_text_command_prints_summary(self) -> None:
         checks = [InstallCheckResult("boot_script_tokens", True, "managed boot scripts have no unresolved tokens")]
         output = io.StringIO()
-        with mock.patch("timecapsulesmb.cli.validate_install.resolve_app_paths"):
-            with mock.patch("timecapsulesmb.cli.validate_install.validate_install", return_value=checks):
-                with redirect_stdout(output):
-                    rc = validate_install.main([])
+        with mock.patch("timecapsulesmb.cli.validate_install.ensure_install_id"):
+            with mock.patch("timecapsulesmb.cli.validate_install.resolve_app_paths"):
+                with mock.patch("timecapsulesmb.cli.validate_install.validate_install", return_value=checks):
+                    with redirect_stdout(output):
+                        rc = validate_install.main([])
 
         self.assertEqual(rc, 0)
         self.assertIn("PASS managed boot scripts have no unresolved tokens", output.getvalue())
@@ -869,20 +889,20 @@ class CliTests(unittest.TestCase):
 
     def test_config_arg_is_passed_to_shared_config_loaders(self) -> None:
         commands = [
-            ("activate", activate, None),
-            ("doctor", doctor, None),
-            ("uninstall", uninstall, None),
-            ("fsck", fsck, None),
-            ("set_ssh", set_ssh, {"defaults": {}}),
-            ("repair_xattrs", repair_xattrs, None),
+            ("activate", activate, "load_env_config", None),
+            ("doctor", doctor, "load_env_config", None),
+            ("uninstall", uninstall, "load_env_config", None),
+            ("fsck", fsck, "load_env_config", None),
+            ("set_ssh", set_ssh, "load_env_config", {"defaults": {}}),
+            ("repair_xattrs", repair_xattrs, "load_optional_env_config", None),
         ]
         sentinel = RuntimeError("stop after config load")
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / "shared.env"
-            for _name, command_module, extra_kwargs in commands:
+            for _name, command_module, loader_name, extra_kwargs in commands:
                 with self.subTest(command=command_module.__name__):
                     patches = [
-                        mock.patch(f"{command_module.__name__}.load_env_config", side_effect=sentinel),
+                        mock.patch(f"{command_module.__name__}.{loader_name}", side_effect=sentinel),
                     ]
                     if hasattr(command_module, "ensure_install_id"):
                         patches.append(mock.patch(f"{command_module.__name__}.ensure_install_id"))
@@ -899,6 +919,55 @@ class CliTests(unittest.TestCase):
                     if extra_kwargs is not None:
                         expected_kwargs.update(extra_kwargs)
                     load_mock.assert_called_once_with(**expected_kwargs)
+
+    def test_optional_env_config_uses_missing_config_when_env_is_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            app_paths = AppPaths(
+                distribution_root=Path(tmp),
+                config_path=env_path,
+                state_dir=Path(tmp),
+                package_root=SRC_ROOT / "timecapsulesmb",
+            )
+            with mock.patch("timecapsulesmb.cli.runtime.resolve_app_paths", return_value=app_paths):
+                config = cli_runtime.load_optional_env_config()
+
+        self.assertFalse(config.exists)
+        self.assertEqual(config.path, env_path)
+        self.assertEqual(config.values, {})
+
+    def test_optional_env_config_reads_env_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("TC_HOST='root@10.0.0.2'\nTC_CONFIGURE_ID='cfg-1'\n")
+            app_paths = AppPaths(
+                distribution_root=Path(tmp),
+                config_path=env_path,
+                state_dir=Path(tmp),
+                package_root=SRC_ROOT / "timecapsulesmb",
+            )
+            with mock.patch("timecapsulesmb.cli.runtime.resolve_app_paths", return_value=app_paths):
+                config = cli_runtime.load_optional_env_config()
+
+        self.assertTrue(config.exists)
+        self.assertEqual(config.path, env_path)
+        self.assertEqual(config.get("TC_HOST"), "root@10.0.0.2")
+        self.assertEqual(config.get("TC_CONFIGURE_ID"), "cfg-1")
+
+    def test_repair_xattrs_non_macos_emits_platform_check_telemetry(self) -> None:
+        with mock.patch("timecapsulesmb.cli.repair_xattrs.ensure_install_id"):
+            with mock.patch(
+                "timecapsulesmb.cli.repair_xattrs.load_optional_env_config",
+                return_value=self.make_app_config({}, exists=False),
+            ):
+                with mock.patch("sys.platform", "linux"):
+                    with self.assertRaises(SystemExit):
+                        repair_xattrs.main(["--path", "/Volumes/Home"])
+
+        finished = self.telemetry_payload("repair_xattrs_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["host_platform"], "linux")
+        self.assertIn("stage=platform_check", finished["error"])
 
     def test_bootstrap_prints_full_next_steps(self) -> None:
         output = io.StringIO()
@@ -919,6 +988,11 @@ class CliTests(unittest.TestCase):
         self.assertIn("doctor", text)
         self.assertIn("activate", text)
         self.assertNotIn("set-ssh", text)
+        started = self.telemetry_payload("bootstrap_started")
+        finished = self.telemetry_payload("bootstrap_finished")
+        self.assertEqual(started["python_executable"], sys.executable)
+        self.assertEqual(finished["result"], "success")
+        self.assertEqual(finished["host_platform_label"], "macOS")
 
     def test_bootstrap_prints_same_core_next_steps_on_linux(self) -> None:
         output = io.StringIO()
@@ -952,10 +1026,15 @@ class CliTests(unittest.TestCase):
     def test_bootstrap_returns_error_when_requirements_missing(self) -> None:
         stderr = io.StringIO()
         with mock.patch("pathlib.Path.exists", return_value=False):
-            with redirect_stderr(stderr):
-                rc = bootstrap.main([])
+            with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
+                with redirect_stderr(stderr):
+                    rc = bootstrap.main([])
         self.assertEqual(rc, 1)
         self.assertIn("Missing", stderr.getvalue())
+        finished = self.telemetry_payload("bootstrap_finished")
+        self.assertEqual(finished["result"], "failure")
+        self.assertEqual(finished["requirements_present"], False)
+        self.assertIn("stage=validate_requirements", finished["error"])
 
     def test_bootstrap_installs_smbclient_via_homebrew_on_macos(self) -> None:
         output = io.StringIO()
@@ -5303,13 +5382,20 @@ class CliTests(unittest.TestCase):
             ],
             resolved=[record],
         )
-        with mock.patch("timecapsulesmb.cli.discover.discover_snapshot", return_value=snapshot):
-            with redirect_stdout(output):
-                rc = discover.main(["--json"])
+        with mock.patch("timecapsulesmb.cli.discover.ensure_install_id"):
+            with mock.patch("timecapsulesmb.cli.discover.discover_snapshot", return_value=snapshot):
+                with redirect_stdout(output):
+                    rc = discover.main(["--json"])
         self.assertEqual(rc, 0)
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["instances"][0]["name"], "Time Capsule")
         self.assertEqual(payload["resolved"][0]["name"], "Time Capsule")
+        started = self.telemetry_payload("discover_started")
+        finished = self.telemetry_payload("discover_finished")
+        self.assertTrue(started["json_output"])
+        self.assertEqual(finished["result"], "success")
+        self.assertEqual(finished["bonjour_instance_count"], 1)
+        self.assertEqual(finished["bonjour_resolved_count"], 1)
 
 
 

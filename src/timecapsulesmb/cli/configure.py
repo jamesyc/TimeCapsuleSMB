@@ -293,11 +293,19 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     ensure_install_id()
     env_path = resolve_app_paths(config_path=args.config).config_path
+    env_exists = env_path.exists()
     existing = parse_env_file(env_path)
     configure_id = str(uuid.uuid4())
     telemetry_values = dict(existing)
     telemetry_values["TC_CONFIGURE_ID"] = configure_id
-    telemetry = TelemetryClient.from_config(AppConfig.from_values(telemetry_values, path=env_path))
+    telemetry = TelemetryClient.from_config(
+        AppConfig.from_values(
+            telemetry_values,
+            path=env_path,
+            exists=env_exists,
+            file_values=existing if env_exists else {},
+        )
+    )
     values: dict[str, str] = {}
     discovered_airport_syap: Optional[str] = None
     probed_device: DeviceCompatibility | None = None

@@ -77,7 +77,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     config = load_env_config(env_path=args.config)
     telemetry = TelemetryClient.from_config(config)
     with CommandContext(telemetry, "doctor", "doctor_started", "doctor_finished", config=config, args=args) as command_context:
+        command_context.update_fields(
+            skip_ssh=args.skip_ssh,
+            skip_bonjour=args.skip_bonjour,
+            skip_smb=args.skip_smb,
+            json_output=args.json,
+        )
         if config.exists and not args.skip_ssh and config.get("TC_NET_IFACE"):
+            command_context.set_stage("preinspect_device")
             try:
                 command_context.inspect_managed_connection(
                     iface=config.require("TC_NET_IFACE"),
@@ -86,6 +93,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             except (ConfigError, TransportError, DeviceError) as exc:
                 command_context.preflight_error = f"doctor pre-inspection failed: {system_exit_message(exc)}"
 
+        command_context.set_stage("run_checks")
         doctor_debug: dict[str, object] = {}
         results, fatal = run_doctor_checks(
             config,
@@ -100,8 +108,18 @@ def main(argv: Optional[list[str]] = None) -> int:
             debug_fields=doctor_debug,
         )
         command_context.add_debug_fields(**doctor_debug)
+        status_counts = {status: sum(1 for result in results if result.status == status) for status in ("PASS", "WARN", "FAIL", "INFO")}
+        command_context.update_fields(
+            fatal=fatal,
+            check_count=len(results),
+            pass_count=status_counts["PASS"],
+            warn_count=status_counts["WARN"],
+            fail_count=status_counts["FAIL"],
+            info_count=status_counts["INFO"],
+        )
 
         if args.json:
+            command_context.set_stage("render_json")
             print(json.dumps({
                 "fatal": fatal,
                 "results": [{"status": result.status, "message": result.message} for result in results],
@@ -116,6 +134,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.succeed()
             return 1 if fatal else 0
 
+        command_context.set_stage("render_results")
         if fatal:
             print("\nSummary: doctor found one or more fatal problems.")
             print_followup_help()
