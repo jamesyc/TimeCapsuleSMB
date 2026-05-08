@@ -334,6 +334,39 @@ echo "file-size=$(tc_log_file_size "$SAMPLE")"
         self.assertIn("utf8-byte-len=4", result.stdout)
         self.assertIn("file-size=12", result.stdout)
 
+    def test_common_hostname_resolution_update_is_idempotent(self) -> None:
+        common = (
+            load_boot_asset_text("common.sh")
+            .replace("/etc/hosts", '"$HOSTS_FIXTURE"')
+            .replace("$(/bin/hostname 2>/dev/null || true)", "airport-base")
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            hosts = tmp_path / "hosts"
+            log = tmp_path / "runtime.log"
+            script = tmp_path / "check.sh"
+            hosts.write_text("127.0.0.1\tlocalhost airport-base-old\n")
+            script.write_text(
+                common
+                + f"\nHOSTS_FIXTURE={shlex.quote(str(hosts))}\n"
+                + f"TC_LOG_FILE={shlex.quote(str(log))}\n"
+                + """
+tc_prepare_local_hostname_resolution
+tc_prepare_local_hostname_resolution
+"""
+            )
+
+            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
+
+            hosts_text = hosts.read_text()
+            log_text = log.read_text()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(hosts_text.count("127.0.0.1\tairport-base airport-base.local\n"), 1)
+        self.assertIn("127.0.0.1\tlocalhost airport-base-old\n", hosts_text)
+        self.assertIn("local hostname resolution prepared for airport-base", log_text)
+        self.assertIn("local hostname resolution already present for airport-base", log_text)
+
     def test_common_watchdog_process_helper_does_not_self_match_literal(self) -> None:
         common = load_boot_asset_text("common.sh").replace(
             "/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null",

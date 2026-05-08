@@ -1223,6 +1223,30 @@ tc_wait_for_bind_interfaces() {
     return 1
 }
 
+tc_hosts_has_hostname() {
+    hosts_target=$1
+    hosts_target_local="${hosts_target}.local"
+
+    [ -r /etc/hosts ] || return 1
+
+    while read hosts_addr hosts_names || [ -n "$hosts_addr$hosts_names" ]; do
+        case "$hosts_addr" in
+            ""|\#*) continue ;;
+        esac
+
+        for hosts_name in $hosts_names; do
+            case "$hosts_name" in
+                \#*) break ;;
+            esac
+            if [ "$hosts_name" = "$hosts_target" ] || [ "$hosts_name" = "$hosts_target_local" ]; then
+                return 0
+            fi
+        done
+    done </etc/hosts
+
+    return 1
+}
+
 tc_prepare_local_hostname_resolution() {
     device_hostname=$(/bin/hostname 2>/dev/null || true)
     if [ -z "$device_hostname" ]; then
@@ -1230,7 +1254,9 @@ tc_prepare_local_hostname_resolution() {
         return 0
     fi
 
-    if printf '127.0.0.1\t%s %s.local\n' "$device_hostname" "$device_hostname" >>/etc/hosts; then
+    if tc_hosts_has_hostname "$device_hostname"; then
+        tc_log "local hostname resolution already present for $device_hostname"
+    elif printf '127.0.0.1\t%s %s.local\n' "$device_hostname" "$device_hostname" >>/etc/hosts; then
         tc_log "local hostname resolution prepared for $device_hostname"
     else
         tc_log "local hostname resolution could not update /etc/hosts"
