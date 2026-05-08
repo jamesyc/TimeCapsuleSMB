@@ -568,7 +568,7 @@ tc_read_mast_volumes_to() {
                     part_uuid=$(tc_format_uuid_line "$line")
                 fi
                 ;;
-            "}"|"};"*)
+            "}"|"};"*|"},"*)
                 if [ "$in_partitions" -eq 1 ] && [ -n "$part_device" ]; then
                     tc_emit_mast_volume "$pending_file"
                     part_device=

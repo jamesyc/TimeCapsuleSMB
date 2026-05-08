@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import plistlib
 import subprocess
 import tempfile
 import textwrap
@@ -23,9 +22,10 @@ from timecapsulesmb.device.storage import (
     select_payload_home_conn,
 )
 from timecapsulesmb.transport.ssh import SshConnection
+from tests.storage_fixtures import MAST_FIXTURES, SHELL_MAST_FIXTURES, MaStFixture
 
 
-class MultiVolumeDeployTests(unittest.TestCase):
+class StorageRuntimeTests(unittest.TestCase):
     def write_runtime_harness(self, tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         repo_root = Path(__file__).resolve().parent.parent
         flash = tmp_path / "Flash"
@@ -81,120 +81,135 @@ class MultiVolumeDeployTests(unittest.TestCase):
         )
         return flash, memory, locks, volumes
 
-    def test_parse_mast_plist_normalizes_hfs_partitions_and_uuid_data(self) -> None:
-        raw = plistlib.dumps(
-            [
-                {
-                    "deviceName": "wd0",
-                    "builtin": True,
-                    "partitions": [
-                        {
-                            "deviceName": "dk2",
-                            "name": "Data",
-                            "format": "hfs",
-                            "uuid": bytes.fromhex("f42bdb83c2655522a08725606a4d0abf"),
-                        },
-                        {
-                            "deviceName": "dk1",
-                            "name": "APconfig",
-                            "format": "msdos",
-                            "uuid": bytes.fromhex("00000000000000000000000000000000"),
-                        },
-                    ],
-                },
-                {
-                    "deviceName": "sd0",
-                    "builtin": False,
-                    "partitions": [
-                        {
-                            "deviceName": "dk3",
-                            "name": "Untitled",
-                            "format": "HFS",
-                            "uuid": "51f93e6f-dc69-524d-986d-cee4d7cb3573",
-                        }
-                    ],
-                },
-            ]
+    def expected_topology_tsv(self, fixture: MaStFixture, volumes_root: Path) -> str:
+        lines = []
+        for volume in fixture.expected:
+            volume_root = volume.volume_root.replace("/Volumes", str(volumes_root), 1)
+            builtin = "1" if volume.builtin else "0"
+            lines.append(
+                "\t".join(
+                    (
+                        volume.disk_device,
+                        builtin,
+                        volume.partition_device,
+                        volume_root,
+                        volume.name,
+                        volume.adisk_uuid,
+                    )
+                )
+            )
+        return "\n".join(lines) + ("\n" if lines else "")
+
+    def write_fake_acp(self, tmp_path: Path, raw: str | bytes) -> Path:
+        acp = tmp_path / "acp"
+        raw_text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+        acp.write_text("#!/bin/sh\ncat <<'OUT'\n" + raw_text + "\nOUT\n")
+        acp.chmod(0o755)
+        return acp
+
+    def parse_topology_tsv(self, text: str, volumes_root: Path) -> tuple[MaStVolume, ...]:
+        volumes: list[MaStVolume] = []
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            fields = line.split("\t")
+            self.assertEqual(len(fields), 6, line)
+            disk_device, builtin, partition_device, volume_root, name, adisk_uuid = fields
+            normalized_root = volume_root.replace(str(volumes_root), "/Volumes", 1)
+            volumes.append(
+                MaStVolume(
+                    disk_device,
+                    partition_device,
+                    normalized_root,
+                    name,
+                    adisk_uuid,
+                    builtin == "1",
+                    "hfs",
+                )
+            )
+        return tuple(volumes)
+
+    def mapped_volume_root(self, volume: MaStVolume, volumes_root: Path) -> str:
+        return volume.volume_root.replace("/Volumes", str(volumes_root), 1)
+
+    def unique_share_names(self, volumes: tuple[MaStVolume, ...]) -> list[str]:
+        names: list[str] = []
+        used: set[str] = set()
+        for volume in volumes:
+            base = volume.name.strip() or f"Disk {volume.partition_device}"
+            candidate = base
+            suffix = 1
+            if candidate in used:
+                candidate = f"{base} ({volume.partition_device})"
+            while candidate in used:
+                candidate = f"{base} ({volume.partition_device}-{suffix})"
+                suffix += 1
+            used.add(candidate)
+            names.append(candidate)
+        return names
+
+    def expected_share_state(
+        self,
+        fixture: MaStFixture,
+        volumes_root: Path,
+        *,
+        internal_share_use_disk_root: bool,
+    ) -> tuple[str, str]:
+        share_lines: list[str] = []
+        adisk_lines: list[str] = []
+        for volume, share_name in zip(fixture.expected, self.unique_share_names(fixture.expected)):
+            volume_root = self.mapped_volume_root(volume, volumes_root)
+            if volume.builtin and not internal_share_use_disk_root:
+                share_path = f"{volume_root}/ShareRoot"
+            else:
+                share_path = volume_root
+            builtin = "1" if volume.builtin else "0"
+            share_lines.append("\t".join((share_name, share_path, volume.partition_device, builtin, volume.adisk_uuid)))
+            adisk_lines.append("\t".join((share_name, volume.partition_device, volume.adisk_uuid, "0x1093")))
+        return "\n".join(share_lines) + "\n", "\n".join(adisk_lines) + "\n"
+
+    def run_share_state_fixture(
+        self,
+        fixture: MaStFixture,
+        tmp_path: Path,
+        flash: Path,
+        volumes_root: Path,
+        *,
+        internal_share_use_disk_root: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        self.write_fake_acp(tmp_path, fixture.raw)
+        for volume in fixture.expected:
+            Path(self.mapped_volume_root(volume, volumes_root)).mkdir(parents=True, exist_ok=True)
+        override = "INTERNAL_SHARE_USE_DISK_ROOT=1" if internal_share_use_disk_root else ""
+        script = tmp_path / f"share-state-{fixture.name}.sh"
+        script.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/bin/sh
+                set -eu
+                . {flash}/common.sh
+                . {flash}/tcapsulesmb.conf
+                {override}
+                tc_init_runtime_env
+                tc_set_log "$RAM_VAR/test.log" test
+                mkdir -p "$RAM_VAR"
+                tc_wake_or_mount_volume() {{ return 0; }}
+                tc_read_mast_volumes_to "$TC_VOLUMES_TSV" "$TC_MAST_RAW"
+                tc_build_share_state "$TC_VOLUMES_TSV"
+                printf 'shares\\n'
+                cat "$TC_SHARES_TSV"
+                printf 'adisk\\n'
+                cat "$TC_ADISK_TSV"
+                """
+            )
         )
+        script.chmod(0o755)
+        return subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
-        volumes = parse_mast_plist(raw)
-
-        self.assertEqual(
-            volumes,
-            (
-                MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs"),
-                MaStVolume("sd0", "dk3", "/Volumes/dk3", "Untitled", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs"),
-            ),
-        )
-
-    def test_parse_mast_plist_accepts_openstep_mast_assignment(self) -> None:
-        raw = textwrap.dedent(
-            """\
-            MaSt = (
-                {
-                    deviceName = "wd0";
-                    builtin = true;
-                    partitions = (
-                        {
-                            deviceName = "dk2";
-                            name = "Data";
-                            format = "hfs";
-                            uuid = <f42bdb83 c2655522 a0872560 6a4d0abf>;
-                        }
-                    );
-                },
-                {
-                    deviceName = "sd0";
-                    builtin = false;
-                    partitions = (
-                        {
-                            deviceName = "dk3";
-                            name = "Untitled";
-                            format = "hfs";
-                            uuid = <51f93e6f dc69524d 986dcee4 d7cb3573>;
-                        }
-                    );
-                }
-            );
-            """
-        )
-
-        volumes = parse_mast_plist(raw)
-
-        self.assertEqual(
-            volumes,
-            (
-                MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs"),
-                MaStVolume("sd0", "dk3", "/Volumes/dk3", "Untitled", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs"),
-            ),
-        )
-
-    def test_parse_mast_plist_accepts_spaced_mast_prefix_before_xml_plist(self) -> None:
-        raw = "MaSt = " + plistlib.dumps(
-            [
-                {
-                    "deviceName": "wd0",
-                    "builtin": True,
-                    "partitions": [
-                        {
-                            "deviceName": "dk2",
-                            "name": "Data",
-                            "format": "hfs",
-                            "uuid": "f42bdb83-c265-5522-a087-25606a4d0abf",
-                        },
-                    ],
-                },
-            ]
-        ).decode("utf-8")
-
-        volumes = parse_mast_plist(raw)
-
-        self.assertEqual(
-            volumes,
-            (
-                MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs"),
-            ),
-        )
+    def test_parse_mast_plist_matches_golden_fixtures(self) -> None:
+        for fixture in MAST_FIXTURES:
+            with self.subTest(fixture=fixture.name):
+                self.assertEqual(parse_mast_plist(fixture.raw), fixture.expected)
 
     def test_select_payload_home_prefers_writable_internal_volume(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")
@@ -323,63 +338,83 @@ class MultiVolumeDeployTests(unittest.TestCase):
         self.assertIn("chmod 600 /mnt/Flash/.tcapsulesmb.conf.tmp", install_command)
         self.assertIn("mv -f /mnt/Flash/.tcapsulesmb.conf.tmp /mnt/Flash/tcapsulesmb.conf", install_command)
 
-    def test_start_samba_signature_mode_parses_mast_text(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            start_path = flash / "start-samba.sh"
-            acp = tmp_path / "acp"
-            acp.write_text(
-                textwrap.dedent(
-                    """\
-                    #!/bin/sh
-                    cat <<'OUT'
-                    (
-                        {
-                            deviceName = "wd0";
-                            builtin = true;
-                            partitions = (
-                                {
-                                    deviceName = "dk2";
-                                    name = "Data";
-                                    format = "hfs";
-                                    uuid = <f42bdb83 c2655522 a0872560 6a4d0abf>;
-                                }
-                            );
-                        },
-                        {
-                            deviceName = "sd0";
-                            builtin = false;
-                            partitions = (
-                                {
-                                    deviceName = "dk3";
-                                    name = "Untitled";
-                                    format = "hfs";
-                                    uuid = <51f93e6f dc69524d 986dcee4 d7cb3573>;
-                                }
-                            );
-                        }
+    def test_start_samba_signature_mode_matches_shell_supported_mast_fixtures(self) -> None:
+        for fixture in SHELL_MAST_FIXTURES:
+            with self.subTest(fixture=fixture.name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    tmp_path = Path(tmp)
+                    flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+                    start_path = flash / "start-samba.sh"
+                    self.write_fake_acp(tmp_path, fixture.raw)
+
+                    proc = subprocess.run(
+                        ["/bin/sh", str(start_path), "--print-topology-signature"],
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        check=False,
                     )
-                    OUT
-                    """
-                )
-            )
-            acp.chmod(0o755)
 
-            proc = subprocess.run(
-                ["/bin/sh", str(start_path), "--print-topology-signature"],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
+                expected_stdout = self.expected_topology_tsv(fixture, volumes)
+                expected_rc = 0 if fixture.expected else 1
+                self.assertEqual(proc.returncode, expected_rc, proc.stderr)
+                self.assertEqual(proc.stdout, expected_stdout)
+                self.assertEqual(self.parse_topology_tsv(proc.stdout, volumes), parse_mast_plist(fixture.raw))
 
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(
-            proc.stdout,
-            f"wd0\t1\tdk2\t{volumes}/dk2\tData\tf42bdb83-c265-5522-a087-25606a4d0abf\n"
-            f"sd0\t0\tdk3\t{volumes}/dk3\tUntitled\t51f93e6f-dc69-524d-986d-cee4d7cb3573\n",
-        )
+    def test_common_share_state_matches_python_policy_for_shell_supported_mast_fixtures(self) -> None:
+        for fixture in SHELL_MAST_FIXTURES:
+            if not fixture.expected:
+                continue
+            with self.subTest(fixture=fixture.name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    tmp_path = Path(tmp)
+                    flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+
+                    proc = self.run_share_state_fixture(
+                        fixture,
+                        tmp_path,
+                        flash,
+                        volumes,
+                        internal_share_use_disk_root=False,
+                    )
+                    expected_shares, expected_adisk = self.expected_share_state(
+                        fixture,
+                        volumes,
+                        internal_share_use_disk_root=False,
+                    )
+                    expected_stdout = f"shares\n{expected_shares}adisk\n{expected_adisk}"
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertEqual(proc.stdout, expected_stdout)
+                    for volume in fixture.expected:
+                        if volume.builtin:
+                            marker = Path(self.mapped_volume_root(volume, volumes)) / "ShareRoot/.com.apple.timemachine.supported"
+                            self.assertTrue(marker.exists(), str(marker))
+
+    def test_common_share_state_internal_disk_root_override_matches_python_policy(self) -> None:
+        for fixture in SHELL_MAST_FIXTURES:
+            if not any(volume.builtin for volume in fixture.expected):
+                continue
+            with self.subTest(fixture=fixture.name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    tmp_path = Path(tmp)
+                    flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+
+                    proc = self.run_share_state_fixture(
+                        fixture,
+                        tmp_path,
+                        flash,
+                        volumes,
+                        internal_share_use_disk_root=True,
+                    )
+                    expected_shares, expected_adisk = self.expected_share_state(
+                        fixture,
+                        volumes,
+                        internal_share_use_disk_root=True,
+                    )
+                    expected_stdout = f"shares\n{expected_shares}adisk\n{expected_adisk}"
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertEqual(proc.stdout, expected_stdout)
+                    self.assertNotIn("/ShareRoot", proc.stdout)
 
     def test_common_build_share_state_uses_modern_mast_rules(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
