@@ -22,7 +22,7 @@ TC_SHARES_TSV="$TC_STATE_DIR/shares.tsv"
 TC_ADISK_TSV="$TC_STATE_DIR/adisk.tsv"
 TC_PAYLOAD_TSV="$TC_STATE_DIR/payload.tsv"
 TC_TOPOLOGY_SIGNATURE="$TC_STATE_DIR/topology.signature"
-TC_USED_SHARE_NAMES_FILE="$TC_STATE_DIR/share-names.txt"
+TC_USED_SHARE_NAMES_FILE=
 TC_TAB=$(printf '\t')
 
 TC_LOG_FILE="$TC_STATE_DIR/runtime.log"
@@ -39,6 +39,7 @@ TC_MDNS_LOG_FILE="$RAM_VAR/mdns.log"
 TC_NBNS_LOG_FILE="$RAM_VAR/nbns.log"
 TC_PAYLOAD_LOG_DIR=
 TC_PAYLOAD_LOG_VOLUME=
+TC_MDNS_CAPTURE_STATUS_FILE=
 TC_RUNTIME_LOG_MAX_BYTES=131072
 TC_SMBD_DISK_LOGGING_ENABLED=0
 TC_ADISK_DISK_ADVF=0x1093
@@ -59,6 +60,7 @@ tc_init_runtime_env() {
     APPLE_MOUNT_WAIT_SECONDS=${APPLE_MOUNT_WAIT_SECONDS:-30}
     MAST_DISCOVERY_WAIT_SECONDS=${MAST_DISCOVERY_WAIT_SECONDS:-120}
     WATCHDOG_MOUNT_WAIT_SECONDS=${WATCHDOG_MOUNT_WAIT_SECONDS:-$APPLE_MOUNT_WAIT_SECONDS}
+    MDNS_CAPTURE_WAIT_SECONDS=${MDNS_CAPTURE_WAIT_SECONDS:-75}
     INTERNAL_SHARE_USE_DISK_ROOT=${INTERNAL_SHARE_USE_DISK_ROOT:-0}
     NBNS_ENABLED=${NBNS_ENABLED:-0}
     TC_SMBD_DISK_LOGGING_ENABLED=${SMBD_DEBUG_LOGGING:-0}
@@ -491,19 +493,19 @@ tc_wake_or_mount_volume_with_policy() {
     fi
 
     mkdir -p "$volume_root"
-    tc_log "$mount_context: requesting Apple mount for $volume_root"
+    tc_log "$mount_context: requesting diskd.useVolume for $volume_root"
     /usr/bin/acp rpc diskd.useVolume path:s:"$volume_root" >/dev/null 2>&1 || true
     attempt=0
     while [ "$attempt" -lt "$apple_wait_seconds" ]; do
         if is_volume_root_mounted "$volume_root"; then
-            tc_log "$mount_context: Apple mounted $volume_root after ${attempt}s"
+            tc_log "$mount_context: observed $volume_root mounted after diskd.useVolume wait: ${attempt}s"
             return 0
         fi
         attempt=$((attempt + 1))
         sleep 1
     done
 
-    tc_log "$mount_context: Apple mount wait timed out after ${apple_wait_seconds}s for $volume_root"
+    tc_log "$mount_context: diskd.useVolume wait timed out after ${apple_wait_seconds}s; manual fallback will handle remaining unmounted volumes"
     mount_hfs_bounded "$device_path" "$volume_root" "$mount_timeout_seconds" "$mount_context"
 }
 
@@ -517,6 +519,105 @@ tc_boot_wake_or_mount_volume() {
 
 tc_watchdog_wake_or_mount_volume() {
     tc_wake_or_mount_volume_with_policy "$1" "$2" "$WATCHDOG_MOUNT_WAIT_SECONDS" 30 "watchdog volume $2"
+}
+
+tc_request_apple_mount_for_volume() {
+    device_path=$1
+    volume_root=$2
+    mount_context=$3
+
+    if [ -z "$device_path" ] || [ -z "$volume_root" ]; then
+        return 1
+    fi
+
+    if is_volume_root_mounted "$volume_root"; then
+        return 0
+    fi
+
+    mkdir -p "$volume_root"
+    tc_log "$mount_context: requesting diskd.useVolume for $volume_root"
+    /usr/bin/acp rpc diskd.useVolume path:s:"$volume_root" >/dev/null 2>&1 || true
+    return 0
+}
+
+tc_request_apple_mounts_for_mast_volumes() {
+    volumes_file=$1
+
+    while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid ||
+        [ -n "$disk_device$builtin$part_device$volume_root$part_name$part_uuid" ]; do
+        [ -n "$part_device" ] || continue
+        tc_request_apple_mount_for_volume "/dev/$part_device" "$volume_root" "MaSt volume $volume_root"
+    done <"$volumes_file"
+}
+
+tc_all_mast_volumes_mounted() {
+    volumes_file=$1
+    found=0
+
+    while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid ||
+        [ -n "$disk_device$builtin$part_device$volume_root$part_name$part_uuid" ]; do
+        [ -n "$part_device" ] || continue
+        found=1
+        if ! is_volume_root_mounted "$volume_root"; then
+            return 1
+        fi
+    done <"$volumes_file"
+
+    [ "$found" -eq 1 ]
+}
+
+tc_wait_for_apple_mast_mounts() {
+    volumes_file=$1
+    wait_seconds=${2:-$APPLE_MOUNT_WAIT_SECONDS}
+    elapsed=0
+
+    if tc_all_mast_volumes_mounted "$volumes_file"; then
+        tc_log "MaSt volume diskd.useVolume wait skipped; all volumes already mounted"
+        return 0
+    fi
+
+    tc_log "MaSt volume diskd.useVolume wait beginning for up to ${wait_seconds}s"
+    while [ "$elapsed" -lt "$wait_seconds" ]; do
+        sleep 1
+        elapsed=$((elapsed + 1))
+        if tc_all_mast_volumes_mounted "$volumes_file"; then
+            tc_log "MaSt volume diskd.useVolume wait complete; all volumes mounted after ${elapsed}s"
+            return 0
+        fi
+    done
+
+    tc_log "MaSt volume diskd.useVolume wait timed out after ${wait_seconds}s; manual fallback will handle remaining unmounted volumes"
+    return 1
+}
+
+tc_mount_remaining_mast_volumes() {
+    volumes_file=$1
+    status=0
+
+    while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid ||
+        [ -n "$disk_device$builtin$part_device$volume_root$part_name$part_uuid" ]; do
+        [ -n "$part_device" ] || continue
+        if is_volume_root_mounted "$volume_root"; then
+            continue
+        fi
+        if mount_hfs_bounded "/dev/$part_device" "$volume_root" 30 "MaSt volume $volume_root"; then
+            :
+        else
+            status=1
+        fi
+    done <"$volumes_file"
+
+    return "$status"
+}
+
+tc_mount_mast_volumes_for_boot() {
+    volumes_file=$1
+
+    tc_log "boot disk load: requesting diskd.useVolume for all MaSt volumes"
+    tc_request_apple_mounts_for_mast_volumes "$volumes_file"
+    tc_wait_for_apple_mast_mounts "$volumes_file" "$APPLE_MOUNT_WAIT_SECONDS" || true
+    tc_log "boot disk load: checking for unmounted volumes after shared diskd wait"
+    tc_mount_remaining_mast_volumes "$volumes_file" || true
 }
 
 tc_plist_key() {
@@ -672,7 +773,7 @@ tc_wait_for_mast_volumes_to() {
     raw_file=$2
     timeout_seconds=${3:-$MAST_DISCOVERY_WAIT_SECONDS}
     elapsed=0
-    sleep_seconds=2
+    sleep_seconds=3
 
     while :; do
         if tc_read_mast_volumes_to "$out_file" "$raw_file"; then
@@ -689,7 +790,7 @@ tc_wait_for_mast_volumes_to() {
 
         if [ "$elapsed" -eq 0 ]; then
             tc_log "MaSt discovery not ready; waiting up to ${timeout_seconds}s for valid HFS volumes"
-        elif [ $((elapsed % 10)) -eq 0 ]; then
+        elif [ $((elapsed % 15)) -eq 0 ]; then
             tc_log "MaSt discovery still waiting after ${elapsed}s"
         fi
 
@@ -864,8 +965,10 @@ tc_append_share_state_row() {
 
 tc_build_share_state() {
     volumes_file=${1:-$TC_VOLUMES_TSV}
+    used_share_names_file="$TC_STATE_DIR/share-names.$$"
     : >"$TC_SHARES_TSV"
     : >"$TC_ADISK_TSV"
+    TC_USED_SHARE_NAMES_FILE=$used_share_names_file
     : >"$TC_USED_SHARE_NAMES_FILE"
 
     disk_device=
@@ -878,8 +981,8 @@ tc_build_share_state() {
         [ -n "$disk_device$builtin$part_device$volume_root$part_name$part_uuid" ]; do
         [ -n "$part_device" ] || continue
         device_path="/dev/$part_device"
-        if ! tc_boot_wake_or_mount_volume "$device_path" "$volume_root"; then
-            tc_log "share skipped: could not mount $device_path at $volume_root"
+        if ! is_volume_root_mounted "$volume_root"; then
+            tc_log "share skipped: $device_path at $volume_root is not mounted"
             continue
         fi
         if ! tc_volume_is_writable "$volume_root"; then
@@ -895,36 +998,91 @@ tc_build_share_state() {
         tc_log "share prepared: $share_name -> $share_path uuid=$part_uuid builtin=$builtin"
     done <"$volumes_file"
 
+    rm -f "$TC_USED_SHARE_NAMES_FILE"
     [ -s "$TC_SHARES_TSV" ]
+}
+
+tc_mount_active_volume_job() {
+    share_name=$1
+    share_path=$2
+    device_path=$3
+    volume_root=$4
+    context=$5
+    df_line=
+
+    tc_log "$context check starting: share=$share_name path=$share_path device=$device_path root=$volume_root"
+    if [ -z "$share_name" ] || [ -z "$share_path" ] || [ -z "$device_path" ] || [ -z "$volume_root" ]; then
+        tc_log "$context check failed: malformed active share row share=$share_name path=$share_path device=$device_path root=$volume_root"
+        return 1
+    fi
+
+    df_line=$(/bin/df -k "$volume_root" 2>/dev/null | /usr/bin/tail -n +2 || true)
+    if [ -n "$df_line" ]; then
+        tc_log "$context df before wake: $df_line"
+    else
+        tc_log "$context df before wake: no df output for $volume_root"
+    fi
+
+    if tc_watchdog_wake_or_mount_volume "$device_path" "$volume_root"; then
+        df_line=$(/bin/df -k "$volume_root" 2>/dev/null | /usr/bin/tail -n +2 || true)
+        if [ -n "$df_line" ]; then
+            tc_log "$context df after wake: $df_line"
+        else
+            tc_log "$context df after wake: no df output for $volume_root"
+        fi
+        if [ -d "$share_path" ]; then
+            tc_log "$context available: share=$share_name path=$share_path device=$device_path root=$volume_root"
+            return 0
+        else
+            tc_log "$context unavailable: share path missing after mount: $share_path"
+            return 1
+        fi
+    else
+        df_line=$(/bin/df -k "$volume_root" 2>/dev/null | /usr/bin/tail -n +2 || true)
+        if [ -n "$df_line" ]; then
+            tc_log "$context df after failed wake: $df_line"
+        else
+            tc_log "$context df after failed wake: no df output for $volume_root"
+        fi
+        tc_log "$context unavailable: $device_path at $volume_root for share=$share_name path=$share_path"
+        return 1
+    fi
 }
 
 tc_mount_active_volumes_from_state() {
     state_file=$TC_SHARES_TSV
     status=0
+    job_count=0
 
     if [ ! -s "$state_file" ]; then
-        state_file=$TC_VOLUMES_TSV
+        tc_log "active share state missing; runtime reload required"
+        return 2
     fi
-    [ -s "$state_file" ] || return 0
 
-    if [ "$state_file" = "$TC_SHARES_TSV" ]; then
-        while IFS="$TC_TAB" read -r share_name share_path part_device builtin part_uuid; do
-            [ -n "$part_device" ] || continue
-            if ! tc_watchdog_wake_or_mount_volume "/dev/$part_device" "/Volumes/$part_device"; then
-                tc_log "active share volume unavailable: /dev/$part_device at /Volumes/$part_device"
-                status=1
-            fi
-        done <"$state_file"
+    tc_log "active share check beginning: state=$state_file"
+
+    while IFS="$TC_TAB" read -r share_name share_path part_device builtin part_uuid; do
+        [ -n "$part_device" ] || continue
+        job_count=$((job_count + 1))
+        tc_log "active share check row $job_count: share=$share_name path=$share_path device=/dev/$part_device root=/Volumes/$part_device builtin=$builtin uuid=$part_uuid"
+        if tc_mount_active_volume_job "$share_name" "$share_path" "/dev/$part_device" "/Volumes/$part_device" "active share volume"; then
+            tc_log "active share check row $job_count succeeded"
+        else
+            tc_log "active share check row $job_count failed"
+            status=1
+        fi
+    done <"$state_file"
+
+    if [ "$job_count" -eq 0 ]; then
+        tc_log "active share check found no valid share rows; runtime reload required"
+        return 2
+    fi
+
+    if [ "$status" -eq 0 ]; then
+        tc_log "active share check complete: all $job_count active share volumes available"
     else
-        while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid; do
-            [ -n "$part_device" ] || continue
-            if ! tc_watchdog_wake_or_mount_volume "/dev/$part_device" "$volume_root"; then
-                tc_log "active MaSt volume unavailable: /dev/$part_device at $volume_root"
-                status=1
-            fi
-        done <"$state_file"
+        tc_log "active share check complete: one or more of $job_count active share volumes unavailable"
     fi
-
     return "$status"
 }
 
@@ -937,28 +1095,66 @@ tc_verify_payload_dir() {
     [ -f "$payload_dir/private/username.map" ] || return 1
 }
 
+tc_emit_payload_candidate_volumes() {
+    volumes_file=${1:-$TC_VOLUMES_TSV}
+
+    for desired_builtin in 1 0; do
+        while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid ||
+            [ -n "$disk_device$builtin$part_device$volume_root$part_name$part_uuid" ]; do
+            [ -n "$part_device" ] || continue
+            [ "$builtin" = "$desired_builtin" ] || continue
+            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$disk_device" "$builtin" "$part_device" "$volume_root" "$part_name" "$part_uuid"
+        done <"$volumes_file"
+    done
+}
+
+tc_scan_payload_candidates_for_builtin() {
+    volumes_file=$1
+    desired_builtin=$2
+
+    while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid ||
+        [ -n "$disk_device$builtin$part_device$volume_root$part_name$part_uuid" ]; do
+        [ -n "$part_device" ] || continue
+        [ "$builtin" = "$desired_builtin" ] || continue
+        candidate="$volume_root/$PAYLOAD_DIR_NAME"
+        if is_volume_root_mounted "$volume_root"; then
+            if tc_verify_payload_dir "$candidate"; then
+                tc_log "payload candidate valid: $candidate builtin=$builtin"
+                if [ -z "$selected_payload_dir" ]; then
+                    selected_payload_dir=$candidate
+                    selected_payload_volume=$volume_root
+                    selected_payload_device="/dev/$part_device"
+                fi
+            else
+                tc_log "payload candidate invalid: missing managed payload at $candidate"
+            fi
+        else
+            tc_log "payload candidate unavailable: /dev/$part_device at $volume_root is not mounted"
+        fi
+    done <"$volumes_file"
+}
+
 tc_resolve_payload() {
     volumes_file=${1:-$TC_VOLUMES_TSV}
     TC_RESOLVED_PAYLOAD_DIR=
     TC_RESOLVED_PAYLOAD_VOLUME=
     TC_RESOLVED_PAYLOAD_DEVICE=
+    selected_payload_dir=
+    selected_payload_volume=
+    selected_payload_device=
 
-    for desired_builtin in 1 0; do
-        while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid; do
-            [ -n "$part_device" ] || continue
-            [ "$builtin" = "$desired_builtin" ] || continue
-            candidate="$volume_root/$PAYLOAD_DIR_NAME"
-            if tc_boot_wake_or_mount_volume "/dev/$part_device" "$volume_root" && tc_verify_payload_dir "$candidate"; then
-                TC_RESOLVED_PAYLOAD_DIR=$candidate
-                TC_RESOLVED_PAYLOAD_VOLUME=$volume_root
-                TC_RESOLVED_PAYLOAD_DEVICE="/dev/$part_device"
-                tc_log "payload directory recovered from MaSt scan: $candidate"
-                return 0
-            fi
-        done <"$volumes_file"
-    done
+    tc_scan_payload_candidates_for_builtin "$volumes_file" 1
+    tc_scan_payload_candidates_for_builtin "$volumes_file" 0
 
-    tc_log "payload directory missing from MaSt volumes"
+    if [ -n "$selected_payload_dir" ]; then
+        TC_RESOLVED_PAYLOAD_DIR=$selected_payload_dir
+        TC_RESOLVED_PAYLOAD_VOLUME=$selected_payload_volume
+        TC_RESOLVED_PAYLOAD_DEVICE=$selected_payload_device
+        tc_log "payload directory selected from mounted MaSt volumes: $TC_RESOLVED_PAYLOAD_DIR"
+        return 0
+    fi
+
+    tc_log "no valid payload directory found on mounted MaSt volumes"
     return 1
 }
 
@@ -987,6 +1183,85 @@ tc_read_payload_state() {
 tc_payload_available() {
     tc_read_payload_state || return 1
     tc_watchdog_wake_or_mount_volume "$TC_PAYLOAD_DEVICE" "$TC_PAYLOAD_VOLUME" && tc_verify_payload_dir "$TC_PAYLOAD_DIR"
+}
+
+tc_log_mast_volume_state() {
+    volumes_file=$1
+
+    while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid ||
+        [ -n "$disk_device$builtin$part_device$volume_root$part_name$part_uuid" ]; do
+        [ -n "$part_device" ] || continue
+        tc_log "MaSt volume: disk=$disk_device builtin=$builtin part=$part_device root=$volume_root name=$part_name uuid=$part_uuid"
+    done <"$volumes_file"
+}
+
+tc_refresh_disk_state() {
+    volumes_file="$TC_STATE_DIR/mast-volumes.$$"
+    raw_file="$TC_STATE_DIR/mast.raw.$$"
+
+    rm -f "$volumes_file" "$raw_file"
+    if ! tc_wait_for_mast_volumes_to "$volumes_file" "$raw_file" "$MAST_DISCOVERY_WAIT_SECONDS"; then
+        tc_log "MaSt discovery failed or returned no valid HFS volumes"
+        rm -f "$volumes_file" "$raw_file"
+        return 1
+    fi
+    /bin/cat "$volumes_file" >"$TC_TOPOLOGY_SIGNATURE"
+    tc_log_mast_volume_state "$volumes_file"
+
+    tc_mount_mast_volumes_for_boot "$volumes_file"
+
+    tc_log "building share state from mounted writable MaSt volumes"
+    if ! tc_build_share_state "$volumes_file"; then
+        tc_log "no writable MaSt share volumes are available"
+        rm -f "$volumes_file" "$raw_file"
+        return 1
+    fi
+
+    if ! tc_resolve_payload "$volumes_file"; then
+        tc_log "payload discovery failed"
+        rm -f "$volumes_file" "$raw_file"
+        return 1
+    fi
+
+    tc_write_payload_state "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME" "$TC_RESOLVED_PAYLOAD_DEVICE"
+    tc_set_payload_log_dir "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME"
+    if tc_payload_log_dir_ready; then
+        tc_log "payload runtime logs enabled at $TC_PAYLOAD_LOG_DIR"
+    else
+        tc_log "payload runtime log directory unavailable at $TC_PAYLOAD_LOG_DIR"
+    fi
+
+    tc_log "disk-state refresh complete: runtime state written"
+    rm -f "$volumes_file" "$raw_file"
+    return 0
+}
+
+tc_stage_disk_runtime() {
+    bind_interfaces=$1
+
+    if ! tc_read_payload_state; then
+        tc_log "payload discovery failed: payload state is unavailable"
+        return 1
+    fi
+    tc_set_payload_log_dir "$TC_PAYLOAD_DIR" "$TC_PAYLOAD_VOLUME"
+
+    SMBD_SRC=$(tc_find_payload_smbd "$TC_PAYLOAD_DIR") || {
+        tc_log "payload discovery failed: missing smbd binary in $TC_PAYLOAD_DIR"
+        return 1
+    }
+
+    NBNS_SRC=
+    if [ "$NBNS_ENABLED" = "1" ]; then
+        if NBNS_SRC=$(tc_find_payload_nbns "$TC_PAYLOAD_DIR"); then
+            :
+        else
+            NBNS_SRC=
+        fi
+    fi
+
+    tc_stage_runtime "$TC_PAYLOAD_DIR" "$SMBD_SRC" "$NBNS_SRC"
+    tc_generate_smb_conf "$TC_PAYLOAD_DIR" "$bind_interfaces"
+    tc_log "runtime staging complete under $RAM_ROOT"
 }
 
 tc_find_payload_smbd() {
@@ -1454,6 +1729,9 @@ tc_start_mdns_capture() {
         fi
     fi
 
+    TC_MDNS_CAPTURE_STATUS_FILE="$TC_STATE_DIR/mdns-capture.status.$$"
+    rm -f "$TC_MDNS_CAPTURE_STATUS_FILE"
+
     if tc_prepare_runtime_log_file "$TC_MDNS_LOG_FILE"; then
         if tc_runtime_logs_unbounded; then
             tc_log "mdns capture: debug logging enabled at $TC_MDNS_LOG_FILE"
@@ -1461,32 +1739,67 @@ tc_start_mdns_capture() {
             tc_log "mdns capture: logging at $TC_MDNS_LOG_FILE"
         fi
         printf '%s %s: launching mdns-advertiser capture\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$TC_LOG_PREFIX" >>"$TC_MDNS_LOG_FILE"
-        "$@" >>"$TC_MDNS_LOG_FILE" 2>&1 &
+        ( "$@" >>"$TC_MDNS_LOG_FILE" 2>&1; echo $? >"$TC_MDNS_CAPTURE_STATUS_FILE" ) &
     else
         tc_log "mdns capture: log unavailable at $TC_MDNS_LOG_FILE"
-        "$@" >/dev/null 2>&1 &
+        ( "$@" >/dev/null 2>&1; echo $? >"$TC_MDNS_CAPTURE_STATUS_FILE" ) &
     fi
     TC_MDNS_CAPTURE_PID=$!
     tc_log "mDNS snapshot capture launched as pid $TC_MDNS_CAPTURE_PID"
 }
 
 tc_wait_for_mdns_capture() {
+    wait_seconds=${MDNS_CAPTURE_WAIT_SECONDS:-75}
+    elapsed=0
+    capture_status=
+
     if [ -z "$TC_MDNS_CAPTURE_PID" ]; then
         return 0
     fi
 
-    tc_log "waiting for mDNS snapshot capture pid $TC_MDNS_CAPTURE_PID"
+    tc_log "waiting up to ${wait_seconds}s for mDNS snapshot capture pid $TC_MDNS_CAPTURE_PID"
     if ! kill -0 "$TC_MDNS_CAPTURE_PID" >/dev/null 2>&1; then
         TC_MDNS_CAPTURE_PID=
+        rm -f "$TC_MDNS_CAPTURE_STATUS_FILE"
+        TC_MDNS_CAPTURE_STATUS_FILE=
         return 0
     fi
 
-    if wait "$TC_MDNS_CAPTURE_PID"; then
-        tc_log "mDNS snapshot capture finished"
-    else
-        tc_log "mDNS snapshot capture exited with failure; final advertiser will use generated records if needed"
-    fi
+    while [ "$elapsed" -lt "$wait_seconds" ]; do
+        if [ -n "$TC_MDNS_CAPTURE_STATUS_FILE" ] && [ -f "$TC_MDNS_CAPTURE_STATUS_FILE" ]; then
+            capture_status=$(/bin/cat "$TC_MDNS_CAPTURE_STATUS_FILE" 2>/dev/null || echo 1)
+            wait "$TC_MDNS_CAPTURE_PID" >/dev/null 2>&1 || true
+            if [ "$capture_status" = "0" ]; then
+                tc_log "mDNS snapshot capture finished"
+            else
+                tc_log "mDNS snapshot capture exited with failure; final advertiser will use generated records if needed"
+            fi
+            rm -f "$TC_MDNS_CAPTURE_STATUS_FILE"
+            TC_MDNS_CAPTURE_PID=
+            TC_MDNS_CAPTURE_STATUS_FILE=
+            return 0
+        fi
+        if ! kill -0 "$TC_MDNS_CAPTURE_PID" >/dev/null 2>&1; then
+            wait "$TC_MDNS_CAPTURE_PID" >/dev/null 2>&1 || true
+            tc_log "mDNS snapshot capture ended without status; final advertiser will use generated records if needed"
+            rm -f "$TC_MDNS_CAPTURE_STATUS_FILE"
+            TC_MDNS_CAPTURE_PID=
+            TC_MDNS_CAPTURE_STATUS_FILE=
+            return 0
+        fi
+        elapsed=$((elapsed + 1))
+        sleep 1
+    done
+
+    tc_log "mDNS snapshot capture timed out after ${wait_seconds}s; stopping capture and continuing with generated records if needed"
+    kill "$TC_MDNS_CAPTURE_PID" >/dev/null 2>&1 || true
+    stop_runtime_process_by_ucomm "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" || true
+    sleep 1
+    kill -9 "$TC_MDNS_CAPTURE_PID" >/dev/null 2>&1 || true
+    wait "$TC_MDNS_CAPTURE_PID" >/dev/null 2>&1 || true
+    rm -f "$TC_MDNS_CAPTURE_STATUS_FILE"
     TC_MDNS_CAPTURE_PID=
+    TC_MDNS_CAPTURE_STATUS_FILE=
 }
 
 tc_launch_mdns_advertiser() {
@@ -1711,10 +2024,25 @@ tc_topology_changed() {
     [ "$current" != "$fresh" ]
 }
 
+tc_topology_changed_debounced() {
+    if ! tc_topology_changed; then
+        return 1
+    fi
+
+    tc_log "watchdog recovery: MaSt topology changed; debouncing 5s"
+    sleep 5
+    if tc_topology_changed; then
+        return 0
+    fi
+
+    tc_log "watchdog recovery: MaSt topology change cleared after debounce"
+    return 1
+}
+
 tc_exec_start_samba() {
     reason=$1
     tc_log "watchdog recovery: re-execing start-samba.sh: $reason"
-    exec /mnt/Flash/start-samba.sh --watchdog-restart
+    exec /mnt/Flash/start-samba.sh --reload-disk-runtime
 }
 
 tc_nbns_enabled() {
@@ -1742,14 +2070,22 @@ tc_all_managed_services_healthy() {
 tc_watchdog_iteration() {
     tc_log "watchdog pass: checking topology, payload, active shares, and managed services"
 
-    if tc_topology_changed; then
+    if tc_topology_changed_debounced; then
         tc_exec_start_samba "MaSt topology changed"
     fi
 
     if tc_payload_available; then
         tc_log "watchdog pass: payload available at ${TC_PAYLOAD_DIR:-unknown}"
-        if ! tc_mount_active_volumes_from_state; then
-            tc_exec_start_samba "active share volume unavailable"
+        if tc_mount_active_volumes_from_state; then
+            :
+        else
+            active_mount_status=$?
+            if [ "$active_mount_status" -eq 2 ]; then
+                tc_exec_start_samba "active share state unavailable"
+            fi
+            tc_log "watchdog recovery: active share volume unavailable; stopping managed services and retrying"
+            tc_stop_managed_services
+            return 1
         fi
         tc_start_smbd_if_needed
     else
@@ -1795,21 +2131,24 @@ tc_sleep_with_runtime_checks() {
 
         sleep "$sleep_seconds"
         slept=$((slept + sleep_seconds))
-        steady_status=0
         if tc_payload_available; then
             :
         else
             tc_log "watchdog steady check: payload unavailable while sleeping"
-            steady_status=1
+            return 1
         fi
         if tc_mount_active_volumes_from_state; then
             :
         else
-            tc_log "watchdog steady check: one or more active share volumes are unavailable while sleeping"
-            steady_status=1
+            active_mount_status=$?
+            if [ "$active_mount_status" -eq 2 ]; then
+                tc_log "watchdog steady check: active share state unavailable while sleeping"
+            else
+                tc_log "watchdog steady check: one or more active share volumes are unavailable while sleeping"
+            fi
+            return "$active_mount_status"
         fi
-        if [ "$steady_status" -eq 0 ]; then
-            tc_log "watchdog steady check: healthy after ${slept}s of ${total_sleep}s"
-        fi
+        tc_log "watchdog steady check: healthy after ${slept}s of ${total_sleep}s"
     done
+    return 0
 }

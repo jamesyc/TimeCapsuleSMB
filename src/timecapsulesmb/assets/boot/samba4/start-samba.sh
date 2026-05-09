@@ -10,11 +10,24 @@ tc_init_runtime_env
 tc_set_log "$RAM_VAR/rc.local.log" "rc.local"
 TC_MDNS_CAPTURE_PID=
 TC_APPLE_MDNS_SNAPSHOT_START=$(/bin/ls -lnT "$APPLE_MDNS_SNAPSHOT" 2>/dev/null || true)
+TC_START_MODE=${1:-}
 
-case "${1:-}" in
+case "$TC_START_MODE" in
     --print-topology-signature)
         tc_print_topology_signature
         exit $?
+        ;;
+    --refresh-disk-state)
+        tc_prepare_ram_root
+        tc_log "managed Samba disk-state refresh beginning; services will not be restarted"
+        tc_refresh_disk_state
+        exit $?
+        ;;
+    ""|--reload-disk-runtime)
+        ;;
+    *)
+        tc_log "unknown start-samba.sh mode: $TC_START_MODE"
+        exit 2
         ;;
 esac
 
@@ -29,7 +42,11 @@ if ! tc_prepare_locks_ramdisk; then
 fi
 tc_prepare_ram_root
 tc_prepare_legacy_prefix
-tc_log "managed Samba boot startup beginning"
+if [ "$TC_START_MODE" = "--reload-disk-runtime" ]; then
+    tc_log "managed Samba disk runtime reload beginning"
+else
+    tc_log "managed Samba boot startup beginning"
+fi
 
 BIND_INTERFACES=$(tc_wait_for_bind_interfaces) || {
     tc_log "network startup failed: could not determine $NET_IFACE IPv4 address"
@@ -39,50 +56,15 @@ TC_NET_IFACE_IP=${BIND_INTERFACES#127.0.0.1/8 }
 TC_NET_IFACE_IP=${TC_NET_IFACE_IP%%/*}
 tc_prepare_local_hostname_resolution
 
-if ! tc_wait_for_mast_volumes_to "$TC_VOLUMES_TSV" "$TC_MAST_RAW" "$MAST_DISCOVERY_WAIT_SECONDS"; then
-    tc_log "MaSt discovery failed or returned no valid HFS volumes"
+if ! tc_refresh_disk_state; then
     exit 1
-fi
-/bin/cat "$TC_VOLUMES_TSV" >"$TC_TOPOLOGY_SIGNATURE"
-
-tc_log "pausing 10s before loading share volumes"
-sleep 10
-
-if ! tc_build_share_state "$TC_VOLUMES_TSV"; then
-    tc_log "no writable MaSt share volumes are available"
-    exit 1
-fi
-
-if ! tc_resolve_payload "$TC_VOLUMES_TSV"; then
-    tc_log "payload discovery failed"
-    exit 1
-fi
-PAYLOAD_DIR=$TC_RESOLVED_PAYLOAD_DIR
-tc_write_payload_state "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME" "$TC_RESOLVED_PAYLOAD_DEVICE"
-tc_set_payload_log_dir "$PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME"
-if tc_payload_log_dir_ready; then
-    tc_log "payload runtime logs enabled at $TC_PAYLOAD_LOG_DIR"
-else
-    tc_log "payload runtime log directory unavailable at $TC_PAYLOAD_LOG_DIR"
 fi
 
 tc_start_mdns_capture
 
-SMBD_SRC=$(tc_find_payload_smbd "$PAYLOAD_DIR") || {
-    tc_log "payload discovery failed: missing smbd binary in $PAYLOAD_DIR"
+if ! tc_stage_disk_runtime "$BIND_INTERFACES"; then
     exit 1
-}
-
-NBNS_SRC=
-if NBNS_SRC=$(tc_find_payload_nbns "$PAYLOAD_DIR"); then
-    :
-else
-    NBNS_SRC=
 fi
-
-tc_stage_runtime "$PAYLOAD_DIR" "$SMBD_SRC" "$NBNS_SRC"
-tc_generate_smb_conf "$PAYLOAD_DIR" "$BIND_INTERFACES"
-tc_log "runtime staging complete under $RAM_ROOT"
 
 tc_start_smbd || {
     tc_log "smbd startup failed: process was not observed"

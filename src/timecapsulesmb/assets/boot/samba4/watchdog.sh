@@ -26,7 +26,11 @@ tc_log "watchdog payload: device=${TC_PAYLOAD_DEVICE:-none} root=${TC_PAYLOAD_VO
 
 while :; do
     if tc_watchdog_iteration; then
-        tc_sleep_with_runtime_checks "$STEADY_POLL_SECONDS"
+        if tc_sleep_with_runtime_checks "$STEADY_POLL_SECONDS"; then
+            :
+        else
+            tc_log "watchdog steady check interrupted; running recovery pass"
+        fi
     else
         sleep "$RECOVERY_POLL_SECONDS"
     fi

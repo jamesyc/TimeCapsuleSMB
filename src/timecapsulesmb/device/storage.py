@@ -345,6 +345,12 @@ def volume_root_is_writable_conn(connection: SshConnection, volume_root: str) ->
     return proc.returncode == 0
 
 
+def ordered_payload_candidate_volumes(
+    volumes: tuple[MaStVolume, ...],
+) -> tuple[MaStVolume, ...]:
+    return tuple(volume for volume in volumes if volume.builtin) + tuple(volume for volume in volumes if not volume.builtin)
+
+
 def select_payload_home_conn(
     connection: SshConnection,
     volumes: tuple[MaStVolume, ...],
@@ -352,8 +358,7 @@ def select_payload_home_conn(
     *,
     wait_seconds: int,
 ) -> PayloadHome:
-    ordered = tuple(volume for volume in volumes if volume.builtin) + tuple(volume for volume in volumes if not volume.builtin)
-    for volume in ordered:
+    for volume in ordered_payload_candidate_volumes(volumes):
         if not ensure_mast_volume_mounted_conn(connection, volume, wait_seconds=wait_seconds):
             continue
         if not volume_root_is_writable_conn(connection, volume.volume_root):

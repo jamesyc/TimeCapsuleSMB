@@ -336,33 +336,36 @@ This matters because:
    - default: `bridge0`
    - timeout: `60` seconds after an initial `1` second delay
 6. reads valid HFS partitions from `/usr/bin/acp -A MaSt`
-7. pauses `10` seconds before loading share volumes
-8. wakes or mounts every valid `MaSt` volume:
-   - first asks Apple `diskd.useVolume`
-   - waits `APPLE_MOUNT_WAIT_SECONDS` seconds from flash config, default `30`
-   - then falls back to a bounded `mount_hfs` attempt with a `30` second command timeout
-9. builds RAM state files under `/mnt/Memory/samba4/var`:
-   - `volumes.tsv`
+7. writes the current `MaSt` rows to the runtime topology signature
+8. requests `diskd.useVolume` for every valid `MaSt` volume
+9. polls all candidate volumes for one shared `APPLE_MOUNT_WAIT_SECONDS` window, default `30`
+10. falls back to bounded `mount_hfs` attempts only for volumes still unmounted after that shared window
+11. builds RAM state files under `/mnt/Memory/samba4/var`:
    - `shares.tsv`
    - `adisk.tsv`
    - `topology.signature`
-10. applies share path rules:
+12. applies share path rules:
    - external volumes always share `/Volumes/dkN`
    - internal volumes share `/Volumes/dkN/ShareRoot` unless `INTERNAL_SHARE_USE_DISK_ROOT=1`
    - internal `ShareRoot` is created when needed
-11. resolves the persistent payload by scanning `MaSt` volumes in internal-first order for `<PAYLOAD_DIR_NAME>`
-12. writes `payload.tsv` so the watchdog can find the selected payload volume/device later
-13. configures payload runtime logs under `<payload>/logs/`
-14. starts the mDNS snapshot capture phase without taking over UDP 5353 yet
-15. copies `smbd`, auth files, and optional `nbns-advertiser` into RAM
-16. generates `/mnt/Memory/samba4/etc/smb.conf` directly from runtime state
-17. starts `smbd` and waits up to `15` seconds for the process to appear
-18. starts the final `mdns-advertiser` phase, which takes over UDP 5353 and advertises every generated share plus the captured Apple records when available
-19. starts the NBNS responder if `NBNS_ENABLED=1`
-20. starts `watchdog.sh` with no disk/root positional arguments
+13. resolves the persistent payload by scanning mounted `MaSt` volumes in internal-first order for `<PAYLOAD_DIR_NAME>`
+14. writes `payload.tsv` so the watchdog can find the selected payload volume/device later
+15. configures payload runtime logs under `<payload>/logs/`
+16. starts the mDNS snapshot capture phase without taking over UDP 5353 yet
+17. copies `smbd`, auth files, and optional `nbns-advertiser` into RAM
+18. generates `/mnt/Memory/samba4/etc/smb.conf` directly from runtime state
+19. starts `smbd` and waits up to `15` seconds for the process to appear
+20. starts the final `mdns-advertiser` phase, which takes over UDP 5353 and advertises every generated share plus the captured Apple records when available
+21. starts the NBNS responder if `NBNS_ENABLED=1`
+22. starts `watchdog.sh` with no disk/root positional arguments
 
 The boot log is written to:
 - `/mnt/Memory/samba4/var/rc.local.log`
+
+Supported `start-samba.sh` modes:
+- `--print-topology-signature` prints the current `MaSt` topology for watchdog comparison.
+- `--refresh-disk-state` is diagnostic-only: it refreshes disk state files but does not stop services, regenerate live `smb.conf`, or restart Samba, mDNS, NBNS, or watchdog.
+- `--reload-disk-runtime` is the live recovery path used by watchdog: it refreshes disk state, restages the runtime, regenerates `smb.conf`, and starts managed services.
 
 Long-running process logs are written under:
 - `<payload>/logs/watchdog.log`
@@ -405,8 +408,8 @@ Current behavior:
 - polls every `10` seconds while any managed service is unhealthy
 - polls every `300` seconds once all managed services are healthy
 - re-reads `MaSt` through `start-samba.sh --print-topology-signature`
-- if disk topology changed, re-execs `/mnt/Flash/start-samba.sh --watchdog-restart`
-- remounts every active share volume from `shares.tsv`, or every known volume from `volumes.tsv` if share state is not available
+- if disk topology changed, re-execs `/mnt/Flash/start-samba.sh --reload-disk-runtime`
+- remounts every active share volume from `shares.tsv`; if share state is unavailable, the runtime is treated as unhealthy and reloaded
 - if the payload volume is unavailable, stops managed Samba/mDNS/NBNS and retries later
 - if only `smbd` is missing, starts it again from the RAM-staged binary and config
 - if only `mdns-advertiser` is missing, restarts it from the existing `adisk.tsv`

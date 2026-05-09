@@ -4375,7 +4375,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("host: root@10.0.0.2", text)
         self.assertIn("volume root: resolved from MaSt at deploy time", text)
         self.assertIn("payload dir: resolved from MaSt at deploy time/.samba4", text)
-        self.assertIn(f"Apple mount wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s", text)
+        self.assertIn(f"diskd.useVolume wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s", text)
         self.assertIn("generated flash runtime config", text)
         self.assertIn("generated smbpasswd", text)
         self.assertNotIn("rendered:smb.conf.template", text)
