@@ -60,7 +60,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.set_stage("confirm_activation")
             print(f"This will start the deployed Samba payload on the {device_name}.")
             print(color_red(NETBSD4_REBOOT_GUIDANCE))
-            answer = input("Continue with NetBSD4 activation? [y/N]: ").strip().lower()
+            try:
+                answer = input("Continue with NetBSD4 activation? [y/N]: ").strip().lower()
+            except EOFError:
+                message = "Running `activate` requires confirmation when stdin is not interactive. Use `activate --yes` in a non-interactive environment."
+                print(message)
+                command_context.fail_with_error(message)
+                return 1
             if answer not in {"y", "yes"}:
                 print("Activation cancelled.")
                 command_context.cancel_with_error("Cancelled by user at NetBSD4 activation confirmation prompt.")

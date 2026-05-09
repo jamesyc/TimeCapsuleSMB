@@ -4787,6 +4787,25 @@ class CliTests(unittest.TestCase):
         self.assertEqual(command_context.finish.call_args.kwargs["result"], "cancelled")
         self.assertIn("Cancelled by user at NetBSD4 activation confirmation prompt.", command_context.finish.call_args.kwargs["error"])
 
+    def test_activate_prompt_eof_reports_non_interactive_error(self) -> None:
+        output = io.StringIO()
+        command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_compatibility())
+        values = self.make_valid_env()
+        with mock.patch("timecapsulesmb.cli.activate.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                with mock.patch("builtins.input", side_effect=EOFError):
+                    with mock.patch("timecapsulesmb.cli.activate.run_remote_actions") as actions_mock:
+                        with mock.patch("timecapsulesmb.cli.activate.CommandContext", return_value=command_context):
+                            with redirect_stdout(output):
+                                rc = activate.main([])
+        self.assertEqual(rc, 1)
+        actions_mock.assert_not_called()
+        message = "Running `activate` requires confirmation when stdin is not interactive. Use `activate --yes` in a non-interactive environment."
+        self.assertIn(message, output.getvalue())
+        command_context.finish.assert_called_once()
+        self.assertEqual(command_context.finish.call_args.kwargs["result"], "failure")
+        self.assertEqual(command_context.finish.call_args.kwargs["error"], message)
+
     def test_activate_yes_runs_idempotent_actions_and_verifies(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
