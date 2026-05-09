@@ -131,7 +131,6 @@ The actual working split is:
   - `/mnt/Flash/dfree.sh`
   - `/mnt/Flash/mdns-advertiser`
   - `/mnt/Flash/tcapsulesmb.conf`
-  - `/mnt/Flash/allmdns.txt`
   - `/mnt/Flash/applemdns.txt`
 - transient runtime on RAM disk:
   - `/mnt/Memory/samba4`
@@ -257,9 +256,7 @@ So the current system does not fully replace Apple mDNS with a hardcoded record 
 - [bin/mdns/mdns-advertiser](bin/mdns/mdns-advertiser)
 
 This helper:
-- can save a raw LAN-wide mDNS snapshot to `/mnt/Flash/allmdns.txt`
 - can generate an AirPort-only Apple identity snapshot at `/mnt/Flash/applemdns.txt`
-- can still fall back to a filtered Apple identity capture when direct generation fails
 - gracefully kills Apple `mDNSResponder` during takeover
 - replays Apple snapshot records afterward
 - overrides only:
@@ -269,7 +266,7 @@ This helper:
 
 Current practical result:
 - Our `_smb._tcp` and `_adisk._tcp` remain authoritative
-- Apple `_airport._tcp` and other records can be preserved
+- Apple `_airport._tcp` can be preserved without waiting for a LAN capture
 - snapshot replay preserves non-ASCII or binary host targets via `HOST_HEX`
 
 ## Bonjour Discovery Boundaries
@@ -285,26 +282,19 @@ Do not merge `_airport`, `_smb`, and `_device-info` records inside `bonjour.disc
 
 ## Apple mDNS Snapshot File
 
-The mDNS snapshot files are:
-
-- `/mnt/Flash/allmdns.txt`
+The runtime mDNS snapshot file is:
 - `/mnt/Flash/applemdns.txt`
 
 Current behavior:
 - `start-samba.sh` gives Apple a short chance to start its own stack
 - `mdns-advertiser --save-airport-snapshot` writes a local `_airport._tcp` identity into `applemdns.txt` from values read directly on the device
-- if direct generation fails, `mdns-advertiser --save-all-snapshot` can still capture a raw LAN-wide snapshot into `allmdns.txt`
-- the fallback `mdns-advertiser --save-snapshot` path captures only the local Apple identity into `applemdns.txt`
+- if direct generation fails, startup does not run mDNS capture
 - `mdns-advertiser --load-snapshot` then kills `mDNSResponder` and replays the snapshot
 - if snapshot load fails, the helper falls back to the generated managed records
 
-The raw `allmdns.txt` file is intentionally diagnostic and may contain all Apple records that were captured on the LAN.
-
 The `applemdns.txt` file is the one used for replay:
-- the preferred path contains a generated `_airport._tcp` record for the local unit
-- the fallback capture path keeps only records tied to the matching local `_airport._tcp` identity
-- if a fallback capture cannot be tied back to the local unit, `applemdns.txt` is not refreshed
-- if no local identity MACs are available, the helper saves the raw capture for diagnostics but still refuses to trust it for replay
+- it contains a generated `_airport._tcp` record for the local unit
+- if generation fails, the previous snapshot remains in place and the final advertiser can still use generated records if needed
 
 However, on replay:
 - `_smb._tcp` from the snapshot is ignored
@@ -354,11 +344,11 @@ This matters because:
 13. resolves the persistent payload by scanning mounted `MaSt` volumes in internal-first order for `<PAYLOAD_DIR_NAME>`
 14. writes `payload.tsv` so the watchdog can find the selected payload volume/device later
 15. configures payload runtime logs under `<payload>/logs/`
-16. generates the mDNS AirPort snapshot without taking over UDP 5353 yet, falling back to capture if needed
+16. generates the mDNS AirPort snapshot without taking over UDP 5353 yet
 17. copies `smbd`, auth files, and optional `nbns-advertiser` into RAM
 18. generates `/mnt/Memory/samba4/etc/smb.conf` directly from runtime state
 19. starts `smbd` and waits up to `15` seconds for the process to appear
-20. starts the final `mdns-advertiser` phase, which takes over UDP 5353 and advertises every generated share plus the captured Apple records when available
+20. starts the final `mdns-advertiser` phase, which takes over UDP 5353 and advertises every generated share plus the generated Apple snapshot record when available
 21. starts the NBNS responder if `NBNS_ENABLED=1`
 22. starts `watchdog.sh` with no disk/root positional arguments
 

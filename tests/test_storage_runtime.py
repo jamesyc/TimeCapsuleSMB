@@ -1589,51 +1589,6 @@ class StorageRuntimeTests(unittest.TestCase):
         self.assertIn("watchdog steady check interrupted; running recovery pass", log_text)
         self.assertNotIn("recovery sleep", proc.stdout)
 
-    def test_common_mdns_capture_wait_times_out_and_continues_startup(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            events = tmp_path / "events.log"
-            script = tmp_path / "mdns-capture-timeout.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    MDNS_CAPTURE_WAIT_SECONDS=2
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    TC_MDNS_CAPTURE_PID=12345
-                    TC_MDNS_CAPTURE_STATUS_FILE="$RAM_VAR/mdns-capture.status.test"
-                    kill() {{ echo "kill $*" >>{events}; return 0; }}
-                    wait() {{ echo "wait $*" >>{events}; return 0; }}
-                    sleep() {{ echo "sleep $*" >>{events}; }}
-                    stop_runtime_process_by_ucomm() {{ echo "stop $1 $2" >>{events}; return 0; }}
-                    tc_wait_for_mdns_capture
-                    [ -z "$TC_MDNS_CAPTURE_PID" ] && echo pid-cleared
-                    [ -z "$TC_MDNS_CAPTURE_STATUS_FILE" ] && echo status-cleared
-                    cat {events}
-                    cat "$RAM_VAR/test.log"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("pid-cleared\n", proc.stdout)
-        self.assertIn("status-cleared\n", proc.stdout)
-        self.assertIn("stop mdns-advertiser mdns-advertiser\n", proc.stdout)
-        self.assertIn("kill -9 12345\n", proc.stdout)
-        self.assertIn(
-            "mDNS snapshot capture timed out after 2s; stopping capture and continuing with generated records if needed",
-            proc.stdout,
-        )
-
     def test_common_mdns_and_nbns_write_payload_logs_in_normal_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -1710,7 +1665,7 @@ class StorageRuntimeTests(unittest.TestCase):
         self.assertIn("nbns-stdout", proc.stdout)
         self.assertIn("nbns-stderr", proc.stdout)
 
-    def test_common_mdns_generation_falls_back_to_capture_when_airport_snapshot_fails(self) -> None:
+    def test_common_mdns_generation_failure_does_not_run_capture(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
@@ -1721,10 +1676,11 @@ class StorageRuntimeTests(unittest.TestCase):
                 "  echo airport-fail >&2\n"
                 "  exit 2\n"
                 "fi\n"
-                "echo capture-ok\n"
+                "echo unexpected-second-run\n"
+                "exit 9\n"
             )
             (flash / "mdns-advertiser").chmod(0o755)
-            script = tmp_path / "mdns-generation-fallback.sh"
+            script = tmp_path / "mdns-generation-failure.sh"
             script.write_text(
                 textwrap.dedent(
                     f"""\
@@ -1760,10 +1716,10 @@ class StorageRuntimeTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("launching mdns-advertiser airport snapshot", proc.stdout)
         self.assertIn("airport-fail", proc.stdout)
-        self.assertIn("mDNS AirPort snapshot generation failed; falling back to mDNS capture", proc.stdout)
-        self.assertIn("launching mdns-advertiser capture", proc.stdout)
-        self.assertIn("--save-all-snapshot", proc.stdout)
-        self.assertIn("capture-ok", proc.stdout)
+        self.assertIn("mDNS AirPort snapshot generation failed; final advertiser will use generated records if needed", proc.stdout)
+        self.assertNotIn("launching mdns-advertiser capture", proc.stdout)
+        self.assertNotIn("--save-all-snapshot", proc.stdout)
+        self.assertNotIn("unexpected-second-run", proc.stdout)
 
     def test_common_boot_mount_requests_all_apple_mounts_before_shared_wait(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
