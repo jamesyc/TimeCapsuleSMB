@@ -57,6 +57,8 @@ LEGACY_PREFIX_NETBSD4BE=/root/tc-netbsd4be
 
 tc_init_runtime_env() {
     APPLE_MOUNT_WAIT_SECONDS=${APPLE_MOUNT_WAIT_SECONDS:-30}
+    MAST_DISCOVERY_WAIT_SECONDS=${MAST_DISCOVERY_WAIT_SECONDS:-120}
+    WATCHDOG_MOUNT_WAIT_SECONDS=${WATCHDOG_MOUNT_WAIT_SECONDS:-$APPLE_MOUNT_WAIT_SECONDS}
     INTERNAL_SHARE_USE_DISK_ROOT=${INTERNAL_SHARE_USE_DISK_ROOT:-0}
     NBNS_ENABLED=${NBNS_ENABLED:-0}
     TC_SMBD_DISK_LOGGING_ENABLED=${SMBD_DEBUG_LOGGING:-0}
@@ -471,9 +473,14 @@ mount_hfs_bounded() {
     return 1
 }
 
-tc_wake_or_mount_volume() {
+# Disk mount policy helpers. Boot and watchdog share the low-level
+# Apple-first flow, but keep separate entry points so their timing can diverge.
+tc_wake_or_mount_volume_with_policy() {
     device_path=$1
     volume_root=$2
+    apple_wait_seconds=$3
+    mount_timeout_seconds=$4
+    mount_context=$5
 
     if [ -z "$device_path" ] || [ -z "$volume_root" ]; then
         return 1
@@ -484,18 +491,32 @@ tc_wake_or_mount_volume() {
     fi
 
     mkdir -p "$volume_root"
+    tc_log "$mount_context: requesting Apple mount for $volume_root"
     /usr/bin/acp rpc diskd.useVolume path:s:"$volume_root" >/dev/null 2>&1 || true
     attempt=0
-    while [ "$attempt" -lt "$APPLE_MOUNT_WAIT_SECONDS" ]; do
+    while [ "$attempt" -lt "$apple_wait_seconds" ]; do
         if is_volume_root_mounted "$volume_root"; then
-            tc_log "Apple mounted $volume_root after ${attempt}s"
+            tc_log "$mount_context: Apple mounted $volume_root after ${attempt}s"
             return 0
         fi
         attempt=$((attempt + 1))
         sleep 1
     done
 
-    mount_hfs_bounded "$device_path" "$volume_root" 30 "MaSt volume $volume_root"
+    tc_log "$mount_context: Apple mount wait timed out after ${apple_wait_seconds}s for $volume_root"
+    mount_hfs_bounded "$device_path" "$volume_root" "$mount_timeout_seconds" "$mount_context"
+}
+
+tc_wake_or_mount_volume() {
+    tc_wake_or_mount_volume_with_policy "$1" "$2" "$APPLE_MOUNT_WAIT_SECONDS" 30 "MaSt volume $2"
+}
+
+tc_boot_wake_or_mount_volume() {
+    tc_wake_or_mount_volume "$1" "$2"
+}
+
+tc_watchdog_wake_or_mount_volume() {
+    tc_wake_or_mount_volume_with_policy "$1" "$2" "$WATCHDOG_MOUNT_WAIT_SECONDS" 30 "watchdog volume $2"
 }
 
 tc_plist_key() {
@@ -646,6 +667,37 @@ tc_read_mast_volumes_to() {
     [ -s "$out_file" ]
 }
 
+tc_wait_for_mast_volumes_to() {
+    out_file=$1
+    raw_file=$2
+    timeout_seconds=${3:-$MAST_DISCOVERY_WAIT_SECONDS}
+    elapsed=0
+    sleep_seconds=2
+
+    while :; do
+        if tc_read_mast_volumes_to "$out_file" "$raw_file"; then
+            if [ "$elapsed" -gt 0 ]; then
+                tc_log "MaSt discovery succeeded after ${elapsed}s"
+            fi
+            return 0
+        fi
+
+        if [ "$elapsed" -ge "$timeout_seconds" ]; then
+            tc_log "MaSt discovery timed out after ${elapsed}s with no valid HFS volumes"
+            return 1
+        fi
+
+        if [ "$elapsed" -eq 0 ]; then
+            tc_log "MaSt discovery not ready; waiting up to ${timeout_seconds}s for valid HFS volumes"
+        elif [ $((elapsed % 10)) -eq 0 ]; then
+            tc_log "MaSt discovery still waiting after ${elapsed}s"
+        fi
+
+        sleep "$sleep_seconds"
+        elapsed=$((elapsed + sleep_seconds))
+    done
+}
+
 tc_print_topology_signature() {
     tmp_dir="/tmp/tcapsulesmb-topology.$$"
     mkdir -p "$tmp_dir"
@@ -767,14 +819,47 @@ tc_volume_is_writable() {
     return 1
 }
 
-tc_initialize_internal_share_root() {
-    volume_root=$1
-    data_root="$volume_root/ShareRoot"
-    marker="$data_root/.com.apple.timemachine.supported"
+# Share-state helpers. These convert mounted MaSt volumes into the runtime
+# state files used by Samba and mDNS.
+tc_share_path_for_volume() {
+    builtin=$1
+    volume_root=$2
 
-    mkdir -p "$data_root"
+    if [ "$builtin" = "1" ] && [ "$INTERNAL_SHARE_USE_DISK_ROOT" != "1" ]; then
+        echo "$volume_root/ShareRoot"
+    else
+        echo "$volume_root"
+    fi
+}
+
+tc_prepare_time_machine_marker() {
+    share_path=$1
+    marker="$share_path/.com.apple.timemachine.supported"
+
     : >"$marker"
-    echo "$data_root"
+}
+
+tc_prepare_share_path() {
+    builtin=$1
+    volume_root=$2
+    share_path=$(tc_share_path_for_volume "$builtin" "$volume_root")
+
+    if [ "$share_path" != "$volume_root" ]; then
+        mkdir -p "$share_path"
+    fi
+    tc_prepare_time_machine_marker "$share_path"
+    echo "$share_path"
+}
+
+tc_append_share_state_row() {
+    share_name=$1
+    share_path=$2
+    part_device=$3
+    builtin=$4
+    part_uuid=$5
+
+    printf '%s\t%s\t%s\t%s\t%s\n' "$share_name" "$share_path" "$part_device" "$builtin" "$part_uuid" >>"$TC_SHARES_TSV"
+    printf '%s\t%s\t%s\t%s\n' "$share_name" "$part_device" "$part_uuid" "$TC_ADISK_DISK_ADVF" >>"$TC_ADISK_TSV"
 }
 
 tc_build_share_state() {
@@ -793,7 +878,7 @@ tc_build_share_state() {
         [ -n "$disk_device$builtin$part_device$volume_root$part_name$part_uuid" ]; do
         [ -n "$part_device" ] || continue
         device_path="/dev/$part_device"
-        if ! tc_wake_or_mount_volume "$device_path" "$volume_root"; then
+        if ! tc_boot_wake_or_mount_volume "$device_path" "$volume_root"; then
             tc_log "share skipped: could not mount $device_path at $volume_root"
             continue
         fi
@@ -802,16 +887,11 @@ tc_build_share_state() {
             continue
         fi
 
-        if [ "$builtin" = "1" ] && [ "$INTERNAL_SHARE_USE_DISK_ROOT" != "1" ]; then
-            share_path=$(tc_initialize_internal_share_root "$volume_root")
-        else
-            share_path=$volume_root
-        fi
+        share_path=$(tc_prepare_share_path "$builtin" "$volume_root")
         base_name=$(tc_sanitize_share_name "$part_name" "$part_device")
         share_name_budget=$(tc_adisk_share_name_budget "$part_device" "$part_uuid" "$TC_ADISK_DISK_ADVF")
         share_name=$(tc_unique_share_name "$base_name" "$part_device" "$share_name_budget")
-        printf '%s\t%s\t%s\t%s\t%s\n' "$share_name" "$share_path" "$part_device" "$builtin" "$part_uuid" >>"$TC_SHARES_TSV"
-        printf '%s\t%s\t%s\t%s\n' "$share_name" "$part_device" "$part_uuid" "$TC_ADISK_DISK_ADVF" >>"$TC_ADISK_TSV"
+        tc_append_share_state_row "$share_name" "$share_path" "$part_device" "$builtin" "$part_uuid"
         tc_log "share prepared: $share_name -> $share_path uuid=$part_uuid builtin=$builtin"
     done <"$volumes_file"
 
@@ -830,7 +910,7 @@ tc_mount_active_volumes_from_state() {
     if [ "$state_file" = "$TC_SHARES_TSV" ]; then
         while IFS="$TC_TAB" read -r share_name share_path part_device builtin part_uuid; do
             [ -n "$part_device" ] || continue
-            if ! tc_wake_or_mount_volume "/dev/$part_device" "/Volumes/$part_device"; then
+            if ! tc_watchdog_wake_or_mount_volume "/dev/$part_device" "/Volumes/$part_device"; then
                 tc_log "active share volume unavailable: /dev/$part_device at /Volumes/$part_device"
                 status=1
             fi
@@ -838,7 +918,7 @@ tc_mount_active_volumes_from_state() {
     else
         while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid; do
             [ -n "$part_device" ] || continue
-            if ! tc_wake_or_mount_volume "/dev/$part_device" "$volume_root"; then
+            if ! tc_watchdog_wake_or_mount_volume "/dev/$part_device" "$volume_root"; then
                 tc_log "active MaSt volume unavailable: /dev/$part_device at $volume_root"
                 status=1
             fi
@@ -868,7 +948,7 @@ tc_resolve_payload() {
             [ -n "$part_device" ] || continue
             [ "$builtin" = "$desired_builtin" ] || continue
             candidate="$volume_root/$PAYLOAD_DIR_NAME"
-            if tc_wake_or_mount_volume "/dev/$part_device" "$volume_root" && tc_verify_payload_dir "$candidate"; then
+            if tc_boot_wake_or_mount_volume "/dev/$part_device" "$volume_root" && tc_verify_payload_dir "$candidate"; then
                 TC_RESOLVED_PAYLOAD_DIR=$candidate
                 TC_RESOLVED_PAYLOAD_VOLUME=$volume_root
                 TC_RESOLVED_PAYLOAD_DEVICE="/dev/$part_device"
@@ -906,7 +986,7 @@ tc_read_payload_state() {
 
 tc_payload_available() {
     tc_read_payload_state || return 1
-    tc_wake_or_mount_volume "$TC_PAYLOAD_DEVICE" "$TC_PAYLOAD_VOLUME" && tc_verify_payload_dir "$TC_PAYLOAD_DIR"
+    tc_watchdog_wake_or_mount_volume "$TC_PAYLOAD_DEVICE" "$TC_PAYLOAD_VOLUME" && tc_verify_payload_dir "$TC_PAYLOAD_DIR"
 }
 
 tc_find_payload_smbd() {

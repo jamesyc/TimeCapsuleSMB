@@ -225,6 +225,59 @@ class StorageRuntimeTests(unittest.TestCase):
             with self.subTest(fixture=fixture.name):
                 self.assertEqual(parse_mast_plist(fixture.raw), fixture.expected)
 
+    def test_common_waits_for_mast_volumes_to_become_available(self) -> None:
+        fixture = SHELL_MAST_FIXTURES[0]
+        raw_text = fixture.raw.decode("utf-8", errors="replace") if isinstance(fixture.raw, bytes) else fixture.raw
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            acp_counter = tmp_path / "acp-count"
+            acp = tmp_path / "acp"
+            acp.write_text(
+                "#!/bin/sh\n"
+                "count=0\n"
+                f"if [ -f {shlex.quote(str(acp_counter))} ]; then\n"
+                f"    count=$(cat {shlex.quote(str(acp_counter))})\n"
+                "fi\n"
+                "count=$((count + 1))\n"
+                f"echo \"$count\" >{shlex.quote(str(acp_counter))}\n"
+                "if [ \"$count\" -lt 3 ]; then\n"
+                "    exit 1\n"
+                "fi\n"
+                "cat <<'OUT'\n"
+                f"{raw_text}\n"
+                "OUT\n"
+            )
+            acp.chmod(0o755)
+            script = tmp_path / "wait-mast.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    sleep() {{ :; }}
+                    tc_wait_for_mast_volumes_to "$TC_VOLUMES_TSV" "$TC_MAST_RAW" 6
+                    printf 'count=%s\\n' "$(cat {acp_counter})"
+                    cat "$TC_VOLUMES_TSV"
+                    cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("count=3\n", proc.stdout)
+        self.assertIn(self.expected_topology_tsv(fixture, volumes).splitlines()[0], proc.stdout)
+        self.assertIn("MaSt discovery not ready; waiting up to 6s for valid HFS volumes", proc.stdout)
+        self.assertIn("MaSt discovery succeeded after 4s", proc.stdout)
+
     def test_select_payload_home_prefers_writable_internal_volume(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")
         internal = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
@@ -462,9 +515,12 @@ class StorageRuntimeTests(unittest.TestCase):
                     self.assertEqual(proc.returncode, 0, proc.stderr)
                     self.assertEqual(proc.stdout, expected_stdout)
                     for volume in fixture.expected:
+                        volume_root = Path(self.mapped_volume_root(volume, volumes))
                         if volume.builtin:
-                            marker = Path(self.mapped_volume_root(volume, volumes)) / "ShareRoot/.com.apple.timemachine.supported"
-                            self.assertTrue(marker.exists(), str(marker))
+                            marker = volume_root / "ShareRoot/.com.apple.timemachine.supported"
+                        else:
+                            marker = volume_root / ".com.apple.timemachine.supported"
+                        self.assertTrue(marker.exists(), str(marker))
 
     def test_common_share_state_internal_disk_root_override_matches_python_policy(self) -> None:
         for fixture in SHELL_MAST_FIXTURES:
@@ -519,7 +575,8 @@ class StorageRuntimeTests(unittest.TestCase):
                     cat "$TC_SHARES_TSV"
                     printf 'adisk\\n'
                     cat "$TC_ADISK_TSV"
-                    printf 'marker=%s\\n' "$([ -f {volumes}/dk2/ShareRoot/.com.apple.timemachine.supported ] && echo yes || echo no)"
+                    printf 'internal_marker=%s\\n' "$([ -f {volumes}/dk2/ShareRoot/.com.apple.timemachine.supported ] && echo yes || echo no)"
+                    printf 'external_marker=%s\\n' "$([ -f {volumes}/dk3/.com.apple.timemachine.supported ] && echo yes || echo no)"
                     """
                 )
             )
@@ -532,7 +589,8 @@ class StorageRuntimeTests(unittest.TestCase):
         self.assertIn(f"Data (dk3)\t{volumes}/dk3\tdk3\t0\tbbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\n", proc.stdout)
         self.assertIn("Data\tdk2\taaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\t0x1093\n", proc.stdout)
         self.assertIn("Data (dk3)\tdk3\tbbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\t0x1093\n", proc.stdout)
-        self.assertIn("marker=yes\n", proc.stdout)
+        self.assertIn("internal_marker=yes\n", proc.stdout)
+        self.assertIn("external_marker=yes\n", proc.stdout)
 
     def test_common_build_share_state_bounds_names_to_adisk_txt_budget(self) -> None:
         long_name = "é" * 100
@@ -944,6 +1002,41 @@ class StorageRuntimeTests(unittest.TestCase):
         self.assertIn(f"rpc diskd.useVolume path:s:{volumes}/dk2", acp_log)
         self.assertFalse(fallback_exists)
 
+    def test_common_boot_and_watchdog_mount_policies_use_separate_waits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "mount-policies.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    APPLE_MOUNT_WAIT_SECONDS=7
+                    WATCHDOG_MOUNT_WAIT_SECONDS=2
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR" {volumes}/dk2
+                    tc_wake_or_mount_volume_with_policy() {{
+                        printf '%s %s %s %s %s\\n' "$1" "$2" "$3" "$4" "$5"
+                        return 1
+                    }}
+                    tc_boot_wake_or_mount_volume /dev/dk2 {volumes}/dk2 || true
+                    tc_watchdog_wake_or_mount_volume /dev/dk2 {volumes}/dk2 || true
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        lines = proc.stdout.splitlines()
+        self.assertEqual(lines[0], f"/dev/dk2 {volumes}/dk2 7 30 MaSt volume {volumes}/dk2")
+        self.assertEqual(lines[1], f"/dev/dk2 {volumes}/dk2 2 30 watchdog volume {volumes}/dk2")
+
     def test_common_watchdog_iteration_mounts_active_share_volumes_before_process_checks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -965,7 +1058,7 @@ class StorageRuntimeTests(unittest.TestCase):
                     EOF
                     tc_topology_changed() {{ return 1; }}
                     tc_payload_available() {{ echo payload; return 0; }}
-                    tc_wake_or_mount_volume() {{ echo "mount $1 $2"; return 0; }}
+                    tc_watchdog_wake_or_mount_volume() {{ echo "mount $1 $2"; return 0; }}
                     tc_start_smbd_if_needed() {{ echo smbd; }}
                     runtime_process_present_by_ucomm() {{ return 0; }}
                     tc_watchdog_iteration

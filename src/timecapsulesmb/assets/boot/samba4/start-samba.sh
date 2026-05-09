@@ -39,7 +39,7 @@ TC_NET_IFACE_IP=${BIND_INTERFACES#127.0.0.1/8 }
 TC_NET_IFACE_IP=${TC_NET_IFACE_IP%%/*}
 tc_prepare_local_hostname_resolution
 
-if ! tc_read_mast_volumes_to "$TC_VOLUMES_TSV" "$TC_MAST_RAW"; then
+if ! tc_wait_for_mast_volumes_to "$TC_VOLUMES_TSV" "$TC_MAST_RAW" "$MAST_DISCOVERY_WAIT_SECONDS"; then
     tc_log "MaSt discovery failed or returned no valid HFS volumes"
     exit 1
 fi
