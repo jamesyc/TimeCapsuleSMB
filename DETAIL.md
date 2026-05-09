@@ -258,7 +258,8 @@ So the current system does not fully replace Apple mDNS with a hardcoded record 
 
 This helper:
 - can save a raw LAN-wide mDNS snapshot to `/mnt/Flash/allmdns.txt`
-- can save a filtered Apple identity snapshot to `/mnt/Flash/applemdns.txt`
+- can generate an AirPort-only Apple identity snapshot at `/mnt/Flash/applemdns.txt`
+- can still fall back to a filtered Apple identity capture when direct generation fails
 - gracefully kills Apple `mDNSResponder` during takeover
 - replays Apple snapshot records afterward
 - overrides only:
@@ -291,16 +292,18 @@ The mDNS snapshot files are:
 
 Current behavior:
 - `start-samba.sh` gives Apple a short chance to start its own stack
-- `mdns-advertiser --save-all-snapshot` captures a raw LAN-wide snapshot into `allmdns.txt`
-- `mdns-advertiser --save-snapshot` captures only the local Apple identity into `applemdns.txt`
+- `mdns-advertiser --save-airport-snapshot` writes a local `_airport._tcp` identity into `applemdns.txt` from values read directly on the device
+- if direct generation fails, `mdns-advertiser --save-all-snapshot` can still capture a raw LAN-wide snapshot into `allmdns.txt`
+- the fallback `mdns-advertiser --save-snapshot` path captures only the local Apple identity into `applemdns.txt`
 - `mdns-advertiser --load-snapshot` then kills `mDNSResponder` and replays the snapshot
 - if snapshot load fails, the helper falls back to the generated managed records
 
 The raw `allmdns.txt` file is intentionally diagnostic and may contain all Apple records that were captured on the LAN.
 
-The filtered `applemdns.txt` file is the one used for replay:
-- when local AirPort identity MACs are available, snapshot save keeps only records tied to the matching local `_airport._tcp` identity
-- if a new capture cannot be tied back to the local unit, `applemdns.txt` is not refreshed
+The `applemdns.txt` file is the one used for replay:
+- the preferred path contains a generated `_airport._tcp` record for the local unit
+- the fallback capture path keeps only records tied to the matching local `_airport._tcp` identity
+- if a fallback capture cannot be tied back to the local unit, `applemdns.txt` is not refreshed
 - if no local identity MACs are available, the helper saves the raw capture for diagnostics but still refuses to trust it for replay
 
 However, on replay:
@@ -351,7 +354,7 @@ This matters because:
 13. resolves the persistent payload by scanning mounted `MaSt` volumes in internal-first order for `<PAYLOAD_DIR_NAME>`
 14. writes `payload.tsv` so the watchdog can find the selected payload volume/device later
 15. configures payload runtime logs under `<payload>/logs/`
-16. starts the mDNS snapshot capture phase without taking over UDP 5353 yet
+16. generates the mDNS AirPort snapshot without taking over UDP 5353 yet, falling back to capture if needed
 17. copies `smbd`, auth files, and optional `nbns-advertiser` into RAM
 18. generates `/mnt/Memory/samba4/etc/smb.conf` directly from runtime state
 19. starts `smbd` and waits up to `15` seconds for the process to appear
@@ -536,6 +539,7 @@ At runtime it can:
 - advertise managed `_adisk._tcp.local.`
 - advertise loaded snapshot records
 - optionally advertise fallback generated `_airport._tcp.local.`
+- generate an AirPort-only Apple snapshot with `--save-airport-snapshot`
 - save an Apple snapshot with `--save-snapshot`
 - load and replay an Apple snapshot with `--load-snapshot`
 - answer A queries for loaded snapshot host targets using the current configured IPv4
@@ -547,7 +551,7 @@ Current validation and behavior notes:
 - `_adisk._tcp` TXT payload sizing is validated before advertisement
 - `_airport._tcp` fields are all optional; missing fields are simply omitted from the TXT payload
 - snapshot replay preserves non-ASCII or binary hostnames using `HOST_HEX`
-- when snapshot mode is active, `_device-info._tcp` is not generated unless it comes from the snapshot
+- managed `_device-info._tcp` is generated even in snapshot mode; snapshot `_device-info._tcp` records are ignored
 
 ## NBNS Responder Details
 

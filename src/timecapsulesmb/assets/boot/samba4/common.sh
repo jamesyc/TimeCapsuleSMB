@@ -215,7 +215,92 @@ get_airport_srcv() {
     /usr/bin/uname -a 2>/dev/null | sed -n 's/.*AirPortFW-\([0-9][0-9.]*\).*/\1/p' | sed -n '1p'
 }
 
+get_airport_acp_value() {
+    acp_key=$1
+    acp_value=$(/usr/bin/acp -q "$acp_key" 2>/dev/null | sed -n '1p')
+    [ -n "$acp_value" ] || return 1
+    printf '%s\n' "$acp_value"
+}
+
+airport_acp_decimal_value() {
+    acp_value=$1
+    case "$acp_value" in
+        0x*|0X*)
+            if acp_decimal=$(printf '%d' "$acp_value" 2>/dev/null); then
+                printf '%s\n' "$acp_decimal"
+                return 0
+            fi
+            return 1
+            ;;
+        *)
+            printf '%s\n' "$acp_value"
+            ;;
+    esac
+}
+
+airport_acp_hex_value() {
+    acp_value=$1
+    case "$acp_value" in
+        0x*|0X*)
+            if acp_decimal=$(printf '%d' "$acp_value" 2>/dev/null); then
+                printf '0x%X\n' "$acp_decimal"
+                return 0
+            fi
+            return 1
+            ;;
+        *)
+            printf '%s\n' "$acp_value"
+            ;;
+    esac
+}
+
+airport_acp_bool_decimal_value() {
+    acp_value=$1
+    case "$acp_value" in
+        false|False|FALSE)
+            echo 0
+            ;;
+        true|True|TRUE)
+            echo 1
+            ;;
+        *)
+            airport_acp_decimal_value "$acp_value"
+            ;;
+    esac
+}
+
+get_airport_system_name() {
+    get_airport_acp_value syNm
+}
+
+get_airport_host_label() {
+    /bin/hostname 2>/dev/null | sed -n '1p'
+}
+
+get_airport_rast() {
+    /usr/bin/acp -A WiFi 2>/dev/null | sed -n 's/^[[:space:]]*raSt=\([^[:space:]]*\).*/\1/p' | sed -n '1p'
+}
+
+get_airport_rana() {
+    acp_value=$(get_airport_acp_value raNA) || return 1
+    airport_acp_bool_decimal_value "$acp_value"
+}
+
+get_airport_syfl() {
+    acp_value=$(get_airport_acp_value syFl) || return 1
+    airport_acp_hex_value "$acp_value"
+}
+
+get_airport_syap() {
+    acp_value=$(get_airport_acp_value syAP) || return 1
+    airport_acp_decimal_value "$acp_value"
+}
+
 get_airport_syvs() {
+    if airport_syvs=$(get_airport_acp_value syVs); then
+        printf '%s\n' "$airport_syvs"
+        return 0
+    fi
     airport_srcv=$1
     digits=$(printf '%s' "$airport_srcv" | sed -n 's/^\([0-9]\)\([0-9]\)\([0-9]\).*/\1.\2.\3/p')
     if [ -n "$digits" ]; then
@@ -223,6 +308,11 @@ get_airport_syvs() {
         return 0
     fi
     return 1
+}
+
+get_airport_bjsd() {
+    acp_value=$(get_airport_acp_value bjSd) || return 1
+    airport_acp_decimal_value "$acp_value"
 }
 
 wait_for_process() {
@@ -1650,12 +1740,21 @@ trim_log_file() {
 derive_airport_fields() {
     iface_mac=$1
 
+    AIRPORT_INSTANCE_NAME=$(get_airport_system_name || true)
+    AIRPORT_HOST_LABEL=$(get_airport_host_label || true)
     AIRPORT_WAMA=
     AIRPORT_RAMA=$(get_radio_mac bwl0 || true)
     AIRPORT_RAM2=$(get_radio_mac bwl1 || true)
-    AIRPORT_SRCV=$(get_airport_srcv || true)
+    AIRPORT_RAST=$(get_airport_rast || true)
+    AIRPORT_RANA=$(get_airport_rana || true)
+    AIRPORT_SYFL=$(get_airport_syfl || true)
+    AIRPORT_SRCV=$(get_airport_acp_value srcv || get_airport_srcv || true)
     AIRPORT_SYVS=$(get_airport_syvs "$AIRPORT_SRCV" || true)
+    AIRPORT_BJSD=$(get_airport_bjsd || true)
     AIRPORT_WAMA=$iface_mac
+    if [ -z "${AIRPORT_SYAP:-}" ]; then
+        AIRPORT_SYAP=$(get_airport_syap || true)
+    fi
 
     if [ -n "$AIRPORT_WAMA" ] || [ -n "$AIRPORT_RAMA" ] || [ -n "$AIRPORT_RAM2" ] || [ -n "$AIRPORT_SRCV" ] || [ -n "$AIRPORT_SYVS" ]; then
         return 0
@@ -1697,55 +1796,90 @@ tc_prepare_mdns_identity() {
     fi
 
     if derive_airport_fields "$iface_mac"; then
-        tc_log "$context: derived airport fields wama=${AIRPORT_WAMA:-missing} rama=${AIRPORT_RAMA:-missing} ram2=${AIRPORT_RAM2:-missing} syvs=${AIRPORT_SYVS:-missing} srcv=${AIRPORT_SRCV:-missing}"
+        tc_log "$context: derived airport fields instance=${AIRPORT_INSTANCE_NAME:-missing} host=${AIRPORT_HOST_LABEL:-missing} wama=${AIRPORT_WAMA:-missing} rama=${AIRPORT_RAMA:-missing} ram2=${AIRPORT_RAM2:-missing} rast=${AIRPORT_RAST:-missing} rana=${AIRPORT_RANA:-missing} syfl=${AIRPORT_SYFL:-missing} syap=${AIRPORT_SYAP:-missing} syvs=${AIRPORT_SYVS:-missing} srcv=${AIRPORT_SRCV:-missing} bjsd=${AIRPORT_BJSD:-missing}"
     else
         tc_log "$context: airport clone fields incomplete; skipping _airport._tcp advertisement"
     fi
     return 0
 }
 
-tc_start_mdns_capture() {
+tc_run_mdns_snapshot_command() {
+    log_context=$1
+    shift
+
+    if tc_prepare_runtime_log_file "$TC_MDNS_LOG_FILE"; then
+        if tc_runtime_logs_unbounded; then
+            tc_log "$log_context: debug logging enabled at $TC_MDNS_LOG_FILE"
+        else
+            tc_log "$log_context: logging at $TC_MDNS_LOG_FILE"
+        fi
+        printf '%s %s: launching mdns-advertiser %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$TC_LOG_PREFIX" "$log_context" >>"$TC_MDNS_LOG_FILE"
+        if "$@" >>"$TC_MDNS_LOG_FILE" 2>&1; then
+            return 0
+        fi
+    else
+        tc_log "$log_context: log unavailable at $TC_MDNS_LOG_FILE"
+        if "$@" >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+tc_generate_mdns() {
     iface_mac=$(get_iface_mac "$NET_IFACE" || true)
-    if ! tc_prepare_mdns_identity "$iface_mac" "mdns capture"; then
+    if ! tc_prepare_mdns_identity "$iface_mac" "mdns generation"; then
         return 0
     fi
 
-    tc_log "starting mDNS snapshot capture"
+    tc_log "generating AirPort mDNS snapshot"
     set -- "$TC_MDNS_BIN" \
-        --save-all-snapshot "$ALL_MDNS_SNAPSHOT" \
-        --save-snapshot "$APPLE_MDNS_SNAPSHOT" \
-        --ipv4 "$TC_NET_IFACE_IP"
-    if [ -n "${AIRPORT_WAMA:-}" ] || [ -n "${AIRPORT_RAMA:-}" ] || [ -n "${AIRPORT_RAM2:-}" ] || [ -n "${AIRPORT_SYVS:-}" ] || [ -n "${AIRPORT_SRCV:-}" ]; then
+        --save-airport-snapshot "$APPLE_MDNS_SNAPSHOT" \
+        --instance "$AIRPORT_INSTANCE_NAME" \
+        --host "$AIRPORT_HOST_LABEL"
+    if [ -n "${AIRPORT_WAMA:-}" ] || [ -n "${AIRPORT_RAMA:-}" ] || [ -n "${AIRPORT_RAM2:-}" ] || [ -n "${AIRPORT_RAST:-}" ] || [ -n "${AIRPORT_RANA:-}" ] || [ -n "${AIRPORT_SYFL:-}" ] || [ -n "${AIRPORT_SYAP:-}" ] || [ -n "${AIRPORT_SYVS:-}" ] || [ -n "${AIRPORT_SRCV:-}" ] || [ -n "${AIRPORT_BJSD:-}" ]; then
         set -- "$@" \
             --airport-wama "$AIRPORT_WAMA" \
             --airport-rama "$AIRPORT_RAMA" \
             --airport-ram2 "$AIRPORT_RAM2" \
+            --airport-rast "$AIRPORT_RAST" \
+            --airport-rana "$AIRPORT_RANA" \
+            --airport-syfl "$AIRPORT_SYFL" \
+            --airport-syap "$AIRPORT_SYAP" \
             --airport-syvs "$AIRPORT_SYVS" \
-            --airport-srcv "$AIRPORT_SRCV"
-        if [ -n "$AIRPORT_SYAP" ]; then
-            set -- "$@" --airport-syap "$AIRPORT_SYAP"
-        else
-            tc_log "airport syAP missing during mDNS capture"
-        fi
+            --airport-srcv "$AIRPORT_SRCV" \
+            --airport-bjsd "$AIRPORT_BJSD"
     fi
 
-    TC_MDNS_CAPTURE_STATUS_FILE="$TC_STATE_DIR/mdns-capture.status.$$"
-    rm -f "$TC_MDNS_CAPTURE_STATUS_FILE"
+    if tc_run_mdns_snapshot_command "airport snapshot" "$@"; then
+        tc_log "mDNS AirPort snapshot generated"
+        return 0
+    fi
 
-    if tc_prepare_runtime_log_file "$TC_MDNS_LOG_FILE"; then
-        if tc_runtime_logs_unbounded; then
-            tc_log "mdns capture: debug logging enabled at $TC_MDNS_LOG_FILE"
-        else
-            tc_log "mdns capture: logging at $TC_MDNS_LOG_FILE"
-        fi
-        printf '%s %s: launching mdns-advertiser capture\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$TC_LOG_PREFIX" >>"$TC_MDNS_LOG_FILE"
-        ( "$@" >>"$TC_MDNS_LOG_FILE" 2>&1; echo $? >"$TC_MDNS_CAPTURE_STATUS_FILE" ) &
+    tc_log "mDNS AirPort snapshot generation failed; falling back to mDNS capture"
+    set -- "$TC_MDNS_BIN" \
+        --save-all-snapshot "$ALL_MDNS_SNAPSHOT" \
+        --save-snapshot "$APPLE_MDNS_SNAPSHOT" \
+        --ipv4 "$TC_NET_IFACE_IP"
+    if [ -n "${AIRPORT_WAMA:-}" ] || [ -n "${AIRPORT_RAMA:-}" ] || [ -n "${AIRPORT_RAM2:-}" ] || [ -n "${AIRPORT_RAST:-}" ] || [ -n "${AIRPORT_RANA:-}" ] || [ -n "${AIRPORT_SYFL:-}" ] || [ -n "${AIRPORT_SYAP:-}" ] || [ -n "${AIRPORT_SYVS:-}" ] || [ -n "${AIRPORT_SRCV:-}" ] || [ -n "${AIRPORT_BJSD:-}" ]; then
+        set -- "$@" \
+            --airport-wama "$AIRPORT_WAMA" \
+            --airport-rama "$AIRPORT_RAMA" \
+            --airport-ram2 "$AIRPORT_RAM2" \
+            --airport-rast "$AIRPORT_RAST" \
+            --airport-rana "$AIRPORT_RANA" \
+            --airport-syfl "$AIRPORT_SYFL" \
+            --airport-syap "$AIRPORT_SYAP" \
+            --airport-syvs "$AIRPORT_SYVS" \
+            --airport-srcv "$AIRPORT_SRCV" \
+            --airport-bjsd "$AIRPORT_BJSD"
+    fi
+
+    if tc_run_mdns_snapshot_command "capture" "$@"; then
+        tc_log "mDNS snapshot capture finished"
     else
-        tc_log "mdns capture: log unavailable at $TC_MDNS_LOG_FILE"
-        ( "$@" >/dev/null 2>&1; echo $? >"$TC_MDNS_CAPTURE_STATUS_FILE" ) &
+        tc_log "mDNS snapshot capture exited with failure; final advertiser will use generated records if needed"
     fi
-    TC_MDNS_CAPTURE_PID=$!
-    tc_log "mDNS snapshot capture launched as pid $TC_MDNS_CAPTURE_PID"
 }
 
 tc_wait_for_mdns_capture() {
@@ -1841,18 +1975,18 @@ tc_launch_mdns_advertiser() {
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
         --device-model "$MDNS_DEVICE_MODEL"
-    if [ -n "${AIRPORT_WAMA:-}" ] || [ -n "${AIRPORT_RAMA:-}" ] || [ -n "${AIRPORT_RAM2:-}" ] || [ -n "${AIRPORT_SYVS:-}" ] || [ -n "${AIRPORT_SRCV:-}" ]; then
+    if [ -n "${AIRPORT_WAMA:-}" ] || [ -n "${AIRPORT_RAMA:-}" ] || [ -n "${AIRPORT_RAM2:-}" ] || [ -n "${AIRPORT_RAST:-}" ] || [ -n "${AIRPORT_RANA:-}" ] || [ -n "${AIRPORT_SYFL:-}" ] || [ -n "${AIRPORT_SYAP:-}" ] || [ -n "${AIRPORT_SYVS:-}" ] || [ -n "${AIRPORT_SRCV:-}" ] || [ -n "${AIRPORT_BJSD:-}" ]; then
         set -- "$@" \
             --airport-wama "$AIRPORT_WAMA" \
             --airport-rama "$AIRPORT_RAMA" \
             --airport-ram2 "$AIRPORT_RAM2" \
+            --airport-rast "$AIRPORT_RAST" \
+            --airport-rana "$AIRPORT_RANA" \
+            --airport-syfl "$AIRPORT_SYFL" \
+            --airport-syap "$AIRPORT_SYAP" \
             --airport-syvs "$AIRPORT_SYVS" \
-            --airport-srcv "$AIRPORT_SRCV"
-        if [ -n "$AIRPORT_SYAP" ]; then
-            set -- "$@" --airport-syap "$AIRPORT_SYAP"
-        else
-            tc_log "airport syAP missing; advertising _airport._tcp without syAP"
-        fi
+            --airport-srcv "$AIRPORT_SRCV" \
+            --airport-bjsd "$AIRPORT_BJSD"
     fi
     if [ -s "$TC_ADISK_TSV" ]; then
         set -- "$@" \
@@ -1885,7 +2019,7 @@ tc_launch_mdns_advertiser() {
 }
 
 tc_start_mdns_advertiser() {
-    tc_launch_mdns_advertiser "mdns startup" 1 1 100
+    tc_launch_mdns_advertiser "mdns startup" 0 1 100
 }
 
 tc_restart_mdns() {

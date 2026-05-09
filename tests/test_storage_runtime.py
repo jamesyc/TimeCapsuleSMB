@@ -713,7 +713,7 @@ class StorageRuntimeTests(unittest.TestCase):
                         Data	dk2	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa	0x1093
                         EOF
                         }}
-                        tc_start_mdns_capture() {{ echo mdns-capture; }}
+                        tc_generate_mdns() {{ echo mdns-generate; }}
                         tc_stage_disk_runtime() {{ echo "stage $1"; }}
                         tc_start_smbd() {{ echo smbd; }}
                         tc_start_mdns_advertiser() {{ echo mdns; }}
@@ -743,7 +743,7 @@ class StorageRuntimeTests(unittest.TestCase):
                     "legacy",
                     "hostname",
                     "refresh",
-                    "mdns-capture",
+                    "mdns-generate",
                     "stage 127.0.0.1/8 192.168.1.2/24",
                     "smbd",
                     "mdns",
@@ -1640,7 +1640,7 @@ class StorageRuntimeTests(unittest.TestCase):
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
             payload = volumes / "dk2/.samba4"
             payload.mkdir(parents=True)
-            (flash / "mdns-advertiser").write_text("#!/bin/sh\necho mdns-stdout\necho mdns-stderr >&2\n")
+            (flash / "mdns-advertiser").write_text("#!/bin/sh\nprintf 'mdns-args:%s\\n' \"$*\"\necho mdns-stdout\necho mdns-stderr >&2\n")
             (flash / "mdns-advertiser").chmod(0o755)
             nbns_bin = memory / "samba4/sbin/nbns-advertiser"
             nbns_bin.parent.mkdir(parents=True)
@@ -1659,13 +1659,30 @@ class StorageRuntimeTests(unittest.TestCase):
                     mkdir -p "$RAM_VAR"
                     is_volume_root_mounted() {{ [ "$1" = "{volumes}/dk2" ]; }}
                     get_iface_mac() {{ echo 80:EA:96:E6:58:68; }}
-                    get_radio_mac() {{ return 1; }}
-                    get_airport_srcv() {{ return 1; }}
+                    get_radio_mac() {{
+                        case "$1" in
+                            bwl0) echo 80:EA:96:EB:2E:7D ;;
+                            bwl1) echo 80:EA:96:EB:2E:7C ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    get_airport_host_label() {{ echo jamess-airport-time-capsule; }}
+                    get_airport_acp_value() {{
+                        case "$1" in
+                            syNm) echo "James's AirPort Time Capsule" ;;
+                            syFl) echo 0x00000A0C ;;
+                            raNA) echo false ;;
+                            syVs) echo 7.9.1 ;;
+                            srcv) echo 79100.2 ;;
+                            bjSd) echo 0x10 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    get_airport_rast() {{ echo 3; }}
                     stop_nbns_conflicts() {{ return 0; }}
                     TC_NET_IFACE_IP=192.168.1.2
                     tc_set_payload_log_dir {payload} {volumes}/dk2
-                    tc_start_mdns_capture
-                    wait "$TC_MDNS_CAPTURE_PID" || true
+                    tc_generate_mdns
                     tc_launch_nbns "nbns test" 0
                     sleep 1
                     printf 'mdns\\n'
@@ -1681,13 +1698,72 @@ class StorageRuntimeTests(unittest.TestCase):
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("mdns\n", proc.stdout)
-        self.assertIn("launching mdns-advertiser capture", proc.stdout)
+        self.assertIn("launching mdns-advertiser airport snapshot", proc.stdout)
+        self.assertIn("--save-airport-snapshot", proc.stdout)
+        self.assertIn("James's AirPort Time Capsule", proc.stdout)
+        self.assertIn("--airport-syfl 0xA0C", proc.stdout)
+        self.assertNotIn("--save-all-snapshot", proc.stdout)
         self.assertIn("mdns-stdout", proc.stdout)
         self.assertIn("mdns-stderr", proc.stdout)
         self.assertIn("nbns\n", proc.stdout)
         self.assertIn("launching nbns-advertiser", proc.stdout)
         self.assertIn("nbns-stdout", proc.stdout)
         self.assertIn("nbns-stderr", proc.stdout)
+
+    def test_common_mdns_generation_falls_back_to_capture_when_airport_snapshot_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            (flash / "mdns-advertiser").write_text(
+                "#!/bin/sh\n"
+                "printf 'mdns-args:%s\\n' \"$*\"\n"
+                "if [ \"$1\" = \"--save-airport-snapshot\" ]; then\n"
+                "  echo airport-fail >&2\n"
+                "  exit 2\n"
+                "fi\n"
+                "echo capture-ok\n"
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            script = tmp_path / "mdns-generation-fallback.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    get_iface_mac() {{ echo 80:EA:96:E6:58:68; }}
+                    get_radio_mac() {{ return 1; }}
+                    get_airport_host_label() {{ echo jamess-airport-time-capsule; }}
+                    get_airport_acp_value() {{
+                        case "$1" in
+                            syNm) echo "James's AirPort Time Capsule" ;;
+                            syVs) echo 7.9.1 ;;
+                            srcv) echo 79100.2 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    TC_NET_IFACE_IP=192.168.1.2
+                    tc_set_log "$RAM_VAR/test.log" test
+                    tc_generate_mdns
+                    cat "$TC_MDNS_LOG_FILE"
+                    cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("launching mdns-advertiser airport snapshot", proc.stdout)
+        self.assertIn("airport-fail", proc.stdout)
+        self.assertIn("mDNS AirPort snapshot generation failed; falling back to mDNS capture", proc.stdout)
+        self.assertIn("launching mdns-advertiser capture", proc.stdout)
+        self.assertIn("--save-all-snapshot", proc.stdout)
+        self.assertIn("capture-ok", proc.stdout)
 
     def test_common_boot_mount_requests_all_apple_mounts_before_shared_wait(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -757,6 +757,63 @@ int main(void) {{
         self.assertNotIn("serving summary", run.stderr)
         self.assertNotIn("mDNS takeover", run.stderr)
 
+    def test_mdns_advertiser_save_airport_snapshot_generates_one_record_without_takeover(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bin_path = self._compile_mdns_advertiser_binary(tmp)
+            apple_snapshot = tmp / "applemdns.txt"
+            run = subprocess.run(
+                [
+                    str(bin_path),
+                    "--save-airport-snapshot",
+                    str(apple_snapshot),
+                    "--instance",
+                    "James's AirPort Time Capsule",
+                    "--host",
+                    "jamess-airport-time-capsule",
+                    "--airport-wama",
+                    "80:EA:96:E6:58:68",
+                    "--airport-rama",
+                    "80:EA:96:EB:2E:7D",
+                    "--airport-ram2",
+                    "80:EA:96:EB:2E:7C",
+                    "--airport-rast",
+                    "3",
+                    "--airport-rana",
+                    "0",
+                    "--airport-syfl",
+                    "0xA0C",
+                    "--airport-syap",
+                    "119",
+                    "--airport-syvs",
+                    "7.9.1",
+                    "--airport-srcv",
+                    "79100.2",
+                    "--airport-bjsd",
+                    "16",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+            content = apple_snapshot.read_text()
+
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("airport snapshot: wrote 1 record", run.stderr)
+        self.assertIn("mdns capture-only:", run.stderr)
+        self.assertNotIn("mDNS takeover", run.stderr)
+        self.assertEqual(content.count("BEGIN\n"), 1)
+        self.assertIn("TYPE=_airport._tcp.local.\n", content)
+        self.assertIn("INSTANCE=James's AirPort Time Capsule\n", content)
+        self.assertIn(f"HOST_HEX={'jamess-airport-time-capsule.local.'.encode().hex()}\n", content)
+        self.assertIn("PORT=5009\n", content)
+        self.assertIn(
+            "TXT=waMA=80-EA-96-E6-58-68,raMA=80-EA-96-EB-2E-7D,raM2=80-EA-96-EB-2E-7C,"
+            "raSt=3,raNA=0,syFl=0xA0C,syAP=119,syVs=7.9.1,srcv=79100.2,bjSd=16\n",
+            content,
+        )
+
     def test_mdns_advertiser_load_arg_requires_advertising_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)

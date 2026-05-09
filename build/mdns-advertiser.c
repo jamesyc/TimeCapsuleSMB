@@ -103,6 +103,7 @@ struct adisk_disk_set {
 
 struct config {
     char save_all_snapshot_path[MAX_NAME];
+    char save_airport_snapshot_path[MAX_NAME];
     char service_type[MAX_NAME];
     char instance_name[MAX_NAME];
     char host_label[MAX_LABEL + 1];
@@ -163,6 +164,7 @@ static int name_equals(const char *a, const char *b);
 static int build_instance_fqdn(char *out, size_t out_len, const char *instance_name, const char *service_type);
 static int open_mdns_socket(int shared_bind, int log_bind_errors, uint32_t ipv4_addr, const char *socket_role);
 static int is_airport_enabled(const struct config *cfg);
+static int cfg_has_airport_identity_macs(const struct config *cfg);
 static int add_rr_ptr(uint8_t *buf, size_t *off, size_t cap, const char *owner, const char *target, uint32_t ttl);
 static int add_rr_txt_empty(uint8_t *buf, size_t *off, size_t cap, const char *owner, uint32_t ttl);
 static int add_rr_txt_items(uint8_t *buf, size_t *off, size_t cap, const char *owner, uint32_t ttl,
@@ -424,9 +426,11 @@ static void usage(const char *prog) {
     fprintf(stderr,
             "Usage: %s --instance <name> --host <label> --ipv4 <address> [options]\n"
             "       %s --save-snapshot <path> [--save-all-snapshot <path>] [airport identity options]\n"
+            "       %s --save-airport-snapshot <path> --instance <name> --host <label> [airport identity options]\n"
             "Options:\n"
             "  --save-all-snapshot <path> Capture raw LAN-wide mDNS records into a snapshot file\n"
             "  --save-snapshot <path> Capture Apple mDNS records into a snapshot file; without --load-snapshot, capture and exit\n"
+            "  --save-airport-snapshot <path> Generate an AirPort-only Apple snapshot file and exit unless loading\n"
             "  --load-snapshot <path> Kill Apple mDNSResponder and replay snapshot records\n"
             "  --shared-bind     Allow shared UDP 5353 binding instead of exclusive takeover\n"
             "  --service <type>   Service type (default: _smb._tcp.local.)\n"
@@ -450,7 +454,7 @@ static void usage(const char *prog) {
             "  --airport-port <p> _airport._tcp service port (default: 5009)\n"
             "  --port <port>      Service port (default: 445)\n"
             "  --ttl <seconds>    Record TTL (default: 120)\n",
-            prog, prog);
+            prog, prog, prog);
 }
 
 static int append_bytes(uint8_t *buf, size_t *off, size_t cap, const void *src, size_t len) {
@@ -1389,6 +1393,40 @@ static int write_snapshot_file_atomic(const char *path, const struct service_rec
         unlink(tmp_path);
         return -1;
     }
+    return 0;
+}
+
+static int build_airport_snapshot_set(const struct config *cfg, struct service_record_set *out) {
+    struct service_record *record;
+    char airport_txt[256];
+    int written;
+
+    if (cfg->instance_name[0] == '\0' || cfg->host_label[0] == '\0' ||
+        !cfg_has_airport_identity_macs(cfg)) {
+        return -1;
+    }
+    if (build_airport_txt(airport_txt, sizeof(airport_txt), cfg) != 0) {
+        return -1;
+    }
+
+    memset(out, 0, sizeof(*out));
+    record = &out->records[out->count++];
+    strncpy(record->service_type, AIRPORT_SERVICE_TYPE, sizeof(record->service_type) - 1);
+    strncpy(record->instance_name, cfg->instance_name, sizeof(record->instance_name) - 1);
+    if (build_instance_fqdn(record->instance_fqdn, sizeof(record->instance_fqdn),
+                            record->instance_name, record->service_type) != 0) {
+        return -1;
+    }
+    strncpy(record->host_label, cfg->host_label, sizeof(record->host_label) - 1);
+    written = snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s.local.", cfg->host_label);
+    if (written < 0 || (size_t)written >= sizeof(record->host_fqdn)) {
+        return -1;
+    }
+    record->port = cfg->airport_port;
+    strncpy(record->txt[0], airport_txt, sizeof(record->txt[0]) - 1);
+    record->txt[0][sizeof(record->txt[0]) - 1] = '\0';
+    record->txt_len[0] = (uint8_t)strlen(record->txt[0]);
+    record->txt_count = 1;
     return 0;
 }
 
@@ -2809,6 +2847,8 @@ int main(int argc, char **argv) {
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--save-all-snapshot") == 0 && i + 1 < argc) {
             strncpy(cfg.save_all_snapshot_path, argv[++i], sizeof(cfg.save_all_snapshot_path) - 1);
+        } else if (strcmp(argv[i], "--save-airport-snapshot") == 0 && i + 1 < argc) {
+            strncpy(cfg.save_airport_snapshot_path, argv[++i], sizeof(cfg.save_airport_snapshot_path) - 1);
         } else if (strcmp(argv[i], "--save-snapshot") == 0 && i + 1 < argc) {
             strncpy(cfg.save_snapshot_path, argv[++i], sizeof(cfg.save_snapshot_path) - 1);
         } else if (strcmp(argv[i], "--load-snapshot") == 0 && i + 1 < argc) {
@@ -2873,9 +2913,17 @@ int main(int argc, char **argv) {
     }
 
     capture_only = (cfg.load_snapshot_path[0] == '\0' &&
-                    (cfg.save_all_snapshot_path[0] != '\0' || cfg.save_snapshot_path[0] != '\0'));
+                    (cfg.save_all_snapshot_path[0] != '\0' ||
+                     cfg.save_airport_snapshot_path[0] != '\0' ||
+                     cfg.save_snapshot_path[0] != '\0'));
 
     if (!capture_only && (cfg.instance_name[0] == '\0' || cfg.host_label[0] == '\0' || cfg.ipv4_addr == 0)) {
+        usage(argv[0]);
+        return EXIT_MISSING_REQUIRED_ARGS;
+    }
+    if (cfg.save_airport_snapshot_path[0] != '\0' &&
+        (cfg.instance_name[0] == '\0' || cfg.host_label[0] == '\0' || !cfg_has_airport_identity_macs(&cfg))) {
+        fprintf(stderr, "--save-airport-snapshot requires --instance, --host, and at least one AirPort identity MAC\n");
         usage(argv[0]);
         return EXIT_MISSING_REQUIRED_ARGS;
     }
@@ -2920,10 +2968,23 @@ int main(int argc, char **argv) {
         snprintf(cfg.host_fqdn, sizeof(cfg.host_fqdn), "%s.local.", cfg.host_label);
         log_startup_config(&cfg, shared_bind);
     } else {
-        fprintf(stderr, "mdns capture-only: save_all=%s save_trusted=%s airport_identity=%s\n",
+        fprintf(stderr, "mdns capture-only: save_all=%s save_airport=%s save_trusted=%s airport_identity=%s\n",
                 cfg.save_all_snapshot_path[0] != '\0' ? cfg.save_all_snapshot_path : "(none)",
+                cfg.save_airport_snapshot_path[0] != '\0' ? cfg.save_airport_snapshot_path : "(none)",
                 cfg.save_snapshot_path[0] != '\0' ? cfg.save_snapshot_path : "(none)",
                 cfg_has_airport_identity_macs(&cfg) ? "present" : "missing");
+    }
+
+    if (cfg.save_airport_snapshot_path[0] != '\0') {
+        struct service_record_set airport_records;
+        memset(&airport_records, 0, sizeof(airport_records));
+        if (build_airport_snapshot_set(&cfg, &airport_records) == 0 &&
+            write_snapshot_file_atomic(cfg.save_airport_snapshot_path, &airport_records) == 0) {
+            fprintf(stderr, "airport snapshot: wrote 1 record to %s\n", cfg.save_airport_snapshot_path);
+        } else {
+            fprintf(stderr, "failed to write airport snapshot file: %s\n", cfg.save_airport_snapshot_path);
+            return EXIT_INVALID_AIRPORT_TXT;
+        }
     }
 
     if (cfg.save_all_snapshot_path[0] != '\0' || cfg.save_snapshot_path[0] != '\0') {
