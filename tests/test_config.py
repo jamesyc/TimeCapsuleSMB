@@ -86,8 +86,6 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(config.exists)
         self.assertEqual(config.file_values, {"TC_HOST": "root@10.0.0.5"})
         self.assertTrue(config.has_file_value("TC_HOST"))
-        self.assertFalse(config.has_file_value("TC_SHARE_USE_DISK_ROOT"))
-        self.assertEqual(config.get("TC_SHARE_USE_DISK_ROOT"), "")
 
     def test_validate_app_config_reports_missing_env_before_defaulted_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -111,21 +109,6 @@ class ConfigTests(unittest.TestCase):
             errors = validate_app_config(config, profile="deploy")
         self.assertEqual(errors[0].kind, "missing_key")
         self.assertEqual(errors[0].key, "TC_AIRPORT_SYAP")
-
-    def test_validate_app_config_ignores_absent_legacy_share_use_disk_root(self) -> None:
-        file_values = self.valid_deploy_file_values()
-        file_values.pop("TC_SHARE_USE_DISK_ROOT", None)
-        values = dict(DEFAULTS)
-        values.update(file_values)
-        with tempfile.TemporaryDirectory() as tmp:
-            config = AppConfig.from_values(
-                values,
-                path=Path(tmp) / ".env",
-                exists=True,
-                file_values=file_values,
-            )
-            errors = validate_app_config(config, profile="deploy")
-        self.assertEqual(errors, [])
 
     def test_require_valid_app_config_formats_actual_env_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -162,7 +145,6 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("TC_MDNS_DEVICE_MODEL=TimeCapsule", rendered)
         self.assertIn("TC_AIRPORT_SYAP=''", rendered)
         self.assertIn("TC_INTERNAL_SHARE_USE_DISK_ROOT=false", rendered)
-        self.assertNotIn("TC_SHARE_USE_DISK_ROOT=", rendered)
         self.assertIn("TC_CONFIGURE_ID=12345678-1234-1234-1234-123456789012", rendered)
 
     def test_env_example_payload_dir_matches_default(self) -> None:

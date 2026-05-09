@@ -1253,29 +1253,6 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "AirPort7,120")
         self.assertEqual(result.values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "false")
 
-    def test_configure_plain_rerun_preserves_existing_share_use_disk_root_true(self) -> None:
-        prompt_values = iter([
-            "root@10.0.0.2",
-            "pw",
-            "bridge0",
-                        "admin",
-            "TimeCapsule",
-            "samba4",
-            "Time Capsule Samba 4",
-            "timecapsulesamba4",
-            "119",
-        ])
-
-        result = self.run_configure_cli(
-            existing_values={"TC_SHARE_USE_DISK_ROOT": "true"},
-            prompt_side_effect=lambda label, default, _secret: default if label == "mDNS device model hint" else next(prompt_values),
-            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
-            confirm=True,
-            command_context=FakeCommandContext(),
-        )
-        self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "true")
-
     def test_configure_ensures_install_id_before_telemetry(self) -> None:
         prompt_values = iter([
             "root@10.0.0.2",

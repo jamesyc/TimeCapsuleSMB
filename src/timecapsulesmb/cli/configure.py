@@ -339,10 +339,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         ssh_opts = existing.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"])
         values["TC_SSH_OPTS"] = ssh_opts
         existing_internal_share_use_disk_root = parse_bool(
-            existing.get(
-                "TC_INTERNAL_SHARE_USE_DISK_ROOT",
-                existing.get("TC_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"]),
-            )
+            existing.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])
         )
         values["TC_INTERNAL_SHARE_USE_DISK_ROOT"] = (
             "true" if args.internal_share_use_disk_root or existing_internal_share_use_disk_root else "false"

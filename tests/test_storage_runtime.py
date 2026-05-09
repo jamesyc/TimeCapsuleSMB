@@ -283,33 +283,6 @@ class StorageRuntimeTests(unittest.TestCase):
         self.assertIn("NBNS_ENABLED=1\n", rendered)
         self.assertIn("SMBD_DEBUG_LOGGING=1\n", rendered)
         self.assertNotIn("TC_SHARE_NAME", rendered)
-        self.assertNotIn("TC_SHARE_USE_DISK_ROOT", rendered)
-
-    def test_flash_runtime_config_migrates_legacy_hidden_share_root_key(self) -> None:
-        config = AppConfig.from_values(
-            {
-                "TC_NET_IFACE": "bridge0",
-                "TC_SAMBA_USER": "admin",
-                "TC_NETBIOS_NAME": "TimeCapsule",
-                "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-                "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
-                "TC_MDNS_DEVICE_MODEL": "TimeCapsule6,106",
-                "TC_AIRPORT_SYAP": "106",
-                "TC_INTERNAL_SHARE_USE_DISK_ROOT": "false",
-                "TC_SHARE_USE_DISK_ROOT": "true",
-            },
-            file_values={"TC_SHARE_USE_DISK_ROOT": "true"},
-        )
-
-        rendered = render_flash_runtime_config(
-            config,
-            PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
-            nbns_enabled=False,
-            debug_logging=False,
-        )
-
-        self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=1\n", rendered)
-        self.assertNotIn("TC_SHARE_USE_DISK_ROOT", rendered)
 
     def test_deployment_plan_uses_flash_pointer_and_single_private_payload(self) -> None:
         plan = build_deployment_plan(

@@ -68,12 +68,7 @@ def render_flash_runtime_config(
     debug_logging: bool,
     apple_mount_wait_seconds: int = DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
 ) -> str:
-    if config.has_file_value("TC_INTERNAL_SHARE_USE_DISK_ROOT"):
-        internal_root_default = config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT")
-    elif config.has_file_value("TC_SHARE_USE_DISK_ROOT"):
-        internal_root_default = config.get("TC_SHARE_USE_DISK_ROOT")
-    else:
-        internal_root_default = config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])
+    internal_root_default = config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])
 
     values: list[tuple[str, str | int]] = [
         ("TC_CONFIG_VERSION", 1),
