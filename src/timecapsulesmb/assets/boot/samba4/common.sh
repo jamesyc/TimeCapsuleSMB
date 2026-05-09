@@ -1406,6 +1406,17 @@ tc_payload_log_dir_ready() {
     is_volume_root_mounted "$TC_PAYLOAD_LOG_VOLUME" || return 1
     mkdir -p "$TC_PAYLOAD_LOG_DIR" || return 1
     chmod 755 "$TC_PAYLOAD_LOG_DIR" >/dev/null 2>&1 || true
+    tc_prepare_smbd_core_dir "$TC_PAYLOAD_LOG_DIR" || return 1
+}
+
+tc_prepare_smbd_core_dir() {
+    log_dir=$1
+
+    [ -n "$log_dir" ] || return 1
+    # Samba derives its core path from the log directory as cores/smbd.
+    # Prepare it on the payload disk so panic dumps do not target RAM.
+    mkdir -p "$log_dir/cores/smbd" || return 1
+    chmod 700 "$log_dir/cores" "$log_dir/cores/smbd" >/dev/null 2>&1 || true
 }
 
 tc_prepare_runtime_log_file() {
@@ -1465,6 +1476,7 @@ tc_generate_smb_conf() {
 
     mkdir -p "$payload_dir/logs"
     chmod 755 "$payload_dir/logs" >/dev/null 2>&1 || true
+    tc_prepare_smbd_core_dir "$payload_dir/logs" || true
     if [ "$TC_SMBD_DISK_LOGGING_ENABLED" = "1" ]; then
         smbd_log_level_line="    log level = 5 vfs:8 fruit:8"
         : >>"$smbd_log" || true

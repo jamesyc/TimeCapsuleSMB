@@ -1229,6 +1229,11 @@ class StorageRuntimeTests(unittest.TestCase):
             script.chmod(0o755)
 
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            smbd_core_dir = payload / "logs/cores/smbd"
+            smbd_core_parent = payload / "logs/cores"
+            smbd_core_dir_exists = smbd_core_dir.is_dir()
+            smbd_core_parent_mode = smbd_core_parent.stat().st_mode & 0o777
+            smbd_core_dir_mode = smbd_core_dir.stat().st_mode & 0o777
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("[Data]\n", proc.stdout)
@@ -1242,6 +1247,9 @@ class StorageRuntimeTests(unittest.TestCase):
         self.assertIn("max open files = 512", proc.stdout)
         self.assertIn("max smbd processes = 16", proc.stdout)
         self.assertNotIn("log level = 5", proc.stdout)
+        self.assertTrue(smbd_core_dir_exists)
+        self.assertEqual(smbd_core_parent_mode, 0o700)
+        self.assertEqual(smbd_core_dir_mode, 0o700)
 
     def test_common_generate_smb_conf_makes_smbd_debug_log_unbounded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

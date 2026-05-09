@@ -1,0 +1,31 @@
+diff --git a/source3/lib/dumpcore.c b/source3/lib/dumpcore.c
+index 147e427..7c7d6b1 100644
+--- a/source3/lib/dumpcore.c
++++ b/source3/lib/dumpcore.c
+@@ -56,10 +56,26 @@ static char *get_default_corepath(const char *logbase, const char *progname)
+ 		return NULL;
+ 	}
+ 
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
++	/*
++	 * Time Capsule payload logs live on Apple-managed HFS. NetBSD4/6 HFS
++	 * reports root-created directories there with uid 4294967295, and the
++	 * firmware does not provide chown. The strict owner check rejects an
++	 * otherwise usable core directory and leaves smbd with no corepath.
++	 * Keep the mode request, but accept the HFS ownership model for this
++	 * appliance-only static build so panic cores land under the payload logs.
++	 */
++	if (!directory_create_or_exist(tmp_corepath, mode)) {
++		DEBUG(0, ("Failed to create %s with mode 0%o\n",
++			  tmp_corepath, (int)mode));
++		goto err_out;
++	}
++#else
+ 	if (!directory_create_or_exist_strict(tmp_corepath, uid, mode)) {
+ 		DEBUG(0, ("Failed to create %s for user %d with mode 0%o\n",
+ 			  tmp_corepath, (int)uid, (int)mode));
+ 		goto err_out;
+ 	}
++#endif
+ 
+ 	/* Setup progname-specific core subdir */

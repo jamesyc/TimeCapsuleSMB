@@ -79,3 +79,8 @@
 # dereferences the yet-to-be-created no-stream filename copy, crashing the smbd
 # client process. Keep this until upstream fixes vfs_fruit.
 0021-vfs-fruit-fstatat-meta-stream-name.patch|fix vfs_fruit AFP_AfpInfo fstatat NULL filename crash
+# Time Capsule payload logs live on Apple-managed HFS, where root-created
+# directories can report owner 4294967295 and fail Samba's strict corepath
+# setup. Relax only the appliance core directory creation so panics produce
+# disk-backed cores under logs/cores/smbd.
+0023-time-capsule-corepath-hfs-owner.patch|allow HFS-backed smbd corepath setup
