@@ -681,6 +681,8 @@ class StorageRuntimeTests(unittest.TestCase):
         self.assertIn(f"path = {volumes}/dk3", proc.stdout)
         self.assertIn(f"log file = {payload}/logs/log.smbd", proc.stdout)
         self.assertIn("max log size = 128", proc.stdout)
+        self.assertIn("max open files = 512", proc.stdout)
+        self.assertIn("max smbd processes = 16", proc.stdout)
         self.assertNotIn("log level = 5", proc.stdout)
 
     def test_common_generate_smb_conf_makes_smbd_debug_log_unbounded(self) -> None:

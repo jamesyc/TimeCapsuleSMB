@@ -1062,6 +1062,8 @@ tc_generate_smb_conf() {
 $smbd_log_level_line
     smb ports = 445
     deadtime = 60
+    max open files = 512
+    max smbd processes = 16
     reset on zero vc = yes
     fruit:aapl = yes
     fruit:model = MacSamba

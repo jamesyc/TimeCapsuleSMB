@@ -107,8 +107,12 @@ index 480886d..1bacb2d 100644
  	if (ret < 0) {
  		status = map_nt_error_from_unix(errno);
  		goto err;
-@@ -549,8 +607,27 @@ static DIR *vfswrap_fdopendir(vfs_handle_struct *handle,
+@@ -549,8 +607,44 @@ static DIR *vfswrap_fdopendir(vfs_handle_struct *handle,
  	DIR *result;
++#ifdef TC_SAMBA4X_NETBSD4_COMPAT
++	int fd;
++	int saved_errno;
++#endif
  
  	START_PROFILE_X(SNUM(handle->conn), syscall_fdopendir);
 +#ifdef TC_SAMBA4X_NETBSD4_COMPAT
@@ -118,14 +122,27 @@ index 480886d..1bacb2d 100644
 +	 * QUERY_DIRECTORY. The default VFS still has Samba's tracked pathname
 +	 * for the directory handle, so use the older path-based opendir().
 +	 *
-+	 * opendir() owns a separate directory fd; the original fsp fd remains
-+	 * owned by Samba's files_struct lifecycle.
++	 * fdopendir() transfers ownership of the files_struct fd to the DIR.
++	 * opendir() creates a separate fd, so close the original files_struct fd
++	 * after opendir() succeeds and mark it consumed. If opendir() fails, leave
++	 * the original fd alone so Samba's normal failure cleanup can close it.
 +	 */
-+	if (fsp->fsp_name == NULL || fsp->fsp_name->base_name == NULL) {
++	fd = fsp_get_io_fd(fsp);
++	if (fd == -1 || fsp->fsp_name == NULL || fsp->fsp_name->base_name == NULL) {
 +		errno = EINVAL;
 +		result = NULL;
 +	} else {
 +		result = opendir(fsp->fsp_name->base_name);
++		if (result != NULL) {
++			if (close(fd) == -1) {
++				saved_errno = errno;
++				closedir(result);
++				errno = saved_errno;
++				result = NULL;
++			} else {
++				fsp_set_fd(fsp, -1);
++			}
++		}
 +	}
 +#else
  	result = sys_fdopendir(fsp_get_io_fd(fsp));
