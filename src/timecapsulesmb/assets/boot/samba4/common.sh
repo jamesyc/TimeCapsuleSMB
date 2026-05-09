@@ -78,6 +78,11 @@ tc_set_payload_append_log() {
     TC_LOG_FALLBACK_FILE=$4
     TC_LOG_MODE=payload_append
     TC_LOG_MAX_BYTES=$(tc_runtime_log_max_bytes)
+
+    line="$(date '+%Y-%m-%d %H:%M:%S') $TC_LOG_PREFIX: log target configured: payload=$TC_LOG_FILE volume=$TC_LOG_VOLUME fallback=${TC_LOG_FALLBACK_FILE:-none}"
+    if ! tc_payload_append_log_line "$line" && [ -n "$TC_LOG_FALLBACK_FILE" ]; then
+        tc_ram_rewrite_log_line "$TC_LOG_FALLBACK_FILE" "$line"
+    fi
 }
 
 tc_runtime_logs_unbounded() {
@@ -1655,11 +1660,14 @@ tc_all_managed_services_healthy() {
 }
 
 tc_watchdog_iteration() {
+    tc_log "watchdog pass: checking topology, payload, active shares, and managed services"
+
     if tc_topology_changed; then
         tc_exec_start_samba "MaSt topology changed"
     fi
 
     if tc_payload_available; then
+        tc_log "watchdog pass: payload available at ${TC_PAYLOAD_DIR:-unknown}"
         if ! tc_mount_active_volumes_from_state; then
             tc_exec_start_samba "active share volume unavailable"
         fi
@@ -1684,7 +1692,13 @@ tc_watchdog_iteration() {
         fi
     fi
 
-    tc_all_managed_services_healthy
+    if tc_all_managed_services_healthy; then
+        tc_log "watchdog pass: healthy"
+        return 0
+    fi
+
+    tc_log "watchdog pass: one or more managed services are unhealthy"
+    return 1
 }
 
 tc_sleep_with_runtime_checks() {
@@ -1701,7 +1715,21 @@ tc_sleep_with_runtime_checks() {
 
         sleep "$sleep_seconds"
         slept=$((slept + sleep_seconds))
-        tc_payload_available || true
-        tc_mount_active_volumes_from_state || true
+        steady_status=0
+        if tc_payload_available; then
+            :
+        else
+            tc_log "watchdog steady check: payload unavailable while sleeping"
+            steady_status=1
+        fi
+        if tc_mount_active_volumes_from_state; then
+            :
+        else
+            tc_log "watchdog steady check: one or more active share volumes are unavailable while sleeping"
+            steady_status=1
+        fi
+        if [ "$steady_status" -eq 0 ]; then
+            tc_log "watchdog steady check: healthy after ${slept}s of ${total_sleep}s"
+        fi
     done
 }

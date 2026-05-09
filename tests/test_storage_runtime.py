@@ -766,6 +766,89 @@ class StorageRuntimeTests(unittest.TestCase):
         self.assertIn("payload=no\n", proc.stdout)
         self.assertIn("fallback line", proc.stdout)
 
+    def test_common_watchdog_iteration_writes_payload_health_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            payload.mkdir(parents=True)
+            script = tmp_path / "watchdog-health-log.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    TC_PAYLOAD_DIR={payload}
+                    TC_PAYLOAD_VOLUME={volumes}/dk2
+                    TC_PAYLOAD_DEVICE=/dev/dk2
+                    is_volume_root_mounted() {{ [ "$1" = "{volumes}/dk2" ]; }}
+                    tc_set_payload_log_dir "$TC_PAYLOAD_DIR" "$TC_PAYLOAD_VOLUME"
+                    mkdir -p "$TC_PAYLOAD_LOG_DIR"
+                    tc_set_payload_append_log "$TC_PAYLOAD_LOG_DIR/watchdog.log" watchdog "$TC_PAYLOAD_VOLUME" "$RAM_VAR/watchdog.log"
+                    tc_topology_changed() {{ return 1; }}
+                    tc_payload_available() {{ return 0; }}
+                    tc_mount_active_volumes_from_state() {{ return 0; }}
+                    tc_start_smbd_if_needed() {{ return 0; }}
+                    tc_all_managed_services_healthy() {{ return 0; }}
+                    tc_watchdog_iteration
+                    printf 'ram=%s\\n' "$([ -f "$RAM_VAR/watchdog.log" ] && echo yes || echo no)"
+                    cat "$TC_PAYLOAD_LOG_DIR/watchdog.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("ram=no\n", proc.stdout)
+        self.assertIn("watchdog pass: checking topology, payload, active shares, and managed services", proc.stdout)
+        self.assertIn(f"watchdog pass: payload available at {payload}", proc.stdout)
+        self.assertIn("watchdog pass: healthy", proc.stdout)
+
+    def test_common_watchdog_steady_sleep_logs_each_healthy_mount_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            payload.mkdir(parents=True)
+            script = tmp_path / "watchdog-steady-log.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    TC_PAYLOAD_DIR={payload}
+                    TC_PAYLOAD_VOLUME={volumes}/dk2
+                    TC_PAYLOAD_DEVICE=/dev/dk2
+                    MOUNT_POLL_SECONDS=1
+                    is_volume_root_mounted() {{ [ "$1" = "{volumes}/dk2" ]; }}
+                    tc_set_payload_log_dir "$TC_PAYLOAD_DIR" "$TC_PAYLOAD_VOLUME"
+                    mkdir -p "$TC_PAYLOAD_LOG_DIR"
+                    tc_set_payload_append_log "$TC_PAYLOAD_LOG_DIR/watchdog.log" watchdog "$TC_PAYLOAD_VOLUME" "$RAM_VAR/watchdog.log"
+                    tc_payload_available() {{ return 0; }}
+                    tc_mount_active_volumes_from_state() {{ return 0; }}
+                    tc_sleep_with_runtime_checks 2
+                    cat "$TC_PAYLOAD_LOG_DIR/watchdog.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("watchdog steady check: healthy after 1s of 2s", proc.stdout)
+        self.assertIn("watchdog steady check: healthy after 2s of 2s", proc.stdout)
+
     def test_common_mdns_and_nbns_write_payload_logs_in_normal_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
