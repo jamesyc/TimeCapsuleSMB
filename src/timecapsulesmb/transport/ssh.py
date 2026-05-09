@@ -40,6 +40,9 @@ SSH_TRANSPORT_ERROR_PATTERNS = (
 
 SSH_CLIENT_NOISE_PATTERNS = (
     re.compile(r"^Warning: Permanently added .+ to the list of known hosts\.$"),
+    re.compile(r"^Warning: No xauth data; using fake authentication data for X11 forwarding\.$"),
+    re.compile(r"^Warning: untrusted X11 forwarding setup failed: .+$"),
+    re.compile(r"^X11 forwarding request failed on channel [0-9]+\.$"),
     re.compile(r"^\*\* WARNING: connection is not using a post-quantum key exchange algorithm\.$"),
     re.compile(r"^\*\* This session may be vulnerable to \"store now, decrypt later\" attacks\.$"),
     re.compile(r"^\*\* The server may need to be upgraded\. See https://openssh\.com/pq\.html$"),

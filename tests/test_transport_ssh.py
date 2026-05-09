@@ -326,6 +326,28 @@ class SSHTransportTests(unittest.TestCase):
                 )
         self.assertEqual(proc.stdout, "NetBSD\n4.0_STABLE\nearmv4\n")
 
+    def test_run_ssh_strips_x11_forwarding_warnings_before_returning_stdout(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.transport.ssh._ssh_option_supported",
+            return_value=True,
+        ):
+            with mock.patch(
+                "timecapsulesmb.transport.ssh._spawn_with_password",
+                return_value=(
+                    0,
+                    "Warning: No xauth data; using fake authentication data for X11 forwarding.\n"
+                    "X11 forwarding request failed on channel 0.\n"
+                    "NetBSD\n4.0_STABLE\nearmv4\n",
+                ),
+            ):
+                proc = ssh_transport.run_ssh(
+                    ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no"),
+                    "uname -s",
+                    check=False,
+                    timeout=10,
+                )
+        self.assertEqual(proc.stdout, "NetBSD\n4.0_STABLE\nearmv4\n")
+
     def test_normalize_ssh_tokens_expands_identity_and_preserves_proxyjump(self) -> None:
         with mock.patch(
             "timecapsulesmb.transport.ssh._ssh_option_supported",

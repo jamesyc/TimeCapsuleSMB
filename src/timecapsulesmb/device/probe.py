@@ -431,7 +431,9 @@ def _probe_remote_os_info_conn(connection: SshConnection) -> tuple[str, str, str
     lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
     if len(lines) < 3:
         raise DeviceError("Failed to determine remote device OS compatibility.")
-    return lines[0], lines[1], lines[2]
+    # SSH client warnings from user config can be emitted before command stdout.
+    # The probe command's own output is the trailing uname triplet.
+    return lines[-3], lines[-2], lines[-1]
 
 
 def _probe_remote_elf_endianness_conn(connection: SshConnection, path: str = "/bin/sh") -> str:

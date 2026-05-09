@@ -130,6 +130,25 @@ class ProbeTests(unittest.TestCase):
             self.assertEqual(args[0], connection)
             self.assertEqual(len(args), 2)
 
+    def test_probe_remote_os_info_conn_ignores_ssh_client_preamble(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        proc = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout=(
+                "Warning: No xauth data; using fake authentication data for X11 forwarding.\n"
+                "X11 forwarding request failed on channel 0.\n"
+                "NetBSD\n"
+                "4.0_STABLE\n"
+                "earmv4\n"
+            ),
+        )
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            result = probe._probe_remote_os_info_conn(connection)
+
+        self.assertEqual(result, ("NetBSD", "4.0_STABLE", "earmv4"))
+
     def test_extract_airport_identity_from_text_finds_airport_extreme_model(self) -> None:
         result = probe.extract_airport_identity_from_text("prefix\x00psyAM\x00pAirPort7,120\x00suffix")
         self.assertEqual(result.model, "AirPort7,120")
