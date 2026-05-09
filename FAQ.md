@@ -52,6 +52,10 @@ Once deployment is complete, you can connect via:
 - Username: `admin`
 - Password: Your Time Capsule password
 
+#### Do I need to `uninstall` before updating?
+
+No. You can run `deploy` over an old deployment.
+
 ## Troubleshooting
 
 #### I'm not sure what went wrong
