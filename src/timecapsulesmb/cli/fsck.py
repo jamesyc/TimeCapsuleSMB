@@ -18,6 +18,7 @@ from timecapsulesmb.transport.ssh import run_ssh
 
 
 FSCK_REBOOT_NO_DOWN_MESSAGE = "fsck requested reboot from the device, but SSH did not go down."
+FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS = 3 * 60 * 60
 NO_MOUNTED_HFS_VOLUMES_MESSAGE = "no mounted HFS volumes found"
 MULTIPLE_MOUNTED_HFS_VOLUMES_MESSAGE = "multiple mounted HFS volumes found; specify --volume to select one"
 
@@ -151,7 +152,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         command_context.set_stage("run_fsck")
         script = build_remote_fsck_script(target.device, target.mountpoint, reboot=not args.no_reboot)
-        proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=240)
+        proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS)
         if proc.stdout:
             print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
 

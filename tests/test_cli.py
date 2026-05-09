@@ -5179,6 +5179,8 @@ class CliTests(unittest.TestCase):
                 rc = fsck.main(["--yes"])
         self.assertEqual(rc, 0)
         run_ssh_mock.assert_called_once()
+        self.assertEqual(run_ssh_mock.call_args.kwargs["timeout"], fsck.FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS)
+        self.assertEqual(fsck.FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS, 10800)
         remote_cmd = run_ssh_mock.call_args.args[1]
         self.assertIn("tc_kill_watchdog_pids KILL", remote_cmd)
         self.assertIn("/mnt/Flash/watchdog.sh", remote_cmd)
@@ -5257,6 +5259,7 @@ class CliTests(unittest.TestCase):
                 rc = fsck.main(["--yes", "--no-reboot"])
         self.assertEqual(rc, 0)
         observe_mock.assert_not_called()
+        self.assertEqual(run_ssh_mock.call_args.kwargs["timeout"], fsck.FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS)
         self.assertNotIn("/sbin/reboot", run_ssh_mock.call_args.args[1])
 
     def test_fsck_prompt_decline_cancels_before_remote_actions(self) -> None:
