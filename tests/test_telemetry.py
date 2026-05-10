@@ -498,6 +498,9 @@ class TelemetryTests(unittest.TestCase):
             {
                 "TC_HOST": "root@192.168.1.217",
                 "TC_PASSWORD": "secret",
+                "TC_MDNS_HOST_LABEL": "legacy-host",
+                "TC_MDNS_INSTANCE_NAME": "Legacy Instance",
+                "TC_NETBIOS_NAME": "LegacyNetbios",
                 "TC_CONFIGURE_ID": "config-id",
                 "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
             },

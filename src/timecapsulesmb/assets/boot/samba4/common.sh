@@ -298,9 +298,17 @@ tc_normalize_mdns_host_label() {
 }
 
 tc_normalize_netbios_name() {
-    tc_identity_first_label "$1" \
+    netbios_name=$(tc_identity_first_label "$1" \
         | sed 's/[^ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-]//g' \
-        | sed 's/^\(.\{1,15\}\).*/\1/'
+        | sed 's/^\(.\{1,15\}\).*/\1/')
+    case "$netbios_name" in
+        *[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789]*)
+            printf '%s\n' "$netbios_name"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 tc_init_runtime_identity() {
@@ -318,7 +326,7 @@ tc_init_runtime_identity() {
 
     runtime_netbios_name=$(tc_normalize_netbios_name "$runtime_hostname" || true)
     if [ -z "$runtime_netbios_name" ]; then
-        runtime_netbios_name=$(tc_normalize_netbios_name "$runtime_host_label" || true)
+        runtime_netbios_name=$(tc_normalize_netbios_name "$runtime_system_name" || true)
     fi
     [ -n "$runtime_netbios_name" ] || runtime_netbios_name=TimeCapsule
 

@@ -507,6 +507,12 @@ kill_watchdog_pids KILL
         self.assertEqual(result.mdns_host_label, "time-capsule")
         self.assertEqual(result.netbios_name, "TimeCapsule")
 
+    def test_runtime_naming_identity_rejects_netbios_without_alnum(self) -> None:
+        result = derive_runtime_naming_identity("极端 时间胶囊", "---.local")
+
+        self.assertEqual(result.mdns_host_label, "timecapsule")
+        self.assertEqual(result.netbios_name, "TimeCapsule")
+
     def test_probe_remote_runtime_naming_identity_reads_acp_and_hostname(self) -> None:
         proc = mock.Mock(stdout="system_name=Time Capsule\nhostname=time-capsule.local\n", returncode=0)
         connection = SshConnection("host", "pw", "-o foo")

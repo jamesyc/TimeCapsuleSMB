@@ -596,6 +596,8 @@ def normalize_runtime_mdns_host_label(value: str) -> str:
 def normalize_runtime_netbios_name(value: str) -> str:
     candidate = _first_dns_label(value)
     normalized = re.sub(r"[^A-Za-z0-9_-]", "", candidate)
+    if not re.search(r"[A-Za-z0-9]", normalized):
+        return ""
     return _truncate_utf8(normalized, MAX_NETBIOS_NAME_BYTES)
 
 
@@ -615,7 +617,7 @@ def derive_runtime_naming_identity(system_name: str | None, hostname: str | None
 
     netbios_name = normalize_runtime_netbios_name(raw_hostname or "")
     if not netbios_name:
-        netbios_name = normalize_runtime_netbios_name(mdns_host_label)
+        netbios_name = normalize_runtime_netbios_name(raw_system_name or "")
     if not netbios_name:
         netbios_name = "TimeCapsule"
 

@@ -638,6 +638,7 @@ class StorageRuntimeTests(unittest.TestCase):
                     printf 'instance=%s\\n' "$(tc_normalize_mdns_instance_name {shlex.quote(system_name)})"
                     printf 'host=%s\\n' "$(tc_normalize_mdns_host_label {shlex.quote(hostname)})"
                     printf 'netbios=%s\\n' "$(tc_normalize_netbios_name {shlex.quote(hostname)})"
+                    printf 'punct_netbios=%s\\n' "$(tc_normalize_netbios_name '---')"
                     """
                 )
             )
@@ -650,6 +651,42 @@ class StorageRuntimeTests(unittest.TestCase):
         self.assertEqual(lines["instance"], normalize_runtime_mdns_instance_name(system_name))
         self.assertEqual(lines["host"], normalize_runtime_mdns_host_label(hostname))
         self.assertEqual(lines["netbios"], normalize_runtime_netbios_name(hostname))
+        self.assertEqual(lines["punct_netbios"], "")
+
+    def test_common_runtime_identity_uses_final_netbios_fallback_for_punctuation_only_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path, hostname_output="---.local")
+            script = tmp_path / "runtime-identity-netbios-fallback.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    tc_set_log "$RAM_VAR/test.log" test
+                    get_airport_acp_value() {{
+                        case "$1" in
+                            syNm) echo "极端 时间胶囊" ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_init_runtime_identity
+                    printf 'identity=%s|%s|%s\\n' "$MDNS_INSTANCE_NAME" "$MDNS_HOST_LABEL" "$SMB_NETBIOS_NAME"
+                    cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("identity=极端 时间胶囊|timecapsule|TimeCapsule\n", proc.stdout)
+        self.assertIn("runtime identity: mdns_instance=极端 时间胶囊 mdns_host=timecapsule netbios=TimeCapsule", proc.stdout)
 
     def test_common_runtime_identity_overwrites_legacy_values_and_feeds_runtime_args(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

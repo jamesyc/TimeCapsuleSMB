@@ -34,6 +34,11 @@ def missing_required_python_module(module_names: Iterable[str]) -> tuple[str, Ba
 
 COMMAND_VALUE_BLACKLIST = {
     "TC_PASSWORD",
+    # Removed naming keys may still exist in old .env files. They are
+    # intentionally ignored and should not appear as command inputs.
+    "TC_MDNS_HOST_LABEL",
+    "TC_MDNS_INSTANCE_NAME",
+    "TC_NETBIOS_NAME",
     # These are already first-class telemetry fields.
     "TC_CONFIGURE_ID",
     "TC_MDNS_DEVICE_MODEL",
