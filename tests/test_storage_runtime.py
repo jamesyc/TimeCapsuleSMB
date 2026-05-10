@@ -194,7 +194,7 @@ class StorageRuntimeTests(unittest.TestCase):
                 share_path = volume_root
             builtin = "1" if volume.builtin else "0"
             share_lines.append("\t".join((share_name, share_path, volume.partition_device, builtin, volume.adisk_uuid)))
-            adisk_lines.append("\t".join((share_name, volume.partition_device, volume.adisk_uuid, "0x1093")))
+            adisk_lines.append("\t".join((share_name, volume.partition_device, volume.adisk_uuid, "0x82")))
         return "\n".join(share_lines) + "\n", "\n".join(adisk_lines) + "\n"
 
     def run_share_state_fixture(
@@ -1026,7 +1026,7 @@ class StorageRuntimeTests(unittest.TestCase):
                         Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                         EOF
                             cat >"$TC_ADISK_TSV" <<'EOF'
-                        Data	dk2	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa	0x1093
+                        Data	dk2	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa	0x82
                         EOF
                         }}
                         tc_start_mdns_capture() {{ echo mdns-capture; }}
@@ -1223,8 +1223,8 @@ class StorageRuntimeTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn(f"Data\t{volumes}/dk2/ShareRoot\tdk2\t1\taaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n", proc.stdout)
         self.assertIn(f"Data (dk3)\t{volumes}/dk3\tdk3\t0\tbbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\n", proc.stdout)
-        self.assertIn("Data\tdk2\taaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\t0x1093\n", proc.stdout)
-        self.assertIn("Data (dk3)\tdk3\tbbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\t0x1093\n", proc.stdout)
+        self.assertIn("Data\tdk2\taaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\t0x82\n", proc.stdout)
+        self.assertIn("Data (dk3)\tdk3\tbbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\t0x82\n", proc.stdout)
         self.assertIn("internal_marker=yes\n", proc.stdout)
         self.assertIn("external_marker=yes\n", proc.stdout)
 
@@ -1263,8 +1263,8 @@ class StorageRuntimeTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         rows = [line.split("\t") for line in proc.stdout.splitlines()]
         self.assertEqual(len(rows), 2)
-        self.assertEqual(len(rows[0][0].encode("utf-8")), 192)
-        self.assertEqual(len(rows[1][0].encode("utf-8")), 192)
+        self.assertEqual(len(rows[0][0].encode("utf-8")), 194)
+        self.assertEqual(len(rows[1][0].encode("utf-8")), 194)
         self.assertTrue(rows[1][0].endswith(" (dk3)"))
         for share_name, disk_key, adisk_uuid, advf in rows:
             txt = f"{disk_key}=adVF={advf},adVN={share_name},adVU={adisk_uuid}"
@@ -1510,7 +1510,7 @@ class StorageRuntimeTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn(f"payload\n{volumes}/dk5/.samba4\t{volumes}/dk5\t/dev/dk5\n", proc.stdout)
         self.assertIn(f"shares\nUSB Backup\t{volumes}/dk5\tdk5\t0\taaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n", proc.stdout)
-        self.assertIn("adisk\nUSB Backup\tdk5\taaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\t0x1093\n", proc.stdout)
+        self.assertIn("adisk\nUSB Backup\tdk5\taaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\t0x82\n", proc.stdout)
         self.assertIn("marker=yes\n", proc.stdout)
         self.assertIn("runtime=yes\n", proc.stdout)
         self.assertIn("[USB Backup]\n", proc.stdout)
