@@ -38,11 +38,14 @@ from timecapsulesmb.deploy.boot_assets import (
 )
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, payload_family_description, render_compatibility_message
 from timecapsulesmb.device.storage import (
-    NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE,
+    MAST_DISCOVERY_ATTEMPTS,
+    MAST_DISCOVERY_DELAY_SECONDS,
     PayloadHome,
     build_dry_run_payload_home,
-    read_mast_volumes_conn,
-    select_payload_home_conn,
+    mast_volumes_debug_summary,
+    payload_candidate_checks_debug_summary,
+    select_payload_home_with_diagnostics_conn,
+    wait_for_mast_volumes_conn,
 )
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_green, color_red
@@ -52,6 +55,17 @@ REBOOT_NO_DOWN_MESSAGE = (
     "Reboot was requested but the device did not go down.\n"
     "The deploy stopped the managed runtime before reboot; power-cycle or rerun deploy."
 )
+
+
+def _no_mast_volumes_message(*, attempts: int, delay_seconds: int) -> str:
+    return (
+        f"No deployable HFS disk was found after {attempts} MaSt queries "
+        f"spaced {delay_seconds} seconds apart."
+    )
+
+
+def _no_writable_mast_volumes_message(volume_count: int) -> str:
+    return f"MaSt found {volume_count} deployable HFS volume(s), but deploy could not write to any of them."
 
 
 def _render_flash_config_assignment(key: str, value: str | int) -> str:
@@ -169,19 +183,35 @@ def main(argv: Optional[list[str]] = None) -> int:
             payload_home = build_dry_run_payload_home(config.require("TC_PAYLOAD_DIR_NAME"))
         else:
             command_context.set_stage("read_mast")
-            mast_volumes = read_mast_volumes_conn(connection)
-            command_context.set_stage("select_payload_home")
-            try:
-                payload_home = select_payload_home_conn(
-                    connection,
-                    mast_volumes,
-                    config.require("TC_PAYLOAD_DIR_NAME"),
-                    wait_seconds=apple_mount_wait_seconds,
+            mast_discovery = wait_for_mast_volumes_conn(
+                connection,
+                attempts=MAST_DISCOVERY_ATTEMPTS,
+                delay_seconds=MAST_DISCOVERY_DELAY_SECONDS,
+            )
+            mast_volumes = mast_discovery.volumes
+            command_context.add_debug_fields(
+                mast_read_attempts=mast_discovery.attempts,
+                mast_volume_count=len(mast_volumes),
+                mast_candidates=mast_volumes_debug_summary(mast_volumes),
+            )
+            if not mast_volumes:
+                raise SystemExit(
+                    _no_mast_volumes_message(
+                        attempts=MAST_DISCOVERY_ATTEMPTS,
+                        delay_seconds=MAST_DISCOVERY_DELAY_SECONDS,
+                    )
                 )
-            except RuntimeError as exc:
-                if str(exc) == NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE:
-                    raise SystemExit(NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE) from exc
-                raise
+            command_context.set_stage("select_payload_home")
+            selection = select_payload_home_with_diagnostics_conn(
+                connection,
+                mast_volumes,
+                config.require("TC_PAYLOAD_DIR_NAME"),
+                wait_seconds=apple_mount_wait_seconds,
+            )
+            command_context.add_debug_fields(mast_candidate_checks=payload_candidate_checks_debug_summary(selection.checks))
+            if selection.payload_home is None:
+                raise SystemExit(_no_writable_mast_volumes_message(len(mast_volumes)))
+            payload_home = selection.payload_home
         command_context.set_stage("build_deployment_plan")
         plan = build_deployment_plan(
             host,

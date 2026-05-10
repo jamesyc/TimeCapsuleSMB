@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 import plistlib
 import re
 import shlex
+import time
 import uuid
 
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 
 
 NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE = "no writable persistent volume found"
+MAST_DISCOVERY_ATTEMPTS = 10
+MAST_DISCOVERY_DELAY_SECONDS = 3
 DRY_RUN_VOLUME_ROOT_PLACEHOLDER = "resolved from MaSt at deploy time"
 DRY_RUN_DEVICE_PATH_PLACEHOLDER = "resolved from MaSt at deploy time"
 UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER = "resolved from MaSt at uninstall time"
@@ -48,6 +52,25 @@ class PayloadHome:
     @property
     def disk_key(self) -> str:
         return PurePosixPath(self.volume_root).name
+
+
+@dataclass(frozen=True)
+class MaStDiscoveryResult:
+    volumes: tuple[MaStVolume, ...]
+    attempts: int
+
+
+@dataclass(frozen=True)
+class PayloadCandidateCheck:
+    volume: MaStVolume
+    mounted: bool
+    writable: bool | None
+
+
+@dataclass(frozen=True)
+class PayloadHomeSelection:
+    payload_home: PayloadHome | None
+    checks: tuple[PayloadCandidateCheck, ...]
 
 
 def build_dry_run_payload_home(payload_dir_name: str) -> PayloadHome:
@@ -285,6 +308,24 @@ def read_mast_volumes_conn(connection: SshConnection) -> tuple[MaStVolume, ...]:
     return parse_mast_plist(proc.stdout)
 
 
+def wait_for_mast_volumes_conn(
+    connection: SshConnection,
+    *,
+    attempts: int = MAST_DISCOVERY_ATTEMPTS,
+    delay_seconds: int = MAST_DISCOVERY_DELAY_SECONDS,
+) -> MaStDiscoveryResult:
+    if attempts <= 0:
+        attempts = 1
+    volumes: tuple[MaStVolume, ...] = ()
+    for attempt in range(1, attempts + 1):
+        volumes = read_mast_volumes_conn(connection)
+        if volumes:
+            return MaStDiscoveryResult(volumes, attempt)
+        if attempt < attempts:
+            time.sleep(delay_seconds)
+    return MaStDiscoveryResult(volumes, attempts)
+
+
 def _remote_mounted_test(volume_root: str) -> str:
     quoted_root = shlex.quote(volume_root)
     return (
@@ -351,6 +392,56 @@ def ordered_payload_candidate_volumes(
     return tuple(volume for volume in volumes if volume.builtin) + tuple(volume for volume in volumes if not volume.builtin)
 
 
+def mast_volume_debug_summary(volume: MaStVolume) -> dict[str, object]:
+    return {
+        "disk": volume.disk_device,
+        "part": volume.partition_device,
+        "root": volume.volume_root,
+        "name": volume.name,
+        "format": volume.format,
+        "builtin": volume.builtin,
+        "uuid": volume.adisk_uuid,
+    }
+
+
+def mast_volumes_debug_summary(volumes: Sequence[MaStVolume]) -> list[dict[str, object]]:
+    return [mast_volume_debug_summary(volume) for volume in volumes]
+
+
+def payload_candidate_checks_debug_summary(checks: Sequence[PayloadCandidateCheck]) -> list[dict[str, object]]:
+    summaries: list[dict[str, object]] = []
+    for check in checks:
+        summary = mast_volume_debug_summary(check.volume)
+        summary["mounted"] = check.mounted
+        summary["writable"] = check.writable
+        summaries.append(summary)
+    return summaries
+
+
+def select_payload_home_with_diagnostics_conn(
+    connection: SshConnection,
+    volumes: tuple[MaStVolume, ...],
+    payload_dir_name: str,
+    *,
+    wait_seconds: int,
+) -> PayloadHomeSelection:
+    checks: list[PayloadCandidateCheck] = []
+    for volume in ordered_payload_candidate_volumes(volumes):
+        mounted = ensure_mast_volume_mounted_conn(connection, volume, wait_seconds=wait_seconds)
+        writable = volume_root_is_writable_conn(connection, volume.volume_root) if mounted else None
+        checks.append(PayloadCandidateCheck(volume, mounted, writable))
+        if mounted and writable:
+            return PayloadHomeSelection(
+                PayloadHome(
+                    volume_root=volume.volume_root,
+                    device_path=volume.device_path,
+                    payload_dir_name=payload_dir_name,
+                ),
+                tuple(checks),
+            )
+    return PayloadHomeSelection(None, tuple(checks))
+
+
 def select_payload_home_conn(
     connection: SshConnection,
     volumes: tuple[MaStVolume, ...],
@@ -358,14 +449,12 @@ def select_payload_home_conn(
     *,
     wait_seconds: int,
 ) -> PayloadHome:
-    for volume in ordered_payload_candidate_volumes(volumes):
-        if not ensure_mast_volume_mounted_conn(connection, volume, wait_seconds=wait_seconds):
-            continue
-        if not volume_root_is_writable_conn(connection, volume.volume_root):
-            continue
-        return PayloadHome(
-            volume_root=volume.volume_root,
-            device_path=volume.device_path,
-            payload_dir_name=payload_dir_name,
-        )
+    selection = select_payload_home_with_diagnostics_conn(
+        connection,
+        volumes,
+        payload_dir_name,
+        wait_seconds=wait_seconds,
+    )
+    if selection.payload_home is not None:
+        return selection.payload_home
     raise RuntimeError(NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE)

@@ -55,7 +55,13 @@ from timecapsulesmb.device.probe import (
     RemoteInterfaceCandidatesProbeResult,
     RemoteInterfaceProbeResult,
 )
-from timecapsulesmb.device.storage import NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE, MaStVolume, PayloadHome
+from timecapsulesmb.device.storage import (
+    MaStDiscoveryResult,
+    MaStVolume,
+    PayloadCandidateCheck,
+    PayloadHome,
+    PayloadHomeSelection,
+)
 from timecapsulesmb.deploy.commands import (
     RunScriptAction,
     StopProcessAction,
@@ -638,6 +644,8 @@ class CliTests(unittest.TestCase):
         patch_upload: bool = False,
         upload_side_effect=None,
         mast_volumes: tuple[MaStVolume, ...] | None = None,
+        mast_discovery: MaStDiscoveryResult | None = None,
+        payload_home_selection: PayloadHomeSelection | None = None,
         select_payload_home_side_effect=None,
         verify_runtime=None,
         reboot_side_effect=None,
@@ -654,6 +662,11 @@ class CliTests(unittest.TestCase):
         payload_home = self._payload_home(mount_root, config_values.get("TC_PAYLOAD_DIR_NAME", DEFAULTS["TC_PAYLOAD_DIR_NAME"]))
         if mast_volumes is None:
             mast_volumes = (self._mast_volume(mount_root.rstrip("/").rsplit("/", 1)[-1]),)
+        if mast_discovery is None:
+            mast_discovery = MaStDiscoveryResult(mast_volumes, 1)
+        if payload_home_selection is None:
+            checks = (PayloadCandidateCheck(mast_volumes[0], True, True),) if mast_volumes else ()
+            payload_home_selection = PayloadHomeSelection(payload_home, checks)
         with ExitStack() as stack:
             if ensure_install_id:
                 mocks.ensure_install_id = stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.ensure_install_id"))
@@ -663,16 +676,22 @@ class CliTests(unittest.TestCase):
             if command_context is not None:
                 mocks.command_context = stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.CommandContext", return_value=command_context))
             mocks.validate_artifacts = stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=artifacts))
-            mocks.read_mast_volumes_conn = stack.enter_context(
-                mock.patch("timecapsulesmb.cli.deploy.read_mast_volumes_conn", return_value=mast_volumes)
+            mocks.wait_for_mast_volumes_conn = stack.enter_context(
+                mock.patch("timecapsulesmb.cli.deploy.wait_for_mast_volumes_conn", return_value=mast_discovery)
             )
             if select_payload_home_side_effect is None:
-                mocks.select_payload_home_conn = stack.enter_context(
-                    mock.patch("timecapsulesmb.cli.deploy.select_payload_home_conn", return_value=payload_home)
+                mocks.select_payload_home_with_diagnostics_conn = stack.enter_context(
+                    mock.patch(
+                        "timecapsulesmb.cli.deploy.select_payload_home_with_diagnostics_conn",
+                        return_value=payload_home_selection,
+                    )
                 )
             else:
-                mocks.select_payload_home_conn = stack.enter_context(
-                    mock.patch("timecapsulesmb.cli.deploy.select_payload_home_conn", side_effect=select_payload_home_side_effect)
+                mocks.select_payload_home_with_diagnostics_conn = stack.enter_context(
+                    mock.patch(
+                        "timecapsulesmb.cli.deploy.select_payload_home_with_diagnostics_conn",
+                        side_effect=select_payload_home_side_effect,
+                    )
                 )
             mocks.require_compatibility = stack.enter_context(
                 mock.patch(
@@ -3695,8 +3714,8 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("generated nbns marker", text)
         result.mocks.run_remote_actions.assert_not_called()
         result.mocks.upload_deployment_payload.assert_not_called()
-        result.mocks.read_mast_volumes_conn.assert_not_called()
-        result.mocks.select_payload_home_conn.assert_not_called()
+        result.mocks.wait_for_mast_volumes_conn.assert_not_called()
+        result.mocks.select_payload_home_with_diagnostics_conn.assert_not_called()
 
     def test_deploy_dry_run_json_outputs_modern_multivolume_plan(self) -> None:
         values = self.make_valid_env()
@@ -3761,9 +3780,11 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(result.rc, 0)
-        result.mocks.read_mast_volumes_conn.assert_called_once()
-        result.mocks.select_payload_home_conn.assert_called_once_with(
-            result.mocks.read_mast_volumes_conn.call_args.args[0],
+        result.mocks.wait_for_mast_volumes_conn.assert_called_once()
+        self.assertEqual(result.mocks.wait_for_mast_volumes_conn.call_args.kwargs["attempts"], 10)
+        self.assertEqual(result.mocks.wait_for_mast_volumes_conn.call_args.kwargs["delay_seconds"], 3)
+        result.mocks.select_payload_home_with_diagnostics_conn.assert_called_once_with(
+            result.mocks.wait_for_mast_volumes_conn.call_args.args[0],
             volumes,
             ".samba4",
             wait_seconds=7,
@@ -3838,18 +3859,54 @@ class CliTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("unrecognized arguments: --install-nbns", stderr.getvalue())
 
-    def test_deploy_exits_when_no_writable_persistent_volume_exists(self) -> None:
+    def test_deploy_exits_when_mast_volumes_are_not_writable(self) -> None:
+        volumes = (self._mast_volume("dk2"),)
         result = self.run_deploy_cli(
             ["--yes"],
+            mast_volumes=volumes,
+            payload_home_selection=PayloadHomeSelection(None, (PayloadCandidateCheck(volumes[0], True, False),)),
             patch_actions=True,
             patch_upload=True,
-            select_payload_home_side_effect=RuntimeError(NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE),
             raises=SystemExit,
         )
 
-        self.assertEqual(str(result.exception), NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE)
+        self.assertEqual(
+            str(result.exception),
+            "MaSt found 1 deployable HFS volume(s), but deploy could not write to any of them.",
+        )
         result.mocks.run_remote_actions.assert_not_called()
         result.mocks.upload_deployment_payload.assert_not_called()
+        telemetry_error = self.telemetry_payload("deploy_finished")["error"]
+        self.assertIn("stage=select_payload_home", telemetry_error)
+        self.assertIn("mast_volume_count=1", telemetry_error)
+        self.assertIn("mast_candidates=[{disk:wd0,part:dk2", telemetry_error)
+        self.assertIn("mast_candidate_checks=[{disk:wd0,part:dk2", telemetry_error)
+        self.assertIn("mounted:true", telemetry_error)
+        self.assertIn("writable:false", telemetry_error)
+
+    def test_deploy_exits_when_mast_discovery_never_finds_disks(self) -> None:
+        result = self.run_deploy_cli(
+            ["--yes"],
+            mast_volumes=(),
+            mast_discovery=MaStDiscoveryResult((), 10),
+            patch_actions=True,
+            patch_upload=True,
+            raises=SystemExit,
+        )
+
+        self.assertEqual(
+            str(result.exception),
+            "No deployable HFS disk was found after 10 MaSt queries spaced 3 seconds apart.",
+        )
+        result.mocks.wait_for_mast_volumes_conn.assert_called_once()
+        result.mocks.select_payload_home_with_diagnostics_conn.assert_not_called()
+        result.mocks.run_remote_actions.assert_not_called()
+        result.mocks.upload_deployment_payload.assert_not_called()
+        telemetry_error = self.telemetry_payload("deploy_finished")["error"]
+        self.assertIn("stage=read_mast", telemetry_error)
+        self.assertIn("mast_read_attempts=10", telemetry_error)
+        self.assertIn("mast_volume_count=0", telemetry_error)
+        self.assertIn("mast_candidates=[]", telemetry_error)
 
     def test_deploy_no_reboot_stops_after_upload_phase(self) -> None:
         result = self.run_deploy_cli(
