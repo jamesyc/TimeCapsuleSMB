@@ -917,6 +917,7 @@ class StorageRuntimeTests(unittest.TestCase):
                         tc_prepare_legacy_prefix() {{ echo legacy; }}
                         tc_wait_for_bind_interfaces() {{ echo "127.0.0.1/8 192.168.1.2/24"; }}
                         tc_prepare_local_hostname_resolution() {{ echo hostname; }}
+                        tc_init_runtime_identity() {{ echo identity; }}
                         tc_refresh_disk_state() {{
                             echo refresh
                             mkdir -p "$RAM_VAR"
@@ -961,6 +962,7 @@ class StorageRuntimeTests(unittest.TestCase):
                     "hostname",
                     "refresh",
                     "mdns-capture",
+                    "identity",
                     "stage 127.0.0.1/8 192.168.1.2/24",
                     "smbd",
                     "mdns",
@@ -2486,6 +2488,60 @@ class StorageRuntimeTests(unittest.TestCase):
             proc.stdout,
             f"payload\nmount /dev/dk2 {volumes}/dk2\nmount /dev/dk3 {volumes}/dk3\nsmbd\n",
         )
+
+    def test_common_watchdog_iteration_refreshes_identity_once_before_service_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "watchdog-identity-refresh.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    NBNS_ENABLED=1
+                    TC_PAYLOAD_DIR={volumes}/dk2/.samba4
+                    TC_PAYLOAD_VOLUME={volumes}/dk2
+                    MDNS_HOST_LABEL=stale-host
+                    SMB_NETBIOS_NAME=StaleName
+                    TC_RUNTIME_IDENTITY_READY=1
+                    tc_topology_changed() {{ return 1; }}
+                    tc_payload_available() {{ return 0; }}
+                    tc_mount_active_volumes_from_state() {{ return 0; }}
+                    tc_init_runtime_identity() {{
+                        echo identity-refresh
+                        MDNS_HOST_LABEL=fresh-host
+                        SMB_NETBIOS_NAME=FreshName
+                        TC_RUNTIME_IDENTITY_READY=1
+                    }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            smbd) return 0 ;;
+                            mdns-advertiser) return 1 ;;
+                            nbns-advertiser) return 1 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_launch_mdns_advertiser() {{ echo "mdns-host=$MDNS_HOST_LABEL"; }}
+                    tc_launch_nbns() {{ echo "nbns-name=$SMB_NETBIOS_NAME"; }}
+                    tc_all_managed_services_healthy() {{ return 1; }}
+                    status=0
+                    tc_watchdog_iteration || status=$?
+                    echo "status=$status"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "identity-refresh\nmdns-host=fresh-host\nnbns-name=FreshName\nstatus=1\n")
 
     def test_common_watchdog_iteration_stops_services_when_active_share_mount_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

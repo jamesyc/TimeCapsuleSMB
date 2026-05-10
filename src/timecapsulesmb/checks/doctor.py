@@ -60,6 +60,7 @@ from timecapsulesmb.transport.ssh import SshConnection, ssh_local_forward
 class DoctorBonjourResult:
     instance: str | None
     target: BonjourServiceTarget | None
+    service_targets: dict[str, tuple[str, ...]]
     reason: str
     debug_needed: bool
     expected_debug: dict[str, str | None] | None
@@ -231,6 +232,69 @@ def _add_bonjour_debug_fields(
             debug_fields["bonjour_native_dns_sd"] = native_dns_sd
 
 
+_BONJOUR_TARGET_SERVICE_ORDER = ("_airport", "_smb", "_adisk", "_device-info")
+
+
+def _bonjour_service_label(service_type: str) -> str:
+    normalized = service_type.strip().rstrip(".")
+    for suffix in ("._tcp.local", "._udp.local", "._tcp", "._udp"):
+        if normalized.endswith(suffix):
+            return normalized[: -len(suffix)]
+    return normalized
+
+
+def _bonjour_service_targets_for_instance(records: Iterable[object], instance_name: str | None) -> dict[str, tuple[str, ...]]:
+    if instance_name is None:
+        return {}
+
+    found: dict[str, set[str]] = {}
+    for record in records:
+        if getattr(record, "name", None) != instance_name:
+            continue
+        hostname = str(getattr(record, "hostname", "") or "").strip().rstrip(".")
+        if not hostname:
+            continue
+        service_label = _bonjour_service_label(str(getattr(record, "service_type", "") or ""))
+        if service_label not in _BONJOUR_TARGET_SERVICE_ORDER:
+            continue
+        found.setdefault(service_label, set()).add(hostname)
+
+    return {service: tuple(sorted(found[service], key=lambda host: host.lower())) for service in _BONJOUR_TARGET_SERVICE_ORDER if service in found}
+
+
+def _format_bonjour_service_targets(service_targets: dict[str, tuple[str, ...]]) -> str:
+    return "; ".join(f"{service}={','.join(hosts)}" for service, hosts in service_targets.items())
+
+
+def _add_bonjour_service_target_consistency_results(
+    instance_name: str | None,
+    service_targets: dict[str, tuple[str, ...]],
+    add_result: Callable[[CheckResult], None],
+) -> bool:
+    if instance_name is None:
+        return False
+    if not service_targets:
+        return False
+
+    formatted_targets = _format_bonjour_service_targets(service_targets)
+    add_result(CheckResult("INFO", f"advertised Bonjour service targets for {instance_name!r}: {formatted_targets}"))
+
+    canonical_hosts = {
+        host.strip().rstrip(".").lower()
+        for hosts in service_targets.values()
+        for host in hosts
+        if host.strip().rstrip(".")
+    }
+    service_count = sum(1 for hosts in service_targets.values() if hosts)
+    if len(canonical_hosts) > 1:
+        add_result(CheckResult("FAIL", f"Bonjour services for {instance_name!r} advertise inconsistent host targets: {formatted_targets}"))
+        return True
+    elif service_count > 1:
+        host = next(iter(canonical_hosts))
+        add_result(CheckResult("PASS", f"Bonjour services for {instance_name!r} advertise consistent host target {host}"))
+    return False
+
+
 def _add_bonjour_results(
     config: AppConfig,
     runtime_naming_identity: RuntimeNamingIdentityProbeResult | None,
@@ -245,6 +309,7 @@ def _add_bonjour_results(
     bonjour_debug_needed = False
     bonjour_expected_debug: dict[str, str | None] | None = None
     bonjour_zeroconf_debug: object | None = None
+    bonjour_service_targets: dict[str, tuple[str, ...]] = {}
 
     if proxied_ssh and not skip_bonjour:
         bonjour_reason = "Bonjour check skipped for SSH-proxied target"
@@ -263,12 +328,13 @@ def _add_bonjour_results(
                 return DoctorBonjourResult(
                     instance=None,
                     target=None,
+                    service_targets={},
                     reason=bonjour_reason,
                     debug_needed=False,
                     expected_debug=bonjour_expected_debug,
                     zeroconf_debug=None,
                 )
-            smb_snapshot, discovery_error, bonjour_zeroconf_debug = discover_smb_services_detailed()
+            smb_snapshot, discovery_error, bonjour_zeroconf_debug = discover_smb_services_detailed(include_related=True)
             bonjour_reason = ""
             if discovery_error is not None:
                 bonjour_reason = discovery_error.message
@@ -276,16 +342,21 @@ def _add_bonjour_results(
                 add_result(discovery_error)
             else:
                 assert smb_snapshot is not None
+                smb_instances = [instance for instance in smb_snapshot.instances if _bonjour_service_label(instance.service_type) == "_smb"]
+                smb_records = [record for record in smb_snapshot.resolved if _bonjour_service_label(record.service_type) == "_smb"]
                 if bonjour_expected.instance_name is not None:
                     selection = select_smb_instance(
-                        smb_snapshot.instances,
+                        smb_instances,
                         expected_instance_name=bonjour_expected.instance_name,
                     )
                     for result in check_smb_instance(selection):
                         add_result(result)
                     if selection.instance is not None:
                         bonjour_instance = selection.instance.name
-                        resolved_record = select_resolved_smb_record(smb_snapshot.resolved, selection.instance)
+                        bonjour_service_targets = _bonjour_service_targets_for_instance(smb_snapshot.resolved, selection.instance.name)
+                        if _add_bonjour_service_target_consistency_results(selection.instance.name, bonjour_service_targets, add_result):
+                            bonjour_debug_needed = True
+                        resolved_record = select_resolved_smb_record(smb_records, selection.instance)
                         resolve_error = None
                         if resolved_record is None:
                             resolved_record, resolve_error = resolve_smb_instance(selection.instance)
@@ -316,7 +387,7 @@ def _add_bonjour_results(
                         bonjour_debug_needed = True
                 elif bonjour_expected.target_ip is not None:
                     resolved_record = select_resolved_smb_record_by_ip(
-                        smb_snapshot.resolved,
+                        smb_records,
                         bonjour_expected.target_ip,
                     )
                     if resolved_record is None:
@@ -325,6 +396,9 @@ def _add_bonjour_results(
                         add_result(CheckResult("FAIL", bonjour_reason))
                     else:
                         bonjour_instance = resolved_record.name
+                        bonjour_service_targets = _bonjour_service_targets_for_instance(smb_snapshot.resolved, resolved_record.name)
+                        if _add_bonjour_service_target_consistency_results(resolved_record.name, bonjour_service_targets, add_result):
+                            bonjour_debug_needed = True
                         add_result(CheckResult("PASS", f"discovered _smb._tcp service matching target IP {bonjour_expected.target_ip}"))
                         target = resolve_smb_service_target(
                             resolved_record,
@@ -354,6 +428,7 @@ def _add_bonjour_results(
     return DoctorBonjourResult(
         instance=bonjour_instance,
         target=bonjour_target,
+        service_targets=bonjour_service_targets,
         reason=bonjour_reason,
         debug_needed=bonjour_debug_needed,
         expected_debug=bonjour_expected_debug,

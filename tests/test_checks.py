@@ -680,6 +680,32 @@ class CheckTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertIs(result_diagnostics, diagnostics)
 
+    def test_discover_smb_services_detailed_can_include_related_bonjour_services(self) -> None:
+        snapshot = BonjourDiscoverySnapshot([], [])
+        diagnostics = BonjourDiscoveryDiagnostics(
+            service=None,
+            service_types=["_airport._tcp.local.", "_smb._tcp.local.", "_adisk._tcp.local.", "_device-info._tcp.local."],
+            timeout_sec=6.0,
+            elapsed_sec=6.0,
+            ip_version="V4Only",
+            instance_count=0,
+            resolved_count=0,
+            pending_count=0,
+            service_added_count=0,
+            service_updated_count=0,
+            resolve_attempt_count=0,
+            resolve_success_count=0,
+            resolve_error_count=0,
+        )
+
+        with mock.patch("timecapsulesmb.checks.bonjour.discover_snapshot_detailed", return_value=(snapshot, diagnostics)) as discover_mock:
+            result, error, result_diagnostics = discover_smb_services_detailed(timeout=3.5, include_related=True)
+
+        discover_mock.assert_called_once_with(None, timeout=3.5)
+        self.assertIs(result, snapshot)
+        self.assertIsNone(error)
+        self.assertIs(result_diagnostics, diagnostics)
+
     def test_discover_smb_services_detailed_returns_fail_when_discovery_backend_errors(self) -> None:
         with mock.patch("timecapsulesmb.checks.bonjour.discover_snapshot_detailed", side_effect=RuntimeError("zeroconf missing")):
             snapshot, error, diagnostics = discover_smb_services_detailed()
@@ -1429,6 +1455,71 @@ class CheckTests(unittest.TestCase):
         self.assertIn("advertised Bonjour host label: home-samba", info_messages)
         self.assertIn("active Samba NetBIOS name: HomeSamba", info_messages)
         self.assertIn("active Samba share names: Data, Data_Kitchen", info_messages)
+
+    def test_run_doctor_checks_fails_when_same_bonjour_instance_uses_inconsistent_service_targets(self) -> None:
+        values = {
+            "TC_HOST": "root@192.168.1.217",
+            "TC_PASSWORD": "pw",
+            "TC_NET_IFACE": "bridge0",
+            "TC_SAMBA_USER": "admin",
+            "TC_PAYLOAD_DIR_NAME": ".samba4",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+            "TC_AIRPORT_SYAP": "119",
+        }
+        instance_name = "James's AirPort Time Capsule"
+        instances = [
+            BonjourServiceInstance("_airport._tcp.local.", instance_name, f"{instance_name}._airport._tcp.local."),
+            BonjourServiceInstance("_smb._tcp.local.", instance_name, f"{instance_name}._smb._tcp.local."),
+            BonjourServiceInstance("_adisk._tcp.local.", instance_name, f"{instance_name}._adisk._tcp.local."),
+            BonjourServiceInstance("_device-info._tcp.local.", instance_name, f"{instance_name}._device-info._tcp.local."),
+        ]
+        records = [
+            BonjourResolvedService(instance_name, "Jamess-AirPort-Time-Capsule.local", "_airport._tcp.local.", port=5009),
+            BonjourResolvedService(instance_name, "james-s-airport-time-capsule.local", "_smb._tcp.local.", port=445, ipv4=["192.168.1.217"]),
+            BonjourResolvedService(instance_name, "james-s-airport-time-capsule.local", "_adisk._tcp.local.", port=9),
+            BonjourResolvedService(instance_name, "james-s-airport-time-capsule.local", "_device-info._tcp.local.", port=0),
+        ]
+        probed_identity = RuntimeNamingIdentityProbeResult(
+            system_name=instance_name,
+            hostname="jamess-airport-time-capsule",
+            mdns_instance_name=instance_name,
+            mdns_host_label="jamess-airport-time-capsule",
+            netbios_name="jamess-airport-",
+            detail="ok",
+        )
+        active_smb_conf = """
+        [global]
+            netbios name = jamess-airport-
+
+        [AirPort Disk]
+            path = /Volumes/dk2/ShareRoot
+        """
+
+        with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
+            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                with mock.patch("timecapsulesmb.checks.doctor.check_ssh_login", return_value=mock.Mock(status="PASS", message="ssh ok")):
+                    with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=mock.Mock(status="PASS", message="445 ok")):
+                        with mock.patch(
+                            "timecapsulesmb.checks.doctor.discover_smb_services_detailed",
+                            return_value=(BonjourDiscoverySnapshot(instances, records), None, None),
+                        ):
+                            with mock.patch("timecapsulesmb.checks.bonjour.socket.getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("192.168.1.217", 0))]):
+                                with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=self.smb_listing_result("james-s-airport-time-capsule.local")):
+                                    with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops_detailed", return_value=[mock.Mock(status="PASS", message="file ops ok")]):
+                                        with mock.patch("timecapsulesmb.checks.doctor.probe_remote_runtime_naming_identity_conn", return_value=probed_identity):
+                                            with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout=active_smb_conf)):
+                                                results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
+
+        self.assertTrue(fatal)
+        messages = [result.message for result in results]
+        self.assertIn(
+            "advertised Bonjour service targets for \"James's AirPort Time Capsule\": _airport=Jamess-AirPort-Time-Capsule.local; _smb=james-s-airport-time-capsule.local; _adisk=james-s-airport-time-capsule.local; _device-info=james-s-airport-time-capsule.local",
+            messages,
+        )
+        self.assertIn(
+            "Bonjour services for \"James's AirPort Time Capsule\" advertise inconsistent host targets: _airport=Jamess-AirPort-Time-Capsule.local; _smb=james-s-airport-time-capsule.local; _adisk=james-s-airport-time-capsule.local; _device-info=james-s-airport-time-capsule.local",
+            messages,
+        )
 
     def test_run_doctor_checks_passes_bonjour_when_service_record_lacks_embedded_ip_but_host_resolves(self) -> None:
         values = {

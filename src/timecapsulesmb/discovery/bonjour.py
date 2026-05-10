@@ -15,6 +15,7 @@ from timecapsulesmb.core.errors import missing_dependency_message
 SERVICE_TYPES = [
     "_airport._tcp.local.",
     "_smb._tcp.local.",
+    "_adisk._tcp.local.",
     "_afpovertcp._tcp.local.",
     "_device-info._tcp.local.",
 ]

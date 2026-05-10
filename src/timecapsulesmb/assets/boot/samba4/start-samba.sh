@@ -8,7 +8,6 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
 tc_init_runtime_env
 tc_set_log "$RAM_VAR/rc.local.log" "rc.local"
-tc_init_runtime_identity
 TC_MDNS_CAPTURE_PID=
 TC_APPLE_MDNS_SNAPSHOT_START=$(/bin/ls -lnT "$APPLE_MDNS_SNAPSHOT" 2>/dev/null || true)
 TC_START_MODE=${1:-}
@@ -62,6 +61,7 @@ if ! tc_refresh_disk_state; then
 fi
 
 tc_start_mdns_capture
+tc_init_runtime_identity
 
 if ! tc_stage_disk_runtime "$BIND_INTERFACES"; then
     exit 1

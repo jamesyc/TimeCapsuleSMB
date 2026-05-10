@@ -74,9 +74,11 @@ def build_bonjour_expected_identity(
 
 def discover_smb_services_detailed(
     timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC,
+    *,
+    include_related: bool = False,
 ) -> tuple[BonjourDiscoverySnapshot | None, CheckResult | None, BonjourDiscoveryDiagnostics | None]:
     try:
-        snapshot, diagnostics = discover_snapshot_detailed(SMB_SERVICE, timeout=timeout)
+        snapshot, diagnostics = discover_snapshot_detailed(None if include_related else SMB_SERVICE, timeout=timeout)
         return snapshot, None, diagnostics
     except Exception as e:
         return None, CheckResult("FAIL", f"Bonjour check failed: {e}"), None

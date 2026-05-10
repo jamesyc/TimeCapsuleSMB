@@ -2235,6 +2235,7 @@ tc_start_smbd_if_needed() {
         return 0
     fi
 
+    tc_watchdog_refresh_runtime_identity_for_recovery
     rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true
     "$TC_SMBD_BIN" -D -s "$TC_SMBD_CONF" >/dev/null 2>&1 || true
     tc_log "watchdog recovery: smbd restart requested"
@@ -2320,8 +2321,16 @@ tc_all_managed_services_healthy() {
     return 0
 }
 
+tc_watchdog_refresh_runtime_identity_for_recovery() {
+    if [ "${TC_WATCHDOG_RECOVERY_IDENTITY_REFRESHED:-0}" != "1" ]; then
+        tc_init_runtime_identity
+        TC_WATCHDOG_RECOVERY_IDENTITY_REFRESHED=1
+    fi
+}
+
 tc_watchdog_iteration() {
     tc_log "watchdog pass: checking topology, payload, active shares, and managed services"
+    TC_WATCHDOG_RECOVERY_IDENTITY_REFRESHED=0
 
     if tc_topology_changed_debounced; then
         tc_exec_start_samba "MaSt topology changed"
@@ -2350,6 +2359,7 @@ tc_watchdog_iteration() {
     if runtime_process_present_by_ucomm "$MDNS_PROC_NAME"; then
         :
     else
+        tc_watchdog_refresh_runtime_identity_for_recovery
         tc_restart_mdns
     fi
 
@@ -2357,6 +2367,7 @@ tc_watchdog_iteration() {
         if runtime_process_present_by_ucomm "$NBNS_PROC_NAME"; then
             :
         else
+            tc_watchdog_refresh_runtime_identity_for_recovery
             tc_restart_nbns
         fi
     fi
