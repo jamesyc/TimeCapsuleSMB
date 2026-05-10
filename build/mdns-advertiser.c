@@ -59,6 +59,8 @@
 #define DNS_TYPE_SRV 33
 #define DNS_TYPE_ANY 255
 #define DNS_CLASS_IN 1
+#define DNS_CLASS_CACHE_FLUSH 0x8000
+#define DNS_CLASS_IN_UNIQUE (DNS_CLASS_IN | DNS_CLASS_CACHE_FLUSH)
 #define DNS_FLAG_QR 0x8000
 #define DNS_FLAG_AA 0x0400
 
@@ -1151,7 +1153,7 @@ static int add_rr_txt_empty(uint8_t *buf, size_t *off, size_t cap, const char *o
     static const uint8_t empty_txt[] = {0x00};
     if (encode_name(buf, off, cap, owner) != 0 ||
         append_u16(buf, off, cap, DNS_TYPE_TXT) != 0 ||
-        append_u16(buf, off, cap, DNS_CLASS_IN) != 0 ||
+        append_u16(buf, off, cap, DNS_CLASS_IN_UNIQUE) != 0 ||
         append_u32(buf, off, cap, ttl) != 0 ||
         append_u16(buf, off, cap, (uint16_t)sizeof(empty_txt)) != 0 ||
         append_bytes(buf, off, cap, empty_txt, sizeof(empty_txt)) != 0) {
@@ -1168,7 +1170,7 @@ static int add_rr_txt_items(uint8_t *buf, size_t *off, size_t cap, const char *o
 
     if (encode_name(buf, off, cap, owner) != 0 ||
         append_u16(buf, off, cap, DNS_TYPE_TXT) != 0 ||
-        append_u16(buf, off, cap, DNS_CLASS_IN) != 0 ||
+        append_u16(buf, off, cap, DNS_CLASS_IN_UNIQUE) != 0 ||
         append_u32(buf, off, cap, ttl) != 0) {
         return -1;
     }
@@ -1209,7 +1211,7 @@ static int add_rr_srv(uint8_t *buf, size_t *off, size_t cap, const char *owner, 
     size_t rdata_start;
     if (encode_name(buf, off, cap, owner) != 0 ||
         append_u16(buf, off, cap, DNS_TYPE_SRV) != 0 ||
-        append_u16(buf, off, cap, DNS_CLASS_IN) != 0 ||
+        append_u16(buf, off, cap, DNS_CLASS_IN_UNIQUE) != 0 ||
         append_u32(buf, off, cap, ttl) != 0) {
         return -1;
     }
@@ -1234,7 +1236,7 @@ static int add_rr_srv(uint8_t *buf, size_t *off, size_t cap, const char *owner, 
 static int add_rr_a(uint8_t *buf, size_t *off, size_t cap, const char *owner, uint32_t ipv4_addr, uint32_t ttl) {
     if (encode_name(buf, off, cap, owner) != 0 ||
         append_u16(buf, off, cap, DNS_TYPE_A) != 0 ||
-        append_u16(buf, off, cap, DNS_CLASS_IN) != 0 ||
+        append_u16(buf, off, cap, DNS_CLASS_IN_UNIQUE) != 0 ||
         append_u32(buf, off, cap, ttl) != 0 ||
         append_u16(buf, off, cap, 4) != 0 ||
         append_bytes(buf, off, cap, &ipv4_addr, 4) != 0) {

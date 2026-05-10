@@ -761,6 +761,135 @@ int main(void) {{
         run = self._compile_and_run_c_helper(source, "mdns_airport_txt_invalid_mac")
         self.assertEqual(run.returncode, 0, run.stderr)
 
+    def test_mdns_advertiser_sets_cache_flush_for_unique_records_only(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+
+ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
+                    const struct sockaddr *dest, socklen_t dest_len);
+
+#define sendto fake_sendto
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+#undef sendto
+
+static unsigned char captured_packet[BUF_SIZE];
+static size_t captured_len = 0;
+
+ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
+                    const struct sockaddr *dest, socklen_t dest_len) {{
+    (void)sockfd;
+    (void)flags;
+    (void)dest;
+    (void)dest_len;
+    memcpy(captured_packet, buf, len);
+    captured_len = len;
+    return (ssize_t)len;
+}}
+
+static int read_first_rr_class(const unsigned char *packet, size_t packet_len, unsigned short *out_class) {{
+    char name[MAX_NAME];
+    size_t cursor = 0;
+    unsigned short rrtype;
+    unsigned short rrclass;
+
+    if (decode_name(packet, packet_len, &cursor, name, sizeof(name)) != 0 || cursor + 10 > packet_len) {{
+        return -1;
+    }}
+    memcpy(&rrtype, packet + cursor, 2);
+    memcpy(&rrclass, packet + cursor + 2, 2);
+    (void)rrtype;
+    *out_class = ntohs(rrclass);
+    return 0;
+}}
+
+static int read_first_question_class(const unsigned char *packet, size_t packet_len, unsigned short *out_class) {{
+    struct dns_header hdr;
+    char name[MAX_NAME];
+    size_t cursor = sizeof(hdr);
+    unsigned short qtype;
+    unsigned short qclass;
+
+    if (packet_len < sizeof(hdr)) {{
+        return -1;
+    }}
+    if (decode_name(packet, packet_len, &cursor, name, sizeof(name)) != 0 || cursor + 4 > packet_len) {{
+        return -1;
+    }}
+    memcpy(&qtype, packet + cursor, 2);
+    memcpy(&qclass, packet + cursor + 2, 2);
+    (void)qtype;
+    *out_class = ntohs(qclass);
+    return 0;
+}}
+
+int main(void) {{
+    uint8_t buf[BUF_SIZE];
+    size_t off;
+    unsigned short rrclass;
+    uint32_t ipv4;
+    const char *txts[1] = {{"k=v"}};
+    struct sockaddr_in dest;
+
+    off = 0;
+    if (add_rr_ptr(buf, &off, sizeof(buf), "_smb._tcp.local.", "Home._smb._tcp.local.", 120) != 0 ||
+        read_first_rr_class(buf, off, &rrclass) != 0 ||
+        rrclass != DNS_CLASS_IN) {{
+        return 1;
+    }}
+
+    off = 0;
+    if (add_rr_srv(buf, &off, sizeof(buf), "Home._smb._tcp.local.", "home.local.", 445, 120) != 0 ||
+        read_first_rr_class(buf, off, &rrclass) != 0 ||
+        rrclass != DNS_CLASS_IN_UNIQUE) {{
+        return 2;
+    }}
+
+    off = 0;
+    if (add_rr_txt_empty(buf, &off, sizeof(buf), "Home._smb._tcp.local.", 120) != 0 ||
+        read_first_rr_class(buf, off, &rrclass) != 0 ||
+        rrclass != DNS_CLASS_IN_UNIQUE) {{
+        return 3;
+    }}
+
+    off = 0;
+    if (add_rr_txt_items(buf, &off, sizeof(buf), "Home._adisk._tcp.local.", 120, txts, NULL, 1) != 0 ||
+        read_first_rr_class(buf, off, &rrclass) != 0 ||
+        rrclass != DNS_CLASS_IN_UNIQUE) {{
+        return 4;
+    }}
+
+    if (inet_pton(AF_INET, "10.0.1.1", &ipv4) != 1) {{
+        return 5;
+    }}
+    off = 0;
+    if (add_rr_a(buf, &off, sizeof(buf), "home.local.", ipv4, 120) != 0 ||
+        read_first_rr_class(buf, off, &rrclass) != 0 ||
+        rrclass != DNS_CLASS_IN_UNIQUE) {{
+        return 6;
+    }}
+
+    memset(&dest, 0, sizeof(dest));
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(5353);
+    dest.sin_addr.s_addr = inet_addr("224.0.0.251");
+    if (send_query_question(1, &dest, "home.local.", DNS_TYPE_A) != 0 ||
+        read_first_question_class(captured_packet, captured_len, &rrclass) != 0 ||
+        rrclass != DNS_CLASS_IN) {{
+        return 7;
+    }}
+
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_cache_flush_classes")
+        self.assertEqual(run.returncode, 0, run.stderr)
+
     def test_mdns_advertiser_no_args_returns_usage_without_running(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             bin_path = self._compile_mdns_advertiser_binary(Path(tmpdir))

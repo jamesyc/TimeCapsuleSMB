@@ -9,6 +9,7 @@ from timecapsulesmb.checks.bonjour import (
     BonjourServiceTarget,
     build_bonjour_expected_identity,
     check_bonjour_host_ip,
+    check_bonjour_host_link_local_ips,
     check_smb_instance,
     check_smb_service_target,
     discover_smb_services_detailed,
@@ -295,6 +296,31 @@ def _add_bonjour_service_target_consistency_results(
     return False
 
 
+def _add_bonjour_host_ip_results(
+    hostname: str,
+    *,
+    expected_ip: str | None,
+    record_ips: list[str],
+    add_result: Callable[[CheckResult], None],
+) -> None:
+    host_ip_result = check_bonjour_host_ip(
+        hostname,
+        expected_ip=expected_ip,
+        record_ips=record_ips,
+    )
+    add_result(host_ip_result)
+    if host_ip_result.status != "PASS":
+        return
+
+    link_local_result = check_bonjour_host_link_local_ips(
+        hostname,
+        expected_ip=expected_ip,
+        record_ips=record_ips,
+    )
+    if link_local_result is not None:
+        add_result(link_local_result)
+
+
 def _add_bonjour_results(
     config: AppConfig,
     runtime_naming_identity: RuntimeNamingIdentityProbeResult | None,
@@ -376,12 +402,11 @@ def _add_bonjour_results(
                             if target.hostname:
                                 bonjour_target = target
                                 record_ips = list(getattr(resolved_record, "ipv4", []) or [])
-                                add_result(
-                                    check_bonjour_host_ip(
-                                        target.hostname,
-                                        expected_ip=bonjour_expected.target_ip,
-                                        record_ips=record_ips,
-                                    )
+                                _add_bonjour_host_ip_results(
+                                    target.hostname,
+                                    expected_ip=bonjour_expected.target_ip,
+                                    record_ips=record_ips,
+                                    add_result=add_result,
                                 )
                     else:
                         bonjour_debug_needed = True
@@ -411,12 +436,11 @@ def _add_bonjour_results(
                         if target.hostname:
                             bonjour_target = target
                             record_ips = list(getattr(resolved_record, "ipv4", []) or [])
-                            add_result(
-                                check_bonjour_host_ip(
-                                    target.hostname,
-                                    expected_ip=bonjour_expected.target_ip,
-                                    record_ips=record_ips,
-                                )
+                            _add_bonjour_host_ip_results(
+                                target.hostname,
+                                expected_ip=bonjour_expected.target_ip,
+                                record_ips=record_ips,
+                                add_result=add_result,
                             )
         except Exception as e:
             bonjour_reason = str(e)
