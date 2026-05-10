@@ -1838,6 +1838,64 @@ tc_run_mdns_snapshot_command() {
     return 1
 }
 
+tc_start_mdns_capture() {
+    rm -f "$APPLE_MDNS_SNAPSHOT" "$ALL_MDNS_SNAPSHOT"
+
+    iface_mac=$(get_iface_mac "$NET_IFACE" || true)
+    if ! tc_prepare_mdns_identity "$iface_mac" "mdns capture"; then
+        return 0
+    fi
+
+    tc_log "starting mDNS snapshot capture"
+    set -- "$TC_MDNS_BIN" \
+        --save-all-snapshot "$ALL_MDNS_SNAPSHOT" \
+        --save-snapshot "$APPLE_MDNS_SNAPSHOT" \
+        --ipv4 "$TC_NET_IFACE_IP"
+    if [ -n "${AIRPORT_WAMA:-}" ] || [ -n "${AIRPORT_RAMA:-}" ] || [ -n "${AIRPORT_RAM2:-}" ] || [ -n "${AIRPORT_RAST:-}" ] || [ -n "${AIRPORT_RANA:-}" ] || [ -n "${AIRPORT_SYFL:-}" ] || [ -n "${AIRPORT_SYAP:-}" ] || [ -n "${AIRPORT_SYVS:-}" ] || [ -n "${AIRPORT_SRCV:-}" ] || [ -n "${AIRPORT_BJSD:-}" ]; then
+        set -- "$@" \
+            --airport-wama "$AIRPORT_WAMA" \
+            --airport-rama "$AIRPORT_RAMA" \
+            --airport-ram2 "$AIRPORT_RAM2" \
+            --airport-rast "$AIRPORT_RAST" \
+            --airport-rana "$AIRPORT_RANA" \
+            --airport-syfl "$AIRPORT_SYFL" \
+            --airport-syap "$AIRPORT_SYAP" \
+            --airport-syvs "$AIRPORT_SYVS" \
+            --airport-srcv "$AIRPORT_SRCV" \
+            --airport-bjsd "$AIRPORT_BJSD"
+    fi
+
+    TC_MDNS_CAPTURE_STATUS_FILE="$TC_STATE_DIR/mdns-capture.status.$$"
+    rm -f "$TC_MDNS_CAPTURE_STATUS_FILE"
+
+    if tc_prepare_runtime_log_file "$TC_MDNS_LOG_FILE"; then
+        if tc_runtime_logs_unbounded; then
+            tc_log "mdns capture: debug logging enabled at $TC_MDNS_LOG_FILE"
+        else
+            tc_log "mdns capture: logging at $TC_MDNS_LOG_FILE"
+        fi
+        printf '%s %s: launching mdns-advertiser capture\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$TC_LOG_PREFIX" >>"$TC_MDNS_LOG_FILE"
+        (
+            set +e
+            "$@" >>"$TC_MDNS_LOG_FILE" 2>&1
+            capture_status=$?
+            echo "$capture_status" >"$TC_MDNS_CAPTURE_STATUS_FILE"
+            exit "$capture_status"
+        ) &
+    else
+        tc_log "mdns capture: log unavailable at $TC_MDNS_LOG_FILE"
+        (
+            set +e
+            "$@" >/dev/null 2>&1
+            capture_status=$?
+            echo "$capture_status" >"$TC_MDNS_CAPTURE_STATUS_FILE"
+            exit "$capture_status"
+        ) &
+    fi
+    TC_MDNS_CAPTURE_PID=$!
+    tc_log "mDNS snapshot capture launched as pid $TC_MDNS_CAPTURE_PID"
+}
+
 tc_generate_mdns() {
     iface_mac=$(get_iface_mac "$NET_IFACE" || true)
     if ! tc_prepare_mdns_identity "$iface_mac" "mdns generation"; then
@@ -1868,30 +1926,7 @@ tc_generate_mdns() {
         return 0
     fi
 
-    tc_log "mDNS AirPort snapshot generation failed; falling back to mDNS capture"
-    set -- "$TC_MDNS_BIN" \
-        --save-all-snapshot "$ALL_MDNS_SNAPSHOT" \
-        --save-snapshot "$APPLE_MDNS_SNAPSHOT" \
-        --ipv4 "$TC_NET_IFACE_IP"
-    if [ -n "${AIRPORT_WAMA:-}" ] || [ -n "${AIRPORT_RAMA:-}" ] || [ -n "${AIRPORT_RAM2:-}" ] || [ -n "${AIRPORT_RAST:-}" ] || [ -n "${AIRPORT_RANA:-}" ] || [ -n "${AIRPORT_SYFL:-}" ] || [ -n "${AIRPORT_SYAP:-}" ] || [ -n "${AIRPORT_SYVS:-}" ] || [ -n "${AIRPORT_SRCV:-}" ] || [ -n "${AIRPORT_BJSD:-}" ]; then
-        set -- "$@" \
-            --airport-wama "$AIRPORT_WAMA" \
-            --airport-rama "$AIRPORT_RAMA" \
-            --airport-ram2 "$AIRPORT_RAM2" \
-            --airport-rast "$AIRPORT_RAST" \
-            --airport-rana "$AIRPORT_RANA" \
-            --airport-syfl "$AIRPORT_SYFL" \
-            --airport-syap "$AIRPORT_SYAP" \
-            --airport-syvs "$AIRPORT_SYVS" \
-            --airport-srcv "$AIRPORT_SRCV" \
-            --airport-bjsd "$AIRPORT_BJSD"
-    fi
-
-    if tc_run_mdns_snapshot_command "capture" "$@"; then
-        tc_log "mDNS snapshot capture finished"
-    else
-        tc_log "mDNS snapshot capture exited with failure; final advertiser will use generated records if needed"
-    fi
+    tc_log "mDNS AirPort snapshot generation failed; final advertiser will use generated records if needed"
 }
 
 tc_wait_for_mdns_capture() {
@@ -1948,6 +1983,22 @@ tc_wait_for_mdns_capture() {
     TC_MDNS_CAPTURE_STATUS_FILE=
 }
 
+tc_ensure_mdns_snapshot_after_capture() {
+    tc_wait_for_mdns_capture
+    if [ -s "$APPLE_MDNS_SNAPSHOT" ]; then
+        tc_log_mdns_snapshot_age "$APPLE_MDNS_SNAPSHOT" || true
+        return 0
+    fi
+
+    tc_log "mDNS snapshot capture did not produce trusted Apple snapshot; generating AirPort fallback"
+    tc_generate_mdns
+    if [ -s "$APPLE_MDNS_SNAPSHOT" ]; then
+        tc_log_mdns_snapshot_age "$APPLE_MDNS_SNAPSHOT" || true
+    else
+        tc_log "mdns advertiser will fall back to generated records"
+    fi
+}
+
 tc_launch_mdns_advertiser() {
     context=$1
     wait_for_capture=$2
@@ -1968,12 +2019,7 @@ tc_launch_mdns_advertiser() {
     fi
 
     if [ "$wait_for_capture" = "1" ]; then
-        tc_wait_for_mdns_capture
-        if tc_log_mdns_snapshot_age "$APPLE_MDNS_SNAPSHOT"; then
-            :
-        else
-            tc_log "mdns advertiser will fall back to generated records"
-        fi
+        tc_ensure_mdns_snapshot_after_capture
     fi
 
     if [ "$kill_prior" = "1" ]; then
@@ -2031,7 +2077,7 @@ tc_launch_mdns_advertiser() {
 }
 
 tc_start_mdns_advertiser() {
-    tc_launch_mdns_advertiser "mdns startup" 0 1 100
+    tc_launch_mdns_advertiser "mdns startup" 1 1 100
 }
 
 tc_restart_mdns() {

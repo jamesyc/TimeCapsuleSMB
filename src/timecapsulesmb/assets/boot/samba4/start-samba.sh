@@ -60,7 +60,7 @@ if ! tc_refresh_disk_state; then
     exit 1
 fi
 
-tc_generate_mdns
+tc_start_mdns_capture
 
 if ! tc_stage_disk_runtime "$BIND_INTERFACES"; then
     exit 1

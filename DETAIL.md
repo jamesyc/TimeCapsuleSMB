@@ -259,7 +259,8 @@ So the current system does not fully replace Apple mDNS with a hardcoded record 
 This helper:
 - can save a raw LAN-wide mDNS snapshot to `/mnt/Flash/allmdns.txt`
 - can generate an AirPort-only Apple identity snapshot at `/mnt/Flash/applemdns.txt`
-- can still fall back to a filtered Apple identity capture when direct generation fails
+- normally captures a filtered Apple identity snapshot before takeover
+- can fall back to generated AirPort identity records when capture does not produce `applemdns.txt`
 - gracefully kills Apple `mDNSResponder` during takeover
 - replays Apple snapshot records afterward
 - overrides only:
@@ -292,18 +293,19 @@ The mDNS snapshot files are:
 
 Current behavior:
 - `start-samba.sh` gives Apple a short chance to start its own stack
-- `mdns-advertiser --save-airport-snapshot` writes a local `_airport._tcp` identity into `applemdns.txt` from values read directly on the device
-- if direct generation fails, `mdns-advertiser --save-all-snapshot` can still capture a raw LAN-wide snapshot into `allmdns.txt`
-- the fallback `mdns-advertiser --save-snapshot` path captures only the local Apple identity into `applemdns.txt`
-- `mdns-advertiser --load-snapshot` then kills `mDNSResponder` and replays the snapshot
+- `start-samba.sh` starts `mdns-advertiser --save-all-snapshot ... --save-snapshot ...` asynchronously after disk state is refreshed
+- startup continues staging Samba while capture runs
+- the final `mdns-advertiser --load-snapshot` phase waits for capture to finish or time out before killing `mDNSResponder`
+- if capture does not produce `applemdns.txt`, `mdns-advertiser --save-airport-snapshot` writes a generated local `_airport._tcp` fallback from values read directly on the device
+- `mdns-advertiser --load-snapshot` then kills `mDNSResponder` and replays the captured or generated snapshot
 - if snapshot load fails, the helper falls back to the generated managed records
 
 The raw `allmdns.txt` file is intentionally diagnostic and may contain all Apple records that were captured on the LAN.
 
 The `applemdns.txt` file is the one used for replay:
-- the preferred path contains a generated `_airport._tcp` record for the local unit
-- the fallback capture path keeps only records tied to the matching local `_airport._tcp` identity
-- if a fallback capture cannot be tied back to the local unit, `applemdns.txt` is not refreshed
+- the preferred path contains captured records tied to the matching local `_airport._tcp` identity, including supported non-SMB Apple services such as printer advertisements
+- the fallback path contains a generated `_airport._tcp` record for the local unit
+- if capture cannot be tied back to the local unit, `applemdns.txt` is not refreshed and the generated fallback is used
 - if no local identity MACs are available, the helper saves the raw capture for diagnostics but still refuses to trust it for replay
 
 However, on replay:
@@ -354,11 +356,11 @@ This matters because:
 13. resolves the persistent payload by scanning mounted `MaSt` volumes in internal-first order for `<PAYLOAD_DIR_NAME>`
 14. writes `payload.tsv` so the watchdog can find the selected payload volume/device later
 15. configures payload runtime logs under `<payload>/logs/`
-16. generates the mDNS AirPort snapshot without taking over UDP 5353 yet, falling back to capture if needed
+16. starts an asynchronous mDNS capture without taking over UDP 5353 yet
 17. copies `smbd`, auth files, and optional `nbns-advertiser` into RAM
 18. generates `/mnt/Memory/samba4/etc/smb.conf` directly from runtime state
 19. starts `smbd` and waits up to `15` seconds for the process to appear
-20. starts the final `mdns-advertiser` phase, which takes over UDP 5353 and advertises every generated share plus the captured Apple records when available
+20. waits for mDNS capture if still running, generates an AirPort-only fallback if capture did not produce `applemdns.txt`, then starts the final `mdns-advertiser` phase
 21. starts the NBNS responder if `NBNS_ENABLED=1`
 22. starts `watchdog.sh` with no disk/root positional arguments
 
