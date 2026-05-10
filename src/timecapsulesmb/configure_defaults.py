@@ -6,12 +6,10 @@ from typing import Optional
 
 from timecapsulesmb.core.config import (
     CONFIG_VALIDATORS,
-    DEFAULTS,
     extract_host,
 )
 from timecapsulesmb.device.probe import (
     RemoteInterfaceCandidatesProbeResult,
-    preferred_interface_name,
 )
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 
@@ -26,13 +24,6 @@ class ConfigureValueChoice:
 class InterfaceIpMatch:
     iface: str
     ip: str
-
-
-@dataclass(frozen=True)
-class DerivedNameDefaults:
-    netbios_name: str
-    mdns_instance_name: str
-    mdns_host_label: str
 
 
 def validated_value_or_empty(key: str, value: str, label: str) -> str:
@@ -119,62 +110,3 @@ def interface_candidate_for_ip(
             if target_ip in candidate.ipv4_addrs:
                 return InterfaceIpMatch(iface=candidate.name, ip=target_ip)
     return None
-
-
-def best_non_link_local_ipv4(
-    values: dict[str, str],
-    discovered_record: BonjourResolvedService | None,
-    probed_interfaces: RemoteInterfaceCandidatesProbeResult | None,
-) -> str | None:
-    host_ip = ipv4_literal(extract_host(values.get("TC_HOST", "")))
-    if host_ip and not is_link_local_ipv4(host_ip):
-        return host_ip
-
-    if discovered_record is not None:
-        for value in discovered_record.ipv4:
-            ip_value = ipv4_literal(value)
-            if ip_value and not is_link_local_ipv4(ip_value):
-                return ip_value
-
-    if probed_interfaces is not None and probed_interfaces.candidates:
-        target_ips = interface_target_ips(values, discovered_record)
-        preferred_iface = preferred_interface_name(probed_interfaces.candidates, target_ips=target_ips)
-        if preferred_iface is None:
-            preferred_iface = probed_interfaces.preferred_iface
-        if preferred_iface:
-            for candidate in probed_interfaces.candidates:
-                if candidate.name != preferred_iface or candidate.loopback:
-                    continue
-                for ip_value in candidate.ipv4_addrs:
-                    if not is_link_local_ipv4(ip_value):
-                        return ip_value
-    return None
-
-
-def derived_name_defaults(
-    values: dict[str, str],
-    discovered_record: BonjourResolvedService | None,
-    probed_interfaces: RemoteInterfaceCandidatesProbeResult | None,
-) -> DerivedNameDefaults | None:
-    source_ip = best_non_link_local_ipv4(values, discovered_record, probed_interfaces)
-    if source_ip is None:
-        return None
-    last_octet = source_ip.rsplit(".", 1)[-1]
-    suffix = f"{int(last_octet):03d}"
-    return DerivedNameDefaults(
-        netbios_name=f"TimeCapsule{suffix}",
-        mdns_instance_name=f"Time Capsule Samba {suffix}",
-        mdns_host_label=f"timecapsulesamba{suffix}",
-    )
-
-
-def derived_prompt_defaults(name_defaults: DerivedNameDefaults | None) -> dict[str, str]:
-    return {
-        "TC_NETBIOS_NAME": name_defaults.netbios_name if name_defaults is not None else DEFAULTS["TC_NETBIOS_NAME"],
-        "TC_MDNS_INSTANCE_NAME": (
-            name_defaults.mdns_instance_name if name_defaults is not None else DEFAULTS["TC_MDNS_INSTANCE_NAME"]
-        ),
-        "TC_MDNS_HOST_LABEL": (
-            name_defaults.mdns_host_label if name_defaults is not None else DEFAULTS["TC_MDNS_HOST_LABEL"]
-        ),
-    }

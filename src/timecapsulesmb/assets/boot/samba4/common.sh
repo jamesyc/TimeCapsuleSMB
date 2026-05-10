@@ -50,6 +50,7 @@ TC_ADISK_TXT_ADVU_PREFIX_BYTES=6
 TC_SAMBA_VM_BUFCACHE=5
 TC_MDNS_CAPTURE_PID=
 TC_APPLE_MDNS_SNAPSHOT_START=
+TC_RUNTIME_IDENTITY_READY=
 
 LEGACY_PREFIX_NETBSD7=/root/tc-netbsd7
 LEGACY_PREFIX_NETBSD4=/root/tc-netbsd4
@@ -275,6 +276,63 @@ get_airport_system_name() {
 
 get_airport_host_label() {
     /bin/hostname 2>/dev/null | sed -n '1p'
+}
+
+tc_identity_first_label() {
+    printf '%s\n' "$1" | sed -n '1p' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/\..*$//'
+}
+
+tc_normalize_mdns_instance_name() {
+    printf '%s\n' "$1" \
+        | sed -n '1p' \
+        | sed 's/[[:cntrl:].]/-/g;s/^[[:space:]]*//;s/[[:space:]]*$//' \
+        | sed 's/^\(.\{1,63\}\).*/\1/'
+}
+
+tc_normalize_mdns_host_label() {
+    tc_identity_first_label "$1" \
+        | sed 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/' \
+        | sed 's/[^abcdefghijklmnopqrstuvwxyz0123456789-]/-/g;s/^-*//;s/-*$//' \
+        | sed 's/^\(.\{1,63\}\).*/\1/' \
+        | sed 's/^-*//;s/-*$//'
+}
+
+tc_normalize_netbios_name() {
+    tc_identity_first_label "$1" \
+        | sed 's/[^ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-]//g' \
+        | sed 's/^\(.\{1,15\}\).*/\1/'
+}
+
+tc_init_runtime_identity() {
+    runtime_system_name=$(get_airport_system_name || true)
+    runtime_hostname=$(/bin/hostname 2>/dev/null | sed -n '1p' || true)
+
+    runtime_host_label=$(tc_normalize_mdns_host_label "$runtime_hostname" || true)
+    if [ -z "$runtime_host_label" ]; then
+        runtime_host_label=$(tc_normalize_mdns_host_label "$runtime_system_name" || true)
+    fi
+    [ -n "$runtime_host_label" ] || runtime_host_label=timecapsule
+
+    runtime_instance_name=$(tc_normalize_mdns_instance_name "$runtime_system_name" || true)
+    [ -n "$runtime_instance_name" ] || runtime_instance_name=$runtime_host_label
+
+    runtime_netbios_name=$(tc_normalize_netbios_name "$runtime_hostname" || true)
+    if [ -z "$runtime_netbios_name" ]; then
+        runtime_netbios_name=$(tc_normalize_netbios_name "$runtime_host_label" || true)
+    fi
+    [ -n "$runtime_netbios_name" ] || runtime_netbios_name=TimeCapsule
+
+    MDNS_INSTANCE_NAME=$runtime_instance_name
+    MDNS_HOST_LABEL=$runtime_host_label
+    SMB_NETBIOS_NAME=$runtime_netbios_name
+    TC_RUNTIME_IDENTITY_READY=1
+    tc_log "runtime identity: mdns_instance=$MDNS_INSTANCE_NAME mdns_host=$MDNS_HOST_LABEL netbios=$SMB_NETBIOS_NAME"
+}
+
+tc_ensure_runtime_identity() {
+    if [ "${TC_RUNTIME_IDENTITY_READY:-0}" != "1" ]; then
+        tc_init_runtime_identity
+    fi
 }
 
 get_airport_rast() {
@@ -1474,6 +1532,7 @@ tc_stage_runtime() {
 tc_generate_smb_conf() {
     payload_dir=$1
     bind_interfaces=$2
+    tc_ensure_runtime_identity
     cache_directory=$(tc_select_cache_directory "$payload_dir")
     smbd_log="$payload_dir/logs/log.smbd"
     smbd_max_log_size=$(tc_smbd_max_log_size)
@@ -2004,6 +2063,7 @@ tc_launch_mdns_advertiser() {
     wait_for_capture=$2
     kill_prior=$3
     wait_attempts=$4
+    tc_ensure_runtime_identity
 
     iface_ip=${TC_NET_IFACE_IP:-}
     if [ -z "$iface_ip" ]; then
@@ -2087,6 +2147,7 @@ tc_restart_mdns() {
 tc_launch_nbns() {
     context=$1
     wait_attempts=$2
+    tc_ensure_runtime_identity
 
     if [ "$NBNS_ENABLED" != "1" ]; then
         tc_log "$context: nbns responder skipped; disabled in $TC_CONFIG_FILE"

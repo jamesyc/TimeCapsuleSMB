@@ -8,6 +8,7 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
 tc_init_runtime_env
 tc_set_log "$RAM_VAR/rc.local.log" "rc.local"
+tc_init_runtime_identity
 TC_MDNS_CAPTURE_PID=
 TC_APPLE_MDNS_SNAPSHOT_START=$(/bin/ls -lnT "$APPLE_MDNS_SNAPSHOT" 2>/dev/null || true)
 TC_START_MODE=${1:-}

@@ -616,10 +616,7 @@ Current important `.env` values include:
 - `TC_PASSWORD`
 - `TC_NET_IFACE`
 - `TC_SAMBA_USER`
-- `TC_NETBIOS_NAME`
 - `TC_PAYLOAD_DIR_NAME`
-- `TC_MDNS_INSTANCE_NAME`
-- `TC_MDNS_HOST_LABEL`
 - `TC_MDNS_DEVICE_MODEL`
 - `TC_AIRPORT_SYAP`
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT`
@@ -644,21 +641,17 @@ Optional deploy flag:
 
 Current defaults:
 - `TC_SAMBA_USER=admin`
-- `TC_NETBIOS_NAME=TimeCapsule`
 - `TC_PAYLOAD_DIR_NAME=.samba4`
-- `TC_MDNS_INSTANCE_NAME=Time Capsule Samba 4`
-- `TC_MDNS_HOST_LABEL=timecapsulesamba4`
 - `TC_MDNS_DEVICE_MODEL=TimeCapsule`
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT=false`
+
+Samba NetBIOS, Bonjour instance, and Bonjour host labels are derived on the device at runtime from `/usr/bin/acp -q syNm` and `/bin/hostname`; they are not configured in `.env`.
 
 Current validation behavior:
 - `TC_HOST`: must be non-empty.
 - `TC_NET_IFACE`: must be a safe interface name.
 - `TC_SAMBA_USER`: must be non-empty, fit Samba's username length limit, and avoid whitespace or control characters.
-- `TC_NETBIOS_NAME`: must fit the 15-byte NetBIOS limit and use NetBIOS-safe characters.
 - `TC_PAYLOAD_DIR_NAME`: must be one safe path component; slashes, `.`/`..`, control characters, traversal, and shell-hostile characters are rejected.
-- `TC_MDNS_INSTANCE_NAME`: may contain spaces, but must be valid printable mDNS instance text within DNS name limits.
-- `TC_MDNS_HOST_LABEL`: must be a single DNS-safe label using letters, numbers, and hyphens; spaces are rejected.
 - `TC_MDNS_DEVICE_MODEL`: must be `TimeCapsule`, `AirPort`, or one of the supported exact Time Capsule or AirPort Extreme model identifiers.
 - `TC_AIRPORT_SYAP`: must be one of the known Apple syAP codes.
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT`: hidden boolean; internal disks use `ShareRoot` by default, and external disks always use the disk root.

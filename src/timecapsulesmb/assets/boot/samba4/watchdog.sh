@@ -8,6 +8,7 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
 tc_init_runtime_env
 tc_set_log "$RAM_VAR/watchdog.log" "watchdog"
+tc_init_runtime_identity
 
 RECOVERY_POLL_SECONDS=10
 MOUNT_POLL_SECONDS=30

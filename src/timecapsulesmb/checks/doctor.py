@@ -15,6 +15,7 @@ from timecapsulesmb.checks.bonjour import (
     resolve_smb_instance,
     resolve_smb_service_target,
     select_resolved_smb_record,
+    select_resolved_smb_record_by_ip,
     select_smb_instance,
 )
 from timecapsulesmb.checks.local_tools import check_required_artifacts, check_required_local_tools
@@ -37,11 +38,13 @@ from timecapsulesmb.device.probe import (
     ProbedDeviceState,
     RemoteInterfaceProbeResult,
     RUNTIME_SMB_CONF,
+    RuntimeNamingIdentityProbeResult,
     nbns_flash_config_enabled_conn,
     probe_connection_state,
     probe_managed_mdns_takeover_conn,
     probe_managed_smbd_conn,
     probe_remote_interface_conn,
+    probe_remote_runtime_naming_identity_conn,
     read_active_smb_conf_conn,
     read_interface_ipv4_conn,
     read_runtime_share_names_conn,
@@ -82,6 +85,7 @@ class DoctorRunContext:
     ssh_ok: bool = False
     active_smb_conf: str | None = None
     active_smb_conf_reason: str = "SSH check not run"
+    runtime_naming_identity: RuntimeNamingIdentityProbeResult | None = None
     bonjour_result: DoctorBonjourResult | None = None
     stop: bool = False
 
@@ -229,6 +233,7 @@ def _add_bonjour_debug_fields(
 
 def _add_bonjour_results(
     config: AppConfig,
+    runtime_naming_identity: RuntimeNamingIdentityProbeResult | None,
     *,
     proxied_ssh: bool,
     skip_bonjour: bool,
@@ -246,12 +251,23 @@ def _add_bonjour_results(
         add_result(CheckResult("SKIP", "Bonjour check skipped for SSH-proxied target; local mDNS may find a different AirPort device"))
     elif not skip_bonjour:
         try:
-            bonjour_expected = build_bonjour_expected_identity(config)
+            bonjour_expected = build_bonjour_expected_identity(config, runtime_naming_identity)
             bonjour_expected_debug = {
                 "instance_name": bonjour_expected.instance_name,
                 "host_label": bonjour_expected.host_label,
                 "target_ip": bonjour_expected.target_ip,
             }
+            if bonjour_expected.instance_name is None and bonjour_expected.target_ip is None:
+                bonjour_reason = "Bonjour identity check skipped; device naming probe unavailable and TC_HOST is not a literal IP"
+                add_result(CheckResult("SKIP", bonjour_reason))
+                return DoctorBonjourResult(
+                    instance=None,
+                    target=None,
+                    reason=bonjour_reason,
+                    debug_needed=False,
+                    expected_debug=bonjour_expected_debug,
+                    zeroconf_debug=None,
+                )
             smb_snapshot, discovery_error, bonjour_zeroconf_debug = discover_smb_services_detailed()
             bonjour_reason = ""
             if discovery_error is not None:
@@ -260,26 +276,59 @@ def _add_bonjour_results(
                 add_result(discovery_error)
             else:
                 assert smb_snapshot is not None
-                selection = select_smb_instance(
-                    smb_snapshot.instances,
-                    expected_instance_name=bonjour_expected.instance_name,
-                )
-                for result in check_smb_instance(selection):
-                    add_result(result)
-                if selection.instance is not None:
-                    bonjour_instance = selection.instance.name
-                    resolved_record = select_resolved_smb_record(smb_snapshot.resolved, selection.instance)
-                    resolve_error = None
-                    if resolved_record is None:
-                        resolved_record, resolve_error = resolve_smb_instance(selection.instance)
-                    if resolve_error is not None:
-                        bonjour_reason = resolve_error.message
+                if bonjour_expected.instance_name is not None:
+                    selection = select_smb_instance(
+                        smb_snapshot.instances,
+                        expected_instance_name=bonjour_expected.instance_name,
+                    )
+                    for result in check_smb_instance(selection):
+                        add_result(result)
+                    if selection.instance is not None:
+                        bonjour_instance = selection.instance.name
+                        resolved_record = select_resolved_smb_record(smb_snapshot.resolved, selection.instance)
+                        resolve_error = None
+                        if resolved_record is None:
+                            resolved_record, resolve_error = resolve_smb_instance(selection.instance)
+                        if resolve_error is not None:
+                            bonjour_reason = resolve_error.message
+                            bonjour_debug_needed = True
+                            add_result(resolve_error)
+                        elif resolved_record is not None:
+                            target = resolve_smb_service_target(
+                                resolved_record,
+                                expected_instance_name=bonjour_expected.instance_name,
+                            )
+                            target_result = check_smb_service_target(target)
+                            if target_result.status == "FAIL":
+                                bonjour_debug_needed = True
+                            add_result(target_result)
+                            if target.hostname:
+                                bonjour_target = target
+                                record_ips = list(getattr(resolved_record, "ipv4", []) or [])
+                                add_result(
+                                    check_bonjour_host_ip(
+                                        target.hostname,
+                                        expected_ip=bonjour_expected.target_ip,
+                                        record_ips=record_ips,
+                                    )
+                                )
+                    else:
                         bonjour_debug_needed = True
-                        add_result(resolve_error)
-                    elif resolved_record is not None:
+                elif bonjour_expected.target_ip is not None:
+                    resolved_record = select_resolved_smb_record_by_ip(
+                        smb_snapshot.resolved,
+                        bonjour_expected.target_ip,
+                    )
+                    if resolved_record is None:
+                        bonjour_debug_needed = True
+                        bonjour_reason = f"no resolved _smb._tcp service matched target IP {bonjour_expected.target_ip}"
+                        add_result(CheckResult("FAIL", bonjour_reason))
+                    else:
+                        bonjour_instance = resolved_record.name
+                        add_result(CheckResult("PASS", f"discovered _smb._tcp service matching target IP {bonjour_expected.target_ip}"))
                         target = resolve_smb_service_target(
                             resolved_record,
-                            expected_instance_name=bonjour_expected.instance_name,
+                            expected_instance_name=None,
                         )
                         target_result = check_smb_service_target(target)
                         if target_result.status == "FAIL":
@@ -295,8 +344,6 @@ def _add_bonjour_results(
                                     record_ips=record_ips,
                                 )
                             )
-                else:
-                    bonjour_debug_needed = True
         except Exception as e:
             bonjour_reason = str(e)
             bonjour_debug_needed = True
@@ -333,6 +380,8 @@ def _add_nbns_results(
     *,
     host: str,
     proxied_ssh: bool,
+    active_smb_conf: str | None,
+    runtime_naming_identity: RuntimeNamingIdentityProbeResult | None,
     add_result: Callable[[CheckResult], None],
 ) -> None:
     try:
@@ -340,8 +389,14 @@ def _add_nbns_results(
             if proxied_ssh:
                 add_result(CheckResult("SKIP", "NBNS check skipped for SSH-proxied target; UDP/137 is not reachable through the SSH jump host"))
             else:
+                expected_name = parse_active_netbios_name(active_smb_conf or "")
+                if expected_name is None and runtime_naming_identity is not None:
+                    expected_name = runtime_naming_identity.netbios_name
+                if expected_name is None:
+                    add_result(CheckResult("SKIP", "NBNS check skipped; active/probed NetBIOS name unavailable"))
+                    return
                 expected_ip = read_interface_ipv4_conn(connection, config.require("TC_NET_IFACE"))
-                add_result(check_nbns_name_resolution(config.require("TC_NETBIOS_NAME"), host, expected_ip))
+                add_result(check_nbns_name_resolution(expected_name, host, expected_ip))
         else:
             add_result(CheckResult("SKIP", "NBNS responder not enabled"))
     except Exception as e:
@@ -352,6 +407,7 @@ def _add_authenticated_smb_results(
     connection: SshConnection,
     config: AppConfig,
     bonjour_target: BonjourServiceTarget | None,
+    runtime_naming_identity: RuntimeNamingIdentityProbeResult | None,
     *,
     host: str,
     smb_password: str,
@@ -394,7 +450,7 @@ def _add_authenticated_smb_results(
             add_result(CheckResult("FAIL", f"authenticated SMB checks failed through SSH tunnel: {e}"))
         return
 
-    smb_servers = doctor_smb_servers(config, bonjour_target)
+    smb_servers = doctor_smb_servers(config, bonjour_target, runtime_naming_identity)
     listing_result = check_authenticated_smb_listing(
         config.require("TC_SAMBA_USER"),
         smb_password,
@@ -452,6 +508,25 @@ def _doctor_check_ssh_login(context: DoctorRunContext) -> None:
     context.ssh_ok = ssh_result.status == "PASS"
     if not context.ssh_ok:
         context.active_smb_conf_reason = "SSH login failed"
+
+
+def _doctor_check_runtime_naming_identity(context: DoctorRunContext) -> None:
+    if context.skip_ssh or not context.ssh_ok:
+        return
+
+    assert context.connection is not None
+    try:
+        context.runtime_naming_identity = probe_remote_runtime_naming_identity_conn(context.connection)
+        if context.debug_fields is not None:
+            context.debug_fields["runtime_naming_identity"] = {
+                "system_name": context.runtime_naming_identity.system_name,
+                "hostname": context.runtime_naming_identity.hostname,
+                "mdns_instance_name": context.runtime_naming_identity.mdns_instance_name,
+                "mdns_host_label": context.runtime_naming_identity.mdns_host_label,
+                "netbios_name": context.runtime_naming_identity.netbios_name,
+            }
+    except Exception as e:
+        context.add_result(CheckResult("WARN", f"runtime naming identity probe skipped: {e}"))
 
 
 def _doctor_check_remote_interface(context: DoctorRunContext) -> None:
@@ -550,6 +625,7 @@ def _doctor_check_direct_smb_port(context: DoctorRunContext) -> None:
 def _doctor_check_bonjour(context: DoctorRunContext) -> None:
     context.bonjour_result = _add_bonjour_results(
         context.config,
+        context.runtime_naming_identity,
         proxied_ssh=context.proxied_ssh,
         skip_bonjour=context.skip_bonjour,
         add_result=context.add_result,
@@ -595,6 +671,8 @@ def _doctor_check_nbns(context: DoctorRunContext) -> None:
         context.config,
         host=context.host,
         proxied_ssh=context.proxied_ssh,
+        active_smb_conf=context.active_smb_conf,
+        runtime_naming_identity=context.runtime_naming_identity,
         add_result=context.add_result,
     )
 
@@ -611,6 +689,7 @@ def _doctor_check_authenticated_smb(context: DoctorRunContext) -> None:
         context.connection,
         context.config,
         context.bonjour_result.target,
+        context.runtime_naming_identity,
         host=context.host,
         smb_password=context.smb_password,
         proxied_ssh=context.proxied_ssh,
@@ -643,6 +722,12 @@ DOCTOR_CHECKS: tuple[DoctorCheck, ...] = (
         requires=("connection",),
         provides=("ssh_status",),
         run=_doctor_check_ssh_login,
+    ),
+    DoctorCheck(
+        id="runtime_naming_identity",
+        requires=("connection", "ssh_status"),
+        provides=("runtime_naming_identity",),
+        run=_doctor_check_runtime_naming_identity,
     ),
     DoctorCheck(
         id="remote_interface",
@@ -682,7 +767,7 @@ DOCTOR_CHECKS: tuple[DoctorCheck, ...] = (
     ),
     DoctorCheck(
         id="bonjour",
-        requires=("config", "proxied_ssh"),
+        requires=("config", "proxied_ssh", "runtime_naming_identity"),
         provides=("bonjour_result",),
         run=_doctor_check_bonjour,
     ),
@@ -706,13 +791,13 @@ DOCTOR_CHECKS: tuple[DoctorCheck, ...] = (
     ),
     DoctorCheck(
         id="nbns",
-        requires=("config", "connection", "host", "proxied_ssh", "ssh_status"),
+        requires=("config", "connection", "host", "proxied_ssh", "ssh_status", "active_smb_conf_state", "runtime_naming_identity"),
         provides=("nbns",),
         run=_doctor_check_nbns,
     ),
     DoctorCheck(
         id="authenticated_smb",
-        requires=("config", "connection", "host", "smb_password", "proxied_ssh", "bonjour_result"),
+        requires=("config", "connection", "host", "smb_password", "proxied_ssh", "bonjour_result", "runtime_naming_identity"),
         provides=("authenticated_smb",),
         run=_doctor_check_authenticated_smb,
     ),

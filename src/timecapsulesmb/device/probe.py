@@ -14,7 +14,12 @@ from timecapsulesmb.device.processes import PROBE_PROCESS_HELPERS
 from timecapsulesmb.transport.local import tcp_open
 from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, ssh_opts_use_proxy
-from timecapsulesmb.core.config import AIRPORT_IDENTITIES_BY_MODEL, AIRPORT_IDENTITIES_BY_SYAP
+from timecapsulesmb.core.config import (
+    AIRPORT_IDENTITIES_BY_MODEL,
+    AIRPORT_IDENTITIES_BY_SYAP,
+    MAX_DNS_LABEL_BYTES,
+    MAX_NETBIOS_NAME_BYTES,
+)
 
 if TYPE_CHECKING:
     from timecapsulesmb.device.compat import DeviceCompatibility
@@ -359,6 +364,16 @@ class AirportIdentityProbeResult:
     detail: str
 
 
+@dataclass(frozen=True)
+class RuntimeNamingIdentityProbeResult:
+    system_name: str | None
+    hostname: str | None
+    mdns_instance_name: str
+    mdns_host_label: str
+    netbios_name: str
+    detail: str
+
+
 def probe_device_conn(connection: SshConnection) -> ProbeResult:
     probe_host = connection.host.split("@", 1)[1] if "@" in connection.host else connection.host
     if not ssh_opts_use_proxy(connection.ssh_opts) and not tcp_open(probe_host, 22):
@@ -442,14 +457,8 @@ path={shlex.quote(path)}
 if [ ! -f "$path" ]; then
   exit 1
 fi
-if [ -x /usr/bin/od ] && [ -x /usr/bin/tr ]; then
-  b5=$(/bin/dd if="$path" bs=1 skip=5 count=1 2>/dev/null | /usr/bin/od -An -t u1 | /usr/bin/tr -d '[:space:]')
-else
-  b5=$(/bin/dd if="$path" bs=1 skip=5 count=1 2>/dev/null | /usr/bin/sed -n l 2>/dev/null)
-fi
+b5=$(/bin/dd if="$path" bs=1 skip=5 count=1 2>/dev/null | /usr/bin/sed -n l 2>/dev/null)
 case "$b5" in
-  1) echo little ;;
-  2) echo big ;;
   "\\001$") echo little ;;
   "\\002$") echo big ;;
   *) echo unknown ;;
@@ -554,6 +563,98 @@ fi
     if not proc.stdout:
         return AirportIdentityProbeResult(model=None, syap=None, detail="AirPort identity unavailable: /usr/bin/acp missing or empty output")
     return extract_airport_identity_from_acp_output(proc.stdout)
+
+
+def _truncate_utf8(value: str, max_bytes: int) -> str:
+    output: list[str] = []
+    used = 0
+    for char in value:
+        char_len = len(char.encode("utf-8"))
+        if used + char_len > max_bytes:
+            break
+        output.append(char)
+        used += char_len
+    return "".join(output)
+
+
+def _first_dns_label(value: str) -> str:
+    return value.strip().split(".", 1)[0].strip()
+
+
+def normalize_runtime_mdns_instance_name(value: str) -> str:
+    normalized = "".join("-" if char == "." or ord(char) < 0x20 or ord(char) == 0x7F else char for char in value)
+    return _truncate_utf8(normalized.strip(), MAX_DNS_LABEL_BYTES)
+
+
+def normalize_runtime_mdns_host_label(value: str) -> str:
+    candidate = _first_dns_label(value).lower()
+    normalized = re.sub(r"[^a-z0-9-]", "-", candidate).strip("-")
+    normalized = _truncate_utf8(normalized, MAX_DNS_LABEL_BYTES)
+    return normalized.strip("-")
+
+
+def normalize_runtime_netbios_name(value: str) -> str:
+    candidate = _first_dns_label(value)
+    normalized = re.sub(r"[^A-Za-z0-9_-]", "", candidate)
+    return _truncate_utf8(normalized, MAX_NETBIOS_NAME_BYTES)
+
+
+def derive_runtime_naming_identity(system_name: str | None, hostname: str | None) -> RuntimeNamingIdentityProbeResult:
+    raw_system_name = (system_name or "").strip() or None
+    raw_hostname = (hostname or "").strip() or None
+
+    mdns_host_label = normalize_runtime_mdns_host_label(raw_hostname or "")
+    if not mdns_host_label:
+        mdns_host_label = normalize_runtime_mdns_host_label(raw_system_name or "")
+    if not mdns_host_label:
+        mdns_host_label = "timecapsule"
+
+    mdns_instance_name = normalize_runtime_mdns_instance_name(raw_system_name or "")
+    if not mdns_instance_name:
+        mdns_instance_name = mdns_host_label
+
+    netbios_name = normalize_runtime_netbios_name(raw_hostname or "")
+    if not netbios_name:
+        netbios_name = normalize_runtime_netbios_name(mdns_host_label)
+    if not netbios_name:
+        netbios_name = "TimeCapsule"
+
+    return RuntimeNamingIdentityProbeResult(
+        system_name=raw_system_name,
+        hostname=raw_hostname,
+        mdns_instance_name=mdns_instance_name,
+        mdns_host_label=mdns_host_label,
+        netbios_name=netbios_name,
+        detail=(
+            "derived runtime naming identity: "
+            f"mdns_instance={mdns_instance_name} mdns_host={mdns_host_label} netbios={netbios_name}"
+        ),
+    )
+
+
+def _parse_runtime_naming_probe_output(text: str) -> RuntimeNamingIdentityProbeResult:
+    values: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        key, separator, value = raw_line.partition("=")
+        if separator:
+            values[key.strip()] = value.strip()
+    return derive_runtime_naming_identity(values.get("system_name"), values.get("hostname"))
+
+
+def probe_remote_runtime_naming_identity_conn(connection: SshConnection) -> RuntimeNamingIdentityProbeResult:
+    script = r"""
+system_name=
+if [ -x /usr/bin/acp ]; then
+  system_name=$(/usr/bin/acp -q syNm 2>/dev/null | /usr/bin/sed -n '1p')
+fi
+hostname=$(/bin/hostname 2>/dev/null | /usr/bin/sed -n '1p')
+printf 'system_name=%s\n' "$system_name"
+printf 'hostname=%s\n' "$hostname"
+"""
+    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=30)
+    if getattr(proc, "returncode", 0) != 0:
+        raise RuntimeError(f"could not read runtime naming identity: rc={proc.returncode}")
+    return _parse_runtime_naming_probe_output(proc.stdout or "")
 
 
 def probe_remote_interface_conn(connection: SshConnection, iface: str) -> RemoteInterfaceProbeResult:

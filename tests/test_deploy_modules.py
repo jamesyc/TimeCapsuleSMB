@@ -78,8 +78,10 @@ from timecapsulesmb.device.probe import (
     ManagedRuntimeProbeResult,
     ManagedSmbdProbeResult,
     SMBD_STATUS_HELPERS,
+    derive_runtime_naming_identity,
     extract_airport_identity_from_acp_output,
     extract_airport_identity_from_text,
+    probe_remote_runtime_naming_identity_conn,
     probe_device_conn,
     probe_managed_runtime_conn,
     probe_managed_mdns_takeover_conn,
@@ -495,6 +497,37 @@ kill_watchdog_pids KILL
         command = run_ssh_mock.call_args.args[1]
         self.assertIn("/usr/bin/acp syAP syAM", command)
         self.assertNotIn("ACPData.bin", command)
+
+    def test_runtime_naming_identity_derives_effective_names(self) -> None:
+        result = derive_runtime_naming_identity("James's AirPort.Time Capsule", "Time Capsule.local")
+
+        self.assertEqual(result.system_name, "James's AirPort.Time Capsule")
+        self.assertEqual(result.hostname, "Time Capsule.local")
+        self.assertEqual(result.mdns_instance_name, "James's AirPort-Time Capsule")
+        self.assertEqual(result.mdns_host_label, "time-capsule")
+        self.assertEqual(result.netbios_name, "TimeCapsule")
+
+    def test_probe_remote_runtime_naming_identity_reads_acp_and_hostname(self) -> None:
+        proc = mock.Mock(stdout="system_name=Time Capsule\nhostname=time-capsule.local\n", returncode=0)
+        connection = SshConnection("host", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
+            result = probe_remote_runtime_naming_identity_conn(connection)
+
+        self.assertEqual(result.system_name, "Time Capsule")
+        self.assertEqual(result.hostname, "time-capsule.local")
+        self.assertEqual(result.mdns_instance_name, "Time Capsule")
+        self.assertEqual(result.mdns_host_label, "time-capsule")
+        self.assertEqual(result.netbios_name, "time-capsule")
+        command = run_ssh_mock.call_args.args[1]
+        self.assertIn("/usr/bin/acp -q syNm", command)
+        self.assertIn("/bin/hostname", command)
+
+    def test_probe_remote_runtime_naming_identity_fails_on_remote_error(self) -> None:
+        proc = mock.Mock(stdout="", returncode=1)
+        connection = SshConnection("host", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            with self.assertRaisesRegex(RuntimeError, "could not read runtime naming identity: rc=1"):
+                probe_remote_runtime_naming_identity_conn(connection)
 
     def test_common_sh_helpers_take_iface_argument(self) -> None:
         content = load_boot_asset_text("common.sh")

@@ -60,7 +60,7 @@ class ConfigTests(unittest.TestCase):
             values = load_app_config(path).values
         self.assertEqual(values["TC_HOST"], "root@10.0.0.5")
         self.assertEqual(values["TC_NETBIOS_NAME"], "ArchiveCapsule")
-        self.assertEqual(values["TC_MDNS_HOST_LABEL"], DEFAULTS["TC_MDNS_HOST_LABEL"])
+        self.assertNotIn("TC_MDNS_HOST_LABEL", DEFAULTS)
 
     def test_parse_env_file_does_not_apply_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -141,7 +141,9 @@ class ConfigTests(unittest.TestCase):
         rendered = render_env_text(values)
         self.assertIn("TC_PASSWORD=secret", rendered)
         self.assertIn("TC_SSH_OPTS='-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'", rendered)
-        self.assertIn("TC_MDNS_INSTANCE_NAME='Time Capsule Samba 4'", rendered)
+        self.assertNotIn("TC_MDNS_INSTANCE_NAME", rendered)
+        self.assertNotIn("TC_MDNS_HOST_LABEL", rendered)
+        self.assertNotIn("TC_NETBIOS_NAME", rendered)
         self.assertIn("TC_MDNS_DEVICE_MODEL=TimeCapsule", rendered)
         self.assertIn("TC_AIRPORT_SYAP=''", rendered)
         self.assertIn("TC_INTERNAL_SHARE_USE_DISK_ROOT=false", rendered)
@@ -283,10 +285,7 @@ class ConfigTests(unittest.TestCase):
             "TC_PASSWORD": "secret",
             "TC_NET_IFACE": "bridge0",
             "TC_SAMBA_USER": "admin",
-            "TC_NETBIOS_NAME": "TimeCapsule",
             "TC_PAYLOAD_DIR_NAME": ".samba4",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
         }
@@ -451,7 +450,7 @@ class ConfigTests(unittest.TestCase):
         values["TC_MDNS_HOST_LABEL"] = "Time Capsule"
         config = AppConfig.from_values(values, file_values=values)
         errors = validate_app_config(config, profile="deploy")
-        self.assertEqual(errors[0].key, "TC_MDNS_HOST_LABEL")
+        self.assertEqual(errors, [])
 
     def test_validate_app_config_rejects_generic_device_model_when_syap_is_specific(self) -> None:
         values = dict(DEFAULTS)

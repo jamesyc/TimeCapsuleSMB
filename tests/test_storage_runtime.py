@@ -15,6 +15,11 @@ from timecapsulesmb.deploy.planner import (
     GENERATED_FLASH_CONFIG_SOURCE,
     build_deployment_plan,
 )
+from timecapsulesmb.device.probe import (
+    normalize_runtime_mdns_host_label,
+    normalize_runtime_mdns_instance_name,
+    normalize_runtime_netbios_name,
+)
 from timecapsulesmb.device.storage import (
     NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE,
     MaStVolume,
@@ -28,7 +33,7 @@ from tests.storage_fixtures import INTERNAL_DATA, MAST_FIXTURES, SHELL_MAST_FIXT
 
 
 class StorageRuntimeTests(unittest.TestCase):
-    def write_runtime_harness(self, tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    def write_runtime_harness(self, tmp_path: Path, *, hostname_output: str | None = None) -> tuple[Path, Path, Path, Path]:
         repo_root = Path(__file__).resolve().parent.parent
         flash = tmp_path / "Flash"
         memory = tmp_path / "Memory"
@@ -49,6 +54,11 @@ class StorageRuntimeTests(unittest.TestCase):
             "/Volumes": str(volumes),
             "/usr/bin/acp": str(tmp_path / "acp"),
         }
+        if hostname_output is not None:
+            hostname = tmp_path / "hostname"
+            hostname.write_text("#!/bin/sh\nprintf '%s\\n' " + shlex.quote(hostname_output) + "\n")
+            hostname.chmod(0o755)
+            replacements["/bin/hostname"] = str(hostname)
         for old, new in replacements.items():
             common = common.replace(old, new)
             start = start.replace(old, new)
@@ -68,9 +78,6 @@ class StorageRuntimeTests(unittest.TestCase):
                 PAYLOAD_DIR_NAME='.samba4'
                 NET_IFACE='bridge0'
                 SMB_SAMBA_USER='admin'
-                SMB_NETBIOS_NAME='TimeCapsule'
-                MDNS_INSTANCE_NAME='Time Capsule Samba 4'
-                MDNS_HOST_LABEL='timecapsulesamba4'
                 MDNS_DEVICE_MODEL='TimeCapsule6,106'
                 AIRPORT_SYAP='106'
                 INTERNAL_SHARE_USE_DISK_ROOT=0
@@ -489,9 +496,6 @@ class StorageRuntimeTests(unittest.TestCase):
             {
                 "TC_NET_IFACE": "bridge0",
                 "TC_SAMBA_USER": "admin",
-                "TC_NETBIOS_NAME": "TimeCapsule",
-                "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-                "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
                 "TC_MDNS_DEVICE_MODEL": "TimeCapsule6,106",
                 "TC_AIRPORT_SYAP": "106",
                 "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
@@ -513,7 +517,125 @@ class StorageRuntimeTests(unittest.TestCase):
         self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=1\n", rendered)
         self.assertIn("NBNS_ENABLED=1\n", rendered)
         self.assertIn("SMBD_DEBUG_LOGGING=1\n", rendered)
+        self.assertNotIn("SMB_NETBIOS_NAME", rendered)
+        self.assertNotIn("MDNS_INSTANCE_NAME", rendered)
+        self.assertNotIn("MDNS_HOST_LABEL", rendered)
         self.assertNotIn("TC_SHARE_NAME", rendered)
+
+    def test_common_runtime_identity_normalizers_match_python(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            system_name = "James's AirPort.Time Capsule"
+            hostname = "Time Capsule.local"
+            script = tmp_path / "runtime-identity-normalizers.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    awk() {{ echo "awk must not be called" >&2; return 127; }}
+                    grep() {{ echo "grep must not be called" >&2; return 127; }}
+                    wc() {{ echo "wc must not be called" >&2; return 127; }}
+                    tr() {{ echo "tr must not be called" >&2; return 127; }}
+                    cut() {{ echo "cut must not be called" >&2; return 127; }}
+                    printf 'instance=%s\\n' "$(tc_normalize_mdns_instance_name {shlex.quote(system_name)})"
+                    printf 'host=%s\\n' "$(tc_normalize_mdns_host_label {shlex.quote(hostname)})"
+                    printf 'netbios=%s\\n' "$(tc_normalize_netbios_name {shlex.quote(hostname)})"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        lines = dict(line.split("=", 1) for line in proc.stdout.splitlines())
+        self.assertEqual(lines["instance"], normalize_runtime_mdns_instance_name(system_name))
+        self.assertEqual(lines["host"], normalize_runtime_mdns_host_label(hostname))
+        self.assertEqual(lines["netbios"], normalize_runtime_netbios_name(hostname))
+
+    def test_common_runtime_identity_overwrites_legacy_values_and_feeds_runtime_args(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path, hostname_output="Time Capsule.local")
+            payload = volumes / "dk2/.samba4"
+            (payload / "private").mkdir(parents=True)
+            mdns_args = tmp_path / "mdns.args"
+            nbns_args = tmp_path / "nbns.args"
+            (flash / "mdns-advertiser").write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$*\" >{shlex.quote(str(mdns_args))}\n"
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            nbns_bin = memory / "samba4/sbin/nbns-advertiser"
+            nbns_bin.parent.mkdir(parents=True)
+            nbns_bin.write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$*\" >{shlex.quote(str(nbns_args))}\n"
+            )
+            nbns_bin.chmod(0o755)
+            script = tmp_path / "runtime-identity.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    MDNS_INSTANCE_NAME=LegacyInstance
+                    MDNS_HOST_LABEL=legacy-host
+                    SMB_NETBIOS_NAME=LegacyNetbios
+                    NBNS_ENABLED=1
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_ETC" "$RAM_VAR"
+                    tc_set_log "$RAM_VAR/test.log" test
+                    get_airport_acp_value() {{
+                        case "$1" in
+                            syNm) echo "James's AirPort Time Capsule" ;;
+                            syVs) echo 7.9.1 ;;
+                            srcv) echo 79100.2 ;;
+                            syAP) echo 119 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    get_iface_mac() {{ echo 80:EA:96:E6:58:68; }}
+                    get_radio_mac() {{ return 1; }}
+                    get_iface_ipv4() {{ echo 192.168.1.2; }}
+                    stop_nbns_conflicts() {{ return 0; }}
+                    TC_NET_IFACE_IP=192.168.1.2
+                    tc_set_payload_log_dir {payload} {volumes}/dk2
+                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                    tc_init_runtime_identity
+                    tc_generate_smb_conf {payload} "127.0.0.1/8 192.168.1.2/24"
+                    tc_launch_mdns_advertiser "mdns test" 0 0 0
+                    tc_launch_nbns "nbns test" 0
+                    sleep 1
+                    printf 'identity=%s|%s|%s\\n' "$MDNS_INSTANCE_NAME" "$MDNS_HOST_LABEL" "$SMB_NETBIOS_NAME"
+                    cat "$TC_SMBD_CONF"
+                    printf 'mdns_args=%s\\n' "$(cat {mdns_args})"
+                    printf 'nbns_args=%s\\n' "$(cat {nbns_args})"
+                    cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("identity=James's AirPort Time Capsule|time-capsule|TimeCapsule", proc.stdout)
+        self.assertIn("netbios name = TimeCapsule\n", proc.stdout)
+        self.assertIn("--instance James's AirPort Time Capsule", proc.stdout)
+        self.assertIn("--host time-capsule", proc.stdout)
+        self.assertIn("nbns_args=--name TimeCapsule --ipv4 192.168.1.2", proc.stdout)
+        self.assertIn("runtime identity: mdns_instance=James's AirPort Time Capsule mdns_host=time-capsule netbios=TimeCapsule", proc.stdout)
+        self.assertNotIn("LegacyInstance", proc.stdout)
+        self.assertNotIn("legacy-host", proc.stdout)
+        self.assertNotIn("LegacyNetbios", proc.stdout)
 
     def test_deployment_plan_uses_flash_pointer_and_single_private_payload(self) -> None:
         plan = build_deployment_plan(

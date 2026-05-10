@@ -7,8 +7,6 @@ from typing import Optional
 
 from timecapsulesmb.configure_defaults import (
     ConfigureValueChoice,
-    derived_name_defaults,
-    derived_prompt_defaults,
     interface_candidate_for_ip,
     interface_target_ips,
     saved_syap_value_for_candidates,
@@ -59,10 +57,7 @@ REQUIRED_PYTHON_MODULES = ("zeroconf", "pexpect", "ifaddr")
 CONFIGURE_DETAIL_FIELDS = [
     ("TC_NET_IFACE", "Network interface on the device", DEFAULTS["TC_NET_IFACE"], False),
     ("TC_SAMBA_USER", "Samba username", DEFAULTS["TC_SAMBA_USER"], False),
-    ("TC_NETBIOS_NAME", "Samba NetBIOS name", DEFAULTS["TC_NETBIOS_NAME"], False),
     ("TC_PAYLOAD_DIR_NAME", "Persistent payload directory name", DEFAULTS["TC_PAYLOAD_DIR_NAME"], False),
-    ("TC_MDNS_INSTANCE_NAME", "mDNS SMB instance name", DEFAULTS["TC_MDNS_INSTANCE_NAME"], False),
-    ("TC_MDNS_HOST_LABEL", "mDNS host label", DEFAULTS["TC_MDNS_HOST_LABEL"], False),
     ("TC_AIRPORT_SYAP", "Airport Utility syAP code", DEFAULTS["TC_AIRPORT_SYAP"], False),
     ("TC_MDNS_DEVICE_MODEL", "mDNS device model hint", DEFAULTS["TC_MDNS_DEVICE_MODEL"], False),
 ]
@@ -452,14 +447,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             inferred_model_choice = ConfigureValueChoice(value=probed_device.exact_model, source="probed")
         saved_syap_choice = saved_value_choice(existing, "TC_AIRPORT_SYAP", "Airport Utility syAP code")
         saved_model_choice = saved_value_choice(existing, "TC_MDNS_DEVICE_MODEL", "mDNS device model hint")
-        name_defaults = derived_name_defaults(values, discovered_record, probed_interfaces)
-        if name_defaults is not None:
-            command_context.add_debug_fields(
-                derived_netbios_name=name_defaults.netbios_name,
-                derived_mdns_instance_name=name_defaults.mdns_instance_name,
-                derived_mdns_host_label=name_defaults.mdns_host_label,
-            )
-        prompt_defaults = derived_prompt_defaults(name_defaults)
 
         for key, label, default, secret in CONFIGURE_DETAIL_FIELDS:
             if key == "TC_AIRPORT_SYAP":
@@ -556,15 +543,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                     continue
                 command_context.add_debug_fields(selected_net_iface_source="manual_or_default")
                 values[key] = prompt_config_value(existing, key, label, default, secret=secret)
-                continue
-            if key in prompt_defaults:
-                values[key] = prompt_config_value(
-                    existing,
-                    key,
-                    label,
-                    prompt_defaults[key],
-                    secret=secret,
-                )
                 continue
             if key == "TC_MDNS_DEVICE_MODEL":
                 syap_derived_model = infer_mdns_device_model_from_airport_syap(values.get("TC_AIRPORT_SYAP", ""))

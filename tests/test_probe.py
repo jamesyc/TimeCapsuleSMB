@@ -149,6 +149,20 @@ class ProbeTests(unittest.TestCase):
 
         self.assertEqual(result, ("NetBSD", "4.0_STABLE", "earmv4"))
 
+    def test_probe_remote_elf_endianness_uses_dd_and_sed_only(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="\\001$\nlittle\n")
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
+            result = probe._probe_remote_elf_endianness_conn(connection)
+
+        self.assertEqual(result, "little")
+        remote_cmd = run_ssh_mock.call_args.args[1]
+        self.assertIn("/bin/dd", remote_cmd)
+        self.assertIn("/usr/bin/sed -n l", remote_cmd)
+        self.assertNotIn("/usr/bin/tr", remote_cmd)
+        self.assertNotIn("/usr/bin/od", remote_cmd)
+
     def test_extract_airport_identity_from_text_finds_airport_extreme_model(self) -> None:
         result = probe.extract_airport_identity_from_text("prefix\x00psyAM\x00pAirPort7,120\x00suffix")
         self.assertEqual(result.model, "AirPort7,120")
