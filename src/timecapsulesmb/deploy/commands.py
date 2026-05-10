@@ -8,6 +8,7 @@ from timecapsulesmb.device.processes import (
     render_pkill_wait_pkill9_by_ucomm,
     render_pkill_wait_pkill9_watchdog,
 )
+from timecapsulesmb.device.storage import render_ensure_volume_root_mounted_script
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,13 @@ class InstallPermissionsAction:
 
 
 @dataclass(frozen=True)
+class EnsureVolumeMountedAction:
+    volume_root: str
+    device_path: str
+    wait_seconds: int
+
+
+@dataclass(frozen=True)
 class StopProcessAction:
     name: str
 
@@ -54,6 +62,7 @@ class RunScriptAction:
 
 
 RemoteAction = Union[
+    EnsureVolumeMountedAction,
     PrepareDirsAction,
     InstallPermissionsAction,
     StopProcessAction,
@@ -72,6 +81,10 @@ def prepare_dirs_action(
 
 def install_permissions_action(permissions: Iterable[RemotePermission]) -> RemoteAction:
     return InstallPermissionsAction(tuple(permissions))
+
+
+def ensure_volume_mounted_action(volume_root: str, device_path: str, wait_seconds: int) -> RemoteAction:
+    return EnsureVolumeMountedAction(volume_root, device_path, wait_seconds)
 
 
 def _render_prepare_dirs_action(action: PrepareDirsAction) -> str:
@@ -106,6 +119,9 @@ def _render_remove_path_action(action: RemovePathAction) -> str:
 
 
 def render_remote_action(action: RemoteAction) -> str:
+    if isinstance(action, EnsureVolumeMountedAction):
+        script = render_ensure_volume_root_mounted_script(action.volume_root, action.device_path, action.wait_seconds)
+        return f"/bin/sh -c {shlex.quote(script)}"
     if isinstance(action, StopProcessAction):
         return render_pkill_wait_pkill9_by_ucomm(action.name, attempts=5)
     if isinstance(action, StopWatchdogAction):
@@ -126,6 +142,13 @@ def render_remote_actions(actions: list[RemoteAction]) -> list[str]:
 
 
 def remote_action_to_jsonable(action: RemoteAction) -> dict[str, object]:
+    if isinstance(action, EnsureVolumeMountedAction):
+        return {
+            "kind": "ensure_volume_mounted",
+            "volume_root": action.volume_root,
+            "device_path": action.device_path,
+            "wait_seconds": action.wait_seconds,
+        }
     if isinstance(action, StopProcessAction):
         return {"kind": "stop_process", "args": [action.name]}
     if isinstance(action, StopWatchdogAction):

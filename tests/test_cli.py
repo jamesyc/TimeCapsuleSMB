@@ -61,6 +61,7 @@ from timecapsulesmb.device.storage import (
     PayloadCandidateCheck,
     PayloadHome,
     PayloadHomeSelection,
+    PayloadVerificationResult,
 )
 from timecapsulesmb.deploy.commands import (
     RunScriptAction,
@@ -647,6 +648,7 @@ class CliTests(unittest.TestCase):
         mast_discovery: MaStDiscoveryResult | None = None,
         payload_home_selection: PayloadHomeSelection | None = None,
         select_payload_home_side_effect=None,
+        payload_verification: PayloadVerificationResult | None = None,
         verify_runtime=None,
         reboot_side_effect=None,
         wait_side_effect=None,
@@ -705,6 +707,12 @@ class CliTests(unittest.TestCase):
                 mocks.upload_deployment_payload = stack.enter_context(
                     mock.patch("timecapsulesmb.cli.deploy.upload_deployment_payload", side_effect=upload_side_effect)
                 )
+            mocks.verify_payload_home_conn = stack.enter_context(
+                mock.patch(
+                    "timecapsulesmb.cli.deploy.verify_payload_home_conn",
+                    return_value=payload_verification or PayloadVerificationResult(True, "ok"),
+                )
+            )
             if verify_runtime is not None:
                 mocks.verify_managed_runtime = stack.enter_context(
                     mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=verify_runtime)
@@ -3725,6 +3733,7 @@ class CliTests(unittest.TestCase):
         payload = json.loads(result.text)
         self.assertEqual(payload["host"], "root@10.0.0.2")
         self.assertEqual(payload["volume_root"], "resolved from MaSt at deploy time")
+        self.assertEqual(payload["device_path"], "resolved from MaSt at deploy time")
         self.assertEqual(payload["payload_dir"], "resolved from MaSt at deploy time/.samba4")
         self.assertEqual(payload["apple_mount_wait_seconds"], DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
         self.assertEqual(payload["payload_targets"]["nbns-advertiser"], "resolved from MaSt at deploy time/.samba4/nbns-advertiser")
@@ -3742,6 +3751,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("generated:adisk.uuid", {upload["source_id"] for upload in payload["uploads"]})
         self.assertNotIn("generated:nbns.enabled", {upload["source_id"] for upload in payload["uploads"]})
         self.assertNotIn("initialize_data_root", {action["kind"] for action in payload["pre_upload_actions"]})
+        self.assertIn("ensure_volume_mounted", {action["kind"] for action in payload["pre_upload_actions"]})
         self.assertEqual(
             [check["id"] for check in payload["post_deploy_checks"]],
             [
@@ -3791,6 +3801,11 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(result.mocks.run_remote_actions.call_count, 2)
         result.mocks.upload_deployment_payload.assert_called_once()
+        result.mocks.verify_payload_home_conn.assert_called_once_with(
+            result.mocks.wait_for_mast_volumes_conn.call_args.args[0],
+            PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+            wait_seconds=7,
+        )
         self.assertIn("Deployed Samba payload to /Volumes/dk2/.samba4", result.text)
         self.assertIn("Updated /mnt/Flash boot files.", result.text)
         self.assertIn("Skipping reboot.", result.text)
@@ -3919,7 +3934,25 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(result.rc, 0)
         result.mocks.remote_request_reboot.assert_not_called()
+        result.mocks.verify_payload_home_conn.assert_called_once()
         self.assertIn("Skipping reboot.", result.text)
+
+    def test_deploy_payload_verification_failure_aborts_before_reboot(self) -> None:
+        result = self.run_deploy_cli(
+            ["--yes"],
+            patch_actions=True,
+            patch_upload=True,
+            payload_verification=PayloadVerificationResult(False, "missing smbd"),
+            reboot_side_effect=AssertionError("deploy should not request reboot after payload verification failure"),
+            raises=SystemExit,
+        )
+
+        self.assertEqual(str(result.exception), "managed payload verification failed at /Volumes/dk2/.samba4: missing smbd")
+        result.mocks.remote_request_reboot.assert_not_called()
+        result.mocks.verify_payload_home_conn.assert_called_once()
+        telemetry_error = self.telemetry_payload("deploy_finished")["error"]
+        self.assertIn("stage=verify_payload_upload", telemetry_error)
+        self.assertIn("managed payload verification failed", telemetry_error)
 
     def test_deploy_declined_reboot_returns_without_rebooting(self) -> None:
         result = self.run_deploy_cli(
@@ -3934,6 +3967,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.rc, 0)
         self.assertIn("Deployment complete without reboot.", result.text)
         result.mocks.remote_request_reboot.assert_not_called()
+        result.mocks.verify_payload_home_conn.assert_called_once()
 
     def test_deploy_reboot_timeout_returns_failure(self) -> None:
         result = self.run_deploy_cli(
@@ -4007,6 +4041,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.mocks.run_remote_actions.call_count, 3)
+        result.mocks.verify_payload_home_conn.assert_called_once()
         result.mocks.remote_request_reboot.assert_not_called()
         self.assertIn("Activating NetBSD4 payload without reboot.", result.text)
         self.assertIn("NetBSD4 activation complete.", result.text)

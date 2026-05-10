@@ -20,6 +20,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.deploy.auth import nt_hash_hex, render_smbpasswd
 from timecapsulesmb.deploy.commands import (
+    EnsureVolumeMountedAction,
     InstallPermissionsAction,
     PrepareDirsAction,
     RemotePermission,
@@ -28,6 +29,7 @@ from timecapsulesmb.deploy.commands import (
     RunScriptAction,
     StopProcessAction,
     StopWatchdogAction,
+    ensure_volume_mounted_action,
     install_permissions_action,
     prepare_dirs_action,
     remote_action_to_jsonable,
@@ -1843,12 +1845,16 @@ int main(void) {{
         }
         with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
             with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as ssh_mock:
-                upload_deployment_payload(
-                    plan,
-                    connection=connection,
-                    source_resolver=source_resolver,
-                )
+                with mock.patch("timecapsulesmb.deploy.executor.ensure_volume_root_mounted_conn", return_value=True) as mount_mock:
+                    upload_deployment_payload(
+                        plan,
+                        connection=connection,
+                        source_resolver=source_resolver,
+                    )
         self.assertEqual(scp_mock.call_count, 12)
+        self.assertEqual(mount_mock.call_count, 5)
+        self.assertTrue(all(call.args[:3] == (connection, "/Volumes/dk2", "/dev/dk2") for call in mount_mock.call_args_list))
+        self.assertTrue(all(call.kwargs == {"wait_seconds": DEFAULT_APPLE_MOUNT_WAIT_SECONDS} for call in mount_mock.call_args_list))
         sources = [call.args[1] for call in scp_mock.call_args_list]
         self.assertEqual(
             sources,
@@ -1902,11 +1908,28 @@ int main(void) {{
         }
         with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
             with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as ssh_mock:
-                upload_deployment_payload(custom_plan, connection=connection, source_resolver=source_resolver)
+                with mock.patch("timecapsulesmb.deploy.executor.ensure_volume_root_mounted_conn") as mount_mock:
+                    upload_deployment_payload(custom_plan, connection=connection, source_resolver=source_resolver)
 
         self.assertEqual([call.args[1] for call in scp_mock.call_args_list], [Path("/tmp/dfree.sh"), Path("/tmp/tcapsulesmb.conf")])
         self.assertEqual([call.args[2] for call in scp_mock.call_args_list], ["/mnt/Flash/.dfree.sh.tmp", "/mnt/Flash/.tcapsulesmb.conf.tmp"])
         self.assertEqual(ssh_mock.call_count, 4)
+        mount_mock.assert_not_called()
+
+    def test_upload_deployment_payload_stops_when_payload_volume_guard_fails(self) -> None:
+        paths = self._payload_home("/Volumes/dk2", "samba4")
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
+        connection = SshConnection("host", "pw", "-o foo")
+        source_resolver = {
+            BINARY_SMBD_SOURCE: Path("/tmp/smbd"),
+        }
+        with mock.patch("timecapsulesmb.deploy.executor.ensure_volume_root_mounted_conn", return_value=False) as mount_mock:
+            with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
+                with self.assertRaisesRegex(RuntimeError, "payload volume /Volumes/dk2 is not mounted before upload"):
+                    upload_deployment_payload(plan, connection=connection, source_resolver=source_resolver)
+
+        mount_mock.assert_called_once_with(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
+        scp_mock.assert_not_called()
 
     def test_upload_deployment_payload_fails_for_missing_planned_source(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
@@ -2331,10 +2354,12 @@ fi
         plan = build_deployment_plan("root@10.0.0.2", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
         text = format_deployment_plan(plan)
         self.assertIn("volume root: /Volumes/dk2", text)
+        self.assertEqual(plan.device_path, "/dev/dk2")
         self.assertIn(f"diskd.useVolume wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s", text)
         self.assertIn("tc_kill_watchdog_pids TERM", text)
         self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", text)
         self.assertIn("/usr/bin/pkill '^mdns-advertiser$' >/dev/null 2>&1 || true", text)
+        self.assertIn("/usr/bin/acp rpc diskd.useVolume path:s:/Volumes/dk2", text)
         self.assertIn(f"mkdir -p {payload_dir} {payload_dir}/private {payload_dir}/cache /mnt/Flash", text)
         self.assertIn(f"rm -rf {payload_dir}/smb.conf.template", text)
         self.assertIn(f"rm -rf {payload_dir}/private/adisk.uuid", text)
@@ -2514,6 +2539,15 @@ fi
             remote_action_to_jsonable(StopWatchdogAction()),
             {"kind": "stop_watchdog", "args": []},
         )
+        self.assertEqual(
+            remote_action_to_jsonable(EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", 30)),
+            {
+                "kind": "ensure_volume_mounted",
+                "volume_root": "/Volumes/dk2",
+                "device_path": "/dev/dk2",
+                "wait_seconds": 30,
+            },
+        )
 
     def test_render_remote_action_rejects_unknown_action_object(self) -> None:
         with self.assertRaises(TypeError):
@@ -2522,7 +2556,19 @@ fi
     def test_deployment_plan_uses_install_permissions_action(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "Time Capsule Samba 4")
         plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
+        self.assertEqual(plan.post_upload_actions[0], ensure_volume_mounted_action("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS))
         self.assertIn(install_permissions_action(plan.permissions), plan.post_upload_actions)
+
+    def test_deployment_plan_guards_each_payload_write_action(self) -> None:
+        paths = self._payload_home("/Volumes/dk2", "samba4")
+        plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
+        expected_guard = EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
+
+        self.assertEqual(plan.pre_upload_actions[4], expected_guard)
+        self.assertEqual(plan.pre_upload_actions[6], expected_guard)
+        self.assertEqual(plan.pre_upload_actions[8], expected_guard)
+        self.assertEqual(plan.pre_upload_actions[10], expected_guard)
+        self.assertEqual(plan.post_upload_actions[0], expected_guard)
 
     def test_deployment_plan_marks_uploaded_payload_binaries_executable(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")

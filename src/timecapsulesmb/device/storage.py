@@ -73,6 +73,12 @@ class PayloadHomeSelection:
     checks: tuple[PayloadCandidateCheck, ...]
 
 
+@dataclass(frozen=True)
+class PayloadVerificationResult:
+    ok: bool
+    detail: str
+
+
 def build_dry_run_payload_home(payload_dir_name: str) -> PayloadHome:
     return PayloadHome(
         volume_root=DRY_RUN_VOLUME_ROOT_PLACEHOLDER,
@@ -334,16 +340,11 @@ def _remote_mounted_test(volume_root: str) -> str:
     )
 
 
-def ensure_mast_volume_mounted_conn(
-    connection: SshConnection,
-    volume: MaStVolume,
-    *,
-    wait_seconds: int,
-) -> bool:
-    root = shlex.quote(volume.volume_root)
-    dev = shlex.quote(volume.device_path)
-    mounted_test = _remote_mounted_test(volume.volume_root)
-    script = (
+def render_ensure_volume_root_mounted_script(volume_root: str, device_path: str, wait_seconds: int) -> str:
+    root = shlex.quote(volume_root)
+    dev = shlex.quote(device_path)
+    mounted_test = _remote_mounted_test(volume_root)
+    return (
         f"mkdir -p {root}; "
         f"if /bin/sh -c {shlex.quote(mounted_test)}; then exit 0; fi; "
         f"/usr/bin/acp rpc diskd.useVolume path:s:{root} >/dev/null 2>&1 || true; "
@@ -355,8 +356,62 @@ def ensure_mast_volume_mounted_conn(
         f"if [ -b {dev} ]; then /sbin/mount_hfs {dev} {root} >/dev/null 2>&1 || true; fi; "
         f"/bin/sh -c {shlex.quote(mounted_test)}"
     )
+
+
+def ensure_volume_root_mounted_conn(
+    connection: SshConnection,
+    volume_root: str,
+    device_path: str,
+    *,
+    wait_seconds: int,
+) -> bool:
+    script = render_ensure_volume_root_mounted_script(volume_root, device_path, wait_seconds)
     proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=max(30, wait_seconds + 45))
     return proc.returncode == 0
+
+
+def ensure_mast_volume_mounted_conn(
+    connection: SshConnection,
+    volume: MaStVolume,
+    *,
+    wait_seconds: int,
+) -> bool:
+    return ensure_volume_root_mounted_conn(
+        connection,
+        volume.volume_root,
+        volume.device_path,
+        wait_seconds=wait_seconds,
+    )
+
+
+def verify_payload_home_conn(
+    connection: SshConnection,
+    payload_home: PayloadHome,
+    *,
+    wait_seconds: int,
+) -> PayloadVerificationResult:
+    if not ensure_volume_root_mounted_conn(
+        connection,
+        payload_home.volume_root,
+        payload_home.device_path,
+        wait_seconds=wait_seconds,
+    ):
+        return PayloadVerificationResult(False, f"volume {payload_home.volume_root} is not mounted")
+
+    payload_dir = shlex.quote(payload_home.payload_dir)
+    script = (
+        "missing=; "
+        "add_missing() { if [ -z \"$missing\" ]; then missing=\"$1\"; else missing=\"$missing; $1\"; fi; }; "
+        f"[ -d {payload_dir} ] || add_missing 'missing payload directory'; "
+        f"[ -x {payload_dir}/smbd ] || [ -x {payload_dir}/sbin/smbd ] || add_missing 'missing smbd'; "
+        f"[ -f {payload_dir}/private/smbpasswd ] || add_missing 'missing private/smbpasswd'; "
+        f"[ -f {payload_dir}/private/username.map ] || add_missing 'missing private/username.map'; "
+        "if [ -z \"$missing\" ]; then echo ok; exit 0; fi; "
+        "echo \"$missing\"; exit 1"
+    )
+    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=30)
+    detail = proc.stdout.strip() or "payload verification command failed"
+    return PayloadVerificationResult(proc.returncode == 0, "ok" if proc.returncode == 0 else detail)
 
 
 def mounted_mast_volumes_conn(

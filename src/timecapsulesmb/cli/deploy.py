@@ -41,10 +41,12 @@ from timecapsulesmb.device.storage import (
     MAST_DISCOVERY_ATTEMPTS,
     MAST_DISCOVERY_DELAY_SECONDS,
     PayloadHome,
+    PayloadVerificationResult,
     build_dry_run_payload_home,
     mast_volumes_debug_summary,
     payload_candidate_checks_debug_summary,
     select_payload_home_with_diagnostics_conn,
+    verify_payload_home_conn,
     wait_for_mast_volumes_conn,
 )
 from timecapsulesmb.telemetry import TelemetryClient
@@ -98,6 +100,10 @@ def render_flash_runtime_config(
         ("MDNS_DEBUG_LOGGING", 1 if debug_logging else 0),
     ]
     return "\n".join(_render_flash_config_assignment(key, value) for key, value in values) + "\n"
+
+
+def _payload_verification_error(payload_home: PayloadHome, result: PayloadVerificationResult) -> str:
+    return f"managed payload verification failed at {payload_home.payload_dir}: {result.detail}"
 
 
 def _non_negative_int(value: str) -> int:
@@ -223,6 +229,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             reboot_after_deploy=not args.no_reboot,
             apple_mount_wait_seconds=apple_mount_wait_seconds,
         )
+        command_context.add_debug_fields(
+            payload_volume_root=plan.volume_root,
+            payload_device_path=plan.device_path,
+            payload_dir=plan.payload_dir,
+        )
 
         if args.dry_run:
             if args.json:
@@ -285,6 +296,16 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         command_context.set_stage("post_upload_actions")
         run_remote_actions(connection, plan.post_upload_actions)
+
+        command_context.set_stage("verify_payload_upload")
+        payload_verification = verify_payload_home_conn(
+            connection,
+            payload_home,
+            wait_seconds=apple_mount_wait_seconds,
+        )
+        command_context.add_debug_fields(payload_upload_verification=payload_verification.detail)
+        if not payload_verification.ok:
+            raise SystemExit(_payload_verification_error(payload_home, payload_verification))
 
         print(f"Deployed Samba payload to {plan.payload_dir}")
         print("Updated /mnt/Flash boot files.")

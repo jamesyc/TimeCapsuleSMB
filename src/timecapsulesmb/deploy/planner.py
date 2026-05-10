@@ -12,6 +12,7 @@ from timecapsulesmb.deploy.commands import (
     RunScriptAction,
     StopProcessAction,
     StopWatchdogAction,
+    ensure_volume_mounted_action,
     install_permissions_action,
     prepare_dirs_action,
 )
@@ -55,6 +56,7 @@ class PlannedCheck:
 class DeploymentPlan:
     host: str
     volume_root: str
+    device_path: str
     payload_dir: str
     disk_key: str
     smbd_path: Path
@@ -149,6 +151,11 @@ def build_deployment_plan(
     apple_mount_wait_seconds: int = DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
 ) -> DeploymentPlan:
     payload_dir = payload_home.payload_dir
+    ensure_payload_volume = ensure_volume_mounted_action(
+        payload_home.volume_root,
+        payload_home.device_path,
+        apple_mount_wait_seconds,
+    )
     flash_targets = {
         "rc.local": "/mnt/Flash/rc.local",
         "common.sh": "/mnt/Flash/common.sh",
@@ -203,6 +210,7 @@ def build_deployment_plan(
     return DeploymentPlan(
         host=host,
         volume_root=payload_home.volume_root,
+        device_path=payload_home.device_path,
         payload_dir=payload_dir,
         disk_key=payload_home.disk_key,
         smbd_path=smbd_path,
@@ -235,12 +243,16 @@ def build_deployment_plan(
             StopProcessAction("smbd"),
             StopProcessAction("mdns-advertiser"),
             StopProcessAction("nbns-advertiser"),
+            ensure_payload_volume,
             RemovePathAction(f"{payload_dir}/smb.conf.template"),
+            ensure_payload_volume,
             RemovePathAction(f"{private_dir}/adisk.uuid"),
+            ensure_payload_volume,
             RemovePathAction(f"{private_dir}/nbns.enabled"),
+            ensure_payload_volume,
             prepare_dirs_action(remote_directories, legacy_symlinks),
         ],
-        post_upload_actions=[install_permissions_action(permissions)],
+        post_upload_actions=[ensure_payload_volume, install_permissions_action(permissions)],
         activation_actions=build_netbsd4_activation_actions() if activate_netbsd4 else [],
         reboot_required=reboot_required,
         post_deploy_checks=NETBSD4_ACTIVATION_CHECKS if activate_netbsd4 else (NETBSD6_REBOOT_DEPLOY_CHECKS if reboot_required else []),

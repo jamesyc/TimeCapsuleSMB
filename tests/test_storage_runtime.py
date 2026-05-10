@@ -21,14 +21,18 @@ from timecapsulesmb.device.probe import (
     normalize_runtime_netbios_name,
 )
 from timecapsulesmb.device.storage import (
+    PayloadVerificationResult,
     NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE,
     MaStVolume,
     PayloadHome,
+    ensure_volume_root_mounted_conn,
     ordered_payload_candidate_volumes,
     payload_candidate_checks_debug_summary,
     parse_mast_plist,
+    render_ensure_volume_root_mounted_script,
     select_payload_home_conn,
     select_payload_home_with_diagnostics_conn,
+    verify_payload_home_conn,
     wait_for_mast_volumes_conn,
 )
 from timecapsulesmb.transport.ssh import SshConnection
@@ -472,6 +476,63 @@ class StorageRuntimeTests(unittest.TestCase):
         self.assertEqual(home, PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"))
         mount_mock.assert_called_once_with(connection, internal, wait_seconds=30)
         writable_mock.assert_called_once_with(connection, "/Volumes/dk2")
+
+    def test_ensure_volume_root_mounted_conn_uses_diskd_and_mount_hfs_fallback(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        with mock.patch("timecapsulesmb.device.storage.run_ssh", return_value=mock.Mock(returncode=0)) as run_ssh_mock:
+            self.assertTrue(ensure_volume_root_mounted_conn(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=12))
+
+        run_ssh_mock.assert_called_once()
+        remote_command = run_ssh_mock.call_args.args[1]
+        self.assertIn("/bin/df -k /Volumes/dk2", remote_command)
+        self.assertIn("/usr/bin/tail -n +2", remote_command)
+        self.assertIn("/usr/bin/acp rpc diskd.useVolume", remote_command)
+        self.assertIn("/sbin/mount_hfs /dev/dk2 /Volumes/dk2", remote_command)
+        self.assertNotIn("grep", remote_command)
+        self.assertNotIn("awk", remote_command)
+        self.assertNotIn("cut", remote_command)
+        self.assertEqual(run_ssh_mock.call_args.kwargs["timeout"], 57)
+
+    def test_ensure_volume_root_mounted_conn_reports_failure(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        with mock.patch("timecapsulesmb.device.storage.run_ssh", return_value=mock.Mock(returncode=1)):
+            self.assertFalse(ensure_volume_root_mounted_conn(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=0))
+
+    def test_render_ensure_volume_root_mounted_script_quotes_paths(self) -> None:
+        script = render_ensure_volume_root_mounted_script("/Volumes/dk 2", "/dev/dk2", 1)
+        self.assertIn("mkdir -p '/Volumes/dk 2'", script)
+        self.assertIn("diskd.useVolume path:s:'/Volumes/dk 2'", script)
+
+    def test_verify_payload_home_conn_passes_for_boot_compatible_payload(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        payload_home = PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4")
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=True) as mount_mock:
+            with mock.patch("timecapsulesmb.device.storage.run_ssh", return_value=mock.Mock(returncode=0, stdout="ok\n")) as run_ssh_mock:
+                result = verify_payload_home_conn(connection, payload_home, wait_seconds=5)
+
+        self.assertEqual(result, PayloadVerificationResult(True, "ok"))
+        mount_mock.assert_called_once_with(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=5)
+        remote_command = run_ssh_mock.call_args.args[1]
+        self.assertIn("[ -d /Volumes/dk2/.samba4 ]", remote_command)
+        self.assertIn("[ -x /Volumes/dk2/.samba4/smbd ]", remote_command)
+        self.assertIn("[ -x /Volumes/dk2/.samba4/sbin/smbd ]", remote_command)
+        self.assertIn("[ -f /Volumes/dk2/.samba4/private/smbpasswd ]", remote_command)
+        self.assertIn("[ -f /Volumes/dk2/.samba4/private/username.map ]", remote_command)
+
+    def test_verify_payload_home_conn_reports_mount_and_payload_failures(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        payload_home = PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4")
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=False):
+            result = verify_payload_home_conn(connection, payload_home, wait_seconds=5)
+        self.assertEqual(result, PayloadVerificationResult(False, "volume /Volumes/dk2 is not mounted"))
+
+        with mock.patch("timecapsulesmb.device.storage.ensure_volume_root_mounted_conn", return_value=True):
+            with mock.patch(
+                "timecapsulesmb.device.storage.run_ssh",
+                return_value=mock.Mock(returncode=1, stdout="missing smbd; missing private/smbpasswd\n"),
+            ):
+                result = verify_payload_home_conn(connection, payload_home, wait_seconds=5)
+        self.assertEqual(result, PayloadVerificationResult(False, "missing smbd; missing private/smbpasswd"))
 
     def test_select_payload_home_skips_unmountable_internal_before_external(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")

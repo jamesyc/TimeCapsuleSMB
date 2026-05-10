@@ -6,6 +6,7 @@ from typing import Iterable, Mapping
 
 from timecapsulesmb.deploy.commands import RemoteAction, render_remote_actions
 from timecapsulesmb.deploy.planner import FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, DeploymentPlan, FileTransfer, UninstallPlan
+from timecapsulesmb.device.storage import ensure_volume_root_mounted_conn
 from timecapsulesmb.transport.ssh import SshConnection, run_scp, run_ssh
 
 
@@ -56,6 +57,25 @@ def _scp_transfer(connection: SshConnection, source: Path, transfer: FileTransfe
     run_scp(connection, source, transfer.destination, timeout=transfer.timeout_seconds)
 
 
+def _destination_is_under(path: str, root: str) -> bool:
+    normalized_path = path.rstrip("/")
+    normalized_root = root.rstrip("/")
+    return normalized_path == normalized_root or normalized_path.startswith(f"{normalized_root}/")
+
+
+def _ensure_payload_volume_before_transfer(connection: SshConnection, plan: DeploymentPlan, transfer: FileTransfer) -> None:
+    if not _destination_is_under(transfer.destination, plan.payload_dir):
+        return
+    if ensure_volume_root_mounted_conn(
+        connection,
+        plan.volume_root,
+        plan.device_path,
+        wait_seconds=plan.apple_mount_wait_seconds,
+    ):
+        return
+    raise RuntimeError(f"payload volume {plan.volume_root} is not mounted before upload to {transfer.destination}")
+
+
 def upload_deployment_payload(
     plan: DeploymentPlan,
     *,
@@ -65,6 +85,7 @@ def upload_deployment_payload(
     planned_modes = {permission.path: permission.mode for permission in plan.permissions}
     for transfer in plan.uploads:
         source = _resolve_transfer_source(source_resolver, transfer)
+        _ensure_payload_volume_before_transfer(connection, plan, transfer)
         if transfer.mode in {"scp", "generated"}:
             _scp_transfer(connection, source, transfer)
         elif transfer.mode == "flash_atomic":
