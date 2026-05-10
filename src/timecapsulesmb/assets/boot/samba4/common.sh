@@ -11,6 +11,7 @@ LOCKS_ROOT=/mnt/Locks
 
 MDNS_PROC_NAME=mdns-advertiser
 NBNS_PROC_NAME=nbns-advertiser
+ALL_MDNS_SNAPSHOT=/mnt/Flash/allmdns.txt
 APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt
 
 TC_CONFIG_FILE=/mnt/Flash/tcapsulesmb.conf
@@ -38,6 +39,7 @@ TC_MDNS_LOG_FILE="$RAM_VAR/mdns.log"
 TC_NBNS_LOG_FILE="$RAM_VAR/nbns.log"
 TC_PAYLOAD_LOG_DIR=
 TC_PAYLOAD_LOG_VOLUME=
+TC_MDNS_CAPTURE_STATUS_FILE=
 TC_RUNTIME_LOG_MAX_BYTES=131072
 TC_SMBD_DISK_LOGGING_ENABLED=0
 TC_ADISK_DISK_ADVF=0x1093
@@ -46,6 +48,8 @@ TC_ADISK_TXT_ADVF_PREFIX_BYTES=6
 TC_ADISK_TXT_ADVN_MID_BYTES=6
 TC_ADISK_TXT_ADVU_PREFIX_BYTES=6
 TC_SAMBA_VM_BUFCACHE=5
+TC_MDNS_CAPTURE_PID=
+TC_APPLE_MDNS_SNAPSHOT_START=
 
 LEGACY_PREFIX_NETBSD7=/root/tc-netbsd7
 LEGACY_PREFIX_NETBSD4=/root/tc-netbsd4
@@ -56,6 +60,7 @@ tc_init_runtime_env() {
     APPLE_MOUNT_WAIT_SECONDS=${APPLE_MOUNT_WAIT_SECONDS:-30}
     MAST_DISCOVERY_WAIT_SECONDS=${MAST_DISCOVERY_WAIT_SECONDS:-120}
     WATCHDOG_MOUNT_WAIT_SECONDS=${WATCHDOG_MOUNT_WAIT_SECONDS:-$APPLE_MOUNT_WAIT_SECONDS}
+    MDNS_CAPTURE_WAIT_SECONDS=${MDNS_CAPTURE_WAIT_SECONDS:-75}
     INTERNAL_SHARE_USE_DISK_ROOT=${INTERNAL_SHARE_USE_DISK_ROOT:-0}
     NBNS_ENABLED=${NBNS_ENABLED:-0}
     TC_SMBD_DISK_LOGGING_ENABLED=${SMBD_DEBUG_LOGGING:-0}
@@ -1769,6 +1774,24 @@ derive_airport_fields() {
     return 1
 }
 
+tc_log_mdns_snapshot_age() {
+    snapshot_path=$1
+    if [ ! -f "$snapshot_path" ]; then
+        tc_log "trusted Apple mDNS snapshot missing at $snapshot_path"
+        return 1
+    fi
+
+    snapshot_current=$(/bin/ls -lnT "$snapshot_path" 2>/dev/null || true)
+    if [ -z "$TC_APPLE_MDNS_SNAPSHOT_START" ]; then
+        tc_log "trusted Apple mDNS snapshot was created during this boot run: $snapshot_path"
+    elif [ "$snapshot_current" != "$TC_APPLE_MDNS_SNAPSHOT_START" ]; then
+        tc_log "trusted Apple mDNS snapshot was updated during this boot run: $snapshot_path"
+    else
+        tc_log "trusted Apple mDNS snapshot predates this boot run; accepting stale snapshot: $snapshot_path"
+    fi
+    return 0
+}
+
 tc_prepare_mdns_identity() {
     iface_mac=$1
     context=$2
@@ -1845,13 +1868,91 @@ tc_generate_mdns() {
         return 0
     fi
 
-    tc_log "mDNS AirPort snapshot generation failed; final advertiser will use generated records if needed"
+    tc_log "mDNS AirPort snapshot generation failed; falling back to mDNS capture"
+    set -- "$TC_MDNS_BIN" \
+        --save-all-snapshot "$ALL_MDNS_SNAPSHOT" \
+        --save-snapshot "$APPLE_MDNS_SNAPSHOT" \
+        --ipv4 "$TC_NET_IFACE_IP"
+    if [ -n "${AIRPORT_WAMA:-}" ] || [ -n "${AIRPORT_RAMA:-}" ] || [ -n "${AIRPORT_RAM2:-}" ] || [ -n "${AIRPORT_RAST:-}" ] || [ -n "${AIRPORT_RANA:-}" ] || [ -n "${AIRPORT_SYFL:-}" ] || [ -n "${AIRPORT_SYAP:-}" ] || [ -n "${AIRPORT_SYVS:-}" ] || [ -n "${AIRPORT_SRCV:-}" ] || [ -n "${AIRPORT_BJSD:-}" ]; then
+        set -- "$@" \
+            --airport-wama "$AIRPORT_WAMA" \
+            --airport-rama "$AIRPORT_RAMA" \
+            --airport-ram2 "$AIRPORT_RAM2" \
+            --airport-rast "$AIRPORT_RAST" \
+            --airport-rana "$AIRPORT_RANA" \
+            --airport-syfl "$AIRPORT_SYFL" \
+            --airport-syap "$AIRPORT_SYAP" \
+            --airport-syvs "$AIRPORT_SYVS" \
+            --airport-srcv "$AIRPORT_SRCV" \
+            --airport-bjsd "$AIRPORT_BJSD"
+    fi
+
+    if tc_run_mdns_snapshot_command "capture" "$@"; then
+        tc_log "mDNS snapshot capture finished"
+    else
+        tc_log "mDNS snapshot capture exited with failure; final advertiser will use generated records if needed"
+    fi
+}
+
+tc_wait_for_mdns_capture() {
+    wait_seconds=${MDNS_CAPTURE_WAIT_SECONDS:-75}
+    elapsed=0
+    capture_status=
+
+    if [ -z "$TC_MDNS_CAPTURE_PID" ]; then
+        return 0
+    fi
+
+    tc_log "waiting up to ${wait_seconds}s for mDNS snapshot capture pid $TC_MDNS_CAPTURE_PID"
+    if ! kill -0 "$TC_MDNS_CAPTURE_PID" >/dev/null 2>&1; then
+        TC_MDNS_CAPTURE_PID=
+        rm -f "$TC_MDNS_CAPTURE_STATUS_FILE"
+        TC_MDNS_CAPTURE_STATUS_FILE=
+        return 0
+    fi
+
+    while [ "$elapsed" -lt "$wait_seconds" ]; do
+        if [ -n "$TC_MDNS_CAPTURE_STATUS_FILE" ] && [ -f "$TC_MDNS_CAPTURE_STATUS_FILE" ]; then
+            capture_status=$(/bin/cat "$TC_MDNS_CAPTURE_STATUS_FILE" 2>/dev/null || echo 1)
+            wait "$TC_MDNS_CAPTURE_PID" >/dev/null 2>&1 || true
+            if [ "$capture_status" = "0" ]; then
+                tc_log "mDNS snapshot capture finished"
+            else
+                tc_log "mDNS snapshot capture exited with failure; final advertiser will use generated records if needed"
+            fi
+            rm -f "$TC_MDNS_CAPTURE_STATUS_FILE"
+            TC_MDNS_CAPTURE_PID=
+            TC_MDNS_CAPTURE_STATUS_FILE=
+            return 0
+        fi
+        if ! kill -0 "$TC_MDNS_CAPTURE_PID" >/dev/null 2>&1; then
+            wait "$TC_MDNS_CAPTURE_PID" >/dev/null 2>&1 || true
+            tc_log "mDNS snapshot capture ended without status; final advertiser will use generated records if needed"
+            rm -f "$TC_MDNS_CAPTURE_STATUS_FILE"
+            TC_MDNS_CAPTURE_PID=
+            TC_MDNS_CAPTURE_STATUS_FILE=
+            return 0
+        fi
+        elapsed=$((elapsed + 1))
+        sleep 1
+    done
+
+    tc_log "mDNS snapshot capture timed out after ${wait_seconds}s; stopping capture and continuing with generated records if needed"
+    kill "$TC_MDNS_CAPTURE_PID" >/dev/null 2>&1 || true
+    stop_runtime_process_by_ucomm "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" || true
+    sleep 1
+    kill -9 "$TC_MDNS_CAPTURE_PID" >/dev/null 2>&1 || true
+    wait "$TC_MDNS_CAPTURE_PID" >/dev/null 2>&1 || true
+    rm -f "$TC_MDNS_CAPTURE_STATUS_FILE"
+    TC_MDNS_CAPTURE_PID=
+    TC_MDNS_CAPTURE_STATUS_FILE=
 }
 
 tc_launch_mdns_advertiser() {
     context=$1
-    kill_prior=$2
-    wait_attempts=$3
+    wait_for_capture=$2
+    kill_prior=$3
+    wait_attempts=$4
 
     iface_ip=${TC_NET_IFACE_IP:-}
     if [ -z "$iface_ip" ]; then
@@ -1864,6 +1965,15 @@ tc_launch_mdns_advertiser() {
     fi
     if ! tc_prepare_mdns_identity "$iface_mac" "$context"; then
         return 0
+    fi
+
+    if [ "$wait_for_capture" = "1" ]; then
+        tc_wait_for_mdns_capture
+        if tc_log_mdns_snapshot_age "$APPLE_MDNS_SNAPSHOT"; then
+            :
+        else
+            tc_log "mdns advertiser will fall back to generated records"
+        fi
     fi
 
     if [ "$kill_prior" = "1" ]; then
@@ -1921,11 +2031,11 @@ tc_launch_mdns_advertiser() {
 }
 
 tc_start_mdns_advertiser() {
-    tc_launch_mdns_advertiser "mdns startup" 1 100
+    tc_launch_mdns_advertiser "mdns startup" 0 1 100
 }
 
 tc_restart_mdns() {
-    tc_launch_mdns_advertiser "watchdog recovery" 0 0
+    tc_launch_mdns_advertiser "watchdog recovery" 0 0 0
 }
 
 tc_launch_nbns() {

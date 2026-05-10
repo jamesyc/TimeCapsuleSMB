@@ -248,7 +248,7 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("LOCKS_ROOT=/mnt/Locks", content)
         self.assertIn("MDNS_PROC_NAME=mdns-advertiser", content)
         self.assertIn("NBNS_PROC_NAME=nbns-advertiser", content)
-        self.assertNotIn("ALL_MDNS_SNAPSHOT", content)
+        self.assertIn("ALL_MDNS_SNAPSHOT=/mnt/Flash/allmdns.txt", content)
         self.assertIn("APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt", content)
         self.assertIn("get_iface_ipv4()", content)
         self.assertIn("get_iface_mac()", content)
