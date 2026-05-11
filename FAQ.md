@@ -46,7 +46,7 @@ The folder contains all the scripts, binaries, and configuration files needed fo
 
 Once deployment is complete, you can connect via:
 - **Finder:** Look in the "Network" folder
-- **Direct URL:** `smb://<yourtimecapsuleIP>/Data`
+- **Direct URL:** `smb://<advertised-host>.local/<share-name>` or `smb://<yourtimecapsuleIP>/<share-name>`
 
 **Credentials:**
 - Username: `admin`
@@ -63,11 +63,11 @@ No. You can run `deploy` over an old deployment.
 1. Reboot the device
 2. Do a fresh `deploy` on top of the (maybe corrupt) old deploy
 
-A reboot and clean deploy will fix 90% of issues. This is especially true for old Gen 1-4 devices, because we deploy the files by copying them via `cat` over `ssh`. This is not very stable and can lead to corrupt files; however, the older devices do not support `scp`, so we just assume it is possible for deployed files to get mangled.
+A reboot and clean deploy will fix 90% of issues. This is especially useful for old Gen 1-4 devices, because their firmware usually does not provide remote `scp`, so uploads use a slower SSH fallback. The deploy flow verifies uploaded file sizes, but rerunning `deploy` is still the simplest way to replace any interrupted upload.
 
 #### Time Machine backups are broken on certain macOS versions
 
-Time Machine backups on macOS 26.4.x and 15.7.5 is currently broken. See [this article](https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups) for details.
+Time Machine backups on macOS 26.4.x and 15.7.5 are currently broken. See [this article](https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups) for details.
 
 **Workaround:** Macs running these versions can still use the device as a standard Samba network share in Finder, but Time Machine backups will not work properly. You can also try the workaround mentioned in the article.
 
@@ -75,10 +75,13 @@ Time Machine backups on macOS 26.4.x and 15.7.5 is currently broken. See [this a
 
 1. Try connecting directly:
    ```
-   smb://<yourtimecapsule>.local/Data
+   smb://<advertised-host>.local/<share-name>
    ```
 
-2. Use the IP address from your `.env` file if hostname resolution fails
+2. Use the IP address from your `.env` file if hostname resolution fails:
+   ```
+   smb://<yourtimecapsuleIP>/<share-name>
+   ```
 
 #### I get "Error 22" or "Invalid Argument" errors
 
@@ -105,7 +108,7 @@ This is normal for **NetBSD 4 devices** (older Gen 1-4 Time Capsules). The firmw
 
 #### Is this secure?
 
-It's *probably* fine for a home network, but if you're very sensitive about security this is not the software for you. Use at your own risk. It's using a build of Samba 4.8.12 currently.
+It's *probably* fine for a home network, but if you're very sensitive about security this is not the software for you. Use at your own risk. It's using a build of Samba 4.24.1 currently.
 
 #### What files are added to the Time Capsule?
 
@@ -117,6 +120,7 @@ The `deploy` script installs files in:
   - `/mnt/Flash/common.sh`
   - `/mnt/Flash/dfree.sh`
   - `/mnt/Flash/mdns-advertiser`
+  - `/mnt/Flash/tcapsulesmb.conf`
   - These files are created by `mdns-advertiser`
     - `/mnt/Flash/allmdns.txt`
     - `/mnt/Flash/applemdns.txt`
@@ -150,12 +154,12 @@ Yes! If you want to rebuild `smbd` yourself, run the scripts in `build/` on a Ne
 #### Can I customize the configuration?
 
 Yes! During `tcapsule configure`, you can customize:
-- SMB share name
 - Samba username
-- Bonjour service name
-- Bonjour hostname label
+- persistent payload folder name
+- device network interface
+- AirPort model hints used for Bonjour metadata
 
-However, for most users, the defaults are recommended.
+Share names and Bonjour names come from the Time Capsule itself. For most users, the defaults are recommended.
 
 ## Maintenance
 

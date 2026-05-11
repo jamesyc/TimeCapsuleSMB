@@ -96,10 +96,9 @@ For typical users, most of the defaults are good enough. If the script offers a 
 
 The default values you can customize are:
 
-- SMB share name: `Data`
 - Samba username: `admin`
-- Bonjour service name: `Time Capsule Samba`
-- Bonjour hostname label: `timecapsulesamba`
+- persistent payload folder name: `.samba4`
+- device network interface: usually detected automatically
 
 The password you enter here also becomes the password used for the SMB login as well. In other words, after setup, you normally connect with:
 
@@ -182,7 +181,7 @@ This is a non-destructive diagnostic command. `tcapsule doctor` checks:
   - Samba share names
 - that SMB is reachable
 - that Bonjour `_smb._tcp` advertisement is visible and resolves
-- that an authenticated SMB listing actually works and includes the configured share name
+- that an authenticated SMB listing actually works and includes the active share name
 - that authenticated SMB file operations also work on the share
 - that `xattr_tdb:file` in the active Samba config points at persistent storage instead of the RAM disk
 
@@ -228,10 +227,9 @@ If you want to remove the files without rebooting immediately, use:
 Once deployment has completed and the Time Capsule has rebooted, you should be able to connect from Finder. The device should show up in the "Network" folder, or with:
 
 ```text
-smb://timecapsulesamba4.local/Data
+smb://<advertised-host>.local/<share-name>
 ```
 
-If your Bonjour hostname is different on your system, `tcapsule doctor` and `tcapsule discover` will tell you what name was actually advertised.
 
 When Finder prompts for credentials, use:
 
@@ -275,16 +273,15 @@ There are other constraints the Time Capsule places on us:
 - Samba 4.0.x has the same issue
 - Samba 4.2.x was much harder to compile, and had a `talloc` / `loadparm` use-after-free runtime bug
 - Samba 4.3.x was the first version to work as a network share, but it does not support vfs_fruit for Time Machine backup support
-- Samba 4.8.x is the first version that fully works, although getting it to compile can be very difficult.
+- Samba 4.8.x was the first version that fully worked; current builds ship Samba 4.24.1.
 
 ## Troubleshooting
 
-The current default result is:
+The normal result is:
 
-- SMB service name: `Time Capsule Samba 4`
 - SMB username: `admin`
-- share name: `Data`
-- Finder address: `smb://timecapsulesamba4.local/Data`
+- Finder address: shown by `tcapsule doctor` or `tcapsule discover`
+- share names: derived from the Time Capsule's disk volume names
 
 ### The Time Capsule Does Not Show Up In Finder
 
@@ -306,9 +303,7 @@ To inspect discovery results from the tool itself in JSON, run:
 .venv/bin/tcapsule discover --json
 ```
 
-If the system is working normally, you should see:
-
-- `Time Capsule Samba 4`
+If the system is working normally, you should see an `_smb._tcp` service with the Time Capsule's current device name.
 
 Finder is not always the best first diagnostic tool. The service can be up and correct even when Finder browsing is being slow or temperamental.
 
@@ -317,7 +312,7 @@ Finder is not always the best first diagnostic tool. The service can be up and c
 Try a reboot, then try the direct address explicitly:
 
 ```text
-smb://timecapsulesamba4.local/Data
+smb://<advertised-host>.local/<share-name>
 ```
 
 If necessary, use the IP address from your `.env` instead. The point is to separate “Bonjour browsing did something odd” from “SMB itself is broken.”

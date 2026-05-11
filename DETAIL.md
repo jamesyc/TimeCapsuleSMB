@@ -9,8 +9,8 @@ It is intentionally denser than [README.md](README.md). The README is the user-f
 The current system works end to end on the target Apple AirPort Time Capsule.
 
 What is working now:
-- static Samba 4.8.x built from NetBSD 7 sources for NetBSD 6-era AirPort storage devices
-- static Samba 4.8.x built from NetBSD 4 sources for older NetBSD 4-era AirPort storage devices
+- static Samba 4.24.1 built from NetBSD 7 sources for NetBSD 6-era AirPort storage devices
+- static Samba 4.24.1 built from NetBSD 4 sources for older NetBSD 4-era AirPort storage devices
 - static tiny SMB / Time Machine mDNS advertiser
 - static NBNS responder for NetBIOS name discovery
 - boot-time runtime staging via `/mnt/Flash/rc.local`
@@ -40,11 +40,11 @@ Current user experience:
 - the Time Capsule advertises `_smb._tcp`
 - the Time Capsule advertises `_adisk._tcp` for Time Machine
 - the Time Capsule replays Apple `_airport._tcp` for AirPort Utility compatibility
-- the Time Capsule can optionally answer NBNS name queries for the configured NetBIOS name
-- the default instance name is `Time Capsule Samba 4`
-- the default host label is `timecapsulesamba4`
+- the Time Capsule can optionally answer NBNS name queries for the active runtime NetBIOS name
+- the Bonjour instance name and Samba server string are derived from Apple `syNm`
+- the Bonjour host label and Samba NetBIOS name are derived from `/bin/hostname`, with `syNm` fallbacks
 - shares are derived from Apple `MaSt` volume metadata and are available as:
-  - `smb://timecapsulesamba4.local/<volume name>`
+  - `smb://<advertised-host>.local/<volume name>`
 
 Current auth model:
 - SMB login user: `admin`
@@ -147,9 +147,9 @@ Current naming split:
 - the live RAM runtime path is intentionally fixed at `/mnt/Memory/samba4`
 - share names are not configured locally; runtime sanitizes and de-duplicates the Apple `MaSt` partition names
 
-## Why Samba 4.8
+## Why Samba 4.8, Then 4.24.1
 
-The project did not land on Samba 4.8 by accident.
+The project did not land on Samba 4.x by accident. Samba 4.8 was the first fully working Time Machine target on this hardware; the current checked-in deploy artifacts are Samba 4.24.1.
 
 ### Samba 3
 
@@ -170,11 +170,15 @@ Separately, the NetBSD 10-era toolchain path also exposed incompatible directory
 
 Samba 4.3 was an important stepping stone, but it was not enough. It did not run into any bugs as a network file share. It worked as a normal authenticated network share, but not as a real Time Machine target. 
 
-In practice, 4.3 proved the architecture and deployment model, while 4.8 is the version that enables the full Time Machine-oriented share behavior.
+In practice, 4.3 proved the architecture and deployment model, while 4.8 was the version that first enabled the full Time Machine-oriented share behavior.
 
 ### Samba 4.8
 
-Samba 4.8 is the current target because it gives the project a usable Time Machine stack through `vfs_fruit`.
+Samba 4.8 was the first stable target because it gave the project a usable Time Machine stack through `vfs_fruit`.
+
+### Samba 4.24.1
+
+Samba 4.24.1 is the current shipped target. It keeps the same static-module deployment model, but uses the newer `samba4x` build lanes and checked-in artifacts.
 
 With the current static-module build, the shipped config supports:
 - `fruit`
@@ -193,7 +197,7 @@ My VM was running NetBSD 10. A NetBSD 10-generated static binary could execute, 
 
 ### NetBSD 7 build path
 
-The working result came from:
+The first working result came from:
 - NetBSD 7 source tree
 - static `earmv4` build
 - Samba 4.8.x
@@ -204,6 +208,8 @@ That combination:
 - serves files successfully
 - supports Time Machine semantics through `vfs_fruit`
 
+The current deploy artifacts use Samba 4.24.1 on the same NetBSD 7 / NetBSD 4 SDK split.
+
 The important build logic is now under [build/](build).
 
 Current maintainer build lanes:
@@ -213,10 +219,19 @@ Current maintainer build lanes:
 - NetBSD 4 SDK lane:
   - [build/downloadoldle.sh](build/downloadoldle.sh)
   - [build/bootstrapoldle.sh](build/bootstrapoldle.sh)
-- NetBSD 7 Samba 4 lane:
+  - [build/downloadoldbe.sh](build/downloadoldbe.sh)
+  - [build/bootstrapoldbe.sh](build/bootstrapoldbe.sh)
+- NetBSD 7 current Samba 4.24 lane:
+  - [build/downloadsamba4x.sh](build/downloadsamba4x.sh)
+  - [build/samba4x.sh](build/samba4x.sh)
+- NetBSD 4 current Samba 4.24 lanes:
+  - [build/downloadsamba4xoldle.sh](build/downloadsamba4xoldle.sh)
+  - [build/downloadsamba4xoldbe.sh](build/downloadsamba4xoldbe.sh)
+  - [build/samba4xoldle.sh](build/samba4xoldle.sh)
+  - [build/samba4xoldbe.sh](build/samba4xoldbe.sh)
+- legacy Samba 4.8 lanes:
   - [build/downloadsamba4.sh](build/downloadsamba4.sh)
   - [build/samba4.sh](build/samba4.sh)
-- NetBSD 4 Samba 4 lane:
   - [build/downloadsamba4oldle.sh](build/downloadsamba4oldle.sh)
   - [build/downloadsamba4oldbe.sh](build/downloadsamba4oldbe.sh)
   - [build/samba4oldle.sh](build/samba4oldle.sh)
@@ -470,6 +485,8 @@ NetBSD 6 note:
 - the HDD cache path above is used for the NetBSD 4 payload family because the NetBSD 4 RAM disk is too tight for the full runtime plus cache TDB growth
 
 Current rendered Samba config characteristics:
+- `netbios name = <runtime hostname-derived name>`
+- `server string = <runtime Apple syNm-derived name>`
 - `security = user`
 - `min protocol = SMB2`
 - `max protocol = SMB3`
@@ -573,7 +590,7 @@ Important properties:
 
 Current behavior:
 - binds UDP port `137`
-- answers NBNS name queries for the configured NetBIOS name
+- answers NBNS name queries for the active runtime NetBIOS name
 - replies for both NetBIOS suffixes:
   - `0x00`
   - `0x20`
@@ -645,7 +662,7 @@ Current defaults:
 - `TC_MDNS_DEVICE_MODEL=TimeCapsule`
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT=false`
 
-Samba NetBIOS, Bonjour instance, and Bonjour host labels are derived on the device at runtime from `/usr/bin/acp -q syNm` and `/bin/hostname`; they are not configured in `.env`.
+Samba NetBIOS, Samba server string, Bonjour instance, and Bonjour host labels are derived on the device at runtime from `/usr/bin/acp -q syNm` and `/bin/hostname`; they are not configured in `.env`.
 
 Current validation behavior:
 - `TC_HOST`: must be non-empty.
@@ -679,7 +696,7 @@ Workflow details:
 ## Host-Side Architecture
 
 Current important package areas:
-- [src/timecapsulesmb/cli/](src/timecapsulesmb/cli): command entrypoints for `bootstrap`, `discover`, `configure`, `set-ssh`, `deploy`, `activate`, `doctor`, `repair-xattrs`, and `uninstall`
+- [src/timecapsulesmb/cli/](src/timecapsulesmb/cli): command entrypoints for `bootstrap`, `paths`, `validate-install`, `discover`, `configure`, `set-ssh`, `deploy`, `activate`, `doctor`, `fsck`, `repair-xattrs`, and `uninstall`
 - [src/timecapsulesmb/core/](src/timecapsulesmb/core): shared config parsing, defaults, and common models
 - [src/timecapsulesmb/transport/](src/timecapsulesmb/transport): local command execution plus SSH and SCP helpers
 - [src/timecapsulesmb/discovery/](src/timecapsulesmb/discovery): Bonjour-based device discovery
@@ -782,7 +799,7 @@ chflags noarch <file>
 Typical scan-and-prompt usage:
 
 ```bash
-.venv/bin/tcapsule repair-xattrs --path /Volumes/Data
+.venv/bin/tcapsule repair-xattrs --path /Volumes/<share-name>
 ```
 
 When exactly one matching `smbfs` mount is visible locally, `--path` can usually be omitted. The command reads the local `mount` table and matches mounted SMB volumes to the configured `TC_HOST`. If more than one candidate is mounted, pass `--path` explicitly:
@@ -794,10 +811,10 @@ When exactly one matching `smbfs` mount is visible locally, `--path` can usually
 Useful modes:
 
 ```bash
-.venv/bin/tcapsule repair-xattrs --path /Volumes/Data --dry-run
-.venv/bin/tcapsule repair-xattrs --path /Volumes/Data --yes
-.venv/bin/tcapsule repair-xattrs --path /Volumes/Data/some-folder --no-recursive
-.venv/bin/tcapsule repair-xattrs --path /Volumes/Data --max-depth 2
+.venv/bin/tcapsule repair-xattrs --path /Volumes/<share-name> --dry-run
+.venv/bin/tcapsule repair-xattrs --path /Volumes/<share-name> --yes
+.venv/bin/tcapsule repair-xattrs --path /Volumes/<share-name>/some-folder --no-recursive
+.venv/bin/tcapsule repair-xattrs --path /Volumes/<share-name> --max-depth 2
 ```
 
 Default safety behavior:
@@ -893,6 +910,9 @@ Hidden operator mode:
 ## Client Telemetry
 
 Client telemetry is now emitted by:
+- `tcapsule bootstrap`
+- `tcapsule paths`
+- `tcapsule validate-install`
 - `tcapsule configure`
 - `tcapsule set-ssh`
 - `tcapsule deploy`
@@ -903,6 +923,12 @@ Client telemetry is now emitted by:
 - `tcapsule uninstall`
 
 Current event model:
+- `bootstrap_started`
+- `bootstrap_finished`
+- `paths_started`
+- `paths_finished`
+- `validate_install_started`
+- `validate_install_finished`
 - `configure_started`
 - `configure_finished`
 - `set_ssh_started`
@@ -969,13 +995,13 @@ Current important outputs:
 - [bin/nbns-netbsd4be/nbns-advertiser](bin/nbns-netbsd4be/nbns-advertiser)
 
 Current active deploy artifact sizes:
-- NetBSD 6 `smbd`: about `11M`
-- NetBSD 6 `mdns-advertiser`: about `249K`
+- NetBSD 6 `smbd`: about `9.7M`
+- NetBSD 6 `mdns-advertiser`: about `265K`
 - NetBSD 6 `nbns-advertiser`: about `184K`
-- NetBSD 4 little-endian `smbd`: about `11M`
-- NetBSD 4 big-endian `smbd`: about `11M`
-- NetBSD 4 little-endian `mdns-advertiser`: about `186K`
-- NetBSD 4 big-endian `mdns-advertiser`: about `185K`
+- NetBSD 4 little-endian `smbd`: about `9.7M`
+- NetBSD 4 big-endian `smbd`: about `9.7M`
+- NetBSD 4 little-endian `mdns-advertiser`: about `192K`
+- NetBSD 4 big-endian `mdns-advertiser`: about `191K`
 - NetBSD 4 little-endian `nbns-advertiser`: about `113K`
 - NetBSD 4 big-endian `nbns-advertiser`: about `112K`
 
@@ -992,19 +1018,21 @@ Current validated maintainer flows:
 - NetBSD 7 full path:
   - [build/download.sh](build/download.sh)
   - [build/bootstrap.sh](build/bootstrap.sh)
-  - [build/downloadsamba4.sh](build/downloadsamba4.sh)
-  - [build/samba4.sh](build/samba4.sh)
+  - [build/downloadsamba4x.sh](build/downloadsamba4x.sh)
+  - [build/samba4x.sh](build/samba4x.sh)
   - [build/mdns.sh](build/mdns.sh)
   - [build/nbns.sh](build/nbns.sh)
 - NetBSD 4 path:
   - [build/downloadoldle.sh](build/downloadoldle.sh)
   - [build/bootstrapoldle.sh](build/bootstrapoldle.sh)
+  - [build/downloadoldbe.sh](build/downloadoldbe.sh)
+  - [build/bootstrapoldbe.sh](build/bootstrapoldbe.sh)
   - [build/hellooldle.sh](build/hellooldle.sh)
   - [build/hellooldbe.sh](build/hellooldbe.sh)
-  - [build/downloadsamba4oldle.sh](build/downloadsamba4oldle.sh)
-  - [build/downloadsamba4oldbe.sh](build/downloadsamba4oldbe.sh)
-  - [build/samba4oldle.sh](build/samba4oldle.sh)
-  - [build/samba4oldbe.sh](build/samba4oldbe.sh)
+  - [build/downloadsamba4xoldle.sh](build/downloadsamba4xoldle.sh)
+  - [build/downloadsamba4xoldbe.sh](build/downloadsamba4xoldbe.sh)
+  - [build/samba4xoldle.sh](build/samba4xoldle.sh)
+  - [build/samba4xoldbe.sh](build/samba4xoldbe.sh)
   - [build/mdnsoldle.sh](build/mdnsoldle.sh)
   - [build/mdnsoldbe.sh](build/mdnsoldbe.sh)
   - [build/nbnsoldle.sh](build/nbnsoldle.sh)
@@ -1080,7 +1108,7 @@ dns-sd -B _smb._tcp local.
 Resolve the SMB service:
 
 ```bash
-dns-sd -L "Time Capsule Samba 4" _smb._tcp local.
+dns-sd -L "<advertised-instance-name>" _smb._tcp local.
 ```
 
 List shares as authenticated user:
@@ -1092,12 +1120,12 @@ smbutil view //admin:<password>@<configured-or-advertised-host>
 Mount the share:
 
 ```bash
-mount_smbfs //admin:<password>@<configured-or-advertised-host>/Data /tmp/tc-auth-mount
+mount_smbfs //admin:<password>@<configured-or-advertised-host>/<share-name> /tmp/tc-auth-mount
 ```
 
 Current expected result:
 - `IPC$`
-- `Data`
+- at least one `MaSt`-derived share name
 
 Expected negative test:
 
@@ -1121,7 +1149,7 @@ The current system is no longer just an experiment:
 - can be manually reactivated after reboot on tested NetBSD 4 gen1 hardware
 - advertises itself over Bonjour
 - authenticates as `admin`
-- serves the internal disk through Samba 4.8
+- serves the internal disk through Samba 4.24.1
 - supports Time Machine via `vfs_fruit`
 
 The main remaining “nice to have” work is polish, not core functionality.
