@@ -123,7 +123,7 @@ Run:
 .venv/bin/tcapsule deploy
 ```
 
-This is the installation step. It validates the checked-in binaries, copies the payload and boot files to the Time Capsule, and sets up the Samba password files.
+This step installs (or updates) Samba onto the device. It validates the checked-in binaries, copies the payload and boot files to the Time Capsule, and sets up the Samba password files. You can run `deploy` for a new version to update.
 
 On NetBSD 6 devices, `deploy` then reboots the device so the new runtime comes up cleanly.
 On NetBSD 4 devices, `deploy` instead activates the new runtime immediately without a reboot. Tested older devices still need `tcapsule activate` after later reboots.
