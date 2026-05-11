@@ -1,14 +1,28 @@
 from __future__ import annotations
 
 import shlex
+import shutil
 import socket
 import subprocess
 
 
+def find_command(name: str) -> str | None:
+    return shutil.which(name)
+
+
 def command_exists(name: str) -> bool:
+    if find_command(name):
+        return True
     return subprocess.run(
         ["/bin/sh", "-c", f"command -v {shlex.quote(name)} >/dev/null 2>&1"]
     ).returncode == 0
+
+
+def require_command(name: str, message: str) -> str:
+    path = find_command(name)
+    if path:
+        return path
+    raise RuntimeError(message)
 
 
 def tcp_open(host: str, port: int, timeout: float = 2.0) -> bool:

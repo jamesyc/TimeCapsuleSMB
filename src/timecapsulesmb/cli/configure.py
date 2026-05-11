@@ -26,9 +26,10 @@ from timecapsulesmb.core.config import (
     parse_bool,
     write_env_file,
 )
-from timecapsulesmb.cli.context import CommandContext, missing_dependency_message, missing_required_python_module
+from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import wait_for_tcp_port_state
-from timecapsulesmb.cli.runtime import add_config_argument, probe_connection_state
+from timecapsulesmb.cli.runtime import add_config_argument, confirm as confirm_prompt, probe_connection_state
+from timecapsulesmb.core.errors import missing_dependency_message, missing_required_python_module
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.device.compat import DeviceCompatibility, render_compatibility_message
@@ -79,11 +80,7 @@ def prompt(label: str, default: str, secret: bool) -> str:
 
 
 def confirm(prompt_text: str, default_no: bool = False) -> bool:
-    if default_no:
-        answer = input(f"{prompt_text} [y/N]: ").strip().lower()
-        return answer in {"Y", "y", "yes"}
-    answer = input(f"{prompt_text} [Y/n]: ").strip().lower()
-    return answer in {"", "Y", "y", "yes"}
+    return confirm_prompt(prompt_text, default=not default_no, eof_default=False)
 
 
 def list_devices(records) -> None:

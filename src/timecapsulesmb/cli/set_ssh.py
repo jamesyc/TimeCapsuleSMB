@@ -5,8 +5,8 @@ from typing import Callable, Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import wait_for_device_up, wait_for_tcp_port_state
+from timecapsulesmb.cli.runtime import add_config_argument, confirm, load_env_config
 from timecapsulesmb.cli.util import color_red
-from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
 from timecapsulesmb.core.config import ConfigError, extract_host
 from timecapsulesmb.deploy.executor import remote_request_reboot
 from timecapsulesmb.identity import ensure_install_id
@@ -120,21 +120,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.update_fields(ssh_final_reachable=True)
         else:
             command_context.set_stage("prompt_disable_ssh")
-            should_disable = False
-            while True:
-                try:
-                    resp = input("SSH already enabled. Disable? [y/N]: ").strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    print()
-                    resp = ""
-                if resp in {"", "n", "no"}:
-                    command_context.update_fields(set_ssh_action="leave_enabled", ssh_final_reachable=True)
-                    print("Leaving SSH enabled.")
-                    break
-                if resp in {"y", "yes"}:
-                    should_disable = True
-                    break
-                print("Please answer 'y' or 'n'.")
+            should_disable = confirm(
+                "SSH already enabled. Disable?",
+                default=False,
+                eof_default=False,
+                interrupt_default=False,
+            )
+            if not should_disable:
+                command_context.update_fields(set_ssh_action="leave_enabled", ssh_final_reachable=True)
+                print("Leaving SSH enabled.")
 
             if should_disable:
                 command_context.update_fields(set_ssh_action="disable_ssh")

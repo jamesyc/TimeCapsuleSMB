@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import importlib
 import time
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.cli import runtime
 from timecapsulesmb.core.config import ConfigError
-from timecapsulesmb.core.errors import missing_dependency_message, system_exit_message
+from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.telemetry import build_device_os_version
 from timecapsulesmb.telemetry.debug import debug_summary, render_debug_mapping
@@ -21,15 +20,6 @@ if TYPE_CHECKING:
     from timecapsulesmb.device.probe import ProbedDeviceState, RemoteInterfaceProbeResult
     from timecapsulesmb.telemetry import TelemetryClient
     from timecapsulesmb.transport.ssh import SshConnection
-
-
-def missing_required_python_module(module_names: Iterable[str]) -> tuple[str, BaseException] | None:
-    for module_name in module_names:
-        try:
-            importlib.import_module(module_name)
-        except Exception as e:
-            return module_name, e
-    return None
 
 
 COMMAND_VALUE_BLACKLIST = {

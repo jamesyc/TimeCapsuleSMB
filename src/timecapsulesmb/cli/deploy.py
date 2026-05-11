@@ -9,7 +9,7 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import request_reboot_and_wait, verify_managed_runtime_flow
-from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
+from timecapsulesmb.cli.runtime import NonInteractivePromptError, add_config_argument, confirm, load_env_config
 from timecapsulesmb.core.config import DEFAULTS, AppConfig, airport_family_display_name_from_config, parse_bool, shell_quote
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
@@ -247,8 +247,18 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("Deploy will activate Samba immediately without rebooting.")
             print(color_red(NETBSD4_REBOOT_GUIDANCE))
             print(NETBSD4_REBOOT_FOLLOWUP)
-            answer = input("Continue with NetBSD 4 deploy + activation? [y/N]: ").strip().lower()
-            if answer not in {"y", "yes"}:
+            try:
+                proceed = confirm(
+                    "Continue with NetBSD 4 deploy + activation?",
+                    default=False,
+                    noninteractive_message="Running `deploy` requires confirmation when stdin is not interactive. Use `deploy --yes` in a non-interactive environment.",
+                )
+            except NonInteractivePromptError as exc:
+                message = str(exc)
+                print(message)
+                command_context.fail_with_error(message)
+                return 1
+            if not proceed:
                 print("Deployment cancelled.")
                 command_context.cancel_with_error("Cancelled by user at NetBSD4 deploy confirmation prompt.")
                 return 0
@@ -336,8 +346,18 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if not args.yes:
             device_name = airport_family_display_name_from_config(config)
-            answer = input(f"This will reboot the {device_name} now. Continue? [Y/n]: ").strip().lower()
-            if answer not in {"", "y", "yes"}:
+            try:
+                proceed = confirm(
+                    f"This will reboot the {device_name} now. Continue?",
+                    default=True,
+                    noninteractive_message="Running `deploy` with reboot requires confirmation when stdin is not interactive. Use `deploy --yes` to skip the prompt or `deploy --no-reboot`.",
+                )
+            except NonInteractivePromptError as exc:
+                message = str(exc)
+                print(message)
+                command_context.fail_with_error(message)
+                return 1
+            if not proceed:
                 print("Deployment complete without reboot.")
                 command_context.cancel_with_error("Cancelled by user at reboot confirmation prompt.")
                 return 0

@@ -5,7 +5,7 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import verify_managed_runtime_flow
-from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
+from timecapsulesmb.cli.runtime import NonInteractivePromptError, add_config_argument, confirm, load_env_config
 from timecapsulesmb.core.config import airport_exact_display_name_from_config
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.dry_run import format_activation_plan
@@ -61,13 +61,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"This will start the deployed Samba payload on the {device_name}.")
             print(color_red(NETBSD4_REBOOT_GUIDANCE))
             try:
-                answer = input("Continue with NetBSD4 activation? [y/N]: ").strip().lower()
-            except EOFError:
-                message = "Running `activate` requires confirmation when stdin is not interactive. Use `activate --yes` in a non-interactive environment."
+                proceed = confirm(
+                    "Continue with NetBSD4 activation?",
+                    default=False,
+                    noninteractive_message="Running `activate` requires confirmation when stdin is not interactive. Use `activate --yes` in a non-interactive environment.",
+                )
+            except NonInteractivePromptError as exc:
+                message = str(exc)
                 print(message)
                 command_context.fail_with_error(message)
                 return 1
-            if answer not in {"y", "yes"}:
+            if not proceed:
                 print("Activation cancelled.")
                 command_context.cancel_with_error("Cancelled by user at NetBSD4 activation confirmation prompt.")
                 return 0

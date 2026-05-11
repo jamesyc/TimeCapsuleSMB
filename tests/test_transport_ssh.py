@@ -599,7 +599,7 @@ class SSHTransportTests(unittest.TestCase):
             src = Path(tmp.name)
             src.write_bytes(b"hello")
             with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
-                with mock.patch("timecapsulesmb.transport.ssh.shutil.which", return_value="/opt/homebrew/bin/sshpass"):
+                with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/opt/homebrew/bin/sshpass"):
                     with mock.patch(
                         "timecapsulesmb.transport.ssh.subprocess.run",
                         side_effect=[
@@ -615,6 +615,33 @@ class SSHTransportTests(unittest.TestCase):
                                     "/tmp/test-upload",
                                     timeout=10,
                                 )
+        self.assertEqual(subprocess_run_mock.call_count, 2)
+        sleep_mock.assert_called_once_with(1)
+
+    def test_run_ssh_capture_bytes_returns_binary_stdout(self) -> None:
+        payload = b"\x00firmware\xff\n"
+        connection = ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no")
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+            with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/opt/homebrew/bin/sshpass"):
+                with mock.patch(
+                    "timecapsulesmb.transport.ssh.subprocess.run",
+                    return_value=subprocess.CompletedProcess(["sshpass"], 0, stdout=payload, stderr=b""),
+                ):
+                    self.assertEqual(ssh_transport.run_ssh_capture_bytes(connection, "/bin/dd if=/dev/rflash0.raw", timeout=10), payload)
+
+    def test_run_ssh_capture_bytes_retries_transient_permission_denied(self) -> None:
+        connection = ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no")
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+            with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/opt/homebrew/bin/sshpass"):
+                with mock.patch(
+                    "timecapsulesmb.transport.ssh.subprocess.run",
+                    side_effect=[
+                        subprocess.CompletedProcess(["sshpass"], 255, stdout=b"Permission denied, please try again.\n", stderr=b""),
+                        subprocess.CompletedProcess(["sshpass"], 0, stdout=b"ok", stderr=b""),
+                    ],
+                ) as subprocess_run_mock:
+                    with mock.patch("timecapsulesmb.transport.ssh.time.sleep") as sleep_mock:
+                        self.assertEqual(ssh_transport.run_ssh_capture_bytes(connection, "/bin/dd if=/dev/rflash0.raw", timeout=10), b"ok")
         self.assertEqual(subprocess_run_mock.call_count, 2)
         sleep_mock.assert_called_once_with(1)
 
@@ -643,7 +670,7 @@ class SSHTransportTests(unittest.TestCase):
             src.write_bytes(b"hello")
             connection = ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no", remote_has_scp=False)
             with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
-                with mock.patch("timecapsulesmb.transport.ssh.shutil.which", return_value="/opt/homebrew/bin/sshpass"):
+                with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/opt/homebrew/bin/sshpass"):
                     with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=subprocess.TimeoutExpired(["sshpass"], 10)):
                         with self.assertRaises(ssh_transport.ScpError) as exc:
                             ssh_transport.run_scp(connection, src, "/tmp/test-upload", timeout=10)
@@ -660,7 +687,7 @@ class SSHTransportTests(unittest.TestCase):
             connection = ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no")
             with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
                 with mock.patch("timecapsulesmb.transport.ssh.probe_remote_scp_available", return_value=False) as probe_mock:
-                    with mock.patch("timecapsulesmb.transport.ssh.shutil.which", return_value="/opt/homebrew/bin/sshpass"):
+                    with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/opt/homebrew/bin/sshpass"):
                         with mock.patch(
                             "timecapsulesmb.transport.ssh.subprocess.run",
                             return_value=subprocess.CompletedProcess(["sshpass"], 0, stdout=b"", stderr=b""),
@@ -677,7 +704,7 @@ class SSHTransportTests(unittest.TestCase):
             src = Path(tmp.name)
             src.write_bytes(b"hello")
             connection = ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no", remote_has_scp=False)
-            with mock.patch("timecapsulesmb.transport.ssh.shutil.which", return_value=None):
+            with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value=None):
                 with self.assertRaises(ssh_transport.ScpError) as exc:
                     ssh_transport.run_scp(connection, src, "/tmp/test-upload", timeout=10)
         self.assertNotIsInstance(exc.exception, SystemExit)

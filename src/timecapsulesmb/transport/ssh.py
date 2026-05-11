@@ -4,7 +4,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 import shlex
-import shutil
 import subprocess
 import os
 import re
@@ -14,7 +13,7 @@ from pathlib import Path
 from timecapsulesmb.core.errors import missing_dependency_message
 from timecapsulesmb.transport.errors import ScpError, SshCommandTimeout, SshError, TransportError
 
-from .local import tcp_open
+from .local import find_command, tcp_open
 
 
 @dataclass
@@ -226,6 +225,74 @@ def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, t
     return subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr="")
 
 
+def _run_sshpass_ssh(
+    connection: SshConnection,
+    remote_cmd: str,
+    *,
+    input_bytes: bytes | None = None,
+    timeout: int,
+    missing_tool_message: str,
+    timeout_message: str,
+) -> subprocess.CompletedProcess[bytes]:
+    if find_command("sshpass") is None:
+        raise SshError(missing_tool_message)
+    env = dict(os.environ)
+    env["SSHPASS"] = connection.password
+    cmd = ["sshpass", "-e", "ssh", *_normalize_ssh_tokens(connection.ssh_opts), connection.host, remote_cmd]
+    proc: subprocess.CompletedProcess[bytes] | None = None
+    for attempt in range(3):
+        try:
+            proc = subprocess.run(
+                cmd,
+                input=input_bytes,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise SshCommandTimeout(timeout_message) from exc
+        combined_text = (proc.stderr + proc.stdout).decode("utf-8", errors="replace")
+        if proc.returncode == 0 or not _looks_like_transient_ssh_auth_failure(combined_text) or attempt == 2:
+            break
+        time.sleep(1)
+    if proc is None:
+        raise SshError("sshpass ssh command did not run")
+    combined_text = (proc.stderr + proc.stdout).decode("utf-8", errors="replace")
+    transport_error = _extract_ssh_transport_error(combined_text)
+    if transport_error:
+        raise SshError(f"Connecting to the device failed, SSH error: {transport_error}")
+    return proc
+
+
+def run_ssh_capture_bytes(connection: SshConnection, remote_cmd: str, *, timeout: int = 120) -> bytes:
+    """Run a remote command over SSH and return raw stdout bytes.
+
+    This intentionally uses a pipe instead of the pexpect PTY path because
+    firmware bank reads are binary and a PTY can transform byte streams.
+    """
+    proc = _run_sshpass_ssh(
+        connection,
+        remote_cmd,
+        timeout=timeout,
+        missing_tool_message=(
+            "Reading raw firmware banks requires local sshpass. "
+            "Run `.venv/bin/tcapsule bootstrap` to install sshpass, then rerun `.venv/bin/tcapsule flash`."
+        ),
+        timeout_message=(
+            "Timed out waiting for ssh command to finish: "
+            f"{_summarize_remote_command(remote_cmd)}"
+        ),
+    )
+    stderr = proc.stderr.decode("utf-8", errors="replace")
+    stdout_text = proc.stdout.decode("utf-8", errors="replace")
+    if proc.returncode != 0:
+        detail = stderr.strip() or stdout_text.strip() or f"ssh command failed with rc={proc.returncode}"
+        raise SshError(detail)
+    return proc.stdout
+
+
 @contextmanager
 def ssh_local_forward(
     connection: SshConnection,
@@ -358,40 +425,24 @@ def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 1
         _verify_remote_size(connection, src, dest, timeout=30)
         return
 
-    if shutil.which("sshpass") is None:
-        raise ScpError(
-            "Remote scp is unavailable and local sshpass is missing. "
-            "Run `.venv/bin/tcapsule bootstrap` to install sshpass, then rerun deploy."
-        )
-
     remote_cmd = f"/bin/sh -c {shlex.quote('cat > ' + shlex.quote(dest))}"
-    cmd = ["sshpass", "-e", "ssh", *_normalize_ssh_tokens(connection.ssh_opts), connection.host, remote_cmd]
-    env = dict(os.environ)
-    env["SSHPASS"] = connection.password
-    proc = None
-    for attempt in range(3):
-        try:
-            proc = subprocess.run(
-                cmd,
-                input=src.read_bytes(),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                env=env,
-                timeout=timeout,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as e:
-            raise ScpError(f"Timed out copying {src.name} to remote path {dest} via sshpass cat fallback") from e
-        stdout = proc.stdout.decode("utf-8", errors="replace").strip()
-        if proc.returncode == 0 or not _looks_like_transient_ssh_auth_failure(stdout) or attempt == 2:
-            break
-        time.sleep(1)
-    if proc is None:
-        raise ScpError(f"sshpass cat fallback upload failed for {src.name} to remote path {dest}")
+    try:
+        proc = _run_sshpass_ssh(
+            connection,
+            remote_cmd,
+            input_bytes=src.read_bytes(),
+            timeout=timeout,
+            missing_tool_message=(
+                "Remote scp is unavailable and local sshpass is missing. "
+                "Run `.venv/bin/tcapsule bootstrap` to install sshpass, then rerun deploy."
+            ),
+            timeout_message=f"Timed out copying {src.name} to remote path {dest} via sshpass cat fallback",
+        )
+    except SshCommandTimeout as exc:
+        raise ScpError(str(exc)) from exc
+    except SshError as exc:
+        raise ScpError(str(exc)) from exc
     if proc.returncode != 0:
-        stdout = proc.stdout.decode("utf-8", errors="replace").strip()
-        transport_error = _extract_ssh_transport_error(stdout)
-        if transport_error:
-            raise ScpError(f"Connecting to the device failed, SSH error: {transport_error}")
+        stdout = (proc.stderr + proc.stdout).decode("utf-8", errors="replace").strip()
         raise ScpError(stdout or f"sshpass cat fallback upload failed for {src.name} to remote path {dest} with rc={proc.returncode}")
     _verify_remote_size(connection, src, dest, timeout=30)

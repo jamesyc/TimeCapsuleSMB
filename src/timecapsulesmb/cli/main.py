@@ -4,7 +4,7 @@ import argparse
 import sys
 from typing import Optional
 
-from . import activate, bootstrap, configure, deploy, discover, doctor, fsck, paths, set_ssh, repair_xattrs, uninstall, validate_install
+from . import activate, bootstrap, configure, deploy, discover, doctor, flash, fsck, paths, set_ssh, repair_xattrs, uninstall, validate_install
 from timecapsulesmb.core.paths import DistributionRootError
 from .version_check import check_client_version, render_version_block_message
 
@@ -16,6 +16,7 @@ COMMANDS = {
     "deploy": deploy.main,
     "discover": discover.main,
     "doctor": doctor.main,
+    "flash": flash.main,
     "fsck": fsck.main,
     "paths": paths.main,
     "set-ssh": set_ssh.main,

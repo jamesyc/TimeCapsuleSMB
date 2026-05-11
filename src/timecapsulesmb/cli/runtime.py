@@ -27,6 +27,10 @@ from timecapsulesmb.device.probe import (
 from timecapsulesmb.transport.ssh import SshConnection
 
 
+class NonInteractivePromptError(RuntimeError):
+    """Raised when a required confirmation cannot be read from stdin."""
+
+
 @dataclass(frozen=True)
 class ManagedTargetState:
     connection: SshConnection
@@ -45,6 +49,40 @@ def add_config_argument(parser: argparse.ArgumentParser) -> None:
 
 def config_path_from_args(args: argparse.Namespace) -> Path | None:
     return getattr(args, "config", None)
+
+
+def _confirm_suffix(default: bool) -> str:
+    return "[Y/n]" if default else "[y/N]"
+
+
+def confirm(
+    prompt_text: str,
+    *,
+    default: bool,
+    eof_default: bool | None = None,
+    interrupt_default: bool | None = None,
+    noninteractive_message: str | None = None,
+) -> bool:
+    while True:
+        try:
+            answer = input(f"{prompt_text} {_confirm_suffix(default)}: ").strip().lower()
+        except EOFError as exc:
+            if eof_default is not None:
+                return eof_default
+            raise NonInteractivePromptError(noninteractive_message or "Confirmation requires interactive stdin.") from exc
+        except KeyboardInterrupt:
+            if interrupt_default is not None:
+                print()
+                return interrupt_default
+            raise
+
+        if not answer:
+            return default
+        if answer in {"y", "yes"}:
+            return True
+        if answer in {"n", "no"}:
+            return False
+        print("Please answer 'y' or 'n'.")
 
 
 def load_config_from_args(

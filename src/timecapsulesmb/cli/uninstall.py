@@ -6,7 +6,7 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import request_reboot_and_wait
-from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
+from timecapsulesmb.cli.runtime import NonInteractivePromptError, add_config_argument, confirm, load_env_config
 from timecapsulesmb.core.config import airport_exact_display_name_from_config
 from timecapsulesmb.deploy.dry_run import format_uninstall_plan, uninstall_plan_to_jsonable
 from timecapsulesmb.deploy.executor import remote_uninstall_payload
@@ -101,8 +101,18 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if not args.yes:
             command_context.set_stage("confirm_reboot")
-            answer = input(f"This will reboot the {device_name} now. Continue? [Y/n]: ").strip().lower()
-            if answer not in {"", "y", "yes"}:
+            try:
+                proceed = confirm(
+                    f"This will reboot the {device_name} now. Continue?",
+                    default=True,
+                    noninteractive_message="Running `uninstall` with reboot requires confirmation when stdin is not interactive. Use `uninstall --yes` to skip the prompt or `uninstall --no-reboot`.",
+                )
+            except NonInteractivePromptError as exc:
+                message = str(exc)
+                print(message)
+                command_context.fail_with_error(message)
+                return 1
+            if not proceed:
                 print(f"Skipped reboot. The {device_name} may need a manual reboot to fully clear running processes.")
                 command_context.succeed()
                 return 0

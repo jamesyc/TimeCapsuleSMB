@@ -7,7 +7,7 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import observe_reboot_cycle
-from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
+from timecapsulesmb.cli.runtime import NonInteractivePromptError, add_config_argument, confirm, load_env_config
 from timecapsulesmb.core.config import airport_exact_display_name_from_config
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.device.processes import render_direct_pkill9_by_ucomm, render_direct_pkill9_watchdog
@@ -144,8 +144,18 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if not args.yes:
             command_context.set_stage("confirm_fsck")
-            answer = input(f"This will stop file sharing, unmount the disk, run fsck_hfs, and reboot the {device_name}. Continue? [Y/n]: ").strip().lower()
-            if answer not in {"", "y", "yes"}:
+            try:
+                proceed = confirm(
+                    f"This will stop file sharing, unmount the disk, run fsck_hfs, and reboot the {device_name}. Continue?",
+                    default=True,
+                    noninteractive_message="Running `fsck` requires confirmation when stdin is not interactive. Use `fsck --yes` in a non-interactive environment.",
+                )
+            except NonInteractivePromptError as exc:
+                message = str(exc)
+                print(message)
+                command_context.fail_with_error(message)
+                return 1
+            if not proceed:
                 print("fsck cancelled.")
                 command_context.cancel_with_error("Cancelled by user at fsck confirmation prompt.")
                 return 0
