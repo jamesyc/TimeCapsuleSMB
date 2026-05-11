@@ -699,6 +699,7 @@ class StorageRuntimeTests(unittest.TestCase):
                     printf 'instance=%s\\n' "$(tc_normalize_mdns_instance_name {shlex.quote(system_name)})"
                     printf 'host=%s\\n' "$(tc_normalize_mdns_host_label {shlex.quote(hostname)})"
                     printf 'netbios=%s\\n' "$(tc_normalize_netbios_name {shlex.quote(hostname)})"
+                    printf 'server=%s\\n' "$(tc_normalize_server_string {shlex.quote("  James's AirPort Time Capsule  ")})"
                     printf 'punct_netbios=%s\\n' "$(tc_normalize_netbios_name '---')"
                     """
                 )
@@ -712,6 +713,7 @@ class StorageRuntimeTests(unittest.TestCase):
         self.assertEqual(lines["instance"], normalize_runtime_mdns_instance_name(system_name))
         self.assertEqual(lines["host"], normalize_runtime_mdns_host_label(hostname))
         self.assertEqual(lines["netbios"], normalize_runtime_netbios_name(hostname))
+        self.assertEqual(lines["server"], "James's AirPort Time Capsule")
         self.assertEqual(lines["punct_netbios"], "")
 
     def test_common_runtime_identity_uses_final_netbios_fallback_for_punctuation_only_names(self) -> None:
@@ -747,7 +749,7 @@ class StorageRuntimeTests(unittest.TestCase):
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("identity=极端 时间胶囊|timecapsule|TimeCapsule\n", proc.stdout)
-        self.assertIn("runtime identity: mdns_instance=极端 时间胶囊 mdns_host=timecapsule netbios=TimeCapsule", proc.stdout)
+        self.assertIn("runtime identity: mdns_instance=极端 时间胶囊 mdns_host=timecapsule netbios=TimeCapsule server_string=极端 时间胶囊", proc.stdout)
 
     def test_common_runtime_identity_overwrites_legacy_values_and_feeds_runtime_args(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -780,6 +782,7 @@ class StorageRuntimeTests(unittest.TestCase):
                     MDNS_INSTANCE_NAME=LegacyInstance
                     MDNS_HOST_LABEL=legacy-host
                     SMB_NETBIOS_NAME=LegacyNetbios
+                    SMB_SERVER_STRING=LegacyServer
                     NBNS_ENABLED=1
                     tc_init_runtime_env
                     mkdir -p "$RAM_ETC" "$RAM_VAR"
@@ -822,13 +825,15 @@ class StorageRuntimeTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("identity=James's AirPort Time Capsule|time-capsule|TimeCapsule", proc.stdout)
         self.assertIn("netbios name = TimeCapsule\n", proc.stdout)
+        self.assertIn("server string = James's AirPort Time Capsule\n", proc.stdout)
         self.assertIn("--instance James's AirPort Time Capsule", proc.stdout)
         self.assertIn("--host time-capsule", proc.stdout)
         self.assertIn("nbns_args=--name TimeCapsule --ipv4 192.168.1.2", proc.stdout)
-        self.assertIn("runtime identity: mdns_instance=James's AirPort Time Capsule mdns_host=time-capsule netbios=TimeCapsule", proc.stdout)
+        self.assertIn("runtime identity: mdns_instance=James's AirPort Time Capsule mdns_host=time-capsule netbios=TimeCapsule server_string=James's AirPort Time Capsule", proc.stdout)
         self.assertNotIn("LegacyInstance", proc.stdout)
         self.assertNotIn("legacy-host", proc.stdout)
         self.assertNotIn("LegacyNetbios", proc.stdout)
+        self.assertNotIn("LegacyServer", proc.stdout)
 
     def test_deployment_plan_uses_flash_pointer_and_single_private_payload(self) -> None:
         plan = build_deployment_plan(

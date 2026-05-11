@@ -54,6 +54,7 @@ TC_SAMBA_VM_BUFCACHE=5
 TC_MDNS_CAPTURE_PID=
 TC_APPLE_MDNS_SNAPSHOT_START=
 TC_RUNTIME_IDENTITY_READY=
+SMB_SERVER_STRING=
 
 LEGACY_PREFIX_NETBSD7=/root/tc-netbsd7
 LEGACY_PREFIX_NETBSD4=/root/tc-netbsd4
@@ -314,6 +315,13 @@ tc_normalize_netbios_name() {
     esac
 }
 
+tc_normalize_server_string() {
+    printf '%s\n' "$1" \
+        | sed -n '1p' \
+        | sed 's/[[:cntrl:]]/-/g;s/^[[:space:]]*//;s/[[:space:]]*$//' \
+        | sed 's/^\(.\{1,255\}\).*/\1/'
+}
+
 tc_init_runtime_identity() {
     runtime_system_name=$(get_airport_system_name || true)
     runtime_hostname=$(/bin/hostname 2>/dev/null | sed -n '1p' || true)
@@ -333,11 +341,15 @@ tc_init_runtime_identity() {
     fi
     [ -n "$runtime_netbios_name" ] || runtime_netbios_name=TimeCapsule
 
+    runtime_server_string=$(tc_normalize_server_string "$runtime_system_name" || true)
+    [ -n "$runtime_server_string" ] || runtime_server_string=$runtime_instance_name
+
     MDNS_INSTANCE_NAME=$runtime_instance_name
     MDNS_HOST_LABEL=$runtime_host_label
     SMB_NETBIOS_NAME=$runtime_netbios_name
+    SMB_SERVER_STRING=$runtime_server_string
     TC_RUNTIME_IDENTITY_READY=1
-    tc_log "runtime identity: mdns_instance=$MDNS_INSTANCE_NAME mdns_host=$MDNS_HOST_LABEL netbios=$SMB_NETBIOS_NAME"
+    tc_log "runtime identity: mdns_instance=$MDNS_INSTANCE_NAME mdns_host=$MDNS_HOST_LABEL netbios=$SMB_NETBIOS_NAME server_string=$SMB_SERVER_STRING"
 }
 
 tc_ensure_runtime_identity() {
@@ -1565,7 +1577,7 @@ tc_generate_smb_conf() {
 [global]
     netbios name = $SMB_NETBIOS_NAME
     workgroup = WORKGROUP
-    server string = Time Capsule Samba 4
+    server string = $SMB_SERVER_STRING
     interfaces = $bind_interfaces
     bind interfaces only = yes
     security = user
