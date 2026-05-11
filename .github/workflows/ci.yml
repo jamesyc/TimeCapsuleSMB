@@ -15,7 +15,9 @@ jobs:
           - ubuntu-latest
           - macos-latest
         python-version:
+          - "3.9"
           - "3.12"
+          - "3.14"
 
     steps:
       - name: Check out repository

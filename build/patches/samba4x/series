@@ -1,0 +1,86 @@
+# Cross-build and static smbd environment.
+# Samba 4.24 marks some generated tools as hostcc but still lets waf inherit
+# target compiler/linker settings. Keep those host tools on the VM compiler,
+# while applying static link flags only to the smbd binary we deploy.
+0001-waf-cross-static-env.patch|waf hostcc and static smbd environment
+
+# NetBSD runtime compatibility.
+# NetBSD4 lacks newer libc symbols, and the runtime kernels are older than the
+# SDKs used to compile these binaries. Keep normal file serving on path-based
+# VFS fallbacks instead of relying on runtime *at/openat2/fdopendir support.
+0002-netbsd4-libreplace-compat.patch|NetBSD4 libc compatibility shims
+0003-netbsd-vfs-runtime-fallbacks.patch|Time Capsule VFS runtime syscall fallbacks
+# NetBSD4 can lose Samba's cached is_directory flag even when stat still says
+# the handle is a directory; recover before rejecting SMB2 QUERY_DIRECTORY.
+0004-netbsd4-query-directory-stat-fallback.patch|NetBSD4 SMB2 directory stat fallback
+
+# Single-binary smbd behavior.
+# Finder and smbclient enumerate shares through IPC$ srvsvc. Embed that one
+# pipe in smbd because the Time Capsule RAM-disk deployment cannot rely on
+# external DCE/RPC helper binaries living on an Apple-managed HFS disk.
+0005-smbd-embedded-srvsvc.patch|embedded srvsvc named pipe support
+# smbd -V exits through shared option parsing before server.c can clean up.
+0006-smbd-version-no-dangling-frame.patch|clean smbd version exit
+# Reopened TDB handles should not leak into any helper exec path.
+0007-tdb-cloexec-compat.patch|TDB close-on-exec compatibility
+
+# No-pthread appliance runtime behavior.
+# Time Capsule kernels do not support the pthread behavior Samba 4.24 expects.
+# Host long-lived notifyd/cleanupd/scavenger work in the smbd parent event loop
+# and avoid helper forks that hit raw abort paths on these targets.
+0008-no-pthread-smbd-daemons-in-parent.patch|host smbd helper services in the parent event loop
+# Avoid pthreadpool-backed messaging paths while preserving Samba's watched
+# SMBX database wrappers; client/session callers still require watched records.
+0009-no-pthread-messaging-and-db-fallbacks.patch|no-pthread messaging fallbacks
+# The static appliance build does not launch winbindd; keep local mappings and
+# skip libwbclient lookups for the remaining Windows SIDs during startup.
+0010-no-pthread-local-sid-to-unixids.patch|local SID mapping without winbindd
+# smbXsrv_version_global_init retains global DB state after returning; parent
+# it to an explicit named context instead of the process-global talloc stack.
+0011-no-pthread-smbxsrv-version-global-parent.patch|explicit parent for retained SMBX version state
+# tevent's pooled request, call-depth, and threaded-context paths assume
+# pthread/TLS behavior that the appliance build removes after configure.
+0012-no-pthread-tevent-fallbacks.patch|tevent fallbacks for no-pthread builds
+# Configure may see pthread/TLS on the VM before the target cache is scrubbed;
+# make the final no-pthread build use process-global storage for __thread uses.
+0013-no-pthread-tls-fallbacks.patch|no-pthread TLS configure and __thread fallback
+# The no-pthread talloc stack is process-global, so forked smbd children inherit
+# parent event-loop stack tracking. Drop inherited tracking after fork and
+# disarm normal-exit diagnostics once smbd has completed clean shutdown.
+0022-no-pthread-talloc-stack-fork-exit-cleanup.patch|no-pthread talloc stack fork and exit cleanup
+
+# Static build compile fixes.
+# This reduced nonshared build can expose duplicate typedefs through multiple
+# include paths; guard the typedefs instead of relying on fragile include order.
+0014-typedef-guards.patch|duplicate typedef guards
+# NetBSD4 lacks posix_spawn, but local named pipe and print queue code still
+# compile into the static smbd target even though printing is not enabled.
+0015-netbsd-posix-spawn-fallbacks.patch|NetBSD posix_spawn fallbacks
+# Samba's bundled popt fallback collides with libc glob_pattern_p in the static
+# NetBSD lanes; rename the bundled private symbol.
+0016-popt-glob-symbol-rename.patch|bundled popt glob symbol rename
+# Time Capsule lock databases live on a tiny RAM disk. Let smb.conf force
+# volatile dbwrap TDB deletes onto the global freelist instead of retaining
+# thousands of per-hash-chain dead records after Time Machine closes files.
+0017-dbwrap-tdb-max-dead-config.patch|configurable dbwrap TDB max-dead records
+# macOS and Time Machine probe stream/ACL xattrs on untouched files. When
+# xattr_tdb backs that metadata, a missing row must behave like an empty xattr
+# set, not EINVAL. This is a real macOS interoperability fix, not a NetBSD shim,
+# and likely applies to future Samba versions that still use xattr_tdb here.
+0018-xattr-tdb-missing-row-empty-xattrs.patch|xattr_tdb missing rows behave like empty xattrs
+# Time Machine durable handles on HFS sparsebundle bands should not treat
+# allocation-block count drift as file identity loss after reconnect.
+0019-time-machine-durable-st-ex-blocks.patch|allow durable reconnect across HFS allocation-block drift
+# Time Capsule kernels can hang in native NetBSD getifaddrs(); force Samba's
+# interface enumeration through libreplace's ioctl-based fallback.
+0020-netbsd-getifaddrs-fallback.patch|force ioctl-based interface enumeration on NetBSD
+# macOS Finder and Time Machine stat AFP_AfpInfo streams during ordinary copy
+# and sparsebundle work. Samba 4.24's fruit fstatat path accidentally
+# dereferences the yet-to-be-created no-stream filename copy, crashing the smbd
+# client process. Keep this until upstream fixes vfs_fruit.
+0021-vfs-fruit-fstatat-meta-stream-name.patch|fix vfs_fruit AFP_AfpInfo fstatat NULL filename crash
+# Time Capsule payload logs live on Apple-managed HFS, where root-created
+# directories can report owner 4294967295 and fail Samba's strict corepath
+# setup. Relax only the appliance core directory creation so panics produce
+# disk-backed cores under logs/cores/smbd.
+0023-time-capsule-corepath-hfs-owner.patch|allow HFS-backed smbd corepath setup

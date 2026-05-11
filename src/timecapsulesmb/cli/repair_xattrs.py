@@ -6,8 +6,9 @@ from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import load_env_config
+from timecapsulesmb.cli.runtime import add_config_argument, load_optional_env_config
 from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.repair_xattrs import (
     ACTION_CLEAR_ARCH_FLAG,
     ACTION_FIX_PERMISSIONS,
@@ -91,6 +92,16 @@ def confirm(prompt: str) -> bool:
 
 
 def run_repair(args: argparse.Namespace, command_context: CommandContext, config: AppConfig) -> int:
+    command_context.set_stage("resolve_scan_root")
+    command_context.update_fields(
+        dry_run=args.dry_run,
+        recursive=args.recursive,
+        max_depth=args.max_depth,
+        include_hidden=args.include_hidden,
+        include_time_machine=args.include_time_machine,
+        fix_permissions=args.fix_permissions,
+        explicit_path=args.path is not None,
+    )
     if args.path is None:
         try:
             root = default_share_path_from_config(
@@ -110,6 +121,8 @@ def run_repair(args: argparse.Namespace, command_context: CommandContext, config
         raise SystemExit(str(exc)) from exc
 
     summary = RepairSummary()
+    command_context.update_fields(repair_root=str(root))
+    command_context.set_stage("scan_findings")
     print(f"Scanning {root}")
     try:
         findings = find_findings(
@@ -127,6 +140,16 @@ def run_repair(args: argparse.Namespace, command_context: CommandContext, config
         raise SystemExit(str(exc)) from exc
     repairs = actionable_findings(findings)
     candidates = [finding_to_candidate(finding) for finding in repairs]
+    command_context.update_fields(
+        scanned_paths=summary.scanned,
+        scanned_files=summary.scanned_files,
+        scanned_dirs=summary.scanned_dirs,
+        skipped_paths=summary.skipped,
+        unreadable_xattrs=summary.unreadable,
+        finding_count=len(findings),
+        repairable_count=len(candidates),
+        permission_repairable=summary.permission_repairable,
+    )
 
     if not findings:
         print("No repairable files found.")
@@ -134,6 +157,7 @@ def run_repair(args: argparse.Namespace, command_context: CommandContext, config
         command_context.succeed()
         return 0
 
+    command_context.set_stage("report_findings")
     print_diagnostics(findings, verbose=args.verbose)
     if candidates:
         print_candidates(candidates, dry_run=args.dry_run)
@@ -150,12 +174,14 @@ def run_repair(args: argparse.Namespace, command_context: CommandContext, config
         command_context.fail_with_error(build_repair_report(findings))
         return 1
 
+    command_context.set_stage("confirm_repair")
     if not args.yes and not confirm(f"Repair {len(candidates)} paths with known-safe fixes? [y/N]: "):
         print("No changes made.")
         print_summary(summary, dry_run=True)
         command_context.fail_with_error(build_repair_report(findings))
         return 0
 
+    command_context.set_stage("repair_findings")
     failed_findings: list[RepairFinding] = []
     for finding, candidate in zip(repairs, candidates):
         print(f"Repairing: {candidate.path}")
@@ -174,6 +200,7 @@ def run_repair(args: argparse.Namespace, command_context: CommandContext, config
                 print(f"FAIL repair did not fix detected issue: {candidate.path}")
 
     unresolved = unresolved_findings_after_success(findings) + failed_findings
+    command_context.update_fields(repaired_count=summary.repaired, repair_failed_count=summary.failed)
     print_summary(summary, dry_run=False)
     if unresolved:
         command_context.fail_with_error(build_repair_report(findings, failed=unresolved))
@@ -184,6 +211,7 @@ def run_repair(args: argparse.Namespace, command_context: CommandContext, config
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Repair files whose SMB xattr metadata is broken by clearing the macOS arch flag.")
+    add_config_argument(parser)
     parser.add_argument("--path", type=Path, default=None, help="Mounted SMB share path or subdirectory to scan. Defaults to the mounted SMB share matching .env.")
     parser.add_argument("--dry-run", action="store_true", help="Only scan and report files; do not prompt or repair")
     parser.add_argument("--yes", action="store_true", help="Repair without prompting")
@@ -200,15 +228,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         parser.error("--dry-run and --yes are mutually exclusive")
     if args.max_depth is not None and args.max_depth < 0:
         parser.error("--max-depth must be non-negative")
-    if sys.platform != "darwin":
-        raise SystemExit("repair-xattrs must be run on macOS because it uses xattr/chflags on the mounted SMB share.")
 
-    try:
-        config = load_env_config()
-    except (OSError, SystemExit):
-        config = AppConfig.missing()
+    ensure_install_id()
+    config = load_optional_env_config(env_path=args.config)
     telemetry = TelemetryClient.from_config(config)
     with CommandContext(telemetry, "repair-xattrs", "repair_xattrs_started", "repair_xattrs_finished", config=config, args=args) as command_context:
+        command_context.set_stage("platform_check")
+        command_context.update_fields(host_platform=sys.platform)
+        if sys.platform != "darwin":
+            raise SystemExit("repair-xattrs must be run on macOS because it uses xattr/chflags on the mounted SMB share.")
         return run_repair(args, command_context, config)
     return 1
 

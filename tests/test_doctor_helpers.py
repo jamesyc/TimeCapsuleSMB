@@ -18,6 +18,7 @@ from timecapsulesmb.checks.smb_config import (  # noqa: E402
 )
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers  # noqa: E402
 from timecapsulesmb.core.config import AppConfig  # noqa: E402
+from timecapsulesmb.device.probe import RuntimeNamingIdentityProbeResult  # noqa: E402
 
 
 class DoctorHelperTests(unittest.TestCase):
@@ -59,30 +60,35 @@ class DoctorHelperTests(unittest.TestCase):
 
         self.assertEqual(parse_active_share_names(smb_conf), ["Data", "Time Machine"])
 
-    def test_doctor_smb_servers_appends_local_only_for_single_label_hostname(self) -> None:
+    def runtime_identity(self, host_label: str = "timecapsulesamba4") -> RuntimeNamingIdentityProbeResult:
+        return RuntimeNamingIdentityProbeResult(
+            system_name="Time Capsule",
+            hostname=host_label,
+            mdns_instance_name="Time Capsule",
+            mdns_host_label=host_label,
+            netbios_name="TimeCapsule",
+            detail="ok",
+        )
+
+    def test_doctor_smb_servers_uses_probed_host_label(self) -> None:
         base_values = {"TC_HOST": "root@10.0.1.99"}
         self.assertEqual(
-            doctor_smb_servers(AppConfig.from_values({**base_values, "TC_MDNS_HOST_LABEL": "timecapsulesamba4"}), None),
+            doctor_smb_servers(AppConfig.from_values(base_values), None, self.runtime_identity()),
             ["timecapsulesamba4.local", "10.0.1.99"],
         )
         self.assertEqual(
-            doctor_smb_servers(AppConfig.from_values({**base_values, "TC_MDNS_HOST_LABEL": "timecapsulesamba4.local"}), None),
-            ["timecapsulesamba4.local", "10.0.1.99"],
-        )
-        self.assertEqual(
-            doctor_smb_servers(AppConfig.from_values({**base_values, "TC_MDNS_HOST_LABEL": "10.0.1.99"}), None),
+            doctor_smb_servers(AppConfig.from_values(base_values), None),
             ["10.0.1.99"],
         )
 
-    def test_doctor_smb_servers_orders_configured_bonjour_then_ssh_host_and_deduplicates(self) -> None:
+    def test_doctor_smb_servers_orders_probed_bonjour_then_ssh_host_and_deduplicates(self) -> None:
         values = {
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_HOST": "root@10.0.1.99",
         }
         target = BonjourServiceTarget("Time Capsule Samba 4", "timecapsulesamba4.local", 445)
 
         self.assertEqual(
-            doctor_smb_servers(AppConfig.from_values(values), target),
+            doctor_smb_servers(AppConfig.from_values(values), target, self.runtime_identity()),
             ["timecapsulesamba4.local", "10.0.1.99"],
         )
 

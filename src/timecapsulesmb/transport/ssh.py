@@ -11,19 +11,10 @@ import re
 import time
 from pathlib import Path
 
+from timecapsulesmb.core.errors import missing_dependency_message
+from timecapsulesmb.transport.errors import ScpError, SshCommandTimeout, SshError, TransportError
+
 from .local import tcp_open
-
-
-class SshTransportError(SystemExit):
-    """Raised for SSH transport failures with a CLI-ready message.
-
-    This intentionally remains a SystemExit subclass during the migration so
-    existing command boundaries keep their current user-facing behavior.
-    """
-
-
-class SshCommandTimeout(SystemExit):
-    """Raised when the local SSH client times out waiting for command completion."""
 
 
 @dataclass
@@ -49,6 +40,9 @@ SSH_TRANSPORT_ERROR_PATTERNS = (
 
 SSH_CLIENT_NOISE_PATTERNS = (
     re.compile(r"^Warning: Permanently added .+ to the list of known hosts\.$"),
+    re.compile(r"^Warning: No xauth data; using fake authentication data for X11 forwarding\.$"),
+    re.compile(r"^Warning: untrusted X11 forwarding setup failed: .+$"),
+    re.compile(r"^X11 forwarding request failed on channel [0-9]+\.$"),
     re.compile(r"^\*\* WARNING: connection is not using a post-quantum key exchange algorithm\.$"),
     re.compile(r"^\*\* This session may be vulnerable to \"store now, decrypt later\" attacks\.$"),
     re.compile(r"^\*\* The server may need to be upgraded\. See https://openssh\.com/pq\.html$"),
@@ -120,9 +114,7 @@ def _spawn_with_password(cmd: list[str], password: str, *, timeout: int, timeout
     try:
         import pexpect
     except Exception as e:
-        from timecapsulesmb.cli.context import missing_dependency_message
-
-        raise SystemExit(missing_dependency_message("pexpect", e)) from e
+        raise SshError(missing_dependency_message("pexpect", e)) from e
 
     child = pexpect.spawn(cmd[0], cmd[1:], encoding="utf-8", codec_errors="replace", timeout=timeout)
     output: list[str] = []
@@ -227,10 +219,10 @@ def run_ssh(connection: SshConnection, remote_cmd: str, *, check: bool = True, t
         time.sleep(1)
     transport_error = _extract_ssh_transport_error(stdout)
     if transport_error:
-        raise SshTransportError(f"Connecting to the device failed, SSH error: {transport_error}")
+        raise SshError(f"Connecting to the device failed, SSH error: {transport_error}")
     stdout = _strip_ssh_client_noise(stdout)
     if check and rc != 0:
-        raise SystemExit(stdout.strip() or f"ssh command failed with rc={rc}")
+        raise SshError(stdout.strip() or f"ssh command failed with rc={rc}")
     return subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr="")
 
 
@@ -246,9 +238,7 @@ def ssh_local_forward(
     try:
         import pexpect
     except Exception as e:
-        from timecapsulesmb.cli.context import missing_dependency_message
-
-        raise SystemExit(missing_dependency_message("pexpect", e)) from e
+        raise SshError(missing_dependency_message("pexpect", e)) from e
 
     cmd = [
         "ssh",
@@ -277,8 +267,8 @@ def ssh_local_forward(
                 text = "".join(output)
                 transport_error = _extract_ssh_transport_error(text)
                 if transport_error:
-                    raise SshTransportError(f"Connecting to the device failed, SSH error: {transport_error}")
-                raise SystemExit(text.strip() or "ssh tunnel exited before becoming ready")
+                    raise SshError(f"Connecting to the device failed, SSH error: {transport_error}")
+                raise SshError(text.strip() or "ssh tunnel exited before becoming ready")
             else:
                 output.append(child.before or "")
                 if tcp_open("127.0.0.1", local_port, timeout=0.2):
@@ -289,8 +279,8 @@ def ssh_local_forward(
                     continue
                 transport_error = _extract_ssh_transport_error("".join(output))
                 if transport_error:
-                    raise SshTransportError(f"Connecting to the device failed, SSH error: {transport_error}")
-                raise SystemExit(
+                    raise SshError(f"Connecting to the device failed, SSH error: {transport_error}")
+                raise SshError(
                     "Timed out waiting for ssh tunnel to become ready: "
                     f"127.0.0.1:{local_port} -> {remote_host}:{remote_port} via {connection.host}"
                 )
@@ -337,7 +327,7 @@ def _verify_remote_size(connection: SshConnection, src: Path, dest: str, *, time
             return
         if attempt < 2:
             time.sleep(1)
-    raise SystemExit(
+    raise ScpError(
         f"upload verification failed for {src.name} -> {dest}: expected {expected_size} bytes, "
         f"got {actual_size if actual_size is not None else 'unknown'} bytes"
     )
@@ -348,25 +338,28 @@ def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 1
         rc = 1
         stdout = ""
         for attempt in range(3):
-            rc, stdout = _spawn_with_password(
-                cmd,
-                connection.password,
-                timeout=timeout,
-                timeout_message=f"Timed out copying {src.name} to remote path {dest} via scp",
-            )
+            try:
+                rc, stdout = _spawn_with_password(
+                    cmd,
+                    connection.password,
+                    timeout=timeout,
+                    timeout_message=f"Timed out copying {src.name} to remote path {dest} via scp",
+                )
+            except SshCommandTimeout as e:
+                raise ScpError(str(e)) from e
             if rc == 0 or not _looks_like_transient_ssh_auth_failure(stdout) or attempt == 2:
                 break
             time.sleep(1)
         if rc != 0:
             transport_error = _extract_ssh_transport_error(stdout)
             if transport_error:
-                raise SshTransportError(f"Connecting to the device failed, SSH error: {transport_error}")
-            raise SystemExit(stdout.strip() or f"scp failed copying {src.name} to remote path {dest} with rc={rc}")
+                raise ScpError(f"Connecting to the device failed, SSH error: {transport_error}")
+            raise ScpError(stdout.strip() or f"scp failed copying {src.name} to remote path {dest} with rc={rc}")
         _verify_remote_size(connection, src, dest, timeout=30)
         return
 
     if shutil.which("sshpass") is None:
-        raise SystemExit(
+        raise ScpError(
             "Remote scp is unavailable and local sshpass is missing. "
             "Run `.venv/bin/tcapsule bootstrap` to install sshpass, then rerun deploy."
         )
@@ -388,17 +381,17 @@ def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 1
                 check=False,
             )
         except subprocess.TimeoutExpired as e:
-            raise SystemExit(f"Timed out copying {src.name} to remote path {dest} via sshpass cat fallback") from e
+            raise ScpError(f"Timed out copying {src.name} to remote path {dest} via sshpass cat fallback") from e
         stdout = proc.stdout.decode("utf-8", errors="replace").strip()
         if proc.returncode == 0 or not _looks_like_transient_ssh_auth_failure(stdout) or attempt == 2:
             break
         time.sleep(1)
     if proc is None:
-        raise SystemExit(f"sshpass cat fallback upload failed for {src.name} to remote path {dest}")
+        raise ScpError(f"sshpass cat fallback upload failed for {src.name} to remote path {dest}")
     if proc.returncode != 0:
         stdout = proc.stdout.decode("utf-8", errors="replace").strip()
         transport_error = _extract_ssh_transport_error(stdout)
         if transport_error:
-            raise SshTransportError(f"Connecting to the device failed, SSH error: {transport_error}")
-        raise SystemExit(stdout or f"sshpass cat fallback upload failed for {src.name} to remote path {dest} with rc={proc.returncode}")
+            raise ScpError(f"Connecting to the device failed, SSH error: {transport_error}")
+        raise ScpError(stdout or f"sshpass cat fallback upload failed for {src.name} to remote path {dest} with rc={proc.returncode}")
     _verify_remote_size(connection, src, dest, timeout=30)

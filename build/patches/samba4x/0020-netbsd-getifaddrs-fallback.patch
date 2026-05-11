@@ -1,0 +1,32 @@
+diff --git a/lib/replace/wscript b/lib/replace/wscript
+--- a/lib/replace/wscript
++++ b/lib/replace/wscript
+@@ -496,7 +496,13 @@ def configure(conf):
+     conf.CHECK_FUNCS('if_nameindex if_nametoindex strerror_r')
+     conf.CHECK_FUNCS('syslog')
+     conf.CHECK_FUNCS('gai_strerror get_current_dir_name')
+-    conf.CHECK_FUNCS('timegm getifaddrs freeifaddrs mmap setgroups syscall setsid')
++    #
++    # AirPort Time Capsule targets run on older NetBSD kernels than the VM
++    # SDK used for this build. Native NetBSD getifaddrs() can hang on the
++    # appliance during Samba interface enumeration, so do not detect the libc
++    # entry points. Samba will compile libreplace/getifaddrs.c instead.
++    #
++    conf.CHECK_FUNCS('timegm mmap setgroups syscall setsid')
+     conf.CHECK_FUNCS('getgrent_r getgrgid_r getgrnam_r getgrouplist getpagesize')
+     conf.CHECK_FUNCS('getpwent_r getpwnam_r getpwuid_r epoll_create1')
+     conf.CHECK_FUNCS('getprogname')
+@@ -849,7 +855,12 @@ removeea setea
+                     mandatory=True) # lets see if we get a mandatory failure for this one
+ 
+     # look for a method of finding the list of network interfaces
+-    for method in ['HAVE_IFACE_GETIFADDRS', 'HAVE_IFACE_AIX', 'HAVE_IFACE_IFCONF', 'HAVE_IFACE_IFREQ']:
++    #
++    # Keep interface enumeration on ioctl-based libreplace paths. The
++    # HAVE_IFACE_GETIFADDRS method exercises the same native getifaddrs()
++    # runtime path that can hang on Time Capsule devices.
++    #
++    for method in ['HAVE_IFACE_IFCONF', 'HAVE_IFACE_IFREQ', 'HAVE_IFACE_AIX']:
+         bsd_for_strlcpy = ''
+         if strlcpy_in_bsd:
+             bsd_for_strlcpy = ' bsd'

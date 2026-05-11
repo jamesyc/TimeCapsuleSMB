@@ -1,0 +1,78 @@
+diff --git a/lib/dbwrap/dbwrap_tdb.c b/lib/dbwrap/dbwrap_tdb.c
+index 694d785..3b487a7 100644
+--- a/lib/dbwrap/dbwrap_tdb.c
++++ b/lib/dbwrap/dbwrap_tdb.c
+@@ -515,4 +515,13 @@ struct db_context *db_open_tdb(TALLOC_CTX *mem_ctx,
+  fail:
+ 	TALLOC_FREE(result);
+ 	return NULL;
+ }
++
++void db_tdb_set_max_dead(struct db_context *db, int max_dead)
++{
++	struct db_tdb_ctx *db_ctx =
++		talloc_get_type_abort(db->private_data, struct db_tdb_ctx);
++
++	/* Tune TDB's per-hash-chain dead-record cache after open. */
++	tdb_set_max_dead(db_ctx->wtdb->tdb, max_dead);
++}
+diff --git a/lib/dbwrap/dbwrap_tdb.h b/lib/dbwrap/dbwrap_tdb.h
+index 71643ec..20e8f4f 100644
+--- a/lib/dbwrap/dbwrap_tdb.h
++++ b/lib/dbwrap/dbwrap_tdb.h
+@@ -29,7 +29,8 @@ struct db_context *db_open_tdb(TALLOC_CTX *mem_ctx,
+ 			       int hash_size, int tdb_flags,
+ 			       int open_flags, mode_t mode,
+ 			       enum dbwrap_lock_order lock_order,
+ 			       uint64_t dbwrap_flags);
++void db_tdb_set_max_dead(struct db_context *db, int max_dead);
+ 
+ 
+ #endif /* __DBWRAP_TDB_H__ */
+diff --git a/source3/lib/dbwrap/dbwrap_open.c b/source3/lib/dbwrap/dbwrap_open.c
+index 0a020fc..48c6c1b 100644
+--- a/source3/lib/dbwrap/dbwrap_open.c
++++ b/source3/lib/dbwrap/dbwrap_open.c
+@@ -64,8 +64,9 @@ struct db_context *db_open(TALLOC_CTX *mem_ctx,
+ 			   uint64_t dbwrap_flags)
+ {
+ 	struct db_context *result = NULL;
+ 	const char *base;
++	int max_dead;
+ 	struct loadparm_context *lp_ctx = NULL;
+ 
+ 	if ((lock_order != DBWRAP_LOCK_ORDER_NONE) &&
+ 	    !DBWRAP_LOCK_ORDER_VALID(lock_order)) {
+@@ -84,7 +85,21 @@ struct db_context *db_open(TALLOC_CTX *mem_ctx,
+ 				base,
+ 				hash_size);
+ 
++	/*
++	 * TDB_VOLATILE defaults to retaining dead records per hash chain.
++	 * Small volatile lock directories may prefer immediate freelist reuse;
++	 * expose TDB's max-dead knob through Samba's parametric dbwrap options.
++	 */
++	max_dead = lp_parm_int(GLOBAL_SECTION_SNUM,
++			       "dbwrap_tdb_max_dead",
++			       "*",
++			       -1);
++	max_dead = lp_parm_int(GLOBAL_SECTION_SNUM,
++			       "dbwrap_tdb_max_dead",
++			       base,
++			       max_dead);
++
+ 	if (tdb_flags & TDB_CLEAR_IF_FIRST) {
+ 		bool try_readonly = false;
+ 
+ 		if (dbwrap_flags & DBWRAP_FLAG_OPTIMIZE_READONLY_ACCESS) {
+@@ -197,6 +212,10 @@ struct db_context *db_open(TALLOC_CTX *mem_ctx,
+ 				   mode,
+ 				   lock_order,
+ 				   dbwrap_flags);
+ 	talloc_unlink(mem_ctx, lp_ctx);
++
++	if (result != NULL && max_dead >= 0) {
++		db_tdb_set_max_dead(result, max_dead);
++	}
+ 	return result;
+ }

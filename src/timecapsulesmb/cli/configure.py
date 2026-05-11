@@ -7,9 +7,6 @@ from typing import Optional
 
 from timecapsulesmb.configure_defaults import (
     ConfigureValueChoice,
-    apply_device_storage_defaults,
-    derived_name_defaults,
-    derived_prompt_defaults,
     interface_candidate_for_ip,
     interface_target_ips,
     saved_syap_value_for_candidates,
@@ -31,7 +28,8 @@ from timecapsulesmb.core.config import (
 )
 from timecapsulesmb.cli.context import CommandContext, missing_dependency_message, missing_required_python_module
 from timecapsulesmb.cli.flows import wait_for_tcp_port_state
-from timecapsulesmb.cli.runtime import probe_connection_state
+from timecapsulesmb.cli.runtime import add_config_argument, probe_connection_state
+from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.device.compat import DeviceCompatibility, render_compatibility_message
 from timecapsulesmb.device.probe import (
@@ -58,12 +56,8 @@ NO_SAVED_VALUE_HINT_KEYS = {"TC_PASSWORD", *HIDDEN_CONFIG_KEYS}
 REQUIRED_PYTHON_MODULES = ("zeroconf", "pexpect", "ifaddr")
 CONFIGURE_DETAIL_FIELDS = [
     ("TC_NET_IFACE", "Network interface on the device", DEFAULTS["TC_NET_IFACE"], False),
-    ("TC_SHARE_NAME", "SMB share name", DEFAULTS["TC_SHARE_NAME"], False),
     ("TC_SAMBA_USER", "Samba username", DEFAULTS["TC_SAMBA_USER"], False),
-    ("TC_NETBIOS_NAME", "Samba NetBIOS name", DEFAULTS["TC_NETBIOS_NAME"], False),
     ("TC_PAYLOAD_DIR_NAME", "Persistent payload directory name", DEFAULTS["TC_PAYLOAD_DIR_NAME"], False),
-    ("TC_MDNS_INSTANCE_NAME", "mDNS SMB instance name", DEFAULTS["TC_MDNS_INSTANCE_NAME"], False),
-    ("TC_MDNS_HOST_LABEL", "mDNS host label", DEFAULTS["TC_MDNS_HOST_LABEL"], False),
     ("TC_AIRPORT_SYAP", "Airport Utility syAP code", DEFAULTS["TC_AIRPORT_SYAP"], False),
     ("TC_MDNS_DEVICE_MODEL", "mDNS device model hint", DEFAULTS["TC_MDNS_DEVICE_MODEL"], False),
 ]
@@ -287,15 +281,26 @@ def enable_ssh_and_reprobe_for_configure(
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Create or update the local TimeCapsuleSMB .env configuration.")
-    parser.add_argument("--share-use-disk-root", action="store_true", help=argparse.SUPPRESS)
+    add_config_argument(parser)
+    parser.add_argument("--internal-share-use-disk-root", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--share-use-disk-root", dest="internal_share_use_disk_root", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     ensure_install_id()
-    existing = parse_env_file(ENV_PATH)
+    env_path = resolve_app_paths(config_path=args.config).config_path
+    env_exists = env_path.exists()
+    existing = parse_env_file(env_path)
     configure_id = str(uuid.uuid4())
     telemetry_values = dict(existing)
     telemetry_values["TC_CONFIGURE_ID"] = configure_id
-    telemetry = TelemetryClient.from_config(AppConfig.from_values(telemetry_values))
+    telemetry = TelemetryClient.from_config(
+        AppConfig.from_values(
+            telemetry_values,
+            path=env_path,
+            exists=env_exists,
+            file_values=existing if env_exists else {},
+        )
+    )
     values: dict[str, str] = {}
     discovered_airport_syap: Optional[str] = None
     probed_device: DeviceCompatibility | None = None
@@ -322,14 +327,18 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         command_context.set_stage("startup")
         print("This writes a local .env configuration file in this folder. The other tcapsule commands use that file.")
-        print(f"Writing {ENV_PATH}")
+        print(f"Writing {env_path}")
         print(f"Press Enter to accept the [{color_cyan('saved/suggested/default')}] value.")
         print("Most users can just keep the suggested values.\n")
 
         ssh_opts = existing.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"])
         values["TC_SSH_OPTS"] = ssh_opts
-        existing_share_use_disk_root = parse_bool(existing.get("TC_SHARE_USE_DISK_ROOT", DEFAULTS["TC_SHARE_USE_DISK_ROOT"]))
-        values["TC_SHARE_USE_DISK_ROOT"] = "true" if args.share_use_disk_root or existing_share_use_disk_root else "false"
+        existing_internal_share_use_disk_root = parse_bool(
+            existing.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])
+        )
+        values["TC_INTERNAL_SHARE_USE_DISK_ROOT"] = (
+            "true" if args.internal_share_use_disk_root or existing_internal_share_use_disk_root else "false"
+        )
         command_context.set_stage("bonjour_discovery")
         try:
             discovered_record = discover_default_record(existing)
@@ -438,14 +447,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             inferred_model_choice = ConfigureValueChoice(value=probed_device.exact_model, source="probed")
         saved_syap_choice = saved_value_choice(existing, "TC_AIRPORT_SYAP", "Airport Utility syAP code")
         saved_model_choice = saved_value_choice(existing, "TC_MDNS_DEVICE_MODEL", "mDNS device model hint")
-        name_defaults = derived_name_defaults(values, discovered_record, probed_interfaces)
-        if name_defaults is not None:
-            command_context.add_debug_fields(
-                derived_netbios_name=name_defaults.netbios_name,
-                derived_mdns_instance_name=name_defaults.mdns_instance_name,
-                derived_mdns_host_label=name_defaults.mdns_host_label,
-            )
-        prompt_defaults = derived_prompt_defaults(name_defaults)
 
         for key, label, default, secret in CONFIGURE_DETAIL_FIELDS:
             if key == "TC_AIRPORT_SYAP":
@@ -543,15 +544,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.add_debug_fields(selected_net_iface_source="manual_or_default")
                 values[key] = prompt_config_value(existing, key, label, default, secret=secret)
                 continue
-            if key in prompt_defaults:
-                values[key] = prompt_config_value(
-                    existing,
-                    key,
-                    label,
-                    prompt_defaults[key],
-                    secret=secret,
-                )
-                continue
             if key == "TC_MDNS_DEVICE_MODEL":
                 syap_derived_model = infer_mdns_device_model_from_airport_syap(values.get("TC_AIRPORT_SYAP", ""))
                 derived_model_choice = (
@@ -587,16 +579,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                 continue
             values[key] = prompt_config_value(existing, key, label, default, secret=secret)
 
-        apply_device_storage_defaults(values)
         values["TC_CONFIGURE_ID"] = configure_id
         command_context.set_stage("write_env")
-        write_env_file(ENV_PATH, values)
+        write_env_file(env_path, values)
         command_context.update_fields(
             configure_id=configure_id,
             device_syap=values.get("TC_AIRPORT_SYAP"),
             device_model=values.get("TC_MDNS_DEVICE_MODEL"),
         )
-        print(f"\nReview the .env file configuration: wrote {ENV_PATH}")
+        print(f"\nReview the .env file configuration: wrote {env_path}")
         print("Next steps:")
         print("- Deploy this configuration to your Time Capsule/Airport Extreme device, run:")
         print("    .venv/bin/tcapsule deploy")

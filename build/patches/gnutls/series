@@ -1,0 +1,4 @@
+# NetBSD and no-pthread compatibility needed by every Samba4x appliance lane.
+# GnuTLS assumes glibc byteswap names and stores PRNG/FIPS state in TLS by
+# default; the Time Capsule smbd is a static single-threaded appliance binary.
+0001-netbsd-no-pthread-gnutls.patch|NetBSD bswap names and no-pthread TLS state

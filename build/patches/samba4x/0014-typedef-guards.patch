@@ -1,0 +1,162 @@
+diff --git a/source3/include/includes.h b/source3/include/includes.h
+index b80683d..05f16e6 100644
+--- a/source3/include/includes.h
++++ b/source3/include/includes.h
+@@ -204,7 +204,10 @@ struct stat_ex {
+ 	uint32_t	st_ex_iflags;
+ };
+ 
++#ifndef SAMBA_SMB_STRUCT_STAT_TYPEDEF
++#define SAMBA_SMB_STRUCT_STAT_TYPEDEF
+ typedef struct stat_ex SMB_STRUCT_STAT;
++#endif
+ 
+ enum timestamp_set_resolution {
+ 	TIMESTAMP_SET_SECONDS = 0,
+diff --git a/source3/include/vfs.h b/source3/include/vfs.h
+index 3922b63..d6e8aad 100644
+--- a/source3/include/vfs.h
++++ b/source3/include/vfs.h
+@@ -412,6 +412,10 @@
+ struct vfs_handle_struct;
+ struct connection_struct;
+ struct files_struct;
++#ifndef SAMBA_FILES_STRUCT_TYPEDEF
++#define SAMBA_FILES_STRUCT_TYPEDEF
++typedef struct files_struct files_struct;
++#endif
+ struct security_descriptor;
+ struct vfs_statvfs_struct;
+ struct smb_request;
+@@ -435,7 +439,7 @@ struct fsp_lease {
+ 	struct smb2_lease lease;
+ };
+ 
+-typedef struct files_struct {
++struct files_struct {
+ 	struct files_struct *next, *prev;
+ 	uint64_t fnum;
+ 	struct smbXsrv_open *op;
+@@ -554,7 +558,7 @@ typedef struct files_struct {
+ 	 * lock attempts on the same offset.
+ 	 */
+ 	uint64_t lock_failure_offset;
+-} files_struct;
++};
+ 
+ /*
+  * The fsp flags "is_pathref" and "is_fsa"
+diff --git a/source3/param/loadparm.h b/source3/param/loadparm.h
+index 72773a8..9194653 100644
+--- a/source3/param/loadparm.h
++++ b/source3/param/loadparm.h
+@@ -26,8 +26,14 @@
+ #include <regex.h>
+ 
+ /* Forward declarations */
++#ifndef SAMBA_SMB_STRUCT_STAT_TYPEDEF
++#define SAMBA_SMB_STRUCT_STAT_TYPEDEF
+ typedef struct stat_ex SMB_STRUCT_STAT;
++#endif
++#ifndef SAMBA_FILES_STRUCT_TYPEDEF
++#define SAMBA_FILES_STRUCT_TYPEDEF
+ typedef struct files_struct files_struct;
++#endif
+ struct smbd_server_connection;
+ struct security_descriptor;
+ struct loadparm_context;
+diff --git a/third_party/heimdal/lib/base/common_plugin.h b/third_party/heimdal/lib/base/common_plugin.h
+index d7b6bca..54bfc6a 100644
+--- a/third_party/heimdal/lib/base/common_plugin.h
++++ b/third_party/heimdal/lib/base/common_plugin.h
+@@ -61,10 +61,16 @@
+ #endif
+ 
+ /* For krb5 plugins, this is a krb5_context */
++#ifndef HEIMDAL_HEIM_PCONTEXT_TYPEDEF
++#define HEIMDAL_HEIM_PCONTEXT_TYPEDEF
+ typedef struct heim_pcontext_s *heim_pcontext;
++#endif
+ 
++#ifndef HEIMDAL_HEIM_GET_INSTANCE_TYPEDEF
++#define HEIMDAL_HEIM_GET_INSTANCE_TYPEDEF
+ typedef uintptr_t
+ (HEIM_LIB_CALL *heim_get_instance_func_t)(const char *);
++#endif
+ typedef heim_get_instance_func_t krb5_get_instance_t;
+ 
+ /*
+diff --git a/third_party/heimdal/lib/base/heimbase.h b/third_party/heimdal/lib/base/heimbase.h
+index dc86bc8..0096d4e 100644
+--- a/third_party/heimdal/lib/base/heimbase.h
++++ b/third_party/heimdal/lib/base/heimbase.h
+@@ -83,7 +83,10 @@
+ 
+ typedef int32_t heim_error_code;
+ typedef struct heim_context_s *heim_context;
++#ifndef HEIMDAL_HEIM_PCONTEXT_TYPEDEF
++#define HEIMDAL_HEIM_PCONTEXT_TYPEDEF
+ typedef struct heim_pcontext_s *heim_pcontext;
++#endif
+ 
+ typedef void (HEIM_CALLCONV *heim_log_log_func_t)(heim_context,
+                                                   const char *,
+@@ -93,8 +96,11 @@ typedef void (HEIM_CALLCONV *heim_log_close_func_t)(void *);
+ 
+ typedef struct heim_log_facility_s heim_log_facility;
+ 
++#ifndef HEIMDAL_HEIM_GET_INSTANCE_TYPEDEF
++#define HEIMDAL_HEIM_GET_INSTANCE_TYPEDEF
+ typedef uintptr_t
+ (HEIM_LIB_CALL *heim_get_instance_func_t)(const char *);
++#endif
+ 
+ #define HEIM_PLUGIN_INVOKE_ALL 1
+ 
+diff --git a/third_party/heimdal/lib/base/log.c b/third_party/heimdal/lib/base/log.c
+index 9a97276..5a166e4 100644
+--- a/third_party/heimdal/lib/base/log.c
++++ b/third_party/heimdal/lib/base/log.c
+@@ -58,7 +58,10 @@ struct heim_log_facility_s {
+     struct heim_log_facility_internal *val;
+ };
+ 
++#ifndef HEIMDAL_HEIM_PCONTEXT_TYPEDEF
++#define HEIMDAL_HEIM_PCONTEXT_TYPEDEF
+ typedef struct heim_pcontext_s *heim_pcontext;
++#endif
+ typedef struct heim_pconfig *heim_pconfig;
+ struct heim_svc_req_desc_common_s {
+     HEIM_SVC_REQUEST_DESC_COMMON_ELEMENTS;
+diff --git a/third_party/heimdal/lib/krb5/krb5.h b/third_party/heimdal/lib/krb5/krb5.h
+index c291f3d..29b3ebc 100644
+--- a/third_party/heimdal/lib/krb5/krb5.h
++++ b/third_party/heimdal/lib/krb5/krb5.h
+@@ -48,8 +48,11 @@
+ #include <k5e1_err.h>
+ 
+ #include <krb5_asn1.h>
++#ifndef HEIMDAL_KRB5_INT_TYPES_DEFINED
++#define HEIMDAL_KRB5_INT_TYPES_DEFINED
+ typedef Krb5Int32 krb5int32;
+ typedef Krb5UInt32 krb5uint32;
++#endif
+ 
+ /* name confusion with MIT */
+ #ifndef KRB5KDC_ERR_KEY_EXP
+diff --git a/third_party/heimdal/lib/krb5/krb5_locl.h b/third_party/heimdal/lib/krb5/krb5_locl.h
+index 6267922..9e25c65 100644
+--- a/third_party/heimdal/lib/krb5/krb5_locl.h
++++ b/third_party/heimdal/lib/krb5/krb5_locl.h
+@@ -125,8 +125,11 @@ struct mbuf;
+ 
+ 
+ #include <krb5_asn1.h>
++#ifndef HEIMDAL_KRB5_INT_TYPES_DEFINED
++#define HEIMDAL_KRB5_INT_TYPES_DEFINED
+ typedef Krb5Int32 krb5int32;
+ typedef Krb5UInt32 krb5uint32;
++#endif
+ #include <pkinit_asn1.h>
+ 
+ struct send_to_kdc;

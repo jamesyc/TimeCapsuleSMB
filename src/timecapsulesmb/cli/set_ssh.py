@@ -6,9 +6,8 @@ from typing import Callable, Optional
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import wait_for_device_up, wait_for_tcp_port_state
 from timecapsulesmb.cli.util import color_red
-from timecapsulesmb.cli.runtime import load_env_config
-from timecapsulesmb.core.config import extract_host
-from timecapsulesmb.core.errors import system_exit_message
+from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
+from timecapsulesmb.core.config import ConfigError, extract_host
 from timecapsulesmb.deploy.executor import remote_request_reboot
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.integrations.acp import enable_ssh
@@ -56,7 +55,7 @@ def disable_ssh_over_ssh(
             _emit(log, f"Removed 'dbug' via: {command}")
             break
         if _dbug_property_already_absent(out):
-            _emit(log, f"'dbug' already absent via: {command}")
+            _emit(log, f"SSH debug flag 'dbug' already absent via: {command}")
             break
         if _looks_like_ssh_auth_failure(out):
             raise RuntimeError("SSH authentication failed while trying to disable SSH over SSH.")
@@ -69,22 +68,23 @@ def disable_ssh_over_ssh(
         try:
             remote_request_reboot(connection)
         except SshCommandTimeout as exc:
-            _emit(log, f"Reboot request timed out; checking whether the device is rebooting... ({exc})")
+            _emit(log, f"Reboot request timed out; continuing to observe whether the device is rebooting... ({exc})")
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Use the configured device target from .env to enable SSH via ACP or disable SSH over SSH.")
+    add_config_argument(parser)
     args = parser.parse_args(argv)
 
     ensure_install_id()
-    config = load_env_config(defaults={})
+    config = load_env_config(env_path=args.config, defaults={})
     telemetry = TelemetryClient.from_config(config)
     with CommandContext(telemetry, "set-ssh", "set_ssh_started", "set_ssh_finished", config=config, args=args) as command_context:
         command_context.set_stage("load_config")
         try:
             command_context.require_valid_config(profile="set_ssh")
-        except SystemExit as exc:
-            message = system_exit_message(exc) or f"Missing {config.path} settings. Run '.venv/bin/tcapsule configure' first."
+        except ConfigError as exc:
+            message = str(exc) or f"Missing {config.path} settings. Run '.venv/bin/tcapsule configure' first."
             command_context.update_fields(set_ssh_action="missing_config")
             print(message)
             command_context.fail_with_error(message)
@@ -152,16 +152,36 @@ def main(argv: Optional[list[str]] = None) -> int:
                 print("Device is starting reboot now, waiting for it to shut down...")
                 command_context.set_stage("wait_for_ssh_down")
                 if not wait_for_tcp_port_state(acp_host, 22, expected_state=False, service_name="SSH port"):
-                    command_context.succeed()
-                    return 0
+                    message = "SSH did not close after disable/reboot request; disable could not be verified."
+                    command_context.update_fields(
+                        ssh_final_reachable=True,
+                        ssh_disable_persisted=False,
+                        ssh_reboot_observed_down=False,
+                    )
+                    print(color_red("Failed to verify SSH disable:"))
+                    print(message)
+                    command_context.fail_with_error(message)
+                    return 1
                 print("Device is down now, verifying persistence after reboot...")
+                command_context.update_fields(ssh_reboot_observed_down=True)
                 command_context.set_stage("wait_for_device_up")
-                wait_for_device_up(acp_host)
+                if not wait_for_device_up(acp_host):
+                    message = "Device went down after disable request but did not come back within timeout."
+                    command_context.update_fields(device_recovered=False)
+                    print(color_red("Failed to verify SSH disable:"))
+                    print(message)
+                    command_context.fail_with_error(message)
+                    return 1
+                command_context.update_fields(device_recovered=True)
                 print("Device successfully rebooted. Checking if SSH is still disabled...")
                 command_context.set_stage("verify_ssh_disabled")
                 if not wait_for_tcp_port_state(acp_host, 22, expected_state=False, timeout_seconds=30, service_name="SSH port"):
                     command_context.update_fields(ssh_final_reachable=True, ssh_disable_persisted=False)
-                    print("Warning: SSH reopened after reboot. Disable may not have persisted.")
+                    message = "SSH reopened after reboot. Disable did not persist."
+                    print(color_red("Failed to verify SSH disable:"))
+                    print(message)
+                    command_context.fail_with_error(message)
+                    return 1
                 else:
                     command_context.update_fields(ssh_final_reachable=False, ssh_disable_persisted=True)
                     print("SSH disabled (remains closed after reboot). Enable SSH again if this was not intended.")

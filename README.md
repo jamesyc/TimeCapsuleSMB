@@ -5,7 +5,7 @@ Apple AirPort Time Capsules are still perfectly usable pieces of hardware, but t
 **NOTE THAT TIME MACHINE ON MACOS 26.4.x (AND 15.7.5) IS CURRENTLY BROKEN**, see https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups  
 Macs running macOS 26.4.x can still use the device as a standard Samba network share in Finder.
 
-This project is fully working for Gen 5 (NetBSD 6 based) Time Capsules, and Gen 1-4 (NetBSD 4) support now exists as well with some extra caveats described below. 
+This project is fully working for Gen 5 (NetBSD 6 based) Time Capsules, and Gen 1-4 (NetBSD 4) support now exists as well with some extra caveats described below.
 
 ## Expectations
 
@@ -71,6 +71,13 @@ On macOS, `bootstrap` can also offer to install `smbclient` via Homebrew. On Lin
 
 If this is your first time using the repo, this is the only command you should run with the repo-local launcher. After this step, use `.venv/bin/tcapsule ...` to run a command.
 
+You can inspect the local repo-only install before continuing:
+
+```bash
+.venv/bin/tcapsule paths
+.venv/bin/tcapsule validate-install
+```
+
 ## Step 2: Create The Local Config
 
 Run:
@@ -89,10 +96,9 @@ For typical users, most of the defaults are good enough. If the script offers a 
 
 The default values you can customize are:
 
-- SMB share name: `Data`
 - Samba username: `admin`
-- Bonjour service name: `Time Capsule Samba`
-- Bonjour hostname label: `timecapsulesamba`
+- persistent payload folder name: `.samba4`
+- device network interface: usually detected automatically
 
 The password you enter here also becomes the password used for the SMB login as well. In other words, after setup, you normally connect with:
 
@@ -100,6 +106,14 @@ The password you enter here also becomes the password used for the SMB login as 
 - password: the same Time Capsule password you entered during configuration
 
 Samba does not magically use Apple’s internal password backend; unfortunately, using Apple's password system is not possible. We deliberately reuse the same password value so that the user experience is simpler and less confusing.
+
+If you want to keep the device config somewhere else, pass `--config PATH` to `configure`; the other config-consuming commands accept the same option and load that path:
+
+```bash
+.venv/bin/tcapsule configure --config ./my-time-capsule.env
+.venv/bin/tcapsule deploy --config ./my-time-capsule.env
+.venv/bin/tcapsule doctor --config ./my-time-capsule.env
+```
 
 ## Step 3: Deploy It
 
@@ -120,7 +134,7 @@ By default, `tcapsule deploy` reboots NetBSD 6 devices after deployment and then
 .venv/bin/tcapsule deploy --yes
 ```
 
-There are also other flags such as `--install-nbns`, `--no-reboot` and `--dry-run`, but leave those alone unless you have a specific reason to use them.
+There are also other flags such as `--no-nbns`, `--no-reboot` and `--dry-run`, but leave those alone unless you have a specific reason to use them.
 
 If you want a machine-readable deployment plan without changing the device, use:
 
@@ -159,7 +173,7 @@ This is a non-destructive diagnostic command. `tcapsule doctor` checks:
 - that the managed runtime is up:
   - `smbd` is running and bound to TCP 445
   - the managed mDNS takeover is active
-  - the optional NBNS responder is checked when enabled
+  - the NBNS responder is checked unless disabled
 - what the box is currently advertising and serving for:
   - Bonjour instance name
   - Bonjour host label
@@ -167,7 +181,7 @@ This is a non-destructive diagnostic command. `tcapsule doctor` checks:
   - Samba share names
 - that SMB is reachable
 - that Bonjour `_smb._tcp` advertisement is visible and resolves
-- that an authenticated SMB listing actually works and includes the configured share name
+- that an authenticated SMB listing actually works and includes the active share name
 - that authenticated SMB file operations also work on the share
 - that `xattr_tdb:file` in the active Samba config points at persistent storage instead of the RAM disk
 
@@ -213,10 +227,9 @@ If you want to remove the files without rebooting immediately, use:
 Once deployment has completed and the Time Capsule has rebooted, you should be able to connect from Finder. The device should show up in the "Network" folder, or with:
 
 ```text
-smb://timecapsulesamba4.local/Data
+smb://<advertised-host>.local/<share-name>
 ```
 
-If your Bonjour hostname is different on your system, `tcapsule doctor` and `tcapsule discover` will tell you what name was actually advertised.
 
 When Finder prompts for credentials, use:
 
@@ -260,16 +273,15 @@ There are other constraints the Time Capsule places on us:
 - Samba 4.0.x has the same issue
 - Samba 4.2.x was much harder to compile, and had a `talloc` / `loadparm` use-after-free runtime bug
 - Samba 4.3.x was the first version to work as a network share, but it does not support vfs_fruit for Time Machine backup support
-- Samba 4.8.x is the first version that fully works, although getting it to compile can be very difficult.
+- Samba 4.8.x was the first version that fully worked; current builds ship Samba 4.24.1.
 
 ## Troubleshooting
 
-The current default result is:
+The normal result is:
 
-- SMB service name: `Time Capsule Samba 4`
 - SMB username: `admin`
-- share name: `Data`
-- Finder address: `smb://timecapsulesamba4.local/Data`
+- Finder address: shown by `tcapsule doctor` or `tcapsule discover`
+- share names: derived from the Time Capsule's disk volume names
 
 ### The Time Capsule Does Not Show Up In Finder
 
@@ -291,9 +303,7 @@ To inspect discovery results from the tool itself in JSON, run:
 .venv/bin/tcapsule discover --json
 ```
 
-If the system is working normally, you should see:
-
-- `Time Capsule Samba 4`
+If the system is working normally, you should see an `_smb._tcp` service with the Time Capsule's current device name.
 
 Finder is not always the best first diagnostic tool. The service can be up and correct even when Finder browsing is being slow or temperamental.
 
@@ -302,7 +312,7 @@ Finder is not always the best first diagnostic tool. The service can be up and c
 Try a reboot, then try the direct address explicitly:
 
 ```text
-smb://timecapsulesamba4.local/Data
+smb://<advertised-host>.local/<share-name>
 ```
 
 If necessary, use the IP address from your `.env` instead. The point is to separate “Bonjour browsing did something odd” from “SMB itself is broken.”

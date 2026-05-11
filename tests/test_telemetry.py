@@ -21,13 +21,14 @@ from timecapsulesmb.cli.context import (
     render_command_debug_lines,
 )
 from timecapsulesmb.cli.runtime import ManagedTargetState
-from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.core.config import AppConfig, ConfigError
 from timecapsulesmb.device.compat import DeviceCompatibility
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState, RemoteInterfaceProbeResult
 from timecapsulesmb.discovery.bonjour import Discovered
 from timecapsulesmb.telemetry import MAX_SEND_ATTEMPTS, TelemetryClient
 from timecapsulesmb.telemetry.debug import render_debug_mapping
-from timecapsulesmb.transport.ssh import SshConnection
+from timecapsulesmb.transport.ssh import SshConnection, SshError
 
 
 def telemetry_client_from_values(
@@ -253,6 +254,85 @@ class TelemetryTests(unittest.TestCase):
         self.assertIn("Debug context:", finished_payload["error"])
         self.assertIn("ssh_opts=-L 108:127.0.0.1:108", finished_payload["error"])
 
+    def test_command_context_converts_transport_error_to_system_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = telemetry_client_from_values(
+                    {
+                        "TC_HOST": "root@192.168.1.118",
+                        "TC_SSH_OPTS": "-L 108:127.0.0.1:108",
+                    },
+                    bootstrap_path=bootstrap_path,
+                )
+                with mock.patch.object(client, "_dispatch_payload_async"):
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        with self.assertRaises(SystemExit) as raised:
+                            with CommandContext(client, "deploy", "deploy_started", "deploy_finished", values={
+                                "TC_HOST": "root@192.168.1.118",
+                                "TC_SSH_OPTS": "-L 108:127.0.0.1:108",
+                            }):
+                                raise SshError("Connecting to the device failed, SSH error: timeout")
+        self.assertEqual(str(raised.exception), "Connecting to the device failed, SSH error: timeout")
+        finished_payload = send_mock.call_args.args[0]
+        self.assertEqual(finished_payload["result"], "failure")
+        self.assertIn("Connecting to the device failed, SSH error: timeout", finished_payload["error"])
+        self.assertNotIn("SshError:", finished_payload["error"])
+        self.assertIn("Debug context:", finished_payload["error"])
+        self.assertIn("ssh_opts=-L 108:127.0.0.1:108", finished_payload["error"])
+
+    def test_command_context_converts_config_error_to_system_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            env_path = Path(tmp) / ".env"
+            config = AppConfig.from_values({"TC_HOST": ""}, path=env_path, exists=True, file_values={})
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
+                with mock.patch.object(client, "_dispatch_payload_async"):
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        with self.assertRaises(SystemExit) as raised:
+                            with CommandContext(client, "deploy", "deploy_started", "deploy_finished", config=config):
+                                config.require("TC_HOST")
+        self.assertEqual(str(raised.exception), f"Missing required setting in {env_path}: TC_HOST")
+        self.assertIsInstance(raised.exception.__cause__, ConfigError)
+        finished_payload = send_mock.call_args.args[0]
+        self.assertEqual(finished_payload["result"], "failure")
+        self.assertIn(f"Missing required setting in {env_path}: TC_HOST", finished_payload["error"])
+        self.assertNotIn("ConfigError:", finished_payload["error"])
+        self.assertIn("Debug context:", finished_payload["error"])
+        self.assertIn(f"env_path={env_path}", finished_payload["error"])
+
+    def test_command_context_converts_device_error_to_system_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = telemetry_client_from_values(
+                    {
+                        "TC_HOST": "root@192.168.1.118",
+                        "TC_NET_IFACE": "bridge0",
+                    },
+                    bootstrap_path=bootstrap_path,
+                )
+                with mock.patch.object(client, "_dispatch_payload_async"):
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        with self.assertRaises(SystemExit) as raised:
+                            with CommandContext(client, "doctor", "doctor_started", "doctor_finished", values={
+                                "TC_HOST": "root@192.168.1.118",
+                                "TC_NET_IFACE": "bridge0",
+                            }):
+                                raise DeviceError("could not determine IPv4 for interface bridge0")
+        self.assertEqual(str(raised.exception), "could not determine IPv4 for interface bridge0")
+        self.assertIsInstance(raised.exception.__cause__, DeviceError)
+        finished_payload = send_mock.call_args.args[0]
+        self.assertEqual(finished_payload["result"], "failure")
+        self.assertIn("could not determine IPv4 for interface bridge0", finished_payload["error"])
+        self.assertNotIn("DeviceError:", finished_payload["error"])
+        self.assertIn("Debug context:", finished_payload["error"])
+        self.assertIn("TC_NET_IFACE=bridge0", finished_payload["error"])
+
     def test_command_context_failure_without_error_gets_fallback_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bootstrap_path = Path(tmp) / ".bootstrap"
@@ -318,7 +398,7 @@ class TelemetryTests(unittest.TestCase):
                                     "TC_HOST": "root@192.168.1.217",
                                     "TC_PASSWORD": "secret-password",
                                     "TC_SSH_OPTS": "-o ProxyJump=bastion",
-                                    "TC_SHARE_USE_DISK_ROOT": "true",
+                                    "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
                                 },
                             ) as command:
                                 command.set_stage("ssh_probe")
@@ -327,7 +407,7 @@ class TelemetryTests(unittest.TestCase):
         self.assertIn("stage=ssh_probe", finished_payload["error"])
         self.assertIn("TC_HOST=root@192.168.1.217", finished_payload["error"])
         self.assertIn("TC_SSH_OPTS=-o ProxyJump=bastion", finished_payload["error"])
-        self.assertIn("TC_SHARE_USE_DISK_ROOT=true", finished_payload["error"])
+        self.assertIn("TC_INTERNAL_SHARE_USE_DISK_ROOT=true", finished_payload["error"])
         self.assertNotIn("TC_PASSWORD", finished_payload["error"])
         self.assertNotIn("secret-password", finished_payload["error"])
 
@@ -418,13 +498,16 @@ class TelemetryTests(unittest.TestCase):
             {
                 "TC_HOST": "root@192.168.1.217",
                 "TC_PASSWORD": "secret",
+                "TC_MDNS_HOST_LABEL": "legacy-host",
+                "TC_MDNS_INSTANCE_NAME": "Legacy Instance",
+                "TC_NETBIOS_NAME": "LegacyNetbios",
                 "TC_CONFIGURE_ID": "config-id",
-                "TC_SHARE_USE_DISK_ROOT": "true",
+                "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
             },
             blacklist=COMMAND_VALUE_BLACKLIST,
         )
 
-        self.assertEqual(lines, ["TC_HOST=root@192.168.1.217", "TC_SHARE_USE_DISK_ROOT=true"])
+        self.assertEqual(lines, ["TC_HOST=root@192.168.1.217", "TC_INTERNAL_SHARE_USE_DISK_ROOT=true"])
 
         lines = render_debug_mapping(
             {
@@ -458,7 +541,7 @@ class TelemetryTests(unittest.TestCase):
                 "TC_HOST": "root@192.168.1.101",
                 "TC_PASSWORD": "secret",
                 "TC_SSH_OPTS": "-o ProxyJump=old",
-                "TC_SHARE_USE_DISK_ROOT": "true",
+                "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
                 "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             },
             preflight_error="preflight failed",
@@ -478,7 +561,7 @@ class TelemetryTests(unittest.TestCase):
         self.assertIn("host=root@192.168.1.217", lines)
         self.assertIn("ssh_opts=-o ProxyJump=bastion", lines)
         self.assertIn("TC_HOST=root@192.168.1.101", lines)
-        self.assertIn("TC_SHARE_USE_DISK_ROOT=true", lines)
+        self.assertIn("TC_INTERNAL_SHARE_USE_DISK_ROOT=true", lines)
         self.assertIn("preflight_error=preflight failed", lines)
         self.assertIn("custom_finish=kept", lines)
         self.assertIn("probe_ssh_port_reachable=true", lines)

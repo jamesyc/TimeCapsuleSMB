@@ -6,119 +6,170 @@ import time
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
-from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.device.compat import compatibility_from_probe_result
+from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.device.processes import PROBE_PROCESS_HELPERS
 from timecapsulesmb.transport.local import tcp_open
+from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh, ssh_opts_use_proxy
-from timecapsulesmb.core.config import AIRPORT_IDENTITIES_BY_MODEL, AIRPORT_IDENTITIES_BY_SYAP
+from timecapsulesmb.core.config import (
+    AIRPORT_IDENTITIES_BY_MODEL,
+    AIRPORT_IDENTITIES_BY_SYAP,
+    MAX_DNS_LABEL_BYTES,
+    MAX_NETBIOS_NAME_BYTES,
+)
 
 if TYPE_CHECKING:
     from timecapsulesmb.device.compat import DeviceCompatibility
 
 
 RUNTIME_SMB_CONF = "/mnt/Memory/samba4/etc/smb.conf"
-NBNS_MARKER_PROBE_TIMEOUT_SECONDS = 10
+RUNTIME_SHARES_TSV = "/mnt/Memory/samba4/var/shares.tsv"
+RUNTIME_PAYLOAD_TSV = "/mnt/Memory/samba4/var/payload.tsv"
+FLASH_RUNTIME_CONFIG = "/mnt/Flash/tcapsulesmb.conf"
+REMOTE_STATE_PROBE_TIMEOUT_SECONDS = 10
 REMOTE_LOG_TAIL_LINES = 80
 REMOTE_LOG_TAIL_MAX_CHARS = 8192
 REMOTE_LOG_TAIL_TIMEOUT_SECONDS = 10
-REMOTE_RUNTIME_LOG_PATHS = {
+REMOTE_RUNTIME_RAM_LOG_PATHS = {
     "remote_rc_local_log_tail": "/mnt/Memory/samba4/var/rc.local.log",
-    "remote_mdns_log_tail": "/mnt/Memory/samba4/var/mdns.log",
+}
+REMOTE_PAYLOAD_LOG_FILENAMES = {
+    "remote_watchdog_log_tail": "watchdog.log",
+    "remote_mdns_log_tail": "mdns.log",
+    "remote_nbns_log_tail": "nbns.log",
+    "remote_smbd_log_tail": "log.smbd",
 }
 SMBD_STATUS_HELPERS = rf'''
+RUNTIME_RAM_ROOT=${{RUNTIME_RAM_ROOT:-/mnt/Memory/samba4}}
+RUNTIME_RAM_SBIN="$RUNTIME_RAM_ROOT/sbin"
+RUNTIME_RAM_PRIVATE="$RUNTIME_RAM_ROOT/private"
+RUNTIME_SMB_CONF_PATH=${{RUNTIME_SMB_CONF_PATH:-{RUNTIME_SMB_CONF}}}
+RUNTIME_SHARES_TSV_PATH=${{RUNTIME_SHARES_TSV_PATH:-{RUNTIME_SHARES_TSV}}}
+RUNTIME_PERSISTENT_ROOT_PREFIX=${{RUNTIME_PERSISTENT_ROOT_PREFIX:-/Volumes/}}
+RUNTIME_TAB=$(printf '\t')
+
 runtime_smb_conf_present() {{
-    [ -f {RUNTIME_SMB_CONF} ]
+    [ -f "$RUNTIME_SMB_CONF_PATH" ]
 }}
 
-capture_ps_out() {{
-    /bin/ps axww -o pid= -o ppid= -o stat= -o time= -o ucomm= -o command= 2>/dev/null || true
+runtime_smbd_binary_present() {{
+    [ -x "$RUNTIME_RAM_SBIN/smbd" ]
 }}
 
-smbd_parent_process_present() {{
-    ps_out=$1
-    smbd_pids=""
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        set -- $line
-        [ "$#" -ge 5 ] || continue
-        if [ "$5" = "smbd" ]; then
-            smbd_pids="$smbd_pids $1"
-        fi
-    done <<EOF
-$ps_out
-EOF
+read_smb_conf_value() {{
+    key=$1
+    if ! runtime_smb_conf_present; then
+        return 1
+    fi
+    /usr/bin/sed -n "s/^[[:space:]]*$key[[:space:]]*=[[:space:]]*//p" "$RUNTIME_SMB_CONF_PATH" | /usr/bin/sed -n '1p'
+}}
 
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        set -- $line
-        [ "$#" -ge 5 ] || continue
-        if [ "$5" = "smbd" ]; then
-            case " $smbd_pids " in
-                *" $2 "*) ;;
-                *) return 0 ;;
-            esac
-        fi
-    done <<EOF
-$ps_out
-EOF
+runtime_passdb_path() {{
+    passdb_backend=$(read_smb_conf_value "passdb backend" || true)
+    case "$passdb_backend" in
+        smbpasswd:*)
+            printf '%s\n' "${{passdb_backend#smbpasswd:}}"
+            return 0
+            ;;
+    esac
     return 1
 }}
 
-mdns_process_present() {{
-    ps_out=$1
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        set -- $line
-        [ "$#" -ge 5 ] || continue
-        if [ "$5" = "mdns-advertiser" ]; then
+runtime_username_map_path() {{
+    read_smb_conf_value "username map"
+}}
+
+runtime_xattr_tdb_path() {{
+    read_smb_conf_value "xattr_tdb:file"
+}}
+
+runtime_data_root_path() {{
+    read_smb_conf_value "path"
+}}
+
+runtime_volume_root() {{
+    data_root=$(runtime_data_root_path || true)
+    case "$data_root" in
+        "$RUNTIME_PERSISTENT_ROOT_PREFIX"*)
+            rest=${{data_root#"$RUNTIME_PERSISTENT_ROOT_PREFIX"}}
+            device_name=${{rest%%/*}}
+            if [ -n "$device_name" ]; then
+                printf '%s%s\n' "$RUNTIME_PERSISTENT_ROOT_PREFIX" "$device_name"
+                return 0
+            fi
+            ;;
+    esac
+    return 1
+}}
+
+runtime_volume_device() {{
+    volume_root=$(runtime_volume_root || true)
+    if [ -n "$volume_root" ]; then
+        printf '/dev/%s\n' "${{volume_root##*/}}"
+        return 0
+    fi
+    return 1
+}}
+
+runtime_share_volume_roots() {{
+    seen_roots=""
+    if [ -s "$RUNTIME_SHARES_TSV_PATH" ]; then
+        while IFS="$RUNTIME_TAB" read -r share_name share_path part_device builtin part_uuid; do
+            [ -n "$part_device" ] || continue
+            volume_root="$RUNTIME_PERSISTENT_ROOT_PREFIX$part_device"
+            case " $seen_roots " in
+                *" $volume_root "*) ;;
+                *)
+                    seen_roots="$seen_roots $volume_root"
+                    printf '%s\n' "$volume_root"
+                    ;;
+            esac
+        done <"$RUNTIME_SHARES_TSV_PATH"
+        if [ -n "$seen_roots" ]; then
             return 0
         fi
-    done <<EOF
-$ps_out
-EOF
+    fi
+    runtime_volume_root
+}}
+
+capture_df_for_volume_root() {{
+    volume_root=$1
+    /bin/df -k "$volume_root" 2>/dev/null | /usr/bin/tail -n +2 || true
+}}
+
+runtime_volume_mounted() {{
+    volume_root=$(runtime_volume_root || true)
+    if [ -z "$volume_root" ]; then
+        return 1
+    fi
+    df_line=$(capture_df_for_volume_root "$volume_root")
+    case "$df_line" in
+        *" $volume_root")
+            return 0
+            ;;
+    esac
     return 1
 }}
 
-apple_mdns_present() {{
-    ps_out=$1
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        set -- $line
-        [ "$#" -ge 5 ] || continue
-        if [ "$5" = "mDNSResponder" ]; then
-            case "$3" in
-                Z*) ;;
-                *) return 0 ;;
-            esac
-        fi
-    done <<EOF
-$ps_out
-EOF
-    return 1
-}}
-
-capture_fstat_for_ucomm() {{
-    ps_out=$1
-    ucomm=$2
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        set -- $line
-        [ "$#" -ge 5 ] || continue
-        [ "$5" = "$ucomm" ] || continue
-        case "$3" in
-            Z*) continue ;;
+runtime_share_volumes_mounted() {{
+    found=0
+    status=0
+    for volume_root in $(runtime_share_volume_roots); do
+        found=1
+        df_line=$(capture_df_for_volume_root "$volume_root")
+        case "$df_line" in
+            *" $volume_root") ;;
+            *) status=1 ;;
         esac
-        # NetBSD4 has fstat but not netstat/sockstat/lsof. Scope fstat to
-        # candidate PIDs so activation checks do not scan every open file on a
-        # busy Time Capsule.
-        /usr/bin/fstat -p "$1" 2>/dev/null || true
-    done <<EOF
-$ps_out
-EOF
+    done
+    [ "$found" -eq 1 ] || return 1
+    return "$status"
 }}
+
+{PROBE_PROCESS_HELPERS}
 
 smbd_bound_445() {{
     case "$1" in
@@ -138,10 +189,58 @@ describe_managed_smbd_status() {{
     ps_out=$1
     fstat_out=$2
     status=0
+    if runtime_smbd_binary_present; then
+        echo "PASS:managed runtime smbd binary present"
+    else
+        echo "FAIL:managed runtime smbd binary missing"
+        status=1
+    fi
     if runtime_smb_conf_present; then
         echo "PASS:managed runtime smb.conf present"
     else
         echo "FAIL:managed runtime smb.conf missing"
+        status=1
+    fi
+    passdb_path=$(runtime_passdb_path || true)
+    if [ "$passdb_path" = "$RUNTIME_RAM_PRIVATE/smbpasswd" ] && [ -f "$passdb_path" ]; then
+        echo "PASS:active smb.conf passdb backend uses RAM smbpasswd"
+    else
+        echo "FAIL:active smb.conf passdb backend is not staged in RAM"
+        status=1
+    fi
+    username_map_path=$(runtime_username_map_path || true)
+    if [ "$username_map_path" = "$RUNTIME_RAM_PRIVATE/username.map" ] && [ -f "$username_map_path" ]; then
+        echo "PASS:active smb.conf username map uses RAM username.map"
+    else
+        echo "FAIL:active smb.conf username map is not staged in RAM"
+        status=1
+    fi
+    xattr_tdb_path=$(runtime_xattr_tdb_path || true)
+    case "$xattr_tdb_path" in
+        "$RUNTIME_PERSISTENT_ROOT_PREFIX"*)
+            xattr_tdb_parent=${{xattr_tdb_path%/*}}
+            if [ -d "$xattr_tdb_parent" ]; then
+                echo "PASS:active smb.conf xattr_tdb:file is persistent"
+            else
+                echo "FAIL:active smb.conf xattr_tdb:file parent is missing"
+                status=1
+            fi
+            ;;
+        *)
+            echo "FAIL:active smb.conf xattr_tdb:file is not persistent disk storage"
+            status=1
+            ;;
+    esac
+    if runtime_share_volumes_mounted; then
+        echo "PASS:all managed share volumes are mounted"
+    else
+        echo "FAIL:one or more managed share volumes are not mounted"
+        status=1
+    fi
+    if watchdog_process_present_for_volume "$ps_out"; then
+        echo "PASS:watchdog is running for managed runtime"
+    else
+        echo "FAIL:watchdog is not running for managed runtime"
         status=1
     fi
     if smbd_parent_process_present "$ps_out"; then
@@ -183,65 +282,6 @@ describe_managed_mdns_status() {{
     fi
     return "$status"
 }}
-'''
-
-
-@dataclass(frozen=True)
-class DevicePaths:
-    volume_root: str
-    payload_dir: str
-    disk_key: str
-    data_root: str
-    data_root_marker: str
-
-
-@dataclass(frozen=True)
-class MountedVolume:
-    device: str
-    mountpoint: str
-
-
-DISK_NAME_CANDIDATES_SH = r'''
-append_candidate() {
-  candidate=$1
-  case " $candidates " in
-    *" $candidate "*)
-      ;;
-    *)
-      candidates="$candidates $candidate"
-      ;;
-  esac
-}
-
-disk_name_candidates() {
-  candidates=""
-  dmesg_disk_lines=$(/sbin/dmesg 2>/dev/null | /usr/bin/sed -n '/^dk[0-9][0-9]* at /p' || true)
-  metadata_wedges=""
-  for dev in $(echo "$dmesg_disk_lines" | /usr/bin/sed -n 's/^\(dk[0-9][0-9]*\) at .*: APconfig$/\1/p;s/^\(dk[0-9][0-9]*\) at .*: APswap$/\1/p'); do
-    metadata_wedges="$metadata_wedges $dev"
-  done
-
-  for dev in $(echo "$dmesg_disk_lines" | /usr/bin/sed -n 's/^\(dk[0-9][0-9]*\) at .*: APdata$/\1/p'); do
-    append_candidate "$dev"
-  done
-  for dev in $(/sbin/sysctl -n hw.disknames 2>/dev/null); do
-    case "$dev" in
-      dk[0-9]*)
-        case " $metadata_wedges " in
-          *" $dev "*)
-            ;;
-          *)
-            append_candidate "$dev"
-            ;;
-        esac
-        ;;
-    esac
-  done
-  if [ -z "$candidates" ]; then
-    candidates=" dk2 dk3"
-  fi
-  echo "$candidates"
-}
 '''
 
 
@@ -291,6 +331,7 @@ class RemoteInterfaceCandidatesProbeResult:
     candidates: tuple[RemoteInterfaceCandidate, ...]
     preferred_iface: str | None
     detail: str
+    target_ip_matches: tuple[RemoteInterfaceCandidate, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -323,6 +364,16 @@ class AirportIdentityProbeResult:
     detail: str
 
 
+@dataclass(frozen=True)
+class RuntimeNamingIdentityProbeResult:
+    system_name: str | None
+    hostname: str | None
+    mdns_instance_name: str
+    mdns_host_label: str
+    netbios_name: str
+    detail: str
+
+
 def probe_device_conn(connection: SshConnection) -> ProbeResult:
     probe_host = connection.host.split("@", 1)[1] if "@" in connection.host else connection.host
     if not ssh_opts_use_proxy(connection.ssh_opts) and not tcp_open(probe_host, 22):
@@ -340,11 +391,11 @@ def probe_device_conn(connection: SshConnection) -> ProbeResult:
         os_name, os_release, arch = _probe_remote_os_info_conn(connection)
         elf_endianness = _probe_remote_elf_endianness_conn(connection)
         airport_identity = probe_remote_airport_identity_conn(connection)
-    except SystemExit as exc:
+    except (TransportError, DeviceError) as exc:
         return ProbeResult(
             ssh_port_reachable=True,
             ssh_authenticated=False,
-            error=system_exit_message(exc) or "SSH authentication failed.",
+            error=str(exc) or "SSH authentication failed.",
             os_name="",
             os_release="",
             arch="",
@@ -379,8 +430,8 @@ def probe_ssh_command_conn(
 ) -> SshCommandProbeResult:
     try:
         proc = run_ssh(connection, command, check=False, timeout=timeout)
-    except SystemExit as exc:
-        return SshCommandProbeResult(ok=False, detail=system_exit_message(exc))
+    except TransportError as exc:
+        return SshCommandProbeResult(ok=False, detail=str(exc))
     if proc.returncode == 0:
         stdout = proc.stdout.strip()
         if expected_stdout_suffix is None or stdout.endswith(expected_stdout_suffix):
@@ -394,8 +445,10 @@ def _probe_remote_os_info_conn(connection: SshConnection) -> tuple[str, str, str
     proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}")
     lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
     if len(lines) < 3:
-        raise SystemExit("Failed to determine remote device OS compatibility.")
-    return lines[0], lines[1], lines[2]
+        raise DeviceError("Failed to determine remote device OS compatibility.")
+    # SSH client warnings from user config can be emitted before command stdout.
+    # The probe command's own output is the trailing uname triplet.
+    return lines[-3], lines[-2], lines[-1]
 
 
 def _probe_remote_elf_endianness_conn(connection: SshConnection, path: str = "/bin/sh") -> str:
@@ -404,14 +457,8 @@ path={shlex.quote(path)}
 if [ ! -f "$path" ]; then
   exit 1
 fi
-if [ -x /usr/bin/od ] && [ -x /usr/bin/tr ]; then
-  b5=$(/bin/dd if="$path" bs=1 skip=5 count=1 2>/dev/null | /usr/bin/od -An -t u1 | /usr/bin/tr -d '[:space:]')
-else
-  b5=$(/bin/dd if="$path" bs=1 skip=5 count=1 2>/dev/null | /usr/bin/sed -n l 2>/dev/null)
-fi
+b5=$(/bin/dd if="$path" bs=1 skip=5 count=1 2>/dev/null | /usr/bin/sed -n l 2>/dev/null)
 case "$b5" in
-  1) echo little ;;
-  2) echo big ;;
   "\\001$") echo little ;;
   "\\002$") echo big ;;
   *) echo unknown ;;
@@ -518,32 +565,98 @@ fi
     return extract_airport_identity_from_acp_output(proc.stdout)
 
 
-def discover_mounted_volume_conn(connection: SshConnection) -> MountedVolume:
-    script = DISK_NAME_CANDIDATES_SH + r'''
-for dev in $(disk_name_candidates); do
-  volume="/Volumes/$dev"
-  if [ ! -d "$volume" ]; then
-    continue
-  fi
+def _truncate_utf8(value: str, max_bytes: int) -> str:
+    output: list[str] = []
+    used = 0
+    for char in value:
+        char_len = len(char.encode("utf-8"))
+        if used + char_len > max_bytes:
+            break
+        output.append(char)
+        used += char_len
+    return "".join(output)
 
-  df_line=$(/bin/df -k "$volume" 2>/dev/null | /usr/bin/tail -n +2 || true)
-  case "$df_line" in
-    /dev/$dev*" $volume")
-      echo "/dev/$dev $volume"
-      exit 0
-      ;;
-  esac
-done
 
-exit 1
-    '''
-    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False)
-    lines = proc.stdout.strip().splitlines()
-    result = lines[-1].strip() if lines else ""
-    if proc.returncode != 0 or not result:
-        raise SystemExit("Failed to discover a mounted AirPort HFS data volume on the device.")
-    device, mountpoint = result.split(" ", 1)
-    return MountedVolume(device=device, mountpoint=mountpoint)
+def _first_dns_label(value: str) -> str:
+    return value.strip().split(".", 1)[0].strip()
+
+
+def normalize_runtime_mdns_instance_name(value: str) -> str:
+    normalized = "".join("-" if char == "." or ord(char) < 0x20 or ord(char) == 0x7F else char for char in value)
+    return _truncate_utf8(normalized.strip(), MAX_DNS_LABEL_BYTES)
+
+
+def normalize_runtime_mdns_host_label(value: str) -> str:
+    candidate = _first_dns_label(value).lower()
+    normalized = re.sub(r"[^a-z0-9-]", "-", candidate).strip("-")
+    normalized = _truncate_utf8(normalized, MAX_DNS_LABEL_BYTES)
+    return normalized.strip("-")
+
+
+def normalize_runtime_netbios_name(value: str) -> str:
+    candidate = _first_dns_label(value)
+    normalized = re.sub(r"[^A-Za-z0-9_-]", "", candidate)
+    if not re.search(r"[A-Za-z0-9]", normalized):
+        return ""
+    return _truncate_utf8(normalized, MAX_NETBIOS_NAME_BYTES)
+
+
+def derive_runtime_naming_identity(system_name: str | None, hostname: str | None) -> RuntimeNamingIdentityProbeResult:
+    raw_system_name = (system_name or "").strip() or None
+    raw_hostname = (hostname or "").strip() or None
+
+    mdns_host_label = normalize_runtime_mdns_host_label(raw_hostname or "")
+    if not mdns_host_label:
+        mdns_host_label = normalize_runtime_mdns_host_label(raw_system_name or "")
+    if not mdns_host_label:
+        mdns_host_label = "timecapsule"
+
+    mdns_instance_name = normalize_runtime_mdns_instance_name(raw_system_name or "")
+    if not mdns_instance_name:
+        mdns_instance_name = mdns_host_label
+
+    netbios_name = normalize_runtime_netbios_name(raw_hostname or "")
+    if not netbios_name:
+        netbios_name = normalize_runtime_netbios_name(raw_system_name or "")
+    if not netbios_name:
+        netbios_name = "TimeCapsule"
+
+    return RuntimeNamingIdentityProbeResult(
+        system_name=raw_system_name,
+        hostname=raw_hostname,
+        mdns_instance_name=mdns_instance_name,
+        mdns_host_label=mdns_host_label,
+        netbios_name=netbios_name,
+        detail=(
+            "derived runtime naming identity: "
+            f"mdns_instance={mdns_instance_name} mdns_host={mdns_host_label} netbios={netbios_name}"
+        ),
+    )
+
+
+def _parse_runtime_naming_probe_output(text: str) -> RuntimeNamingIdentityProbeResult:
+    values: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        key, separator, value = raw_line.partition("=")
+        if separator:
+            values[key.strip()] = value.strip()
+    return derive_runtime_naming_identity(values.get("system_name"), values.get("hostname"))
+
+
+def probe_remote_runtime_naming_identity_conn(connection: SshConnection) -> RuntimeNamingIdentityProbeResult:
+    script = r"""
+system_name=
+if [ -x /usr/bin/acp ]; then
+  system_name=$(/usr/bin/acp -q syNm 2>/dev/null | /usr/bin/sed -n '1p')
+fi
+hostname=$(/bin/hostname 2>/dev/null | /usr/bin/sed -n '1p')
+printf 'system_name=%s\n' "$system_name"
+printf 'hostname=%s\n' "$hostname"
+"""
+    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=30)
+    if getattr(proc, "returncode", 0) != 0:
+        raise RuntimeError(f"could not read runtime naming identity: rc={proc.returncode}")
+    return _parse_runtime_naming_probe_output(proc.stdout or "")
 
 
 def probe_remote_interface_conn(connection: SshConnection, iface: str) -> RemoteInterfaceProbeResult:
@@ -631,7 +744,8 @@ def _parse_ifconfig_candidates(output: str) -> tuple[RemoteInterfaceCandidate, .
 
 
 def _interface_preference_key(candidate: RemoteInterfaceCandidate, target_ips: Iterable[str] = ()) -> tuple[int, int, int, int, int, int, int]:
-    target_ip_set = {value for value in target_ips if value}
+    target_ip_tuple = tuple(value for value in target_ips if value)
+    target_ip_set = set(target_ip_tuple)
     non_loopback_ipv4 = tuple(addr for addr in candidate.ipv4_addrs if not _is_loopback_ipv4(addr))
     non_link_local_ipv4 = tuple(addr for addr in non_loopback_ipv4 if not _is_link_local_ipv4(addr))
     private_non_link_local_ipv4 = tuple(addr for addr in non_link_local_ipv4 if _is_private_ipv4(addr))
@@ -656,11 +770,16 @@ def preferred_interface_name(
     eligible = [candidate for candidate in candidates if not candidate.loopback and candidate.ipv4_addrs]
     if not eligible:
         return None
-    best = max(eligible, key=lambda candidate: (_interface_preference_key(candidate, target_ips), candidate.name))
+    target_ip_tuple = tuple(value for value in target_ips if value)
+    best = max(eligible, key=lambda candidate: (_interface_preference_key(candidate, target_ip_tuple), candidate.name))
     return best.name
 
 
-def probe_remote_interface_candidates_conn(connection: SshConnection) -> RemoteInterfaceCandidatesProbeResult:
+def probe_remote_interface_candidates_conn(
+    connection: SshConnection,
+    *,
+    target_ips: Iterable[str] = (),
+) -> RemoteInterfaceCandidatesProbeResult:
     proc = run_ssh(connection, "/sbin/ifconfig -a", check=False, timeout=30)
     if proc.returncode != 0:
         return RemoteInterfaceCandidatesProbeResult(
@@ -669,17 +788,26 @@ def probe_remote_interface_candidates_conn(connection: SshConnection) -> RemoteI
             detail=f"ifconfig -a failed: rc={proc.returncode}",
         )
     candidates = _parse_ifconfig_candidates(proc.stdout)
-    preferred_iface = preferred_interface_name(candidates)
+    target_ip_tuple = tuple(value for value in target_ips if value)
+    target_ip_set = set(target_ip_tuple)
+    target_ip_matches = tuple(
+        candidate
+        for candidate in candidates
+        if not candidate.loopback and target_ip_set.intersection(candidate.ipv4_addrs)
+    )
+    preferred_iface = preferred_interface_name(candidates, target_ips=target_ip_tuple)
     if preferred_iface is None:
         return RemoteInterfaceCandidatesProbeResult(
             candidates=candidates,
             preferred_iface=None,
             detail="no non-loopback IPv4 interface candidates found",
+            target_ip_matches=target_ip_matches,
         )
     return RemoteInterfaceCandidatesProbeResult(
         candidates=candidates,
         preferred_iface=preferred_iface,
         detail=f"preferred interface {preferred_iface}",
+        target_ip_matches=target_ip_matches,
     )
 
 
@@ -696,7 +824,7 @@ def read_interface_ipv4_conn(connection: SshConnection, iface: str) -> str:
     )
     iface_ip = proc.stdout.strip()
     if not iface_ip:
-        raise SystemExit(f"could not determine IPv4 for interface {iface}")
+        raise DeviceError(f"could not determine IPv4 for interface {iface}")
     return iface_ip
 
 
@@ -863,17 +991,43 @@ def probe_managed_runtime_conn(
     )
 
 
-def nbns_marker_enabled_conn(connection: SshConnection, payload_dir: str) -> bool:
-    marker_path = f"{payload_dir}/private/nbns.enabled"
-    quoted_marker = shlex.quote(marker_path)
-    script = f"if [ -f {quoted_marker} ]; then echo enabled; fi"
+def nbns_flash_config_enabled_conn(connection: SshConnection) -> bool:
+    quoted_config = shlex.quote(FLASH_RUNTIME_CONFIG)
+    script = (
+        f"if [ -f {quoted_config} ]; then "
+        f". {quoted_config}; "
+        "if [ \"${NBNS_ENABLED:-0}\" = \"1\" ]; then echo enabled; fi; "
+        "fi"
+    )
     proc = run_ssh(
         connection,
         f"/bin/sh -c {shlex.quote(script)}",
         check=False,
-        timeout=NBNS_MARKER_PROBE_TIMEOUT_SECONDS,
+        timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
     )
     return proc.stdout.strip() == "enabled"
+
+
+def read_runtime_share_names_conn(connection: SshConnection) -> list[str]:
+    quoted_state = shlex.quote(RUNTIME_SHARES_TSV)
+    script = f"if [ -f {quoted_state} ]; then /bin/cat {quoted_state}; fi"
+    proc = run_ssh(
+        connection,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
+    )
+    names: list[str] = []
+    for raw_line in proc.stdout.splitlines():
+        line = raw_line.rstrip("\n")
+        if not line.strip():
+            continue
+        if "\t" not in line:
+            continue
+        name = line.split("\t", 1)[0].strip()
+        if name:
+            names.append(name)
+    return names
 
 
 def _limit_remote_log_tail(text: str) -> str:
@@ -908,13 +1062,54 @@ def read_remote_log_tail_conn(connection: SshConnection, path: str) -> str:
     return _limit_remote_log_tail(text)
 
 
+def read_runtime_payload_dir_conn(connection: SshConnection) -> str | None:
+    script = (
+        f"payload_tsv={shlex.quote(RUNTIME_PAYLOAD_TSV)}; "
+        'if [ -s "$payload_tsv" ]; then '
+        "IFS=$(printf '\\t') read -r payload_dir payload_volume payload_device <\"$payload_tsv\"; "
+        'if [ -n "$payload_dir" ]; then printf "%s\\n" "$payload_dir"; exit 0; fi; '
+        "fi; exit 1"
+    )
+    proc = run_ssh(
+        connection,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=REMOTE_LOG_TAIL_TIMEOUT_SECONDS,
+    )
+    if proc.returncode != 0:
+        return None
+    stdout = (proc.stdout or "").strip()
+    if not stdout:
+        return None
+    return stdout.splitlines()[0]
+
+
 def read_runtime_log_tails_conn(connection: SshConnection) -> dict[str, str]:
     logs: dict[str, str] = {}
-    for key, path in REMOTE_RUNTIME_LOG_PATHS.items():
+    for key, path in REMOTE_RUNTIME_RAM_LOG_PATHS.items():
         try:
             logs[key] = read_remote_log_tail_conn(connection, path)
-        except (Exception, SystemExit) as e:
+        except Exception as e:
             logs[key] = f"(unavailable: {e})"
+    try:
+        payload_dir = read_runtime_payload_dir_conn(connection)
+    except Exception as e:
+        payload_dir = None
+        logs["remote_payload_log_dir"] = f"(unavailable: {e})"
+    if payload_dir:
+        logs["remote_payload_log_dir"] = payload_dir
+        for key, filename in REMOTE_PAYLOAD_LOG_FILENAMES.items():
+            path = f"{payload_dir.rstrip('/')}/logs/{filename}"
+            try:
+                logs[key] = read_remote_log_tail_conn(connection, path)
+            except Exception as e:
+                logs[key] = f"(unavailable: {e})"
+    else:
+        logs.setdefault("remote_payload_log_dir", f"(missing {RUNTIME_PAYLOAD_TSV})")
+        try:
+            logs["remote_watchdog_log_tail"] = read_remote_log_tail_conn(connection, "/mnt/Memory/samba4/var/watchdog.log")
+        except Exception as e:
+            logs["remote_watchdog_log_tail"] = f"(unavailable: {e})"
     return logs
 
 
@@ -932,70 +1127,6 @@ def probe_paths_absent_conn(
     return run_ssh(connection, f"/bin/sh -c {shlex.quote('; '.join(script_lines))}", check=False)
 
 
-def discover_volume_root_conn(connection: SshConnection) -> str:
-    try:
-        return discover_mounted_volume_conn(connection).mountpoint
-    except SystemExit:
-        pass
-
-    script = DISK_NAME_CANDIDATES_SH + r'''
-for dev in $(disk_name_candidates); do
-  if [ ! -b "/dev/$dev" ]; then
-    continue
-  fi
-
-  volume="/Volumes/$dev"
-  created_mountpoint=0
-  if [ ! -d "$volume" ]; then
-    mkdir -p "$volume"
-    created_mountpoint=1
-  fi
-
-  /sbin/mount_hfs "/dev/$dev" "$volume" >/dev/null 2>&1 || true
-
-  df_line=$(/bin/df -k "$volume" 2>/dev/null | /usr/bin/tail -n +2 || true)
-  case "$df_line" in
-    *" $volume")
-      :
-      ;;
-    *)
-      if [ "$created_mountpoint" -eq 1 ]; then
-        /bin/rmdir "$volume" >/dev/null 2>&1 || true
-      fi
-      continue
-      ;;
-  esac
-
-  if [ ! -w "$volume" ]; then
-    continue
-  fi
-
-  echo "$volume"
-  exit 0
-done
-
-exit 1
-    '''
-    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}")
-    lines = proc.stdout.strip().splitlines()
-    volume = lines[-1].strip() if lines else ""
-    if not volume:
-        raise SystemExit("Failed to discover an AirPort volume root on the device.")
-    return volume
-
-
-def build_device_paths(volume_root: str, payload_dir_name: str, *, share_use_disk_root: bool = False) -> DevicePaths:
-    disk_key = PurePosixPath(volume_root).name
-    data_root = volume_root if share_use_disk_root else f"{volume_root}/ShareRoot"
-    return DevicePaths(
-        volume_root=volume_root,
-        payload_dir=f"{volume_root}/{payload_dir_name}",
-        disk_key=disk_key,
-        data_root=data_root,
-        data_root_marker=f"{data_root}/.com.apple.timemachine.supported",
-    )
-
-
 def wait_for_ssh_state_conn(
     connection: SshConnection,
     *,
@@ -1007,7 +1138,7 @@ def wait_for_ssh_state_conn(
         try:
             proc = run_ssh(connection, "/bin/echo ok", check=False, timeout=10)
             is_up = proc.returncode == 0 and proc.stdout.strip().endswith("ok")
-        except SystemExit:
+        except TransportError:
             is_up = False
         if is_up == expected_up:
             return True

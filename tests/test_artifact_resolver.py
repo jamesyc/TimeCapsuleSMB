@@ -48,12 +48,16 @@ class ArtifactResolverTests(unittest.TestCase):
         self.assertEqual(artifacts["smbd"].repo_relative_path, "bin/samba4-netbsd4le/smbd")
         self.assertEqual(artifacts["mdns-advertiser"].repo_relative_path, "bin/mdns-netbsd4le/mdns-advertiser")
         self.assertEqual(artifacts["nbns-advertiser"].repo_relative_path, "bin/nbns-netbsd4le/nbns-advertiser")
+        self.assertNotIn("samba-dcerpcd", artifacts)
+        self.assertNotIn("rpcd_classic", artifacts)
 
     def test_resolve_netbsd6_payload_returns_current_logical_deploy_names(self) -> None:
         artifacts = resolve_payload_artifacts(REPO_ROOT, "netbsd6_samba4")
         self.assertEqual(artifacts["smbd"].repo_relative_path, "bin/samba4/smbd")
         self.assertEqual(artifacts["mdns-advertiser"].repo_relative_path, "bin/mdns/mdns-advertiser")
         self.assertEqual(artifacts["nbns-advertiser"].repo_relative_path, "bin/nbns/nbns-advertiser")
+        self.assertNotIn("samba-dcerpcd", artifacts)
+        self.assertNotIn("rpcd_classic", artifacts)
 
     def test_resolve_artifact_raises_for_unknown_name(self) -> None:
         with self.assertRaises(KeyError):

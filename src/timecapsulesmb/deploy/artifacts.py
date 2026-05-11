@@ -31,10 +31,10 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def validate_artifacts(repo_root: Path) -> list[tuple[str, bool, str]]:
+def validate_artifacts(distribution_root: Path) -> list[tuple[str, bool, str]]:
     results: list[tuple[str, bool, str]] = []
     for record in load_artifact_manifest().values():
-        path = repo_root / record.path
+        path = distribution_root / record.path
         if not path.exists():
             results.append((record.name, False, f"missing {record.path}"))
             continue

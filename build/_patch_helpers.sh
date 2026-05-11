@@ -84,7 +84,65 @@ patch_require_fixed() {
     pattern="$2"
     target="$3"
 
-    if ! grep -F -q "$pattern" "$target"; then
+    # Pass the literal search text through the environment. awk -v parses
+    # escape sequences in assigned strings, so text like "\n" would become a
+    # newline before index() sees it.
+    if ! PATCH_REQUIRE_FIXED_PATTERN="$pattern" awk '
+        BEGIN { pattern = ENVIRON["PATCH_REQUIRE_FIXED_PATTERN"] }
+        index($0, pattern) { found = 1 }
+        END { exit(found ? 0 : 1) }
+    ' "$target"; then
         patch_fail "$desc: expected text not found in $target"
     fi
+}
+
+patch_apply_checked() {
+    desc="$1"
+    patch_file="$2"
+    workdir="$3"
+
+    if [ ! -f "$patch_file" ]; then
+        patch_fail "$desc: missing patch file $patch_file"
+    fi
+    if [ ! -d "$workdir" ]; then
+        patch_fail "$desc: missing workdir $workdir"
+    fi
+
+    git -C "$workdir" apply --check "$patch_file" ||
+        patch_fail "$desc: patch does not apply cleanly"
+    git -C "$workdir" apply "$patch_file" ||
+        patch_fail "$desc: patch apply failed"
+}
+
+patch_apply_series() {
+    desc_prefix="$1"
+    series_file="$2"
+    workdir="$3"
+    series_dir="$(dirname "$series_file")"
+    series_lineno=0
+
+    if [ ! -f "$series_file" ]; then
+        patch_fail "$desc_prefix: missing patch series $series_file"
+    fi
+
+    while IFS= read -r series_line || [ -n "$series_line" ]; do
+        series_lineno=$((series_lineno + 1))
+        case "$series_line" in
+            ''|\#*)
+                continue
+                ;;
+        esac
+
+        patch_name="${series_line%%|*}"
+        if [ "$patch_name" = "$series_line" ]; then
+            patch_desc="$patch_name"
+        else
+            patch_desc="${series_line#*|}"
+        fi
+
+        patch_apply_checked "$desc_prefix $patch_desc" \
+            "$series_dir/$patch_name" \
+            "$workdir" ||
+            patch_fail "$desc_prefix: failed at $series_file:$series_lineno"
+    done <"$series_file"
 }

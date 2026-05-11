@@ -7,9 +7,12 @@ from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.cli import runtime
-from timecapsulesmb.core.errors import system_exit_message
+from timecapsulesmb.core.config import ConfigError
+from timecapsulesmb.core.errors import missing_dependency_message, system_exit_message
+from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.telemetry import build_device_os_version
 from timecapsulesmb.telemetry.debug import debug_summary, render_debug_mapping
+from timecapsulesmb.transport.errors import TransportError
 
 if TYPE_CHECKING:
     from timecapsulesmb.cli.runtime import ManagedTargetState
@@ -29,16 +32,13 @@ def missing_required_python_module(module_names: Iterable[str]) -> tuple[str, Ba
     return None
 
 
-def missing_dependency_message(module_name: str, error: BaseException | None = None) -> str:
-    error_suffix = f" {type(error).__name__}: {error}" if error is not None else ""
-    return (
-        f"Failed to load {module_name}. Install the Python package {module_name}. "
-        f"Run `./tcapsule bootstrap` first to set up the required dependencies.{error_suffix}"
-    )
-
-
 COMMAND_VALUE_BLACKLIST = {
     "TC_PASSWORD",
+    # Removed naming keys may still exist in old .env files. They are
+    # intentionally ignored and should not appear as command inputs.
+    "TC_MDNS_HOST_LABEL",
+    "TC_MDNS_INSTANCE_NAME",
+    "TC_NETBIOS_NAME",
     # These are already first-class telemetry fields.
     "TC_CONFIGURE_ID",
     "TC_MDNS_DEVICE_MODEL",
@@ -146,6 +146,13 @@ class CommandContext:
             self.result = "cancelled"
             if not self.error_lines:
                 self.set_error("Cancelled by user")
+        elif isinstance(exc, (TransportError, ConfigError, DeviceError)):
+            message = str(exc)
+            self.result = "failure"
+            if message and not self.error_lines:
+                self.set_error(message)
+            self.finish(result=self.result, **self.finish_fields)
+            raise SystemExit(message) from exc
         elif exc_type is SystemExit:
             message = system_exit_message(exc)
             if message and message not in {"0", "None"}:

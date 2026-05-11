@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "current_version": 20004,
-  "min_supported_version": 20004,
-  "latest_tag": "v2.0.4",
+  "current_version": 20007,
+  "min_supported_version": 20007,
+  "latest_tag": "v2.0.7",
   "download_url": "https://github.com/jamesyc/TimeCapsuleSMB/releases/latest",
   "message": "This version is no longer supported. Please update before continuing."
 }

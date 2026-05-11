@@ -133,7 +133,7 @@ class ACPTests(unittest.TestCase):
 
         run_ssh_mock.assert_called_once_with(connection, "acp remove dbug", check=False, timeout=30)
         reboot_mock.assert_called_once_with(connection)
-        self.assertEqual(messages, ["'dbug' already absent via: acp remove dbug"])
+        self.assertEqual(messages, ["SSH debug flag 'dbug' already absent via: acp remove dbug"])
 
     def test_disable_ssh_over_ssh_reports_bad_ssh_password_as_auth_failure(self) -> None:
         connection = SshConnection("root@10.0.0.2", "bad", "-o foo")
@@ -156,7 +156,7 @@ class ACPTests(unittest.TestCase):
             ):
                 set_ssh.disable_ssh_over_ssh(connection, reboot_device=True, log=messages.append)
 
-        self.assertIn("Reboot request timed out; checking whether the device is rebooting...", messages[-1])
+        self.assertIn("Reboot request timed out; continuing to observe whether the device is rebooting...", messages[-1])
 
 
 if __name__ == "__main__":

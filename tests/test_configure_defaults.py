@@ -12,9 +12,6 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.configure_defaults import (  # noqa: E402
     ConfigureValueChoice,
-    apply_device_storage_defaults,
-    derived_name_defaults,
-    derived_prompt_defaults,
     interface_candidate_for_ip,
     interface_target_ips,
     ipv4_literal,
@@ -61,48 +58,11 @@ class ConfigureDefaultsTests(unittest.TestCase):
         self.assertEqual(match.iface, "mgi0")
         self.assertEqual(match.ip, "10.0.1.7")
 
-    def test_derived_name_defaults_precedence_is_host_discovery_then_probe(self) -> None:
-        discovered = BonjourResolvedService("Capsule", "capsule.local", ipv4=["192.168.1.72"])
-        probe = RemoteInterfaceCandidatesProbeResult(
-            candidates=(
-                RemoteInterfaceCandidate("bridge0", ("192.168.1.217",), up=True, active=True, loopback=False),
-            ),
-            preferred_iface="bridge0",
-            detail="ok",
-        )
-
-        from_host = derived_name_defaults({"TC_HOST": "root@10.0.1.7"}, discovered, probe)
-        from_discovery = derived_name_defaults({"TC_HOST": "root@capsule.local"}, discovered, probe)
-        from_probe = derived_name_defaults({"TC_HOST": "root@capsule.local"}, None, probe)
-
-        self.assertEqual(from_host.netbios_name if from_host else None, "TimeCapsule007")
-        self.assertEqual(from_discovery.netbios_name if from_discovery else None, "TimeCapsule072")
-        self.assertEqual(from_probe.netbios_name if from_probe else None, "TimeCapsule217")
-
-    def test_derived_name_defaults_ignores_link_local_sources(self) -> None:
-        discovered = BonjourResolvedService("Capsule", "capsule.local", ipv4=["169.254.1.2"])
-        probe = RemoteInterfaceCandidatesProbeResult(
-            candidates=(
-                RemoteInterfaceCandidate("bridge0", ("169.254.1.3",), up=True, active=True, loopback=False),
-            ),
-            preferred_iface="bridge0",
-            detail="ok",
-        )
-
-        self.assertIsNone(derived_name_defaults({"TC_HOST": "root@169.254.1.1"}, discovered, probe))
-        self.assertEqual(derived_prompt_defaults(None)["TC_NETBIOS_NAME"], "TimeCapsule")
-
     def test_saved_value_choice_rejects_invalid_saved_config_values(self) -> None:
-        self.assertIsNone(
-            saved_value_choice(
-                {"TC_NETBIOS_NAME": "ABCDEFGHIJKLMNOP"},
-                "TC_NETBIOS_NAME",
-                "Samba NetBIOS name",
-            )
-        )
+        self.assertIsNone(saved_value_choice({"TC_AIRPORT_SYAP": "999"}, "TC_AIRPORT_SYAP", "Airport Utility syAP code"))
         self.assertEqual(
-            saved_value_choice({"TC_NETBIOS_NAME": "Capsule"}, "TC_NETBIOS_NAME", "Samba NetBIOS name"),
-            ConfigureValueChoice("Capsule", "saved"),
+            saved_value_choice({"TC_AIRPORT_SYAP": "119"}, "TC_AIRPORT_SYAP", "Airport Utility syAP code"),
+            ConfigureValueChoice("119", "saved"),
         )
 
     def test_saved_syap_must_match_detected_candidates(self) -> None:
@@ -110,14 +70,6 @@ class ConfigureDefaultsTests(unittest.TestCase):
 
         self.assertEqual(saved_syap_value_for_candidates(choice, ("119", "120")), "119")
         self.assertIsNone(saved_syap_value_for_candidates(choice, ("113",)))
-
-    def test_airport_extreme_defaults_to_disk_root_share(self) -> None:
-        values = {"TC_AIRPORT_SYAP": "120", "TC_MDNS_DEVICE_MODEL": "AirPort7,120"}
-
-        apply_device_storage_defaults(values)
-
-        self.assertEqual(values["TC_SHARE_USE_DISK_ROOT"], "true")
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,7 +7,10 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.cli.runtime import load_optional_env_config
 from timecapsulesmb.identity import ensure_install_id
+from timecapsulesmb.telemetry import TelemetryClient
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -150,29 +153,68 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--python", default=sys.executable or "python3", help="Python interpreter to use for the repo .venv")
     args = parser.parse_args(argv)
 
-    if not REQUIREMENTS.exists():
-        print(f"Missing {REQUIREMENTS}", file=sys.stderr)
-        return 1
+    ensure_install_id()
+    config = load_optional_env_config()
+    telemetry = TelemetryClient.from_config(config)
+    with CommandContext(
+        telemetry,
+        "bootstrap",
+        "bootstrap_started",
+        "bootstrap_finished",
+        config=config,
+        args=args,
+        python_executable=args.python,
+    ) as command_context:
+        command_context.update_fields(
+            requirements_path=str(REQUIREMENTS),
+            venv_path=str(VENVDIR),
+            requirements_present=REQUIREMENTS.exists(),
+            venv_exists_before=VENVDIR.exists(),
+            python_executable=args.python,
+        )
+        command_context.set_stage("validate_requirements")
+        if not REQUIREMENTS.exists():
+            message = f"Missing {REQUIREMENTS}"
+            print(message, file=sys.stderr)
+            command_context.fail_with_error(message)
+            return 1
 
-    try:
-        platform_label = current_platform_label()
-        print(f"Detected host platform: {platform_label}", flush=True)
-        venv_python = ensure_venv(args.python)
-        install_python_requirements(venv_python)
-        maybe_install_smbclient()
-        maybe_install_sshpass()
-        ensure_install_id()
-    except subprocess.CalledProcessError as e:
-        print(f"Command failed with exit code {e.returncode}: {e.cmd}", file=sys.stderr)
-        return e.returncode or 1
-    except BootstrapError as e:
-        print(str(e), file=sys.stderr)
-        return 1
+        try:
+            command_context.set_stage("detect_platform")
+            platform_label = current_platform_label()
+            command_context.update_fields(host_platform_label=platform_label)
+            print(f"Detected host platform: {platform_label}", flush=True)
+            command_context.set_stage("ensure_venv")
+            venv_python = ensure_venv(args.python)
+            command_context.update_fields(venv_python=str(venv_python))
+            command_context.set_stage("install_python_requirements")
+            install_python_requirements(venv_python)
+            command_context.set_stage("install_smbclient")
+            maybe_install_smbclient()
+            command_context.set_stage("install_sshpass")
+            maybe_install_sshpass()
+        except subprocess.CalledProcessError as e:
+            message = f"Command failed with exit code {e.returncode}: {e.cmd}"
+            print(message, file=sys.stderr)
+            command_context.fail_with_error(message)
+            return e.returncode or 1
+        except BootstrapError as e:
+            print(str(e), file=sys.stderr)
+            command_context.fail_with_error(str(e))
+            return 1
 
-    print("\nHost setup complete.", flush=True)
-    print("Next steps:", flush=True)
-    print(f"  1. {VENVDIR / 'bin' / 'tcapsule'} configure", flush=True)
-    print(f"  2. {VENVDIR / 'bin' / 'tcapsule'} deploy", flush=True)
-    print(f"  3. {VENVDIR / 'bin' / 'tcapsule'} doctor", flush=True)
-    print(f"  4. NetBSD 4 only, after reboot if Samba did not auto-start: {VENVDIR / 'bin' / 'tcapsule'} activate", flush=True)
-    return 0
+        command_context.set_stage("complete")
+        command_context.update_fields(
+            smbclient_available_after=shutil.which("smbclient") is not None,
+            sshpass_available_after=shutil.which("sshpass") is not None,
+            venv_exists_after=VENVDIR.exists(),
+        )
+        print("\nHost setup complete.", flush=True)
+        print("Next steps:", flush=True)
+        print(f"  1. {VENVDIR / 'bin' / 'tcapsule'} configure", flush=True)
+        print(f"  2. {VENVDIR / 'bin' / 'tcapsule'} deploy", flush=True)
+        print(f"  3. {VENVDIR / 'bin' / 'tcapsule'} doctor", flush=True)
+        print(f"  4. NetBSD 4 only, after reboot if Samba did not auto-start: {VENVDIR / 'bin' / 'tcapsule'} activate", flush=True)
+        command_context.succeed()
+        return 0
+    return 1

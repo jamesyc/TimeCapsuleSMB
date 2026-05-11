@@ -142,7 +142,7 @@ class SSHTransportTests(unittest.TestCase):
                     timeout=10,
                     timeout_message="timeout",
                 )
-        self.assertIsInstance(exc.exception, SystemExit)
+        self.assertNotIsInstance(exc.exception, SystemExit)
         self.assertEqual(str(exc.exception), "timeout")
         fake_child.close.assert_called_once()
 
@@ -190,13 +190,14 @@ class SSHTransportTests(unittest.TestCase):
                 "timecapsulesmb.transport.ssh._spawn_with_password",
                 return_value=(7, "remote command failed\n"),
             ):
-                with self.assertRaises(SystemExit) as exc:
+                with self.assertRaises(ssh_transport.SshError) as exc:
                     ssh_transport.run_ssh(
                         ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no"),
                         "/bin/false",
                         check=True,
                         timeout=10,
                     )
+        self.assertNotIsInstance(exc.exception, SystemExit)
         self.assertEqual(str(exc.exception), "remote command failed")
 
     def test_run_ssh_check_true_uses_rc_fallback_when_output_is_noise_only(self) -> None:
@@ -208,29 +209,31 @@ class SSHTransportTests(unittest.TestCase):
                     "Warning: Permanently added '192.168.1.118' (RSA) to the list of known hosts.\n",
                 ),
             ):
-                with self.assertRaises(SystemExit) as exc:
+                with self.assertRaises(ssh_transport.SshError) as exc:
                     ssh_transport.run_ssh(
                         ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no"),
                         "/bin/false",
                         check=True,
                         timeout=10,
                     )
+        self.assertNotIsInstance(exc.exception, SystemExit)
         self.assertEqual(str(exc.exception), "ssh command failed with rc=7")
 
     def test_run_ssh_timeout_error_includes_remote_command_summary(self) -> None:
         def fake_spawn(_cmd, _password, *, timeout, timeout_message):
-            raise SystemExit(timeout_message)
+            raise ssh_transport.SshCommandTimeout(timeout_message)
 
         remote_cmd = "/bin/sh -c 'echo one\necho two'"
         with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
             with mock.patch("timecapsulesmb.transport.ssh._spawn_with_password", side_effect=fake_spawn):
-                with self.assertRaises(SystemExit) as exc:
+                with self.assertRaises(ssh_transport.SshCommandTimeout) as exc:
                     ssh_transport.run_ssh(
                         ssh_transport.SshConnection("root@192.168.1.118", "secret-password", "-o StrictHostKeyChecking=no"),
                         remote_cmd,
                         check=False,
                         timeout=10,
                     )
+        self.assertNotIsInstance(exc.exception, SystemExit)
         self.assertEqual(
             str(exc.exception),
             "Timed out waiting for ssh command to finish: /bin/sh -c 'echo one echo two'",
@@ -266,13 +269,14 @@ class SSHTransportTests(unittest.TestCase):
                     "NetBSD\n6.0\nevbarm\n",
                 ),
             ):
-                with self.assertRaises(SystemExit) as exc:
+                with self.assertRaises(ssh_transport.SshError) as exc:
                     ssh_transport.run_ssh(
                         ssh_transport.SshConnection("root@192.168.1.67", "pw", "-o LocalForward=127.0.0.1:108:127.0.0.1:108"),
                         "/bin/echo ok",
                         check=False,
                         timeout=10,
                     )
+        self.assertNotIsInstance(exc.exception, SystemExit)
         self.assertEqual(
             str(exc.exception),
             "Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied",
@@ -311,6 +315,28 @@ class SSHTransportTests(unittest.TestCase):
                     "** WARNING: connection is not using a post-quantum key exchange algorithm.\n"
                     "** This session may be vulnerable to \"store now, decrypt later\" attacks.\n"
                     "** The server may need to be upgraded. See https://openssh.com/pq.html\n"
+                    "NetBSD\n4.0_STABLE\nearmv4\n",
+                ),
+            ):
+                proc = ssh_transport.run_ssh(
+                    ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no"),
+                    "uname -s",
+                    check=False,
+                    timeout=10,
+                )
+        self.assertEqual(proc.stdout, "NetBSD\n4.0_STABLE\nearmv4\n")
+
+    def test_run_ssh_strips_x11_forwarding_warnings_before_returning_stdout(self) -> None:
+        with mock.patch(
+            "timecapsulesmb.transport.ssh._ssh_option_supported",
+            return_value=True,
+        ):
+            with mock.patch(
+                "timecapsulesmb.transport.ssh._spawn_with_password",
+                return_value=(
+                    0,
+                    "Warning: No xauth data; using fake authentication data for X11 forwarding.\n"
+                    "X11 forwarding request failed on channel 0.\n"
                     "NetBSD\n4.0_STABLE\nearmv4\n",
                 ),
             ):
@@ -419,18 +445,19 @@ class SSHTransportTests(unittest.TestCase):
 
     def test_spawn_with_password_reports_missing_pexpect(self) -> None:
         with mock.patch("builtins.__import__", side_effect=self.missing_pexpect_import):
-            with self.assertRaises(SystemExit) as exc:
+            with self.assertRaises(ssh_transport.SshError) as exc:
                 ssh_transport._spawn_with_password(
                     ["ssh", "host", "cmd"],
                     "pw",
                     timeout=10,
                     timeout_message="timeout",
                 )
+        self.assertNotIsInstance(exc.exception, SystemExit)
         self.assertEqual(str(exc.exception), MISSING_PEXPECT_MESSAGE)
 
     def test_ssh_local_forward_reports_missing_pexpect(self) -> None:
         with mock.patch("builtins.__import__", side_effect=self.missing_pexpect_import):
-            with self.assertRaises(SystemExit) as exc:
+            with self.assertRaises(ssh_transport.SshError) as exc:
                 with ssh_transport.ssh_local_forward(
                     ssh_transport.SshConnection("root@192.168.1.118", "pw", ""),
                     local_port=10445,
@@ -439,6 +466,7 @@ class SSHTransportTests(unittest.TestCase):
                     ready_timeout=5,
                 ):
                     pass
+        self.assertNotIsInstance(exc.exception, SystemExit)
         self.assertEqual(str(exc.exception), MISSING_PEXPECT_MESSAGE)
 
     def test_ssh_local_forward_waits_for_port_and_closes_child(self) -> None:
@@ -479,7 +507,7 @@ class SSHTransportTests(unittest.TestCase):
         fake_child.before = "bind [127.0.0.1]:10445: Permission denied\n"
         with mock.patch("pexpect.spawn", return_value=fake_child):
             with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
-                with self.assertRaises(ssh_transport.SshTransportError) as exc:
+                with self.assertRaises(ssh_transport.SshError) as exc:
                     with ssh_transport.ssh_local_forward(
                         ssh_transport.SshConnection("root@192.168.1.118", "pw", ""),
                         local_port=10445,
@@ -488,6 +516,7 @@ class SSHTransportTests(unittest.TestCase):
                         ready_timeout=5,
                     ):
                         pass
+        self.assertNotIsInstance(exc.exception, SystemExit)
         self.assertIn("bind [127.0.0.1]:10445: Permission denied", str(exc.exception))
         fake_child.close.assert_called_once_with(force=True)
 
@@ -504,7 +533,7 @@ class SSHTransportTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
                 with mock.patch("timecapsulesmb.transport.ssh.tcp_open", return_value=False):
                     with mock.patch("timecapsulesmb.transport.ssh.time.time", side_effect=[100.0, 106.0]):
-                        with self.assertRaises(SystemExit) as exc:
+                        with self.assertRaises(ssh_transport.SshError) as exc:
                             with ssh_transport.ssh_local_forward(
                                 ssh_transport.SshConnection("root@192.168.1.118", "pw", ""),
                                 local_port=10445,
@@ -513,6 +542,7 @@ class SSHTransportTests(unittest.TestCase):
                                 ready_timeout=5,
                             ):
                                 pass
+        self.assertNotIsInstance(exc.exception, SystemExit)
         self.assertEqual(
             str(exc.exception),
             "Timed out waiting for ssh tunnel to become ready: 127.0.0.1:10445 -> 10.0.1.1:445 via root@192.168.1.118",
@@ -551,13 +581,14 @@ class SSHTransportTests(unittest.TestCase):
                 return_value=subprocess.CompletedProcess(["ssh"], 0, stdout="3\n", stderr=""),
             ):
                 with mock.patch("timecapsulesmb.transport.ssh.time.sleep"):
-                    with self.assertRaises(SystemExit) as exc:
+                    with self.assertRaises(ssh_transport.ScpError) as exc:
                         ssh_transport._verify_remote_size(
                             ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no"),
                             src,
                             "/tmp/test-upload",
                             timeout=30,
                         )
+        self.assertNotIsInstance(exc.exception, SystemExit)
         self.assertEqual(
             str(exc.exception),
             f"upload verification failed for {src.name} -> /tmp/test-upload: expected 5 bytes, got 3 bytes",
@@ -594,12 +625,13 @@ class SSHTransportTests(unittest.TestCase):
             connection = ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no", remote_has_scp=True)
 
             def fake_spawn(_cmd, _password, *, timeout, timeout_message):
-                raise SystemExit(timeout_message)
+                raise ssh_transport.SshCommandTimeout(timeout_message)
 
             with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
                 with mock.patch("timecapsulesmb.transport.ssh._spawn_with_password", side_effect=fake_spawn):
-                    with self.assertRaises(SystemExit) as exc:
+                    with self.assertRaises(ssh_transport.ScpError) as exc:
                         ssh_transport.run_scp(connection, src, "/tmp/test-upload", timeout=10)
+        self.assertNotIsInstance(exc.exception, SystemExit)
         self.assertEqual(
             str(exc.exception),
             f"Timed out copying {src.name} to remote path /tmp/test-upload via scp",
@@ -613,8 +645,9 @@ class SSHTransportTests(unittest.TestCase):
             with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
                 with mock.patch("timecapsulesmb.transport.ssh.shutil.which", return_value="/opt/homebrew/bin/sshpass"):
                     with mock.patch("timecapsulesmb.transport.ssh.subprocess.run", side_effect=subprocess.TimeoutExpired(["sshpass"], 10)):
-                        with self.assertRaises(SystemExit) as exc:
+                        with self.assertRaises(ssh_transport.ScpError) as exc:
                             ssh_transport.run_scp(connection, src, "/tmp/test-upload", timeout=10)
+        self.assertNotIsInstance(exc.exception, SystemExit)
         self.assertEqual(
             str(exc.exception),
             f"Timed out copying {src.name} to remote path /tmp/test-upload via sshpass cat fallback",
@@ -645,8 +678,9 @@ class SSHTransportTests(unittest.TestCase):
             src.write_bytes(b"hello")
             connection = ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no", remote_has_scp=False)
             with mock.patch("timecapsulesmb.transport.ssh.shutil.which", return_value=None):
-                with self.assertRaises(SystemExit) as exc:
+                with self.assertRaises(ssh_transport.ScpError) as exc:
                     ssh_transport.run_scp(connection, src, "/tmp/test-upload", timeout=10)
+        self.assertNotIsInstance(exc.exception, SystemExit)
         self.assertIn("local sshpass is missing", str(exc.exception))
         self.assertIn("tcapsule bootstrap", str(exc.exception))
 
@@ -660,8 +694,9 @@ class SSHTransportTests(unittest.TestCase):
                     "timecapsulesmb.transport.ssh._spawn_with_password",
                     return_value=(255, "bind [127.0.0.1]:108: Permission denied\n"),
                 ):
-                    with self.assertRaises(ssh_transport.SshTransportError) as exc:
+                    with self.assertRaises(ssh_transport.ScpError) as exc:
                         ssh_transport.run_scp(connection, src, "/tmp/test-upload", timeout=10)
+        self.assertNotIsInstance(exc.exception, SystemExit)
         self.assertIn("Connecting to the device failed, SSH error: bind [127.0.0.1]:108: Permission denied", str(exc.exception))
 
 

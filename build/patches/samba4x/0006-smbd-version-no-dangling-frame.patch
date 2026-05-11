@@ -1,0 +1,73 @@
+diff --git a/source3/smbd/server.c b/source3/smbd/server.c
+index 80e96b0..b2f130c 100644
+--- a/source3/smbd/server.c
++++ b/source3/smbd/server.c
+@@ -61,6 +61,7 @@
+ #include "source3/lib/substitute.h"
+ #include "lib/addrchange.h"
+ #include "../source4/lib/tls/tls.h"
++#include <samba/version.h>
+ 
+ #ifdef HAVE_LIBQUIC
+ #include <netinet/quic.h>
+@@ -96,6 +97,22 @@ struct smbd_parent_context {
+ 	struct tstream_tls_params *quic_tlsp;
+ };
+ 
++static bool smbd_handle_early_version_option(int argc, char *argv[])
++{
++	int i;
++
++	for (i = 1; i < argc; i++) {
++		if (strcmp(argv[i], "-V") == 0 ||
++		    strcmp(argv[i], "--version") == 0)
++		{
++			printf("Version %s\n", SAMBA_VERSION_STRING);
++			return true;
++		}
++	}
++
++	return false;
++}
++
+ struct smbd_open_socket {
+ 	struct smbd_open_socket *prev, *next;
+ 	struct smbd_parent_context *parent;
+@@ -1998,6 +2015,19 @@ extern void build_options(bool screen);
+ 
+ 	setproctitle_init(argc, discard_const(argv), environ);
+ 
++	/*
++	 * Samba's common --version popt callback calls exit(0). If smbd lets
++	 * that callback run after talloc_stackframe() below, lib/util reports a
++	 * scary "Dangling frame" even though the version path is intentionally
++	 * exiting early. Handle the option before talloc tracking is enabled.
++	 *
++	 * This is not NetBSD4-specific; NetBSD6/7 builds see the same warning
++	 * because it is an smbd early-exit cleanup issue.
++	 */
++	if (smbd_handle_early_version_option(argc, argv)) {
++		exit(0);
++	}
++
+ 	/*
+ 	 * Do this before any other talloc operation
+ 	 */
+@@ -2039,6 +2069,8 @@ extern void build_options(bool screen);
+ 	while((opt = poptGetNextOpt(pc)) != -1) {
+ 		switch (opt)  {
+ 		case 'b':
++			poptFreeContext(pc);
++			TALLOC_FREE(frame);
+ 			build_options(true); /* Display output to screen as well as debug */
+ 			exit(0);
+ 			break;
+@@ -2046,6 +2078,8 @@ extern void build_options(bool screen);
+ 			d_fprintf(stderr, "\nInvalid option %s: %s\n\n",
+ 				  poptBadOption(pc, 0), poptStrerror(opt));
+ 			poptPrintUsage(pc, stderr, 0);
++			poptFreeContext(pc);
++			TALLOC_FREE(frame);
+ 			exit(1);
+ 		}
+ 	}

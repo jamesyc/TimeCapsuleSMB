@@ -22,6 +22,7 @@ from timecapsulesmb.device.compat import (
     require_compatibility,
     render_compatibility_message,
 )
+from timecapsulesmb.device.errors import DeviceError
 
 
 class CompatibilityTests(unittest.TestCase):
@@ -188,9 +189,10 @@ class CompatibilityTests(unittest.TestCase):
         )
 
     def test_require_compatibility_raises_with_fallback_for_missing_probe(self) -> None:
-        with self.assertRaises(SystemExit) as ctx:
+        with self.assertRaises(DeviceError) as ctx:
             require_compatibility(None, fallback_error="probe failed")
         self.assertEqual(str(ctx.exception), "probe failed")
+        self.assertNotIsInstance(ctx.exception, SystemExit)
 
     def test_render_compatibility_message_falls_back_to_reason_detail(self) -> None:
         compat = DeviceCompatibility(

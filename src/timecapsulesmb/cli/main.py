@@ -4,7 +4,8 @@ import argparse
 import sys
 from typing import Optional
 
-from . import activate, bootstrap, configure, deploy, discover, doctor, fsck, set_ssh, repair_xattrs, uninstall
+from . import activate, bootstrap, configure, deploy, discover, doctor, fsck, paths, set_ssh, repair_xattrs, uninstall, validate_install
+from timecapsulesmb.core.paths import DistributionRootError
 from .version_check import check_client_version, render_version_block_message
 
 
@@ -16,9 +17,11 @@ COMMANDS = {
     "discover": discover.main,
     "doctor": doctor.main,
     "fsck": fsck.main,
+    "paths": paths.main,
     "set-ssh": set_ssh.main,
     "repair-xattrs": repair_xattrs.main,
     "uninstall": uninstall.main,
+    "validate-install": validate_install.main,
 }
 
 
@@ -42,6 +45,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             pass
     try:
         return COMMANDS[args.command](args.args)
+    except DistributionRootError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     except KeyboardInterrupt:
         print("\nCancelled.", file=sys.stderr)
         return 130

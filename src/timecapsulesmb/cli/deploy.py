@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import json
 import tempfile
 from pathlib import Path
@@ -8,36 +9,101 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import request_reboot_and_wait, verify_managed_runtime_flow
-from timecapsulesmb.cli.runtime import load_env_config
-from timecapsulesmb.core.config import airport_family_display_name_from_config, parse_bool
+from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
+from timecapsulesmb.core.config import DEFAULTS, AppConfig, airport_family_display_name_from_config, parse_bool, shell_quote
+from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
+from timecapsulesmb.deploy.auth import render_smbpasswd
 from timecapsulesmb.deploy.dry_run import deployment_plan_to_jsonable, format_deployment_plan
-from timecapsulesmb.deploy.executor import (
-    remote_ensure_adisk_uuid,
-    remote_install_auth_files,
-    run_remote_actions,
-    upload_deployment_payload,
-)
-from timecapsulesmb.deploy.planner import build_deployment_plan
-from timecapsulesmb.deploy.templates import (
+from timecapsulesmb.deploy.executor import run_remote_actions, upload_deployment_payload
+from timecapsulesmb.deploy.planner import (
+    BINARY_MDNS_SOURCE,
+    BINARY_NBNS_SOURCE,
+    BINARY_SMBD_SOURCE,
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
-    build_template_bundle,
-    render_template,
-    write_boot_asset,
+    GENERATED_FLASH_CONFIG_SOURCE,
+    GENERATED_SMBPASSWD_SOURCE,
+    GENERATED_USERNAME_MAP_SOURCE,
+    PACKAGED_COMMON_SH_SOURCE,
+    PACKAGED_DFREE_SH_SOURCE,
+    PACKAGED_START_SAMBA_SOURCE,
+    PACKAGED_RC_LOCAL_SOURCE,
+    PACKAGED_WATCHDOG_SOURCE,
+    build_deployment_plan,
+)
+from timecapsulesmb.deploy.boot_assets import (
+    boot_asset_path,
 )
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, payload_family_description, render_compatibility_message
-from timecapsulesmb.device.probe import build_device_paths, discover_volume_root_conn
+from timecapsulesmb.device.storage import (
+    MAST_DISCOVERY_ATTEMPTS,
+    MAST_DISCOVERY_DELAY_SECONDS,
+    PayloadHome,
+    PayloadVerificationResult,
+    build_dry_run_payload_home,
+    mast_volumes_debug_summary,
+    payload_candidate_checks_debug_summary,
+    select_payload_home_with_diagnostics_conn,
+    verify_payload_home_conn,
+    wait_for_mast_volumes_conn,
+)
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_green, color_red
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
 REBOOT_NO_DOWN_MESSAGE = (
     "Reboot was requested but the device did not go down.\n"
     "The deploy stopped the managed runtime before reboot; power-cycle or rerun deploy."
 )
+
+
+def _no_mast_volumes_message(*, attempts: int, delay_seconds: int) -> str:
+    return (
+        f"No deployable HFS disk was found after {attempts} MaSt queries "
+        f"spaced {delay_seconds} seconds apart."
+    )
+
+
+def _no_writable_mast_volumes_message(volume_count: int) -> str:
+    return f"MaSt found {volume_count} deployable HFS volume(s), but deploy could not write to any of them."
+
+
+def _render_flash_config_assignment(key: str, value: str | int) -> str:
+    if isinstance(value, int):
+        return f"{key}={value}"
+    return f"{key}={shell_quote(value)}"
+
+
+def render_flash_runtime_config(
+    config: AppConfig,
+    payload_home: PayloadHome,
+    *,
+    nbns_enabled: bool,
+    debug_logging: bool,
+    apple_mount_wait_seconds: int = DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+) -> str:
+    internal_root_default = config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])
+
+    values: list[tuple[str, str | int]] = [
+        ("TC_CONFIG_VERSION", 1),
+        ("PAYLOAD_DIR_NAME", payload_home.payload_dir_name),
+        ("NET_IFACE", config.require("TC_NET_IFACE")),
+        ("SMB_SAMBA_USER", config.require("TC_SAMBA_USER")),
+        ("MDNS_DEVICE_MODEL", config.get("TC_MDNS_DEVICE_MODEL", DEFAULTS["TC_MDNS_DEVICE_MODEL"])),
+        ("AIRPORT_SYAP", config.get("TC_AIRPORT_SYAP", DEFAULTS["TC_AIRPORT_SYAP"])),
+        ("INTERNAL_SHARE_USE_DISK_ROOT", 1 if parse_bool(internal_root_default) else 0),
+        ("APPLE_MOUNT_WAIT_SECONDS", apple_mount_wait_seconds),
+        ("NBNS_ENABLED", 1 if nbns_enabled else 0),
+        ("SMBD_DEBUG_LOGGING", 1 if debug_logging else 0),
+        ("MDNS_DEBUG_LOGGING", 1 if debug_logging else 0),
+    ]
+    return "\n".join(_render_flash_config_assignment(key, value) for key, value in values) + "\n"
+
+
+def _payload_verification_error(payload_home: PayloadHome, result: PayloadVerificationResult) -> str:
+    return f"managed payload verification failed at {payload_home.payload_dir}: {result.detail}"
 
 
 def _non_negative_int(value: str) -> int:
@@ -52,12 +118,13 @@ def _non_negative_int(value: str) -> int:
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Deploy the checked-in Samba 4 payload to an AirPort storage device.")
+    add_config_argument(parser)
     parser.add_argument("--no-reboot", action="store_true", help="Do not reboot after deployment")
     parser.add_argument("--yes", action="store_true", help="Do not prompt before reboot")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without making changes")
     parser.add_argument("--json", action="store_true", help="Output the dry-run deployment plan as JSON")
     parser.add_argument("--allow-unsupported", action="store_true", help="Proceed even if the detected device is not currently supported")
-    parser.add_argument("--install-nbns", action="store_true", help="Enable the bundled NBNS responder on the next boot")
+    parser.add_argument("--no-nbns", action="store_true", help="Disable the bundled NBNS responder on the next boot")
     parser.add_argument(
         "--mount-wait",
         type=_non_negative_int,
@@ -74,12 +141,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not args.json:
         print("Deploying...")
 
+    nbns_enabled = not args.no_nbns
     ensure_install_id()
-    config = load_env_config()
-    telemetry = TelemetryClient.from_config(config, nbns_enabled=args.install_nbns)
+    app_paths = resolve_app_paths(config_path=args.config)
+    config = load_env_config(env_path=args.config)
+    telemetry = TelemetryClient.from_config(config, nbns_enabled=nbns_enabled)
     with CommandContext(telemetry, "deploy", "deploy_started", "deploy_finished", config=config, args=args) as command_context:
         command_context.update_fields(
-            nbns_enabled=args.install_nbns,
+            nbns_enabled=nbns_enabled,
             reboot_was_attempted=False,
             device_came_back_after_reboot=False,
         )
@@ -90,7 +159,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         smb_password = connection.password
 
         command_context.set_stage("validate_artifacts")
-        artifact_results = validate_artifacts(REPO_ROOT)
+        artifact_results = validate_artifacts(app_paths.distribution_root)
         failures = [message for _, ok, message in artifact_results if not ok]
         if failures:
             raise SystemExit("; ".join(failures))
@@ -112,29 +181,58 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not args.json:
             print(f"Using {payload_family_description(payload_family)} payload...")
         apple_mount_wait_seconds = args.mount_wait
-        command_context.set_stage("discover_volume_root")
-        volume_root = discover_volume_root_conn(connection)
-        share_use_disk_root = parse_bool(config.get("TC_SHARE_USE_DISK_ROOT", "false"))
-        resolved_artifacts = resolve_payload_artifacts(REPO_ROOT, payload_family)
+        resolved_artifacts = resolve_payload_artifacts(app_paths.distribution_root, payload_family)
         smbd_path = resolved_artifacts["smbd"].absolute_path
         mdns_path = resolved_artifacts["mdns-advertiser"].absolute_path
         nbns_path = resolved_artifacts["nbns-advertiser"].absolute_path
-        device_paths = build_device_paths(
-            volume_root,
-            config.require("TC_PAYLOAD_DIR_NAME"),
-            share_use_disk_root=share_use_disk_root,
-        )
+        if args.dry_run:
+            payload_home = build_dry_run_payload_home(config.require("TC_PAYLOAD_DIR_NAME"))
+        else:
+            command_context.set_stage("read_mast")
+            mast_discovery = wait_for_mast_volumes_conn(
+                connection,
+                attempts=MAST_DISCOVERY_ATTEMPTS,
+                delay_seconds=MAST_DISCOVERY_DELAY_SECONDS,
+            )
+            mast_volumes = mast_discovery.volumes
+            command_context.add_debug_fields(
+                mast_read_attempts=mast_discovery.attempts,
+                mast_volume_count=len(mast_volumes),
+                mast_candidates=mast_volumes_debug_summary(mast_volumes),
+            )
+            if not mast_volumes:
+                raise SystemExit(
+                    _no_mast_volumes_message(
+                        attempts=MAST_DISCOVERY_ATTEMPTS,
+                        delay_seconds=MAST_DISCOVERY_DELAY_SECONDS,
+                    )
+                )
+            command_context.set_stage("select_payload_home")
+            selection = select_payload_home_with_diagnostics_conn(
+                connection,
+                mast_volumes,
+                config.require("TC_PAYLOAD_DIR_NAME"),
+                wait_seconds=apple_mount_wait_seconds,
+            )
+            command_context.add_debug_fields(mast_candidate_checks=payload_candidate_checks_debug_summary(selection.checks))
+            if selection.payload_home is None:
+                raise SystemExit(_no_writable_mast_volumes_message(len(mast_volumes)))
+            payload_home = selection.payload_home
         command_context.set_stage("build_deployment_plan")
         plan = build_deployment_plan(
             host,
-            device_paths,
+            payload_home,
             smbd_path,
             mdns_path,
             nbns_path,
-            install_nbns=args.install_nbns,
             activate_netbsd4=is_netbsd4,
             reboot_after_deploy=not args.no_reboot,
             apple_mount_wait_seconds=apple_mount_wait_seconds,
+        )
+        command_context.add_debug_fields(
+            payload_volume_root=plan.volume_root,
+            payload_device_path=plan.device_path,
+            payload_dir=plan.payload_dir,
         )
 
         if args.dry_run:
@@ -157,51 +255,57 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         command_context.set_stage("pre_upload_actions")
         run_remote_actions(connection, plan.pre_upload_actions)
-        command_context.set_stage("ensure_adisk_uuid")
-        adisk_uuid = remote_ensure_adisk_uuid(connection, plan.private_dir)
-        command_context.set_stage("render_templates")
-        template_bundle = build_template_bundle(
+        command_context.set_stage("prepare_deployment_files")
+        flash_config_text = render_flash_runtime_config(
             config,
-            adisk_disk_key=plan.disk_key,
-            adisk_uuid=adisk_uuid,
-            payload_family=payload_family,
+            payload_home,
+            nbns_enabled=nbns_enabled,
             debug_logging=args.debug_logging,
-            data_root=device_paths.data_root,
-            share_use_disk_root=share_use_disk_root,
             apple_mount_wait_seconds=apple_mount_wait_seconds,
         )
 
-        with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp, ExitStack() as boot_assets:
             tmpdir = Path(tmp)
-            rendered_rc_local = tmpdir / "rc.local"
-            rendered_common = tmpdir / "common.sh"
-            rendered_start = tmpdir / "start-samba.sh"
-            rendered_dfree = tmpdir / "dfree.sh"
-            rendered_watchdog = tmpdir / "watchdog.sh"
-            rendered_smbconf = tmpdir / "smb.conf.template"
-            write_boot_asset("rc.local", rendered_rc_local)
-            write_boot_asset("common.sh", rendered_common)
-            rendered_start.write_text(render_template("start-samba.sh", template_bundle.start_script_replacements))
-            write_boot_asset("dfree.sh", rendered_dfree)
-            rendered_watchdog.write_text(render_template("watchdog.sh", template_bundle.watchdog_replacements))
-            rendered_smbconf.write_text(render_template("smb.conf.template", template_bundle.smbconf_replacements))
+            generated_flash_config = tmpdir / "tcapsulesmb.conf"
+            generated_smbpasswd = tmpdir / "smbpasswd"
+            generated_username_map = tmpdir / "username.map"
+            generated_flash_config.write_text(flash_config_text)
+            smbpasswd_text, username_map_text = render_smbpasswd(config.require("TC_SAMBA_USER"), smb_password)
+            generated_smbpasswd.write_text(smbpasswd_text)
+            generated_username_map.write_text(username_map_text)
+            upload_sources = {
+                BINARY_SMBD_SOURCE: plan.smbd_path,
+                BINARY_MDNS_SOURCE: plan.mdns_path,
+                BINARY_NBNS_SOURCE: plan.nbns_path,
+                GENERATED_SMBPASSWD_SOURCE: generated_smbpasswd,
+                GENERATED_USERNAME_MAP_SOURCE: generated_username_map,
+                GENERATED_FLASH_CONFIG_SOURCE: generated_flash_config,
+                PACKAGED_RC_LOCAL_SOURCE: boot_assets.enter_context(boot_asset_path("rc.local")),
+                PACKAGED_COMMON_SH_SOURCE: boot_assets.enter_context(boot_asset_path("common.sh")),
+                PACKAGED_DFREE_SH_SOURCE: boot_assets.enter_context(boot_asset_path("dfree.sh")),
+                PACKAGED_START_SAMBA_SOURCE: boot_assets.enter_context(boot_asset_path("start-samba.sh")),
+                PACKAGED_WATCHDOG_SOURCE: boot_assets.enter_context(boot_asset_path("watchdog.sh")),
+            }
 
             command_context.set_stage("upload_payload")
             upload_deployment_payload(
                 plan,
                 connection=connection,
-                rc_local=rendered_rc_local,
-                common_sh=rendered_common,
-                rendered_start=rendered_start,
-                rendered_dfree=rendered_dfree,
-                rendered_watchdog=rendered_watchdog,
-                rendered_smbconf=rendered_smbconf,
+                source_resolver=upload_sources,
             )
 
-        command_context.set_stage("install_auth_files")
-        remote_install_auth_files(connection, plan.private_dir, config.require("TC_SAMBA_USER"), smb_password)
-        command_context.set_stage("post_auth_actions")
-        run_remote_actions(connection, plan.post_auth_actions)
+        command_context.set_stage("post_upload_actions")
+        run_remote_actions(connection, plan.post_upload_actions)
+
+        command_context.set_stage("verify_payload_upload")
+        payload_verification = verify_payload_home_conn(
+            connection,
+            payload_home,
+            wait_seconds=apple_mount_wait_seconds,
+        )
+        command_context.add_debug_fields(payload_upload_verification=payload_verification.detail)
+        if not payload_verification.ok:
+            raise SystemExit(_payload_verification_error(payload_home, payload_verification))
 
         print(f"Deployed Samba payload to {plan.payload_dir}")
         print("Updated /mnt/Flash boot files.")

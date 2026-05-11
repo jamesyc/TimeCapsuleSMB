@@ -2,39 +2,39 @@
   "artifacts": {
     "mdns-advertiser": {
       "path": "bin/mdns/mdns-advertiser",
-      "sha256": "d2894eb83202e3b019d5db911ec099945142e4d8d455f3e194a2c78f025b363e"
+      "sha256": "fc11d127064af17347e7ae850f1ac1705dc75f814366f6f0f8041e32d24264c6"
     },
     "mdns-advertiser-netbsd4le": {
       "path": "bin/mdns-netbsd4le/mdns-advertiser",
-      "sha256": "bfffd78afb476724619e16bba2114dee2d637272ea5a79f41a8bde588f26bfa0"
+      "sha256": "7b1f273612737399e4a6e3a149c258a05b0edbe1540e4e4f00271cdfceccf6cf"
     },
     "mdns-advertiser-netbsd4be": {
       "path": "bin/mdns-netbsd4be/mdns-advertiser",
-      "sha256": "519bb0ed9258ab6137ce53c97295724b44bca8ff8d95583dbf9c9a290ad36eae"
+      "sha256": "d4afa4fff389a9cea66eeaafba659fb6f42e194bfbc74cd377cda8a149bc378b"
     },
     "nbns-advertiser": {
       "path": "bin/nbns/nbns-advertiser",
-      "sha256": "a1616bf32396cc4f003d89ce9f11e2a3bb7e402a6f9cfffed84a7a4fefdeb6b3"
+      "sha256": "3818f9b118f59900f81b3d805356f2a4b55b8a26c284a9cdccd7d738f8df0861"
     },
     "nbns-advertiser-netbsd4le": {
       "path": "bin/nbns-netbsd4le/nbns-advertiser",
-      "sha256": "da83673e06c05997e9d30ff6f92423d3d7a76c61ef9a9169f6c52d2f7f1ea54d"
+      "sha256": "e42b7e0887c72d9ac6a6ae812dd10acd45960c302816bb6ac5b0a054130a6e74"
     },
     "nbns-advertiser-netbsd4be": {
       "path": "bin/nbns-netbsd4be/nbns-advertiser",
-      "sha256": "5bcb18b0041ea7235322413901b27c69eb69497f9d1378b2fa5f74e6bc42a5dd"
+      "sha256": "21032245bc736cd34facf3bd782b21b6502f3aeae6cd7c8adcc38c3f0736dc1f"
     },
     "smbd": {
       "path": "bin/samba4/smbd",
-      "sha256": "ce6e8131c4ff957d3dafc8c4e342bc9a1bd90cf5a53e25e3b6896eecfe17cf79"
+      "sha256": "a5f4824a0bedfec506d9d9bcd1f4542cc058eba101d34319eb5e4c847687cdfc"
     },
     "smbd-netbsd4le": {
       "path": "bin/samba4-netbsd4le/smbd",
-      "sha256": "333f99861cca6c508c7dbc31793c8fcdb314e9fd9e9abf951b6a020bc8db4193"
+      "sha256": "deaeaa8eb10f29a12f251b1c2e5e054e4659535bc79a1a6ea19217b1238621ad"
     },
     "smbd-netbsd4be": {
       "path": "bin/samba4-netbsd4be/smbd",
-      "sha256": "18ca6df7d26459eef68eeaf1cc4c6bf1c244588667d0bb2d2835fe8de143cf37"
+      "sha256": "8f70eb1a696c8a309274dfeb5f6a337e393399877541f355ef0d4aee3c889e1a"
     }
   }
 }

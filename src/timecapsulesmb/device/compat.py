@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Optional, Protocol
 
 from timecapsulesmb.core.config import AIRPORT_DEVICE_IDENTITIES, AIRPORT_SYAP_TO_MODEL
+from timecapsulesmb.device.errors import DeviceError
 
 
 def _syaps_for_group(group: str) -> tuple[str, ...]:
@@ -113,7 +114,7 @@ class DeviceCompatibility:
 
 def require_compatibility(compat: DeviceCompatibility | None, *, fallback_error: str | None = None) -> DeviceCompatibility:
     if compat is None:
-        raise SystemExit(fallback_error or "Failed to determine remote device OS compatibility.")
+        raise DeviceError(fallback_error or "Failed to determine remote device OS compatibility.")
     return compat
 
 

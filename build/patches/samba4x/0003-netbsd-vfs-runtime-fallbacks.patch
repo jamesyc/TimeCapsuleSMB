@@ -1,0 +1,944 @@
+--- a/source3/modules/vfs_default.c
++++ b/source3/modules/vfs_default.c
+@@ -88,6 +88,18 @@
+ 	handle->conn->open_how_resolve &= ~VFS_OPEN_HOW_RESOLVE_NO_XDEV;
+ #endif
+ 
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
++	/*
++	 * Runtime Time Capsule kernels do not provide usable openat2()
++	 * resolve constraints. Disable the optimistic direct openat2()
++	 * probes so Samba falls back through its component path walk
++	 * instead of weakening those constraints inside vfswrap_openat().
++	 */
++	handle->conn->open_how_resolve &=
++		~(VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS |
++		  VFS_OPEN_HOW_RESOLVE_NO_XDEV);
++#endif
++
+ 	return 0;    /* Return >= 0 for success */
+ }
+ 
+@@ -354,6 +366,26 @@
+ 
+ 	return NT_STATUS_OK;
+ }
++
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
++static int tc_netbsd_symlinkat_compat(const char *target,
++				      const struct files_struct *dirfsp,
++				      const struct smb_filename *smb_fname);
++static ssize_t tc_netbsd_readlinkat_compat(
++	const struct files_struct *dirfsp,
++	const struct smb_filename *smb_fname,
++	char *buf,
++	size_t bufsiz);
++static int tc_netbsd_fstatat_compat(
++	struct vfs_handle_struct *handle,
++	const struct files_struct *dirfsp,
++	const struct smb_filename *smb_fname,
++	SMB_STRUCT_STAT *sbuf,
++	int flags);
++#ifdef TC_SAMBA4X_NETBSD4_COMPAT
++static DIR *tc_netbsd_fdopendir_compat(files_struct *fsp);
++#endif
++#endif
+ 
+ static NTSTATUS vfswrap_create_dfs_pathat(struct vfs_handle_struct *handle,
+ 				struct files_struct *dirfsp,
+@@ -374,9 +406,17 @@
+ 		goto out;
+ 	}
+ 
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
++	{
++		ret = tc_netbsd_symlinkat_compat(msdfs_link,
++						 dirfsp,
++						 smb_fname);
++	}
++#else
+ 	ret = symlinkat(msdfs_link,
+ 			fsp_get_pathref_fd(dirfsp),
+ 			smb_fname->base_name);
++#endif
+ 	if (ret == 0) {
+ 		status = NT_STATUS_OK;
+ 	} else {
+@@ -437,10 +477,19 @@
+ 		}
+ 	}
+ 
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
++	{
++		referral_len = tc_netbsd_readlinkat_compat(dirfsp,
++							   smb_fname,
++							   link_target,
++							   bufsize - 1);
++	}
++#else
+ 	referral_len = readlinkat(fsp_get_pathref_fd(dirfsp),
+ 				smb_fname->base_name,
+ 				link_target,
+ 				bufsize - 1);
++#endif
+ 	if (referral_len == -1) {
+ 		if (errno == EINVAL) {
+ 			/*
+@@ -477,11 +526,21 @@
+ 		goto err;
+ 	}
+ 
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
++	{
++		ret = tc_netbsd_fstatat_compat(handle,
++					       dirfsp,
++					       smb_fname,
++					       &smb_fname->st,
++					       AT_SYMLINK_NOFOLLOW);
++	}
++#else
+        ret = sys_fstatat(fsp_get_pathref_fd(dirfsp),
+ 			 smb_fname->base_name,
+ 			 &smb_fname->st,
+ 			 AT_SYMLINK_NOFOLLOW,
+ 			 lp_fake_directory_create_times(SNUM(handle->conn)));
++#endif
+ 	if (ret < 0) {
+ 		status = map_nt_error_from_unix(errno);
+ 		goto err;
+@@ -549,8 +608,28 @@
+ 	DIR *result;
+ 
+ 	START_PROFILE_X(SNUM(handle->conn), syscall_fdopendir);
++#if defined(TC_SAMBA4X_VFS_AT_PATH_COMPAT) && defined(TC_SAMBA4X_NETBSD4_COMPAT)
++	/*
++	 * NetBSD4's libc does not provide fdopendir(), and Samba's replace
++	 * fallback reports that as NT_STATUS_NOT_SUPPORTED during SMB2
++	 * QUERY_DIRECTORY. Keep fd-relative emulation in the open/stat helpers,
++	 * but use Samba's tracked directory name here: NetBSD4's opendir(".")
++	 * after fchdir() creates a DIR that does not enumerate reliably once
++	 * Samba restores the connection cwd.
++	 *
++	 * fdopendir() transfers ownership of the files_struct fd to the DIR, and
++	 * Samba keeps using fsp's fd for per-entry openat/fstatat lookups while
++	 * the DIR is alive. opendir() creates a separate fd, so attach that DIR
++	 * fd back to fsp and close the original pathref fd. If opendir() fails,
++	 * leave the original fd alone so Samba's normal failure cleanup can close
++	 * it.
++	 */
++	result = tc_netbsd_fdopendir_compat(fsp);
++#else
+ 	result = sys_fdopendir(fsp_get_io_fd(fsp));
++#endif
+ 	END_PROFILE_X(syscall_fdopendir);
++
+ 	return result;
+ }
+ 
+@@ -581,8 +660,552 @@
+ 	START_PROFILE_X(SNUM(handle->conn), syscall_rewinddir);
+ 	rewinddir(dirp);
+ 	END_PROFILE_X(syscall_rewinddir);
++}
++
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
++/*
++ * Time Capsule runtime kernels are older than the NetBSD SDKs used to build
++ * Samba. The NetBSD 6 appliance binary is built against NetBSD 7 headers, and
++ * NetBSD 4 lacks the same *at syscall family, so source3 can see *at/openat2
++ * support at compile time that is missing on-device.
++ *
++ * Do not emulate relative dirfd operations in lib/replace: a raw fd is not
++ * enough context there. The default VFS layer still has Samba's live dirfsp,
++ * so emulate the *at contract by temporarily fchdir()ing to that fd and
++ * calling the older relative-path syscall. This stays scoped to the static
++ * no-pthread appliance build; fchdir() is process-global and would be unsafe
++ * in a normal threaded smbd.
++ */
++static int tc_netbsd_prepare_fd_cwd(int dirfd, int *saved_cwd)
++{
++	int fd;
++	int saved_errno;
++
++	*saved_cwd = -1;
++
++	if (dirfd == AT_FDCWD) {
++		return 0;
++	}
++
++	if (dirfd == -1) {
++		errno = EBADF;
++		return -1;
++	}
++
++	fd = open(".", O_RDONLY);
++	if (fd == -1) {
++		return -1;
++	}
++
++	if (fchdir(dirfd) == -1) {
++		saved_errno = errno;
++		close(fd);
++		errno = saved_errno;
++		return -1;
++	}
++
++	*saved_cwd = fd;
++	return 0;
++}
++
++static int tc_netbsd_restore_cwd(int saved_cwd, int saved_errno)
++{
++	int restore_errno;
++
++	if (saved_cwd == -1) {
++		errno = saved_errno;
++		return 0;
++	}
++
++	if (fchdir(saved_cwd) == -1) {
++		restore_errno = errno;
++		close(saved_cwd);
++		errno = restore_errno;
++		return -1;
++	}
++
++	if (close(saved_cwd) == -1) {
++		restore_errno = errno;
++		errno = restore_errno;
++		return -1;
++	}
++
++	errno = saved_errno;
++	return 0;
++}
++
++static int tc_netbsd_prepare_at_cwd(const struct files_struct *dirfsp,
++				    const struct smb_filename *smb_fname,
++				    const char **path,
++				    int *saved_cwd)
++{
++	const char *base_name = NULL;
++
++	if (smb_fname == NULL ||
++	    smb_fname->base_name == NULL)
++	{
++		errno = EINVAL;
++		return -1;
++	}
++
++	base_name = smb_fname->base_name;
++	*path = base_name;
++	*saved_cwd = -1;
++
++	if (base_name[0] == '/') {
++		return 0;
++	}
++
++	if (dirfsp == NULL) {
++		errno = EINVAL;
++		return -1;
++	}
++
++	return tc_netbsd_prepare_fd_cwd(fsp_get_pathref_fd(dirfsp), saved_cwd);
++}
++
++static char *tc_netbsd_getcwd_talloc(TALLOC_CTX *mem_ctx)
++{
++	size_t size = 256;
++
++	while (size <= 65536) {
++		char *cwd = talloc_array(mem_ctx, char, size);
++		if (cwd == NULL) {
++			errno = ENOMEM;
++			return NULL;
++		}
++		if (getcwd(cwd, size) != NULL) {
++			return cwd;
++		}
++		if (errno != ERANGE) {
++			int saved_errno = errno;
++			TALLOC_FREE(cwd);
++			errno = saved_errno;
++			return NULL;
++		}
++		TALLOC_FREE(cwd);
++		size *= 2;
++	}
++
++	errno = ERANGE;
++	return NULL;
++}
++
++static char *tc_netbsd_at_path_from_fd(TALLOC_CTX *mem_ctx,
++				       const struct files_struct *dirfsp,
++				       const struct smb_filename *smb_fname)
++{
++	const char *base_name = NULL;
++	int saved_cwd = -1;
++	int saved_errno = 0;
++	char *cwd = NULL;
++	char *path = NULL;
++
++	if (smb_fname == NULL ||
++	    smb_fname->base_name == NULL)
++	{
++		errno = EINVAL;
++		return NULL;
++	}
++
++	base_name = smb_fname->base_name;
++	if (base_name[0] == '/') {
++		path = talloc_strdup(mem_ctx, base_name);
++		if (path == NULL) {
++			errno = ENOMEM;
++		}
++		return path;
++	}
++
++	if (dirfsp == NULL) {
++		errno = EINVAL;
++		return NULL;
++	}
++
++	if (tc_netbsd_prepare_fd_cwd(fsp_get_pathref_fd(dirfsp),
++				     &saved_cwd) == -1)
++	{
++		return NULL;
++	}
++
++	cwd = tc_netbsd_getcwd_talloc(mem_ctx);
++	saved_errno = errno;
++	if (tc_netbsd_restore_cwd(saved_cwd, saved_errno) == -1) {
++		return NULL;
++	}
++	if (cwd == NULL) {
++		return NULL;
++	}
++
++	if (strcmp(cwd, "/") == 0) {
++		path = talloc_asprintf(mem_ctx, "/%s", base_name);
++	} else {
++		path = talloc_asprintf(mem_ctx, "%s/%s", cwd, base_name);
++	}
++	if (path == NULL) {
++		errno = ENOMEM;
++	}
++	return path;
++}
++
++static int tc_netbsd_normalize_open_flags(int flags,
++					  bool *want_directory,
++					  bool *want_cloexec)
++{
++	*want_directory = false;
++	*want_cloexec = false;
++
++#ifdef O_SEARCH
++	/*
++	 * NetBSD 7 headers define O_SEARCH but NetBSD 4 headers do not. Samba
++	 * can use it for pathref traversal, while the Time Capsule runtime only
++	 * has older open(). Always consume it here so callers see one behavior
++	 * regardless of which SDK headers built this lane.
++	 */
++	flags &= ~O_SEARCH;
++#endif
++#ifdef O_DIRECTORY
++	if ((flags & O_DIRECTORY) != 0) {
++		*want_directory = true;
++		flags &= ~O_DIRECTORY;
++	}
++#endif
++#ifdef O_CLOEXEC
++	if ((flags & O_CLOEXEC) != 0) {
++		*want_cloexec = true;
++		flags &= ~O_CLOEXEC;
++	}
++#endif
++#ifdef O_PATH
++	flags &= ~O_PATH;
++#endif
++
++	return flags;
++}
++
++static int tc_netbsd_set_cloexec(int fd)
++{
++#ifdef FD_CLOEXEC
++	int fd_flags = fcntl(fd, F_GETFD);
++	if (fd_flags == -1) {
++		return -1;
++	}
++	return fcntl(fd, F_SETFD, fd_flags | FD_CLOEXEC);
++#else
++	errno = ENOSYS;
++	return -1;
++#endif
++}
++
++static int tc_netbsd_validate_opened_file(files_struct *fsp,
++					  int fd,
++					  bool want_directory,
++					  bool want_cloexec)
++{
++	SMB_STRUCT_STAT sbuf;
++	int ret;
++
++	if (fd == -1) {
++		return fd;
++	}
++
++	if (want_cloexec && tc_netbsd_set_cloexec(fd) == -1) {
++		int err = errno;
++		close(fd);
++		errno = err;
++		return -1;
++	}
++
++	if (!want_directory && !fsp->fsp_flags.is_directory) {
++		return fd;
++	}
++
++	ret = sys_fstat(fd,
++			&sbuf,
++			lp_fake_directory_create_times(SNUM(fsp->conn)));
++	if (ret != 0) {
++		int err = errno;
++		close(fd);
++		errno = err;
++		return -1;
++	}
++	if (!S_ISDIR(sbuf.st_ex_mode)) {
++		close(fd);
++		errno = ENOTDIR;
++		return -1;
++	}
++	return fd;
++}
++
++static int tc_netbsd_openat_compat(const struct files_struct *dirfsp,
++				   const struct smb_filename *smb_fname,
++				   files_struct *fsp,
++				   int flags,
++				   mode_t mode)
++{
++	const char *path = NULL;
++	int saved_cwd = -1;
++	int saved_errno = 0;
++	bool want_directory = false;
++	bool want_cloexec = false;
++	int result = -1;
++
++	flags = tc_netbsd_normalize_open_flags(flags,
++					       &want_directory,
++					       &want_cloexec);
++
++	if (tc_netbsd_prepare_at_cwd(dirfsp,
++				     smb_fname,
++				     &path,
++				     &saved_cwd) == -1)
++	{
++		return -1;
++	}
++
++	result = open(path, flags, mode);
++	saved_errno = errno;
++	if (tc_netbsd_restore_cwd(saved_cwd, saved_errno) == -1) {
++		int restore_errno = errno;
++		if (result != -1) {
++			close(result);
++		}
++		errno = restore_errno;
++		return -1;
++	}
++
++	return tc_netbsd_validate_opened_file(fsp,
++					      result,
++					      want_directory,
++					      want_cloexec);
+ }
+ 
++static int tc_netbsd_mkdirat_compat(const struct files_struct *dirfsp,
++				    const struct smb_filename *smb_fname,
++				    mode_t mode)
++{
++	const char *path = NULL;
++	int saved_cwd = -1;
++	int saved_errno = 0;
++	int result = -1;
++
++	if (tc_netbsd_prepare_at_cwd(dirfsp,
++				     smb_fname,
++				     &path,
++				     &saved_cwd) == -1)
++	{
++		return -1;
++	}
++
++	result = mkdir(path, mode);
++	saved_errno = errno;
++	if (tc_netbsd_restore_cwd(saved_cwd, saved_errno) == -1) {
++		return -1;
++	}
++	return result;
++}
++
++static int tc_netbsd_fstatat_compat(
++	struct vfs_handle_struct *handle,
++	const struct files_struct *dirfsp,
++	const struct smb_filename *smb_fname,
++	SMB_STRUCT_STAT *sbuf,
++	int flags)
++{
++	const char *path = NULL;
++	int saved_cwd = -1;
++	int saved_errno = 0;
++	int result = -1;
++
++	if ((flags & ~AT_SYMLINK_NOFOLLOW) != 0) {
++		errno = ENOSYS;
++		return -1;
++	}
++
++	if (tc_netbsd_prepare_at_cwd(dirfsp,
++				     smb_fname,
++				     &path,
++				     &saved_cwd) == -1)
++	{
++		return -1;
++	}
++
++	if ((flags & AT_SYMLINK_NOFOLLOW) != 0) {
++		result = sys_lstat(
++			path,
++			sbuf,
++			lp_fake_directory_create_times(SNUM(handle->conn)));
++	} else {
++		result = sys_stat(
++			path,
++			sbuf,
++			lp_fake_directory_create_times(SNUM(handle->conn)));
++	}
++	saved_errno = errno;
++	if (tc_netbsd_restore_cwd(saved_cwd, saved_errno) == -1) {
++		return -1;
++	}
++	return result;
++}
++
++static int tc_netbsd_unlinkat_compat(const struct files_struct *dirfsp,
++				     const struct smb_filename *smb_fname,
++				     int flags)
++{
++	const char *path = NULL;
++	int saved_cwd = -1;
++	int saved_errno = 0;
++	int result = -1;
++
++	if ((flags & ~AT_REMOVEDIR) != 0) {
++		errno = ENOSYS;
++		return -1;
++	}
++
++	if (tc_netbsd_prepare_at_cwd(dirfsp,
++				     smb_fname,
++				     &path,
++				     &saved_cwd) == -1)
++	{
++		return -1;
++	}
++
++	if ((flags & AT_REMOVEDIR) != 0) {
++		result = rmdir(path);
++	} else {
++		result = unlink(path);
++	}
++	saved_errno = errno;
++	if (tc_netbsd_restore_cwd(saved_cwd, saved_errno) == -1) {
++		return -1;
++	}
++	return result;
++}
++
++static int tc_netbsd_symlinkat_compat(const char *target,
++				      const struct files_struct *dirfsp,
++				      const struct smb_filename *smb_fname)
++{
++	const char *path = NULL;
++	int saved_cwd = -1;
++	int saved_errno = 0;
++	int result = -1;
++
++	if (target == NULL) {
++		errno = EINVAL;
++		return -1;
++	}
++
++	if (tc_netbsd_prepare_at_cwd(dirfsp,
++				     smb_fname,
++				     &path,
++				     &saved_cwd) == -1)
++	{
++		return -1;
++	}
++
++	result = symlink(target, path);
++	saved_errno = errno;
++	if (tc_netbsd_restore_cwd(saved_cwd, saved_errno) == -1) {
++		return -1;
++	}
++	return result;
++}
++
++static ssize_t tc_netbsd_readlinkat_compat(
++	const struct files_struct *dirfsp,
++	const struct smb_filename *smb_fname,
++	char *buf,
++	size_t bufsiz)
++{
++	const char *path = NULL;
++	int saved_cwd = -1;
++	int saved_errno = 0;
++	ssize_t result = -1;
++
++	if (tc_netbsd_prepare_at_cwd(dirfsp,
++				     smb_fname,
++				     &path,
++				     &saved_cwd) == -1)
++	{
++		return -1;
++	}
++
++	result = readlink(path, buf, bufsiz);
++	saved_errno = errno;
++	if (tc_netbsd_restore_cwd(saved_cwd, saved_errno) == -1) {
++		return -1;
++	}
++	return result;
++}
++
++static int tc_netbsd_mknodat_compat(const struct files_struct *dirfsp,
++				    const struct smb_filename *smb_fname,
++				    mode_t mode,
++				    SMB_DEV_T dev)
++{
++	const char *path = NULL;
++	int saved_cwd = -1;
++	int saved_errno = 0;
++	int result = -1;
++
++	if (tc_netbsd_prepare_at_cwd(dirfsp,
++				     smb_fname,
++				     &path,
++				     &saved_cwd) == -1)
++	{
++		return -1;
++	}
++
++	result = sys_mknod(path, mode, dev);
++	saved_errno = errno;
++	if (tc_netbsd_restore_cwd(saved_cwd, saved_errno) == -1) {
++		return -1;
++	}
++	return result;
++}
++
++#ifdef TC_SAMBA4X_NETBSD4_COMPAT
++static DIR *tc_netbsd_fdopendir_compat(files_struct *fsp)
++{
++	DIR *result = NULL;
++	int dir_fd = -1;
++	int fd = fsp_get_io_fd(fsp);
++	int saved_errno = 0;
++
++	if (fd == -1 ||
++	    fsp->fsp_name == NULL ||
++	    fsp->fsp_name->base_name == NULL)
++	{
++		errno = EINVAL;
++		return NULL;
++	}
++
++	result = opendir(fsp->fsp_name->base_name);
++	if (result != NULL) {
++		dir_fd = dirfd(result);
++		if (dir_fd == -1) {
++			saved_errno = errno;
++			closedir(result);
++			errno = saved_errno;
++			return NULL;
++		}
++		if (dir_fd != fd && close(fd) == -1) {
++			saved_errno = errno;
++			closedir(result);
++			errno = saved_errno;
++			return NULL;
++		}
++		if (dir_fd != fd) {
++			fsp_set_fd(fsp, -1);
++			fsp_set_fd(fsp, dir_fd);
++		}
++	}
++
++	return result;
++}
++#endif
++#endif
++
+ static int vfswrap_mkdirat(vfs_handle_struct *handle,
+ 			struct files_struct *dirfsp,
+ 			const struct smb_filename *smb_fname,
+@@ -592,7 +1215,11 @@
+ 
+ 	START_PROFILE_X(SNUM(handle->conn), syscall_mkdirat);
+ 
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
++	result = tc_netbsd_mkdirat_compat(dirfsp, smb_fname, mode);
++#else
+ 	result = mkdirat(fsp_get_pathref_fd(dirfsp), smb_fname->base_name, mode);
++#endif
+ 
+ 	END_PROFILE_X(syscall_mkdirat);
+ 	return result;
+@@ -616,16 +1243,27 @@
+ 			  files_struct *fsp,
+ 			  const struct vfs_open_how *how)
+ {
++#ifndef TC_SAMBA4X_VFS_AT_PATH_COMPAT
+ 	int dirfd = fsp_get_pathref_fd(dirfsp);
++#endif
+ 	int flags = how->flags;
+ 	mode_t mode = how->mode;
++#ifndef TC_SAMBA4X_VFS_AT_PATH_COMPAT
+ 	bool have_opath = false;
++#endif
+ 	bool became_root = false;
+ 	int result;
+ 
+ 	START_PROFILE_X(SNUM(handle->conn), syscall_openat);
+ 
++#ifndef TC_SAMBA4X_VFS_AT_PATH_COMPAT
+ 	SMB_ASSERT((dirfd != -1) || (smb_fname->base_name[0] == '/'));
++#else
++	/*
++	 * The appliance fallback accepts cwd-relative basenames when dirfsp is
++	 * present, because it temporarily fchdir()s to that live pathref fd.
++	 */
++#endif
+ 
+ 	if (how->resolve & ~(VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS |
+ 			     VFS_OPEN_HOW_WITH_BACKUP_INTENT |
+@@ -638,6 +1276,7 @@
+ 
+ 	SMB_ASSERT(!is_named_stream(smb_fname));
+ 
++#ifndef TC_SAMBA4X_VFS_AT_PATH_COMPAT
+ #ifdef O_PATH
+ 	have_opath = true;
+ 	if (fsp->fsp_flags.is_pathref) {
+@@ -662,10 +1301,36 @@
+ 		flags &= (O_PATH|O_CLOEXEC|O_DIRECTORY|O_NOFOLLOW);
+ 	}
+ #endif
++#endif
+ 
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
+ 	if (how->resolve & VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS ||
+ 	    how->resolve & VFS_OPEN_HOW_RESOLVE_NO_XDEV)
+ 	{
++		/*
++		 * vfswrap_connect() disables these features for normal appliance
++		 * connections. If a caller still asks for them, return ENOSYS so
++		 * Samba's caller-level fallback logic can choose the safer path.
++		 */
++		errno = ENOSYS;
++		result = -1;
++		goto out;
++	}
++
++	if (fsp->fsp_flags.is_pathref) {
++		become_root();
++		became_root = true;
++	}
++
++	result = tc_netbsd_openat_compat(dirfsp,
++					 smb_fname,
++					 fsp,
++					 flags,
++					 mode);
++#else
++	if (how->resolve & VFS_OPEN_HOW_RESOLVE_NO_SYMLINKS ||
++	    how->resolve & VFS_OPEN_HOW_RESOLVE_NO_XDEV)
++	{
+ 		struct open_how linux_how = {
+ 			.flags = flags,
+ 			.mode = mode,
+@@ -712,6 +1377,7 @@
+ 			smb_fname->base_name,
+ 			flags,
+ 			mode);
++#endif
+ 
+ 	if (became_root) {
+ 		int err = errno;
+@@ -1316,11 +1982,37 @@
+ 		flags |= RENAME_NOREPLACE;
+ 	}
+ 
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
++	if (flags != 0) {
++		/*
++		 * Samba's create-directory path expects EINVAL when
++		 * RENAME_NOREPLACE is unavailable, then falls back to a
++		 * mkdir+rename sequence that works without renameat2().
++		 */
++		errno = EINVAL;
++		result = -1;
++	} else {
++		TALLOC_CTX *frame = talloc_stackframe();
++		char *src = tc_netbsd_at_path_from_fd(frame,
++						      src_dirfsp,
++						      smb_fname_src);
++		char *dst = tc_netbsd_at_path_from_fd(frame,
++						      dst_dirfsp,
++						      smb_fname_dst);
++		if (src == NULL || dst == NULL) {
++			result = -1;
++		} else {
++			result = rename(src, dst);
++		}
++		TALLOC_FREE(frame);
++	}
++#else
+ 	result = renameat2(fsp_get_pathref_fd(src_dirfsp),
+ 			   smb_fname_src->base_name,
+ 			   fsp_get_pathref_fd(dst_dirfsp),
+ 			   smb_fname_dst->base_name,
+ 			   flags);
++#endif
+ 
+ 	END_PROFILE_X(syscall_renameat);
+ 	return result;
+@@ -1394,12 +2086,20 @@
+ 
+ 	SMB_ASSERT(!is_named_stream(smb_fname));
+ 
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
++	result = tc_netbsd_fstatat_compat(handle,
++					  dirfsp,
++					  smb_fname,
++					  sbuf,
++					  flags);
++#else
+ 	result = sys_fstatat(
+ 		fsp_get_pathref_fd(dirfsp),
+ 		smb_fname->base_name,
+ 		sbuf,
+ 		flags,
+ 		lp_fake_directory_create_times(SNUM(handle->conn)));
++#endif
+ 
+ 	END_PROFILE_X(syscall_fstatat);
+ 	return result;
+@@ -2754,9 +3454,13 @@
+ 
+ 	SMB_ASSERT(!is_named_stream(smb_fname));
+ 
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
++	result = tc_netbsd_unlinkat_compat(dirfsp, smb_fname, flags);
++#else
+ 	result = unlinkat(fsp_get_pathref_fd(dirfsp),
+ 			smb_fname->base_name,
+ 			flags);
++#endif
+ 
+ 	END_PROFILE_X(syscall_unlinkat);
+ 	return result;
+@@ -3243,9 +3947,15 @@
+ 
+ 	SMB_ASSERT(!is_named_stream(new_smb_fname));
+ 
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
++	result = tc_netbsd_symlinkat_compat(link_target->base_name,
++					    dirfsp,
++					    new_smb_fname);
++#else
+ 	result = symlinkat(link_target->base_name,
+ 			fsp_get_pathref_fd(dirfsp),
+ 			new_smb_fname->base_name);
++#endif
+ 	END_PROFILE_X(syscall_symlinkat);
+ 	return result;
+ }
+@@ -3262,10 +3972,17 @@
+ 
+ 	SMB_ASSERT(!is_named_stream(smb_fname));
+ 
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
++	result = tc_netbsd_readlinkat_compat(dirfsp,
++					     smb_fname,
++					     buf,
++					     bufsiz);
++#else
+ 	result = readlinkat(fsp_get_pathref_fd(dirfsp),
+ 			smb_fname->base_name,
+ 			buf,
+ 			bufsiz);
++#endif
+ 
+ 	END_PROFILE_X(syscall_readlinkat);
+ 	return result;
+@@ -3285,11 +4002,32 @@
+ 	SMB_ASSERT(!is_named_stream(old_smb_fname));
+ 	SMB_ASSERT(!is_named_stream(new_smb_fname));
+ 
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
++	if (flags != 0) {
++		errno = ENOSYS;
++		result = -1;
++	} else {
++		TALLOC_CTX *frame = talloc_stackframe();
++		char *oldpath = tc_netbsd_at_path_from_fd(frame,
++							  src_dirfsp,
++							  old_smb_fname);
++		char *newpath = tc_netbsd_at_path_from_fd(frame,
++							  dst_dirfsp,
++							  new_smb_fname);
++		if (oldpath == NULL || newpath == NULL) {
++			result = -1;
++		} else {
++			result = link(oldpath, newpath);
++		}
++		TALLOC_FREE(frame);
++	}
++#else
+ 	result = linkat(fsp_get_pathref_fd(src_dirfsp),
+ 			old_smb_fname->base_name,
+ 			fsp_get_pathref_fd(dst_dirfsp),
+ 			new_smb_fname->base_name,
+ 			flags);
++#endif
+ 
+ 	END_PROFILE_X(syscall_linkat);
+ 	return result;
+@@ -3307,10 +4045,14 @@
+ 
+ 	SMB_ASSERT(!is_named_stream(smb_fname));
+ 
++#ifdef TC_SAMBA4X_VFS_AT_PATH_COMPAT
++	result = tc_netbsd_mknodat_compat(dirfsp, smb_fname, mode, dev);
++#else
+ 	result = sys_mknodat(fsp_get_pathref_fd(dirfsp),
+ 			smb_fname->base_name,
+ 			mode,
+ 			dev);
++#endif
+ 
+ 	END_PROFILE_X(syscall_mknodat);
+ 	return result;
+@@ -4160,5 +4902,3 @@
+ 	return smb_register_vfs(SMB_VFS_INTERFACE_VERSION,
+ 				DEFAULT_VFS_MODULE_NAME, &vfs_default_fns);
+ }
+-
+-

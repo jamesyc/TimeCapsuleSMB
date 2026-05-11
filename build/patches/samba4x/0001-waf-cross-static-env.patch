@@ -1,0 +1,95 @@
+diff --git a/buildtools/wafsamba/samba_autoconf.py b/buildtools/wafsamba/samba_autoconf.py
+index 979d5a3..a5012b3 100644
+--- a/buildtools/wafsamba/samba_autoconf.py
++++ b/buildtools/wafsamba/samba_autoconf.py
+@@ -984,7 +984,9 @@ def CURRENT_CFLAGS(bld, target, cflags,
+     if use_hostcc:
+         ret += ['-D_SAMBA_HOSTCC_']
+     ret += TO_LIST(cflags)
+-    if not 'EXTRA_CFLAGS' in bld.env:
++    if use_hostcc:
++        list = TO_LIST(bld.env.HOST_CFLAGS)
++    elif not 'EXTRA_CFLAGS' in bld.env:
+         list = []
+     else:
+         list = bld.env['EXTRA_CFLAGS']
+diff --git a/buildtools/wafsamba/wafsamba.py b/buildtools/wafsamba/wafsamba.py
+index 8dff3d6..1bc9766 100644
+--- a/buildtools/wafsamba/wafsamba.py
++++ b/buildtools/wafsamba/wafsamba.py
+@@ -40,6 +40,28 @@ LIB_PATH="shared"
+ 
+ os.environ['PYTHONUNBUFFERED'] = '1'
+ 
++def APPLY_HOSTCC_ENV(bld, taskgen):
++    if not getattr(taskgen, 'samba_use_hostcc', False):
++        return
++    if not bld.env.HOSTCC:
++        return
++    taskgen.env = taskgen.env.derive()
++    hostcc = TO_LIST(bld.env.HOSTCC)
++    gccdeps_cflags = [flag for flag in TO_LIST(bld.env.CFLAGS) if flag in ('-MD', '-MMD')]
++    host_cflags = TO_LIST(bld.env.HOST_CFLAGS) + gccdeps_cflags
++    taskgen.env.CC = hostcc
++    taskgen.env.LINK_CC = hostcc
++    taskgen.env.CFLAGS = host_cflags
++    taskgen.env.CPPFLAGS = TO_LIST(bld.env.HOST_CPPFLAGS)
++    taskgen.env.LDFLAGS = []
++    taskgen.env.LINKFLAGS = []
++    taskgen.env.STLIB_MARKER = []
++    taskgen.env.SHLIB_MARKER = []
++    taskgen.env.FULLSTATIC_MARKER = []
++    taskgen.env.EXTRA_CFLAGS = host_cflags
++    taskgen.env.EXTRA_LDFLAGS = []
++
++
+ if Context.HEXVERSION not in (0x2010600,):
+     Logs.error('''
+ Please use the version of waf that comes with Samba, not
+@@ -424,6 +446,24 @@ Build.BuildContext.SAMBA_LIBRARY = SAMBA_LIBRARY
+ 
+ 
+ #################################################################
++def APPLY_SMBD_STATIC_ENV(bld, taskgen):
++    # Time Capsule runs smbd from a tiny RAM disk. Keep the deployed binary
++    # fully static and apply the static link flags only to smbd; external
++    # DCE-RPC helper binaries are intentionally not shipped because executing
++    # them from the HFS data disk is unsafe if Apple firmware unmounts it.
++    if getattr(taskgen, 'target', None) != 'smbd/smbd':
++        return
++    static_linkflags = TO_LIST(getattr(bld.env, 'SMBD_STATIC_LINKFLAGS', []))
++    static_ldflags = TO_LIST(getattr(bld.env, 'SMBD_STATIC_LDFLAGS', []))
++    if not static_linkflags and not static_ldflags:
++        return
++    taskgen.env = taskgen.env.derive()
++    taskgen.env.LINKFLAGS = static_linkflags
++    taskgen.env.LDFLAGS = static_ldflags
++    taskgen.env.LIBPATH = TO_LIST(getattr(bld.env, 'SMBD_STATIC_LIBPATH', []))
++    taskgen.env.SHLIB_MARKER = getattr(bld.env, 'SMBD_STATIC_SHLIB_MARKER', '')
++    taskgen.env.FULLSTATIC_MARKER = getattr(bld.env, 'SMBD_STATIC_FULLSTATIC_MARKER', '-static')
++
+ def SAMBA_BINARY(bld, binname, source,
+                  deps='',
+                  includes='',
+@@ -544,8 +584,11 @@ def SAMBA_BINARY(bld, binname, source,
+         install_path   = None,
+         samba_inst_path= install_path,
+         samba_install  = install,
+-        samba_ldflags  = pie_ldflags
++        samba_ldflags  = pie_ldflags,
++        samba_use_hostcc = use_hostcc
+         )
++    APPLY_HOSTCC_ENV(bld, t)
++    APPLY_SMBD_STATIC_ENV(bld, t)
+ 
+     if manpages is not None and 'XSLTPROC_MANPAGES' in bld.env and bld.env['XSLTPROC_MANPAGES']:
+         bld.MANPAGES(manpages, install)
+@@ -861,6 +904,8 @@ def SAMBA_SUBSYSTEM(bld, modname, source,
+         samba_builtin_subsystem = None,
+         )
+ 
++    APPLY_HOSTCC_ENV(bld, t)
++
+     if cflags_end is not None:
+         t.samba_cflags.extend(TO_LIST(cflags_end))
+ 

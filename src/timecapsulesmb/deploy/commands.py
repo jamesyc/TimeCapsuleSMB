@@ -2,172 +2,180 @@ from __future__ import annotations
 
 import shlex
 from dataclasses import dataclass
+from typing import Iterable, Union
+
+from timecapsulesmb.device.processes import (
+    render_pkill_wait_pkill9_by_ucomm,
+    render_pkill_wait_pkill9_watchdog,
+)
+from timecapsulesmb.device.storage import render_ensure_volume_root_mounted_script
 
 
 @dataclass(frozen=True)
-class RemoteAction:
-    kind: str
-    args: tuple[str, ...]
+class RemoteSymlink:
+    path: str
+    target: str
 
 
-def _render_process_present(pattern: str, *, full: bool) -> str:
-    if full:
-        ps_match = f"*{pattern}*"
-        return (
-            "found=1; "
-            "if ps ax -o command= >/tmp/tcapsule-ps.$$ 2>/dev/null; then "
-            "found=0; "
-            "while IFS= read line; do "
-            f'case "$line" in {ps_match}) found=1; break ;; esac; '
-            "done </tmp/tcapsule-ps.$$; "
-            "rm -f /tmp/tcapsule-ps.$$; "
-            "fi; "
-            '[ \"$found\" -eq 1 ]'
+@dataclass(frozen=True)
+class RemotePermission:
+    path: str
+    mode: str
+
+
+@dataclass(frozen=True)
+class PrepareDirsAction:
+    directories: tuple[str, ...]
+    recreated_symlinks: tuple[RemoteSymlink, ...]
+
+
+@dataclass(frozen=True)
+class InstallPermissionsAction:
+    permissions: tuple[RemotePermission, ...]
+
+
+@dataclass(frozen=True)
+class EnsureVolumeMountedAction:
+    volume_root: str
+    device_path: str
+    wait_seconds: int
+
+
+@dataclass(frozen=True)
+class StopProcessAction:
+    name: str
+
+
+@dataclass(frozen=True)
+class StopWatchdogAction:
+    pass
+
+
+@dataclass(frozen=True)
+class RemovePathAction:
+    path: str
+
+
+@dataclass(frozen=True)
+class RunScriptAction:
+    path: str
+
+
+RemoteAction = Union[
+    EnsureVolumeMountedAction,
+    PrepareDirsAction,
+    InstallPermissionsAction,
+    StopProcessAction,
+    StopWatchdogAction,
+    RemovePathAction,
+    RunScriptAction,
+]
+
+
+def prepare_dirs_action(
+    directories: Iterable[str],
+    recreated_symlinks: Iterable[RemoteSymlink] = (),
+) -> RemoteAction:
+    return PrepareDirsAction(tuple(directories), tuple(recreated_symlinks))
+
+
+def install_permissions_action(permissions: Iterable[RemotePermission]) -> RemoteAction:
+    return InstallPermissionsAction(tuple(permissions))
+
+
+def ensure_volume_mounted_action(volume_root: str, device_path: str, wait_seconds: int) -> RemoteAction:
+    return EnsureVolumeMountedAction(volume_root, device_path, wait_seconds)
+
+
+def _render_prepare_dirs_action(action: PrepareDirsAction) -> str:
+    commands: list[str] = []
+    if action.directories:
+        commands.append("mkdir -p {}".format(" ".join(shlex.quote(path) for path in action.directories)))
+    if action.recreated_symlinks:
+        commands.append("rm -rf {}".format(" ".join(shlex.quote(link.path) for link in action.recreated_symlinks)))
+        commands.extend(
+            f"ln -s {shlex.quote(link.target)} {shlex.quote(link.path)}"
+            for link in action.recreated_symlinks
         )
-
-    return (
-        "found=1; "
-        "if ps ax -o ucomm= >/tmp/tcapsule-ps.$$ 2>/dev/null; then "
-        "found=0; "
-        "while IFS= read line; do "
-        f'case \"$line\" in {shlex.quote(pattern)}) found=1; break ;; esac; '
-        "done </tmp/tcapsule-ps.$$; "
-        "rm -f /tmp/tcapsule-ps.$$; "
-        "fi; "
-        '[ \"$found\" -eq 1 ]'
-    )
+    return " && ".join(commands) if commands else "true"
 
 
-def prepare_dirs_action(payload_dir: str) -> RemoteAction:
-    return RemoteAction("prepare_dirs", (payload_dir,))
+def _render_install_permissions_action(action: InstallPermissionsAction) -> str:
+    commands: list[str] = []
+    for permission in action.permissions:
+        commands.append(f"chmod {shlex.quote(permission.mode)} {shlex.quote(permission.path)}")
+    return " && ".join(commands) if commands else "true"
 
 
-def initialize_data_root_action(data_root: str, marker_path: str) -> RemoteAction:
-    return RemoteAction("initialize_data_root", (data_root, marker_path))
-
-
-def install_permissions_action(payload_dir: str) -> RemoteAction:
-    return RemoteAction("install_permissions", (payload_dir,))
-
-
-def enable_nbns_action(private_dir: str) -> RemoteAction:
-    return RemoteAction("enable_nbns", (private_dir,))
-
-
-def stop_process_action(name: str) -> RemoteAction:
-    return RemoteAction("stop_process", (name,))
-
-
-def stop_process_full_action(pattern: str) -> RemoteAction:
-    return RemoteAction("stop_process_full", (pattern,))
-
-
-def remove_path_action(path: str) -> RemoteAction:
-    return RemoteAction("remove_path", (path,))
-
-
-def run_script_action(path: str) -> RemoteAction:
-    return RemoteAction("run_script", (path,))
+def _render_remove_path_action(action: RemovePathAction) -> str:
+    path = action.path
+    if path.rstrip("/") == "/mnt/Flash" or (
+        path.startswith("/mnt/Flash")
+        and len(path) > len("/mnt/Flash")
+        and path[len("/mnt/Flash")].isspace()
+    ):
+        raise ValueError(f"Refusing to remove flash root path: {path}")
+    return f"rm -rf {shlex.quote(path)}"
 
 
 def render_remote_action(action: RemoteAction) -> str:
-    if action.kind == "stop_process":
-        name = action.args[0]
-        return (
-            f"pkill {shlex.quote(name)} >/dev/null 2>&1 || true; "
-            "attempt=0; "
-            f"while /bin/sh -c {shlex.quote(_render_process_present(name, full=False))} >/dev/null 2>&1; do "
-            'if [ "$attempt" -ge 10 ]; then break; fi; '
-            "attempt=$((attempt + 1)); "
-            "sleep 1; "
-            "done"
-        )
-
-    if action.kind == "stop_process_full":
-        pattern = action.args[0]
-        return (
-            f"pkill -f {shlex.quote(pattern)} >/dev/null 2>&1 || true; "
-            "attempt=0; "
-            f"while /bin/sh -c {shlex.quote(_render_process_present(pattern, full=True))} >/dev/null 2>&1; do "
-            'if [ "$attempt" -ge 10 ]; then break; fi; '
-            "attempt=$((attempt + 1)); "
-            "sleep 1; "
-            "done"
-        )
-
-    if action.kind == "prepare_dirs":
-        payload_dir = action.args[0]
-        return (
-            "mkdir -p {} {} {} {} {} {} && "
-            "rm -rf {} {} {} {} && "
-            "ln -s {} {} && "
-            "ln -s {} {} && "
-            "ln -s {} {} && "
-            "ln -s {} {}"
-        ).format(
-            shlex.quote(payload_dir),
-            shlex.quote(payload_dir + "/private"),
-            shlex.quote(payload_dir + "/cache"),
-            shlex.quote("/mnt/Flash"),
-            shlex.quote("/root"),
-            shlex.quote("/mnt/Memory/samba4"),
-            shlex.quote("/root/tc-netbsd4"),
-            shlex.quote("/root/tc-netbsd4le"),
-            shlex.quote("/root/tc-netbsd4be"),
-            shlex.quote("/root/tc-netbsd7"),
-            shlex.quote("/mnt/Memory/samba4"),
-            shlex.quote("/root/tc-netbsd4"),
-            shlex.quote("/mnt/Memory/samba4"),
-            shlex.quote("/root/tc-netbsd4le"),
-            shlex.quote("/mnt/Memory/samba4"),
-            shlex.quote("/root/tc-netbsd4be"),
-            shlex.quote("/mnt/Memory/samba4"),
-            shlex.quote("/root/tc-netbsd7"),
-        )
-
-    if action.kind == "initialize_data_root":
-        data_root, marker_path = action.args
-        return (
-            f"mkdir -p {shlex.quote(data_root)} && "
-            f"/bin/sh -c {shlex.quote(f': > {shlex.quote(marker_path)}')}"
-        )
-
-    if action.kind == "install_permissions":
-        payload_dir = action.args[0]
-        private_dir = f"{payload_dir}/private"
-        return (
-            f"chmod 755 {shlex.quote(payload_dir + '/smbd')} "
-            f"{shlex.quote(payload_dir + '/mdns-advertiser')} "
-            f"{shlex.quote(payload_dir + '/nbns-advertiser')} && "
-            f"chmod 755 {shlex.quote('/mnt/Flash/rc.local')} "
-            f"{shlex.quote('/mnt/Flash/common.sh')} "
-            f"{shlex.quote('/mnt/Flash/start-samba.sh')} "
-            f"{shlex.quote('/mnt/Flash/watchdog.sh')} "
-            f"{shlex.quote('/mnt/Flash/dfree.sh')} "
-            f"{shlex.quote('/mnt/Flash/mdns-advertiser')} && "
-            f"chmod 755 {shlex.quote(payload_dir + '/cache')} && "
-            f"chmod 700 {shlex.quote(private_dir)} && "
-            f"chmod 600 {shlex.quote(private_dir + '/smbpasswd')} "
-            f"{shlex.quote(private_dir + '/username.map')} "
-            f"{shlex.quote(private_dir + '/adisk.uuid')} && "
-            f"if [ -f {shlex.quote(private_dir + '/nbns.enabled')} ]; then "
-            f"chmod 600 {shlex.quote(private_dir + '/nbns.enabled')}; "
-            f"fi"
-        )
-
-    if action.kind == "enable_nbns":
-        private_dir = action.args[0]
-        marker_path = private_dir + "/nbns.enabled"
-        return f"/bin/sh -c {shlex.quote(f': > {shlex.quote(marker_path)}')}"
-
-    if action.kind == "remove_path":
-        return f"rm -rf {shlex.quote(action.args[0])}"
-
-    if action.kind == "run_script":
-        return f"/bin/sh {shlex.quote(action.args[0])}"
-
-    raise ValueError(f"Unknown remote action kind: {action.kind}")
+    if isinstance(action, EnsureVolumeMountedAction):
+        script = render_ensure_volume_root_mounted_script(action.volume_root, action.device_path, action.wait_seconds)
+        return f"/bin/sh -c {shlex.quote(script)}"
+    if isinstance(action, StopProcessAction):
+        return render_pkill_wait_pkill9_by_ucomm(action.name, attempts=5)
+    if isinstance(action, StopWatchdogAction):
+        return render_pkill_wait_pkill9_watchdog(attempts=5)
+    if isinstance(action, PrepareDirsAction):
+        return _render_prepare_dirs_action(action)
+    if isinstance(action, InstallPermissionsAction):
+        return _render_install_permissions_action(action)
+    if isinstance(action, RemovePathAction):
+        return _render_remove_path_action(action)
+    if isinstance(action, RunScriptAction):
+        return f"/bin/sh {shlex.quote(action.path)}"
+    raise TypeError(f"Unsupported remote action: {action!r}")
 
 
 def render_remote_actions(actions: list[RemoteAction]) -> list[str]:
     return [render_remote_action(action) for action in actions]
+
+
+def remote_action_to_jsonable(action: RemoteAction) -> dict[str, object]:
+    if isinstance(action, EnsureVolumeMountedAction):
+        return {
+            "kind": "ensure_volume_mounted",
+            "volume_root": action.volume_root,
+            "device_path": action.device_path,
+            "wait_seconds": action.wait_seconds,
+        }
+    if isinstance(action, StopProcessAction):
+        return {"kind": "stop_process", "args": [action.name]}
+    if isinstance(action, StopWatchdogAction):
+        return {"kind": "stop_watchdog", "args": []}
+    if isinstance(action, PrepareDirsAction):
+        return {
+            "kind": "prepare_dirs",
+            "directories": list(action.directories),
+            "recreated_symlinks": [
+                {"path": link.path, "target": link.target}
+                for link in action.recreated_symlinks
+            ],
+        }
+    if isinstance(action, InstallPermissionsAction):
+        return {
+            "kind": "install_permissions",
+            "permissions": [
+                {"path": permission.path, "mode": permission.mode}
+                for permission in action.permissions
+            ],
+        }
+    if isinstance(action, RemovePathAction):
+        return {"kind": "remove_path", "args": [action.path]}
+    if isinstance(action, RunScriptAction):
+        return {"kind": "run_script", "args": [action.path]}
+    raise TypeError(f"Unsupported remote action: {action!r}")
+
+
+def remote_actions_to_jsonable(actions: list[RemoteAction]) -> list[dict[str, object]]:
+    return [remote_action_to_jsonable(action) for action in actions]

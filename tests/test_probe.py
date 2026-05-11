@@ -12,34 +12,47 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.device import probe
+import timecapsulesmb.device.probe as probe
 from timecapsulesmb.device.probe import (
-    nbns_marker_enabled_conn,
     preferred_interface_name,
     probe_remote_interface_candidates_conn,
     probe_remote_interface_conn,
+    read_runtime_share_names_conn,
     read_runtime_log_tails_conn,
 )
 from timecapsulesmb.transport.ssh import SshConnection
 
 
 class ProbeTests(unittest.TestCase):
-    def test_nbns_marker_enabled_conn_uses_short_timeout_for_disk_path_probe(self) -> None:
+    def test_read_runtime_share_names_conn_parses_shares_tsv(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
-        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="enabled\n")
+        proc = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="AirPort Disk\t/Volumes/dk2/ShareRoot\nBackup (dk3)\t/Volumes/dk3\n",
+        )
 
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
-            result = nbns_marker_enabled_conn(connection, "/Volumes/dk2/.samba4")
+            result = read_runtime_share_names_conn(connection)
 
-        self.assertTrue(result)
+        self.assertEqual(result, ["AirPort Disk", "Backup (dk3)"])
         run_ssh_mock.assert_called_once()
         args, kwargs = run_ssh_mock.call_args
         self.assertEqual(args[0], connection)
-        self.assertIn("/Volumes/dk2/.samba4/private/nbns.enabled", args[1])
+        self.assertIn(probe.RUNTIME_SHARES_TSV, args[1])
         self.assertFalse(kwargs["check"])
-        self.assertEqual(kwargs["timeout"], probe.NBNS_MARKER_PROBE_TIMEOUT_SECONDS)
+        self.assertEqual(kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
 
-    def test_read_runtime_log_tails_conn_fetches_rc_local_and_mdns_with_short_timeout(self) -> None:
+    def test_read_runtime_share_names_conn_ignores_non_tsv_output(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="enabled\n\n")
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            result = read_runtime_share_names_conn(connection)
+
+        self.assertEqual(result, [])
+
+    def test_read_runtime_log_tails_conn_fetches_ram_boot_and_payload_logs_with_short_timeout(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
 
         def fake_run_ssh(
@@ -47,18 +60,30 @@ class ProbeTests(unittest.TestCase):
             remote_cmd: str,
             **_kwargs: object,
         ) -> subprocess.CompletedProcess[str]:
+            if "payload.tsv" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="/Volumes/dk2/.samba4\n", stderr="")
             if "rc.local.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rc log\n", stderr="")
+            if "watchdog.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="watchdog log\n", stderr="")
             if "mdns.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="mdns log\n", stderr="")
+            if "nbns.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="nbns log\n", stderr="")
+            if "log.smbd" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="smbd log\n", stderr="")
             self.fail(f"unexpected remote command: {remote_cmd}")
 
         with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=fake_run_ssh) as run_ssh_mock:
             logs = read_runtime_log_tails_conn(connection)
 
         self.assertEqual(logs["remote_rc_local_log_tail"], "rc log")
+        self.assertEqual(logs["remote_payload_log_dir"], "/Volumes/dk2/.samba4")
+        self.assertEqual(logs["remote_watchdog_log_tail"], "watchdog log")
         self.assertEqual(logs["remote_mdns_log_tail"], "mdns log")
-        self.assertEqual(run_ssh_mock.call_count, 2)
+        self.assertEqual(logs["remote_nbns_log_tail"], "nbns log")
+        self.assertEqual(logs["remote_smbd_log_tail"], "smbd log")
+        self.assertEqual(run_ssh_mock.call_count, 6)
         for call in run_ssh_mock.call_args_list:
             args, kwargs = call
             self.assertEqual(args[0], connection)
@@ -104,6 +129,39 @@ class ProbeTests(unittest.TestCase):
             args, _kwargs = call
             self.assertEqual(args[0], connection)
             self.assertEqual(len(args), 2)
+
+    def test_probe_remote_os_info_conn_ignores_ssh_client_preamble(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        proc = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout=(
+                "Warning: No xauth data; using fake authentication data for X11 forwarding.\n"
+                "X11 forwarding request failed on channel 0.\n"
+                "NetBSD\n"
+                "4.0_STABLE\n"
+                "earmv4\n"
+            ),
+        )
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            result = probe._probe_remote_os_info_conn(connection)
+
+        self.assertEqual(result, ("NetBSD", "4.0_STABLE", "earmv4"))
+
+    def test_probe_remote_elf_endianness_uses_dd_and_sed_only(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="\\001$\nlittle\n")
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
+            result = probe._probe_remote_elf_endianness_conn(connection)
+
+        self.assertEqual(result, "little")
+        remote_cmd = run_ssh_mock.call_args.args[1]
+        self.assertIn("/bin/dd", remote_cmd)
+        self.assertIn("/usr/bin/sed -n l", remote_cmd)
+        self.assertNotIn("/usr/bin/tr", remote_cmd)
+        self.assertNotIn("/usr/bin/od", remote_cmd)
 
     def test_extract_airport_identity_from_text_finds_airport_extreme_model(self) -> None:
         result = probe.extract_airport_identity_from_text("prefix\x00psyAM\x00pAirPort7,120\x00suffix")
@@ -172,6 +230,24 @@ bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu
             result = probe_remote_interface_candidates_conn(connection)
         self.assertEqual(result.preferred_iface, "bridge0")
         self.assertEqual(preferred_interface_name(result.candidates, target_ips=("10.0.1.1",)), "bcmeth1")
+
+    def test_probe_remote_interface_candidates_reports_target_ip_matches(self) -> None:
+        ifconfig_output = """
+bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+\tinet 192.168.168.111 netmask 0xffffff00 broadcast 192.168.168.255
+\tstatus: active
+bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+\tinet 169.254.117.175 netmask 0xffff0000 broadcast 169.254.255.255
+\tstatus: active
+lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> metric 0 mtu 33172
+\tinet 127.0.0.1 netmask 0xff000000
+"""
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=ifconfig_output)
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            result = probe_remote_interface_candidates_conn(connection, target_ips=("192.168.168.111",))
+        self.assertEqual(result.preferred_iface, "bcmeth1")
+        self.assertEqual([candidate.name for candidate in result.target_ip_matches], ["bcmeth1"])
 
     def test_preferred_interface_name_private_ipv4_beats_link_local_without_target_ip(self) -> None:
         ifconfig_output = """

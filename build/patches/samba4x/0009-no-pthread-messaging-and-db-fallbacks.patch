@@ -1,0 +1,133 @@
+diff --git a/lib/messaging/messages_dgm.c b/lib/messaging/messages_dgm.c
+index 1c96b2f..20b6884 100644
+--- a/lib/messaging/messages_dgm.c
++++ b/lib/messaging/messages_dgm.c
+@@ -528,6 +528,18 @@ static void messaging_dgm_out_queue_trigger(struct tevent_req *req,
+ 
+ 	tevent_req_reset_endtime(req);
+ 
++#ifndef HAVE_PTHREAD
++	/*
++	 * The Time Capsule appliance binary is a static no-pthread smbd.
++	 * The queued datagram path is only for full sockets and depends on
++	 * pthreadpool_tevent. Do not enter that path without pthreads; the
++	 * direct nonblocking send path below is enough for normal small
++	 * Samba control datagrams, and a full socket should fail cleanly.
++	 */
++	tevent_req_error(req, ENOSYS);
++	return;
++#endif
++
+ 	state->subreq = pthreadpool_tevent_job_send(
+ 		state, state->ev, state->pool,
+ 		messaging_dgm_out_threaded_job, state);
+@@ -669,6 +681,17 @@ static int messaging_dgm_out_send_fragment(
+ 		}
+ 	}
+ 
++#ifndef HAVE_PTHREAD
++	/*
++	 * Without pthread support there is no safe background sender for a
++	 * full datagram socket. Return a real send error instead of creating
++	 * a pthreadpool-backed queue that registers atfork handlers and aborts
++	 * in smbd helper children on the appliance.
++	 */
++	DBG_WARNING("messaging datagram send queue unavailable without pthreads\n");
++	return EWOULDBLOCK;
++#endif
++
+ 	req = messaging_dgm_out_queue_send(out, ev, out, iov, iovlen,
+ 					   fds, num_fds);
+ 	if (req == NULL) {
+@@ -1079,6 +1102,7 @@ int messaging_dgm_init(struct tevent_context *ev,
+ 
+ 	ctx->have_dgm_context = &have_dgm_context;
+ 
++#ifdef HAVE_PTHREAD
+ 	ret = pthreadpool_tevent_init(ctx, UINT_MAX, &ctx->pool);
+ 	if (ret != 0) {
+ 		DBG_WARNING("pthreadpool_tevent_init failed: %s\n",
+@@ -1086,6 +1110,15 @@ int messaging_dgm_init(struct tevent_context *ev,
+ 		TALLOC_FREE(ctx);
+ 		return ret;
+ 	}
++#else
++	/*
++	 * NetBSD Time Capsule targets run the static smbd without libpthread.
++	 * Keep datagram messaging usable via direct nonblocking sends, but do
++	 * not initialize pthreadpool_tevent: its atfork/assert paths are not
++	 * valid in this build and kill notifyd/client children with SIGABRT.
++	 */
++	ctx->pool = NULL;
++#endif
+ 
+ 	global_dgm_context = ctx;
+ 	return 0;
+diff --git a/source3/lib/messages.c b/source3/lib/messages.c
+index b856a28..f694253 100644
+--- a/source3/lib/messages.c
++++ b/source3/lib/messages.c
+@@ -194,7 +194,20 @@ static bool messaging_register_event_context(struct messaging_context *ctx,
+ 
+ 		if (reg->refcount == 0) {
+ 			if (reg->ev != NULL) {
++#ifndef HAVE_PTHREAD
++				/*
++				 * The Time Capsule appliance build removes
++				 * pthreads and runs a static smbd. In this
++				 * mode stale filtered-read event context
++				 * bookkeeping should not abort the whole file
++				 * server; clear the stale pointer and reuse the
++				 * slot.
++				 */
++				DBG_WARNING("clearing stale messaging event context registration\n");
++				reg->ev = NULL;
++#else
+ 				abort();
++#endif
+ 			}
+ 			free_reg = reg;
+ 			/*
+@@ -1113,7 +1126,18 @@ static void messaging_filtered_read_cleanup(struct tevent_req *req,
+ 
+ 	ok = messaging_deregister_event_context(msg_ctx, state->ev);
+ 	if (!ok) {
++#ifndef HAVE_PTHREAD
++		/*
++		 * A missing deregistration is preferable to crashing smbd on
++		 * this single-threaded appliance build. The filtered read is
++		 * already being torn down, and the waiter arrays are cleaned
++		 * below, so keep serving and leave a log breadcrumb for future
++		 * audits.
++		 */
++		DBG_WARNING("messaging event context deregistration was already gone\n");
++#else
+ 		abort();
++#endif
+ 	}
+ 
+ 	/*
+diff --git a/source3/lib/tallocmsg.c b/source3/lib/tallocmsg.c
+index a5c6603..79de4f5 100644
+--- a/source3/lib/tallocmsg.c
++++ b/source3/lib/tallocmsg.c
+@@ -64,6 +64,19 @@ void register_msg_pool_usage(
+ {
+ 	struct tevent_req *req = NULL;
+ 
++#ifndef HAVE_PTHREAD
++	/*
++	 * The Time Capsule appliance build runs Samba without pthread support on
++	 * NetBSD4 and NetBSD6/7. Samba 4.24's MSG_REQ_POOL_USAGE diagnostic hook
++	 * registers a filtered messaging reader during smbd startup; in the
++	 * static no-pthread build that path aborts before smbd can bind TCP 445.
++	 *
++	 * This only disables the smbcontrol memory-pool report hook. Normal Samba
++	 * messaging, process control, and SMB serving do not depend on it.
++	 */
++	return;
++#endif
++
+ 	req = messaging_filtered_read_send(
+ 		mem_ctx,
+ 		messaging_tevent_context(msg_ctx),

@@ -17,11 +17,12 @@ from timecapsulesmb.discovery.bonjour import (
     discover_snapshot_detailed,
     resolve_service_instance,
 )
+from timecapsulesmb.device.probe import RuntimeNamingIdentityProbeResult
 
 
 @dataclass(frozen=True)
 class BonjourExpectedIdentity:
-    instance_name: str
+    instance_name: str | None
     host_label: str | None
     target_ip: str | None
 
@@ -30,7 +31,7 @@ class BonjourExpectedIdentity:
 class BonjourInstanceSelection:
     instance: BonjourServiceInstance | None
     candidates: list[BonjourServiceInstance]
-    expected_instance_name: str
+    expected_instance_name: str | None
 
 
 @dataclass(frozen=True)
@@ -50,31 +51,35 @@ class BonjourServiceTarget:
         return host
 
 
-def build_bonjour_expected_identity(config: AppConfig) -> BonjourExpectedIdentity:
+def build_bonjour_expected_identity(
+    config: AppConfig,
+    runtime_naming_identity: RuntimeNamingIdentityProbeResult | None = None,
+) -> BonjourExpectedIdentity:
     target_ip = None
     candidate_ip = extract_host(config.get("TC_HOST")).strip()
     if candidate_ip:
         try:
-            ipaddress.ip_address(candidate_ip)
+            parsed_ip = ipaddress.ip_address(candidate_ip)
         except ValueError:
             pass
         else:
-            target_ip = candidate_ip
+            if parsed_ip.version == 4:
+                target_ip = candidate_ip
     return BonjourExpectedIdentity(
-        instance_name=config.require("TC_MDNS_INSTANCE_NAME"),
-        host_label=config.get("TC_MDNS_HOST_LABEL") or None,
+        instance_name=runtime_naming_identity.mdns_instance_name if runtime_naming_identity is not None else None,
+        host_label=runtime_naming_identity.mdns_host_label if runtime_naming_identity is not None else None,
         target_ip=target_ip,
     )
 
 
 def discover_smb_services_detailed(
     timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC,
+    *,
+    include_related: bool = False,
 ) -> tuple[BonjourDiscoverySnapshot | None, CheckResult | None, BonjourDiscoveryDiagnostics | None]:
     try:
-        snapshot, diagnostics = discover_snapshot_detailed(SMB_SERVICE, timeout=timeout)
+        snapshot, diagnostics = discover_snapshot_detailed(None if include_related else SMB_SERVICE, timeout=timeout)
         return snapshot, None, diagnostics
-    except SystemExit as e:
-        return None, CheckResult("FAIL", f"Bonjour check failed: {e}"), None
     except Exception as e:
         return None, CheckResult("FAIL", f"Bonjour check failed: {e}"), None
 
@@ -104,7 +109,7 @@ def check_smb_instance(selection: BonjourInstanceSelection) -> list[CheckResult]
     return [
         CheckResult(
             "FAIL",
-            f"no discovered _smb._tcp instance matched configured instance {selection.expected_instance_name!r}",
+            f"no discovered _smb._tcp instance matched expected device instance {selection.expected_instance_name!r}",
         ),
         CheckResult(
             "INFO",
@@ -116,6 +121,21 @@ def check_smb_instance(selection: BonjourInstanceSelection) -> list[CheckResult]
             ),
         ),
     ]
+
+
+def select_resolved_smb_record_by_ip(
+    records: list[BonjourResolvedService],
+    target_ip: str,
+) -> BonjourResolvedService | None:
+    matches = [
+        record
+        for record in records
+        if (record.service_type == SMB_SERVICE or record.service_type.startswith(f"{SMB_SERVICE}."))
+        and target_ip in (record.ipv4 or [])
+    ]
+    if not matches:
+        return None
+    return sorted(matches, key=lambda record: (record.name or "", record.hostname or "", record.fullname or ""))[0]
 
 
 def select_resolved_smb_record(
@@ -141,8 +161,6 @@ def select_resolved_smb_record(
 def resolve_smb_instance(instance: BonjourServiceInstance, timeout_ms: int = FINAL_PENDING_RESOLVE_TIMEOUT_MS) -> tuple[BonjourResolvedService | None, CheckResult | None]:
     try:
         record = resolve_service_instance(instance, timeout_ms=timeout_ms)
-    except SystemExit as e:
-        return None, CheckResult("FAIL", f"Bonjour check failed: {e}")
     except Exception as e:
         return None, CheckResult("FAIL", f"Bonjour check failed: {e}")
     if record is None:
@@ -156,11 +174,11 @@ def resolve_smb_instance(instance: BonjourServiceInstance, timeout_ms: int = FIN
 def resolve_smb_service_target(
     record: BonjourResolvedService,
     *,
-    expected_instance_name: str,
+    expected_instance_name: str | None,
 ) -> BonjourServiceTarget:
     hostname = (record.hostname or "").strip().rstrip(".")
     return BonjourServiceTarget(
-        instance_name=expected_instance_name,
+        instance_name=expected_instance_name or record.name,
         hostname=hostname or None,
         port=record.port or 445,
     )
@@ -222,3 +240,30 @@ def check_bonjour_host_ip(
     if known_ips:
         return CheckResult("PASS", f"resolved Bonjour host {hostname} to {', '.join(known_ips)}")
     return CheckResult("FAIL", f"could not resolve Bonjour host {hostname}")
+
+
+def check_bonjour_host_link_local_ips(
+    hostname: str,
+    *,
+    expected_ip: str | None = None,
+    record_ips: list[str] | None = None,
+) -> CheckResult | None:
+    if not expected_ip:
+        return None
+
+    link_local_ips: list[str] = []
+    for ip in record_ips or []:
+        try:
+            parsed_ip = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if parsed_ip.version == 4 and parsed_ip.is_link_local and ip not in link_local_ips:
+            link_local_ips.append(ip)
+
+    if not link_local_ips:
+        return None
+
+    return CheckResult(
+        "WARN",
+        f"Bonjour host {hostname} also advertised link-local IPv4 {', '.join(link_local_ips)}; clients may have stale mDNS cache",
+    )

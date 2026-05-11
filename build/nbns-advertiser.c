@@ -26,6 +26,17 @@
 
 static volatile sig_atomic_t g_stop = 0;
 
+static ssize_t sendto_retry(int sockfd, const void *buf, size_t len, int flags,
+                            const struct sockaddr *dest, socklen_t dest_len) {
+    ssize_t sent;
+
+    do {
+        sent = sendto(sockfd, buf, len, flags, dest, dest_len);
+    } while (sent < 0 && errno == EINTR);
+
+    return sent;
+}
+
 struct config {
     char netbios_name[MAX_NAME];
     uint32_t ipv4_addr;
@@ -296,7 +307,7 @@ static int maybe_respond_to_query(int sock,
         return 0;
     }
 
-    if (sendto(sock, response, (size_t)response_len, 0, (const struct sockaddr *)peer, peer_len) < 0) {
+    if (sendto_retry(sock, response, (size_t)response_len, 0, (const struct sockaddr *)peer, peer_len) < 0) {
         perror("sendto");
     }
 

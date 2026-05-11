@@ -16,6 +16,7 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.cli.flows import (
     ACP_REBOOT_REQUEST_TIMEOUT_SECONDS,
     REBOOT_UP_TIMEOUT_MESSAGE,
+    observe_reboot_cycle,
     request_reboot_and_wait,
     wait_for_device_up,
     wait_for_tcp_port_state,
@@ -27,7 +28,7 @@ from timecapsulesmb.device.probe import (
     ManagedSmbdProbeResult,
 )
 from timecapsulesmb.integrations.acp import ACPConnectionError
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
 
 class FakeCommandContext:
@@ -100,6 +101,27 @@ class CliFlowTests(unittest.TestCase):
         self.assertTrue(ok)
         tcp_open_mock.assert_called_once_with("10.0.0.2", 5009)
         sleep_mock.assert_not_called()
+
+    def test_observe_reboot_cycle_succeeds_without_requesting_reboot(self) -> None:
+        command_context = FakeCommandContext()
+        output = io.StringIO()
+        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
+            with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
+                with redirect_stdout(output):
+                    ok = observe_reboot_cycle(
+                        self.make_connection(),
+                        command_context,
+                        reboot_no_down_message="did not go down",
+                        down_timeout_seconds=90,
+                        up_timeout_seconds=420,
+                    )
+
+        self.assertTrue(ok)
+        reboot_mock.assert_not_called()
+        self.assertEqual(wait_mock.call_args_list[0].kwargs, {"expected_up": False, "timeout_seconds": 90})
+        self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 420})
+        self.assertEqual(command_context.finish_fields["device_came_back_after_reboot"], True)
+        self.assertIn("Device is back online.", output.getvalue())
 
     def test_request_reboot_and_wait_succeeds_after_acp_reboot_request(self) -> None:
         command_context = FakeCommandContext()
@@ -189,7 +211,7 @@ class CliFlowTests(unittest.TestCase):
             "timecapsulesmb.cli.flows.acp_reboot",
             side_effect=ACPConnectionError("ACP timed out"),
         ):
-            with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=SystemExit("ssh failed")):
+            with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=SshError("ssh failed")):
                 with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
                     with redirect_stdout(output):
                         ok = request_reboot_and_wait(
@@ -255,7 +277,7 @@ class CliFlowTests(unittest.TestCase):
             "timecapsulesmb.cli.flows.acp_reboot",
             side_effect=ACPConnectionError("ACP timed out"),
         ):
-            with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=SystemExit("ssh failed")):
+            with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=SshError("ssh failed")):
                 with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", return_value=False) as wait_mock:
                     with redirect_stdout(output):
                         ok = request_reboot_and_wait(
@@ -287,7 +309,10 @@ class CliFlowTests(unittest.TestCase):
 
     def test_verify_managed_runtime_flow_succeeds_when_runtime_ready(self) -> None:
         command_context = FakeCommandContext()
-        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(True)) as verify_mock:
+        with (
+            mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(True)) as verify_mock,
+            mock.patch("timecapsulesmb.cli.flows.read_runtime_log_tails_conn") as log_tail_mock,
+        ):
             ok = verify_managed_runtime_flow(
                 self.make_connection(),
                 command_context,
@@ -301,11 +326,21 @@ class CliFlowTests(unittest.TestCase):
         self.assertEqual(command_context.stages, ["verify_runtime"])
         self.assertIsNone(command_context.error)
         self.assertEqual(verify_mock.call_args.kwargs, {"timeout_seconds": 123})
+        log_tail_mock.assert_not_called()
 
     def test_verify_managed_runtime_flow_fails_when_runtime_not_ready(self) -> None:
         command_context = FakeCommandContext()
         output = io.StringIO()
-        with mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(False)):
+        with (
+            mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(False)),
+            mock.patch(
+                "timecapsulesmb.cli.flows.read_runtime_log_tails_conn",
+                return_value={
+                    "remote_rc_local_log_tail": "rc log",
+                    "remote_mdns_log_tail": "mdns log",
+                },
+            ),
+        ):
             with redirect_stdout(output):
                 ok = verify_managed_runtime_flow(
                     self.make_connection(),
@@ -320,6 +355,29 @@ class CliFlowTests(unittest.TestCase):
         self.assertEqual(command_context.stages, ["verify_runtime"])
         self.assertEqual(command_context.error, "runtime failed managed runtime is not ready")
         self.assertIn("runtime failed managed runtime is not ready", output.getvalue())
+        self.assertEqual(command_context.debug_fields["remote_rc_local_log_tail"], "rc log")
+        self.assertEqual(command_context.debug_fields["remote_mdns_log_tail"], "mdns log")
+
+    def test_verify_managed_runtime_flow_keeps_original_failure_when_log_tail_fails(self) -> None:
+        command_context = FakeCommandContext()
+        output = io.StringIO()
+        with (
+            mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=self.managed_runtime_probe(False)),
+            mock.patch("timecapsulesmb.cli.flows.read_runtime_log_tails_conn", side_effect=RuntimeError("tail failed")),
+        ):
+            with redirect_stdout(output):
+                ok = verify_managed_runtime_flow(
+                    self.make_connection(),
+                    command_context,
+                    stage="verify_runtime",
+                    timeout_seconds=123,
+                    heading="Checking runtime",
+                    failure_message="runtime failed",
+                )
+
+        self.assertFalse(ok)
+        self.assertEqual(command_context.error, "runtime failed managed runtime is not ready")
+        self.assertEqual(command_context.debug_fields["remote_runtime_log_tail_error"], "tail failed")
 
     def test_verify_managed_runtime_flow_includes_runtime_timeout_detail(self) -> None:
         command_context = FakeCommandContext()

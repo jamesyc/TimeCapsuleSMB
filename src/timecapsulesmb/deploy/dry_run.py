@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 
 from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE
-from timecapsulesmb.deploy.commands import render_remote_actions
+from timecapsulesmb.deploy.commands import remote_actions_to_jsonable, render_remote_actions
 from timecapsulesmb.deploy.planner import ActivationPlan, DeploymentPlan, UninstallPlan
 
 
@@ -34,7 +34,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     lines.append(f"  payload dir: {plan.payload_dir}")
     lines.append("")
     lines.append("Boot options:")
-    lines.append(f"  Apple mount wait: {plan.apple_mount_wait_seconds}s")
+    lines.append(f"  diskd.useVolume wait: {plan.apple_mount_wait_seconds}s")
     lines.append("")
     lines.append("Remote actions (pre-upload):")
     for command in render_remote_actions(plan.pre_upload_actions):
@@ -42,14 +42,11 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     lines.append("")
     lines.append("Uploads:")
     for upload in plan.uploads:
-        lines.append(f"  {upload.source} -> {upload.destination}")
+        timeout = f", timeout {upload.timeout_seconds}s" if upload.timeout_seconds is not None else ""
+        lines.append(f"  {upload.description} ({upload.source_id}, {upload.mode}{timeout}) -> {upload.destination}")
     lines.append("")
-    lines.append("Generated auth:")
-    for generated in plan.generated_auth_files:
-        lines.append(f"  {generated.source} -> {generated.destination}")
-    lines.append("")
-    lines.append("Remote actions (post-auth):")
-    for command in render_remote_actions(plan.post_auth_actions):
+    lines.append("Remote actions (post-upload):")
+    for command in render_remote_actions(plan.post_upload_actions):
         lines.append(f"  {command}")
     lines.append("")
     if plan.activation_actions:
@@ -79,6 +76,9 @@ def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
     data["smbd_path"] = str(plan.smbd_path)
     data["mdns_path"] = str(plan.mdns_path)
     data["nbns_path"] = str(plan.nbns_path)
+    data["pre_upload_actions"] = remote_actions_to_jsonable(plan.pre_upload_actions)
+    data["post_upload_actions"] = remote_actions_to_jsonable(plan.post_upload_actions)
+    data["activation_actions"] = remote_actions_to_jsonable(plan.activation_actions)
     _add_reboot_request_json(data, plan.reboot_required)
     return data
 
@@ -109,8 +109,18 @@ def format_uninstall_plan(plan: UninstallPlan) -> str:
     lines.append("")
     lines.append("Target:")
     lines.append(f"  host: {plan.host}")
-    lines.append(f"  volume root: {plan.volume_root}")
-    lines.append(f"  payload dir: {plan.payload_dir}")
+    lines.append("  volume roots:")
+    if plan.volume_roots:
+        for volume_root in plan.volume_roots:
+            lines.append(f"    {volume_root}")
+    else:
+        lines.append("    none")
+    lines.append("  payload dirs:")
+    if plan.payload_dirs:
+        for payload_dir in plan.payload_dirs:
+            lines.append(f"    {payload_dir}")
+    else:
+        lines.append("    none")
     lines.append("")
     lines.append("Remote actions:")
     for command in render_remote_actions(plan.remote_actions):
@@ -131,5 +141,6 @@ def format_uninstall_plan(plan: UninstallPlan) -> str:
 
 def uninstall_plan_to_jsonable(plan: UninstallPlan) -> dict[str, object]:
     data = asdict(plan)
+    data["remote_actions"] = remote_actions_to_jsonable(plan.remote_actions)
     _add_reboot_request_json(data, plan.reboot_required)
     return data

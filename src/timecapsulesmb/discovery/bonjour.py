@@ -9,10 +9,13 @@ from dataclasses import asdict, dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
+from timecapsulesmb.core.errors import missing_dependency_message
+
 
 SERVICE_TYPES = [
     "_airport._tcp.local.",
     "_smb._tcp.local.",
+    "_adisk._tcp.local.",
     "_afpovertcp._tcp.local.",
     "_device-info._tcp.local.",
 ]
@@ -517,8 +520,6 @@ def _open_zeroconf() -> Any:
     try:
         from zeroconf import IPVersion, Zeroconf
     except Exception as e:
-        from timecapsulesmb.cli.context import missing_dependency_message
-
         raise RuntimeError(missing_dependency_message("zeroconf", e)) from e
 
     # Our Time Capsule targets advertise over IPv4, and zeroconf 0.147.x can

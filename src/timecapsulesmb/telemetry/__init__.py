@@ -14,7 +14,7 @@ from pathlib import Path
 
 from timecapsulesmb.cli.util import CLI_VERSION, RELEASE_TAG, SAMBA_VERSION
 from timecapsulesmb.core.config import AppConfig
-from timecapsulesmb.identity import BOOTSTRAP_PATH, load_install_identity
+from timecapsulesmb.identity import load_install_identity
 
 
 SCHEMA_VERSION = 3
@@ -53,7 +53,7 @@ class TelemetryClient:
         config: AppConfig,
         *,
         nbns_enabled: bool | None = None,
-        bootstrap_path: Path = BOOTSTRAP_PATH,
+        bootstrap_path: Path | None = None,
     ) -> "TelemetryClient":
         identity = load_install_identity(bootstrap_path)
         endpoint = os.getenv(TELEMETRY_URL_ENV, DEFAULT_TELEMETRY_URL)

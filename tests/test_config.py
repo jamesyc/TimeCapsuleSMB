@@ -15,6 +15,8 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.core.config import (
     AIRPORT_SYAP_TO_MODEL,
     AppConfig,
+    ConfigError,
+    ConfigValidationError,
     build_adisk_share_txt,
     build_mdns_device_model_txt,
     DEFAULTS,
@@ -26,7 +28,6 @@ from timecapsulesmb.core.config import (
     require_valid_app_config,
     render_env_text,
     validate_app_config,
-    validate_adisk_share_name,
     validate_airport_syap,
     validate_bool,
     validate_mdns_device_model_matches_syap,
@@ -40,7 +41,7 @@ from timecapsulesmb.core.config import (
     validate_ssh_target,
     write_env_file,
 )
-from timecapsulesmb.core.paths import resolve_app_paths, resolve_project_root
+from timecapsulesmb.core.paths import manifest_artifact_paths, resolve_app_paths, resolve_project_root
 
 
 class ConfigTests(unittest.TestCase):
@@ -55,11 +56,11 @@ class ConfigTests(unittest.TestCase):
     def test_load_app_config_applies_defaults_and_unquotes_file_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ".env"
-            path.write_text("TC_HOST='root@10.0.0.5'\nTC_SHARE_NAME='Archive Share'\n")
+            path.write_text("TC_HOST='root@10.0.0.5'\nTC_NETBIOS_NAME='ArchiveCapsule'\n")
             values = load_app_config(path).values
         self.assertEqual(values["TC_HOST"], "root@10.0.0.5")
-        self.assertEqual(values["TC_SHARE_NAME"], "Archive Share")
-        self.assertEqual(values["TC_MDNS_HOST_LABEL"], DEFAULTS["TC_MDNS_HOST_LABEL"])
+        self.assertEqual(values["TC_NETBIOS_NAME"], "ArchiveCapsule")
+        self.assertNotIn("TC_MDNS_HOST_LABEL", DEFAULTS)
 
     def test_parse_env_file_does_not_apply_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -85,8 +86,6 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(config.exists)
         self.assertEqual(config.file_values, {"TC_HOST": "root@10.0.0.5"})
         self.assertTrue(config.has_file_value("TC_HOST"))
-        self.assertFalse(config.has_file_value("TC_SHARE_USE_DISK_ROOT"))
-        self.assertEqual(config.get("TC_SHARE_USE_DISK_ROOT"), DEFAULTS["TC_SHARE_USE_DISK_ROOT"])
 
     def test_validate_app_config_reports_missing_env_before_defaulted_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -111,27 +110,13 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(errors[0].kind, "missing_key")
         self.assertEqual(errors[0].key, "TC_AIRPORT_SYAP")
 
-    def test_validate_app_config_allows_defaulted_optional_share_use_disk_root(self) -> None:
-        file_values = self.valid_deploy_file_values()
-        file_values.pop("TC_SHARE_USE_DISK_ROOT", None)
-        values = dict(DEFAULTS)
-        values.update(file_values)
-        with tempfile.TemporaryDirectory() as tmp:
-            config = AppConfig.from_values(
-                values,
-                path=Path(tmp) / ".env",
-                exists=True,
-                file_values=file_values,
-            )
-            errors = validate_app_config(config, profile="deploy")
-        self.assertEqual(errors, [])
-
     def test_require_valid_app_config_formats_actual_env_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ".env"
             config = AppConfig.from_values({}, path=path, exists=True, file_values={})
-            with self.assertRaises(SystemExit) as ctx:
+            with self.assertRaises(ConfigValidationError) as ctx:
                 require_valid_app_config(config, profile="deploy", command_name="deploy")
+        self.assertNotIsInstance(ctx.exception, SystemExit)
         self.assertIn(f"Missing required setting in {path}: TC_HOST", str(ctx.exception))
         self.assertIn("before running `deploy`", str(ctx.exception))
 
@@ -142,6 +127,10 @@ class ConfigTests(unittest.TestCase):
             nested.mkdir()
             (root / "tcapsule").write_text("#!/usr/bin/env python3\n")
             (root / "src" / "timecapsulesmb").mkdir(parents=True)
+            for relative_path in manifest_artifact_paths():
+                artifact_path = root / relative_path
+                artifact_path.parent.mkdir(parents=True, exist_ok=True)
+                artifact_path.write_bytes(b"payload")
             self.assertEqual(resolve_project_root(nested), root)
             self.assertEqual(resolve_app_paths(nested).env_path, root / ".env")
 
@@ -152,10 +141,12 @@ class ConfigTests(unittest.TestCase):
         rendered = render_env_text(values)
         self.assertIn("TC_PASSWORD=secret", rendered)
         self.assertIn("TC_SSH_OPTS='-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'", rendered)
-        self.assertIn("TC_MDNS_INSTANCE_NAME='Time Capsule Samba 4'", rendered)
+        self.assertNotIn("TC_MDNS_INSTANCE_NAME", rendered)
+        self.assertNotIn("TC_MDNS_HOST_LABEL", rendered)
+        self.assertNotIn("TC_NETBIOS_NAME", rendered)
         self.assertIn("TC_MDNS_DEVICE_MODEL=TimeCapsule", rendered)
         self.assertIn("TC_AIRPORT_SYAP=''", rendered)
-        self.assertIn("TC_SHARE_USE_DISK_ROOT=false", rendered)
+        self.assertIn("TC_INTERNAL_SHARE_USE_DISK_ROOT=false", rendered)
         self.assertIn("TC_CONFIGURE_ID=12345678-1234-1234-1234-123456789012", rendered)
 
     def test_env_example_payload_dir_matches_default(self) -> None:
@@ -293,12 +284,8 @@ class ConfigTests(unittest.TestCase):
             "TC_HOST": "root@10.0.0.5",
             "TC_PASSWORD": "secret",
             "TC_NET_IFACE": "bridge0",
-            "TC_SHARE_NAME": "Data",
             "TC_SAMBA_USER": "admin",
-            "TC_NETBIOS_NAME": "TimeCapsule",
             "TC_PAYLOAD_DIR_NAME": ".samba4",
-            "TC_MDNS_INSTANCE_NAME": "Time Capsule Samba 4",
-            "TC_MDNS_HOST_LABEL": "timecapsulesamba4",
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
             "TC_AIRPORT_SYAP": "119",
         }
@@ -376,24 +363,6 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertEqual(validate_mdns_host_label("-timecapsule", "mDNS host label"), "mDNS host label must not start or end with a hyphen.")
         self.assertEqual(validate_mdns_host_label("timecapsule-", "mDNS host label"), "mDNS host label must not start or end with a hyphen.")
-
-    def test_validate_adisk_share_name_rejects_long_values(self) -> None:
-        self.assertIsNone(validate_adisk_share_name("a" * 194, "SMB share name"))
-        self.assertEqual(
-            validate_adisk_share_name("a" * 195, "SMB share name"),
-            "SMB share name must be 194 bytes or fewer.",
-        )
-
-    def test_validate_adisk_share_name_accepts_spaces(self) -> None:
-        self.assertIsNone(validate_adisk_share_name("Data", "SMB share name"))
-        self.assertIsNone(validate_adisk_share_name("Time Machine Backups", "SMB share name"))
-
-    def test_validate_adisk_share_name_rejects_unsafe_characters(self) -> None:
-        for value in ("Bad/Share", "Bad\\Share", "Bad[Share]", "Bad,Share", "Bad=Share"):
-            self.assertEqual(
-                validate_adisk_share_name(value, "SMB share name"),
-                "SMB share name contains a character that is not safe for Samba/adisk.",
-            )
 
     def test_validate_netbios_name_rejects_long_values(self) -> None:
         self.assertEqual(
@@ -481,7 +450,7 @@ class ConfigTests(unittest.TestCase):
         values["TC_MDNS_HOST_LABEL"] = "Time Capsule"
         config = AppConfig.from_values(values, file_values=values)
         errors = validate_app_config(config, profile="deploy")
-        self.assertEqual(errors[0].key, "TC_MDNS_HOST_LABEL")
+        self.assertEqual(errors, [])
 
     def test_validate_app_config_rejects_generic_device_model_when_syap_is_specific(self) -> None:
         values = dict(DEFAULTS)
@@ -509,8 +478,9 @@ class ConfigTests(unittest.TestCase):
 
     def test_app_config_require_raises_for_missing_value(self) -> None:
         config = AppConfig.from_values({"TC_HOST": ""})
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ConfigError) as ctx:
             config.require("TC_HOST")
+        self.assertNotIsInstance(ctx.exception, SystemExit)
 
 
 if __name__ == "__main__":

@@ -1,19 +1,17 @@
 from __future__ import annotations
 
 import shlex
-import tempfile
-import uuid
 from pathlib import Path, PurePosixPath
+from typing import Iterable, Mapping
 
-from timecapsulesmb.deploy.auth import render_smbpasswd
-from timecapsulesmb.deploy.commands import render_remote_actions
-from timecapsulesmb.deploy.planner import DeploymentPlan, UninstallPlan
+from timecapsulesmb.deploy.commands import RemoteAction, render_remote_actions
+from timecapsulesmb.deploy.planner import FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, DeploymentPlan, FileTransfer, UninstallPlan
+from timecapsulesmb.device.storage import ensure_volume_root_mounted_conn
 from timecapsulesmb.transport.ssh import SshConnection, run_scp, run_ssh
 
 
 DETACHED_REBOOT_COMMAND = "/bin/sh -c 'exec </dev/null >/dev/null 2>&1; (/bin/sleep 1; /sbin/reboot) & exit 0'"
 REBOOT_REQUEST_TIMEOUT_SECONDS = 30
-PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS = 180
 
 
 def _flash_upload_tmp_path(destination: str) -> str:
@@ -21,78 +19,89 @@ def _flash_upload_tmp_path(destination: str) -> str:
     return str(path.with_name(f".{path.name}.tmp"))
 
 
-def upload_flash_file(connection: SshConnection, source: Path, destination: str, *, timeout: int = 120) -> None:
+def upload_flash_file(
+    connection: SshConnection,
+    source: Path,
+    destination: str,
+    *,
+    timeout: int = 120,
+    mode: str = "755",
+) -> None:
     tmp_destination = _flash_upload_tmp_path(destination)
     quoted_tmp = shlex.quote(tmp_destination)
     quoted_destination = shlex.quote(destination)
+    quoted_mode = shlex.quote(mode)
 
     run_ssh(connection, f"/bin/sh -c {shlex.quote(f'rm -f {quoted_tmp}')}")
     run_scp(connection, source, tmp_destination, timeout=timeout)
     install_script = (
         "rc=0; "
-        f"chmod 755 {quoted_tmp} && mv -f {quoted_tmp} {quoted_destination} || rc=$?; "
+        f"chmod {quoted_mode} {quoted_tmp} && mv -f {quoted_tmp} {quoted_destination} || rc=$?; "
         f"rm -f {quoted_tmp}; "
         'exit "$rc"'
     )
     run_ssh(connection, f"/bin/sh -c {shlex.quote(install_script)}")
 
 
-def remote_install_auth_files(connection: SshConnection, private_dir: str, samba_user: str, samba_password: str) -> None:
-    smbpasswd_text, username_map_text = render_smbpasswd(samba_user, samba_password)
-    with tempfile.TemporaryDirectory(prefix="tc-deploy-auth-") as tmp:
-        tmpdir = Path(tmp)
-        smbpasswd_path = tmpdir / "smbpasswd"
-        username_map_path = tmpdir / "username.map"
-        smbpasswd_path.write_text(smbpasswd_text)
-        username_map_path.write_text(username_map_text)
-        run_scp(connection, smbpasswd_path, f"{private_dir}/smbpasswd")
-        run_scp(connection, username_map_path, f"{private_dir}/username.map")
+def _resolve_transfer_source(source_resolver: Mapping[str, Path], transfer: FileTransfer) -> Path:
+    try:
+        return source_resolver[transfer.source_id]
+    except KeyError as e:
+        raise KeyError(f"No local source for planned transfer {transfer.source_id!r}") from e
 
 
-def remote_ensure_adisk_uuid(connection: SshConnection, private_dir: str) -> str:
-    remote_path = f"{private_dir}/adisk.uuid"
-    proc = run_ssh(
+def _scp_transfer(connection: SshConnection, source: Path, transfer: FileTransfer) -> None:
+    if transfer.timeout_seconds is None:
+        run_scp(connection, source, transfer.destination)
+        return
+    run_scp(connection, source, transfer.destination, timeout=transfer.timeout_seconds)
+
+
+def _destination_is_under(path: str, root: str) -> bool:
+    normalized_path = path.rstrip("/")
+    normalized_root = root.rstrip("/")
+    return normalized_path == normalized_root or normalized_path.startswith(f"{normalized_root}/")
+
+
+def _ensure_payload_volume_before_transfer(connection: SshConnection, plan: DeploymentPlan, transfer: FileTransfer) -> None:
+    if not _destination_is_under(transfer.destination, plan.payload_dir):
+        return
+    if ensure_volume_root_mounted_conn(
         connection,
-        f"/bin/sh -c {shlex.quote(f'if [ -f {shlex.quote(remote_path)} ]; then cat {shlex.quote(remote_path)}; fi')}",
-        check=False,
-    )
-    existing = proc.stdout.strip()
-    if existing:
-        return existing
-
-    adisk_uuid = str(uuid.uuid4())
-    with tempfile.TemporaryDirectory(prefix="tc-deploy-adisk-") as tmp:
-        tmpdir = Path(tmp)
-        uuid_path = tmpdir / "adisk.uuid"
-        uuid_path.write_text(f"{adisk_uuid}\n")
-        run_scp(connection, uuid_path, remote_path)
-    return adisk_uuid
+        plan.volume_root,
+        plan.device_path,
+        wait_seconds=plan.apple_mount_wait_seconds,
+    ):
+        return
+    raise RuntimeError(f"payload volume {plan.volume_root} is not mounted before upload to {transfer.destination}")
 
 
 def upload_deployment_payload(
     plan: DeploymentPlan,
     *,
     connection: SshConnection,
-    rc_local: Path,
-    common_sh: Path,
-    rendered_start: Path,
-    rendered_dfree: Path,
-    rendered_watchdog: Path,
-    rendered_smbconf: Path,
+    source_resolver: Mapping[str, Path],
 ) -> None:
-    run_scp(connection, plan.smbd_path, plan.payload_targets["smbd"], timeout=PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS)
-    run_scp(connection, plan.mdns_path, plan.payload_targets["mdns-advertiser"], timeout=PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS)
-    upload_flash_file(connection, plan.mdns_path, plan.flash_targets["mdns-advertiser"], timeout=PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS)
-    run_scp(connection, plan.nbns_path, plan.payload_targets["nbns-advertiser"], timeout=PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS)
-    upload_flash_file(connection, rc_local, plan.flash_targets["rc.local"])
-    upload_flash_file(connection, common_sh, plan.flash_targets["common.sh"])
-    upload_flash_file(connection, rendered_start, plan.flash_targets["start-samba.sh"])
-    upload_flash_file(connection, rendered_watchdog, plan.flash_targets["watchdog.sh"])
-    upload_flash_file(connection, rendered_dfree, plan.flash_targets["dfree.sh"])
-    run_scp(connection, rendered_smbconf, plan.payload_targets["smb.conf.template"])
+    planned_modes = {permission.path: permission.mode for permission in plan.permissions}
+    for transfer in plan.uploads:
+        source = _resolve_transfer_source(source_resolver, transfer)
+        _ensure_payload_volume_before_transfer(connection, plan, transfer)
+        if transfer.mode in {"scp", "generated"}:
+            _scp_transfer(connection, source, transfer)
+        elif transfer.mode == "flash_atomic":
+            timeout = transfer.timeout_seconds if transfer.timeout_seconds is not None else FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS
+            upload_flash_file(
+                connection,
+                source,
+                transfer.destination,
+                timeout=timeout,
+                mode=planned_modes.get(transfer.destination, "755"),
+            )
+        else:
+            raise ValueError(f"Unsupported deployment upload mode {transfer.mode!r} for {transfer.source_id!r}")
 
 
-def run_remote_actions(connection: SshConnection, actions) -> None:
+def run_remote_actions(connection: SshConnection, actions: Iterable[RemoteAction]) -> None:
     for command in render_remote_actions(list(actions)):
         run_ssh(connection, command)
 
