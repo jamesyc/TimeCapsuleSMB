@@ -919,6 +919,34 @@ class CliTests(unittest.TestCase):
         self.assertEqual(finished["artifact_count"], 1)
         self.assertEqual(finished["missing_artifact_count"], 0)
 
+    def test_paths_config_arg_is_passed_to_path_resolution(self) -> None:
+        app_paths = AppPaths(
+            distribution_root=REPO_ROOT,
+            config_path=REPO_ROOT / "custom.env",
+            state_dir=REPO_ROOT,
+            package_root=SRC_ROOT / "timecapsulesmb",
+        )
+        data = {
+            "distribution_root": str(app_paths.distribution_root),
+            "config_path": str(app_paths.config_path),
+            "state_dir": str(app_paths.state_dir),
+            "package_root": str(app_paths.package_root),
+            "artifact_manifest": "manifest.json",
+            "artifacts": [],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / "custom.env"
+            with mock.patch("timecapsulesmb.cli.paths.ensure_install_id"):
+                with mock.patch("timecapsulesmb.cli.paths.load_optional_env_config", return_value=self.make_app_config({}, exists=False)) as load_mock:
+                    with mock.patch("timecapsulesmb.cli.paths.resolve_app_paths", return_value=app_paths) as resolve_mock:
+                        with mock.patch("timecapsulesmb.cli.paths.paths_to_jsonable", return_value=data):
+                            with redirect_stdout(io.StringIO()):
+                                rc = paths.main(["--json", "--config", str(env_path)])
+
+        self.assertEqual(rc, 0)
+        load_mock.assert_called_once_with(env_path=env_path)
+        resolve_mock.assert_called_once_with(config_path=env_path)
+
     def test_validate_install_json_command_returns_failure_when_check_fails(self) -> None:
         app_paths = AppPaths(
             distribution_root=REPO_ROOT,
@@ -948,6 +976,26 @@ class CliTests(unittest.TestCase):
         self.assertEqual(finished["failed_check_ids"], ["artifact_hashes"])
         self.assertIn("install validation failed", finished["error"])
 
+    def test_validate_install_config_arg_is_passed_to_path_resolution(self) -> None:
+        app_paths = AppPaths(
+            distribution_root=REPO_ROOT,
+            config_path=REPO_ROOT / "custom.env",
+            state_dir=REPO_ROOT,
+            package_root=SRC_ROOT / "timecapsulesmb",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / "custom.env"
+            with mock.patch("timecapsulesmb.cli.validate_install.ensure_install_id"):
+                with mock.patch("timecapsulesmb.cli.validate_install.load_optional_env_config", return_value=self.make_app_config({}, exists=False)) as load_mock:
+                    with mock.patch("timecapsulesmb.cli.validate_install.resolve_app_paths", return_value=app_paths) as resolve_mock:
+                        with mock.patch("timecapsulesmb.cli.validate_install.validate_install", return_value=[]):
+                            with redirect_stdout(io.StringIO()):
+                                rc = validate_install.main(["--json", "--config", str(env_path)])
+
+        self.assertEqual(rc, 0)
+        load_mock.assert_called_once_with(env_path=env_path)
+        resolve_mock.assert_called_once_with(config_path=env_path)
+
     def test_validate_install_text_command_prints_summary(self) -> None:
         checks = [InstallCheckResult("boot_script_tokens", True, "managed boot scripts have no unresolved tokens")]
         output = io.StringIO()
@@ -968,6 +1016,9 @@ class CliTests(unittest.TestCase):
             ("uninstall", uninstall, "load_env_config", None),
             ("fsck", fsck, "load_env_config", None),
             ("set_ssh", set_ssh, "load_env_config", {"defaults": {}}),
+            ("discover", discover, "load_optional_env_config", None),
+            ("paths", paths, "load_optional_env_config", None),
+            ("validate_install", validate_install, "load_optional_env_config", None),
             ("repair_xattrs", repair_xattrs, "load_optional_env_config", None),
         ]
         sentinel = RuntimeError("stop after config load")
@@ -4318,6 +4369,17 @@ class CliTests(unittest.TestCase):
 
     def test_main_registers_flash_command(self) -> None:
         self.assertIs(cli_main_module.COMMANDS["flash"], cli_flash.main)
+
+    def test_flash_live_login_read_uses_binary_capture(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        payload = b"#!/bin/sh\n\xff"
+        with mock.patch("timecapsulesmb.cli.flash.run_ssh_capture_bytes", return_value=payload) as capture_mock:
+            self.assertEqual(cli_flash.read_live_login(connection), payload)
+        capture_mock.assert_called_once_with(
+            connection,
+            "/bin/dd if=/etc/rc.d/LOGIN bs=4096 2>/dev/null",
+            timeout=30,
+        )
 
     def test_flash_read_only_saves_banks_and_manifest(self) -> None:
         output = io.StringIO()

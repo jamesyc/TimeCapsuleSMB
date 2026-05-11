@@ -278,7 +278,7 @@ def run_ssh_capture_bytes(connection: SshConnection, remote_cmd: str, *, timeout
         timeout=timeout,
         missing_tool_message=(
             "Reading raw firmware banks requires local sshpass. "
-            "Run `.venv/bin/tcapsule bootstrap` to install sshpass, then rerun `.venv/bin/tcapsule flash`."
+            "Run `./tcapsule bootstrap` to install sshpass, then rerun `tcapsule flash`."
         ),
         timeout_message=(
             "Timed out waiting for ssh command to finish: "
@@ -434,7 +434,7 @@ def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 1
             timeout=timeout,
             missing_tool_message=(
                 "Remote scp is unavailable and local sshpass is missing. "
-                "Run `.venv/bin/tcapsule bootstrap` to install sshpass, then rerun deploy."
+                "Run `./tcapsule bootstrap` to install sshpass, then rerun `tcapsule deploy`."
             ),
             timeout_message=f"Timed out copying {src.name} to remote path {dest} via sshpass cat fallback",
         )

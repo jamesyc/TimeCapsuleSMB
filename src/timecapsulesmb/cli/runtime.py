@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ipaddress
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,7 +15,12 @@ from timecapsulesmb.core.config import (
     require_valid_app_config,
 )
 from timecapsulesmb.core.paths import resolve_app_paths
-from timecapsulesmb.device.compat import DeviceCompatibility, require_compatibility
+from timecapsulesmb.device.compat import (
+    DeviceCompatibility,
+    is_netbsd4_payload_family,
+    render_compatibility_message,
+    require_compatibility,
+)
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
     RemoteInterfaceCandidate,
@@ -49,6 +55,18 @@ def add_config_argument(parser: argparse.ArgumentParser) -> None:
 
 def config_path_from_args(args: argparse.Namespace) -> Path | None:
     return getattr(args, "config", None)
+
+
+def json_text(data: object) -> str:
+    return json.dumps(data, indent=2, sort_keys=True)
+
+
+def print_json(data: object) -> None:
+    print(json_text(data))
+
+
+def write_json_file(path: Path, data: object) -> None:
+    path.write_text(json_text(data) + "\n")
 
 
 def _confirm_suffix(default: bool) -> str:
@@ -215,3 +233,44 @@ def require_connection_compatibility(connection: SshConnection) -> DeviceCompati
         state.compatibility,
         fallback_error=state.probe_result.error or "Failed to determine remote device OS compatibility.",
     )
+
+
+def require_supported_device_compatibility(
+    command_context,
+    *,
+    allow_unsupported: bool = False,
+    json_output: bool = False,
+) -> tuple[DeviceCompatibility, str]:
+    compatibility = command_context.require_compatibility()
+    compatibility_message = render_compatibility_message(compatibility)
+    if not compatibility.supported:
+        if not allow_unsupported:
+            raise SystemExit(compatibility_message)
+        if not json_output:
+            print(f"Warning: {compatibility_message}")
+            print("Continuing because --allow-unsupported was provided.")
+    elif not json_output:
+        print(compatibility_message)
+    return compatibility, compatibility_message
+
+
+def require_netbsd4_device_compatibility(
+    command_context,
+    *,
+    command_name: str,
+    json_output: bool = False,
+    unsupported_message: str | None = None,
+) -> tuple[DeviceCompatibility, str]:
+    compatibility, compatibility_message = require_supported_device_compatibility(
+        command_context,
+        json_output=json_output,
+    )
+    netbsd4_payload = is_netbsd4_payload_family(compatibility.payload_family)
+    command_context.update_fields(
+        compatibility_supported=compatibility.supported,
+        netbsd4_payload=netbsd4_payload,
+    )
+    if not netbsd4_payload:
+        message = unsupported_message or f"{command_name} is only supported for NetBSD4 AirPort storage devices."
+        raise SystemExit(message)
+    return compatibility, compatibility_message

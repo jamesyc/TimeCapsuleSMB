@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
-import json
 import tempfile
 from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import request_reboot_and_wait, verify_managed_runtime_flow
-from timecapsulesmb.cli.runtime import NonInteractivePromptError, add_config_argument, confirm, load_env_config
+from timecapsulesmb.cli.runtime import (
+    NonInteractivePromptError,
+    add_config_argument,
+    confirm,
+    load_env_config,
+    print_json,
+    require_supported_device_compatibility,
+)
 from timecapsulesmb.core.config import DEFAULTS, AppConfig, airport_family_display_name_from_config, parse_bool, shell_quote
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
@@ -36,7 +42,7 @@ from timecapsulesmb.deploy.planner import (
 from timecapsulesmb.deploy.boot_assets import (
     boot_asset_path,
 )
-from timecapsulesmb.device.compat import is_netbsd4_payload_family, payload_family_description, render_compatibility_message
+from timecapsulesmb.device.compat import is_netbsd4_payload_family, payload_family_description
 from timecapsulesmb.device.storage import (
     MAST_DISCOVERY_ATTEMPTS,
     MAST_DISCOVERY_DELAY_SECONDS,
@@ -164,16 +170,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         if failures:
             raise SystemExit("; ".join(failures))
         command_context.set_stage("check_compatibility")
-        compatibility = command_context.require_compatibility()
-        compatibility_message = render_compatibility_message(compatibility)
-        if not compatibility.supported:
-            if not args.allow_unsupported:
-                raise SystemExit(compatibility_message)
-            if not args.json:
-                print(f"Warning: {compatibility_message}")
-                print("Continuing because --allow-unsupported was provided.")
-        elif not args.json:
-            print(compatibility_message)
+        compatibility, compatibility_message = require_supported_device_compatibility(
+            command_context,
+            allow_unsupported=args.allow_unsupported,
+            json_output=args.json,
+        )
         if not compatibility.payload_family:
             raise SystemExit(f"{compatibility_message}\nNo deployable payload is available for this detected device.")
         payload_family = compatibility.payload_family
@@ -237,7 +238,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if args.dry_run:
             if args.json:
-                print(json.dumps(deployment_plan_to_jsonable(plan), indent=2, sort_keys=True))
+                print_json(deployment_plan_to_jsonable(plan))
             else:
                 print(format_deployment_plan(plan))
             command_context.succeed()

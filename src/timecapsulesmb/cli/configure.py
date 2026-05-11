@@ -28,7 +28,7 @@ from timecapsulesmb.core.config import (
 )
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import wait_for_tcp_port_state
-from timecapsulesmb.cli.runtime import add_config_argument, confirm as confirm_prompt, probe_connection_state
+from timecapsulesmb.cli.runtime import add_config_argument, confirm as confirm_prompt
 from timecapsulesmb.core.errors import missing_dependency_message, missing_required_python_module
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
@@ -37,6 +37,7 @@ from timecapsulesmb.device.probe import (
     ProbedDeviceState,
     RemoteInterfaceCandidatesProbeResult,
     preferred_interface_name,
+    probe_connection_state,
     probe_remote_interface_candidates_conn,
 )
 from timecapsulesmb.discovery.bonjour import (

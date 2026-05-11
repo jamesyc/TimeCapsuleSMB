@@ -2,16 +2,22 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
-import json
 import re
 from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import NonInteractivePromptError, add_config_argument, confirm, load_env_config
+from timecapsulesmb.cli.runtime import (
+    NonInteractivePromptError,
+    add_config_argument,
+    confirm,
+    load_env_config,
+    print_json,
+    require_netbsd4_device_compatibility,
+    write_json_file,
+)
 from timecapsulesmb.core.config import extract_host
 from timecapsulesmb.core.paths import default_user_data_dir
-from timecapsulesmb.device.compat import is_netbsd4_payload_family, render_compatibility_message
 from timecapsulesmb.flash import (
     FlashAnalysis,
     FlashAnalysisError,
@@ -23,7 +29,7 @@ from timecapsulesmb.flash import (
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.integrations.acp import get_property_int
 from timecapsulesmb.telemetry import TelemetryClient
-from timecapsulesmb.transport.ssh import SshConnection, run_ssh, run_ssh_capture_bytes
+from timecapsulesmb.transport.ssh import SshConnection, run_ssh_capture_bytes
 
 
 FLASH_READ_TIMEOUT_SECONDS = 180
@@ -56,8 +62,7 @@ def dump_remote_bank(connection: SshConnection, device: str) -> bytes:
 
 
 def read_live_login(connection: SshConnection) -> bytes:
-    proc = run_ssh(connection, "/bin/dd if=/etc/rc.d/LOGIN bs=4096 2>/dev/null", check=True, timeout=30)
-    return proc.stdout.encode("utf-8", errors="replace")
+    return run_ssh_capture_bytes(connection, "/bin/dd if=/etc/rc.d/LOGIN bs=4096 2>/dev/null", timeout=30)
 
 
 def read_flash_inputs(connection: SshConnection, *, acp_host: str, password: str) -> tuple[bytes, bytes, int | None, int | None, int | None, bytes]:
@@ -110,7 +115,7 @@ def save_flash_banks(*, backup_dir: Path, primary: bytes, secondary: bytes) -> N
 
 
 def save_flash_manifest(*, backup_dir: Path, manifest: dict[str, object]) -> None:
-    (backup_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    write_json_file(backup_dir / "manifest.json", manifest)
 
 
 def save_active_patched_bank_if_ready(*, backup_dir: Path, analysis: FlashAnalysis) -> Path | None:
@@ -198,14 +203,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         acp_host = extract_host(connection.host)
 
         command_context.set_stage("check_compatibility")
-        compatibility = command_context.require_compatibility()
-        compatibility_message = render_compatibility_message(compatibility)
-        if not compatibility.supported:
-            raise SystemExit(compatibility_message)
-        if not is_netbsd4_payload_family(compatibility.payload_family):
-            raise SystemExit("flash is only supported for NetBSD4 AirPort storage devices.")
-        if not args.json:
-            print(compatibility_message)
+        compatibility, _compatibility_message = require_netbsd4_device_compatibility(
+            command_context,
+            command_name="flash",
+            json_output=args.json,
+            unsupported_message="flash is only supported for NetBSD4 AirPort storage devices.",
+        )
 
         command_context.set_stage("read_flash")
         primary, secondary, cks1, cks2, acp_syap, live_login = read_flash_inputs(
@@ -253,7 +256,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         save_flash_manifest(backup_dir=backup_dir, manifest=manifest)
 
         if args.json:
-            print(json.dumps(manifest, indent=2, sort_keys=True))
+            print_json(manifest)
         else:
             print_flash_summary(manifest)
 

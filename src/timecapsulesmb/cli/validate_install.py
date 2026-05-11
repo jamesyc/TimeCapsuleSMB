@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import argparse
-import json
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import load_optional_env_config
+from timecapsulesmb.cli.runtime import add_config_argument, load_optional_env_config, print_json
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.install_validation import install_checks_to_jsonable, install_ok, validate_install
@@ -14,11 +13,12 @@ from timecapsulesmb.telemetry import TelemetryClient
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Validate the local TimeCapsuleSMB repo-only install.")
+    add_config_argument(parser)
     parser.add_argument("--json", action="store_true", help="Output validation results as JSON")
     args = parser.parse_args(argv)
 
     ensure_install_id()
-    config = load_optional_env_config()
+    config = load_optional_env_config(env_path=args.config)
     telemetry = TelemetryClient.from_config(config)
     with CommandContext(
         telemetry,
@@ -30,7 +30,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         json_output=args.json,
     ) as command_context:
         command_context.set_stage("resolve_paths")
-        app_paths = resolve_app_paths()
+        app_paths = resolve_app_paths(config_path=args.config)
         command_context.update_fields(
             config_exists=app_paths.config_path.exists(),
             state_dir_exists=app_paths.state_dir.exists(),
@@ -46,10 +46,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             failed_check_ids=[check.id for check in failed_checks],
         )
         if args.json:
-            print(json.dumps({
+            print_json({
                 "ok": ok,
                 "checks": install_checks_to_jsonable(checks),
-            }, indent=2, sort_keys=True))
+            })
             if ok:
                 command_context.succeed()
                 return 0
