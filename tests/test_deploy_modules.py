@@ -5,6 +5,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 import io
 from dataclasses import replace
@@ -337,6 +338,96 @@ echo "file-size=$(tc_log_file_size "$SAMPLE")"
         self.assertIn("byte-len=12", result.stdout)
         self.assertIn("utf8-byte-len=4", result.stdout)
         self.assertIn("file-size=12", result.stdout)
+
+    def test_common_bind_interfaces_uses_ifconfig_netmask_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            mode_file = tmp_path / "ifconfig-mode"
+            fake_ifconfig = tmp_path / "ifconfig"
+            fake_ifconfig.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    mode=wide
+                    if [ -f {shlex.quote(str(mode_file))} ]; then
+                        read mode < {shlex.quote(str(mode_file))}
+                    fi
+                    case "$mode" in
+                        missing)
+                            printf '%s\\n' 'bridge0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST>'
+                            printf '%s\\n' '        inet 10.20.3.4 broadcast 10.20.3.255'
+                            ;;
+                        *)
+                            printf '%s\\n' 'bridge0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST>'
+                            printf '%s\\n' '        inet 10.20.3.4 netmask 0xfffffe00 broadcast 10.20.3.255'
+                            ;;
+                    esac
+                    """
+                )
+            )
+            fake_ifconfig.chmod(0o755)
+            common = load_boot_asset_text("common.sh").replace("/sbin/ifconfig", shlex.quote(str(fake_ifconfig)))
+            script = tmp_path / "check.sh"
+            script.write_text(
+                common
+                + f"\nMODE_FILE={shlex.quote(str(mode_file))}\n"
+                + """
+NET_IFACE=bridge0
+tc_log() { :; }
+sleep() { :; }
+printf '%s\n' wide >"$MODE_FILE"
+printf 'bind=%s\n' "$(tc_wait_for_bind_interfaces)"
+printf 'prefix16=%s\n' "$(tc_netmask_to_prefix 0xffff0000)"
+printf 'prefix23_dotted=%s\n' "$(tc_netmask_to_prefix 255.255.254.0)"
+printf '%s\n' missing >"$MODE_FILE"
+printf 'fallback=%s\n' "$(tc_wait_for_bind_interfaces)"
+"""
+            )
+
+            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("bind=127.0.0.1/8 10.20.3.4/23\n", result.stdout)
+        self.assertIn("prefix16=16\n", result.stdout)
+        self.assertIn("prefix23_dotted=23\n", result.stdout)
+        self.assertIn("fallback=127.0.0.1/8 10.20.3.4/24\n", result.stdout)
+
+    def test_common_log_trim_preserves_existing_log_when_readers_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fail_tail = tmp_path / "tail"
+            fail_cat = tmp_path / "cat"
+            fail_tail.write_text("#!/bin/sh\nexit 1\n")
+            fail_cat.write_text("#!/bin/sh\nexit 1\n")
+            fail_tail.chmod(0o755)
+            fail_cat.chmod(0o755)
+            common = (
+                load_boot_asset_text("common.sh")
+                .replace("/usr/bin/tail", shlex.quote(str(fail_tail)))
+                .replace("/bin/cat", shlex.quote(str(fail_cat)))
+            )
+            bounded_log = tmp_path / "bounded.log"
+            legacy_log = tmp_path / "legacy.log"
+            script = tmp_path / "check.sh"
+            script.write_text(
+                common
+                + f"\nBOUNDED_LOG={shlex.quote(str(bounded_log))}\n"
+                + f"LEGACY_LOG={shlex.quote(str(legacy_log))}\n"
+                + """
+printf '%s\n' 'abcdefghijklmnopqrstuvwxyz' >"$BOUNDED_LOG"
+printf '%s\n' '0123456789abcdef' >"$LEGACY_LOG"
+tc_trim_log_file_if_needed "$BOUNDED_LOG" 5
+trim_log_file "$LEGACY_LOG" 5
+"""
+            )
+
+            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
+            trim_temps = list(tmp_path.glob("*.tmp.*"))
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(bounded_log.read_text(), "abcdefghijklmnopqrstuvwxyz\n")
+            self.assertEqual(legacy_log.read_text(), "0123456789abcdef\n")
+            self.assertEqual(trim_temps, [])
 
     def test_common_hostname_resolution_update_is_idempotent(self) -> None:
         common = (

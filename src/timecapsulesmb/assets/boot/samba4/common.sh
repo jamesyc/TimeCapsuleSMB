@@ -127,6 +127,23 @@ tc_log_file_size() {
     esac
 }
 
+tc_replace_log_with_trimmed_copy() {
+    trim_log_path=$1
+    trim_log_bytes=$2
+    trim_log_tmp=$3
+
+    if /usr/bin/tail -c "$trim_log_bytes" "$trim_log_path" >"$trim_log_tmp" 2>/dev/null || /bin/cat "$trim_log_path" >"$trim_log_tmp" 2>/dev/null; then
+        # Failed readers can leave an empty temporary file from redirection; never let that erase an existing log.
+        if [ -s "$trim_log_tmp" ] || [ ! -s "$trim_log_path" ]; then
+            mv "$trim_log_tmp" "$trim_log_path"
+            return $?
+        fi
+    fi
+
+    rm -f "$trim_log_tmp"
+    return 0
+}
+
 tc_trim_log_file_if_needed() {
     trim_log_path=$1
     trim_log_bytes=$2
@@ -138,8 +155,7 @@ tc_trim_log_file_if_needed() {
     [ -n "$current_size" ] || current_size=0
     [ "$current_size" -gt "$trim_log_bytes" ] || return 0
 
-    /usr/bin/tail -c "$trim_log_bytes" "$trim_log_path" >"$trim_log_tmp" 2>/dev/null || /bin/cat "$trim_log_path" >"$trim_log_tmp" 2>/dev/null || true
-    mv "$trim_log_tmp" "$trim_log_path"
+    tc_replace_log_with_trimmed_copy "$trim_log_path" "$trim_log_bytes" "$trim_log_tmp"
 }
 
 tc_append_bounded_log_line() {
@@ -196,6 +212,55 @@ tc_log() {
 get_iface_ipv4() {
     iface=$1
     /sbin/ifconfig "$iface" 2>/dev/null | sed -n 's/^[[:space:]]*inet[[:space:]]\([0-9.]*\).*/\1/p' | sed -n '1p'
+}
+
+tc_netmask_to_prefix() {
+    netmask=$1
+    netmask=$(echo "$netmask" | sed 'y/ABCDEF/abcdef/')
+
+    case "$netmask" in
+        0xffffffff|255.255.255.255) echo 32 ;;
+        0xfffffffe|255.255.255.254) echo 31 ;;
+        0xfffffffc|255.255.255.252) echo 30 ;;
+        0xfffffff8|255.255.255.248) echo 29 ;;
+        0xfffffff0|255.255.255.240) echo 28 ;;
+        0xffffffe0|255.255.255.224) echo 27 ;;
+        0xffffffc0|255.255.255.192) echo 26 ;;
+        0xffffff80|255.255.255.128) echo 25 ;;
+        0xffffff00|255.255.255.0) echo 24 ;;
+        0xfffffe00|255.255.254.0) echo 23 ;;
+        0xfffffc00|255.255.252.0) echo 22 ;;
+        0xfffff800|255.255.248.0) echo 21 ;;
+        0xfffff000|255.255.240.0) echo 20 ;;
+        0xffffe000|255.255.224.0) echo 19 ;;
+        0xffffc000|255.255.192.0) echo 18 ;;
+        0xffff8000|255.255.128.0) echo 17 ;;
+        0xffff0000|255.255.0.0) echo 16 ;;
+        0xfffe0000|255.254.0.0) echo 15 ;;
+        0xfffc0000|255.252.0.0) echo 14 ;;
+        0xfff80000|255.248.0.0) echo 13 ;;
+        0xfff00000|255.240.0.0) echo 12 ;;
+        0xffe00000|255.224.0.0) echo 11 ;;
+        0xffc00000|255.192.0.0) echo 10 ;;
+        0xff800000|255.128.0.0) echo 9 ;;
+        0xff000000|255.0.0.0) echo 8 ;;
+        0xfe000000|254.0.0.0) echo 7 ;;
+        0xfc000000|252.0.0.0) echo 6 ;;
+        0xf8000000|248.0.0.0) echo 5 ;;
+        0xf0000000|240.0.0.0) echo 4 ;;
+        0xe0000000|224.0.0.0) echo 3 ;;
+        0xc0000000|192.0.0.0) echo 2 ;;
+        0x80000000|128.0.0.0) echo 1 ;;
+        0x00000000|0x0|0|0.0.0.0) echo 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+get_iface_ipv4_prefix() {
+    iface=$1
+    iface_netmask=$(/sbin/ifconfig "$iface" 2>/dev/null | sed -n 's/^[[:space:]]*inet[[:space:]][0-9.][0-9.]*[[:space:]].*netmask[[:space:]]\([^[:space:]]*\).*/\1/p' | sed -n '1p')
+    [ -n "$iface_netmask" ] || return 1
+    tc_netmask_to_prefix "$iface_netmask"
 }
 
 get_iface_mac() {
@@ -1756,8 +1821,10 @@ tc_wait_for_bind_interfaces() {
     while [ "$attempt" -lt 60 ]; do
         iface_ip=$(get_iface_ipv4 "$NET_IFACE" || true)
         if [ -n "$iface_ip" ] && [ "$iface_ip" != "0.0.0.0" ]; then
-            tc_log "network interface $NET_IFACE ready with IPv4 $iface_ip"
-            echo "127.0.0.1/8 $iface_ip/24"
+            iface_prefix=$(get_iface_ipv4_prefix "$NET_IFACE" || true)
+            [ -n "$iface_prefix" ] || iface_prefix=24
+            tc_log "network interface $NET_IFACE ready with IPv4 $iface_ip/$iface_prefix"
+            echo "127.0.0.1/8 $iface_ip/$iface_prefix"
             return 0
         fi
 
@@ -1824,8 +1891,7 @@ trim_log_file() {
 
     ensure_parent_dir "$trim_log_path"
     if [ -f "$trim_log_path" ]; then
-        /usr/bin/tail -c "$trim_log_bytes" "$trim_log_path" >"$trim_log_tmp" 2>/dev/null || /bin/cat "$trim_log_path" >"$trim_log_tmp" 2>/dev/null || true
-        mv "$trim_log_tmp" "$trim_log_path"
+        tc_replace_log_with_trimmed_copy "$trim_log_path" "$trim_log_bytes" "$trim_log_tmp"
     else
         : >"$trim_log_path"
     fi

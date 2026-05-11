@@ -240,6 +240,50 @@ class StorageRuntimeTests(unittest.TestCase):
             with self.subTest(fixture=fixture.name):
                 self.assertEqual(parse_mast_plist(fixture.raw), fixture.expected)
 
+    def test_parse_mast_openstep_fallback_handles_current_acp_line_format(self) -> None:
+        raw = """\
+MaSt = (
+    {
+        deviceName = "wd0";
+        builtin = true;
+        partitions = (
+            {
+                deviceName = "dk2";
+                name = "Data; Main";
+                format = "hfs";
+                uuid = <f42bdb83 c2655522 a0872560 6a4d0abf>;
+            },
+            {
+                deviceName = "dk1";
+                name = "APconfig";
+                format = "msdos";
+                uuid = <00000000 00000000 00000000 00000000>;
+            }
+        );
+    },
+    {
+        deviceName = "sd0";
+        builtin = false;
+        partitions = (
+            {
+                deviceName = "dk3";
+                name = "uuid = fake";
+                format = "hfs";
+                uuid = <51f93e6f dc69524d 986dcee4 d7cb3573>;
+            }
+        );
+    }
+);
+"""
+
+        self.assertEqual(
+            parse_mast_plist(raw),
+            (
+                MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data; Main", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs"),
+                MaStVolume("sd0", "dk3", "/Volumes/dk3", "uuid = fake", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs"),
+            ),
+        )
+
     def test_wait_for_mast_volumes_retries_until_available(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")
         volume = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
