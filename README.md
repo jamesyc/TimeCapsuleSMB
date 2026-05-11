@@ -57,6 +57,8 @@ If you run into any issues:
 
 Just delete this `TimeCapsuleSMB` folder if you want to remove it from your Mac after you're done setting up the Time Capsule. All the scripts/binaries/etc are stored in the `TimeCapsuleSMB` folder, so if you want to clean up your Mac then just deleting the folder is fine.
 
+If you find a bug, report it here: https://github.com/jamesyc/TimeCapsuleSMB/issues  
+
 ## Step 1: Prepare Your Host
 
 Run:
