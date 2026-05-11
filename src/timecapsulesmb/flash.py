@@ -148,6 +148,20 @@ class FlashAnalysis:
         return None
 
 
+def write_decision_for_bank(analysis: FlashAnalysis, bank: BankAnalysis) -> str:
+    if analysis.active_bank is None:
+        return "active bank selection ambiguous; no patched output written"
+    if bank.name != analysis.active_bank:
+        return "inactive bank left unmodified"
+    if bank.login.classification == "already_patched":
+        return "active bank already patched; no patched output written"
+    if bank.patch is not None:
+        return "active bank patch candidate"
+    if bank.patch_error:
+        return f"active bank patch refused: {bank.patch_error}"
+    return f"active bank patch refused: LOGIN classification {bank.login.classification}"
+
+
 def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -322,6 +336,7 @@ def analyze_bank(
     data: bytes,
     acp_checksum: int | None,
     os_release: str,
+    build_patch_candidate: bool = True,
 ) -> BankAnalysis:
     footer = find_footer(data)
     footer_valid = (zlib.adler32(data[: footer.end_offset]) & 0xFFFFFFFF) == footer.checksum
@@ -331,10 +346,11 @@ def analyze_bank(
     identity_match, identity_detail = _identity_matches(gzip_member.decompressed, os_release=os_release)
     patch = None
     patch_error = None
-    try:
-        patch = build_patch(data, footer, gzip_member, login)
-    except FlashAnalysisError as exc:
-        patch_error = str(exc)
+    if build_patch_candidate:
+        try:
+            patch = build_patch(data, footer, gzip_member, login)
+        except FlashAnalysisError as exc:
+            patch_error = str(exc)
     return BankAnalysis(
         name=name,
         device=device,
@@ -369,6 +385,7 @@ def analyze_flash_banks(
         data=primary_data,
         acp_checksum=cks1,
         os_release=os_release,
+        build_patch_candidate=False,
     )
     secondary = analyze_bank(
         name="secondary",
@@ -376,19 +393,45 @@ def analyze_flash_banks(
         data=secondary_data,
         acp_checksum=cks2,
         os_release=os_release,
+        build_patch_candidate=False,
     )
     active_candidates = [bank.name for bank in (primary, secondary) if bank.valid_for_active_selection]
     active_bank = active_candidates[0] if len(active_candidates) == 1 else None
+    if active_bank == primary.name:
+        primary = analyze_bank(
+            name="primary",
+            device="/dev/rflash0.raw",
+            data=primary_data,
+            acp_checksum=cks1,
+            os_release=os_release,
+            build_patch_candidate=True,
+        )
+    elif active_bank == secondary.name:
+        secondary = analyze_bank(
+            name="secondary",
+            device="/dev/rflash1.raw",
+            data=secondary_data,
+            acp_checksum=cks2,
+            os_release=os_release,
+            build_patch_candidate=True,
+        )
     return FlashAnalysis(primary=primary, secondary=secondary, active_bank=active_bank)
 
 
-def bank_to_jsonable(bank: BankAnalysis, *, include_data: bool = False, would_write: bool = False) -> dict[str, object]:
+def bank_to_jsonable(
+    bank: BankAnalysis,
+    *,
+    include_data: bool = False,
+    would_write: bool = False,
+    write_decision: str,
+) -> dict[str, object]:
     payload: dict[str, object] = {
         "name": bank.name,
         "device": bank.device,
         "size": bank.size,
         "sha256": bank.sha256,
         "would_write": would_write,
+        "write_decision": write_decision,
         "footer": {
             "offset": bank.footer.offset,
             "checksum": f"0x{bank.footer.checksum:08x}",
@@ -436,10 +479,12 @@ def analysis_to_jsonable(analysis: FlashAnalysis) -> dict[str, object]:
             bank_to_jsonable(
                 analysis.primary,
                 would_write=analysis.active_bank == analysis.primary.name and analysis.primary.patch is not None,
+                write_decision=write_decision_for_bank(analysis, analysis.primary),
             ),
             bank_to_jsonable(
                 analysis.secondary,
                 would_write=analysis.active_bank == analysis.secondary.name and analysis.secondary.patch is not None,
+                write_decision=write_decision_for_bank(analysis, analysis.secondary),
             ),
         ],
     }

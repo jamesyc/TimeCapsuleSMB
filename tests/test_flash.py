@@ -19,6 +19,7 @@ from timecapsulesmb.flash import (
     FlashAnalysisError,
     analyze_bank,
     analyze_flash_banks,
+    analysis_to_jsonable,
     build_patch,
     classify_login,
     find_gzip_member,
@@ -121,7 +122,7 @@ class FlashAnalysisTests(unittest.TestCase):
         self.assertGreaterEqual(first.patch.changed_range_start, first.login.offset or 0)
         self.assertLessEqual(first.patch.changed_range_end, (first.login.offset or 0) + (first.login.length or 0))
 
-    def test_zopfli_gzip_patches_primary_and_secondary_when_both_fit(self) -> None:
+    def test_zopfli_gzip_patches_active_bank_only_when_both_fit(self) -> None:
         primary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")
         secondary = make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
 
@@ -135,13 +136,10 @@ class FlashAnalysisTests(unittest.TestCase):
 
         self.assertEqual(analysis.active_bank, "primary")
         self.assertIsNotNone(analysis.primary.patch)
-        self.assertIsNotNone(analysis.secondary.patch)
+        self.assertIsNone(analysis.secondary.patch)
         assert analysis.primary.patch is not None
-        assert analysis.secondary.patch is not None
         self.assertEqual(analysis.primary.patch.compression_method, "zopfli-gzip")
-        self.assertEqual(analysis.secondary.patch.compression_method, "zopfli-gzip")
         self.assertEqual(len(analysis.primary.patch.target_bank), len(primary))
-        self.assertEqual(len(analysis.secondary.patch.target_bank), len(secondary))
 
     def test_missing_zopfli_reports_bootstrap_message(self) -> None:
         bank = make_bank()
@@ -156,7 +154,7 @@ class FlashAnalysisTests(unittest.TestCase):
         self.assertIn("Python package zopfli is required", str(raised.exception))
         self.assertIn("bootstrap", str(raised.exception))
 
-    def test_patch_errors_are_reported_for_primary_and_secondary_when_zopfli_gzip_is_too_large(self) -> None:
+    def test_patch_errors_are_reported_for_active_bank_only_when_zopfli_gzip_is_too_large(self) -> None:
         primary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")
         secondary = make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
 
@@ -177,7 +175,7 @@ class FlashAnalysisTests(unittest.TestCase):
         self.assertIsNone(analysis.primary.patch)
         self.assertIsNone(analysis.secondary.patch)
         self.assertIn("zopfli-gzip=100000", analysis.primary.patch_error or "")
-        self.assertIn("zopfli-gzip=100000", analysis.secondary.patch_error or "")
+        self.assertIsNone(analysis.secondary.patch_error)
 
     def test_analyze_already_patched_bank_does_not_build_patch(self) -> None:
         bank = make_bank(login=PATCHED_LOGIN_SCRIPT)
@@ -187,6 +185,43 @@ class FlashAnalysisTests(unittest.TestCase):
         self.assertEqual(analysis.login.classification, "already_patched")
         self.assertIsNone(analysis.patch)
         self.assertIsNone(analysis.patch_error)
+
+    def test_analyze_flash_banks_reports_active_already_patched_as_noop(self) -> None:
+        primary = make_bank(login=PATCHED_LOGIN_SCRIPT, release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
+
+        analysis = analyze_flash_banks(
+            primary_data=primary,
+            secondary_data=secondary,
+            cks1=bank_checksum(primary),
+            cks2=bank_checksum(secondary),
+            os_release="4.0_STABLE",
+        )
+        payload = analysis_to_jsonable(analysis)
+
+        self.assertEqual(analysis.active_bank, "primary")
+        self.assertEqual(analysis.primary.login.classification, "already_patched")
+        self.assertIsNone(analysis.primary.patch)
+        self.assertEqual(payload["banks"][0]["write_decision"], "active bank already patched; no patched output written")
+        self.assertEqual(payload["banks"][1]["write_decision"], "inactive bank left unmodified")
+
+    def test_analyze_flash_banks_refuses_active_unknown_login(self) -> None:
+        primary = make_bank(login=b"#!/bin/sh\n# PROVIDE: LOGIN\nexit 0\n", release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
+
+        analysis = analyze_flash_banks(
+            primary_data=primary,
+            secondary_data=secondary,
+            cks1=bank_checksum(primary),
+            cks2=bank_checksum(secondary),
+            os_release="4.0_STABLE",
+        )
+        payload = analysis_to_jsonable(analysis)
+
+        self.assertEqual(analysis.active_bank, "primary")
+        self.assertEqual(analysis.primary.login.classification, "unknown")
+        self.assertIsNone(analysis.primary.patch)
+        self.assertEqual(payload["banks"][0]["write_decision"], "active bank patch refused: LOGIN classification unknown")
 
     def test_analyze_bank_marks_acp_checksum_mismatch(self) -> None:
         bank = make_bank()
@@ -208,6 +243,8 @@ class FlashAnalysisTests(unittest.TestCase):
         )
 
         self.assertIsNone(analysis.active_bank)
+        self.assertIsNone(analysis.primary.patch)
+        self.assertIsNone(analysis.secondary.patch)
         self.assertFalse(analysis.primary.valid_for_active_selection)
 
     def test_patch_build_failure_is_reported_per_bank(self) -> None:

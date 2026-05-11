@@ -4,8 +4,10 @@ import shutil
 import shlex
 import subprocess
 import sys
+import selectors
 import tempfile
 import textwrap
+import time
 import unittest
 import io
 from dataclasses import replace
@@ -97,6 +99,16 @@ from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshEr
 
 
 class DeployModuleTests(unittest.TestCase):
+    _mdns_binary_tmpdir: tempfile.TemporaryDirectory[str] | None = None
+    _mdns_binary_path: Path | None = None
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        if cls._mdns_binary_tmpdir is not None:
+            cls._mdns_binary_tmpdir.cleanup()
+        cls._mdns_binary_tmpdir = None
+        cls._mdns_binary_path = None
+
     def _payload_home(self, volume_root: str = "/Volumes/dk2", payload_dir_name: str = "samba4") -> PayloadHome:
         disk_key = volume_root.rstrip("/").rsplit("/", 1)[-1]
         return PayloadHome(volume_root, f"/dev/{disk_key}", payload_dir_name)
@@ -160,8 +172,11 @@ class DeployModuleTests(unittest.TestCase):
     def _compile_mdns_advertiser_binary(self, tmp: Path) -> Path:
         if shutil.which("cc") is None:
             self.skipTest("cc not available")
+        if self.__class__._mdns_binary_path is not None:
+            return self.__class__._mdns_binary_path
 
-        bin_path = tmp / "mdns-advertiser"
+        self.__class__._mdns_binary_tmpdir = tempfile.TemporaryDirectory()
+        bin_path = Path(self.__class__._mdns_binary_tmpdir.name) / "mdns-advertiser"
         proc = subprocess.run(
             [
                 "cc",
@@ -181,6 +196,7 @@ class DeployModuleTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.__class__._mdns_binary_path = bin_path
         return bin_path
 
     def _run_mdns_advertiser_until_ready_or_exit(self, bin_path: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -190,17 +206,32 @@ class DeployModuleTests(unittest.TestCase):
             stderr=subprocess.PIPE,
             text=True,
         )
+        stderr_chunks: list[str] = []
+        deadline = time.monotonic() + 2
+        selector = selectors.DefaultSelector()
+        assert proc.stderr is not None
+        selector.register(proc.stderr, selectors.EVENT_READ)
+        try:
+            while proc.poll() is None and time.monotonic() < deadline:
+                events = selector.select(max(0.0, min(0.05, deadline - time.monotonic())))
+                if not events:
+                    continue
+                assert proc.stderr is not None
+                line = proc.stderr.readline()
+                if line:
+                    stderr_chunks.append(line)
+                    if "serving summary:" in line:
+                        break
+        finally:
+            selector.close()
+        proc.terminate()
         try:
             stdout, stderr = proc.communicate(timeout=2)
-            return subprocess.CompletedProcess([str(bin_path), *args], proc.returncode, stdout, stderr)
         except subprocess.TimeoutExpired:
-            proc.terminate()
-            try:
-                stdout, stderr = proc.communicate(timeout=2)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                stdout, stderr = proc.communicate(timeout=2)
-            return subprocess.CompletedProcess([str(bin_path), *args], proc.returncode, stdout, stderr)
+            proc.kill()
+            stdout, stderr = proc.communicate(timeout=2)
+        stderr = "".join(stderr_chunks) + stderr
+        return subprocess.CompletedProcess([str(bin_path), *args], proc.returncode, stdout, stderr)
 
     def _write_matching_airport_snapshot(self, path: Path) -> None:
         path.write_text(
@@ -1100,6 +1131,7 @@ int main(void) {{
             run = self._run_mdns_advertiser_until_ready_or_exit(
                 bin_path,
                 [
+                    "--shared-bind",
                     "--load-snapshot",
                     str(snapshot),
                     "--instance",
@@ -1126,6 +1158,7 @@ int main(void) {{
             run = self._run_mdns_advertiser_until_ready_or_exit(
                 bin_path,
                 [
+                    "--shared-bind",
                     "--save-all-snapshot",
                     str(all_snapshot),
                     "--save-snapshot",

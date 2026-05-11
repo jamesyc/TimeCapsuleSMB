@@ -14,6 +14,8 @@ ACP_STATIC_KEY = bytes.fromhex("5b6faf5d9d5b0e1351f2da1de7e8d673")
 
 COMMAND_GETPROP = 0x14
 COMMAND_SETPROP = 0x15
+COMMAND_FLASH_PRIMARY = 0x03
+COMMAND_FLASH_SECONDARY = 0x05
 
 # Minimal Python 3 ACP packet framing. Keep this file stdlib-only so configure
 # can enable SSH without bootstrapping extra dependencies.
@@ -52,6 +54,12 @@ class ACPMessageHeader:
     command: int
     error_code: int
     body_size: int
+
+
+@dataclass(frozen=True)
+class ACPFlashResult:
+    command: int
+    reply_body: bytes
 
 
 def _resolve_log(log: LogCallback | None, verbose: bool) -> LogCallback | None:
@@ -245,6 +253,14 @@ def _read_reply_header(sock: socket.socket, *, expected_command: int) -> ACPMess
     return header
 
 
+def _read_reply_body(sock: socket.socket, header: ACPMessageHeader) -> bytes:
+    if header.body_size in (-1, 0):
+        return b""
+    if header.body_size < -1:
+        raise ACPProtocolError(f"ACP response had invalid body_size {header.body_size}")
+    return _recv_exact(sock, header.body_size)
+
+
 def _read_property_result(sock: socket.socket) -> tuple[str | None, int, bytes]:
     name, flags, size = _parse_property_header(_recv_exact(sock, PROPERTY_HEADER.size))
     data = _recv_exact(sock, size)
@@ -294,6 +310,28 @@ def get_property_int(
                 if len(data) != 4:
                     raise ACPProtocolError(f"ACP property {name} returned {len(data)} bytes, expected 4")
                 return struct.unpack(">I", data)[0]
+    finally:
+        sock.close()
+
+
+def flash_firmware_bank(
+    host: str,
+    password: str,
+    bank_name: str,
+    payload: bytes,
+    *,
+    timeout: float = 120.0,
+) -> ACPFlashResult:
+    if bank_name == "primary":
+        command = COMMAND_FLASH_PRIMARY
+    elif bank_name == "secondary":
+        command = COMMAND_FLASH_SECONDARY
+    else:
+        raise ACPProtocolError(f"unsupported flash bank name: {bank_name!r}")
+    sock = _send_message(host, password, command, payload, timeout=timeout)
+    try:
+        header = _read_reply_header(sock, expected_command=command)
+        return ACPFlashResult(command=command, reply_body=_read_reply_body(sock, header))
     finally:
         sock.close()
 
