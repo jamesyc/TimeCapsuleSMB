@@ -12,7 +12,7 @@ from timecapsulesmb.core.config import airport_exact_display_name_from_config
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.device.processes import render_direct_pkill9_by_ucomm, render_direct_pkill9_watchdog
 from timecapsulesmb.identity import ensure_install_id
-from timecapsulesmb.device.storage import MaStVolume, mounted_mast_volumes_conn, read_mast_volumes_conn
+from timecapsulesmb.device.storage import MaStVolume
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import run_ssh
 
@@ -121,13 +121,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         command_context.set_stage("resolve_connection")
         connection = command_context.resolve_env_connection(allow_empty_password=True)
 
-        command_context.set_stage("read_mast")
-        mast_volumes = read_mast_volumes_conn(connection)
-        command_context.set_stage("mount_hfs_volumes")
-        mounted_volumes = mounted_mast_volumes_conn(
+        mounted_volumes = command_context.mount_mast_volumes(
             connection,
-            mast_volumes,
             wait_seconds=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+            mount_stage="mount_hfs_volumes",
         )
         command_context.set_stage("select_fsck_volume")
         try:
@@ -144,8 +141,14 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if not args.yes:
             command_context.set_stage("confirm_fsck")
-            answer = input(f"This will stop file sharing, unmount the disk, run fsck_hfs, and reboot the {device_name}. Continue? [Y/n]: ").strip().lower()
-            if answer not in {"", "y", "yes"}:
+            proceed = command_context.confirm_or_fail(
+                f"This will stop file sharing, unmount the disk, run fsck_hfs, and reboot the {device_name}. Continue?",
+                default=True,
+                noninteractive_message="Running `fsck` requires confirmation when stdin is not interactive. Use `fsck --yes` in a non-interactive environment.",
+            )
+            if proceed is None:
+                return 1
+            if not proceed:
                 print("fsck cancelled.")
                 command_context.cancel_with_error("Cancelled by user at fsck confirmation prompt.")
                 return 0

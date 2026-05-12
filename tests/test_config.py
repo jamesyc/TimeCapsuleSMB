@@ -452,6 +452,32 @@ class ConfigTests(unittest.TestCase):
         errors = validate_app_config(config, profile="deploy")
         self.assertEqual(errors, [])
 
+    def test_flash_profile_ignores_deploy_only_settings(self) -> None:
+        values = dict(DEFAULTS)
+        values["TC_HOST"] = "root@10.0.0.2"
+        values["TC_PASSWORD"] = "pw"
+        values["TC_NET_IFACE"] = "not a valid interface"
+        values["TC_AIRPORT_SYAP"] = "not-a-syap"
+        values["TC_MDNS_DEVICE_MODEL"] = "not-a-model"
+        values["TC_SAMBA_USER"] = "bad user"
+        values["TC_PAYLOAD_DIR_NAME"] = "/bad"
+        values["TC_INTERNAL_SHARE_USE_DISK_ROOT"] = "not-bool"
+        config = AppConfig.from_values(values, file_values=values)
+
+        self.assertEqual(validate_app_config(config, profile="flash"), [])
+
+    def test_flash_profile_requires_password(self) -> None:
+        values = dict(DEFAULTS)
+        values["TC_HOST"] = "root@10.0.0.2"
+        file_values = dict(values)
+        file_values.pop("TC_PASSWORD", None)
+        config = AppConfig.from_values(values, file_values=file_values)
+
+        errors = validate_app_config(config, profile="flash")
+
+        self.assertEqual(errors[0].kind, "missing_key")
+        self.assertEqual(errors[0].key, "TC_PASSWORD")
+
     def test_validate_app_config_rejects_generic_device_model_when_syap_is_specific(self) -> None:
         values = dict(DEFAULTS)
         values["TC_HOST"] = "root@10.0.0.2"

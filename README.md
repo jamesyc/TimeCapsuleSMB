@@ -157,6 +157,17 @@ For older hardware, this is currently needed after reboot because the firmware d
 
 Unfortunately, you need to run `activate` after *every* reboot if your device does not start Samba automatically.
 
+Advanced NetBSD 4 users can back up the firmware with:
+
+```bash
+.venv/bin/tcapsule flash
+```
+
+The command is read-only by default. On supported devices, `tcapsule flash --patch` can install the persistent boot hook and `tcapsule flash --restore` can restore the active bank from Apple stock firmware downloaded from Apple's catalog. Both write modes modify only the primary copy (does not touch the secondary backup copy on the flash), and run validation by reading the bank back after ACP accepts the write.
+
+Patch mode cannot send a reboot or poweroff command after a successful write. After `tcapsule flash --patch` reports success, a user needs to manually
+unplug the device to reboot, and then wait a few minutes for the device to boot to run `tcapsule doctor`. Restore mode can request a software reboot with `tcapsule flash --restore --reboot`; after that, use `tcapsule flash --check-apple` to verify the active bank matches Apple stock firmware.
+
 ## Step 5: Verify The Result
 
 Run:
@@ -342,6 +353,8 @@ This explains the engineering constraints, historical dead ends, and current imp
 This should be treated as a LAN-only setup. Do not expose this SMB service directly to the public internet! Do not forward ports to it. Do not pretend that an old Time Capsule turned into a modern hardened NAS just because the SMB side now works better. I have tested this with a M1 Macbook Pro and an A1470 Time Capsule. Your mileage may vary. 
 
 Also note that the current auth model maps SMB access to `root` internally on the Time Capsule. That is a deliberate compatibility choice for this old firmware, as the version of NetBSD 6 running on the Time Capsule errors when Samba tries to switch users.
+
+The commands have logging and telemetry enabled by default. Errors and exceptions are logged so they can be easily investigated later.
 
 ## For Developers And Maintainers
 

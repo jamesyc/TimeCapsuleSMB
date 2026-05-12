@@ -5,13 +5,16 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import verify_managed_runtime_flow
-from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
+from timecapsulesmb.cli.runtime import (
+    add_config_argument,
+    load_env_config,
+    require_netbsd4_device_compatibility,
+)
 from timecapsulesmb.core.config import airport_exact_display_name_from_config
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.dry_run import format_activation_plan
 from timecapsulesmb.deploy.executor import run_remote_actions
 from timecapsulesmb.deploy.planner import build_netbsd4_activation_plan
-from timecapsulesmb.device.compat import is_netbsd4_payload_family, render_compatibility_message
 from timecapsulesmb.device.probe import probe_managed_runtime_conn
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_red
@@ -33,18 +36,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         target = command_context.resolve_validated_managed_target(profile="activate", include_probe=True)
         connection = target.connection
         command_context.set_stage("check_compatibility")
-        compatibility = command_context.require_compatibility()
-        compatibility_message = render_compatibility_message(compatibility)
-        netbsd4_payload = is_netbsd4_payload_family(compatibility.payload_family)
-        command_context.update_fields(
-            compatibility_supported=compatibility.supported,
-            netbsd4_payload=netbsd4_payload,
+        require_netbsd4_device_compatibility(
+            command_context,
+            command_name="activate",
+            unsupported_message="activate is only supported for NetBSD4 AirPort storage devices; use deploy for persistent NetBSD6 installs.",
         )
-        if not compatibility.supported:
-            raise SystemExit(compatibility_message)
-        print(compatibility_message)
-        if not netbsd4_payload:
-            raise SystemExit("activate is only supported for NetBSD4 AirPort storage devices; use deploy for persistent NetBSD6 installs.")
 
         command_context.set_stage("build_activation_plan")
         plan = build_netbsd4_activation_plan()
@@ -60,14 +56,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.set_stage("confirm_activation")
             print(f"This will start the deployed Samba payload on the {device_name}.")
             print(color_red(NETBSD4_REBOOT_GUIDANCE))
-            try:
-                answer = input("Continue with NetBSD4 activation? [y/N]: ").strip().lower()
-            except EOFError:
-                message = "Running `activate` requires confirmation when stdin is not interactive. Use `activate --yes` in a non-interactive environment."
-                print(message)
-                command_context.fail_with_error(message)
+            proceed = command_context.confirm_or_fail(
+                "Continue with NetBSD4 activation?",
+                default=False,
+                noninteractive_message="Running `activate` requires confirmation when stdin is not interactive. Use `activate --yes` in a non-interactive environment.",
+            )
+            if proceed is None:
                 return 1
-            if answer not in {"y", "yes"}:
+            if not proceed:
                 print("Activation cancelled.")
                 command_context.cancel_with_error("Cancelled by user at NetBSD4 activation confirmation prompt.")
                 return 0

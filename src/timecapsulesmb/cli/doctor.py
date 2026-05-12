@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import argparse
-import json
 from typing import Optional
 
 from timecapsulesmb.checks.doctor import run_doctor_checks
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
+from timecapsulesmb.cli.runtime import add_config_argument, load_env_config, print_json
 from timecapsulesmb.cli.util import color_green, color_red
 from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.core.errors import system_exit_message
@@ -120,11 +119,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if args.json:
             command_context.set_stage("render_json")
-            print(json.dumps({
+            print_json({
                 "fatal": fatal,
                 "results": [{"status": result.status, "message": result.message} for result in results],
                 "summary": "doctor found one or more fatal problems." if fatal else "doctor checks passed.",
-            }, indent=2, sort_keys=True))
+            })
             if fatal:
                 error = build_doctor_error(results)
                 if error:

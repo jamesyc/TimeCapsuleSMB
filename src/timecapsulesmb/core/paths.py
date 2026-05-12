@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import os
+import platform
 from importlib import resources
 from pathlib import Path
 
@@ -171,6 +172,17 @@ def _resolve_state_dir(distribution_root: Path) -> Path:
     if env_state_dir:
         return _resolve_user_path(env_state_dir)
     return distribution_root
+
+
+def default_user_data_dir() -> Path:
+    """Return a Homebrew-safe user data directory for durable local artifacts."""
+    system = platform.system()
+    if system == "Darwin":
+        return Path.home() / "Library" / "Application Support" / "TimeCapsuleSMB"
+    xdg_data_home = os.getenv("XDG_DATA_HOME", "").strip()
+    if xdg_data_home:
+        return Path(xdg_data_home).expanduser().resolve() / "timecapsulesmb"
+    return Path.home() / ".local" / "share" / "timecapsulesmb"
 
 
 def resolve_app_paths(start: Path | None = None, config_path: Path | str | None = None) -> AppPaths:

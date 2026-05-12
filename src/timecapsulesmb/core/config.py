@@ -492,6 +492,13 @@ MANAGED_REQUIRED_FILE_KEYS = (
     "TC_MDNS_DEVICE_MODEL",
     "TC_AIRPORT_SYAP",
 )
+FLASH_REQUIRED_FILE_KEYS = (
+    "TC_HOST",
+    "TC_PASSWORD",
+)
+FLASH_VALIDATED_KEYS = (
+    "TC_HOST",
+)
 
 CONFIG_PROFILES: dict[str, ConfigProfile] = {
     "configure": ConfigProfile(
@@ -524,6 +531,10 @@ CONFIG_PROFILES: dict[str, ConfigProfile] = {
     "set_ssh": ConfigProfile(
         required_file_values=("TC_HOST", "TC_PASSWORD"),
         validated_keys=("TC_HOST",),
+    ),
+    "flash": ConfigProfile(
+        required_file_values=FLASH_REQUIRED_FILE_KEYS,
+        validated_keys=FLASH_VALIDATED_KEYS,
     ),
     "repair_xattrs": ConfigProfile(
         required_values=("TC_HOST",),

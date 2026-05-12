@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import argparse
-import json
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import load_optional_env_config
+from timecapsulesmb.cli.runtime import add_config_argument, load_optional_env_config, print_json
 from timecapsulesmb.discovery.bonjour import (
     DEFAULT_BROWSE_TIMEOUT_SEC,
     BonjourResolvedService,
@@ -75,6 +74,7 @@ def print_table(records: list[BonjourResolvedService]) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Discover Apple AirPort storage devices via mDNS/Bonjour")
+    add_config_argument(parser)
     parser.add_argument("--timeout", type=float, default=DEFAULT_BROWSE_TIMEOUT_SEC, help="Browse time in seconds (default: 6)")
     parser.add_argument("--json", action="store_true", help="Output results as JSON")
     parser.add_argument("--select", action="store_true", help="Interactively select one and print selection")
@@ -99,16 +99,10 @@ def _run_discover(args: argparse.Namespace, command_context: CommandContext | No
         )
         command_context.add_debug_fields(discovery_snapshot=snapshot)
     if args.json:
-        print(
-            json.dumps(
-                {
-                    "instances": [service_instance_to_jsonable(instance) for instance in snapshot.instances],
-                    "resolved": [discovery_record_to_jsonable(record) for record in records],
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
+        print_json({
+            "instances": [service_instance_to_jsonable(instance) for instance in snapshot.instances],
+            "resolved": [discovery_record_to_jsonable(record) for record in records],
+        })
         if command_context is not None:
             command_context.succeed()
         return 0
@@ -163,7 +157,7 @@ def run_cli(argv: Optional[list[str]] = None, command_context: CommandContext | 
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     ensure_install_id()
-    config = load_optional_env_config()
+    config = load_optional_env_config(env_path=args.config)
     telemetry = TelemetryClient.from_config(config)
     with CommandContext(
         telemetry,

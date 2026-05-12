@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import add_config_argument, load_optional_env_config
+from timecapsulesmb.cli.runtime import add_config_argument, confirm as confirm_prompt, load_optional_env_config
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.repair_xattrs import (
@@ -81,14 +81,8 @@ def print_summary(summary: RepairSummary, *, dry_run: bool) -> None:
         print(f"  failed: {summary.failed}")
 
 
-def confirm(prompt: str) -> bool:
-    try:
-        return input(prompt).strip().lower() in {"y", "yes"}
-    except EOFError:
-        return False
-    except KeyboardInterrupt:
-        print()
-        return False
+def confirm(prompt_text: str) -> bool:
+    return confirm_prompt(prompt_text, default=False, eof_default=False, interrupt_default=False)
 
 
 def run_repair(args: argparse.Namespace, command_context: CommandContext, config: AppConfig) -> int:
@@ -175,7 +169,7 @@ def run_repair(args: argparse.Namespace, command_context: CommandContext, config
         return 1
 
     command_context.set_stage("confirm_repair")
-    if not args.yes and not confirm(f"Repair {len(candidates)} paths with known-safe fixes? [y/N]: "):
+    if not args.yes and not confirm(f"Repair {len(candidates)} paths with known-safe fixes?"):
         print("No changes made.")
         print_summary(summary, dry_run=True)
         command_context.fail_with_error(build_repair_report(findings))

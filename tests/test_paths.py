@@ -18,6 +18,7 @@ from timecapsulesmb.core.paths import (
     TCAPSULE_CONFIG_ENV,
     TCAPSULE_DISTRIBUTION_ROOT_ENV,
     TCAPSULE_STATE_DIR_ENV,
+    default_user_data_dir,
     manifest_artifact_paths,
     resolve_app_paths,
     resolve_distribution_root,
@@ -125,6 +126,18 @@ class PathResolutionTests(unittest.TestCase):
         self.assertEqual(app_paths.state_dir, state)
         self.assertEqual(app_paths.bootstrap_path, state / ".bootstrap")
         self.assertEqual(app_paths.version_check_cache_path, state / ".version-check-cache.json")
+
+    def test_default_user_data_dir_uses_platform_location(self) -> None:
+        with mock.patch("timecapsulesmb.core.paths.platform.system", return_value="Darwin"):
+            self.assertEqual(default_user_data_dir(), Path.home() / "Library" / "Application Support" / "TimeCapsuleSMB")
+
+        with mock.patch("timecapsulesmb.core.paths.platform.system", return_value="Linux"):
+            with mock.patch.dict(os.environ, {"XDG_DATA_HOME": "/tmp/xdg"}):
+                self.assertEqual(default_user_data_dir(), Path("/tmp/xdg/timecapsulesmb").resolve())
+
+        with mock.patch("timecapsulesmb.core.paths.platform.system", return_value="Linux"):
+            with mock.patch.dict(os.environ, {"XDG_DATA_HOME": ""}):
+                self.assertEqual(default_user_data_dir(), Path.home() / ".local" / "share" / "timecapsulesmb")
 
     def test_validate_distribution_root_returns_all_missing_manifest_payloads(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

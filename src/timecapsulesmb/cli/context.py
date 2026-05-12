@@ -1,15 +1,22 @@
 from __future__ import annotations
 
-import importlib
 import time
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.cli import runtime
 from timecapsulesmb.core.config import ConfigError
-from timecapsulesmb.core.errors import missing_dependency_message, system_exit_message
+from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.device.storage import (
+    mast_volumes_debug_summary,
+    mounted_mast_volumes_conn,
+    payload_candidate_checks_debug_summary,
+    read_mast_volumes_conn,
+    select_payload_home_with_diagnostics_conn,
+    wait_for_mast_volumes_conn,
+)
 from timecapsulesmb.telemetry import build_device_os_version
 from timecapsulesmb.telemetry.debug import debug_summary, render_debug_mapping
 from timecapsulesmb.transport.errors import TransportError
@@ -19,17 +26,9 @@ if TYPE_CHECKING:
     from timecapsulesmb.core.config import AppConfig
     from timecapsulesmb.device.compat import DeviceCompatibility
     from timecapsulesmb.device.probe import ProbedDeviceState, RemoteInterfaceProbeResult
+    from timecapsulesmb.device.storage import MaStDiscoveryResult, MaStVolume, PayloadHomeSelection
     from timecapsulesmb.telemetry import TelemetryClient
     from timecapsulesmb.transport.ssh import SshConnection
-
-
-def missing_required_python_module(module_names: Iterable[str]) -> tuple[str, BaseException] | None:
-    for module_name in module_names:
-        try:
-            importlib.import_module(module_name)
-        except Exception as e:
-            return module_name, e
-    return None
 
 
 COMMAND_VALUE_BLACKLIST = {
@@ -222,6 +221,116 @@ class CommandContext:
             self.telemetry.emit(event, **fields)
         except Exception:
             pass
+
+    def confirm_or_fail(
+        self,
+        prompt_text: str,
+        *,
+        default: bool,
+        noninteractive_message: str,
+        eof_default: bool | None = None,
+        interrupt_default: bool | None = None,
+    ) -> bool | None:
+        try:
+            return runtime.confirm(
+                prompt_text,
+                default=default,
+                eof_default=eof_default,
+                interrupt_default=interrupt_default,
+                noninteractive_message=noninteractive_message,
+            )
+        except runtime.NonInteractivePromptError as exc:
+            message = str(exc)
+            print(message)
+            self.fail_with_error(message)
+            return None
+
+    def _storage_connection(self, connection: SshConnection | None) -> SshConnection:
+        if connection is not None:
+            return connection
+        if self.connection is None:
+            raise RuntimeError("CommandContext connection is not set.")
+        return self.connection
+
+    def read_mast_volumes(
+        self,
+        connection: SshConnection | None = None,
+        *,
+        stage: str = "read_mast",
+    ) -> tuple[MaStVolume, ...]:
+        connection = self._storage_connection(connection)
+        self.set_stage(stage)
+        volumes = read_mast_volumes_conn(connection)
+        self.add_debug_fields(
+            mast_volume_count=len(volumes),
+            mast_candidates=mast_volumes_debug_summary(volumes),
+        )
+        return volumes
+
+    def mount_mast_volumes(
+        self,
+        connection: SshConnection | None = None,
+        *,
+        wait_seconds: int,
+        read_stage: str = "read_mast",
+        mount_stage: str = "mount_mast_volumes",
+    ) -> tuple[MaStVolume, ...]:
+        connection = self._storage_connection(connection)
+        mast_volumes = self.read_mast_volumes(connection, stage=read_stage)
+        self.set_stage(mount_stage)
+        mounted_volumes = mounted_mast_volumes_conn(
+            connection,
+            mast_volumes,
+            wait_seconds=wait_seconds,
+        )
+        self.add_debug_fields(
+            mast_mounted_volume_count=len(mounted_volumes),
+            mast_mounted_candidates=mast_volumes_debug_summary(mounted_volumes),
+        )
+        return mounted_volumes
+
+    def wait_for_mast_volumes(
+        self,
+        connection: SshConnection | None = None,
+        *,
+        attempts: int,
+        delay_seconds: int,
+        stage: str = "read_mast",
+    ) -> MaStDiscoveryResult:
+        connection = self._storage_connection(connection)
+        self.set_stage(stage)
+        mast_discovery = wait_for_mast_volumes_conn(
+            connection,
+            attempts=attempts,
+            delay_seconds=delay_seconds,
+        )
+        mast_volumes = mast_discovery.volumes
+        self.add_debug_fields(
+            mast_read_attempts=mast_discovery.attempts,
+            mast_volume_count=len(mast_volumes),
+            mast_candidates=mast_volumes_debug_summary(mast_volumes),
+        )
+        return mast_discovery
+
+    def select_payload_home(
+        self,
+        connection: SshConnection | None,
+        mast_volumes: tuple[MaStVolume, ...],
+        payload_dir_name: str,
+        *,
+        wait_seconds: int,
+        stage: str = "select_payload_home",
+    ) -> PayloadHomeSelection:
+        connection = self._storage_connection(connection)
+        self.set_stage(stage)
+        selection = select_payload_home_with_diagnostics_conn(
+            connection,
+            mast_volumes,
+            payload_dir_name,
+            wait_seconds=wait_seconds,
+        )
+        self.add_debug_fields(mast_candidate_checks=payload_candidate_checks_debug_summary(selection.checks))
+        return selection
 
     def resolve_env_connection(
         self,

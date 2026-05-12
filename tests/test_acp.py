@@ -81,6 +81,38 @@ class ACPTests(unittest.TestCase):
         self.assertIn(b"acRB", fake_socket.sent)
         self.assertIn(b"\x00\x00\x00\x00", fake_socket.sent)
 
+    def test_flash_firmware_bank_sends_primary_command_with_raw_payload(self) -> None:
+        response = acp._compose_header(command=acp.COMMAND_FLASH_PRIMARY, payload=b"accepted") + b"accepted"
+        fake_socket = FakeSocket(response)
+        with mock.patch("timecapsulesmb.integrations.acp.socket.create_connection", return_value=fake_socket):
+            result = acp.flash_firmware_bank("10.0.0.2", "pw", "primary", b"raw-bank")
+
+        self.assertEqual(result.command, acp.COMMAND_FLASH_PRIMARY)
+        self.assertEqual(result.reply_body, b"accepted")
+        self.assertIn(b"raw-bank", fake_socket.sent)
+
+    def test_flash_firmware_bank_rejects_bad_reply_body_checksum(self) -> None:
+        response = acp._compose_header(command=acp.COMMAND_FLASH_PRIMARY, payload=b"accepted") + b"acceptEd"
+        fake_socket = FakeSocket(response)
+        with mock.patch("timecapsulesmb.integrations.acp.socket.create_connection", return_value=fake_socket):
+            with self.assertRaises(acp.ACPProtocolError) as raised:
+                acp.flash_firmware_bank("10.0.0.2", "pw", "primary", b"raw-bank")
+
+        self.assertIn("body checksum mismatch", str(raised.exception))
+
+    def test_flash_firmware_bank_sends_secondary_command(self) -> None:
+        response = acp._compose_header(command=acp.COMMAND_FLASH_SECONDARY)
+        fake_socket = FakeSocket(response)
+        with mock.patch("timecapsulesmb.integrations.acp.socket.create_connection", return_value=fake_socket):
+            result = acp.flash_firmware_bank("10.0.0.2", "pw", "secondary", b"raw-bank")
+
+        self.assertEqual(result.command, acp.COMMAND_FLASH_SECONDARY)
+        self.assertIn(b"raw-bank", fake_socket.sent)
+
+    def test_flash_firmware_bank_rejects_unknown_bank_name(self) -> None:
+        with self.assertRaises(acp.ACPProtocolError):
+            acp.flash_firmware_bank("10.0.0.2", "pw", "tertiary", b"raw-bank")
+
     def test_enable_ssh_can_skip_reboot(self) -> None:
         with mock.patch("timecapsulesmb.integrations.acp.set_dbug") as set_dbug_mock:
             with mock.patch("timecapsulesmb.integrations.acp.reboot") as reboot_mock:
@@ -98,6 +130,27 @@ class ACPTests(unittest.TestCase):
 
         self.assertIn("-0x1234", str(exc.exception))
         self.assertIn("wrong AirPort admin password", str(exc.exception))
+
+    def test_get_property_int_validates_sized_reply_body_checksum(self) -> None:
+        body = acp._compose_property_element("dbug", 0x3000)
+        response = acp._compose_header(command=acp.COMMAND_GETPROP, payload=body) + body
+        fake_socket = FakeSocket(response)
+        with mock.patch("timecapsulesmb.integrations.acp.socket.create_connection", return_value=fake_socket):
+            value = acp.get_dbug("10.0.0.2", "pw")
+
+        self.assertEqual(value, 0x3000)
+
+    def test_get_property_int_rejects_bad_sized_reply_body_checksum(self) -> None:
+        body = acp._compose_property_element("dbug", 0x3000)
+        corrupted = bytearray(body)
+        corrupted[-1] ^= 0x01
+        response = acp._compose_header(command=acp.COMMAND_GETPROP, payload=body) + bytes(corrupted)
+        fake_socket = FakeSocket(response)
+        with mock.patch("timecapsulesmb.integrations.acp.socket.create_connection", return_value=fake_socket):
+            with self.assertRaises(acp.ACPProtocolError) as raised:
+                acp.get_dbug("10.0.0.2", "pw")
+
+        self.assertIn("body checksum mismatch", str(raised.exception))
 
     def test_bad_header_checksum_is_protocol_error(self) -> None:
         header = bytearray(acp._compose_header(command=acp.COMMAND_SETPROP))

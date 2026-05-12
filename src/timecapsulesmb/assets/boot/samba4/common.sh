@@ -503,6 +503,19 @@ runtime_process_present_by_ucomm() {
     return 1
 }
 
+tc_smbd_parent_pid() {
+    pid_file="$RAM_VAR/smbd.pid"
+    [ -f "$pid_file" ] || return 1
+
+    smbd_pid=$(/bin/cat "$pid_file" 2>/dev/null | /usr/bin/sed -n '1p')
+    case "$smbd_pid" in
+        ""|*[!0123456789]*) return 1 ;;
+    esac
+
+    kill -0 "$smbd_pid" >/dev/null 2>&1 || return 1
+    echo "$smbd_pid"
+}
+
 runtime_watchdog_pids() {
     if ps_out=$(/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null); then
         old_ifs=$IFS
@@ -2330,6 +2343,25 @@ tc_start_smbd_if_needed() {
     tc_log "watchdog recovery: smbd restart requested"
 }
 
+tc_reload_smbd_config() {
+    smbd_pid=$(tc_smbd_parent_pid || true)
+    if [ -z "$smbd_pid" ]; then
+        tc_log "watchdog recovery: smbd config reload skipped; missing valid $RAM_VAR/smbd.pid"
+        return 1
+    fi
+
+    # Samba's parent process reloads services on SIGHUP. Signal only the
+    # parent pid file instead of pkilling every smbd child, so active SMB
+    # sessions can keep running while new share definitions are loaded.
+    if kill -HUP "$smbd_pid" >/dev/null 2>&1; then
+        tc_log "watchdog recovery: smbd config reload requested with SIGHUP pid $smbd_pid"
+        return 0
+    fi
+
+    tc_log "watchdog recovery: smbd config reload failed for pid $smbd_pid"
+    return 1
+}
+
 tc_start_watchdog() {
     if runtime_watchdog_present; then
         tc_log "watchdog already running"
@@ -2388,6 +2420,68 @@ tc_exec_start_samba() {
     exec /mnt/Flash/start-samba.sh --reload-disk-runtime
 }
 
+tc_live_reload_disk_runtime() {
+    reason=$1
+
+    if ! tc_read_payload_state; then
+        tc_log "watchdog recovery: live disk runtime refresh skipped; current payload state is unavailable"
+        return 1
+    fi
+    old_payload_dir=$TC_PAYLOAD_DIR
+    old_payload_volume=$TC_PAYLOAD_VOLUME
+    old_payload_device=$TC_PAYLOAD_DEVICE
+
+    tc_log "watchdog recovery: attempting live disk runtime refresh: $reason"
+    if ! tc_refresh_disk_state; then
+        tc_log "watchdog recovery: live disk runtime refresh failed during disk-state refresh"
+        return 1
+    fi
+    if ! tc_read_payload_state; then
+        tc_log "watchdog recovery: live disk runtime refresh failed; refreshed payload state is unavailable"
+        return 1
+    fi
+    if [ "$TC_PAYLOAD_DIR" != "$old_payload_dir" ] ||
+        [ "$TC_PAYLOAD_VOLUME" != "$old_payload_volume" ] ||
+        [ "$TC_PAYLOAD_DEVICE" != "$old_payload_device" ]; then
+        tc_log "watchdog recovery: live disk runtime refresh cannot continue because payload home changed from $old_payload_dir to $TC_PAYLOAD_DIR"
+        return 1
+    fi
+
+    BIND_INTERFACES=$(tc_wait_for_bind_interfaces) || {
+        tc_log "watchdog recovery: live disk runtime refresh failed; bind interface unavailable"
+        return 1
+    }
+    TC_NET_IFACE_IP=${BIND_INTERFACES#127.0.0.1/8 }
+    TC_NET_IFACE_IP=${TC_NET_IFACE_IP%%/*}
+    tc_prepare_local_hostname_resolution
+    tc_init_runtime_identity
+
+    if [ ! -x "$TC_SMBD_BIN" ]; then
+        tc_log "watchdog recovery: live disk runtime refresh failed; RAM smbd binary is missing"
+        return 1
+    fi
+    tc_generate_smb_conf "$TC_PAYLOAD_DIR" "$BIND_INTERFACES"
+
+    if runtime_process_present_by_ucomm smbd; then
+        if ! tc_reload_smbd_config; then
+            return 1
+        fi
+    else
+        tc_start_smbd_if_needed
+    fi
+
+    tc_launch_mdns_advertiser "watchdog topology refresh" 0 1 10
+    if tc_nbns_enabled; then
+        if runtime_process_present_by_ucomm "$NBNS_PROC_NAME"; then
+            :
+        else
+            tc_restart_nbns
+        fi
+    fi
+    tc_log "watchdog recovery: live disk runtime refresh complete"
+    return 0
+}
+
 tc_nbns_enabled() {
     [ "$NBNS_ENABLED" = "1" ]
 }
@@ -2422,7 +2516,11 @@ tc_watchdog_iteration() {
     TC_WATCHDOG_RECOVERY_IDENTITY_REFRESHED=0
 
     if tc_topology_changed_debounced; then
-        tc_exec_start_samba "MaSt topology changed"
+        if tc_live_reload_disk_runtime "MaSt topology changed"; then
+            :
+        else
+            tc_exec_start_samba "MaSt topology changed"
+        fi
     fi
 
     if tc_payload_available; then

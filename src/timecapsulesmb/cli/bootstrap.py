@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import argparse
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.runtime import load_optional_env_config
+from timecapsulesmb.cli.runtime import confirm, load_optional_env_config
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.telemetry import TelemetryClient
+from timecapsulesmb.transport.local import find_command
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -29,14 +29,6 @@ class BootstrapError(Exception):
 
 def run(cmd: list[str], *, cwd: Optional[Path] = None) -> None:
     subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True)
-
-
-def confirm(prompt_text: str, *, default: bool = True) -> bool:
-    suffix = "[Y/n]" if default else "[y/N]"
-    reply = input(f"{prompt_text} {suffix}: ").strip().lower()
-    if not reply:
-        return default
-    return reply in {"y", "yes"}
 
 
 def current_platform_label() -> str:
@@ -60,27 +52,45 @@ def ensure_venv(python: str) -> Path:
     return VENVDIR / "bin" / "python"
 
 
+def venv_has_pip(venv_python: Path) -> bool:
+    proc = subprocess.run(
+        [str(venv_python), "-m", "pip", "--version"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return proc.returncode == 0
+
+
+def ensure_pip(venv_python: Path) -> None:
+    if venv_has_pip(venv_python):
+        return
+    print("pip is missing from .venv; bootstrapping pip with ensurepip", flush=True)
+    run([str(venv_python), "-m", "ensurepip", "--upgrade"])
+
+
 def install_python_requirements(venv_python: Path) -> None:
     print("Installing Python dependencies into .venv", flush=True)
+    ensure_pip(venv_python)
     run([str(venv_python), "-m", "pip", "install", "-U", "pip"])
     run([str(venv_python), "-m", "pip", "install", "-r", str(REQUIREMENTS)])
     run([str(venv_python), "-m", "pip", "install", "-e", str(REPO_ROOT)])
 
 
 def maybe_install_smbclient() -> None:
-    if shutil.which("smbclient"):
+    if find_command("smbclient"):
         return
 
     print("smbclient is required for cross-platform SMB verification in 'tcapsule doctor'.", flush=True)
 
     if current_platform_label() == "macOS":
-        brew = shutil.which("brew")
+        brew = find_command("brew")
         if not brew:
             print("Homebrew not found, so bootstrap cannot install smbclient automatically.", flush=True)
             print("Install Homebrew from https://brew.sh and then run: brew install samba", flush=True)
             return
         print("On macOS, smbclient is provided by the Homebrew 'samba' formula.", flush=True)
-        if not confirm("Install smbclient now via 'brew install samba'?", default=True):
+        if not confirm("Install smbclient now via 'brew install samba'?", default=True, eof_default=False):
             print("Skipping smbclient install. Later, run 'brew install samba' before using 'tcapsule doctor'.", flush=True)
             return
         print("Installing smbclient via 'brew install samba'", flush=True)
@@ -93,15 +103,15 @@ def maybe_install_smbclient() -> None:
         return
 
     print("Automatic smbclient installation is not implemented for this platform.", flush=True)
-    if shutil.which("apt-get"):
+    if find_command("apt-get"):
         print("Install it with: sudo apt-get update && sudo apt-get install -y smbclient", flush=True)
-    elif shutil.which("dnf"):
+    elif find_command("dnf"):
         print("Install it with: sudo dnf install -y samba-client", flush=True)
-    elif shutil.which("yum"):
+    elif find_command("yum"):
         print("Install it with: sudo yum install -y samba-client", flush=True)
-    elif shutil.which("zypper"):
+    elif find_command("zypper"):
         print("Install it with: sudo zypper install smbclient", flush=True)
-    elif shutil.which("pacman"):
+    elif find_command("pacman"):
         print("Install it with: sudo pacman -S samba", flush=True)
     else:
         print("Install smbclient with your distro package manager before running 'tcapsule doctor'.", flush=True)
@@ -109,14 +119,14 @@ def maybe_install_smbclient() -> None:
 
 
 def maybe_install_sshpass() -> None:
-    if shutil.which("sshpass"):
+    if find_command("sshpass"):
         print("Found local sshpass.", flush=True)
         return
 
     print("sshpass is required for NetBSD4 devices that do not provide remote scp.", flush=True)
     platform_label = current_platform_label()
     if platform_label == "macOS":
-        brew = shutil.which("brew")
+        brew = find_command("brew")
         if not brew:
             print(red("Homebrew is missing, please install Homebrew:"), flush=True)
             print(HOMEBREW_INSTALL_COMMAND, flush=True)
@@ -127,20 +137,20 @@ def maybe_install_sshpass() -> None:
         return
 
     if platform_label == "Linux":
-        if apt_get := shutil.which("apt-get"):
+        if apt_get := find_command("apt-get"):
             run(["sudo", apt_get, "update"])
             run(["sudo", apt_get, "install", "-y", "sshpass"])
             return
-        if dnf := shutil.which("dnf"):
+        if dnf := find_command("dnf"):
             run(["sudo", dnf, "install", "-y", "sshpass"])
             return
-        if yum := shutil.which("yum"):
+        if yum := find_command("yum"):
             run(["sudo", yum, "install", "-y", "sshpass"])
             return
-        if zypper := shutil.which("zypper"):
+        if zypper := find_command("zypper"):
             run(["sudo", zypper, "install", "-y", "sshpass"])
             return
-        if pacman := shutil.which("pacman"):
+        if pacman := find_command("pacman"):
             run(["sudo", pacman, "-S", "--needed", "sshpass"])
             return
         raise BootstrapError("No supported Linux package manager found to install sshpass.")
@@ -205,8 +215,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         command_context.set_stage("complete")
         command_context.update_fields(
-            smbclient_available_after=shutil.which("smbclient") is not None,
-            sshpass_available_after=shutil.which("sshpass") is not None,
+            smbclient_available_after=find_command("smbclient") is not None,
+            sshpass_available_after=find_command("sshpass") is not None,
             venv_exists_after=VENVDIR.exists(),
         )
         print("\nHost setup complete.", flush=True)

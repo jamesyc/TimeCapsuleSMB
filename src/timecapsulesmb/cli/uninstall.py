@@ -1,22 +1,17 @@
 from __future__ import annotations
 
 import argparse
-import json
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import request_reboot_and_wait
-from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
+from timecapsulesmb.cli.runtime import add_config_argument, load_env_config, print_json
 from timecapsulesmb.core.config import airport_exact_display_name_from_config
 from timecapsulesmb.deploy.dry_run import format_uninstall_plan, uninstall_plan_to_jsonable
 from timecapsulesmb.deploy.executor import remote_uninstall_payload
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS, build_uninstall_plan
 from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
-from timecapsulesmb.device.storage import (
-    UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER,
-    mounted_mast_volumes_conn,
-    read_mast_volumes_conn,
-)
+from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.telemetry import TelemetryClient
 
@@ -62,12 +57,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             volume_roots = [UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER]
             payload_dirs = [f"{UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER}/{payload_dir_name}"]
         else:
-            command_context.set_stage("read_mast")
-            mast_volumes = read_mast_volumes_conn(connection)
-            command_context.set_stage("mount_mast_volumes")
-            mounted_volumes = mounted_mast_volumes_conn(
+            mounted_volumes = command_context.mount_mast_volumes(
                 connection,
-                mast_volumes,
                 wait_seconds=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
             )
             volume_roots = [volume.volume_root for volume in mounted_volumes]
@@ -78,7 +69,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if args.dry_run:
             if args.json:
-                print(json.dumps(uninstall_plan_to_jsonable(plan), indent=2, sort_keys=True))
+                print_json(uninstall_plan_to_jsonable(plan))
             else:
                 print(format_uninstall_plan(plan))
             command_context.succeed()
@@ -101,8 +92,14 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if not args.yes:
             command_context.set_stage("confirm_reboot")
-            answer = input(f"This will reboot the {device_name} now. Continue? [Y/n]: ").strip().lower()
-            if answer not in {"", "y", "yes"}:
+            proceed = command_context.confirm_or_fail(
+                f"This will reboot the {device_name} now. Continue?",
+                default=True,
+                noninteractive_message="Running `uninstall` with reboot requires confirmation when stdin is not interactive. Use `uninstall --yes` to skip the prompt or `uninstall --no-reboot`.",
+            )
+            if proceed is None:
+                return 1
+            if not proceed:
                 print(f"Skipped reboot. The {device_name} may need a manual reboot to fully clear running processes.")
                 command_context.succeed()
                 return 0

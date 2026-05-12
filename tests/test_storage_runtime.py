@@ -40,8 +40,20 @@ from tests.storage_fixtures import INTERNAL_DATA, MAST_FIXTURES, SHELL_MAST_FIXT
 
 
 class StorageRuntimeTests(unittest.TestCase):
+    _runtime_asset_texts: tuple[str, str, str] | None = None
+
+    @classmethod
+    def runtime_asset_texts(cls) -> tuple[str, str, str]:
+        if cls._runtime_asset_texts is None:
+            repo_root = Path(__file__).resolve().parent.parent
+            cls._runtime_asset_texts = (
+                (repo_root / "src/timecapsulesmb/assets/boot/samba4/common.sh").read_text(),
+                (repo_root / "src/timecapsulesmb/assets/boot/samba4/start-samba.sh").read_text(),
+                (repo_root / "src/timecapsulesmb/assets/boot/samba4/watchdog.sh").read_text(),
+            )
+        return cls._runtime_asset_texts
+
     def write_runtime_harness(self, tmp_path: Path, *, hostname_output: str | None = None) -> tuple[Path, Path, Path, Path]:
-        repo_root = Path(__file__).resolve().parent.parent
         flash = tmp_path / "Flash"
         memory = tmp_path / "Memory"
         locks = tmp_path / "Locks"
@@ -51,9 +63,7 @@ class StorageRuntimeTests(unittest.TestCase):
         locks.mkdir()
         volumes.mkdir()
 
-        common = (repo_root / "src/timecapsulesmb/assets/boot/samba4/common.sh").read_text()
-        start = (repo_root / "src/timecapsulesmb/assets/boot/samba4/start-samba.sh").read_text()
-        watchdog = (repo_root / "src/timecapsulesmb/assets/boot/samba4/watchdog.sh").read_text()
+        common, start, watchdog = self.runtime_asset_texts()
         replacements = {
             "/mnt/Flash": str(flash),
             "/mnt/Memory": str(memory),
@@ -126,6 +136,59 @@ class StorageRuntimeTests(unittest.TestCase):
         acp.chmod(0o755)
         return acp
 
+    def write_selectable_fixture_acp(self, tmp_path: Path, fixtures: tuple[MaStFixture, ...]) -> Path:
+        raw_dir = tmp_path / "mast-fixtures"
+        raw_dir.mkdir()
+        selector = tmp_path / "selected-fixture"
+        selector.write_text("")
+        for fixture in fixtures:
+            raw = fixture.raw
+            path = raw_dir / fixture.name
+            if isinstance(raw, bytes):
+                path.write_bytes(raw)
+            else:
+                path.write_text(raw)
+        acp = tmp_path / "acp"
+        acp.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/bin/sh
+                selected=$(cat {shlex.quote(str(selector))})
+                path={shlex.quote(str(raw_dir))}/$selected
+                [ -f "$path" ] || exit 1
+                cat "$path"
+                """
+            )
+        )
+        acp.chmod(0o755)
+        return selector
+
+    def parse_named_shell_sections(self, stdout: str) -> dict[str, tuple[int, str]]:
+        sections: dict[str, tuple[int, str]] = {}
+        current_name: str | None = None
+        current_status = 0
+        current_lines: list[str] = []
+        for line in stdout.splitlines(keepends=True):
+            if line.startswith("__TC_BEGIN__\t"):
+                self.assertIsNone(current_name, stdout)
+                _marker, name, status_text = line.rstrip("\n").split("\t", 2)
+                current_name = name
+                current_status = int(status_text)
+                current_lines = []
+            elif line.startswith("__TC_END__\t"):
+                self.assertIsNotNone(current_name, stdout)
+                _marker, name = line.rstrip("\n").split("\t", 1)
+                self.assertEqual(name, current_name, stdout)
+                sections[current_name] = (current_status, "".join(current_lines))
+                current_name = None
+                current_status = 0
+                current_lines = []
+            else:
+                self.assertIsNotNone(current_name, stdout)
+                current_lines.append(line)
+        self.assertIsNone(current_name, stdout)
+        return sections
+
     def parse_topology_tsv(self, text: str, volumes_root: Path) -> tuple[MaStVolume, ...]:
         volumes: list[MaStVolume] = []
         for line in text.splitlines():
@@ -197,20 +260,22 @@ class StorageRuntimeTests(unittest.TestCase):
             adisk_lines.append("\t".join((share_name, volume.partition_device, volume.adisk_uuid, "0x82")))
         return "\n".join(share_lines) + "\n", "\n".join(adisk_lines) + "\n"
 
-    def run_share_state_fixture(
+    def run_share_state_fixture_batch(
         self,
-        fixture: MaStFixture,
+        fixtures: tuple[MaStFixture, ...],
         tmp_path: Path,
         flash: Path,
         volumes_root: Path,
         *,
         internal_share_use_disk_root: bool,
     ) -> subprocess.CompletedProcess[str]:
-        self.write_fake_acp(tmp_path, fixture.raw)
-        for volume in fixture.expected:
-            Path(self.mapped_volume_root(volume, volumes_root)).mkdir(parents=True, exist_ok=True)
+        selector = self.write_selectable_fixture_acp(tmp_path, fixtures)
+        for fixture in fixtures:
+            for volume in fixture.expected:
+                Path(self.mapped_volume_root(volume, volumes_root)).mkdir(parents=True, exist_ok=True)
         override = "INTERNAL_SHARE_USE_DISK_ROOT=1" if internal_share_use_disk_root else ""
-        script = tmp_path / f"share-state-{fixture.name}.sh"
+        names = " ".join(shlex.quote(fixture.name) for fixture in fixtures)
+        script = tmp_path / "share-state-fixtures.sh"
         script.write_text(
             textwrap.dedent(
                 f"""\
@@ -223,12 +288,17 @@ class StorageRuntimeTests(unittest.TestCase):
                 tc_set_log "$RAM_VAR/test.log" test
                 mkdir -p "$RAM_VAR"
                 is_volume_root_mounted() {{ return 0; }}
-                tc_read_mast_volumes_to "$TC_VOLUMES_TSV" "$TC_MAST_RAW"
-                tc_build_share_state "$TC_VOLUMES_TSV"
-                printf 'shares\\n'
-                cat "$TC_SHARES_TSV"
-                printf 'adisk\\n'
-                cat "$TC_ADISK_TSV"
+                for fixture_name in {names}; do
+                    echo "$fixture_name" >{shlex.quote(str(selector))}
+                    printf '__TC_BEGIN__\\t%s\\t0\\n' "$fixture_name"
+                    tc_read_mast_volumes_to "$TC_VOLUMES_TSV" "$TC_MAST_RAW"
+                    tc_build_share_state "$TC_VOLUMES_TSV"
+                    printf 'shares\\n'
+                    cat "$TC_SHARES_TSV"
+                    printf 'adisk\\n'
+                    cat "$TC_ADISK_TSV"
+                    printf '__TC_END__\\t%s\\n' "$fixture_name"
+                done
                 """
             )
         )
@@ -458,36 +528,41 @@ MaSt = (
         )
 
     def test_common_payload_candidate_order_matches_python_for_shell_fixtures(self) -> None:
-        for fixture in SHELL_MAST_FIXTURES:
-            if not fixture.expected:
-                continue
+        fixtures = tuple(fixture for fixture in SHELL_MAST_FIXTURES if fixture.expected)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            cases = tmp_path / "payload-order-cases"
+            cases.mkdir()
+            for fixture in fixtures:
+                (cases / f"{fixture.name}.tsv").write_text(self.expected_topology_tsv(fixture, volumes))
+            names = " ".join(shlex.quote(fixture.name) for fixture in fixtures)
+            script = tmp_path / "payload-order-fixtures.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    for fixture_name in {names}; do
+                        printf '__TC_BEGIN__\\t%s\\t0\\n' "$fixture_name"
+                        cp {shlex.quote(str(cases))}/"$fixture_name.tsv" "$TC_VOLUMES_TSV"
+                        tc_emit_payload_candidate_volumes "$TC_VOLUMES_TSV"
+                        printf '__TC_END__\\t%s\\n' "$fixture_name"
+                    done
+                    """
+                )
+            )
+            script.chmod(0o755)
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        sections = self.parse_named_shell_sections(proc.stdout)
+        for fixture in fixtures:
             with self.subTest(fixture=fixture.name):
-                with tempfile.TemporaryDirectory() as tmp:
-                    tmp_path = Path(tmp)
-                    flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-                    expected_topology = self.expected_topology_tsv(fixture, volumes)
-                    heredoc_topology = textwrap.indent(expected_topology.rstrip(), " " * 28)
-                    script = tmp_path / "payload-order-fixture.sh"
-                    script.write_text(
-                        textwrap.dedent(
-                            f"""\
-                            #!/bin/sh
-                            set -eu
-                            . {flash}/common.sh
-                            . {flash}/tcapsulesmb.conf
-                            tc_init_runtime_env
-                            mkdir -p "$RAM_VAR"
-                            cat >"$TC_VOLUMES_TSV" <<'EOF'
-{heredoc_topology}
-                            EOF
-                            tc_emit_payload_candidate_volumes "$TC_VOLUMES_TSV"
-                            """
-                        )
-                    )
-                    script.chmod(0o755)
-
-                    proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
                 ordered = ordered_payload_candidate_volumes(fixture.expected)
                 expected_lines = []
                 for volume in ordered:
@@ -505,8 +580,9 @@ MaSt = (
                             )
                         )
                     )
-                self.assertEqual(proc.returncode, 0, proc.stderr)
-                self.assertEqual(proc.stdout, "\n".join(expected_lines) + "\n")
+                status, stdout = sections[fixture.name]
+                self.assertEqual(status, 0)
+                self.assertEqual(stdout, "\n".join(expected_lines) + "\n")
 
     def test_select_payload_home_prefers_writable_internal_volume(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")
@@ -852,8 +928,9 @@ MaSt = (
                     tc_init_runtime_identity
                     tc_generate_smb_conf {payload} "127.0.0.1/8 192.168.1.2/24"
                     tc_launch_mdns_advertiser "mdns test" 0 0 0
+                    wait "$mdns_launch_pid" || true
                     tc_launch_nbns "nbns test" 0
-                    sleep 1
+                    wait "$!" || true
                     printf 'identity=%s|%s|%s\\n' "$MDNS_INSTANCE_NAME" "$MDNS_HOST_LABEL" "$SMB_NETBIOS_NAME"
                     cat "$TC_SMBD_CONF"
                     printf 'mdns_args=%s\\n' "$(cat {mdns_args})"
@@ -920,27 +997,47 @@ MaSt = (
         self.assertIn("mv -f /mnt/Flash/.tcapsulesmb.conf.tmp /mnt/Flash/tcapsulesmb.conf", install_command)
 
     def test_start_samba_signature_mode_matches_shell_supported_mast_fixtures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            start_path = flash / "start-samba.sh"
+            selector = self.write_selectable_fixture_acp(tmp_path, SHELL_MAST_FIXTURES)
+            names = " ".join(shlex.quote(fixture.name) for fixture in SHELL_MAST_FIXTURES)
+            script = tmp_path / "signature-fixtures.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    for fixture_name in {names}; do
+                        echo "$fixture_name" >{shlex.quote(str(selector))}
+                        out={shlex.quote(str(tmp_path))}/"signature-$fixture_name.out"
+                        err={shlex.quote(str(tmp_path))}/"signature-$fixture_name.err"
+                        set +e
+                        /bin/sh {shlex.quote(str(start_path))} --print-topology-signature >"$out" 2>"$err"
+                        status=$?
+                        set -e
+                        printf '__TC_BEGIN__\\t%s\\t%s\\n' "$fixture_name" "$status"
+                        cat "$out"
+                        printf '__TC_END__\\t%s\\n' "$fixture_name"
+                        cat "$err" >&2
+                    done
+                    """
+                )
+            )
+            script.chmod(0o755)
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        sections = self.parse_named_shell_sections(proc.stdout)
         for fixture in SHELL_MAST_FIXTURES:
             with self.subTest(fixture=fixture.name):
-                with tempfile.TemporaryDirectory() as tmp:
-                    tmp_path = Path(tmp)
-                    flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-                    start_path = flash / "start-samba.sh"
-                    self.write_fake_acp(tmp_path, fixture.raw)
-
-                    proc = subprocess.run(
-                        ["/bin/sh", str(start_path), "--print-topology-signature"],
-                        text=True,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        check=False,
-                    )
-
                 expected_stdout = self.expected_topology_tsv(fixture, volumes)
                 expected_rc = 0 if fixture.expected else 1
-                self.assertEqual(proc.returncode, expected_rc, proc.stderr)
-                self.assertEqual(proc.stdout, expected_stdout)
-                self.assertEqual(self.parse_topology_tsv(proc.stdout, volumes), parse_mast_plist(fixture.raw))
+                status, stdout = sections[fixture.name]
+                self.assertEqual(status, expected_rc, proc.stderr)
+                self.assertEqual(stdout, expected_stdout)
+                self.assertEqual(self.parse_topology_tsv(stdout, volumes), parse_mast_plist(fixture.raw))
 
     def test_start_samba_signature_mode_handles_mast_without_final_newline(self) -> None:
         raw = textwrap.dedent(
@@ -1176,29 +1273,32 @@ MaSt = (
         self.assertEqual(proc.stdout, f"shares\n{expected_shares}adisk\n{expected_adisk}")
 
     def test_common_share_state_matches_python_policy_for_shell_supported_mast_fixtures(self) -> None:
-        for fixture in SHELL_MAST_FIXTURES:
-            if not fixture.expected:
-                continue
-            with self.subTest(fixture=fixture.name):
-                with tempfile.TemporaryDirectory() as tmp:
-                    tmp_path = Path(tmp)
-                    flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+        fixtures = tuple(fixture for fixture in SHELL_MAST_FIXTURES if fixture.expected)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
 
-                    proc = self.run_share_state_fixture(
-                        fixture,
-                        tmp_path,
-                        flash,
-                        volumes,
-                        internal_share_use_disk_root=False,
-                    )
+            proc = self.run_share_state_fixture_batch(
+                fixtures,
+                tmp_path,
+                flash,
+                volumes,
+                internal_share_use_disk_root=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            sections = self.parse_named_shell_sections(proc.stdout)
+            for fixture in fixtures:
+                with self.subTest(fixture=fixture.name):
                     expected_shares, expected_adisk = self.expected_share_state(
                         fixture,
                         volumes,
                         internal_share_use_disk_root=False,
                     )
                     expected_stdout = f"shares\n{expected_shares}adisk\n{expected_adisk}"
-                    self.assertEqual(proc.returncode, 0, proc.stderr)
-                    self.assertEqual(proc.stdout, expected_stdout)
+                    status, stdout = sections[fixture.name]
+                    self.assertEqual(status, 0)
+                    self.assertEqual(stdout, expected_stdout)
                     for volume in fixture.expected:
                         volume_root = Path(self.mapped_volume_root(volume, volumes))
                         if volume.builtin:
@@ -1208,30 +1308,33 @@ MaSt = (
                         self.assertTrue(marker.exists(), str(marker))
 
     def test_common_share_state_internal_disk_root_override_matches_python_policy(self) -> None:
-        for fixture in SHELL_MAST_FIXTURES:
-            if not any(volume.builtin for volume in fixture.expected):
-                continue
-            with self.subTest(fixture=fixture.name):
-                with tempfile.TemporaryDirectory() as tmp:
-                    tmp_path = Path(tmp)
-                    flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+        fixtures = tuple(fixture for fixture in SHELL_MAST_FIXTURES if any(volume.builtin for volume in fixture.expected))
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
 
-                    proc = self.run_share_state_fixture(
-                        fixture,
-                        tmp_path,
-                        flash,
-                        volumes,
-                        internal_share_use_disk_root=True,
-                    )
+            proc = self.run_share_state_fixture_batch(
+                fixtures,
+                tmp_path,
+                flash,
+                volumes,
+                internal_share_use_disk_root=True,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            sections = self.parse_named_shell_sections(proc.stdout)
+            for fixture in fixtures:
+                with self.subTest(fixture=fixture.name):
                     expected_shares, expected_adisk = self.expected_share_state(
                         fixture,
                         volumes,
                         internal_share_use_disk_root=True,
                     )
                     expected_stdout = f"shares\n{expected_shares}adisk\n{expected_adisk}"
-                    self.assertEqual(proc.returncode, 0, proc.stderr)
-                    self.assertEqual(proc.stdout, expected_stdout)
-                    self.assertNotIn("/ShareRoot", proc.stdout)
+                    status, stdout = sections[fixture.name]
+                    self.assertEqual(status, 0)
+                    self.assertEqual(stdout, expected_stdout)
+                    self.assertNotIn("/ShareRoot", stdout)
 
     def test_common_build_share_state_uses_modern_mast_rules(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1357,9 +1460,9 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
             log_text = (memory / "samba4/var/test.log").read_text()
 
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, f"{volumes}/dk3/.samba4\n{volumes}/dk3\n/dev/dk3\n")
-        self.assertIn(f"payload directory selected from mounted MaSt volumes: {volumes}/dk3/.samba4", log_text)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(proc.stdout, f"{volumes}/dk3/.samba4\n{volumes}/dk3\n/dev/dk3\n")
+            self.assertIn(f"payload directory selected from mounted MaSt volumes: {volumes}/dk3/.samba4", log_text)
 
     def test_common_refresh_disk_state_succeeds_with_payload_and_one_share_when_external_optional_fails(self) -> None:
         fixture = SHELL_MAST_FIXTURES[0]
@@ -1789,6 +1892,7 @@ MaSt = (
                     TC_PAYLOAD_VOLUME={volumes}/dk2
                     TC_PAYLOAD_DEVICE=/dev/dk2
                     MOUNT_POLL_SECONDS=1
+                    sleep() {{ :; }}
                     is_volume_root_mounted() {{ [ "$1" = "{volumes}/dk2" ]; }}
                     tc_set_payload_log_dir "$TC_PAYLOAD_DIR" "$TC_PAYLOAD_VOLUME"
                     mkdir -p "$TC_PAYLOAD_LOG_DIR"
@@ -2014,6 +2118,9 @@ MaSt = (
             flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
             marker = tmp_path / "capture.started"
             release = tmp_path / "capture.release"
+            fake_sleep = tmp_path / "sleep"
+            fake_sleep.write_text("#!/bin/sh\n/bin/sleep 0.05\n")
+            fake_sleep.chmod(0o755)
             (flash / "mdns-advertiser").write_text(
                 "#!/bin/sh\n"
                 "printf 'capture-args:%s\\n' \"$*\"\n"
@@ -2031,6 +2138,7 @@ MaSt = (
                     set -eu
                     . {flash}/common.sh
                     . {flash}/tcapsulesmb.conf
+                    PATH={shlex.quote(str(tmp_path))}:$PATH
                     tc_init_runtime_env
                     MDNS_CAPTURE_WAIT_SECONDS=5
                     tc_set_log "$RAM_VAR/test.log" test
@@ -2142,8 +2250,9 @@ MaSt = (
                     }}
                     TC_NET_IFACE_IP=192.168.1.2
                     tc_start_mdns_capture
+                    wait "$TC_MDNS_CAPTURE_PID" || true
                     tc_launch_mdns_advertiser "mdns test" 1 0 0
-                    sleep 1
+                    wait "$mdns_launch_pid" || true
                     cat "$APPLE_MDNS_SNAPSHOT"
                     cat "$TC_MDNS_LOG_FILE"
                     cat "$RAM_VAR/test.log"
@@ -2205,8 +2314,9 @@ MaSt = (
                     }}
                     TC_NET_IFACE_IP=192.168.1.2
                     tc_start_mdns_capture
+                    wait "$TC_MDNS_CAPTURE_PID" || true
                     tc_launch_mdns_advertiser "mdns test" 1 0 0
-                    sleep 1
+                    wait "$mdns_launch_pid" || true
                     cat "$APPLE_MDNS_SNAPSHOT"
                     cat "$TC_MDNS_LOG_FILE"
                     cat "$RAM_VAR/test.log"
@@ -2276,7 +2386,7 @@ MaSt = (
                     tc_set_payload_log_dir {payload} {volumes}/dk2
                     tc_generate_mdns
                     tc_launch_nbns "nbns test" 0
-                    sleep 1
+                    wait "$!" || true
                     printf 'mdns\\n'
                     cat "$TC_MDNS_LOG_FILE"
                     printf 'nbns\\n'
@@ -2830,6 +2940,127 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "payload\nmounts\nsmbd\n")
+
+    def test_common_watchdog_iteration_live_reloads_on_topology_change_without_reexec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            payload.mkdir(parents=True)
+            script = tmp_path / "watchdog-live-topology.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR" "$RAM_SBIN" "$RAM_ETC"
+                    : >"$TC_SMBD_BIN"
+                    chmod 755 "$TC_SMBD_BIN"
+                    tc_write_payload_state {payload} {volumes}/dk2 /dev/dk2
+                    sleep() {{ :; }}
+                    tc_topology_changed() {{ return 0; }}
+                    tc_refresh_disk_state() {{
+                        echo refresh
+                        tc_write_payload_state {payload} {volumes}/dk2 /dev/dk2
+                        cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                        cat >"$TC_ADISK_TSV" <<'EOF'
+                    Data	dk2	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa	0x82
+                    EOF
+                    }}
+                    tc_wait_for_bind_interfaces() {{ echo "127.0.0.1/8 192.168.1.2/24"; }}
+                    tc_prepare_local_hostname_resolution() {{ echo hostname; }}
+                    tc_init_runtime_identity() {{
+                        echo identity
+                        MDNS_INSTANCE_NAME=Live
+                        MDNS_HOST_LABEL=live
+                        SMB_NETBIOS_NAME=Live
+                        SMB_SERVER_STRING=Live
+                        TC_RUNTIME_IDENTITY_READY=1
+                    }}
+                    tc_generate_smb_conf() {{ echo "generate $1 $2"; }}
+                    tc_reload_smbd_config() {{ echo reload; }}
+                    tc_launch_mdns_advertiser() {{ echo "mdns $1 $2 $3 $4"; }}
+                    tc_payload_available() {{ echo payload; return 0; }}
+                    tc_mount_active_volumes_from_state() {{ echo mounts; return 0; }}
+                    tc_start_smbd_if_needed() {{ echo smbd; }}
+                    runtime_process_present_by_ucomm() {{ return 0; }}
+                    tc_exec_start_samba() {{ echo "exec $1"; exit 42; }}
+                    tc_watchdog_iteration
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            "\n".join(
+                (
+                    "refresh",
+                    "hostname",
+                    "identity",
+                    f"generate {payload} 127.0.0.1/8 192.168.1.2/24",
+                    "reload",
+                    "mdns watchdog topology refresh 0 1 10",
+                    "payload",
+                    "mounts",
+                    "smbd",
+                    "",
+                )
+            ),
+        )
+        self.assertIn("watchdog recovery: attempting live disk runtime refresh: MaSt topology changed", log_text)
+        self.assertIn("watchdog recovery: live disk runtime refresh complete", log_text)
+        self.assertNotIn("re-execing start-samba.sh", log_text)
+
+    def test_common_watchdog_iteration_reexecs_when_live_topology_reload_changes_payload_home(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            old_payload = volumes / "dk2/.samba4"
+            new_payload = volumes / "dk3/.samba4"
+            old_payload.mkdir(parents=True)
+            new_payload.mkdir(parents=True)
+            script = tmp_path / "watchdog-live-topology-payload-change.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR" "$RAM_SBIN" "$RAM_ETC"
+                    : >"$TC_SMBD_BIN"
+                    chmod 755 "$TC_SMBD_BIN"
+                    tc_write_payload_state {old_payload} {volumes}/dk2 /dev/dk2
+                    sleep() {{ :; }}
+                    tc_topology_changed() {{ return 0; }}
+                    tc_refresh_disk_state() {{
+                        echo refresh
+                        tc_write_payload_state {new_payload} {volumes}/dk3 /dev/dk3
+                    }}
+                    tc_reload_smbd_config() {{ echo reload; }}
+                    tc_exec_start_samba() {{ echo "exec $1"; exit 42; }}
+                    tc_watchdog_iteration
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 42, proc.stderr)
+        self.assertEqual(proc.stdout, "refresh\nexec MaSt topology changed\n")
 
     def test_common_watchdog_reexec_uses_reload_disk_runtime_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

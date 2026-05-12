@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import argparse
-from typing import Callable, Optional
+from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import wait_for_device_up, wait_for_tcp_port_state
+from timecapsulesmb.cli.runtime import LogCallback, add_config_argument, confirm, emit_progress, load_env_config
 from timecapsulesmb.cli.util import color_red
-from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
 from timecapsulesmb.core.config import ConfigError, extract_host
 from timecapsulesmb.deploy.executor import remote_request_reboot
 from timecapsulesmb.identity import ensure_install_id
@@ -14,14 +14,6 @@ from timecapsulesmb.integrations.acp import enable_ssh
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, run_ssh
 from timecapsulesmb.transport.local import tcp_open
-
-
-LogCallback = Optional[Callable[[str], None]]
-
-
-def _emit(log: LogCallback, message: str) -> None:
-    if log is not None:
-        log(message)
 
 
 def _dbug_property_already_absent(output: str) -> bool:
@@ -52,10 +44,10 @@ def disable_ssh_over_ssh(
         rc = proc.returncode
         out = proc.stdout or ""
         if rc == 0:
-            _emit(log, f"Removed 'dbug' via: {command}")
+            emit_progress(log, f"Removed 'dbug' via: {command}")
             break
         if _dbug_property_already_absent(out):
-            _emit(log, f"SSH debug flag 'dbug' already absent via: {command}")
+            emit_progress(log, f"SSH debug flag 'dbug' already absent via: {command}")
             break
         if _looks_like_ssh_auth_failure(out):
             raise RuntimeError("SSH authentication failed while trying to disable SSH over SSH.")
@@ -68,7 +60,7 @@ def disable_ssh_over_ssh(
         try:
             remote_request_reboot(connection)
         except SshCommandTimeout as exc:
-            _emit(log, f"Reboot request timed out; continuing to observe whether the device is rebooting... ({exc})")
+            emit_progress(log, f"Reboot request timed out; continuing to observe whether the device is rebooting... ({exc})")
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -120,21 +112,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.update_fields(ssh_final_reachable=True)
         else:
             command_context.set_stage("prompt_disable_ssh")
-            should_disable = False
-            while True:
-                try:
-                    resp = input("SSH already enabled. Disable? [y/N]: ").strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    print()
-                    resp = ""
-                if resp in {"", "n", "no"}:
-                    command_context.update_fields(set_ssh_action="leave_enabled", ssh_final_reachable=True)
-                    print("Leaving SSH enabled.")
-                    break
-                if resp in {"y", "yes"}:
-                    should_disable = True
-                    break
-                print("Please answer 'y' or 'n'.")
+            should_disable = confirm(
+                "SSH already enabled. Disable?",
+                default=False,
+                eof_default=False,
+                interrupt_default=False,
+            )
+            if not should_disable:
+                command_context.update_fields(set_ssh_action="leave_enabled", ssh_final_reachable=True)
+                print("Leaving SSH enabled.")
 
             if should_disable:
                 command_context.update_fields(set_ssh_action="disable_ssh")
