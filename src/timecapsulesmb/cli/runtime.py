@@ -5,7 +5,7 @@ import ipaddress
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 from timecapsulesmb.core.config import (
     DEFAULTS,
@@ -34,7 +34,7 @@ from timecapsulesmb.device.probe import (
 from timecapsulesmb.transport.ssh import SshConnection
 
 
-LogCallback = Callable[[str], None] | None
+LogCallback = Optional[Callable[[str], None]]
 
 
 class NonInteractivePromptError(RuntimeError):

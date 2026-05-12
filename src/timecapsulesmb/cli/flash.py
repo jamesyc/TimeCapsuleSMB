@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+from dataclasses import dataclass
 from datetime import datetime
+from functools import partial
 import re
 from pathlib import Path
 from typing import Optional
@@ -27,6 +29,7 @@ from timecapsulesmb.cli.runtime import (
 from timecapsulesmb.cli.util import color_green, color_red
 from timecapsulesmb.core.config import AIRPORT_IDENTITIES_BY_SYAP, extract_host
 from timecapsulesmb.core.paths import default_user_data_dir
+from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.flash import (
     FlashAnalysis,
     FlashAnalysisError,
@@ -61,6 +64,30 @@ POWERCYCLE_REQUIRED_MESSAGE = (
     "POWER-CYCLE REQUIRED: unplug the Time Capsule, wait 10 seconds, then plug it back in."
 )
 ProgressLogger = LogCallback
+
+
+@dataclass(frozen=True)
+class FlashTarget:
+    connection: SshConnection
+    acp_host: str
+    compatibility: DeviceCompatibility
+
+
+@dataclass(frozen=True)
+class FlashInputs:
+    primary: bytes
+    secondary: bytes
+    cks1: int | None
+    cks2: int | None
+    syap: str
+    live_login: bytes
+
+
+@dataclass(frozen=True)
+class FlashAnalysisBundle:
+    analysis: FlashAnalysis
+    backup_dir: Path
+    manifest: dict[str, object]
 
 
 def _safe_path_part(value: str) -> str:
@@ -120,6 +147,29 @@ def read_flash_inputs(
     emit_progress(log, "Reading live /etc/rc.d/LOGIN...")
     login = read_live_login(connection, log=log)
     return primary, secondary, cks1, cks2, syap, login
+
+
+def dump_remote_bank_for_validation(
+    connection: SshConnection,
+    device: str,
+    *,
+    log: ProgressLogger = None,
+) -> bytes:
+    emit_progress(log, f"Reading back written firmware bank from {device}...")
+    emit_progress(log, f"SSH: /bin/dd if={device} bs=65536 2>/dev/null")
+    return dump_remote_bank(connection, device)
+
+
+def get_property_int_for_validation(
+    host: str,
+    password: str,
+    name: str,
+    *,
+    log: ProgressLogger = None,
+    **kwargs: object,
+) -> int:
+    emit_progress(log, f"Reading ACP checksum property {name} after write...")
+    return get_property_int(host, password, name, **kwargs)
 
 
 def _manifest(
@@ -354,7 +404,7 @@ def _update_context_with_plan(command_context: CommandContext, plan: FlashPlan, 
     command_context.update_fields(**fields)
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Analyze, patch, or restore the NetBSD4 firmware boot hook.")
     add_config_argument(parser)
     mode_group = parser.add_mutually_exclusive_group()
@@ -375,6 +425,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Apple .basebinary firmware template to use; defaults to Apple catalog auto-selection",
     )
     parser.add_argument("--firmware-version", default=None, help="Apple firmware version to select, for example 7.8.1")
+    return parser
+
+
+def _parse_args(argv: Optional[list[str]]) -> tuple[argparse.Namespace, str]:
+    parser = _build_parser()
     args = parser.parse_args(argv)
     operation = _operation_from_args(args)
 
@@ -388,12 +443,393 @@ def main(argv: Optional[list[str]] = None) -> int:
         parser.error("--poweroff is not supported; power cycle manually after a validated patch write")
     if args.json and operation in WRITE_OPERATIONS:
         parser.error("--json is only valid for read-only flash modes")
+    return args, operation
 
+
+def _require_operation_dependencies(operation: str) -> None:
     if operation == "patch":
         try:
             require_zopfli_gzip_available()
         except FlashAnalysisError as exc:
             raise SystemExit(str(exc)) from exc
+
+
+def _resolve_flash_target(
+    command_context: CommandContext,
+    *,
+    args: argparse.Namespace,
+    log: ProgressLogger,
+) -> FlashTarget:
+    command_context.set_stage("resolve_connection")
+    emit_progress(log, "Resolving SSH target...")
+    target = command_context.resolve_validated_managed_target(profile="flash", include_probe=False)
+    connection = target.connection
+    acp_host = extract_host(connection.host)
+    emit_progress(log, f"Using ACP host {acp_host}.")
+
+    command_context.set_stage("check_compatibility")
+    emit_progress(log, "Checking NetBSD4 device compatibility...")
+    compatibility, _compatibility_message = require_netbsd4_device_compatibility(
+        command_context,
+        command_name="flash",
+        json_output=args.json,
+        unsupported_message="flash is only supported for NetBSD4 AirPort storage devices.",
+    )
+    return FlashTarget(connection=connection, acp_host=acp_host, compatibility=compatibility)
+
+
+def _read_flash(
+    command_context: CommandContext,
+    target: FlashTarget,
+    *,
+    log: ProgressLogger,
+) -> FlashInputs | None:
+    command_context.set_stage("read_flash")
+    try:
+        primary, secondary, cks1, cks2, acp_syap, live_login = read_flash_inputs(
+            target.connection,
+            acp_host=target.acp_host,
+            password=target.connection.password,
+            log=log,
+        )
+    except FlashAnalysisError as exc:
+        message = str(exc)
+        record_flash_error(command_context, message, stage="read_flash")
+        print(message)
+        command_context.fail()
+        return None
+    except SshError as exc:
+        message = f"SSH flash read failed: {exc}"
+        record_flash_error(command_context, message, stage="read_flash")
+        print(message)
+        command_context.fail()
+        return None
+
+    try:
+        syap = normalize_syap(acp_syap)
+    except FlashAnalysisError as exc:
+        message = str(exc)
+        record_flash_error(command_context, message, stage="read_flash", live_login=live_login)
+        print(message)
+        command_context.fail()
+        return None
+
+    identity = AIRPORT_IDENTITIES_BY_SYAP.get(syap)
+    command_context.update_fields(
+        device_syap=syap,
+        device_model=None if identity is None else identity.mdns_model,
+    )
+    return FlashInputs(
+        primary=primary,
+        secondary=secondary,
+        cks1=cks1,
+        cks2=cks2,
+        syap=syap,
+        live_login=live_login,
+    )
+
+
+def _analyze_flash(
+    command_context: CommandContext,
+    *,
+    args: argparse.Namespace,
+    operation: str,
+    target: FlashTarget,
+    inputs: FlashInputs,
+    log: ProgressLogger,
+) -> FlashAnalysisBundle | None:
+    backup_dir = build_flash_backup_dir(base_dir=args.backup_dir, host=target.acp_host, syap=inputs.syap)
+    command_context.set_stage("save_raw_backup")
+    emit_progress(log, f"Saving raw flash backup to {backup_dir}...")
+    save_flash_banks(backup_dir=backup_dir, primary=inputs.primary, secondary=inputs.secondary)
+
+    command_context.set_stage("analyze_flash")
+    if operation == "patch":
+        emit_progress(log, "Analyzing flash banks and building patched gzip candidate...")
+    else:
+        emit_progress(log, "Analyzing flash banks...")
+    try:
+        analysis = analyze_flash_banks(
+            primary_data=inputs.primary,
+            secondary_data=inputs.secondary,
+            cks1=inputs.cks1,
+            cks2=inputs.cks2,
+            os_release=target.compatibility.os_release,
+            build_patch_candidate=operation == "patch",
+        )
+    except FlashAnalysisError as exc:
+        message = str(exc)
+        record_flash_error(command_context, message, stage="analyze_flash", live_login=inputs.live_login)
+        print(message)
+        command_context.fail()
+        return None
+
+    command_context.update_fields(
+        active_bank=analysis.active_bank,
+        primary_login=analysis.primary.login.classification,
+        secondary_login=analysis.secondary.login.classification,
+    )
+    patched_active_path = None
+    if operation == "patch":
+        patched_active_path = save_active_patched_bank_if_ready(backup_dir=backup_dir, analysis=analysis)
+    if patched_active_path is not None:
+        command_context.update_fields(patched_active_path=str(patched_active_path))
+
+    manifest = _manifest(
+        operation=operation,
+        analysis=analysis,
+        host=target.acp_host,
+        syap=inputs.syap,
+        live_login=inputs.live_login,
+        backup_dir=backup_dir,
+        os_release=target.compatibility.os_release,
+    )
+    return FlashAnalysisBundle(analysis=analysis, backup_dir=backup_dir, manifest=manifest)
+
+
+def _plan_flash(
+    command_context: CommandContext,
+    *,
+    args: argparse.Namespace,
+    operation: str,
+    bundle: FlashAnalysisBundle,
+    inputs: FlashInputs,
+) -> tuple[bool, FlashPlan | None]:
+    if operation == "read_only":
+        return True, None
+
+    command_context.set_stage("plan_flash")
+    try:
+        plan = _plan_from_operation(
+            operation=operation,
+            analysis=bundle.analysis,
+            syap=inputs.syap,
+            firmware_template=args.firmware_template,
+            firmware_version=args.firmware_version,
+        )
+    except FlashAnalysisError as exc:
+        message = str(exc)
+        active_analysis = bundle.analysis.active
+        include_login_mismatch = (
+            operation == "patch"
+            and active_analysis is not None
+            and active_analysis.login.classification != "stock"
+        )
+        record_flash_error(
+            command_context,
+            message,
+            stage="plan_flash",
+            live_login=inputs.live_login,
+            include_login_mismatch=include_login_mismatch,
+        )
+        print(message)
+        command_context.fail()
+        return False, None
+    assert plan is not None
+    payload_path = save_acp_flash_payload(backup_dir=bundle.backup_dir, plan=plan)
+    files = bundle.manifest.get("files")
+    if isinstance(files, dict) and payload_path is not None and plan.target_bank is not None:
+        files[f"{plan.target_bank.name}_{plan.mode}_basebinary_payload"] = str(payload_path)
+    bundle.manifest["flash_plan"] = plan.to_jsonable()
+    _update_context_with_plan(command_context, plan, payload_path)
+    return True, plan
+
+
+def _save_and_report_manifest(
+    command_context: CommandContext,
+    *,
+    args: argparse.Namespace,
+    bundle: FlashAnalysisBundle,
+    log: ProgressLogger,
+) -> None:
+    command_context.set_stage("save_backup")
+    emit_progress(log, "Writing flash manifest...")
+    save_flash_manifest(backup_dir=bundle.backup_dir, manifest=bundle.manifest)
+    if args.json:
+        print_json(bundle.manifest)
+    else:
+        print_flash_summary(bundle.manifest)
+
+
+def _prepare_write(
+    command_context: CommandContext,
+    *,
+    args: argparse.Namespace,
+    operation: str,
+    plan: FlashPlan,
+) -> tuple[bool, int]:
+    if plan.already_satisfied:
+        if operation == "patch":
+            print("Active firmware bank is already patched; no write needed.")
+        else:
+            print("Active firmware bank already matches the requested Apple stock firmware; no write needed.")
+        command_context.succeed()
+        return False, 0
+
+    if not args.yes:
+        command_context.set_stage("confirm_write")
+        proceed = command_context.confirm_or_fail(
+            _confirmation_prompt(plan),
+            default=False,
+            noninteractive_message=(
+                f"Running `flash --{operation}` requires confirmation when stdin is not interactive. "
+                f"Use `flash --{operation} --yes` to skip the prompt."
+            )
+        )
+        if proceed is None:
+            return False, 1
+        if not proceed:
+            print("Flash write cancelled.", flush=True)
+            command_context.cancel_with_error("Cancelled by user at flash write confirmation prompt.")
+            return False, 0
+    return True, 0
+
+
+def _write_flash(
+    command_context: CommandContext,
+    *,
+    target: FlashTarget,
+    plan: FlashPlan,
+    bundle: FlashAnalysisBundle,
+    live_login: bytes,
+    log: ProgressLogger,
+) -> dict[str, object] | None:
+    command_context.set_stage("write_active_bank")
+    assert plan.target_bank is not None
+    emit_progress(log, f"Sending ACP flash command for active {plan.target_bank.name} bank...")
+    try:
+        write_result = write_and_validate_plan(
+            connection=target.connection,
+            acp_host=target.acp_host,
+            plan=plan,
+            os_release=target.compatibility.os_release,
+            flash_firmware_bank_func=flash_firmware_bank,
+            dump_remote_bank_func=partial(dump_remote_bank_for_validation, log=log),
+            get_property_int_func=partial(get_property_int_for_validation, log=log),
+            timeout=FLASH_WRITE_TIMEOUT_SECONDS,
+        )
+    except FlashAnalysisError as exc:
+        message = str(exc)
+        record_flash_error(command_context, message, stage="post_write_validation", live_login=live_login)
+        print(message)
+        command_context.fail()
+        return None
+    except SshError as exc:
+        message = f"SSH post-write validation failed: {exc}"
+        record_flash_error(command_context, message, stage="post_write_validation", live_login=live_login)
+        print(message)
+        command_context.fail()
+        return None
+
+    bundle.manifest["write_result"] = write_result
+    save_flash_manifest(backup_dir=bundle.backup_dir, manifest=bundle.manifest)
+    command_context.update_fields(
+        wrote_bank=write_result["bank"],
+        readback_sha256=write_result["readback_sha256"],
+        readback_prefix_sha256=write_result["readback_prefix_sha256"],
+        acp_reply_body_size=write_result["reply_body_size"],
+    )
+    print(
+        f"Firmware write validated for {write_result['bank']} bank; "
+        f"readback_prefix_sha256={write_result['readback_prefix_sha256']}"
+    )
+    return write_result
+
+
+def _finish_write(
+    command_context: CommandContext,
+    *,
+    args: argparse.Namespace,
+    operation: str,
+    target: FlashTarget,
+    log: ProgressLogger,
+) -> int:
+    if operation == "patch":
+        print(color_red(POWERCYCLE_REQUIRED_MESSAGE), flush=True)
+        print(f"{color_green('Patch write successful.')} The device needs to be manually rebooted.", flush=True)
+        command_context.succeed()
+        return 0
+
+    if not args.reboot:
+        print(f"{color_green('Restore write successful.')} The device needs to be manually rebooted.", flush=True)
+        command_context.succeed()
+        return 0
+
+    request_ssh_reboot(target.connection, command_context, log=log)
+    if not observe_reboot_cycle(
+        target.connection,
+        command_context,
+        reboot_no_down_message="Firmware write validated, but the device did not go down after reboot request.",
+        down_timeout_seconds=60,
+        up_timeout_seconds=240,
+    ):
+        print(color_red(POWERCYCLE_REQUIRED_MESSAGE), flush=True)
+        return 1
+    print("Device returned after reboot. Run `tcapsule flash --check-apple` to verify Apple stock firmware.", flush=True)
+    command_context.succeed()
+    return 0
+
+
+def _run_flash(
+    command_context: CommandContext,
+    *,
+    args: argparse.Namespace,
+    operation: str,
+    log: ProgressLogger,
+) -> int:
+    command_context.update_fields(read_only=operation not in WRITE_OPERATIONS, write_requested=operation in WRITE_OPERATIONS, operation=operation)
+    target = _resolve_flash_target(command_context, args=args, log=log)
+    inputs = _read_flash(command_context, target, log=log)
+    if inputs is None:
+        return 1
+
+    bundle = _analyze_flash(
+        command_context,
+        args=args,
+        operation=operation,
+        target=target,
+        inputs=inputs,
+        log=log,
+    )
+    if bundle is None:
+        return 1
+
+    plan_ok, plan = _plan_flash(
+        command_context,
+        args=args,
+        operation=operation,
+        bundle=bundle,
+        inputs=inputs,
+    )
+    if not plan_ok:
+        return 1
+
+    _save_and_report_manifest(command_context, args=args, bundle=bundle, log=log)
+    if operation not in WRITE_OPERATIONS:
+        command_context.succeed()
+        return 0
+
+    assert plan is not None
+    should_write, rc = _prepare_write(command_context, args=args, operation=operation, plan=plan)
+    if not should_write:
+        return rc
+
+    if _write_flash(
+        command_context,
+        target=target,
+        plan=plan,
+        bundle=bundle,
+        live_login=inputs.live_login,
+        log=log,
+    ) is None:
+        return 1
+
+    return _finish_write(command_context, args=args, operation=operation, target=target, log=log)
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    args, operation = _parse_args(argv)
+    _require_operation_dependencies(operation)
 
     log = prefixed_logger("flash", enabled=not args.json)
     if not args.json:
@@ -404,249 +840,5 @@ def main(argv: Optional[list[str]] = None) -> int:
     config = load_env_config(env_path=args.config)
     telemetry = TelemetryClient.from_config(config, include_device_identity=False)
     with CommandContext(telemetry, "flash", "flash_started", "flash_finished", config=config, args=args) as command_context:
-        command_context.update_fields(read_only=operation not in WRITE_OPERATIONS, write_requested=operation in WRITE_OPERATIONS, operation=operation)
-        command_context.set_stage("resolve_connection")
-        emit_progress(log, "Resolving SSH target...")
-        target = command_context.resolve_validated_managed_target(profile="flash", include_probe=False)
-        connection = target.connection
-        acp_host = extract_host(connection.host)
-        emit_progress(log, f"Using ACP host {acp_host}.")
-
-        command_context.set_stage("check_compatibility")
-        emit_progress(log, "Checking NetBSD4 device compatibility...")
-        compatibility, _compatibility_message = require_netbsd4_device_compatibility(
-            command_context,
-            command_name="flash",
-            json_output=args.json,
-            unsupported_message="flash is only supported for NetBSD4 AirPort storage devices.",
-        )
-
-        command_context.set_stage("read_flash")
-        try:
-            primary, secondary, cks1, cks2, acp_syap, live_login = read_flash_inputs(
-                connection,
-                acp_host=acp_host,
-                password=connection.password,
-                log=log,
-            )
-        except FlashAnalysisError as exc:
-            message = str(exc)
-            record_flash_error(command_context, message, stage="read_flash")
-            print(message)
-            command_context.fail()
-            return 1
-        except SshError as exc:
-            message = f"SSH flash read failed: {exc}"
-            record_flash_error(command_context, message, stage="read_flash")
-            print(message)
-            command_context.fail()
-            return 1
-        try:
-            syap = normalize_syap(acp_syap)
-        except FlashAnalysisError as exc:
-            message = str(exc)
-            record_flash_error(command_context, message, stage="read_flash", live_login=live_login)
-            print(message)
-            command_context.fail()
-            return 1
-        identity = AIRPORT_IDENTITIES_BY_SYAP.get(syap)
-        command_context.update_fields(
-            device_syap=syap,
-            device_model=None if identity is None else identity.mdns_model,
-        )
-        backup_dir = build_flash_backup_dir(base_dir=args.backup_dir, host=acp_host, syap=syap)
-        command_context.set_stage("save_raw_backup")
-        emit_progress(log, f"Saving raw flash backup to {backup_dir}...")
-        save_flash_banks(backup_dir=backup_dir, primary=primary, secondary=secondary)
-
-        command_context.set_stage("analyze_flash")
-        if operation == "patch":
-            emit_progress(log, "Analyzing flash banks and building patched gzip candidate...")
-        else:
-            emit_progress(log, "Analyzing flash banks...")
-        try:
-            analysis = analyze_flash_banks(
-                primary_data=primary,
-                secondary_data=secondary,
-                cks1=cks1,
-                cks2=cks2,
-                os_release=compatibility.os_release,
-                build_patch_candidate=operation == "patch",
-            )
-        except FlashAnalysisError as exc:
-            message = str(exc)
-            record_flash_error(command_context, message, stage="analyze_flash", live_login=live_login)
-            print(message)
-            command_context.fail()
-            return 1
-        command_context.update_fields(
-            active_bank=analysis.active_bank,
-            primary_login=analysis.primary.login.classification,
-            secondary_login=analysis.secondary.login.classification,
-        )
-        patched_active_path = None
-        if operation == "patch":
-            patched_active_path = save_active_patched_bank_if_ready(backup_dir=backup_dir, analysis=analysis)
-        if patched_active_path is not None:
-            command_context.update_fields(patched_active_path=str(patched_active_path))
-        manifest = _manifest(
-            operation=operation,
-            analysis=analysis,
-            host=acp_host,
-            syap=syap,
-            live_login=live_login,
-            backup_dir=backup_dir,
-            os_release=compatibility.os_release,
-        )
-
-        plan = None
-        if operation != "read_only":
-            command_context.set_stage("plan_flash")
-            emit_progress(log, "Resolving Apple firmware template and composing flash plan...")
-            try:
-                plan = _plan_from_operation(
-                    operation=operation,
-                    analysis=analysis,
-                    syap=syap,
-                    firmware_template=args.firmware_template,
-                    firmware_version=args.firmware_version,
-                )
-            except FlashAnalysisError as exc:
-                message = str(exc)
-                active_analysis = analysis.active
-                include_login_mismatch = (
-                    operation == "patch"
-                    and active_analysis is not None
-                    and active_analysis.login.classification != "stock"
-                )
-                record_flash_error(
-                    command_context,
-                    message,
-                    stage="plan_flash",
-                    live_login=live_login,
-                    include_login_mismatch=include_login_mismatch,
-                )
-                print(message)
-                command_context.fail()
-                return 1
-            assert plan is not None
-            payload_path = save_acp_flash_payload(backup_dir=backup_dir, plan=plan)
-            files = manifest.get("files")
-            if isinstance(files, dict) and payload_path is not None and plan.target_bank is not None:
-                files[f"{plan.target_bank.name}_{plan.mode}_basebinary_payload"] = str(payload_path)
-            manifest["flash_plan"] = plan.to_jsonable()
-            _update_context_with_plan(command_context, plan, payload_path)
-
-        command_context.set_stage("save_backup")
-        emit_progress(log, "Writing flash manifest...")
-        save_flash_manifest(backup_dir=backup_dir, manifest=manifest)
-
-        if args.json:
-            print_json(manifest)
-        else:
-            print_flash_summary(manifest)
-
-        if operation not in WRITE_OPERATIONS:
-            command_context.succeed()
-            return 0
-
-        assert plan is not None
-        if plan.already_satisfied:
-            if operation == "patch":
-                print("Active firmware bank is already patched; no write needed.")
-            else:
-                print("Active firmware bank already matches the requested Apple stock firmware; no write needed.")
-            command_context.succeed()
-            return 0
-
-        if not args.yes:
-            command_context.set_stage("confirm_write")
-            proceed = command_context.confirm_or_fail(
-                _confirmation_prompt(plan),
-                default=False,
-                noninteractive_message=(
-                    f"Running `flash --{operation}` requires confirmation when stdin is not interactive. "
-                    f"Use `flash --{operation} --yes` to skip the prompt."
-                )
-            )
-            if proceed is None:
-                return 1
-            if not proceed:
-                print("Flash write cancelled.", flush=True)
-                command_context.cancel_with_error("Cancelled by user at flash write confirmation prompt.")
-                return 0
-
-        command_context.set_stage("write_active_bank")
-        assert plan.target_bank is not None
-        emit_progress(log, f"Sending ACP flash command for active {plan.target_bank.name} bank...")
-
-        def dump_remote_bank_for_validation(validation_connection: SshConnection, device: str) -> bytes:
-            emit_progress(log, f"Reading back written firmware bank from {device}...")
-            emit_progress(log, f"SSH: /bin/dd if={device} bs=65536 2>/dev/null")
-            return dump_remote_bank(validation_connection, device)
-
-        def get_property_int_for_validation(host: str, password: str, name: str, **kwargs: object) -> int:
-            emit_progress(log, f"Reading ACP checksum property {name} after write...")
-            return get_property_int(host, password, name, **kwargs)
-
-        try:
-            write_result = write_and_validate_plan(
-                connection=connection,
-                acp_host=acp_host,
-                plan=plan,
-                os_release=compatibility.os_release,
-                flash_firmware_bank_func=flash_firmware_bank,
-                dump_remote_bank_func=dump_remote_bank_for_validation,
-                get_property_int_func=get_property_int_for_validation,
-                timeout=FLASH_WRITE_TIMEOUT_SECONDS,
-            )
-        except FlashAnalysisError as exc:
-            message = str(exc)
-            record_flash_error(command_context, message, stage="post_write_validation", live_login=live_login)
-            print(message)
-            command_context.fail()
-            return 1
-        except SshError as exc:
-            message = f"SSH post-write validation failed: {exc}"
-            record_flash_error(command_context, message, stage="post_write_validation", live_login=live_login)
-            print(message)
-            command_context.fail()
-            return 1
-        manifest["write_result"] = write_result
-        save_flash_manifest(backup_dir=backup_dir, manifest=manifest)
-        command_context.update_fields(
-            wrote_bank=write_result["bank"],
-            readback_sha256=write_result["readback_sha256"],
-            readback_prefix_sha256=write_result["readback_prefix_sha256"],
-            acp_reply_body_size=write_result["reply_body_size"],
-        )
-        print(
-            f"Firmware write validated for {write_result['bank']} bank; "
-            f"readback_prefix_sha256={write_result['readback_prefix_sha256']}"
-        )
-
-        if operation == "patch":
-            print(color_red(POWERCYCLE_REQUIRED_MESSAGE), flush=True)
-            print(f"{color_green('Patch write successful.')} The device needs to be manually rebooted.", flush=True)
-            command_context.succeed()
-            return 0
-
-        if not args.reboot:
-            print(f"{color_green('Restore write successful.')} The device needs to be manually rebooted.", flush=True)
-            command_context.succeed()
-            return 0
-
-        request_ssh_reboot(connection, command_context, log=log)
-        if not observe_reboot_cycle(
-            connection,
-            command_context,
-            reboot_no_down_message="Firmware write validated, but the device did not go down after reboot request.",
-            down_timeout_seconds=60,
-            up_timeout_seconds=240,
-        ):
-            print(color_red(POWERCYCLE_REQUIRED_MESSAGE), flush=True)
-            return 1
-        print("Device returned after reboot. Run `tcapsule flash --check-apple` to verify Apple stock firmware.", flush=True)
-        command_context.succeed()
-        return 0
+        return _run_flash(command_context, args=args, operation=operation, log=log)
     return 1
