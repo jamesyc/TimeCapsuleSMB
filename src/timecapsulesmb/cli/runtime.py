@@ -5,6 +5,7 @@ import ipaddress
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from timecapsulesmb.core.config import (
     DEFAULTS,
@@ -31,6 +32,9 @@ from timecapsulesmb.device.probe import (
     probe_remote_interface_conn,
 )
 from timecapsulesmb.transport.ssh import SshConnection
+
+
+LogCallback = Callable[[str], None] | None
 
 
 class NonInteractivePromptError(RuntimeError):
@@ -67,6 +71,21 @@ def print_json(data: object) -> None:
 
 def write_json_file(path: Path, data: object) -> None:
     path.write_text(json_text(data) + "\n")
+
+
+def prefixed_logger(prefix: str, *, enabled: bool) -> LogCallback:
+    if not enabled:
+        return None
+
+    def emit(message: str) -> None:
+        print(f"[{prefix}] {message}", flush=True)
+
+    return emit
+
+
+def emit_progress(log: LogCallback, message: str) -> None:
+    if log is not None:
+        log(message)
 
 
 def _confirm_suffix(default: bool) -> str:

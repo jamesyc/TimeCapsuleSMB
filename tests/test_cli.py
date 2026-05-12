@@ -205,6 +205,29 @@ class FakeCommandContext:
     def require_compatibility(self):
         return self.compatibility
 
+    def confirm_or_fail(
+        self,
+        prompt_text: str,
+        *,
+        default: bool,
+        noninteractive_message: str,
+        eof_default: bool | None = None,
+        interrupt_default: bool | None = None,
+    ) -> bool | None:
+        try:
+            return cli_runtime.confirm(
+                prompt_text,
+                default=default,
+                eof_default=eof_default,
+                interrupt_default=interrupt_default,
+                noninteractive_message=noninteractive_message,
+            )
+        except cli_runtime.NonInteractivePromptError as exc:
+            message = str(exc)
+            print(message)
+            self.fail_with_error(message)
+            return None
+
 
 class CliTests(unittest.TestCase):
     def _payload_home(self, volume_root: str = "/Volumes/dk2", payload_dir_name: str = "samba4") -> PayloadHome:
@@ -240,8 +263,8 @@ class CliTests(unittest.TestCase):
         mounted = mounted_volumes if mounted_volumes is not None else (self._mast_volume("dk2"),)
         read = read_volumes if read_volumes is not None else mounted
         return SimpleNamespace(
-            read_mast_volumes_conn=stack.enter_context(mock.patch(f"timecapsulesmb.cli.{module}.read_mast_volumes_conn", return_value=read)),
-            mounted_mast_volumes_conn=stack.enter_context(mock.patch(f"timecapsulesmb.cli.{module}.mounted_mast_volumes_conn", return_value=mounted)),
+            read_mast_volumes_conn=stack.enter_context(mock.patch("timecapsulesmb.cli.context.read_mast_volumes_conn", return_value=read)),
+            mounted_mast_volumes_conn=stack.enter_context(mock.patch("timecapsulesmb.cli.context.mounted_mast_volumes_conn", return_value=mounted)),
         )
 
     def managed_runtime_probe(self, ready: bool) -> ManagedRuntimeProbeResult:
@@ -796,19 +819,19 @@ class CliTests(unittest.TestCase):
                 mocks.command_context = stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.CommandContext", return_value=command_context))
             mocks.validate_artifacts = stack.enter_context(mock.patch("timecapsulesmb.cli.deploy.validate_artifacts", return_value=artifacts))
             mocks.wait_for_mast_volumes_conn = stack.enter_context(
-                mock.patch("timecapsulesmb.cli.deploy.wait_for_mast_volumes_conn", return_value=mast_discovery)
+                mock.patch("timecapsulesmb.cli.context.wait_for_mast_volumes_conn", return_value=mast_discovery)
             )
             if select_payload_home_side_effect is None:
                 mocks.select_payload_home_with_diagnostics_conn = stack.enter_context(
                     mock.patch(
-                        "timecapsulesmb.cli.deploy.select_payload_home_with_diagnostics_conn",
+                        "timecapsulesmb.cli.context.select_payload_home_with_diagnostics_conn",
                         return_value=payload_home_selection,
                     )
                 )
             else:
                 mocks.select_payload_home_with_diagnostics_conn = stack.enter_context(
                     mock.patch(
-                        "timecapsulesmb.cli.deploy.select_payload_home_with_diagnostics_conn",
+                        "timecapsulesmb.cli.context.select_payload_home_with_diagnostics_conn",
                         side_effect=select_payload_home_side_effect,
                     )
                 )
@@ -5315,7 +5338,7 @@ class CliTests(unittest.TestCase):
                             with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank", side_effect=fake_flash) as flash_mock:
                                 with mock.patch("timecapsulesmb.cli.flash.dump_remote_bank", side_effect=fake_readback):
                                     with mock.patch("timecapsulesmb.cli.flash.get_property_int", side_effect=fake_get_property):
-                                        with mock.patch("timecapsulesmb.cli.flash.remote_request_reboot") as reboot_mock:
+                                        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
                                             with redirect_stdout(output):
                                                 rc = cli_flash.main([
                                                     "--patch",
@@ -5452,7 +5475,7 @@ class CliTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank", side_effect=fake_flash) as flash_mock:
                             with mock.patch("timecapsulesmb.cli.flash.dump_remote_bank", side_effect=fake_readback):
                                 with mock.patch("timecapsulesmb.cli.flash.get_property_int", side_effect=fake_get_property):
-                                    with mock.patch("timecapsulesmb.cli.flash.remote_request_reboot") as reboot_mock:
+                                    with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
                                         with redirect_stdout(output):
                                             rc = cli_flash.main([
                                                 "--restore",
@@ -5529,7 +5552,7 @@ class CliTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank", side_effect=fake_flash):
                             with mock.patch("timecapsulesmb.cli.flash.dump_remote_bank", side_effect=fake_readback):
                                 with mock.patch("timecapsulesmb.cli.flash.get_property_int", side_effect=fake_get_property):
-                                    with mock.patch("timecapsulesmb.cli.flash.remote_request_reboot") as ssh_reboot_mock:
+                                    with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as ssh_reboot_mock:
                                         with mock.patch("timecapsulesmb.cli.flows.acp_reboot", side_effect=AssertionError("flash should not request ACP reboot")) as acp_reboot_mock:
                                             with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
                                                 with redirect_stdout(output):
@@ -5752,7 +5775,7 @@ class CliTests(unittest.TestCase):
                         ):
                             with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank", return_value=SimpleNamespace(command=0x03, reply_body=b"")):
                                 with mock.patch("timecapsulesmb.cli.flash.dump_remote_bank", return_value=primary):
-                                    with mock.patch("timecapsulesmb.cli.flash.remote_request_reboot") as reboot_mock:
+                                    with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
                                         with redirect_stdout(output):
                                             rc = cli_flash.main([
                                                 "--patch",
@@ -5798,7 +5821,7 @@ class CliTests(unittest.TestCase):
                             with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank", return_value=SimpleNamespace(command=0x03, reply_body=b"")) as flash_mock:
                                 with mock.patch("timecapsulesmb.cli.flash.dump_remote_bank", side_effect=SshError("ssh command failed with rc=255")):
                                     with mock.patch("timecapsulesmb.cli.flash.get_property_int", side_effect=AssertionError("ACP checksum should not be read after read-back failure")) as acp_mock:
-                                        with mock.patch("timecapsulesmb.cli.flash.remote_request_reboot") as reboot_mock:
+                                        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
                                             with redirect_stdout(output):
                                                 rc = cli_flash.main([
                                                     "--patch",
@@ -5914,7 +5937,7 @@ class CliTests(unittest.TestCase):
                             with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank", side_effect=fake_flash) as flash_mock:
                                 with mock.patch("timecapsulesmb.cli.flash.dump_remote_bank", side_effect=fake_readback):
                                     with mock.patch("timecapsulesmb.cli.flash.get_property_int", side_effect=fake_get_property):
-                                        with mock.patch("timecapsulesmb.cli.flash.remote_request_reboot") as reboot_mock:
+                                        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
                                             with redirect_stdout(output):
                                                 rc = cli_flash.main([
                                                     "--patch",
@@ -6005,7 +6028,7 @@ class CliTests(unittest.TestCase):
                                 unknown_login,
                             ),
                         ):
-                            with mock.patch("timecapsulesmb.cli.flash.confirm", side_effect=AssertionError("confirm should not be called")) as confirm_mock:
+                            with mock.patch("timecapsulesmb.cli.context.runtime.confirm", side_effect=AssertionError("confirm should not be called")) as confirm_mock:
                                 with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank") as flash_mock:
                                     with redirect_stdout(output):
                                         rc = cli_flash.main([

@@ -9,9 +9,7 @@ from typing import Optional
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import request_reboot_and_wait, verify_managed_runtime_flow
 from timecapsulesmb.cli.runtime import (
-    NonInteractivePromptError,
     add_config_argument,
-    confirm,
     load_env_config,
     print_json,
     require_supported_device_compatibility,
@@ -49,11 +47,7 @@ from timecapsulesmb.device.storage import (
     PayloadHome,
     PayloadVerificationResult,
     build_dry_run_payload_home,
-    mast_volumes_debug_summary,
-    payload_candidate_checks_debug_summary,
-    select_payload_home_with_diagnostics_conn,
     verify_payload_home_conn,
-    wait_for_mast_volumes_conn,
 )
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_green, color_red
@@ -189,18 +183,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         if args.dry_run:
             payload_home = build_dry_run_payload_home(config.require("TC_PAYLOAD_DIR_NAME"))
         else:
-            command_context.set_stage("read_mast")
-            mast_discovery = wait_for_mast_volumes_conn(
+            mast_discovery = command_context.wait_for_mast_volumes(
                 connection,
                 attempts=MAST_DISCOVERY_ATTEMPTS,
                 delay_seconds=MAST_DISCOVERY_DELAY_SECONDS,
             )
             mast_volumes = mast_discovery.volumes
-            command_context.add_debug_fields(
-                mast_read_attempts=mast_discovery.attempts,
-                mast_volume_count=len(mast_volumes),
-                mast_candidates=mast_volumes_debug_summary(mast_volumes),
-            )
             if not mast_volumes:
                 raise SystemExit(
                     _no_mast_volumes_message(
@@ -208,14 +196,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                         delay_seconds=MAST_DISCOVERY_DELAY_SECONDS,
                     )
                 )
-            command_context.set_stage("select_payload_home")
-            selection = select_payload_home_with_diagnostics_conn(
+            selection = command_context.select_payload_home(
                 connection,
                 mast_volumes,
                 config.require("TC_PAYLOAD_DIR_NAME"),
                 wait_seconds=apple_mount_wait_seconds,
             )
-            command_context.add_debug_fields(mast_candidate_checks=payload_candidate_checks_debug_summary(selection.checks))
             if selection.payload_home is None:
                 raise SystemExit(_no_writable_mast_volumes_message(len(mast_volumes)))
             payload_home = selection.payload_home
@@ -248,16 +234,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("Deploy will activate Samba immediately without rebooting.")
             print(color_red(NETBSD4_REBOOT_GUIDANCE))
             print(NETBSD4_REBOOT_FOLLOWUP)
-            try:
-                proceed = confirm(
-                    "Continue with NetBSD 4 deploy + activation?",
-                    default=False,
-                    noninteractive_message="Running `deploy` requires confirmation when stdin is not interactive. Use `deploy --yes` in a non-interactive environment.",
-                )
-            except NonInteractivePromptError as exc:
-                message = str(exc)
-                print(message)
-                command_context.fail_with_error(message)
+            proceed = command_context.confirm_or_fail(
+                "Continue with NetBSD 4 deploy + activation?",
+                default=False,
+                noninteractive_message="Running `deploy` requires confirmation when stdin is not interactive. Use `deploy --yes` in a non-interactive environment.",
+            )
+            if proceed is None:
                 return 1
             if not proceed:
                 print("Deployment cancelled.")
@@ -347,16 +329,12 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if not args.yes:
             device_name = airport_family_display_name_from_config(config)
-            try:
-                proceed = confirm(
-                    f"This will reboot the {device_name} now. Continue?",
-                    default=True,
-                    noninteractive_message="Running `deploy` with reboot requires confirmation when stdin is not interactive. Use `deploy --yes` to skip the prompt or `deploy --no-reboot`.",
-                )
-            except NonInteractivePromptError as exc:
-                message = str(exc)
-                print(message)
-                command_context.fail_with_error(message)
+            proceed = command_context.confirm_or_fail(
+                f"This will reboot the {device_name} now. Continue?",
+                default=True,
+                noninteractive_message="Running `deploy` with reboot requires confirmation when stdin is not interactive. Use `deploy --yes` to skip the prompt or `deploy --no-reboot`.",
+            )
+            if proceed is None:
                 return 1
             if not proceed:
                 print("Deployment complete without reboot.")

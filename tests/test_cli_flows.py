@@ -18,6 +18,7 @@ from timecapsulesmb.cli.flows import (
     REBOOT_UP_TIMEOUT_MESSAGE,
     observe_reboot_cycle,
     request_reboot_and_wait,
+    request_ssh_reboot,
     wait_for_device_up,
     wait_for_tcp_port_state,
     verify_managed_runtime_flow,
@@ -225,6 +226,51 @@ class CliFlowTests(unittest.TestCase):
         self.assertEqual(command_context.debug_fields["ssh_reboot_succeeded"], False)
         self.assertEqual(command_context.debug_fields["ssh_reboot_error"], "ssh failed")
         self.assertEqual(command_context.finish_fields["device_came_back_after_reboot"], True)
+        self.assertIn("SSH reboot request failed; checking whether the device is rebooting anyway...", output.getvalue())
+
+    def test_request_ssh_reboot_uses_ssh_only_strategy_and_progress_log(self) -> None:
+        command_context = FakeCommandContext()
+        messages: list[str] = []
+        output = io.StringIO()
+        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
+            with redirect_stdout(output):
+                request_ssh_reboot(self.make_connection(), command_context, log=messages.append)
+
+        reboot_mock.assert_called_once()
+        self.assertEqual(command_context.stages, ["reboot"])
+        self.assertEqual(command_context.finish_fields["reboot_was_attempted"], True)
+        self.assertEqual(command_context.debug_fields["reboot_request_strategy"], "ssh")
+        self.assertEqual(command_context.debug_fields["ssh_reboot_attempted"], True)
+        self.assertEqual(command_context.debug_fields["ssh_reboot_succeeded"], True)
+        self.assertEqual(messages, ["SSH: /sbin/reboot"])
+        self.assertIn("SSH reboot requested.", output.getvalue())
+
+    def test_request_ssh_reboot_records_timeout_without_raising(self) -> None:
+        command_context = FakeCommandContext()
+        output = io.StringIO()
+        with mock.patch(
+            "timecapsulesmb.cli.flows.remote_request_reboot",
+            side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot"),
+        ):
+            with redirect_stdout(output):
+                request_ssh_reboot(self.make_connection(), command_context)
+
+        self.assertEqual(command_context.debug_fields["reboot_request_strategy"], "ssh")
+        self.assertEqual(command_context.debug_fields["ssh_reboot_succeeded"], False)
+        self.assertEqual(command_context.debug_fields["ssh_reboot_timed_out"], True)
+        self.assertEqual(command_context.debug_fields["ssh_reboot_error"], "Timed out waiting for ssh command to finish: reboot")
+        self.assertIn("SSH reboot request timed out; checking whether the device is rebooting...", output.getvalue())
+
+    def test_request_ssh_reboot_records_ssh_error_without_raising(self) -> None:
+        command_context = FakeCommandContext()
+        output = io.StringIO()
+        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=SshError("ssh failed")):
+            with redirect_stdout(output):
+                request_ssh_reboot(self.make_connection(), command_context)
+
+        self.assertEqual(command_context.debug_fields["reboot_request_strategy"], "ssh")
+        self.assertEqual(command_context.debug_fields["ssh_reboot_succeeded"], False)
+        self.assertEqual(command_context.debug_fields["ssh_reboot_error"], "ssh failed")
         self.assertIn("SSH reboot request failed; checking whether the device is rebooting anyway...", output.getvalue())
 
     def test_request_reboot_and_wait_fails_when_device_never_goes_down_after_acp_request(self) -> None:

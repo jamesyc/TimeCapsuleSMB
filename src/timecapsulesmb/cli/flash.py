@@ -5,7 +5,7 @@ import base64
 from datetime import datetime
 import re
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 from timecapsulesmb.apple_firmware import (
     APPLE_FIRMWARE_CATALOG_URL,
@@ -13,12 +13,13 @@ from timecapsulesmb.apple_firmware import (
     normalize_syap,
 )
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.flows import observe_reboot_cycle
+from timecapsulesmb.cli.flows import observe_reboot_cycle, request_ssh_reboot
 from timecapsulesmb.cli.runtime import (
-    NonInteractivePromptError,
+    LogCallback,
     add_config_argument,
-    confirm,
+    emit_progress,
     load_env_config,
+    prefixed_logger,
     print_json,
     require_netbsd4_device_compatibility,
     write_json_file,
@@ -26,7 +27,6 @@ from timecapsulesmb.cli.runtime import (
 from timecapsulesmb.cli.util import color_green, color_red
 from timecapsulesmb.core.config import AIRPORT_IDENTITIES_BY_SYAP, extract_host
 from timecapsulesmb.core.paths import default_user_data_dir
-from timecapsulesmb.deploy.executor import remote_request_reboot
 from timecapsulesmb.flash import (
     FlashAnalysis,
     FlashAnalysisError,
@@ -50,7 +50,7 @@ from timecapsulesmb.flash_workflow import (
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.integrations.acp import ACPError, flash_firmware_bank, get_property_int
 from timecapsulesmb.telemetry import TelemetryClient
-from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError, run_ssh_capture_bytes
+from timecapsulesmb.transport.ssh import SshConnection, SshError, run_ssh_capture_bytes
 
 
 FLASH_READ_TIMEOUT_SECONDS = 180
@@ -60,22 +60,7 @@ WRITE_OPERATIONS = {"patch", "restore"}
 POWERCYCLE_REQUIRED_MESSAGE = (
     "POWER-CYCLE REQUIRED: unplug the Time Capsule, wait 10 seconds, then plug it back in."
 )
-ProgressLogger = Optional[Callable[[str], None]]
-
-
-def _progress_logger(enabled: bool) -> ProgressLogger:
-    if not enabled:
-        return None
-
-    def emit(message: str) -> None:
-        print(f"[flash] {message}", flush=True)
-
-    return emit
-
-
-def _progress(log: ProgressLogger, message: str) -> None:
-    if log is not None:
-        log(message)
+ProgressLogger = LogCallback
 
 
 def _safe_path_part(value: str) -> str:
@@ -96,7 +81,7 @@ def build_flash_backup_dir(*, base_dir: Path | None, host: str, syap: str) -> Pa
 
 
 def dump_remote_bank(connection: SshConnection, device: str, *, log: ProgressLogger = None) -> bytes:
-    _progress(log, f"SSH: /bin/dd if={device} bs=65536 2>/dev/null")
+    emit_progress(log, f"SSH: /bin/dd if={device} bs=65536 2>/dev/null")
     return run_ssh_capture_bytes(
         connection,
         f"/bin/dd if={device} bs=65536 2>/dev/null",
@@ -105,7 +90,7 @@ def dump_remote_bank(connection: SshConnection, device: str, *, log: ProgressLog
 
 
 def read_live_login(connection: SshConnection, *, log: ProgressLogger = None) -> bytes:
-    _progress(log, "SSH: /bin/dd if=/etc/rc.d/LOGIN bs=4096 2>/dev/null")
+    emit_progress(log, "SSH: /bin/dd if=/etc/rc.d/LOGIN bs=4096 2>/dev/null")
     return run_ssh_capture_bytes(connection, "/bin/dd if=/etc/rc.d/LOGIN bs=4096 2>/dev/null", timeout=30)
 
 
@@ -123,16 +108,16 @@ def read_flash_inputs(
     password: str,
     log: ProgressLogger = None,
 ) -> tuple[bytes, bytes, int | None, int | None, int | None, bytes]:
-    _progress(log, "Reading primary firmware bank from /dev/rflash0.raw...")
+    emit_progress(log, "Reading primary firmware bank from /dev/rflash0.raw...")
     primary = dump_remote_bank(connection, "/dev/rflash0.raw", log=log)
-    _progress(log, "Reading secondary firmware bank from /dev/rflash1.raw...")
+    emit_progress(log, "Reading secondary firmware bank from /dev/rflash1.raw...")
     secondary = dump_remote_bank(connection, "/dev/rflash1.raw", log=log)
-    _progress(log, "Reading ACP checksum properties cks1 and cks2...")
+    emit_progress(log, "Reading ACP checksum properties cks1 and cks2...")
     cks1 = read_acp_property_int(acp_host, password, "cks1")
     cks2 = read_acp_property_int(acp_host, password, "cks2")
-    _progress(log, "Reading ACP product property syAP...")
+    emit_progress(log, "Reading ACP product property syAP...")
     syap = read_acp_property_int(acp_host, password, "syAP")
-    _progress(log, "Reading live /etc/rc.d/LOGIN...")
+    emit_progress(log, "Reading live /etc/rc.d/LOGIN...")
     login = read_live_login(connection, log=log)
     return primary, secondary, cks1, cks2, syap, login
 
@@ -369,33 +354,6 @@ def _update_context_with_plan(command_context: CommandContext, plan: FlashPlan, 
     command_context.update_fields(**fields)
 
 
-def _request_ssh_reboot(connection: SshConnection, command_context: CommandContext, *, log: ProgressLogger) -> None:
-    command_context.set_stage("reboot")
-    command_context.update_fields(reboot_was_attempted=True)
-    command_context.add_debug_fields(reboot_request_strategy="ssh")
-    _progress(log, "SSH: /sbin/reboot")
-    try:
-        remote_request_reboot(connection)
-    except SshCommandTimeout as exc:
-        command_context.add_debug_fields(
-            ssh_reboot_succeeded=False,
-            ssh_reboot_timed_out=True,
-            ssh_reboot_error=str(exc),
-        )
-        print("SSH reboot request timed out; checking whether the device is rebooting...", flush=True)
-        return
-    except SshError as exc:
-        command_context.add_debug_fields(
-            ssh_reboot_succeeded=False,
-            ssh_reboot_error=str(exc),
-        )
-        print("SSH reboot request failed; checking whether the device is rebooting anyway...", flush=True)
-        return
-
-    command_context.add_debug_fields(ssh_reboot_succeeded=True)
-    print("SSH reboot requested.", flush=True)
-
-
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Analyze, patch, or restore the NetBSD4 firmware boot hook.")
     add_config_argument(parser)
@@ -437,25 +395,25 @@ def main(argv: Optional[list[str]] = None) -> int:
         except FlashAnalysisError as exc:
             raise SystemExit(str(exc)) from exc
 
-    log = _progress_logger(not args.json)
+    log = prefixed_logger("flash", enabled=not args.json)
     if not args.json:
         print("Analyzing NetBSD4 flash firmware...", flush=True)
 
-    _progress(log, "Loading configuration and install identity...")
+    emit_progress(log, "Loading configuration and install identity...")
     ensure_install_id()
     config = load_env_config(env_path=args.config)
     telemetry = TelemetryClient.from_config(config, include_device_identity=False)
     with CommandContext(telemetry, "flash", "flash_started", "flash_finished", config=config, args=args) as command_context:
         command_context.update_fields(read_only=operation not in WRITE_OPERATIONS, write_requested=operation in WRITE_OPERATIONS, operation=operation)
         command_context.set_stage("resolve_connection")
-        _progress(log, "Resolving SSH target...")
+        emit_progress(log, "Resolving SSH target...")
         target = command_context.resolve_validated_managed_target(profile="flash", include_probe=False)
         connection = target.connection
         acp_host = extract_host(connection.host)
-        _progress(log, f"Using ACP host {acp_host}.")
+        emit_progress(log, f"Using ACP host {acp_host}.")
 
         command_context.set_stage("check_compatibility")
-        _progress(log, "Checking NetBSD4 device compatibility...")
+        emit_progress(log, "Checking NetBSD4 device compatibility...")
         compatibility, _compatibility_message = require_netbsd4_device_compatibility(
             command_context,
             command_name="flash",
@@ -498,14 +456,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         backup_dir = build_flash_backup_dir(base_dir=args.backup_dir, host=acp_host, syap=syap)
         command_context.set_stage("save_raw_backup")
-        _progress(log, f"Saving raw flash backup to {backup_dir}...")
+        emit_progress(log, f"Saving raw flash backup to {backup_dir}...")
         save_flash_banks(backup_dir=backup_dir, primary=primary, secondary=secondary)
 
         command_context.set_stage("analyze_flash")
         if operation == "patch":
-            _progress(log, "Analyzing flash banks and building patched gzip candidate...")
+            emit_progress(log, "Analyzing flash banks and building patched gzip candidate...")
         else:
-            _progress(log, "Analyzing flash banks...")
+            emit_progress(log, "Analyzing flash banks...")
         try:
             analysis = analyze_flash_banks(
                 primary_data=primary,
@@ -544,7 +502,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         plan = None
         if operation != "read_only":
             command_context.set_stage("plan_flash")
-            _progress(log, "Resolving Apple firmware template and composing flash plan...")
+            emit_progress(log, "Resolving Apple firmware template and composing flash plan...")
             try:
                 plan = _plan_from_operation(
                     operation=operation,
@@ -580,7 +538,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             _update_context_with_plan(command_context, plan, payload_path)
 
         command_context.set_stage("save_backup")
-        _progress(log, "Writing flash manifest...")
+        emit_progress(log, "Writing flash manifest...")
         save_flash_manifest(backup_dir=backup_dir, manifest=manifest)
 
         if args.json:
@@ -603,19 +561,15 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if not args.yes:
             command_context.set_stage("confirm_write")
-            try:
-                proceed = confirm(
-                    _confirmation_prompt(plan),
-                    default=False,
-                    noninteractive_message=(
-                        f"Running `flash --{operation}` requires confirmation when stdin is not interactive. "
-                        f"Use `flash --{operation} --yes` to skip the prompt."
-                    ),
+            proceed = command_context.confirm_or_fail(
+                _confirmation_prompt(plan),
+                default=False,
+                noninteractive_message=(
+                    f"Running `flash --{operation}` requires confirmation when stdin is not interactive. "
+                    f"Use `flash --{operation} --yes` to skip the prompt."
                 )
-            except NonInteractivePromptError as exc:
-                message = str(exc)
-                print(message)
-                command_context.fail_with_error(message)
+            )
+            if proceed is None:
                 return 1
             if not proceed:
                 print("Flash write cancelled.", flush=True)
@@ -624,15 +578,15 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         command_context.set_stage("write_active_bank")
         assert plan.target_bank is not None
-        _progress(log, f"Sending ACP flash command for active {plan.target_bank.name} bank...")
+        emit_progress(log, f"Sending ACP flash command for active {plan.target_bank.name} bank...")
 
         def dump_remote_bank_for_validation(validation_connection: SshConnection, device: str) -> bytes:
-            _progress(log, f"Reading back written firmware bank from {device}...")
-            _progress(log, f"SSH: /bin/dd if={device} bs=65536 2>/dev/null")
+            emit_progress(log, f"Reading back written firmware bank from {device}...")
+            emit_progress(log, f"SSH: /bin/dd if={device} bs=65536 2>/dev/null")
             return dump_remote_bank(validation_connection, device)
 
         def get_property_int_for_validation(host: str, password: str, name: str, **kwargs: object) -> int:
-            _progress(log, f"Reading ACP checksum property {name} after write...")
+            emit_progress(log, f"Reading ACP checksum property {name} after write...")
             return get_property_int(host, password, name, **kwargs)
 
         try:
@@ -682,7 +636,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.succeed()
             return 0
 
-        _request_ssh_reboot(connection, command_context, log=log)
+        request_ssh_reboot(connection, command_context, log=log)
         if not observe_reboot_cycle(
             connection,
             command_context,

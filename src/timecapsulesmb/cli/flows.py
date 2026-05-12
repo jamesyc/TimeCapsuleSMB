@@ -4,6 +4,7 @@ import time
 from typing import Iterable
 
 from timecapsulesmb.cli.context import CommandContext
+from timecapsulesmb.cli.runtime import LogCallback, emit_progress
 from timecapsulesmb.core.config import extract_host
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.deploy.executor import remote_request_reboot
@@ -89,6 +90,18 @@ def request_reboot_and_wait(
     )
 
 
+def request_ssh_reboot(
+    connection: SshConnection,
+    command_context: CommandContext,
+    *,
+    log: LogCallback = None,
+) -> None:
+    command_context.set_stage("reboot")
+    command_context.update_fields(reboot_was_attempted=True)
+    command_context.add_debug_fields(reboot_request_strategy="ssh")
+    _request_reboot_via_ssh(connection, command_context, log=log)
+
+
 def _request_reboot_acp_then_ssh(connection: SshConnection, command_context: CommandContext) -> None:
     command_context.add_debug_fields(reboot_request_strategy="acp_then_ssh")
     if _request_reboot_via_acp(connection, command_context):
@@ -117,8 +130,14 @@ def _request_reboot_via_acp(connection: SshConnection, command_context: CommandC
     return True
 
 
-def _request_reboot_via_ssh(connection: SshConnection, command_context: CommandContext) -> None:
+def _request_reboot_via_ssh(
+    connection: SshConnection,
+    command_context: CommandContext,
+    *,
+    log: LogCallback = None,
+) -> None:
     command_context.add_debug_fields(ssh_reboot_attempted=True)
+    emit_progress(log, "SSH: /sbin/reboot")
     try:
         remote_request_reboot(connection)
     except SshCommandTimeout as exc:

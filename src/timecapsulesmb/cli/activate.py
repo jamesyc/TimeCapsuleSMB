@@ -6,9 +6,7 @@ from typing import Optional
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import verify_managed_runtime_flow
 from timecapsulesmb.cli.runtime import (
-    NonInteractivePromptError,
     add_config_argument,
-    confirm,
     load_env_config,
     require_netbsd4_device_compatibility,
 )
@@ -58,16 +56,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.set_stage("confirm_activation")
             print(f"This will start the deployed Samba payload on the {device_name}.")
             print(color_red(NETBSD4_REBOOT_GUIDANCE))
-            try:
-                proceed = confirm(
-                    "Continue with NetBSD4 activation?",
-                    default=False,
-                    noninteractive_message="Running `activate` requires confirmation when stdin is not interactive. Use `activate --yes` in a non-interactive environment.",
-                )
-            except NonInteractivePromptError as exc:
-                message = str(exc)
-                print(message)
-                command_context.fail_with_error(message)
+            proceed = command_context.confirm_or_fail(
+                "Continue with NetBSD4 activation?",
+                default=False,
+                noninteractive_message="Running `activate` requires confirmation when stdin is not interactive. Use `activate --yes` in a non-interactive environment.",
+            )
+            if proceed is None:
                 return 1
             if not proceed:
                 print("Activation cancelled.")
