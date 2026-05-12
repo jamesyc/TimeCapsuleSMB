@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+import os
 import plistlib
 import re
+import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import urlopen
@@ -57,12 +59,37 @@ def download_url(url: str, *, timeout: int = 60) -> bytes:
         return response.read()
 
 
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp:
+            temp_path = Path(temp.name)
+            temp.write(data)
+            temp.flush()
+            os.fsync(temp.fileno())
+        os.replace(temp_path, path)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+
+
 def load_apple_firmware_catalog(*, cache_dir: Path) -> list[dict[str, object]]:
     cache_dir.mkdir(parents=True, exist_ok=True)
     catalog_path = cache_dir / "version.xml"
     try:
         catalog_data = download_url(APPLE_FIRMWARE_CATALOG_URL)
-        catalog_path.write_bytes(catalog_data)
+        _atomic_write_bytes(catalog_path, catalog_data)
     except Exception as exc:
         if not catalog_path.exists():
             raise FlashAnalysisError(f"failed to download Apple firmware catalog: {exc}") from exc
@@ -136,7 +163,10 @@ def download_firmware_template_to_cache(
             f"downloaded Apple firmware template size mismatch for {url}: "
             f"got {len(data)}, expected {expected_size}"
         )
-    path.write_bytes(data)
+    try:
+        _atomic_write_bytes(path, data)
+    except OSError as exc:
+        raise FlashAnalysisError(f"failed to write Apple firmware template cache {path}: {exc}") from exc
     return FirmwareTemplateCandidate(
         data=data,
         source=url,
