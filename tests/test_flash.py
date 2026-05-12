@@ -13,6 +13,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+import timecapsulesmb.flash as flash_module
 from timecapsulesmb.flash import (
     PATCHED_LOGIN_SCRIPT,
     STOCK_LOGIN_NETBSD4_DUMMY,
@@ -72,6 +73,44 @@ class FlashAnalysisTests(unittest.TestCase):
 
         self.assertGreater(member.offset, 0)
         self.assertIn(STOCK_LOGIN_NETBSD4_DUMMY, member.decompressed)
+
+    def test_find_gzip_member_skips_reserved_flag_candidates_before_decompressing(self) -> None:
+        bank = make_bank(extra_gzip_magic=b"\x1f\x8b\x08\xe0bad")
+        footer = find_footer(bank)
+
+        with mock.patch("timecapsulesmb.flash._decompress_gzip_member", wraps=flash_module._decompress_gzip_member) as decompress_mock:
+            member = find_gzip_member(bank, footer)
+
+        self.assertIn(STOCK_LOGIN_NETBSD4_DUMMY, member.decompressed)
+        self.assertEqual(decompress_mock.call_count, 1)
+
+    def test_find_footer_ignores_empty_prefix_padding_false_positive(self) -> None:
+        bank = bytearray(make_bank())
+        expected = find_footer(bytes(bank))
+        bank[expected.offset - 12 : expected.offset - 4] = b"\x00\x00\x00\x01\x00\x00\x00\x00"
+
+        footer = find_footer(bytes(bank))
+
+        self.assertEqual(footer, expected)
+
+    def test_find_footer_caches_adler32_by_candidate_end_offset(self) -> None:
+        bank = bytearray(make_bank())
+        footer = find_footer(bytes(bank))
+        false_candidate = struct.pack(">II", 0, footer.end_offset)
+        bank[footer.offset - 16 : footer.offset - 8] = false_candidate
+        bank[footer.offset - 8 : footer.offset] = false_candidate
+        original_adler32 = zlib.adler32
+        calls_by_length: dict[int, int] = {}
+
+        def counting_adler32(data: bytes | memoryview) -> int:
+            calls_by_length[len(data)] = calls_by_length.get(len(data), 0) + 1
+            return original_adler32(data)
+
+        with mock.patch("timecapsulesmb.flash.zlib.adler32", side_effect=counting_adler32):
+            found = find_footer(bytes(bank))
+
+        self.assertEqual(found.offset, footer.offset)
+        self.assertEqual(calls_by_length[footer.end_offset], 1)
 
     def test_classify_stock_login_as_patchable(self) -> None:
         login = classify_login(b"prefix" + STOCK_LOGIN_NETBSD4_DUMMY + b"\x00")

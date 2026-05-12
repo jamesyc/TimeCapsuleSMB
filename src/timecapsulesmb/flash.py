@@ -45,7 +45,9 @@ PATCHED_LOGIN_SCRIPT = (
 
 KNOWN_STOCK_LOGIN_SCRIPTS = (STOCK_LOGIN_NETBSD4_DUMMY,)
 GZIP_MAGIC = b"\x1f\x8b\x08"
+GZIP_RESERVED_FLAG_BITS = 0xE0
 FOOTER_SCAN_BYTES = 4096
+MIN_FOOTER_END_OFFSET = 16
 ZOPFLI_BOOTSTRAP_MESSAGE = (
     "Python package zopfli is required for flash patch compression. "
     "Run `./tcapsule bootstrap` to install it, then rerun `.venv/bin/tcapsule flash`."
@@ -170,13 +172,18 @@ def find_footer(data: bytes) -> FooterInfo:
     start = max(0, len(data) - FOOTER_SCAN_BYTES)
     matches: list[FooterInfo] = []
     data_view = memoryview(data)
+    checksum_cache: dict[int, int] = {}
     for offset in range(start, len(data) - 7):
         checksum, end_offset = struct.unpack_from(">II", data, offset)
+        if end_offset < MIN_FOOTER_END_OFFSET:
+            continue
         if end_offset > len(data):
             continue
         if end_offset >= offset:
             continue
-        if zlib.adler32(data_view[:end_offset]) & 0xFFFFFFFF == checksum:
+        if end_offset not in checksum_cache:
+            checksum_cache[end_offset] = zlib.adler32(data_view[:end_offset]) & 0xFFFFFFFF
+        if checksum_cache[end_offset] == checksum:
             matches.append(FooterInfo(offset, checksum, end_offset))
     if len(matches) != 1:
         raise FlashAnalysisError(f"expected exactly one valid footer, found {len(matches)}")
@@ -196,9 +203,18 @@ def _decompress_gzip_member(data: bytes, offset: int) -> GzipMemberInfo | None:
     return GzipMemberInfo(offset=offset, consumed_length=consumed, decompressed=decompressed)
 
 
+def _has_valid_gzip_header_flags(data: bytes, offset: int) -> bool:
+    flag_offset = offset + len(GZIP_MAGIC)
+    if flag_offset >= len(data):
+        return False
+    return (data[flag_offset] & GZIP_RESERVED_FLAG_BITS) == 0
+
+
 def find_gzip_member(data: bytes, footer: FooterInfo) -> GzipMemberInfo:
     matches: list[GzipMemberInfo] = []
     for match in re.finditer(re.escape(GZIP_MAGIC), data[: footer.end_offset]):
+        if not _has_valid_gzip_header_flags(data, match.start()):
+            continue
         member = _decompress_gzip_member(data, match.start())
         if member is None:
             continue

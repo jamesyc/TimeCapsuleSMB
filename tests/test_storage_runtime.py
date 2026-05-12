@@ -1460,9 +1460,9 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
             log_text = (memory / "samba4/var/test.log").read_text()
 
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, f"{volumes}/dk3/.samba4\n{volumes}/dk3\n/dev/dk3\n")
-        self.assertIn(f"payload directory selected from mounted MaSt volumes: {volumes}/dk3/.samba4", log_text)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(proc.stdout, f"{volumes}/dk3/.samba4\n{volumes}/dk3\n/dev/dk3\n")
+            self.assertIn(f"payload directory selected from mounted MaSt volumes: {volumes}/dk3/.samba4", log_text)
 
     def test_common_refresh_disk_state_succeeds_with_payload_and_one_share_when_external_optional_fails(self) -> None:
         fixture = SHELL_MAST_FIXTURES[0]
@@ -2940,6 +2940,127 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "payload\nmounts\nsmbd\n")
+
+    def test_common_watchdog_iteration_live_reloads_on_topology_change_without_reexec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            payload.mkdir(parents=True)
+            script = tmp_path / "watchdog-live-topology.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR" "$RAM_SBIN" "$RAM_ETC"
+                    : >"$TC_SMBD_BIN"
+                    chmod 755 "$TC_SMBD_BIN"
+                    tc_write_payload_state {payload} {volumes}/dk2 /dev/dk2
+                    sleep() {{ :; }}
+                    tc_topology_changed() {{ return 0; }}
+                    tc_refresh_disk_state() {{
+                        echo refresh
+                        tc_write_payload_state {payload} {volumes}/dk2 /dev/dk2
+                        cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                        cat >"$TC_ADISK_TSV" <<'EOF'
+                    Data	dk2	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa	0x82
+                    EOF
+                    }}
+                    tc_wait_for_bind_interfaces() {{ echo "127.0.0.1/8 192.168.1.2/24"; }}
+                    tc_prepare_local_hostname_resolution() {{ echo hostname; }}
+                    tc_init_runtime_identity() {{
+                        echo identity
+                        MDNS_INSTANCE_NAME=Live
+                        MDNS_HOST_LABEL=live
+                        SMB_NETBIOS_NAME=Live
+                        SMB_SERVER_STRING=Live
+                        TC_RUNTIME_IDENTITY_READY=1
+                    }}
+                    tc_generate_smb_conf() {{ echo "generate $1 $2"; }}
+                    tc_reload_smbd_config() {{ echo reload; }}
+                    tc_launch_mdns_advertiser() {{ echo "mdns $1 $2 $3 $4"; }}
+                    tc_payload_available() {{ echo payload; return 0; }}
+                    tc_mount_active_volumes_from_state() {{ echo mounts; return 0; }}
+                    tc_start_smbd_if_needed() {{ echo smbd; }}
+                    runtime_process_present_by_ucomm() {{ return 0; }}
+                    tc_exec_start_samba() {{ echo "exec $1"; exit 42; }}
+                    tc_watchdog_iteration
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            "\n".join(
+                (
+                    "refresh",
+                    "hostname",
+                    "identity",
+                    f"generate {payload} 127.0.0.1/8 192.168.1.2/24",
+                    "reload",
+                    "mdns watchdog topology refresh 0 1 10",
+                    "payload",
+                    "mounts",
+                    "smbd",
+                    "",
+                )
+            ),
+        )
+        self.assertIn("watchdog recovery: attempting live disk runtime refresh: MaSt topology changed", log_text)
+        self.assertIn("watchdog recovery: live disk runtime refresh complete", log_text)
+        self.assertNotIn("re-execing start-samba.sh", log_text)
+
+    def test_common_watchdog_iteration_reexecs_when_live_topology_reload_changes_payload_home(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            old_payload = volumes / "dk2/.samba4"
+            new_payload = volumes / "dk3/.samba4"
+            old_payload.mkdir(parents=True)
+            new_payload.mkdir(parents=True)
+            script = tmp_path / "watchdog-live-topology-payload-change.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR" "$RAM_SBIN" "$RAM_ETC"
+                    : >"$TC_SMBD_BIN"
+                    chmod 755 "$TC_SMBD_BIN"
+                    tc_write_payload_state {old_payload} {volumes}/dk2 /dev/dk2
+                    sleep() {{ :; }}
+                    tc_topology_changed() {{ return 0; }}
+                    tc_refresh_disk_state() {{
+                        echo refresh
+                        tc_write_payload_state {new_payload} {volumes}/dk3 /dev/dk3
+                    }}
+                    tc_reload_smbd_config() {{ echo reload; }}
+                    tc_exec_start_samba() {{ echo "exec $1"; exit 42; }}
+                    tc_watchdog_iteration
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 42, proc.stderr)
+        self.assertEqual(proc.stdout, "refresh\nexec MaSt topology changed\n")
 
     def test_common_watchdog_reexec_uses_reload_disk_runtime_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

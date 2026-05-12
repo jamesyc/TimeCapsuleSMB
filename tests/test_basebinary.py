@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -10,6 +11,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+import timecapsulesmb.basebinary as basebinary
 from timecapsulesmb.basebinary import (
     BasebinaryError,
     BasebinaryHeader,
@@ -118,6 +120,33 @@ class BasebinaryTests(unittest.TestCase):
         self.assertEqual(encrypted[:16], encrypted[0x8000 : 0x8000 + 16])
         self.assertEqual(encrypted[-4:], b"tail")
         self.assertEqual(decrypt_basebinary_payload(encrypted, key=TEST_KEY, iv=header.iv), payload)
+
+    def test_aes_module_lookup_is_cached_across_chunks(self) -> None:
+        class IdentityCipher:
+            def encrypt(self, data: bytes) -> bytes:
+                return data
+
+            def decrypt(self, data: bytes) -> bytes:
+                return data
+
+        class FakeAESModule:
+            MODE_CBC = 2
+
+            @staticmethod
+            def new(_key: bytes, _mode: int, _iv: bytes) -> IdentityCipher:
+                return IdentityCipher()
+
+        data = b"x" * (0x8000 * 3 + 17)
+        header = make_header(encrypted=True)
+        basebinary._load_aes_module.cache_clear()
+        try:
+            with mock.patch("timecapsulesmb.basebinary.importlib.import_module", return_value=FakeAESModule) as import_mock:
+                encrypted = encrypt_basebinary_payload(data, key=TEST_KEY, iv=header.iv)
+        finally:
+            basebinary._load_aes_module.cache_clear()
+
+        self.assertEqual(encrypted, data)
+        import_mock.assert_called_once_with("Crypto.Cipher.AES")
 
     def test_nested_basebinary_repack_preserves_headers_and_updates_inner_payload(self) -> None:
         original_payload = b"raw bank prefix" * 64

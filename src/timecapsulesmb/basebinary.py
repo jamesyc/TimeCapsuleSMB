@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 import importlib
 import struct
 import zlib
@@ -148,6 +149,7 @@ def derive_basebinary_key(stored_key: bytes) -> bytes:
     return bytes(value ^ (index + 0x19) for index, value in enumerate(stored_key))
 
 
+@lru_cache(maxsize=1)
 def _load_aes_module() -> object:
     try:
         return importlib.import_module("Crypto.Cipher.AES")
