@@ -54,6 +54,7 @@ class ACPMessageHeader:
     command: int
     error_code: int
     body_size: int
+    body_checksum: int
 
 
 @dataclass(frozen=True)
@@ -175,6 +176,7 @@ def _parse_header(data: bytes) -> ACPMessageHeader:
         command=command,
         error_code=error_code,
         body_size=body_size,
+        body_checksum=body_checksum,
     )
 
 
@@ -203,6 +205,29 @@ def _parse_property_header(data: bytes) -> tuple[str | None, int, int]:
     raw_name, flags, size = PROPERTY_HEADER.unpack(data)
     name = None if raw_name == b"\x00\x00\x00\x00" else raw_name.decode("ascii", errors="replace")
     return name, flags, size
+
+
+def _parse_property_result_from_body(body: bytes, offset: int) -> tuple[str | None, int, bytes, int]:
+    end_header = offset + PROPERTY_HEADER.size
+    if end_header > len(body):
+        raise ACPProtocolError(
+            f"ACP property header at offset {offset} extends past body size {len(body)}"
+        )
+    name, flags, size = _parse_property_header(body[offset:end_header])
+    end_value = end_header + size
+    if end_value > len(body):
+        raise ACPProtocolError(
+            f"ACP property {name or '<end>'} value extends past body size {len(body)}"
+        )
+    data = body[end_header:end_value]
+    if flags & 1:
+        if len(data) == 4:
+            error_code = struct.unpack(">i", data)[0]
+            raise ACPPropertyError(
+                f"ACP property {name or '<end>'} failed with error_code {_format_error_code(error_code)}"
+            )
+        raise ACPPropertyError(f"ACP property {name or '<end>'} failed")
+    return name, flags, data, end_value
 
 
 def _recv_exact(sock: socket.socket, size: int) -> bytes:
@@ -258,7 +283,13 @@ def _read_reply_body(sock: socket.socket, header: ACPMessageHeader) -> bytes:
         return b""
     if header.body_size < -1:
         raise ACPProtocolError(f"ACP response had invalid body_size {header.body_size}")
-    return _recv_exact(sock, header.body_size)
+    body = _recv_exact(sock, header.body_size)
+    checksum = _adler32_signed(body)
+    if checksum != header.body_checksum:
+        raise ACPProtocolError(
+            f"ACP response body checksum mismatch: got {checksum:#x}, expected {header.body_checksum:#x}"
+        )
+    return body
 
 
 def _read_property_result(sock: socket.socket) -> tuple[str | None, int, bytes]:
@@ -274,6 +305,21 @@ def _read_property_result(sock: socket.socket) -> tuple[str | None, int, bytes]:
     return name, flags, data
 
 
+def _iter_property_results_from_body(body: bytes) -> list[tuple[str | None, int, bytes]]:
+    results: list[tuple[str | None, int, bytes]] = []
+    offset = 0
+    while offset < len(body):
+        name, flags, data, offset = _parse_property_result_from_body(body, offset)
+        results.append((name, flags, data))
+    return results
+
+
+def _read_property_results(sock: socket.socket, header: ACPMessageHeader) -> list[tuple[str | None, int, bytes]] | None:
+    if header.body_size in (-1, 0):
+        return None
+    return _iter_property_results_from_body(_read_reply_body(sock, header))
+
+
 def set_property_int(
     host: str,
     password: str,
@@ -285,8 +331,12 @@ def set_property_int(
     payload = _compose_property_element(name, value)
     sock = _send_message(host, password, COMMAND_SETPROP, payload, timeout=timeout)
     try:
-        _read_reply_header(sock, expected_command=COMMAND_SETPROP)
-        _read_property_result(sock)
+        header = _read_reply_header(sock, expected_command=COMMAND_SETPROP)
+        results = _read_property_results(sock, header)
+        if results is None:
+            _read_property_result(sock)
+        elif not results:
+            raise ACPProtocolError("ACP set-property response body did not contain a property result")
     finally:
         sock.close()
 
@@ -301,15 +351,25 @@ def get_property_int(
     payload = _compose_property_element(name, None)
     sock = _send_message(host, password, COMMAND_GETPROP, payload, flags=4, timeout=timeout)
     try:
-        _read_reply_header(sock, expected_command=COMMAND_GETPROP)
-        while True:
-            prop_name, _flags, data = _read_property_result(sock)
+        header = _read_reply_header(sock, expected_command=COMMAND_GETPROP)
+        results = _read_property_results(sock, header)
+        if results is None:
+            while True:
+                prop_name, _flags, data = _read_property_result(sock)
+                if prop_name is None and data == b"\x00\x00\x00\x00":
+                    raise ACPPropertyError(f"ACP property {name} was not returned")
+                if prop_name == name:
+                    if len(data) != 4:
+                        raise ACPProtocolError(f"ACP property {name} returned {len(data)} bytes, expected 4")
+                    return struct.unpack(">I", data)[0]
+        for prop_name, _flags, data in results:
             if prop_name is None and data == b"\x00\x00\x00\x00":
-                raise ACPPropertyError(f"ACP property {name} was not returned")
+                break
             if prop_name == name:
                 if len(data) != 4:
                     raise ACPProtocolError(f"ACP property {name} returned {len(data)} bytes, expected 4")
                 return struct.unpack(">I", data)[0]
+        raise ACPPropertyError(f"ACP property {name} was not returned")
     finally:
         sock.close()
 

@@ -33,7 +33,7 @@ class FirmwareTemplateCandidate:
 
 def _safe_path_part(value: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip())
-    return safe.strip("-") or "device"
+    return safe.strip("-.") or "device"
 
 
 def default_firmware_template_cache_root() -> Path:

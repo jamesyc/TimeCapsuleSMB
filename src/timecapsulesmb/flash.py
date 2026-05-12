@@ -209,6 +209,12 @@ def find_gzip_member(data: bytes, footer: FooterInfo) -> GzipMemberInfo:
     return matches[0]
 
 
+def classify_firmware_prefix_login(data: bytes) -> LoginInfo:
+    footer = FooterInfo(offset=len(data), checksum=0, end_offset=len(data))
+    gzip_member = find_gzip_member(data, footer)
+    return classify_login(gzip_member.decompressed)
+
+
 def classify_login(decompressed: bytes) -> LoginInfo:
     stock_matches: list[tuple[int, bytes]] = []
     for script in KNOWN_STOCK_LOGIN_SCRIPTS:

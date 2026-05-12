@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import struct
+import zlib
 
 from timecapsulesmb.flash import (
     BankAnalysis,
@@ -121,19 +123,7 @@ def plan_restore_apple(
         cache_dir=cache_dir,
     )
     already_satisfied = active.data[: len(payload.expected_prefix)] == payload.expected_prefix
-    match = AppleFirmwareMatch(
-        matched=already_satisfied,
-        template_source=payload.template_source,
-        template_path=payload.template_path,
-        template_product_id=payload.template_product_id,
-        template_version=payload.template_version,
-        template_sha256=payload.template_sha256,
-        inner_sha256=payload.expected_prefix_sha256,
-        inner_size=len(payload.expected_prefix),
-        key_id=payload.key_id,
-        inner_model=payload.inner_model,
-        inner_version=payload.inner_version,
-    )
+    match = apple_match_from_restore_payload(payload=payload, matched=already_satisfied)
     return FlashPlan(mode="restore", target_bank=active, payload=payload, apple_match=match, already_satisfied=already_satisfied)
 
 
@@ -173,8 +163,13 @@ def plan_download_only(
         cache_dir=cache_dir,
     )
     already_satisfied = active.data[: len(payload.expected_prefix)] == payload.expected_prefix
-    match = AppleFirmwareMatch(
-        matched=already_satisfied,
+    match = apple_match_from_restore_payload(payload=payload, matched=already_satisfied)
+    return FlashPlan(mode="download_only", target_bank=active, payload=payload, apple_match=match, already_satisfied=already_satisfied)
+
+
+def apple_match_from_restore_payload(*, payload: AcpFlashPayload, matched: bool) -> AppleFirmwareMatch:
+    return AppleFirmwareMatch(
+        matched=matched,
         template_source=payload.template_source,
         template_path=payload.template_path,
         template_product_id=payload.template_product_id,
@@ -186,7 +181,6 @@ def plan_download_only(
         inner_model=payload.inner_model,
         inner_version=payload.inner_version,
     )
-    return FlashPlan(mode="download_only", target_bank=active, payload=payload, apple_match=match, already_satisfied=True)
 
 
 def active_checksum_property(bank_name: str) -> str:
@@ -195,6 +189,19 @@ def active_checksum_property(bank_name: str) -> str:
     if bank_name == "secondary":
         return "cks2"
     raise FlashAnalysisError(f"unknown active bank: {bank_name}")
+
+
+def expected_bank_after_write(active: BankAnalysis, payload: AcpFlashPayload) -> tuple[bytes, int]:
+    if len(payload.expected_prefix) != active.footer.end_offset:
+        raise FlashAnalysisError(
+            "flash payload expected prefix length does not match active bank footer end_offset: "
+            f"payload={len(payload.expected_prefix)}, active_end_offset={active.footer.end_offset}"
+        )
+    expected = bytearray(active.data)
+    expected[: active.footer.end_offset] = payload.expected_prefix
+    checksum = zlib.adler32(memoryview(expected)[: active.footer.end_offset]) & 0xFFFFFFFF
+    expected[active.footer.offset : active.footer.offset + 4] = struct.pack(">I", checksum)
+    return bytes(expected), checksum
 
 
 def write_and_validate_plan(
@@ -233,6 +240,13 @@ def write_and_validate_plan(
             "read-back firmware bank prefix SHA-256 mismatch after ACP write: "
             f"got {actual_prefix_sha256}, expected {payload.expected_prefix_sha256}"
         )
+    expected_bank, expected_footer_checksum = expected_bank_after_write(active, payload)
+    expected_bank_sha256 = sha256_hex(expected_bank)
+    if readback != expected_bank:
+        raise FlashAnalysisError(
+            "read-back firmware bank SHA-256 mismatch after ACP write: "
+            f"got {readback_sha256}, expected {expected_bank_sha256}"
+        )
 
     checksum_property = active_checksum_property(active.name)
     try:
@@ -268,10 +282,12 @@ def write_and_validate_plan(
         "firmware_payload_size": len(payload.data),
         "expected_prefix_sha256": payload.expected_prefix_sha256,
         "expected_prefix_size": len(payload.expected_prefix),
+        "expected_bank_sha256": expected_bank_sha256,
         "readback_sha256": readback_sha256,
         "readback_prefix_sha256": actual_prefix_sha256,
         "acp_checksum_property": checksum_property,
         "acp_checksum": f"0x{acp_checksum:08x}",
         "footer_checksum": f"0x{readback_analysis.footer.checksum:08x}",
+        "expected_footer_checksum": f"0x{expected_footer_checksum:08x}",
         "login_classification": readback_analysis.login.classification,
     }

@@ -91,6 +91,15 @@ class ACPTests(unittest.TestCase):
         self.assertEqual(result.reply_body, b"accepted")
         self.assertIn(b"raw-bank", fake_socket.sent)
 
+    def test_flash_firmware_bank_rejects_bad_reply_body_checksum(self) -> None:
+        response = acp._compose_header(command=acp.COMMAND_FLASH_PRIMARY, payload=b"accepted") + b"acceptEd"
+        fake_socket = FakeSocket(response)
+        with mock.patch("timecapsulesmb.integrations.acp.socket.create_connection", return_value=fake_socket):
+            with self.assertRaises(acp.ACPProtocolError) as raised:
+                acp.flash_firmware_bank("10.0.0.2", "pw", "primary", b"raw-bank")
+
+        self.assertIn("body checksum mismatch", str(raised.exception))
+
     def test_flash_firmware_bank_sends_secondary_command(self) -> None:
         response = acp._compose_header(command=acp.COMMAND_FLASH_SECONDARY)
         fake_socket = FakeSocket(response)
@@ -121,6 +130,27 @@ class ACPTests(unittest.TestCase):
 
         self.assertIn("-0x1234", str(exc.exception))
         self.assertIn("wrong AirPort admin password", str(exc.exception))
+
+    def test_get_property_int_validates_sized_reply_body_checksum(self) -> None:
+        body = acp._compose_property_element("dbug", 0x3000)
+        response = acp._compose_header(command=acp.COMMAND_GETPROP, payload=body) + body
+        fake_socket = FakeSocket(response)
+        with mock.patch("timecapsulesmb.integrations.acp.socket.create_connection", return_value=fake_socket):
+            value = acp.get_dbug("10.0.0.2", "pw")
+
+        self.assertEqual(value, 0x3000)
+
+    def test_get_property_int_rejects_bad_sized_reply_body_checksum(self) -> None:
+        body = acp._compose_property_element("dbug", 0x3000)
+        corrupted = bytearray(body)
+        corrupted[-1] ^= 0x01
+        response = acp._compose_header(command=acp.COMMAND_GETPROP, payload=body) + bytes(corrupted)
+        fake_socket = FakeSocket(response)
+        with mock.patch("timecapsulesmb.integrations.acp.socket.create_connection", return_value=fake_socket):
+            with self.assertRaises(acp.ACPProtocolError) as raised:
+                acp.get_dbug("10.0.0.2", "pw")
+
+        self.assertIn("body checksum mismatch", str(raised.exception))
 
     def test_bad_header_checksum_is_protocol_error(self) -> None:
         header = bytearray(acp._compose_header(command=acp.COMMAND_SETPROP))

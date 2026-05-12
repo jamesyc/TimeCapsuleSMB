@@ -4946,6 +4946,7 @@ class CliTests(unittest.TestCase):
         secondary = self.make_flash_bank(release=b"NetBSD 4.0_BETA2 #0: old")
         command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_stable_compatibility())
         with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp) / "backup"
             template_path = Path(tmp) / "7.8.1.basebinary"
             template_path.write_bytes(self.make_firmware_template(primary, product_id=113))
             with self.flash_zopfli_available():
@@ -4964,17 +4965,20 @@ class CliTests(unittest.TestCase):
                         ):
                             with mock.patch("builtins.input", return_value="n"):
                                 with redirect_stdout(output):
-                                    rc = cli_flash.main([
-                                        "--patch",
-                                        "--firmware-template",
-                                        str(template_path),
-                                        "--backup-dir",
-                                        str(Path(tmp) / "backup"),
-                                    ])
+                                        rc = cli_flash.main([
+                                            "--patch",
+                                            "--firmware-template",
+                                            str(template_path),
+                                            "--backup-dir",
+                                            str(backup_dir),
+                                        ])
+            manifest = json.loads((backup_dir / "manifest.json").read_text())
 
         self.assertEqual(rc, 0)
         self.assertIn("Flash write cancelled.", output.getvalue())
         self.assertNotIn("secondary: patch", output.getvalue())
+        self.assertEqual(manifest["write_outcome"]["status"], "cancelled")
+        self.assertFalse(manifest["write_outcome"]["write_may_have_modified_device"])
         self.assertEqual(command_context.finish.call_args.kwargs["result"], "cancelled")
 
     def test_flash_yes_without_write_mode_rejects(self) -> None:
@@ -5358,8 +5362,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(reparsed_payload.inner.payload, fake_readback(None, "")[: self.flash_bank_end_offset(primary)])
         self.assertTrue(payload_file_exists)
         reboot_mock.assert_not_called()
+        self.assertEqual(manifest["write_outcome"]["status"], "validated")
+        self.assertTrue(manifest["write_outcome"]["write_may_have_modified_device"])
         self.assertEqual(manifest["write_result"]["bank"], "primary")
         self.assertEqual(manifest["write_result"]["login_classification"], "already_patched")
+        self.assertEqual(manifest["write_result"]["expected_bank_sha256"], manifest["write_result"]["readback_sha256"])
         self.assertEqual(manifest["flash_plan"]["payload"]["key_id"], "observed-k30a-78100")
         self.assertIn("POWER-CYCLE REQUIRED", output.getvalue())
         self.assertIn("Patch write successful.\x1b[0m The device needs to be manually rebooted.", output.getvalue())
@@ -5405,6 +5412,8 @@ class CliTests(unittest.TestCase):
         self.assertFalse(manifest["flash_plan"]["write_requested"])
         self.assertIsNone(manifest["flash_plan"]["payload"])
         self.assertEqual(manifest["flash_plan"]["target_bank"], "primary")
+        self.assertEqual(manifest["write_outcome"]["status"], "not_needed")
+        self.assertFalse(manifest["write_outcome"]["write_may_have_modified_device"])
         self.assertIn("Active firmware bank is already patched; no write needed.", output.getvalue())
         self.assertEqual(command_context.finish.call_args.kwargs["result"], "success")
 
@@ -5497,7 +5506,14 @@ class CliTests(unittest.TestCase):
         self.assertEqual(manifest["operation"], "restore")
         self.assertEqual(manifest["flash_plan"]["mode"], "restore")
         self.assertFalse(manifest["flash_plan"]["already_satisfied"])
+        self.assertTrue(manifest["banks"][0]["would_write"])
+        self.assertEqual(manifest["banks"][0]["write_decision"], "active bank restore from Apple firmware planned")
+        self.assertFalse(manifest["banks"][1]["would_write"])
+        self.assertEqual(manifest["banks"][1]["write_decision"], "inactive bank left unmodified")
+        self.assertEqual(manifest["write_outcome"]["status"], "validated")
+        self.assertTrue(manifest["write_outcome"]["write_validated"])
         self.assertEqual(manifest["write_result"]["login_classification"], "stock")
+        self.assertEqual(manifest["write_result"]["expected_bank_sha256"], manifest["write_result"]["readback_sha256"])
         self.assertIn("Restore write successful.\x1b[0m The device needs to be manually rebooted.", output.getvalue())
         self.assertNotIn("Reboot not requested", output.getvalue())
 
@@ -5621,6 +5637,10 @@ class CliTests(unittest.TestCase):
         flash_mock.assert_not_called()
         self.assertTrue(manifest["flash_plan"]["already_satisfied"])
         self.assertTrue(manifest["flash_plan"]["apple_match"]["matched"])
+        self.assertFalse(manifest["banks"][0]["would_write"])
+        self.assertEqual(manifest["banks"][0]["write_decision"], "active bank already matches requested Apple stock firmware; no write needed")
+        self.assertEqual(manifest["write_outcome"]["status"], "not_needed")
+        self.assertFalse(manifest["write_outcome"]["write_may_have_modified_device"])
         self.assertIn("already matches the requested Apple stock firmware", output.getvalue())
 
     def test_flash_check_apple_reports_match_without_zopfli_or_write(self) -> None:
@@ -5702,6 +5722,51 @@ class CliTests(unittest.TestCase):
         flash_mock.assert_not_called()
         self.assertEqual(manifest["operation"], "download_only")
         self.assertEqual(manifest["flash_plan"]["payload"]["key_id"], "observed-k30a-78100")
+        self.assertTrue(manifest["flash_plan"]["already_satisfied"])
+        self.assertTrue(manifest["flash_plan"]["apple_match"]["matched"])
+
+    def test_flash_download_only_reports_mismatch_without_write(self) -> None:
+        output = io.StringIO()
+        stock_primary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = self.make_flash_bank(release=b"NetBSD 4.0_BETA2 #0: old")
+        patched_primary = self.make_patched_flash_bank(stock_primary, secondary)
+        command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_stable_compatibility())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp) / "backup"
+            template_path = Path(tmp) / "7.8.1.basebinary"
+            template_path.write_bytes(self.make_firmware_template(stock_primary, product_id=113))
+            with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
+                with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
+                    with mock.patch(
+                        "timecapsulesmb.cli.flash.read_flash_inputs",
+                        return_value=(
+                            patched_primary,
+                            secondary,
+                            self.flash_bank_checksum(patched_primary),
+                            self.flash_bank_checksum(secondary),
+                            113,
+                            PATCHED_LOGIN_SCRIPT,
+                        ),
+                    ):
+                        with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank") as flash_mock:
+                            with redirect_stdout(output):
+                                rc = cli_flash.main([
+                                    "--download-only",
+                                    "--firmware-template",
+                                    str(template_path),
+                                    "--backup-dir",
+                                    str(backup_dir),
+                                ])
+            manifest = json.loads((backup_dir / "manifest.json").read_text())
+
+        self.assertEqual(rc, 0)
+        flash_mock.assert_not_called()
+        self.assertFalse(manifest["flash_plan"]["already_satisfied"])
+        self.assertFalse(manifest["flash_plan"]["apple_match"]["matched"])
+        self.assertFalse(manifest["flash_plan"]["write_requested"])
+        self.assertFalse(manifest["banks"][0]["would_write"])
+        self.assertEqual(manifest["banks"][0]["write_decision"], "download only; no firmware write planned")
 
     def test_flash_restore_refuses_wrong_product_template_before_acp(self) -> None:
         output = io.StringIO()
@@ -5741,6 +5806,45 @@ class CliTests(unittest.TestCase):
         self.assertIn("does not match device syAP", output.getvalue())
         self.assertIn("flash_error_stage=plan_flash", command_context.finish.call_args.kwargs["error"])
         self.assertNotIn("flash_error_stage", command_context.finish.call_args.kwargs)
+
+    def test_flash_restore_refuses_non_stock_template_before_acp(self) -> None:
+        output = io.StringIO()
+        stock_primary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = self.make_flash_bank(release=b"NetBSD 4.0_BETA2 #0: old")
+        patched_primary = self.make_patched_flash_bank(stock_primary, secondary)
+        command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_stable_compatibility())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            template_path = Path(tmp) / "patched-template.basebinary"
+            template_path.write_bytes(self.make_firmware_template(patched_primary, product_id=113))
+            with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
+                with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
+                    with mock.patch(
+                        "timecapsulesmb.cli.flash.read_flash_inputs",
+                        return_value=(
+                            stock_primary,
+                            secondary,
+                            self.flash_bank_checksum(stock_primary),
+                            self.flash_bank_checksum(secondary),
+                            113,
+                            STOCK_LOGIN_NETBSD4_DUMMY,
+                        ),
+                    ):
+                        with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank") as flash_mock:
+                            with redirect_stdout(output):
+                                rc = cli_flash.main([
+                                    "--restore",
+                                    "--yes",
+                                    "--firmware-template",
+                                    str(template_path),
+                                    "--backup-dir",
+                                    str(Path(tmp) / "backup"),
+                                ])
+
+        self.assertEqual(rc, 1)
+        flash_mock.assert_not_called()
+        self.assertIn("Apple firmware template LOGIN classification is already_patched", output.getvalue())
+        self.assertIn("flash_error_stage=plan_flash", command_context.finish.call_args.kwargs["error"])
 
     def test_flash_patch_and_restore_are_mutually_exclusive(self) -> None:
         stderr = io.StringIO()
@@ -5794,6 +5898,74 @@ class CliTests(unittest.TestCase):
         self.assertIn("read-back firmware bank prefix SHA-256 mismatch", command_context.finish.call_args.kwargs["error"])
         self.assertNotIn("flash_error_stage", command_context.finish.call_args.kwargs)
         self.assertNotIn("flash_error", command_context.finish.call_args.kwargs)
+
+    def test_flash_write_full_bank_mismatch_fails_even_when_prefix_matches(self) -> None:
+        output = io.StringIO()
+        primary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = self.make_flash_bank(release=b"NetBSD 4.0_BETA2 #0: old")
+        command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_stable_compatibility())
+        written: dict[str, bytes] = {}
+
+        def fake_flash(_host: str, _password: str, bank_name: str, payload: bytes, **_kwargs: object) -> SimpleNamespace:
+            written["bank_name"] = bank_name.encode()
+            written["payload"] = payload
+            return SimpleNamespace(command=0x03, reply_body=b"")
+
+        def fake_readback(_conn: object, _dev: str) -> bytes:
+            reparsed = parse_nested_basebinary(written["payload"])
+            end_offset = self.flash_bank_end_offset(primary)
+            rebuilt = bytearray(primary)
+            rebuilt[:end_offset] = reparsed.inner.payload
+            checksum = zlib.adler32(bytes(rebuilt[:end_offset])) & 0xFFFFFFFF
+            for offset in range(max(0, len(primary) - 4096), len(primary) - 7):
+                _old_checksum, candidate_end = struct.unpack(">II", primary[offset : offset + 8])
+                if candidate_end == end_offset:
+                    rebuilt[offset : offset + 4] = struct.pack(">I", checksum)
+                    rebuilt[-1] ^= 0x01
+                    return bytes(rebuilt)
+            self.fail("synthetic flash bank footer not found")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp) / "backup"
+            template_path = Path(tmp) / "7.8.1.basebinary"
+            template_path.write_bytes(self.make_firmware_template(primary, product_id=113))
+            with self.flash_zopfli_available():
+                with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
+                    with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
+                        with mock.patch(
+                            "timecapsulesmb.cli.flash.read_flash_inputs",
+                            return_value=(
+                                primary,
+                                secondary,
+                                self.flash_bank_checksum(primary),
+                                self.flash_bank_checksum(secondary),
+                                113,
+                                STOCK_LOGIN_NETBSD4_DUMMY,
+                            ),
+                        ):
+                            with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank", side_effect=fake_flash) as flash_mock:
+                                with mock.patch("timecapsulesmb.cli.flash.dump_remote_bank", side_effect=fake_readback):
+                                    with mock.patch("timecapsulesmb.cli.flash.get_property_int", side_effect=AssertionError("ACP checksum should not be read after full-bank mismatch")) as acp_mock:
+                                        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
+                                            with redirect_stdout(output):
+                                                rc = cli_flash.main([
+                                                    "--patch",
+                                                    "--yes",
+                                                    "--firmware-template",
+                                                    str(template_path),
+                                                    "--backup-dir",
+                                                    str(backup_dir),
+                                                ])
+            manifest = json.loads((backup_dir / "manifest.json").read_text())
+
+        self.assertEqual(rc, 1)
+        flash_mock.assert_called_once()
+        acp_mock.assert_not_called()
+        reboot_mock.assert_not_called()
+        self.assertIn("read-back firmware bank SHA-256 mismatch", output.getvalue())
+        self.assertEqual(manifest["write_outcome"]["status"], "failed")
+        self.assertTrue(manifest["write_outcome"]["write_may_have_modified_device"])
+        self.assertIn("read-back firmware bank SHA-256 mismatch", manifest["write_outcome"]["message"])
 
     def test_flash_write_readback_ssh_error_is_reported_without_traceback(self) -> None:
         output = io.StringIO()

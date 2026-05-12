@@ -19,7 +19,7 @@ from timecapsulesmb.basebinary import (
     compose_nested_basebinary,
     parse_nested_basebinary,
 )
-from timecapsulesmb.flash import BankAnalysis, FlashAnalysisError, sha256_hex
+from timecapsulesmb.flash import BankAnalysis, FlashAnalysisError, classify_firmware_prefix_login, sha256_hex
 
 
 T = TypeVar("T")
@@ -180,6 +180,11 @@ def build_restore_payload_from_template(
         raise FlashAnalysisError(
             "Apple firmware payload length does not match active bank footer end_offset: "
             f"template={len(template.inner.payload)}, active_end_offset={active.footer.end_offset}"
+        )
+    login = classify_firmware_prefix_login(template.inner.payload)
+    if login.classification != "stock":
+        raise FlashAnalysisError(
+            f"Apple firmware template LOGIN classification is {login.classification}; expected stock"
         )
     return _payload_from_template(
         candidate=candidate,

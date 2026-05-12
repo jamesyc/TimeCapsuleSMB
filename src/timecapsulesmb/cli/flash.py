@@ -184,10 +184,7 @@ def _manifest(
 ) -> dict[str, object]:
     payload = analysis_to_jsonable(analysis)
     if operation != "patch":
-        for bank in payload["banks"]:
-            assert isinstance(bank, dict)
-            bank["would_write"] = False
-            bank["write_decision"] = "backup only; no patch candidate built"
+        _mark_manifest_no_write(payload, "backup only; no patch candidate built")
     files: dict[str, str] = {
         "primary": str(backup_dir / "primary.raw"),
         "secondary": str(backup_dir / "secondary.raw"),
@@ -209,6 +206,49 @@ def _manifest(
         },
     })
     return payload
+
+
+def _mark_manifest_no_write(manifest: dict[str, object], decision: str) -> None:
+    for bank in manifest["banks"]:
+        assert isinstance(bank, dict)
+        bank["would_write"] = False
+        bank["write_decision"] = decision
+
+
+def _manifest_banks(manifest: dict[str, object]) -> list[dict[str, object]]:
+    banks = manifest.get("banks")
+    assert isinstance(banks, list)
+    typed_banks: list[dict[str, object]] = []
+    for bank in banks:
+        assert isinstance(bank, dict)
+        typed_banks.append(bank)
+    return typed_banks
+
+
+def _apply_flash_plan_to_manifest(manifest: dict[str, object], plan: FlashPlan) -> None:
+    target_name = None if plan.target_bank is None else plan.target_bank.name
+    for bank in _manifest_banks(manifest):
+        if bank.get("name") != target_name:
+            bank["would_write"] = False
+            if target_name is not None:
+                bank["write_decision"] = "inactive bank left unmodified"
+            continue
+
+        if plan.mode == "restore":
+            bank["would_write"] = plan.write_requested
+            if plan.write_requested:
+                bank["write_decision"] = "active bank restore from Apple firmware planned"
+            else:
+                bank["write_decision"] = "active bank already matches requested Apple stock firmware; no write needed"
+        elif plan.mode == "check_apple":
+            bank["would_write"] = False
+            bank["write_decision"] = "check only; no firmware write planned"
+        elif plan.mode == "download_only":
+            bank["would_write"] = False
+            bank["write_decision"] = "download only; no firmware write planned"
+        elif plan.mode == "patch" and plan.already_satisfied:
+            bank["would_write"] = False
+            bank["write_decision"] = "active bank already patched; no write needed"
 
 
 def save_flash_banks(*, backup_dir: Path, primary: bytes, secondary: bytes) -> None:
@@ -402,6 +442,64 @@ def _update_context_with_plan(command_context: CommandContext, plan: FlashPlan, 
     if payload_path is not None:
         fields["firmware_payload_path"] = str(payload_path)
     command_context.update_fields(**fields)
+
+
+def _write_outcome_payload(
+    *,
+    plan: FlashPlan,
+    status: str,
+    write_validated: bool,
+    write_may_have_modified_device: bool,
+    stage: str | None = None,
+    message: str | None = None,
+) -> dict[str, object]:
+    outcome: dict[str, object] = {
+        "status": status,
+        "mode": plan.mode,
+        "write_validated": write_validated,
+        "write_may_have_modified_device": write_may_have_modified_device,
+    }
+    if plan.target_bank is not None:
+        outcome.update({
+            "bank": plan.target_bank.name,
+            "device": plan.target_bank.device,
+        })
+    if plan.payload is not None:
+        outcome.update({
+            "firmware_payload_sha256": plan.payload.payload_sha256,
+            "firmware_payload_size": len(plan.payload.data),
+            "expected_prefix_sha256": plan.payload.expected_prefix_sha256,
+            "expected_prefix_size": len(plan.payload.expected_prefix),
+        })
+    if stage is not None:
+        outcome["stage"] = stage
+    if message is not None:
+        outcome["message"] = message
+    return outcome
+
+
+def _record_write_outcome(
+    *,
+    bundle: FlashAnalysisBundle,
+    plan: FlashPlan,
+    status: str,
+    write_validated: bool,
+    write_may_have_modified_device: bool,
+    stage: str | None = None,
+    message: str | None = None,
+    write_result: dict[str, object] | None = None,
+) -> None:
+    bundle.manifest["write_outcome"] = _write_outcome_payload(
+        plan=plan,
+        status=status,
+        write_validated=write_validated,
+        write_may_have_modified_device=write_may_have_modified_device,
+        stage=stage,
+        message=message,
+    )
+    if write_result is not None:
+        bundle.manifest["write_result"] = write_result
+    save_flash_manifest(backup_dir=bundle.backup_dir, manifest=bundle.manifest)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -631,6 +729,7 @@ def _plan_flash(
     if isinstance(files, dict) and payload_path is not None and plan.target_bank is not None:
         files[f"{plan.target_bank.name}_{plan.mode}_basebinary_payload"] = str(payload_path)
     bundle.manifest["flash_plan"] = plan.to_jsonable()
+    _apply_flash_plan_to_manifest(bundle.manifest, plan)
     _update_context_with_plan(command_context, plan, payload_path)
     return True, plan
 
@@ -656,6 +755,7 @@ def _prepare_write(
     *,
     args: argparse.Namespace,
     operation: str,
+    bundle: FlashAnalysisBundle,
     plan: FlashPlan,
 ) -> tuple[bool, int]:
     if plan.already_satisfied:
@@ -663,6 +763,13 @@ def _prepare_write(
             print("Active firmware bank is already patched; no write needed.")
         else:
             print("Active firmware bank already matches the requested Apple stock firmware; no write needed.")
+        _record_write_outcome(
+            bundle=bundle,
+            plan=plan,
+            status="not_needed",
+            write_validated=False,
+            write_may_have_modified_device=False,
+        )
         command_context.succeed()
         return False, 0
 
@@ -680,6 +787,15 @@ def _prepare_write(
             return False, 1
         if not proceed:
             print("Flash write cancelled.", flush=True)
+            _record_write_outcome(
+                bundle=bundle,
+                plan=plan,
+                status="cancelled",
+                write_validated=False,
+                write_may_have_modified_device=False,
+                stage="confirm_write",
+                message="Cancelled by user at flash write confirmation prompt.",
+            )
             command_context.cancel_with_error("Cancelled by user at flash write confirmation prompt.")
             return False, 0
     return True, 0
@@ -697,6 +813,14 @@ def _write_flash(
     command_context.set_stage("write_active_bank")
     assert plan.target_bank is not None
     emit_progress(log, f"Sending ACP flash command for active {plan.target_bank.name} bank...")
+    _record_write_outcome(
+        bundle=bundle,
+        plan=plan,
+        status="attempting",
+        write_validated=False,
+        write_may_have_modified_device=True,
+        stage="write_active_bank",
+    )
     try:
         write_result = write_and_validate_plan(
             connection=target.connection,
@@ -710,19 +834,43 @@ def _write_flash(
         )
     except FlashAnalysisError as exc:
         message = str(exc)
+        _record_write_outcome(
+            bundle=bundle,
+            plan=plan,
+            status="failed",
+            write_validated=False,
+            write_may_have_modified_device=True,
+            stage="post_write_validation",
+            message=message,
+        )
         record_flash_error(command_context, message, stage="post_write_validation", live_login=live_login)
         print(message)
         command_context.fail()
         return None
     except SshError as exc:
         message = f"SSH post-write validation failed: {exc}"
+        _record_write_outcome(
+            bundle=bundle,
+            plan=plan,
+            status="failed",
+            write_validated=False,
+            write_may_have_modified_device=True,
+            stage="post_write_validation",
+            message=message,
+        )
         record_flash_error(command_context, message, stage="post_write_validation", live_login=live_login)
         print(message)
         command_context.fail()
         return None
 
-    bundle.manifest["write_result"] = write_result
-    save_flash_manifest(backup_dir=bundle.backup_dir, manifest=bundle.manifest)
+    _record_write_outcome(
+        bundle=bundle,
+        plan=plan,
+        status="validated",
+        write_validated=True,
+        write_may_have_modified_device=True,
+        write_result=write_result,
+    )
     command_context.update_fields(
         wrote_bank=write_result["bank"],
         readback_sha256=write_result["readback_sha256"],
@@ -810,7 +958,7 @@ def _run_flash(
         return 0
 
     assert plan is not None
-    should_write, rc = _prepare_write(command_context, args=args, operation=operation, plan=plan)
+    should_write, rc = _prepare_write(command_context, args=args, operation=operation, bundle=bundle, plan=plan)
     if not should_write:
         return rc
 
