@@ -39,7 +39,7 @@ from timecapsulesmb.checks.doctor import (
 )
 from timecapsulesmb.checks.local_tools import check_required_local_tools
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.checks.network import check_ssh_login, ssh_opts_use_proxy
+from timecapsulesmb.checks.network import check_smb_port, check_ssh_login, ssh_opts_use_proxy
 from timecapsulesmb.checks.nbns import build_nbns_query, check_nbns_name_resolution, extract_nbns_response_ip
 from timecapsulesmb.checks.smb import (
     check_authenticated_smb_file_ops_detailed,
@@ -404,6 +404,58 @@ class CheckTests(unittest.TestCase):
 
         self.assertEqual(calls, ["stop"])
         self.assertEqual([result.message for result in context.results], ["stopped"])
+
+    def test_check_smb_port_reports_local_socket_error(self) -> None:
+        with mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value="[Errno 113] No route to host"):
+            result = check_smb_port("10.0.0.2")
+
+        self.assertEqual(result.status, "WARN")
+        self.assertEqual(result.message, "SMB not reachable at 10.0.0.2:445 ([Errno 113] No route to host)")
+        self.assertEqual(result.details, {"error": "[Errno 113] No route to host"})
+
+    def test_run_doctor_checks_adds_socket_debug_when_direct_smb_is_unreachable(self) -> None:
+        debug_fields: dict[str, object] = {}
+        socket_debug = "smbd:\nroot smbd 101 10 internet stream tcp 0x0 *:445\nnbns-advertiser:\n(no internet sockets reported)"
+        socket_debug_mock = mock.Mock(return_value=socket_debug)
+
+        self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smb_port=CheckResult("WARN", "SMB not reachable at 10.0.0.2:445 ([Errno 113] No route to host)"),
+            xattr_result=CheckResult("PASS", "xattr ok"),
+            skip_smb=True,
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor.read_remote_service_socket_diagnostics_conn": socket_debug_mock,
+            },
+        )
+
+        self.assertEqual(debug_fields["remote_service_sockets"], socket_debug)
+        socket_debug_mock.assert_called_once()
+
+    def test_run_doctor_checks_adds_socket_debug_when_nbns_fails(self) -> None:
+        debug_fields: dict[str, object] = {}
+        socket_debug_mock = mock.Mock(return_value="smbd:\n(no internet sockets reported)\nnbns-advertiser:\nroot nbns-advertiser 201 7 internet dgram udp 0x0 *:137")
+
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smb_port=CheckResult("PASS", "SMB reachable at 10.0.0.2:445"),
+            xattr_result=CheckResult("PASS", "xattr ok"),
+            read_active_smb_conf="[global]\n    netbios name = TimeCapsule\n[Data]\n",
+            skip_smb=True,
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor.nbns_flash_config_enabled_conn": mock.Mock(return_value=True),
+                "timecapsulesmb.checks.doctor.read_interface_ipv4_conn": mock.Mock(return_value="10.0.0.2"),
+                "timecapsulesmb.checks.doctor.check_nbns_name_resolution": mock.Mock(
+                    return_value=CheckResult("FAIL", "NBNS query for 'TimeCapsule' timed out against 10.0.0.2:137")
+                ),
+                "timecapsulesmb.checks.doctor.read_remote_service_socket_diagnostics_conn": socket_debug_mock,
+            },
+        )
+
+        self.assertTrue(run.fatal)
+        self.assertIn("nbns-advertiser:", debug_fields["remote_service_sockets"])
+        socket_debug_mock.assert_called_once()
 
     def test_doctor_smb_servers_uses_probed_host_label(self) -> None:
         base_values = {"TC_HOST": "root@10.0.1.99"}

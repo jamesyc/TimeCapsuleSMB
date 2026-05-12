@@ -25,19 +25,27 @@ def require_command(name: str, message: str) -> str:
     raise RuntimeError(message)
 
 
-def tcp_open(host: str, port: int, timeout: float = 2.0) -> bool:
+def tcp_connect_error(host: str, port: int, timeout: float = 2.0) -> str | None:
+    errors: list[str] = []
     try:
         for family, socktype, proto, _, sockaddr in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM):
             with socket.socket(family, socktype, proto) as sock:
                 sock.settimeout(timeout)
                 try:
                     sock.connect(sockaddr)
-                    return True
-                except OSError:
+                    return None
+                except OSError as exc:
+                    message = str(exc) or exc.__class__.__name__
+                    if message not in errors:
+                        errors.append(message)
                     continue
-    except Exception:
-        return False
-    return False
+    except Exception as exc:
+        return str(exc) or exc.__class__.__name__
+    return "; ".join(errors) if errors else "connection failed"
+
+
+def tcp_open(host: str, port: int, timeout: float = 2.0) -> bool:
+    return tcp_connect_error(host, port, timeout=timeout) is None
 
 
 def find_free_local_port(host: str = "127.0.0.1") -> int:

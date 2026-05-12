@@ -46,6 +46,7 @@ from timecapsulesmb.device.probe import (
     probe_managed_smbd_conn,
     probe_remote_interface_conn,
     probe_remote_runtime_naming_identity_conn,
+    read_remote_service_socket_diagnostics_conn,
     read_active_smb_conf_conn,
     read_interface_ipv4_conn,
     read_runtime_share_names_conn,
@@ -696,6 +697,17 @@ def _doctor_check_managed_mdns(context: DoctorRunContext) -> None:
         context.add_result(CheckResult("FAIL", f"managed mDNS takeover is not active ({mdns_probe.detail})"))
 
 
+def _add_remote_service_socket_debug(context: DoctorRunContext) -> None:
+    if context.debug_fields is None or context.skip_ssh or not context.ssh_ok:
+        return
+    if context.connection is None or "remote_service_sockets" in context.debug_fields:
+        return
+    try:
+        context.debug_fields["remote_service_sockets"] = read_remote_service_socket_diagnostics_conn(context.connection)
+    except Exception as e:
+        context.debug_fields["remote_service_sockets_error"] = f"{type(e).__name__}: {e}"
+
+
 def _doctor_check_active_smb_conf(context: DoctorRunContext) -> None:
     if context.skip_ssh or not context.ssh_ok:
         return
@@ -718,7 +730,10 @@ def _doctor_check_direct_smb_port(context: DoctorRunContext) -> None:
     if context.proxied_ssh:
         context.add_result(CheckResult("SKIP", f"direct SMB port check skipped for SSH-proxied target {context.host}"))
     else:
-        context.add_result(check_smb_port(context.host))
+        result = check_smb_port(context.host)
+        context.add_result(result)
+        if result.status != "PASS":
+            _add_remote_service_socket_debug(context)
 
 
 def _doctor_check_bonjour(context: DoctorRunContext) -> None:
@@ -765,6 +780,7 @@ def _doctor_check_nbns(context: DoctorRunContext) -> None:
 
     assert context.connection is not None
     assert context.host is not None
+    result_start = len(context.results)
     _add_nbns_results(
         context.connection,
         context.config,
@@ -774,6 +790,8 @@ def _doctor_check_nbns(context: DoctorRunContext) -> None:
         runtime_naming_identity=context.runtime_naming_identity,
         add_result=context.add_result,
     )
+    if any(result.status == "FAIL" for result in context.results[result_start:]):
+        _add_remote_service_socket_debug(context)
 
 
 def _doctor_check_authenticated_smb(context: DoctorRunContext) -> None:

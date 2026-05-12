@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.device.probe import probe_ssh_command_conn
-from timecapsulesmb.transport.local import tcp_open
+from timecapsulesmb.transport.local import tcp_connect_error
 from timecapsulesmb.transport.ssh import SshConnection, ssh_opts_use_proxy
 
 
@@ -21,6 +21,7 @@ def check_ssh_login(connection: SshConnection) -> CheckResult:
 
 
 def check_smb_port(host: str) -> CheckResult:
-    if tcp_open(host, 445):
+    connect_error = tcp_connect_error(host, 445)
+    if connect_error is None:
         return CheckResult("PASS", f"SMB reachable at {host}:445")
-    return CheckResult("WARN", f"SMB not reachable at {host}:445")
+    return CheckResult("WARN", f"SMB not reachable at {host}:445 ({connect_error})", {"error": connect_error})

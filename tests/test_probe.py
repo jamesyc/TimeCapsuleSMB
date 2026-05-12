@@ -90,6 +90,23 @@ class ProbeTests(unittest.TestCase):
             self.assertFalse(kwargs["check"])
             self.assertEqual(kwargs["timeout"], probe.REMOTE_LOG_TAIL_TIMEOUT_SECONDS)
 
+    def test_read_remote_service_socket_diagnostics_conn_scopes_fstat_to_service_processes(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        stdout = "smbd:\nroot smbd 101 10 internet stream tcp 0x0 *:445\nnbns-advertiser:\n(no internet sockets reported)\n"
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=stdout)
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
+            result = probe.read_remote_service_socket_diagnostics_conn(connection)
+
+        self.assertEqual(result, stdout.strip())
+        args, kwargs = run_ssh_mock.call_args
+        self.assertEqual(args[0], connection)
+        self.assertIn('capture_fstat_for_ucomm "$ps_out" "$proc_name"', args[1])
+        self.assertIn("for proc_name in smbd nbns-advertiser", args[1])
+        self.assertIn("/internet/p", args[1])
+        self.assertFalse(kwargs["check"])
+        self.assertEqual(kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
+
     def test_probe_remote_interface_conn_uses_connection_wrapper_without_old_positional_shape(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
         proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="bridge0\n")

@@ -1113,6 +1113,33 @@ def read_runtime_log_tails_conn(connection: SshConnection) -> dict[str, str]:
     return logs
 
 
+def read_remote_service_socket_diagnostics_conn(connection: SshConnection) -> str:
+    script = rf'''
+{SMBD_STATUS_HELPERS}
+if [ ! -x /usr/bin/fstat ]; then
+    echo "fstat missing"
+    exit 0
+fi
+ps_out="$(capture_ps_out)"
+for proc_name in smbd nbns-advertiser; do
+    echo "$proc_name:"
+    socket_lines=$(capture_fstat_for_ucomm "$ps_out" "$proc_name" | /usr/bin/sed -n '/internet/p' | /usr/bin/sed -n '1,40p')
+    if [ -n "$socket_lines" ]; then
+        printf '%s\n' "$socket_lines"
+    else
+        echo "(no internet sockets reported)"
+    fi
+done
+'''
+    proc = run_ssh(
+        connection,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
+    )
+    return proc.stdout.strip()
+
+
 def probe_paths_absent_conn(
     connection: SshConnection,
     paths: Iterable[str],
