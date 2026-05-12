@@ -3616,6 +3616,116 @@ class CliTests(unittest.TestCase):
         self.assertIn("remote_rc_local_log_tail=rc line 1\nrc line 2", telemetry_error)
         self.assertIn("remote_mdns_log_tail=mdns line", telemetry_error)
 
+    def test_doctor_failure_telemetry_identifies_zeroconf_native_dns_sd_false_negative(self) -> None:
+        output = io.StringIO()
+        results = [doctor.CheckResult("FAIL", "no discovered _smb._tcp instance matched expected device instance 'Home'")]
+
+        def fake_run_doctor_checks(*_args, **kwargs):
+            kwargs["debug_fields"]["bonjour_expected"] = {
+                "instance_name": "Home",
+                "host_label": "home",
+                "target_ip": "10.0.0.2",
+            }
+            kwargs["debug_fields"]["bonjour_zeroconf"] = {"instance_count": 0, "service_event_count": 0, "ptr_record_count": 0}
+            kwargs["debug_fields"]["bonjour_native_dns_sd"] = {
+                "status": "ok",
+                "browses": [
+                    {
+                        "service_type": "_smb._tcp",
+                        "events": [
+                            {"service_type": "_smb._tcp", "action": "Add", "name": "Home"},
+                        ],
+                    }
+                ],
+            }
+            return results, True
+
+        with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})):
+            with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
+                with redirect_stdout(output):
+                    rc = doctor.main([])
+        self.assertEqual(rc, 1)
+        telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
+        self.assertIn("Discovery context:", telemetry_error)
+        self.assertIn("INFO Python zeroconf discovered 0 Bonjour instances during doctor", telemetry_error)
+        self.assertIn("INFO native dns-sd discovered expected _smb._tcp instance 'Home'", telemetry_error)
+        self.assertIn("INFO likely doctor false negative", telemetry_error)
+
+    def test_doctor_error_does_not_report_false_negative_when_native_dns_sd_only_saw_other_instances(self) -> None:
+        results = [
+            doctor.CheckResult(
+                "FAIL",
+                "no discovered _smb._tcp instance matched expected device instance 'Home'",
+            )
+        ]
+        error = doctor.build_doctor_error(
+            results,
+            {
+                "bonjour_expected": {"instance_name": "Home"},
+                "bonjour_zeroconf": {"instance_count": 0},
+                "bonjour_native_dns_sd": {
+                    "browses": [
+                        {
+                            "service_type": "_smb._tcp",
+                            "events": [
+                                {"service_type": "_smb._tcp", "action": "Add", "name": "Kitchen"},
+                            ],
+                        }
+                    ],
+                },
+            },
+        )
+        self.assertIsNotNone(error)
+        assert error is not None
+        self.assertNotIn("Discovery context:", error)
+        self.assertNotIn("likely doctor false negative", error)
+
+    def test_doctor_failure_telemetry_includes_derived_mdns_boot_context(self) -> None:
+        output = io.StringIO()
+        results = [
+            doctor.CheckResult(
+                "FAIL",
+                "no discovered _smb._tcp instance matched expected device instance 'Home'",
+            )
+        ]
+
+        def fake_run_doctor_checks(*_args, **kwargs):
+            kwargs["debug_fields"]["remote_rc_local_log_tail"] = "\n".join(
+                [
+                    "mDNS snapshot capture did not produce trusted Apple snapshot; generating AirPort fallback",
+                    "mDNS AirPort snapshot generated",
+                    "trusted Apple mDNS snapshot was updated during this boot run: /mnt/Flash/applemdns.txt",
+                ]
+            )
+            kwargs["debug_fields"]["remote_mdns_log_tail"] = "\n".join(
+                [
+                    "warning: could not identify local Apple mDNS records for snapshot file: /mnt/Flash/applemdns.txt",
+                    "airport snapshot: wrote 1 record to /mnt/Flash/applemdns.txt",
+                    "snapshot load: loaded 1 records, advertising 1 snapshot records",
+                    "serving summary: source=snapshot",
+                    "serving service: type=_smb._tcp.local. instance=Home port=445 host=home.local.",
+                    "serving service: type=_adisk._tcp.local. instance=Home share=Data disk_key=dk2 uuid=1234",
+                    "serving service: type=_device-info._tcp.local. instance=Home model=TimeCapsule6,116",
+                    "mDNS takeover established after SIGTERM + 0ms using exclusive bind",
+                ]
+            )
+            return results, True
+
+        with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})):
+            with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
+                with redirect_stdout(output):
+                    rc = doctor.main([])
+        self.assertEqual(rc, 1)
+        telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
+        self.assertIn("mDNS boot context:", telemetry_error)
+        self.assertIn("INFO trusted Apple mDNS snapshot capture failed; AirPort fallback snapshot was generated", telemetry_error)
+        self.assertIn("INFO mDNS snapshot load: loaded 1 records, advertising 1 snapshot records", telemetry_error)
+        self.assertIn(
+            "INFO mdns-advertiser source=snapshot; generated services include _smb._tcp.local., _adisk._tcp.local., _device-info._tcp.local.",
+            telemetry_error,
+        )
+        self.assertIn("INFO mDNS takeover established after SIGTERM + 0ms using exclusive bind", telemetry_error)
+
     def test_doctor_includes_soft_preinspection_error_in_failure_telemetry(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
