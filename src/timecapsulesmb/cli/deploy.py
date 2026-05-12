@@ -21,7 +21,7 @@ from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
 from timecapsulesmb.deploy.auth import render_smbpasswd
 from timecapsulesmb.deploy.dry_run import deployment_plan_to_jsonable, format_deployment_plan
-from timecapsulesmb.deploy.executor import run_remote_actions, upload_deployment_payload
+from timecapsulesmb.deploy.executor import flush_remote_filesystem_writes, run_remote_actions, upload_deployment_payload
 from timecapsulesmb.deploy.planner import (
     BINARY_MDNS_SOURCE,
     BINARY_NBNS_SOURCE,
@@ -297,6 +297,24 @@ def main(argv: Optional[list[str]] = None) -> int:
             wait_seconds=apple_mount_wait_seconds,
         )
         command_context.add_debug_fields(payload_upload_verification=payload_verification.detail)
+        if not payload_verification.ok:
+            raise SystemExit(_payload_verification_error(payload_home, payload_verification))
+
+        command_context.set_stage("flush_payload_upload")
+        if not args.json:
+            print("Flushing deployed payload to disk...")
+        flush_remote_filesystem_writes(connection)
+
+        # The immediate verification above can succeed from cache. Flush and
+        # verify again before any reboot so dirty HFS metadata cannot disappear
+        # under an ACP-triggered restart.
+        command_context.set_stage("verify_payload_upload_after_sync")
+        payload_verification = verify_payload_home_conn(
+            connection,
+            payload_home,
+            wait_seconds=apple_mount_wait_seconds,
+        )
+        command_context.add_debug_fields(payload_post_sync_verification=payload_verification.detail)
         if not payload_verification.ok:
             raise SystemExit(_payload_verification_error(payload_home, payload_verification))
 

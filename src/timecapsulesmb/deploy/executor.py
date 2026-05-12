@@ -12,6 +12,11 @@ from timecapsulesmb.transport.ssh import SshConnection, run_scp, run_ssh
 
 DETACHED_REBOOT_COMMAND = "/bin/sh -c 'exec </dev/null >/dev/null 2>&1; (/bin/sleep 1; /sbin/reboot) & exit 0'"
 REBOOT_REQUEST_TIMEOUT_SECONDS = 30
+PAYLOAD_FLUSH_SETTLE_SECONDS = 5
+FLUSH_REMOTE_FILESYSTEMS_COMMAND = (
+    f"/bin/sh -c {shlex.quote(f'/bin/sync; /bin/sleep {PAYLOAD_FLUSH_SETTLE_SECONDS}; /bin/sync')}"
+)
+FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS = 30
 
 
 def _flash_upload_tmp_path(destination: str) -> str:
@@ -108,6 +113,10 @@ def run_remote_actions(connection: SshConnection, actions: Iterable[RemoteAction
 
 def remote_request_reboot(connection: SshConnection) -> None:
     run_ssh(connection, DETACHED_REBOOT_COMMAND, check=False, timeout=REBOOT_REQUEST_TIMEOUT_SECONDS)
+
+
+def flush_remote_filesystem_writes(connection: SshConnection) -> None:
+    run_ssh(connection, FLUSH_REMOTE_FILESYSTEMS_COMMAND, timeout=FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS)
 
 
 def remote_uninstall_payload(connection: SshConnection, plan: UninstallPlan) -> None:

@@ -41,7 +41,10 @@ from timecapsulesmb.deploy.commands import (
 from timecapsulesmb.deploy.dry_run import format_deployment_plan
 from timecapsulesmb.deploy.executor import (
     DETACHED_REBOOT_COMMAND,
+    FLUSH_REMOTE_FILESYSTEMS_COMMAND,
+    FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS,
     REBOOT_REQUEST_TIMEOUT_SECONDS,
+    flush_remote_filesystem_writes,
     remote_request_reboot,
     remote_uninstall_payload,
     upload_deployment_payload,
@@ -262,6 +265,18 @@ class DeployModuleTests(unittest.TestCase):
             check=False,
             timeout=REBOOT_REQUEST_TIMEOUT_SECONDS,
         )
+
+    def test_flush_remote_filesystem_writes_syncs_and_waits(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
+            flush_remote_filesystem_writes(connection)
+        run_ssh_mock.assert_called_once_with(
+            connection,
+            FLUSH_REMOTE_FILESYSTEMS_COMMAND,
+            timeout=FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS,
+        )
+        self.assertIn("/bin/sync", FLUSH_REMOTE_FILESYSTEMS_COMMAND)
+        self.assertIn("/bin/sleep 5", FLUSH_REMOTE_FILESYSTEMS_COMMAND)
 
     def test_load_boot_asset_text_reads_packaged_asset(self) -> None:
         content = load_boot_asset_text("rc.local")
