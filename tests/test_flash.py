@@ -74,6 +74,12 @@ class FlashAnalysisTests(unittest.TestCase):
         self.assertGreater(member.offset, 0)
         self.assertIn(STOCK_LOGIN_NETBSD4_DUMMY, member.decompressed)
 
+    def test_find_footer_rejects_short_buffers(self) -> None:
+        with self.assertRaises(FlashAnalysisError) as raised:
+            find_footer(b"short")
+
+        self.assertIn("expected exactly one valid footer, found 0", str(raised.exception))
+
     def test_find_gzip_member_skips_reserved_flag_candidates_before_decompressing(self) -> None:
         bank = make_bank(extra_gzip_magic=b"\x1f\x8b\x08\xe0bad")
         footer = find_footer(bank)

@@ -169,6 +169,8 @@ def sha256_hex(data: bytes) -> str:
 
 
 def find_footer(data: bytes) -> FooterInfo:
+    if len(data) < 8:
+        raise FlashAnalysisError("expected exactly one valid footer, found 0")
     start = max(0, len(data) - FOOTER_SCAN_BYTES)
     matches: list[FooterInfo] = []
     data_view = memoryview(data)
