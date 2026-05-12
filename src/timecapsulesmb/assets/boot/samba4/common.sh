@@ -1827,6 +1827,51 @@ tc_tune_kernel_memory() {
     fi
 }
 
+tc_log_filtered_ifconfig_file() {
+    label=$1
+    path=$2
+
+    if [ ! -s "$path" ]; then
+        tc_log "network diagnostics: $label: (empty)"
+        return 0
+    fi
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            *"ether "*|*"address "*) continue ;;
+        esac
+        case "$line" in
+            *": flags="*|*[[:space:]]inet[[:space:]]*|*[[:space:]]status:*)
+                tc_log "network diagnostics: $label: $line"
+                ;;
+        esac
+    done <"$path"
+}
+
+tc_log_network_ipv4_timeout_diagnostics() {
+    iface=$1
+    target_ifconfig="$TC_STATE_DIR/ifconfig-$iface.$$"
+    all_ifconfig="$TC_STATE_DIR/ifconfig-all.$$"
+
+    tc_log "network diagnostics: configured NET_IFACE=$iface"
+
+    if /sbin/ifconfig "$iface" >"$target_ifconfig" 2>&1; then
+        tc_log_filtered_ifconfig_file "$iface" "$target_ifconfig"
+    else
+        tc_log "network diagnostics: ifconfig $iface failed"
+        tc_log_filtered_ifconfig_file "$iface" "$target_ifconfig"
+    fi
+
+    if /sbin/ifconfig -a >"$all_ifconfig" 2>&1; then
+        tc_log_filtered_ifconfig_file "ifconfig -a" "$all_ifconfig"
+    else
+        tc_log "network diagnostics: ifconfig -a failed"
+        tc_log_filtered_ifconfig_file "ifconfig -a" "$all_ifconfig"
+    fi
+
+    rm -f "$target_ifconfig" "$all_ifconfig"
+}
+
 tc_wait_for_bind_interfaces() {
     attempt=0
 
@@ -1846,6 +1891,7 @@ tc_wait_for_bind_interfaces() {
     done
 
     tc_log "timed out waiting for IPv4 on $NET_IFACE"
+    tc_log_network_ipv4_timeout_diagnostics "$NET_IFACE"
     return 1
 }
 

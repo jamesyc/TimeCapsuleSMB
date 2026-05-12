@@ -126,6 +126,76 @@ class StorageRuntimeTests(unittest.TestCase):
             )
         return "\n".join(lines) + ("\n" if lines else "")
 
+    def test_common_wait_for_bind_interfaces_logs_filtered_network_diagnostics_on_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fake_ifconfig = tmp_path / "ifconfig"
+            fake_ifconfig.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/bin/sh
+                    case "$1" in
+                        bridge0)
+                            cat <<'OUT'
+                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+                            ether 00:11:22:33:44:55
+                            status: active
+                    OUT
+                            ;;
+                        -a)
+                            cat <<'OUT'
+                    bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+                            ether 66:77:88:99:aa:bb
+                            inet 169.254.44.9 netmask 0xffff0000 broadcast 169.254.255.255
+                            status: active
+                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+                            ether 00:11:22:33:44:55
+                            status: active
+                    OUT
+                            ;;
+                        *)
+                            exit 1
+                            ;;
+                    esac
+                    """
+                )
+            )
+            fake_ifconfig.chmod(0o755)
+            common_path = flash / "common.sh"
+            common_path.write_text(common_path.read_text().replace("/sbin/ifconfig", str(fake_ifconfig)))
+            script = tmp_path / "network-timeout-diagnostics.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    sleep() {{ :; }}
+                    tc_wait_for_bind_interfaces || status=$?
+                    printf 'status=%s\\n' "${{status:-0}}"
+                    cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=1\n", proc.stdout)
+        self.assertIn("timed out waiting for IPv4 on bridge0", proc.stdout)
+        self.assertIn("network diagnostics: configured NET_IFACE=bridge0", proc.stdout)
+        self.assertIn("network diagnostics: bridge0: bridge0: flags=", proc.stdout)
+        self.assertIn("network diagnostics: ifconfig -a: bcmeth1: flags=", proc.stdout)
+        self.assertIn("network diagnostics: ifconfig -a:         inet 169.254.44.9", proc.stdout)
+        self.assertNotIn("00:11:22:33:44:55", proc.stdout)
+        self.assertNotIn("66:77:88:99:aa:bb", proc.stdout)
+
     def write_fake_acp(self, tmp_path: Path, raw: str | bytes, *, final_newline: bool = True) -> Path:
         acp = tmp_path / "acp"
         raw_text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw

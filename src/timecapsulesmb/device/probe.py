@@ -4,7 +4,7 @@ import shlex
 import subprocess
 import time
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -19,6 +19,7 @@ from timecapsulesmb.core.config import (
     AIRPORT_IDENTITIES_BY_SYAP,
     MAX_DNS_LABEL_BYTES,
     MAX_NETBIOS_NAME_BYTES,
+    extract_host,
 )
 
 if TYPE_CHECKING:
@@ -33,6 +34,7 @@ REMOTE_STATE_PROBE_TIMEOUT_SECONDS = 10
 REMOTE_LOG_TAIL_LINES = 80
 REMOTE_LOG_TAIL_MAX_CHARS = 8192
 REMOTE_LOG_TAIL_TIMEOUT_SECONDS = 10
+REMOTE_NETWORK_DIAGNOSTICS_TIMEOUT_SECONDS = 10
 REMOTE_RUNTIME_RAM_LOG_PATHS = {
     "remote_rc_local_log_tail": "/mnt/Memory/samba4/var/rc.local.log",
 }
@@ -1111,6 +1113,153 @@ def read_runtime_log_tails_conn(connection: SshConnection) -> dict[str, str]:
         except Exception as e:
             logs["remote_watchdog_log_tail"] = f"(unavailable: {e})"
     return logs
+
+
+def runtime_startup_failure_debug_fields(logs: Mapping[str, object]) -> dict[str, object]:
+    rc_local_log = str(logs.get("remote_rc_local_log_tail") or "")
+    match = re.search(r"timed out waiting for IPv4 on ([^ \n\r\t]+)", rc_local_log)
+    if not match:
+        return {}
+    return {
+        "runtime_startup_failure": "network_ipv4_timeout",
+        "runtime_startup_failed_iface": match.group(1),
+    }
+
+
+def _parse_remote_diagnostic_sections(text: str) -> tuple[dict[str, str], dict[str, str]]:
+    values: dict[str, str] = {}
+    sections: dict[str, list[str]] = {}
+    current_section: str | None = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip("\n")
+        if line.startswith("TC_DIAG_BEGIN "):
+            current_section = line.partition(" ")[2].strip()
+            sections[current_section] = []
+            continue
+        if line.startswith("TC_DIAG_END "):
+            current_section = None
+            continue
+        if current_section is not None:
+            sections[current_section].append(line)
+            continue
+        if "=" in line:
+            key, value = line.split("=", 1)
+            values[key] = value
+
+    return values, {key: "\n".join(lines).strip() for key, lines in sections.items()}
+
+
+def _remote_interface_debug_summary(candidates: Iterable[RemoteInterfaceCandidate]) -> list[dict[str, object]]:
+    return [
+        {
+            "name": candidate.name,
+            "ipv4": list(candidate.ipv4_addrs),
+            "up": candidate.up,
+            "active": candidate.active,
+            "loopback": candidate.loopback,
+        }
+        for candidate in candidates
+    ]
+
+
+def _network_failure_hint(
+    *,
+    configured_iface: str | None,
+    candidates: tuple[RemoteInterfaceCandidate, ...],
+    target_host: str,
+) -> str | None:
+    if not configured_iface:
+        return "NET_IFACE is not set in flash runtime config"
+
+    configured_candidate = next((candidate for candidate in candidates if candidate.name == configured_iface), None)
+    if configured_candidate is None:
+        return f"configured interface {configured_iface} was not reported by ifconfig -a"
+    if not configured_candidate.ipv4_addrs:
+        return f"configured interface {configured_iface} has no IPv4 address"
+
+    target_matches = [
+        candidate.name
+        for candidate in candidates
+        if target_host and target_host in candidate.ipv4_addrs and candidate.name != configured_iface
+    ]
+    if target_matches:
+        return f"SSH target {target_host} is on {','.join(target_matches)}, not configured interface {configured_iface}"
+
+    if target_host.startswith("169.254."):
+        return f"SSH target {target_host} is link-local; configured interface {configured_iface} has IPv4"
+
+    return None
+
+
+def read_remote_network_diagnostics_conn(connection: SshConnection) -> dict[str, object]:
+    quoted_config = shlex.quote(FLASH_RUNTIME_CONFIG)
+    script = rf'''
+CONFIG={quoted_config}
+NET_IFACE=
+if [ -f "$CONFIG" ]; then
+    . "$CONFIG" >/dev/null 2>&1 || true
+fi
+printf 'NET_IFACE=%s\n' "${{NET_IFACE:-}}"
+printf 'TC_DIAG_BEGIN target_ifconfig\n'
+if [ -n "${{NET_IFACE:-}}" ]; then
+    /sbin/ifconfig "$NET_IFACE" 2>&1
+else
+    echo "(NET_IFACE unset)"
+fi | /usr/bin/sed -n '/ether /d;/address /d;p'
+printf 'TC_DIAG_END target_ifconfig\n'
+printf 'TC_DIAG_BEGIN ifconfig_a\n'
+/sbin/ifconfig -a 2>&1 | /usr/bin/sed -n '/ether /d;/address /d;p'
+printf 'TC_DIAG_END ifconfig_a\n'
+printf 'TC_DIAG_BEGIN routes\n'
+if [ -x /usr/bin/netstat ]; then
+    /usr/bin/netstat -rn -f inet 2>&1
+elif [ -x /bin/netstat ]; then
+    /bin/netstat -rn -f inet 2>&1
+else
+    echo "(route diagnostics unavailable)"
+fi
+printf 'TC_DIAG_END routes\n'
+'''
+    proc = run_ssh(
+        connection,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=REMOTE_NETWORK_DIAGNOSTICS_TIMEOUT_SECONDS,
+    )
+    values, sections = _parse_remote_diagnostic_sections(proc.stdout or "")
+    configured_iface = values.get("NET_IFACE") or None
+    all_ifconfig = sections.get("ifconfig_a", "")
+    candidates = _parse_ifconfig_candidates(all_ifconfig)
+    target_host = extract_host(connection.host)
+    target_ip_matches = tuple(
+        candidate
+        for candidate in candidates
+        if target_host and target_host in candidate.ipv4_addrs and not candidate.loopback
+    )
+    hint = _network_failure_hint(
+        configured_iface=configured_iface,
+        candidates=candidates,
+        target_host=target_host,
+    )
+    diagnostics: dict[str, object] = {
+        "remote_network_config": {
+            "NET_IFACE": configured_iface,
+            "ssh_target_host": target_host,
+        },
+        "remote_network_probe_rc": proc.returncode,
+        "remote_network_target_ifconfig": _limit_remote_log_tail(sections.get("target_ifconfig", "")),
+        "remote_network_ipv4_interfaces": _remote_interface_debug_summary(candidates),
+        "remote_network_preferred_iface": preferred_interface_name(candidates, target_ips=(target_host,)),
+        "remote_network_target_ip_matches": [candidate.name for candidate in target_ip_matches],
+        "remote_network_routes": _limit_remote_log_tail(sections.get("routes", "")),
+    }
+    if hint:
+        diagnostics["remote_network_failure_hint"] = hint
+    stderr = (proc.stderr or "").strip()
+    if stderr:
+        diagnostics["remote_network_probe_stderr"] = _limit_remote_log_tail(stderr)
+    return diagnostics
 
 
 def read_remote_service_socket_diagnostics_conn(connection: SshConnection) -> str:

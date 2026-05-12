@@ -17,8 +17,10 @@ from timecapsulesmb.device.probe import (
     preferred_interface_name,
     probe_remote_interface_candidates_conn,
     probe_remote_interface_conn,
+    read_remote_network_diagnostics_conn,
     read_runtime_share_names_conn,
     read_runtime_log_tails_conn,
+    runtime_startup_failure_debug_fields,
 )
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -106,6 +108,70 @@ class ProbeTests(unittest.TestCase):
         self.assertIn("/internet/p", args[1])
         self.assertFalse(kwargs["check"])
         self.assertEqual(kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
+
+    def test_runtime_startup_failure_debug_fields_classifies_network_ipv4_timeout(self) -> None:
+        fields = runtime_startup_failure_debug_fields(
+            {
+                "remote_rc_local_log_tail": (
+                    "rc.local: managed Samba boot startup beginning\n"
+                    "rc.local: timed out waiting for IPv4 on bridge0\n"
+                    "rc.local: network startup failed: could not determine bridge0 IPv4 address\n"
+                )
+            }
+        )
+
+        self.assertEqual(
+            fields,
+            {
+                "runtime_startup_failure": "network_ipv4_timeout",
+                "runtime_startup_failed_iface": "bridge0",
+            },
+        )
+
+    def test_read_remote_network_diagnostics_conn_summarizes_configured_iface_and_candidates(self) -> None:
+        connection = SshConnection("root@169.254.44.9", "pw", "-o StrictHostKeyChecking=no")
+        stdout = """\
+NET_IFACE=bridge0
+TC_DIAG_BEGIN target_ifconfig
+bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+\tstatus: active
+TC_DIAG_END target_ifconfig
+TC_DIAG_BEGIN ifconfig_a
+bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+\tinet 169.254.44.9 netmask 0xffff0000 broadcast 169.254.255.255
+\tstatus: active
+bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+\tstatus: active
+TC_DIAG_END ifconfig_a
+TC_DIAG_BEGIN routes
+default 169.254.0.1
+TC_DIAG_END routes
+"""
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=stdout, stderr="")
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
+            diagnostics = read_remote_network_diagnostics_conn(connection)
+
+        self.assertEqual(diagnostics["remote_network_config"], {"NET_IFACE": "bridge0", "ssh_target_host": "169.254.44.9"})
+        self.assertEqual(diagnostics["remote_network_probe_rc"], 0)
+        self.assertIn("bridge0: flags=", str(diagnostics["remote_network_target_ifconfig"]))
+        self.assertEqual(diagnostics["remote_network_target_ip_matches"], ["bcmeth1"])
+        self.assertEqual(diagnostics["remote_network_preferred_iface"], "bcmeth1")
+        self.assertEqual(diagnostics["remote_network_failure_hint"], "configured interface bridge0 has no IPv4 address")
+        self.assertEqual(
+            diagnostics["remote_network_ipv4_interfaces"],
+            [
+                {"name": "bcmeth1", "ipv4": ["169.254.44.9"], "up": True, "active": True, "loopback": False},
+                {"name": "bridge0", "ipv4": [], "up": True, "active": True, "loopback": False},
+            ],
+        )
+        self.assertIn("default 169.254.0.1", str(diagnostics["remote_network_routes"]))
+        args, kwargs = run_ssh_mock.call_args
+        self.assertEqual(args[0], connection)
+        self.assertIn("/sbin/ifconfig -a", args[1])
+        self.assertIn("/mnt/Flash/tcapsulesmb.conf", args[1])
+        self.assertFalse(kwargs["check"])
+        self.assertEqual(kwargs["timeout"], probe.REMOTE_NETWORK_DIAGNOSTICS_TIMEOUT_SECONDS)
 
     def test_probe_remote_interface_conn_uses_connection_wrapper_without_old_positional_shape(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
