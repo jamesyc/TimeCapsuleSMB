@@ -156,7 +156,6 @@ def dump_remote_bank_for_validation(
     log: ProgressLogger = None,
 ) -> bytes:
     emit_progress(log, f"Reading back written firmware bank from {device}...")
-    emit_progress(log, f"SSH: /bin/dd if={device} bs=65536 2>/dev/null")
     return dump_remote_bank(connection, device)
 
 
