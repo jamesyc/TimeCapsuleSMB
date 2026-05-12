@@ -76,15 +76,15 @@ def _emit(log: LogCallback | None, message: str) -> None:
         log(message)
 
 
-def _signed32(value: int) -> int:
+def _signed_i32(value: int) -> int:
     value &= 0xFFFFFFFF
     if value >= 0x80000000:
         value -= 0x100000000
     return value
 
 
-def _adler32_signed(data: bytes) -> int:
-    return _signed32(zlib.adler32(data))
+def _adler32_i32(data: bytes) -> int:
+    return _signed_i32(zlib.adler32(data))
 
 
 def _format_error_code(error_code: int) -> str:
@@ -120,7 +120,7 @@ def _compose_header(
         body_checksum = 1
     else:
         resolved_body_size = len(payload) if body_size is None else body_size
-        body_checksum = _adler32_signed(payload)
+        body_checksum = _adler32_i32(payload)
 
     key = _generate_acp_header_key(password)
     tmp_header = HEADER.pack(
@@ -138,7 +138,7 @@ def _compose_header(
     return HEADER.pack(
         ACP_MAGIC,
         ACP_VERSION,
-        _adler32_signed(tmp_header),
+        _adler32_i32(tmp_header),
         body_checksum,
         resolved_body_size,
         flags,
@@ -164,7 +164,7 @@ def _parse_header(data: bytes) -> ACPMessageHeader:
         raise ACPProtocolError(f"ACP response had unsupported version {version:#x}")
 
     tmp_header = HEADER.pack(magic, version, 0, body_checksum, body_size, flags, _unused, command, error_code, key)
-    expected_checksum = _adler32_signed(tmp_header)
+    expected_checksum = _adler32_i32(tmp_header)
     if header_checksum != expected_checksum:
         raise ACPProtocolError(
             f"ACP response header checksum mismatch: got {header_checksum:#x}, expected {expected_checksum:#x}"
@@ -284,7 +284,7 @@ def _read_reply_body(sock: socket.socket, header: ACPMessageHeader) -> bytes:
     if header.body_size < -1:
         raise ACPProtocolError(f"ACP response had invalid body_size {header.body_size}")
     body = _recv_exact(sock, header.body_size)
-    checksum = _adler32_signed(body)
+    checksum = _adler32_i32(body)
     if checksum != header.body_checksum:
         raise ACPProtocolError(
             f"ACP response body checksum mismatch: got {checksum:#x}, expected {header.body_checksum:#x}"
