@@ -18,6 +18,7 @@ from timecapsulesmb.flash_payloads import (
     find_apple_firmware_match,
 )
 from timecapsulesmb.integrations.acp import ACPError
+from timecapsulesmb.transport.ssh import SshConnection
 
 
 @dataclass(frozen=True)
@@ -198,7 +199,7 @@ def active_checksum_property(bank_name: str) -> str:
 
 def write_and_validate_plan(
     *,
-    connection: object,
+    connection: SshConnection,
     acp_host: str,
     plan: FlashPlan,
     os_release: str,

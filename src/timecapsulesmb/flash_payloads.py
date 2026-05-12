@@ -10,6 +10,7 @@ from timecapsulesmb.apple_firmware import (
     UNSUPPORTED_FIRMWARE_KEY_MESSAGE,
     is_missing_key_error,
     normalize_syap,
+    refresh_cached_firmware_template_candidate,
     resolve_firmware_template_candidates,
 )
 from timecapsulesmb.basebinary import (
@@ -224,13 +225,13 @@ def _try_candidates(
     candidate_count = 0
     for candidate in candidates:
         candidate_count += 1
-        try:
-            return build(candidate)
-        except FlashAnalysisError as exc:
-            message = str(exc)
-            errors.append(f"{candidate.source}: {message}")
-            if is_missing_key_error(message):
-                missing_key_errors += 1
+        result, message, missing_key_error = _build_candidate_with_cache_refresh(candidate, build)
+        if message is None:
+            assert result is not None
+            return result
+        errors.append(f"{candidate.source}: {message}")
+        if missing_key_error:
+            missing_key_errors += 1
 
     if missing_key_errors and missing_key_errors == candidate_count:
         raise FlashAnalysisError(f"{UNSUPPORTED_FIRMWARE_KEY_MESSAGE} syAP={normalized_syap}")
@@ -238,6 +239,29 @@ def _try_candidates(
     if len(errors) > 3:
         detail += f"; ... {len(errors) - 3} more template errors"
     raise FlashAnalysisError(f"no firmware template matched the active bank for syAP {normalized_syap}: {detail}")
+
+
+def _build_candidate_with_cache_refresh(
+    candidate: FirmwareTemplateCandidate,
+    build: Callable[[FirmwareTemplateCandidate], T],
+) -> tuple[T | None, str | None, bool]:
+    try:
+        return build(candidate), None, False
+    except FlashAnalysisError as exc:
+        initial_message = str(exc)
+
+    try:
+        refreshed = refresh_cached_firmware_template_candidate(candidate)
+    except FlashAnalysisError as exc:
+        return None, f"{initial_message}; cache refresh failed: {exc}", False
+    if refreshed is None:
+        return None, initial_message, is_missing_key_error(initial_message)
+
+    try:
+        return build(refreshed), None, False
+    except FlashAnalysisError as exc:
+        refreshed_message = str(exc)
+        return None, f"{initial_message}; after cache refresh: {refreshed_message}", is_missing_key_error(refreshed_message)
 
 
 def build_patch_payload_for_active_bank(
@@ -303,14 +327,16 @@ def find_apple_firmware_match(
     first_valid: AppleFirmwareMatch | None = None
     for candidate in candidates:
         candidate_count += 1
-        try:
-            match = apple_match_from_template(bank=bank, syap=syap, candidate=candidate)
-        except FlashAnalysisError as exc:
-            message = str(exc)
+        match, message, missing_key_error = _build_candidate_with_cache_refresh(
+            candidate,
+            lambda refreshed_candidate: apple_match_from_template(bank=bank, syap=syap, candidate=refreshed_candidate),
+        )
+        if message is not None:
             errors.append(f"{candidate.source}: {message}")
-            if is_missing_key_error(message):
+            if missing_key_error:
                 missing_key_errors += 1
             continue
+        assert match is not None
         if first_valid is None:
             first_valid = match
         if match.matched:

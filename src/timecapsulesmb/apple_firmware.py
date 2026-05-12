@@ -27,6 +27,8 @@ class FirmwareTemplateCandidate:
     path: Path | None
     product_id: str | None
     version: str | None
+    expected_size: int | None = None
+    from_cache: bool = False
 
 
 def _safe_path_part(value: str) -> str:
@@ -97,8 +99,33 @@ def read_cached_or_download_template(entry: dict[str, object], *, cache_dir: Pat
     if path.exists():
         data = path.read_bytes()
         if expected_size is None or len(data) == expected_size:
-            return FirmwareTemplateCandidate(data=data, source=url, path=path, product_id=product_id, version=version)
+            return FirmwareTemplateCandidate(
+                data=data,
+                source=url,
+                path=path,
+                product_id=product_id,
+                version=version,
+                expected_size=expected_size,
+                from_cache=True,
+            )
 
+    return download_firmware_template_to_cache(
+        url=url,
+        path=path,
+        product_id=product_id,
+        version=version,
+        expected_size=expected_size,
+    )
+
+
+def download_firmware_template_to_cache(
+    *,
+    url: str,
+    path: Path,
+    product_id: str,
+    version: str,
+    expected_size: int | None,
+) -> FirmwareTemplateCandidate:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         data = download_url(url, timeout=120)
@@ -110,7 +137,30 @@ def read_cached_or_download_template(entry: dict[str, object], *, cache_dir: Pat
             f"got {len(data)}, expected {expected_size}"
         )
     path.write_bytes(data)
-    return FirmwareTemplateCandidate(data=data, source=url, path=path, product_id=product_id, version=version)
+    return FirmwareTemplateCandidate(
+        data=data,
+        source=url,
+        path=path,
+        product_id=product_id,
+        version=version,
+        expected_size=expected_size,
+        from_cache=False,
+    )
+
+
+def refresh_cached_firmware_template_candidate(candidate: FirmwareTemplateCandidate) -> FirmwareTemplateCandidate | None:
+    if not candidate.from_cache or candidate.path is None or candidate.product_id is None or candidate.version is None:
+        return None
+    scheme = urlparse(candidate.source).scheme.lower()
+    if scheme not in {"http", "https"}:
+        return None
+    return download_firmware_template_to_cache(
+        url=candidate.source,
+        path=candidate.path,
+        product_id=candidate.product_id,
+        version=candidate.version,
+        expected_size=candidate.expected_size,
+    )
 
 
 def _version_key(version: str) -> tuple[int, ...]:
@@ -150,6 +200,8 @@ def resolve_firmware_template_candidates(
             path=path,
             product_id=None,
             version=firmware_version,
+            expected_size=None,
+            from_cache=False,
         )
         return
 

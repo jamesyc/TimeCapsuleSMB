@@ -477,6 +477,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(message)
             command_context.fail()
             return 1
+        except SshError as exc:
+            message = f"SSH flash read failed: {exc}"
+            record_flash_error(command_context, message, stage="read_flash")
+            print(message)
+            command_context.fail()
+            return 1
         try:
             syap = normalize_syap(acp_syap)
         except FlashAnalysisError as exc:
@@ -512,7 +518,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         except FlashAnalysisError as exc:
             message = str(exc)
             record_flash_error(command_context, message, stage="analyze_flash", live_login=live_login)
-            raise SystemExit(message) from exc
+            print(message)
+            command_context.fail()
+            return 1
         command_context.update_fields(
             active_bank=analysis.active_bank,
             primary_login=analysis.primary.login.classification,
@@ -640,6 +648,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
         except FlashAnalysisError as exc:
             message = str(exc)
+            record_flash_error(command_context, message, stage="post_write_validation", live_login=live_login)
+            print(message)
+            command_context.fail()
+            return 1
+        except SshError as exc:
+            message = f"SSH post-write validation failed: {exc}"
             record_flash_error(command_context, message, stage="post_write_validation", live_login=live_login)
             print(message)
             command_context.fail()
