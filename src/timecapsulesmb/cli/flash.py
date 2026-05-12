@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import partial
 import re
 from pathlib import Path
@@ -103,7 +103,7 @@ def build_flash_backup_dir(*, base_dir: Path | None, host: str, syap: str) -> Pa
     if base_dir is not None:
         return base_dir.expanduser().resolve()
     root = default_flash_backup_root()
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%fZ")
     return root / f"{timestamp}-{_safe_path_part(host)}-syAP{_safe_path_part(syap)}"
 
 

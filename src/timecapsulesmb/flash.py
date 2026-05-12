@@ -212,14 +212,15 @@ def _has_valid_gzip_header_flags(data: bytes, offset: int) -> bool:
 
 def find_gzip_member(data: bytes, footer: FooterInfo) -> GzipMemberInfo:
     matches: list[GzipMemberInfo] = []
-    for match in re.finditer(re.escape(GZIP_MAGIC), data[: footer.end_offset]):
-        if not _has_valid_gzip_header_flags(data, match.start()):
+    offset = data.find(GZIP_MAGIC, 0, footer.end_offset)
+    while offset >= 0:
+        if not _has_valid_gzip_header_flags(data, offset):
+            offset = data.find(GZIP_MAGIC, offset + 1, footer.end_offset)
             continue
-        member = _decompress_gzip_member(data, match.start())
-        if member is None:
-            continue
-        if member.end_offset <= footer.end_offset:
+        member = _decompress_gzip_member(data, offset)
+        if member is not None and member.end_offset <= footer.end_offset:
             matches.append(member)
+        offset = data.find(GZIP_MAGIC, offset + 1, footer.end_offset)
     if len(matches) != 1:
         raise FlashAnalysisError(f"expected exactly one valid gzip member, found {len(matches)}")
     return matches[0]
@@ -334,7 +335,7 @@ def build_patch(data: bytes, footer: FooterInfo, gzip_member: GzipMemberInfo, lo
     patched_gzip = compression.data
     padded_gzip = patched_gzip + (b"\x00" * (gzip_member.consumed_length - len(patched_gzip)))
     rebuilt[gzip_member.offset : gzip_member.end_offset] = padded_gzip
-    checksum = zlib.adler32(bytes(rebuilt[: footer.end_offset])) & 0xFFFFFFFF
+    checksum = zlib.adler32(memoryview(rebuilt)[: footer.end_offset]) & 0xFFFFFFFF
     rebuilt[footer.offset : footer.offset + 4] = struct.pack(">I", checksum)
 
     round_trip = _decompress_gzip_member(bytes(rebuilt), gzip_member.offset)
@@ -371,7 +372,8 @@ def analyze_bank(
     build_patch_candidate: bool = True,
 ) -> BankAnalysis:
     footer = find_footer(data)
-    footer_valid = (zlib.adler32(data[: footer.end_offset]) & 0xFFFFFFFF) == footer.checksum
+    data_view = memoryview(data)
+    footer_valid = (zlib.adler32(data_view[: footer.end_offset]) & 0xFFFFFFFF) == footer.checksum
     acp_matches = None if acp_checksum is None else acp_checksum == footer.checksum
     gzip_member = find_gzip_member(data, footer)
     login = classify_login(gzip_member.decompressed)
