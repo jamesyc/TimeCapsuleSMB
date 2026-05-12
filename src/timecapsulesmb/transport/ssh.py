@@ -49,6 +49,8 @@ SSH_CLIENT_NOISE_PATTERNS = (
 
 SSH_AUTHENTICITY_PROMPT = r"Are you sure you want to continue connecting \(yes/no/\[fingerprint\]\)\?"
 REMOTE_COMMAND_SUMMARY_LIMIT = 500
+SSH_ERROR_STDERR_LIMIT_BYTES = 65536
+SSH_ERROR_STDOUT_PREFIX_BYTES = 8192
 
 
 def _summarize_remote_command(remote_cmd: str) -> str:
@@ -83,6 +85,12 @@ def ssh_opts_use_proxy(ssh_opts: str) -> bool:
 def _looks_like_transient_ssh_auth_failure(output: str) -> bool:
     lowered = output.lower()
     return "permission denied" in lowered or "please try again" in lowered
+
+
+def _decode_ssh_error_output(stderr: bytes, stdout: bytes = b"", *, include_stdout: bool = True) -> str:
+    stderr_text = stderr[:SSH_ERROR_STDERR_LIMIT_BYTES].decode("utf-8", errors="replace")
+    stdout_text = stdout[:SSH_ERROR_STDOUT_PREFIX_BYTES].decode("utf-8", errors="replace") if include_stdout else ""
+    return stderr_text + stdout_text
 
 
 def _extract_ssh_transport_error(output: str) -> str | None:
@@ -233,6 +241,7 @@ def _run_sshpass_ssh(
     timeout: int,
     missing_tool_message: str,
     timeout_message: str,
+    stdout_is_text: bool = True,
 ) -> subprocess.CompletedProcess[bytes]:
     if find_command("sshpass") is None:
         raise SshError(missing_tool_message)
@@ -253,13 +262,19 @@ def _run_sshpass_ssh(
             )
         except subprocess.TimeoutExpired as exc:
             raise SshCommandTimeout(timeout_message) from exc
-        combined_text = (proc.stderr + proc.stdout).decode("utf-8", errors="replace")
-        if proc.returncode == 0 or not _looks_like_transient_ssh_auth_failure(combined_text) or attempt == 2:
+        if proc.returncode == 0:
+            break
+        combined_text = _decode_ssh_error_output(proc.stderr, proc.stdout, include_stdout=stdout_is_text)
+        if not _looks_like_transient_ssh_auth_failure(combined_text) or attempt == 2:
             break
         time.sleep(1)
     if proc is None:
         raise SshError("sshpass ssh command did not run")
-    combined_text = (proc.stderr + proc.stdout).decode("utf-8", errors="replace")
+    combined_text = _decode_ssh_error_output(
+        proc.stderr,
+        b"" if proc.returncode == 0 else proc.stdout,
+        include_stdout=stdout_is_text,
+    )
     transport_error = _extract_ssh_transport_error(combined_text)
     if transport_error:
         raise SshError(f"Connecting to the device failed, SSH error: {transport_error}")
@@ -284,11 +299,10 @@ def run_ssh_capture_bytes(connection: SshConnection, remote_cmd: str, *, timeout
             "Timed out waiting for ssh command to finish: "
             f"{_summarize_remote_command(remote_cmd)}"
         ),
+        stdout_is_text=False,
     )
-    stderr = proc.stderr.decode("utf-8", errors="replace")
-    stdout_text = proc.stdout.decode("utf-8", errors="replace")
     if proc.returncode != 0:
-        detail = stderr.strip() or stdout_text.strip() or f"ssh command failed with rc={proc.returncode}"
+        detail = _decode_ssh_error_output(proc.stderr, include_stdout=False).strip() or f"ssh command failed with rc={proc.returncode}"
         raise SshError(detail)
     return proc.stdout
 
@@ -443,6 +457,6 @@ def run_scp(connection: SshConnection, src: Path, dest: str, *, timeout: int = 1
     except SshError as exc:
         raise ScpError(str(exc)) from exc
     if proc.returncode != 0:
-        stdout = (proc.stderr + proc.stdout).decode("utf-8", errors="replace").strip()
+        stdout = _decode_ssh_error_output(proc.stderr, proc.stdout).strip()
         raise ScpError(stdout or f"sshpass cat fallback upload failed for {src.name} to remote path {dest} with rc={proc.returncode}")
     _verify_remote_size(connection, src, dest, timeout=30)

@@ -495,15 +495,9 @@ MANAGED_REQUIRED_FILE_KEYS = (
 FLASH_REQUIRED_FILE_KEYS = (
     "TC_HOST",
     "TC_PASSWORD",
-    "TC_NET_IFACE",
-    "TC_MDNS_DEVICE_MODEL",
-    "TC_AIRPORT_SYAP",
 )
 FLASH_VALIDATED_KEYS = (
     "TC_HOST",
-    "TC_NET_IFACE",
-    "TC_MDNS_DEVICE_MODEL",
-    "TC_AIRPORT_SYAP",
 )
 
 CONFIG_PROFILES: dict[str, ConfigProfile] = {
@@ -541,7 +535,6 @@ CONFIG_PROFILES: dict[str, ConfigProfile] = {
     "flash": ConfigProfile(
         required_file_values=FLASH_REQUIRED_FILE_KEYS,
         validated_keys=FLASH_VALIDATED_KEYS,
-        cross_check_syap_model=True,
     ),
     "repair_xattrs": ConfigProfile(
         required_values=("TC_HOST",),

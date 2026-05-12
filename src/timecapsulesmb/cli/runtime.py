@@ -40,7 +40,7 @@ class NonInteractivePromptError(RuntimeError):
 @dataclass(frozen=True)
 class ManagedTargetState:
     connection: SshConnection
-    interface_probe: RemoteInterfaceProbeResult
+    interface_probe: RemoteInterfaceProbeResult | None
     probe_state: ProbedDeviceState | None
 
 
@@ -216,6 +216,8 @@ def resolve_validated_managed_target(
 ) -> ManagedTargetState:
     require_valid_app_config(config, profile=profile, command_name=command_name)
     connection = resolve_env_connection(config)
+    if profile == "flash":
+        return ManagedTargetState(connection=connection, interface_probe=None, probe_state=None)
     target = inspect_managed_connection(connection, config.require("TC_NET_IFACE"), include_probe=include_probe)
     if not target.interface_probe.exists:
         raise ConfigError(

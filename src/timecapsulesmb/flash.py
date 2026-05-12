@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import importlib
 import re
@@ -169,13 +169,14 @@ def sha256_hex(data: bytes) -> str:
 def find_footer(data: bytes) -> FooterInfo:
     start = max(0, len(data) - FOOTER_SCAN_BYTES)
     matches: list[FooterInfo] = []
+    data_view = memoryview(data)
     for offset in range(start, len(data) - 7):
-        checksum, end_offset = struct.unpack(">II", data[offset : offset + 8])
+        checksum, end_offset = struct.unpack_from(">II", data, offset)
         if end_offset > len(data):
             continue
         if end_offset >= offset:
             continue
-        if zlib.adler32(data[:end_offset]) & 0xFFFFFFFF == checksum:
+        if zlib.adler32(data_view[:end_offset]) & 0xFFFFFFFF == checksum:
             matches.append(FooterInfo(offset, checksum, end_offset))
     if len(matches) != 1:
         raise FlashAnalysisError(f"expected exactly one valid footer, found {len(matches)}")
@@ -184,11 +185,12 @@ def find_footer(data: bytes) -> FooterInfo:
 
 def _decompress_gzip_member(data: bytes, offset: int) -> GzipMemberInfo | None:
     decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    remaining = memoryview(data)[offset:]
     try:
-        decompressed = decompressor.decompress(data[offset:]) + decompressor.flush()
+        decompressed = decompressor.decompress(remaining) + decompressor.flush()
     except zlib.error:
         return None
-    consumed = len(data[offset:]) - len(decompressor.unused_data)
+    consumed = len(remaining) - len(decompressor.unused_data)
     if consumed <= 0:
         return None
     return GzipMemberInfo(offset=offset, consumed_length=consumed, decompressed=decompressed)
@@ -329,6 +331,14 @@ def build_patch(data: bytes, footer: FooterInfo, gzip_member: GzipMemberInfo, lo
     )
 
 
+def _with_patch_candidate(bank: BankAnalysis) -> BankAnalysis:
+    try:
+        patch = build_patch(bank.data, bank.footer, bank.gzip_member, bank.login)
+    except FlashAnalysisError as exc:
+        return replace(bank, patch=None, patch_error=str(exc))
+    return replace(bank, patch=patch, patch_error=None)
+
+
 def analyze_bank(
     *,
     name: str,
@@ -344,14 +354,7 @@ def analyze_bank(
     gzip_member = find_gzip_member(data, footer)
     login = classify_login(gzip_member.decompressed)
     identity_match, identity_detail = _identity_matches(gzip_member.decompressed, os_release=os_release)
-    patch = None
-    patch_error = None
-    if build_patch_candidate:
-        try:
-            patch = build_patch(data, footer, gzip_member, login)
-        except FlashAnalysisError as exc:
-            patch_error = str(exc)
-    return BankAnalysis(
+    analysis = BankAnalysis(
         name=name,
         device=device,
         data=data,
@@ -366,9 +369,12 @@ def analyze_bank(
         login=login,
         kernel_identity_match=identity_match,
         kernel_identity_detail=identity_detail,
-        patch=patch,
-        patch_error=patch_error,
+        patch=None,
+        patch_error=None,
     )
+    if build_patch_candidate:
+        return _with_patch_candidate(analysis)
+    return analysis
 
 
 def analyze_flash_banks(
@@ -378,6 +384,7 @@ def analyze_flash_banks(
     cks1: int | None,
     cks2: int | None,
     os_release: str,
+    build_patch_candidate: bool = True,
 ) -> FlashAnalysis:
     primary = analyze_bank(
         name="primary",
@@ -397,24 +404,10 @@ def analyze_flash_banks(
     )
     active_candidates = [bank.name for bank in (primary, secondary) if bank.valid_for_active_selection]
     active_bank = active_candidates[0] if len(active_candidates) == 1 else None
-    if active_bank == primary.name:
-        primary = analyze_bank(
-            name="primary",
-            device="/dev/rflash0.raw",
-            data=primary_data,
-            acp_checksum=cks1,
-            os_release=os_release,
-            build_patch_candidate=True,
-        )
-    elif active_bank == secondary.name:
-        secondary = analyze_bank(
-            name="secondary",
-            device="/dev/rflash1.raw",
-            data=secondary_data,
-            acp_checksum=cks2,
-            os_release=os_release,
-            build_patch_candidate=True,
-        )
+    if build_patch_candidate and active_bank == primary.name:
+        primary = _with_patch_candidate(primary)
+    elif build_patch_candidate and active_bank == secondary.name:
+        secondary = _with_patch_candidate(secondary)
     return FlashAnalysis(primary=primary, secondary=secondary, active_bank=active_bank)
 
 

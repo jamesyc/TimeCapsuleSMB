@@ -66,6 +66,25 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(payload["host_os"], "macOS" if sys.platform == "darwin" else payload["host_os"])
         self.assertNotIn("command_id", payload)
 
+    def test_from_config_can_exclude_stale_device_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = telemetry_client_from_values(
+                    {
+                        "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+                        "TC_AIRPORT_SYAP": "119",
+                    },
+                    bootstrap_path=bootstrap_path,
+                    include_device_identity=False,
+                )
+                with mock.patch.object(client, "_dispatch_payload_async") as dispatch_mock:
+                    client.emit("flash_started")
+        payload = dispatch_mock.call_args.args[0]
+        self.assertNotIn("device_model", payload)
+        self.assertNotIn("device_syap", payload)
+
     def test_emit_is_disabled_when_bootstrap_has_telemetry_false(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bootstrap_path = Path(tmp) / ".bootstrap"

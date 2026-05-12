@@ -157,6 +157,27 @@ For older hardware, this is currently needed after reboot because the firmware d
 
 Unfortunately, you need to run `activate` after *every* reboot if your device does not start Samba automatically.
 
+Advanced NetBSD 4 users can back up the active and inactive firmware banks with:
+
+```bash
+.venv/bin/tcapsule flash
+```
+
+The command is read-only by default and does not build patch candidates. On
+supported devices, `tcapsule flash --patch` can install the persistent boot hook
+and `tcapsule flash --restore` can restore the active bank from Apple stock
+firmware downloaded from Apple's catalog. Flash uses `.env` only for SSH
+connection settings and reads the AirPort product ID from the live device. Both
+write modes are active-bank-only, validate by reading the bank back after ACP
+accepts the write, and keep the inactive bank unmodified.
+
+Patch mode deliberately does not send a reboot or poweroff command after a
+successful write. After `tcapsule flash --patch` reports success, manually
+reboot the device, then run `tcapsule doctor`. Restore mode can optionally
+request a software reboot with `tcapsule flash --restore --reboot`; after that,
+use `tcapsule flash --check-apple` to verify the active bank matches Apple
+stock firmware.
+
 ## Step 5: Verify The Result
 
 Run:

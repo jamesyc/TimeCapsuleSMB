@@ -110,6 +110,11 @@ DEFAULT_BASEBINARY_KEYS: tuple[BasebinaryKey, ...] = (
         provenance="extracted from a TimeCapsule6,113 ACPd binary and validated by checksum against Apple product 113 firmware",
     ),
     BasebinaryKey.from_hex(
+        "observed-k30b-78100",
+        "9d1259ee89f28a2ccfa64697adbb4193",
+        provenance="extracted from a TimeCapsule6,116 ACPd binary and validated by checksum against Apple product 116 firmware",
+    ),
+    BasebinaryKey.from_hex(
         "observed-j28-79100",
         "b19937ddcb78b3f151e4e0b48198e6a7",
         provenance="extracted from a TimeCapsule8,119 ACPd binary and validated by checksum against Apple product 119 firmware",

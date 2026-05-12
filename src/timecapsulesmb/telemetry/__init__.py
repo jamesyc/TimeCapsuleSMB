@@ -54,6 +54,7 @@ class TelemetryClient:
         *,
         nbns_enabled: bool | None = None,
         bootstrap_path: Path | None = None,
+        include_device_identity: bool = True,
     ) -> "TelemetryClient":
         identity = load_install_identity(bootstrap_path)
         endpoint = os.getenv(TELEMETRY_URL_ENV, DEFAULT_TELEMETRY_URL)
@@ -68,8 +69,8 @@ class TelemetryClient:
             host_os=detect_host_os(),
             host_os_version=detect_host_os_version(),
             configure_id=config.get("TC_CONFIGURE_ID") or None,
-            device_model=config.get("TC_MDNS_DEVICE_MODEL") or None,
-            device_syap=config.get("TC_AIRPORT_SYAP") or None,
+            device_model=(config.get("TC_MDNS_DEVICE_MODEL") or None) if include_device_identity else None,
+            device_syap=(config.get("TC_AIRPORT_SYAP") or None) if include_device_identity else None,
             nbns_enabled=nbns_enabled,
         )
         return cls(endpoint=endpoint, token=token, context=context, enabled=identity.telemetry_enabled)

@@ -141,6 +141,27 @@ class FlashAnalysisTests(unittest.TestCase):
         self.assertEqual(analysis.primary.patch.compression_method, "zopfli-gzip")
         self.assertEqual(len(analysis.primary.patch.target_bank), len(primary))
 
+    def test_analyze_flash_banks_reuses_active_bank_metadata_for_patch(self) -> None:
+        primary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
+        cks1 = bank_checksum(primary)
+        cks2 = bank_checksum(secondary)
+
+        with mock.patch("timecapsulesmb.flash.find_footer", wraps=find_footer) as footer_mock:
+            with mock.patch("timecapsulesmb.flash.find_gzip_member", wraps=find_gzip_member) as gzip_mock:
+                analysis = analyze_flash_banks(
+                    primary_data=primary,
+                    secondary_data=secondary,
+                    cks1=cks1,
+                    cks2=cks2,
+                    os_release="4.0_STABLE",
+                )
+
+        self.assertEqual(analysis.active_bank, "primary")
+        self.assertIsNotNone(analysis.primary.patch)
+        self.assertEqual(footer_mock.call_count, 2)
+        self.assertEqual(gzip_mock.call_count, 2)
+
     def test_missing_zopfli_reports_bootstrap_message(self) -> None:
         bank = make_bank()
         footer = find_footer(bank)

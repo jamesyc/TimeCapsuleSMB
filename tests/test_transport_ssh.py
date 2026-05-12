@@ -24,6 +24,11 @@ MISSING_PEXPECT_MESSAGE = (
 )
 
 
+class DecodeTrapBytes(bytes):
+    def decode(self, *args: object, **kwargs: object) -> str:
+        raise AssertionError("stdout should not be decoded")
+
+
 class SSHTransportTests(unittest.TestCase):
     def setUp(self) -> None:
         ssh_transport._ssh_option_supported.cache_clear()
@@ -629,6 +634,30 @@ class SSHTransportTests(unittest.TestCase):
                 ):
                     self.assertEqual(ssh_transport.run_ssh_capture_bytes(connection, "/bin/dd if=/dev/rflash0.raw", timeout=10), payload)
 
+    def test_run_ssh_capture_bytes_does_not_decode_successful_binary_stdout(self) -> None:
+        payload = DecodeTrapBytes(b"\x00firmware\xff" * 4096)
+        connection = ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no")
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+            with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/opt/homebrew/bin/sshpass"):
+                with mock.patch(
+                    "timecapsulesmb.transport.ssh.subprocess.run",
+                    return_value=subprocess.CompletedProcess(["sshpass"], 0, stdout=payload, stderr=b""),
+                ):
+                    self.assertEqual(ssh_transport.run_ssh_capture_bytes(connection, "/bin/dd if=/dev/rflash0.raw", timeout=10), payload)
+
+    def test_run_ssh_capture_bytes_does_not_decode_failed_binary_stdout(self) -> None:
+        payload = DecodeTrapBytes(b"x" * (ssh_transport.SSH_ERROR_STDOUT_PREFIX_BYTES + 100))
+        connection = ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no")
+        with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
+            with mock.patch("timecapsulesmb.transport.ssh.find_command", return_value="/opt/homebrew/bin/sshpass"):
+                with mock.patch(
+                    "timecapsulesmb.transport.ssh.subprocess.run",
+                    return_value=subprocess.CompletedProcess(["sshpass"], 1, stdout=payload, stderr=b""),
+                ):
+                    with self.assertRaises(ssh_transport.SshError) as exc:
+                        ssh_transport.run_ssh_capture_bytes(connection, "/bin/dd if=/dev/rflash0.raw", timeout=10)
+        self.assertEqual(str(exc.exception), "ssh command failed with rc=1")
+
     def test_run_ssh_capture_bytes_retries_transient_permission_denied(self) -> None:
         connection = ssh_transport.SshConnection("root@192.168.1.118", "pw", "-o StrictHostKeyChecking=no")
         with mock.patch("timecapsulesmb.transport.ssh._ssh_option_supported", return_value=True):
@@ -636,7 +665,7 @@ class SSHTransportTests(unittest.TestCase):
                 with mock.patch(
                     "timecapsulesmb.transport.ssh.subprocess.run",
                     side_effect=[
-                        subprocess.CompletedProcess(["sshpass"], 255, stdout=b"Permission denied, please try again.\n", stderr=b""),
+                        subprocess.CompletedProcess(["sshpass"], 255, stdout=b"", stderr=b"Permission denied, please try again.\n"),
                         subprocess.CompletedProcess(["sshpass"], 0, stdout=b"ok", stderr=b""),
                     ],
                 ) as subprocess_run_mock:

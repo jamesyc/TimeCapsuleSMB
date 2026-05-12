@@ -31,6 +31,9 @@ jobs:
       - name: Upgrade pip
         run: python -m pip install --upgrade pip
 
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+
       - name: Compile mdns-advertiser
         run: cc -Wall -Wextra -Werror -o /tmp/mdns-advertiser-test build/mdns-advertiser.c
 

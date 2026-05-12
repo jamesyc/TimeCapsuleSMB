@@ -456,9 +456,9 @@ class ConfigTests(unittest.TestCase):
         values = dict(DEFAULTS)
         values["TC_HOST"] = "root@10.0.0.2"
         values["TC_PASSWORD"] = "pw"
-        values["TC_NET_IFACE"] = "bridge0"
-        values["TC_AIRPORT_SYAP"] = "119"
-        values["TC_MDNS_DEVICE_MODEL"] = "TimeCapsule8,119"
+        values["TC_NET_IFACE"] = "not a valid interface"
+        values["TC_AIRPORT_SYAP"] = "not-a-syap"
+        values["TC_MDNS_DEVICE_MODEL"] = "not-a-model"
         values["TC_SAMBA_USER"] = "bad user"
         values["TC_PAYLOAD_DIR_NAME"] = "/bad"
         values["TC_INTERNAL_SHARE_USE_DISK_ROOT"] = "not-bool"
@@ -466,12 +466,9 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(validate_app_config(config, profile="flash"), [])
 
-    def test_flash_profile_requires_password_and_identity(self) -> None:
+    def test_flash_profile_requires_password(self) -> None:
         values = dict(DEFAULTS)
         values["TC_HOST"] = "root@10.0.0.2"
-        values["TC_NET_IFACE"] = "bridge0"
-        values["TC_AIRPORT_SYAP"] = "119"
-        values["TC_MDNS_DEVICE_MODEL"] = "TimeCapsule8,119"
         file_values = dict(values)
         file_values.pop("TC_PASSWORD", None)
         config = AppConfig.from_values(values, file_values=file_values)
