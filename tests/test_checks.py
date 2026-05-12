@@ -1821,6 +1821,61 @@ class CheckTests(unittest.TestCase):
         self.assertIn("admin@10.0.1.1", result.message)
         self.assertEqual(result.details["server"], "10.0.1.1")
 
+    def test_try_authenticated_smb_listing_records_attempt_debug_details(self) -> None:
+        failed_proc = subprocess.CompletedProcess(["smbclient"], 1, "", "NT_STATUS_IO_TIMEOUT\n")
+        with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
+            with mock.patch(
+                "timecapsulesmb.checks.smb.run_local_capture",
+                side_effect=[
+                    subprocess.TimeoutExpired(cmd=["smbclient"], timeout=30),
+                    failed_proc,
+                ],
+            ):
+                result = try_authenticated_smb_listing(
+                    "admin",
+                    "secret-password",
+                    ["home.local", "10.0.1.1"],
+                    expected_share_name="Data",
+                )
+
+        self.assertEqual(result.status, "FAIL")
+        attempts = result.details["attempts"]
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(attempts[0]["server"], "home.local")
+        self.assertEqual(attempts[0]["outcome"], "timeout")
+        self.assertEqual(attempts[0]["timeout_sec"], 30)
+        self.assertEqual(attempts[1]["server"], "10.0.1.1")
+        self.assertEqual(attempts[1]["outcome"], "error")
+        self.assertEqual(attempts[1]["returncode"], 1)
+        self.assertEqual(attempts[1]["failure"], "NT_STATUS_IO_TIMEOUT")
+        self.assertNotIn("secret-password", str(attempts))
+
+    def test_run_doctor_checks_adds_smb_listing_attempts_to_debug_fields(self) -> None:
+        debug_fields: dict[str, object] = {}
+        listing_attempts = [
+            {"server": "timecapsulesamba4.local", "outcome": "timeout", "timeout_sec": 30},
+            {"server": "10.0.0.2", "outcome": "timeout", "timeout_sec": 30},
+        ]
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            smb_listing=CheckResult(
+                "FAIL",
+                "authenticated SMB listing failed: timed out via 10.0.0.2",
+                {"attempts": listing_attempts},
+            ),
+            smb_file_ops=[],
+            debug_fields=debug_fields,
+        )
+
+        self.assertTrue(run.fatal)
+        self.assertEqual(
+            debug_fields["authenticated_smb_listing_servers"],
+            ["timecapsulesamba4.local", "10.0.0.2"],
+        )
+        self.assertEqual(debug_fields["authenticated_smb_listing_expected_share"], "Data")
+        self.assertEqual(debug_fields["authenticated_smb_listing_attempts"], listing_attempts)
+
     def test_check_authenticated_smb_file_ops_detailed_reports_each_step(self) -> None:
         def fake_run_local_capture(args, timeout=15):
             self.assertEqual(args[0], "smbclient")

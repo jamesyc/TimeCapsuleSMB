@@ -513,6 +513,7 @@ def _add_authenticated_smb_results(
     smb_password: str,
     proxied_ssh: bool,
     active_smb_conf: str | None,
+    debug_fields: dict[str, object] | None,
     add_result: Callable[[CheckResult], None],
 ) -> None:
     try:
@@ -522,6 +523,9 @@ def _add_authenticated_smb_results(
         return
     if proxied_ssh:
         local_port = find_free_local_port()
+        if debug_fields is not None:
+            debug_fields["authenticated_smb_listing_servers"] = ["127.0.0.1"]
+            debug_fields["authenticated_smb_listing_expected_share"] = share_name
         try:
             with ssh_local_forward(
                 connection,
@@ -529,15 +533,16 @@ def _add_authenticated_smb_results(
                 remote_host=host,
                 remote_port=445,
             ):
-                add_result(
-                    check_authenticated_smb_listing(
-                        config.require("TC_SAMBA_USER"),
-                        smb_password,
-                        "127.0.0.1",
-                        expected_share_name=share_name,
-                        port=local_port,
-                    )
+                listing_result = check_authenticated_smb_listing(
+                    config.require("TC_SAMBA_USER"),
+                    smb_password,
+                    "127.0.0.1",
+                    expected_share_name=share_name,
+                    port=local_port,
                 )
+                if debug_fields is not None and listing_result.details.get("attempts"):
+                    debug_fields["authenticated_smb_listing_attempts"] = listing_result.details["attempts"]
+                add_result(listing_result)
                 for result in check_authenticated_smb_file_ops_detailed(
                     config.require("TC_SAMBA_USER"),
                     smb_password,
@@ -551,12 +556,17 @@ def _add_authenticated_smb_results(
         return
 
     smb_servers = doctor_smb_servers(config, bonjour_target, runtime_naming_identity)
+    if debug_fields is not None:
+        debug_fields["authenticated_smb_listing_servers"] = smb_servers
+        debug_fields["authenticated_smb_listing_expected_share"] = share_name
     listing_result = check_authenticated_smb_listing(
         config.require("TC_SAMBA_USER"),
         smb_password,
         smb_servers,
         expected_share_name=share_name,
     )
+    if debug_fields is not None and listing_result.details.get("attempts"):
+        debug_fields["authenticated_smb_listing_attempts"] = listing_result.details["attempts"]
     add_result(listing_result)
     if listing_result.status != "PASS":
         return
@@ -811,6 +821,7 @@ def _doctor_check_authenticated_smb(context: DoctorRunContext) -> None:
         smb_password=context.smb_password,
         proxied_ssh=context.proxied_ssh,
         active_smb_conf=context.active_smb_conf,
+        debug_fields=context.debug_fields,
         add_result=context.add_result,
     )
 
