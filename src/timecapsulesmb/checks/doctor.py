@@ -496,7 +496,14 @@ def _add_nbns_results(
                     add_result(CheckResult("SKIP", "NBNS check skipped; active/probed NetBIOS name unavailable"))
                     return
                 expected_ip = read_interface_ipv4_conn(connection, config.require("TC_NET_IFACE"))
-                add_result(check_nbns_name_resolution(expected_name, host, expected_ip))
+                nbns_result = check_nbns_name_resolution(expected_name, host, expected_ip)
+                if nbns_result.status == "FAIL":
+                    nbns_result = CheckResult(
+                        "INFO",
+                        f"optional NBNS check failed: {nbns_result.message}",
+                        nbns_result.details,
+                    )
+                add_result(nbns_result)
         else:
             add_result(CheckResult("SKIP", "NBNS responder not enabled"))
     except Exception as e:

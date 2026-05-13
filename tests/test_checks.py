@@ -432,7 +432,7 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(debug_fields["remote_service_sockets"], socket_debug)
         socket_debug_mock.assert_called_once()
 
-    def test_run_doctor_checks_adds_socket_debug_when_nbns_fails(self) -> None:
+    def test_run_doctor_checks_reports_info_when_optional_nbns_fails(self) -> None:
         debug_fields: dict[str, object] = {}
         socket_debug_mock = mock.Mock(return_value="smbd:\n(no internet sockets reported)\nnbns-advertiser:\nroot nbns-advertiser 201 7 internet dgram udp 0x0 *:137")
 
@@ -453,9 +453,12 @@ class CheckTests(unittest.TestCase):
             },
         )
 
-        self.assertTrue(run.fatal)
-        self.assertIn("nbns-advertiser:", debug_fields["remote_service_sockets"])
-        socket_debug_mock.assert_called_once()
+        self.assertFalse(run.fatal)
+        nbns_result = next(result for result in run.results if "optional NBNS check failed" in result.message)
+        self.assertEqual(nbns_result.status, "INFO")
+        self.assertIn("timed out against 10.0.0.2:137", nbns_result.message)
+        self.assertNotIn("remote_service_sockets", debug_fields)
+        socket_debug_mock.assert_not_called()
 
     def test_doctor_smb_servers_uses_probed_host_label(self) -> None:
         base_values = {"TC_HOST": "root@10.0.1.99"}
