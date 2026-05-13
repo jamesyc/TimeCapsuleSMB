@@ -56,6 +56,23 @@ class BasebinaryTests(unittest.TestCase):
         self.assertEqual(key.stored_key.hex(), "c025fefa2320b0e985dfac106694db4a")
         self.assertEqual(key.derived_key.hex(), "d93fe5e63e3eafc9a4fd8f3443b2fc62")
 
+    def test_observed_k10a_key_is_in_default_trial_keyring(self) -> None:
+        key = next(key for key in DEFAULT_BASEBINARY_KEYS if key.key_id == "observed-k10a-78100")
+
+        self.assertEqual(key.stored_key.hex(), "a66e263e7b751242ac7fa0c90951ed08")
+        self.assertEqual(key.derived_key.hex(), "bf743d22666b0d628d5d83ed2c77ca20")
+
+    def test_default_keyring_parses_observed_k10a_model_114_container(self) -> None:
+        key = next(key for key in DEFAULT_BASEBINARY_KEYS if key.key_id == "observed-k10a-78100")
+        payload = b"model 114 firmware payload" * 128
+        encoded = compose_basebinary(make_header(encrypted=True, model=114, version=0x07818000), payload, key=key)
+
+        parsed = parse_basebinary(encoded)
+
+        self.assertEqual(parsed.key_id, "observed-k10a-78100")
+        self.assertEqual(parsed.header.model, 114)
+        self.assertEqual(parsed.payload, payload)
+
     def test_observed_k30b_key_is_in_default_trial_keyring(self) -> None:
         key = next(key for key in DEFAULT_BASEBINARY_KEYS if key.key_id == "observed-k30b-78100")
 
