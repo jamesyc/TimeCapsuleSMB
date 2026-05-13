@@ -54,7 +54,7 @@ class ProbeTests(unittest.TestCase):
 
         self.assertEqual(result, [])
 
-    def test_read_runtime_log_tails_conn_fetches_ram_boot_and_payload_logs_with_short_timeout(self) -> None:
+    def test_read_runtime_log_tails_conn_fetches_ram_and_payload_logs_with_short_timeout(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
 
         def fake_run_ssh(
