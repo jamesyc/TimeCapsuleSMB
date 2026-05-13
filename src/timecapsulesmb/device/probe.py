@@ -677,6 +677,29 @@ def _is_loopback_ipv4(value: str) -> bool:
     return value.startswith("127.")
 
 
+def is_runtime_usable_ipv4(value: str) -> bool:
+    return (
+        bool(value)
+        and value != "0.0.0.0"
+        and not _is_loopback_ipv4(value)
+        and not _is_link_local_ipv4(value)
+    )
+
+
+def runtime_usable_ipv4_addrs(values: Iterable[str]) -> tuple[str, ...]:
+    return tuple(value for value in values if is_runtime_usable_ipv4(value))
+
+
+def runtime_interface_candidates(
+    candidates: Iterable[RemoteInterfaceCandidate],
+) -> tuple[RemoteInterfaceCandidate, ...]:
+    return tuple(
+        candidate
+        for candidate in candidates
+        if not candidate.loopback and runtime_usable_ipv4_addrs(candidate.ipv4_addrs)
+    )
+
+
 def _is_private_ipv4(value: str) -> bool:
     if value.startswith("10.") or value.startswith("192.168."):
         return True
@@ -814,20 +837,30 @@ def probe_remote_interface_candidates_conn(
 
 
 def read_interface_ipv4_conn(connection: SshConnection, iface: str) -> str:
+    iface_addrs = read_interface_ipv4_addrs_conn(connection, iface)
+    usable_addrs = runtime_usable_ipv4_addrs(iface_addrs)
+    if usable_addrs:
+        return usable_addrs[0]
+    if iface_addrs:
+        raise DeviceError(
+            f"could not determine non-link-local IPv4 for interface {iface} "
+            f"(reported: {', '.join(iface_addrs)})"
+        )
+    raise DeviceError(f"could not determine IPv4 for interface {iface}")
+
+
+def read_interface_ipv4_addrs_conn(connection: SshConnection, iface: str) -> tuple[str, ...]:
     probe_cmd = (
         f"/sbin/ifconfig {shlex.quote(iface)} 2>/dev/null | "
         "sed -n 's/^[[:space:]]*inet[[:space:]]\\([0-9.]*\\).*/\\1/p' | "
-        "sed -n '1p'"
+        "sed -n '/^$/d;p'"
     )
     proc = run_ssh(
         connection,
         f"/bin/sh -c {shlex.quote(probe_cmd)}",
         check=False,
     )
-    iface_ip = proc.stdout.strip()
-    if not iface_ip:
-        raise DeviceError(f"could not determine IPv4 for interface {iface}")
-    return iface_ip
+    return tuple(line.strip() for line in proc.stdout.splitlines() if line.strip())
 
 
 def read_active_smb_conf_conn(connection: SshConnection) -> str:

@@ -208,7 +208,16 @@ tc_log() {
 
 get_iface_ipv4() {
     iface=$1
-    /sbin/ifconfig "$iface" 2>/dev/null | sed -n 's/^[[:space:]]*inet[[:space:]]\([0-9.]*\).*/\1/p' | sed -n '1p'
+    /sbin/ifconfig "$iface" 2>/dev/null | sed -n '
+        s/^[[:space:]]*inet[[:space:]]\([0-9.]*\).*/\1/p
+    ' | sed -n '
+        /^0\.0\.0\.0$/d
+        /^127\./d
+        /^169\.254\./d
+        /^$/d
+        p
+        q
+    '
 }
 
 tc_netmask_to_prefix() {
@@ -255,7 +264,13 @@ tc_netmask_to_prefix() {
 
 get_iface_ipv4_prefix() {
     iface=$1
-    iface_netmask=$(/sbin/ifconfig "$iface" 2>/dev/null | sed -n 's/^[[:space:]]*inet[[:space:]][0-9.][0-9.]*[[:space:]].*netmask[[:space:]]\([^[:space:]]*\).*/\1/p' | sed -n '1p')
+    target_ip=${2:-}
+    if [ -n "$target_ip" ]; then
+        target_ip_pattern=$(printf '%s\n' "$target_ip" | sed 's/\./\\./g')
+        iface_netmask=$(/sbin/ifconfig "$iface" 2>/dev/null | sed -n "s/^[[:space:]]*inet[[:space:]]$target_ip_pattern[[:space:]].*netmask[[:space:]]\([^[:space:]]*\).*/\1/p" | sed -n '1p')
+    else
+        iface_netmask=$(/sbin/ifconfig "$iface" 2>/dev/null | sed -n 's/^[[:space:]]*inet[[:space:]][0-9.][0-9.]*[[:space:]].*netmask[[:space:]]\([^[:space:]]*\).*/\1/p' | sed -n '1p')
+    fi
     [ -n "$iface_netmask" ] || return 1
     tc_netmask_to_prefix "$iface_netmask"
 }
@@ -1868,7 +1883,7 @@ tc_wait_for_bind_interfaces() {
     while [ "$attempt" -lt 60 ]; do
         iface_ip=$(get_iface_ipv4 "$NET_IFACE" || true)
         if [ -n "$iface_ip" ] && [ "$iface_ip" != "0.0.0.0" ]; then
-            iface_prefix=$(get_iface_ipv4_prefix "$NET_IFACE" || true)
+            iface_prefix=$(get_iface_ipv4_prefix "$NET_IFACE" "$iface_ip" || true)
             [ -n "$iface_prefix" ] || iface_prefix=24
             tc_log "network interface $NET_IFACE ready with IPv4 $iface_ip/$iface_prefix"
             echo "127.0.0.1/8 $iface_ip/$iface_prefix"

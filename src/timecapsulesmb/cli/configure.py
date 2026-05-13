@@ -39,6 +39,8 @@ from timecapsulesmb.device.probe import (
     preferred_interface_name,
     probe_connection_state,
     probe_remote_interface_candidates_conn,
+    runtime_interface_candidates,
+    runtime_usable_ipv4_addrs,
 )
 from timecapsulesmb.discovery.bonjour import (
     BonjourResolvedService,
@@ -206,15 +208,49 @@ def print_automatic_value_choice(key: str, choice: ConfigureValueChoice) -> None
         print(f"Using {key} derived from TC_AIRPORT_SYAP: {choice.value}")
 
 
+def runtime_interface_invalid_message(allowed_values: tuple[str, ...]) -> str:
+    allowed = ", ".join(allowed_values)
+    return f"Network interface on the device must be one of the probed non-link-local IPv4 interfaces: {allowed}"
+
+
+def prompt_runtime_interface_value(
+    key: str,
+    label: str,
+    current: str,
+    allowed_values: tuple[str, ...],
+) -> str:
+    return prompt_config_value_from_candidates(
+        key,
+        label,
+        current,
+        allowed_values,
+        invalid_message=runtime_interface_invalid_message(allowed_values),
+    )
+
+
+def no_runtime_interface_message(result: RemoteInterfaceCandidatesProbeResult) -> str:
+    reported: list[str] = []
+    for candidate in result.candidates:
+        if candidate.loopback:
+            continue
+        ipv4 = ", ".join(candidate.ipv4_addrs) if candidate.ipv4_addrs else "no IPv4"
+        reported.append(f"{candidate.name}: {ipv4}")
+    reported_text = "; ".join(reported) if reported else "none"
+    return (
+        "No usable runtime network interface was found. TimeCapsuleSMB needs a non-link-local LAN IPv4 "
+        "address for Samba and mDNS; 169.254.x.x self-assigned addresses are only suitable for temporary "
+        f"SSH recovery. Fix LAN/DHCP connectivity, then run configure again. Reported interfaces: {reported_text}."
+    )
+
+
 def print_probed_interface_default(result: RemoteInterfaceCandidatesProbeResult, preferred_iface: str) -> None:
-    candidate_names = [candidate.name for candidate in result.candidates if candidate.ipv4_addrs and not candidate.loopback]
-    if candidate_names:
-        print("Found network interfaces with IPv4 on the device:")
-        for candidate in result.candidates:
-            if not candidate.ipv4_addrs or candidate.loopback:
-                continue
+    candidates = runtime_interface_candidates(result.candidates)
+    if candidates:
+        print("Found network interfaces with non-link-local IPv4 on the device:")
+        for candidate in candidates:
+            ipv4_addrs = runtime_usable_ipv4_addrs(candidate.ipv4_addrs)
             marker = " (suggested)" if candidate.name == preferred_iface else ""
-            print(f"  {candidate.name}: {', '.join(candidate.ipv4_addrs)}{marker}")
+            print(f"  {candidate.name}: {', '.join(ipv4_addrs)}{marker}")
     print(f"Using probed default for TC_NET_IFACE: {preferred_iface}")
 
 
@@ -494,18 +530,27 @@ def main(argv: Optional[list[str]] = None) -> int:
                 continue
             if key == "TC_NET_IFACE":
                 saved_iface_choice = saved_value_choice(existing, key, label)
-                candidate_names = {
-                    candidate.name
-                    for candidate in (probed_interfaces.candidates if probed_interfaces is not None else ())
-                    if candidate.ipv4_addrs and not candidate.loopback
-                }
+                runtime_candidates = runtime_interface_candidates(
+                    probed_interfaces.candidates if probed_interfaces is not None else ()
+                )
+                candidate_names = tuple(candidate.name for candidate in runtime_candidates)
+                candidate_name_set = set(candidate_names)
+                if probed_interfaces is not None and probed_interfaces.candidates and not candidate_names:
+                    message = no_runtime_interface_message(probed_interfaces)
+                    print(color_red(message))
+                    command_context.add_debug_fields(configure_failure_reason="no_runtime_usable_net_iface")
+                    command_context.fail_with_error(message)
+                    return 1
                 target_ips = interface_target_ips(values, discovered_record)
+                runtime_target_ips = runtime_usable_ipv4_addrs(target_ips)
                 exact_target_match = (
                     interface_candidate_for_ip(probed_interfaces, target_ips)
                     if probed_interfaces is not None
                     else None
                 )
-                if saved_iface_choice is not None and (not candidate_names or saved_iface_choice.value in candidate_names):
+                if saved_iface_choice is not None and (
+                    not candidate_names or saved_iface_choice.value in candidate_name_set
+                ):
                     if exact_target_match and exact_target_match.iface != saved_iface_choice.value:
                         print_saved_value_hint(saved_iface_choice.value)
                         print(
@@ -514,30 +559,62 @@ def main(argv: Optional[list[str]] = None) -> int:
                         )
                     else:
                         print_saved_value_hint(saved_iface_choice.value)
-                        command_context.add_debug_fields(selected_net_iface=saved_iface_choice.value, selected_net_iface_source="saved")
-                        values[key] = prompt_valid_config_value(key, label, saved_iface_choice.value)
+                        command_context.add_debug_fields(
+                            selected_net_iface=saved_iface_choice.value,
+                            selected_net_iface_source="saved",
+                        )
+                        if candidate_names:
+                            values[key] = prompt_runtime_interface_value(
+                                key,
+                                label,
+                                saved_iface_choice.value,
+                                candidate_names,
+                            )
+                        else:
+                            values[key] = prompt_valid_config_value(key, label, saved_iface_choice.value)
                         continue
                 if exact_target_match and probed_interfaces is not None:
                     print_probed_interface_default(probed_interfaces, exact_target_match.iface)
-                    command_context.add_debug_fields(selected_net_iface=exact_target_match.iface, selected_net_iface_source="target_ip_match")
-                    values[key] = prompt_valid_config_value(key, label, exact_target_match.iface)
+                    command_context.add_debug_fields(
+                        selected_net_iface=exact_target_match.iface,
+                        selected_net_iface_source="target_ip_match",
+                    )
+                    values[key] = prompt_runtime_interface_value(key, label, exact_target_match.iface, candidate_names)
                     continue
                 if saved_iface_choice is not None and not candidate_names:
                     print_saved_value_hint(saved_iface_choice.value)
-                    command_context.add_debug_fields(selected_net_iface=saved_iface_choice.value, selected_net_iface_source="saved_no_probe_candidates")
+                    command_context.add_debug_fields(
+                        selected_net_iface=saved_iface_choice.value,
+                        selected_net_iface_source="saved_no_probe_candidates",
+                    )
                     values[key] = prompt_valid_config_value(key, label, saved_iface_choice.value)
                     continue
-                if probed_interfaces is not None and probed_interfaces.candidates:
-                    preferred_iface = preferred_interface_name(probed_interfaces.candidates, target_ips=target_ips)
+                if runtime_candidates:
+                    preferred_iface = preferred_interface_name(runtime_candidates, target_ips=runtime_target_ips)
                     if preferred_iface:
                         print_probed_interface_default(probed_interfaces, preferred_iface)
-                        command_context.add_debug_fields(selected_net_iface=preferred_iface, selected_net_iface_source="probed_preferred_for_target_ips")
-                        values[key] = prompt_valid_config_value(key, label, preferred_iface)
+                        command_context.add_debug_fields(
+                            selected_net_iface=preferred_iface,
+                            selected_net_iface_source="probed_preferred_for_target_ips",
+                        )
+                        values[key] = prompt_runtime_interface_value(key, label, preferred_iface, candidate_names)
                         continue
-                if probed_interfaces is not None and probed_interfaces.preferred_iface:
+                if (
+                    probed_interfaces is not None
+                    and probed_interfaces.preferred_iface
+                    and probed_interfaces.preferred_iface in candidate_name_set
+                ):
                     print_probed_interface_default(probed_interfaces, probed_interfaces.preferred_iface)
-                    command_context.add_debug_fields(selected_net_iface=probed_interfaces.preferred_iface, selected_net_iface_source="probed_preferred")
-                    values[key] = prompt_valid_config_value(key, label, probed_interfaces.preferred_iface)
+                    command_context.add_debug_fields(
+                        selected_net_iface=probed_interfaces.preferred_iface,
+                        selected_net_iface_source="probed_preferred",
+                    )
+                    values[key] = prompt_runtime_interface_value(
+                        key,
+                        label,
+                        probed_interfaces.preferred_iface,
+                        candidate_names,
+                    )
                     continue
                 command_context.add_debug_fields(selected_net_iface_source="manual_or_default")
                 values[key] = prompt_config_value(existing, key, label, default, secret=secret)

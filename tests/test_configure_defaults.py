@@ -58,6 +58,18 @@ class ConfigureDefaultsTests(unittest.TestCase):
         self.assertEqual(match.iface, "mgi0")
         self.assertEqual(match.ip, "10.0.1.7")
 
+    def test_interface_candidate_ignores_link_local_target_matches(self) -> None:
+        probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate("bcmeth1", ("169.254.1.2",), up=True, active=True, loopback=False),
+                RemoteInterfaceCandidate("bridge0", ("192.168.1.72",), up=True, active=True, loopback=False),
+            ),
+            preferred_iface="bridge0",
+            detail="ok",
+        )
+
+        self.assertIsNone(interface_candidate_for_ip(probe, ("169.254.1.2",)))
+
     def test_saved_value_choice_rejects_invalid_saved_config_values(self) -> None:
         self.assertIsNone(saved_value_choice({"TC_AIRPORT_SYAP": "999"}, "TC_AIRPORT_SYAP", "Airport Utility syAP code"))
         self.assertEqual(

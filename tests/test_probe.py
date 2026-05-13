@@ -362,6 +362,27 @@ bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu
             result = probe_remote_interface_candidates_conn(connection)
         self.assertEqual(preferred_interface_name(result.candidates, target_ips=("169.254.44.9",)), "bcmeth1")
 
+    def test_read_interface_ipv4_conn_returns_first_runtime_usable_address(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        proc = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="0.0.0.0\n169.254.44.9\n192.168.1.217\n",
+        )
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            self.assertEqual(probe.read_interface_ipv4_conn(connection, "bridge0"), "192.168.1.217")
+
+    def test_read_interface_ipv4_conn_rejects_link_local_only_address(self) -> None:
+        connection = SshConnection("root@169.254.44.9", "pw", "")
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="0.0.0.0\n169.254.44.9\n")
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            with self.assertRaises(probe.DeviceError) as ctx:
+                probe.read_interface_ipv4_conn(connection, "bridge0")
+
+        self.assertIn("could not determine non-link-local IPv4 for interface bridge0", str(ctx.exception))
+
     def test_probe_remote_interface_candidates_preserves_multiple_private_candidates(self) -> None:
         ifconfig_output = """
 bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500

@@ -51,6 +51,7 @@ from timecapsulesmb.cli.main import main
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.core.config import (
     AppConfig,
+    ConfigError,
     DEFAULTS,
     airport_exact_display_name_from_config,
     airport_family_display_name_from_config,
@@ -303,6 +304,12 @@ class CliTests(unittest.TestCase):
             mock.patch(
                 "timecapsulesmb.cli.runtime.probe_remote_interface_conn",
                 return_value=RemoteInterfaceProbeResult(iface="bridge0", exists=True, detail="interface bridge0 exists"),
+            )
+        )
+        self._exit_stack.enter_context(
+            mock.patch(
+                "timecapsulesmb.cli.runtime.read_interface_ipv4_addrs_conn",
+                return_value=("192.168.1.217",),
             )
         )
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=False))
@@ -1903,7 +1910,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.rc, 0)
         self.assertEqual(seen_defaults["Network interface on the device"], "bcmeth1")
         self.assertEqual(result.values["TC_NET_IFACE"], "bcmeth1")
-        self.assertIn("Found network interfaces with IPv4 on the device:", result.text)
+        self.assertIn("Found network interfaces with non-link-local IPv4 on the device:", result.text)
         self.assertIn("bcmeth1: 10.0.1.1 (suggested)", result.text)
         self.assertIn("Using probed default for TC_NET_IFACE: bcmeth1", result.text)
 
@@ -2094,7 +2101,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_NET_IFACE"], "bridge0")
         self.assertIn("bridge0: 192.168.1.217 (suggested)", result.text)
 
-    def test_configure_link_local_target_ip_can_win_when_it_is_the_only_exact_match(self) -> None:
+    def test_configure_link_local_target_ip_does_not_win_runtime_interface(self) -> None:
         seen_defaults = {}
         prompt_values = iter([
             "root@169.254.44.9",
@@ -2130,9 +2137,10 @@ class CliTests(unittest.TestCase):
             interface_probe=interface_probe,
         )
         self.assertEqual(result.rc, 0)
-        self.assertEqual(seen_defaults["Network interface on the device"], "bcmeth1")
-        self.assertEqual(result.values["TC_NET_IFACE"], "bcmeth1")
-        self.assertIn("bcmeth1: 169.254.44.9 (suggested)", result.text)
+        self.assertEqual(seen_defaults["Network interface on the device"], "bridge0")
+        self.assertEqual(result.values["TC_NET_IFACE"], "bridge0")
+        self.assertIn("bridge0: 192.168.1.217 (suggested)", result.text)
+        self.assertNotIn("bcmeth1: 169.254.44.9 (suggested)", result.text)
 
     def test_configure_multiple_private_interfaces_without_exact_match_prints_candidates_and_prompts(self) -> None:
         seen_defaults = {}
@@ -2173,7 +2181,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(seen_defaults["Network interface on the device"], "bridge0")
         self.assertEqual(result.values["TC_NET_IFACE"], "bridge0")
         text = result.text
-        self.assertIn("Found network interfaces with IPv4 on the device:", text)
+        self.assertIn("Found network interfaces with non-link-local IPv4 on the device:", text)
         self.assertIn("bcmeth1: 10.0.1.1", text)
         self.assertIn("bridge0: 192.168.1.217 (suggested)", text)
 
@@ -2229,17 +2237,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_NET_IFACE"], "bcmeth1")
         self.assertIn("bcmeth1: 10.0.1.1 (suggested)", result.text)
 
-    def test_configure_falls_back_to_static_default_when_probe_has_no_ipv4_candidates(self) -> None:
+    def test_configure_fails_when_probe_has_no_runtime_usable_ipv4_candidates(self) -> None:
         seen_defaults = {}
         prompt_values = iter([
             "root@10.0.0.2",
             "rootpw",
-            "Data",
-            "admin",
-            "TimeCapsule",
-            "samba4",
-            "Time Capsule Samba 4",
-            "timecapsulesamba4",
         ])
 
         def fake_prompt(label, default, _secret):
@@ -2253,7 +2255,13 @@ class CliTests(unittest.TestCase):
         interface_probe = RemoteInterfaceCandidatesProbeResult(
             candidates=(
                 RemoteInterfaceCandidate(name="lo0", ipv4_addrs=("127.0.0.1",), up=True, active=True, loopback=True),
-                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=(), up=True, active=True, loopback=False),
+                RemoteInterfaceCandidate(
+                    name="bridge0",
+                    ipv4_addrs=("0.0.0.0", "169.254.44.9"),
+                    up=True,
+                    active=True,
+                    loopback=False,
+                ),
             ),
             preferred_iface=None,
             detail="no non-loopback IPv4 interface candidates found",
@@ -2264,10 +2272,11 @@ class CliTests(unittest.TestCase):
             probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
             interface_probe=interface_probe,
         )
-        self.assertEqual(result.rc, 0)
-        self.assertEqual(seen_defaults["Network interface on the device"], "bridge0")
-        self.assertEqual(result.values["TC_NET_IFACE"], "bridge0")
-        self.assertNotIn("Using probed default for TC_NET_IFACE", result.text)
+        self.assertEqual(result.rc, 1)
+        self.assertNotIn("Network interface on the device", seen_defaults)
+        self.assertEqual(result.values, {})
+        self.assertIn("No usable runtime network interface was found", result.text)
+        self.assertIn("169.254.x.x self-assigned addresses are only suitable for temporary SSH recovery", result.text)
 
     def test_configure_skipped_mdns_netbsd6_little_autofills_syap_and_model(self) -> None:
         record = Discovered(
@@ -4547,6 +4556,23 @@ class CliTests(unittest.TestCase):
         self.assertIn("TC_NET_IFACE is invalid", str(ctx.exception))
         self.assertIn("bridge0 was not found", str(ctx.exception))
         self.assertIn("Found remote interfaces: bcmeth1=10.0.0.2.", str(ctx.exception))
+
+    def test_managed_target_rejects_link_local_runtime_interface(self) -> None:
+        config = self.make_app_config(self.make_valid_env())
+        with mock.patch(
+            "timecapsulesmb.cli.runtime.read_interface_ipv4_addrs_conn",
+            return_value=("0.0.0.0", "169.254.44.9"),
+        ):
+            with self.assertRaises(ConfigError) as ctx:
+                cli_runtime.resolve_validated_managed_target(
+                    config,
+                    command_name="deploy",
+                    profile="deploy",
+                    include_probe=False,
+                )
+
+        self.assertIn("TC_NET_IFACE is not usable", str(ctx.exception))
+        self.assertIn("Reported IPv4 addresses on bridge0: 0.0.0.0, 169.254.44.9", str(ctx.exception))
 
     def test_activate_prompt_decline_cancels_before_remote_actions(self) -> None:
         output = io.StringIO()

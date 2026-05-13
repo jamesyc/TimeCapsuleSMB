@@ -197,6 +197,52 @@ class StorageRuntimeTests(unittest.TestCase):
         self.assertNotIn("00:11:22:33:44:55", proc.stdout)
         self.assertNotIn("66:77:88:99:aa:bb", proc.stdout)
 
+    def test_common_wait_for_bind_interfaces_uses_first_non_link_local_ipv4(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fake_ifconfig = tmp_path / "ifconfig"
+            fake_ifconfig.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/bin/sh
+                    cat <<'OUT'
+                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+                            inet 0.0.0.0 netmask 0xff000000 broadcast 255.255.255.255
+                            inet 169.254.44.9 netmask 0xffff0000 broadcast 169.254.255.255
+                            inet 192.168.1.2 netmask 0xffffff00 broadcast 192.168.1.255
+                    OUT
+                    """
+                )
+            )
+            fake_ifconfig.chmod(0o755)
+            common_path = flash / "common.sh"
+            common_path.write_text(common_path.read_text().replace("/sbin/ifconfig", str(fake_ifconfig)))
+            script = tmp_path / "network-ready.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    sleep() {{ :; }}
+                    tc_wait_for_bind_interfaces
+                    cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("127.0.0.1/8 192.168.1.2/24", proc.stdout)
+        self.assertIn("network interface bridge0 ready with IPv4 192.168.1.2/24", proc.stdout)
+
     def write_fake_acp(self, tmp_path: Path, raw: str | bytes, *, final_newline: bool = True) -> Path:
         acp = tmp_path / "acp"
         raw_text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw

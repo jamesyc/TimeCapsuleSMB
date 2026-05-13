@@ -30,6 +30,8 @@ from timecapsulesmb.device.probe import (
     probe_connection_state,
     probe_remote_interface_candidates_conn,
     probe_remote_interface_conn,
+    read_interface_ipv4_addrs_conn,
+    runtime_usable_ipv4_addrs,
 )
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -211,6 +213,15 @@ def _format_remote_interface_candidates(result: RemoteInterfaceCandidatesProbeRe
     return "Found remote interfaces: " + ", ".join(_format_remote_interface(candidate) for candidate in candidates) + "."
 
 
+def _invalid_interface_address_message(*, iface: str, ipv4_addrs: tuple[str, ...]) -> str:
+    reported = ", ".join(ipv4_addrs) if ipv4_addrs else "none"
+    return (
+        "TC_NET_IFACE is not usable. Run the `configure` command again.\n"
+        f"Configured interface {iface} must have a non-link-local IPv4 address for Samba/mDNS.\n"
+        f"Reported IPv4 addresses on {iface}: {reported}."
+    )
+
+
 def _invalid_interface_message(
     *,
     connection: SshConnection,
@@ -243,6 +254,14 @@ def resolve_validated_managed_target(
             _invalid_interface_message(
                 connection=connection,
                 detail=target.interface_probe.detail,
+            )
+        )
+    iface_addrs = read_interface_ipv4_addrs_conn(connection, config.require("TC_NET_IFACE"))
+    if not runtime_usable_ipv4_addrs(iface_addrs):
+        raise ConfigError(
+            _invalid_interface_address_message(
+                iface=config.require("TC_NET_IFACE"),
+                ipv4_addrs=iface_addrs,
             )
         )
     return target

@@ -10,6 +10,8 @@ from timecapsulesmb.core.config import (
 )
 from timecapsulesmb.device.probe import (
     RemoteInterfaceCandidatesProbeResult,
+    runtime_interface_candidates,
+    runtime_usable_ipv4_addrs,
 )
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 
@@ -90,23 +92,14 @@ def interface_target_ips(values: dict[str, str], discovered_record: BonjourResol
     return tuple(ordered)
 
 
-def is_link_local_ipv4(value: str) -> bool:
-    return value.startswith("169.254.")
-
-
 def interface_candidate_for_ip(
     result: RemoteInterfaceCandidatesProbeResult,
     target_ips: tuple[str, ...],
 ) -> InterfaceIpMatch | None:
-    # Prefer exact non-link-local matches first. Link-local can still be used,
-    # but only when it is the only exact address we can match to an interface.
-    ordered_target_ips = tuple(ip for ip in target_ips if not is_link_local_ipv4(ip)) + tuple(
-        ip for ip in target_ips if is_link_local_ipv4(ip)
-    )
-    for target_ip in ordered_target_ips:
-        for candidate in result.candidates:
-            if candidate.loopback:
-                continue
-            if target_ip in candidate.ipv4_addrs:
+    runtime_candidates = runtime_interface_candidates(result.candidates)
+    runtime_target_ips = tuple(ip for ip in target_ips if runtime_usable_ipv4_addrs((ip,)))
+    for target_ip in runtime_target_ips:
+        for candidate in runtime_candidates:
+            if target_ip in runtime_usable_ipv4_addrs(candidate.ipv4_addrs):
                 return InterfaceIpMatch(iface=candidate.name, ip=target_ip)
     return None
