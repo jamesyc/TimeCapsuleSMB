@@ -1547,6 +1547,98 @@ MaSt = (
             self.assertEqual(proc.stdout, f"{volumes}/dk3/.samba4\n{volumes}/dk3\n/dev/dk3\n")
             self.assertIn(f"payload directory selected from mounted MaSt volumes: {volumes}/dk3/.samba4", log_text)
 
+    def test_common_payload_discovery_retries_manual_mount_after_first_invalid_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            (volumes / "dk2").mkdir()
+            script = tmp_path / "payload-retry-success.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    is_volume_root_mounted() {{ [ "$1" = "{volumes}/dk2" ]; }}
+                    mount_hfs_bounded() {{
+                        mkdir -p {volumes}/dk2/.samba4/private
+                        : >{volumes}/dk2/.samba4/smbd
+                        chmod 755 {volumes}/dk2/.samba4/smbd
+                        : >{volumes}/dk2/.samba4/private/smbpasswd
+                        : >{volumes}/dk2/.samba4/private/username.map
+                        return 0
+                    }}
+                    cat >"$TC_VOLUMES_TSV" <<'EOF'
+                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                    tc_resolve_payload "$TC_VOLUMES_TSV"
+                    printf '%s\\n%s\\n%s\\n' "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME" "$TC_RESOLVED_PAYLOAD_DEVICE"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, f"{volumes}/dk2/.samba4\n{volumes}/dk2\n/dev/dk2\n")
+        self.assertIn(f"payload discovery first invalid payload check failed for {volumes}/dk2/.samba4", log_text)
+        self.assertIn("payload candidate diagnostics (first failure before retry)", log_text)
+        self.assertIn(f"payload diagnostic command: df -k {volumes}/dk2", log_text)
+        self.assertIn(f"payload diagnostic command: ls -la {volumes}/dk2/.samba4", log_text)
+        self.assertIn(f"payload discovery retry: manual mount_hfs retry for /dev/dk2 at {volumes}/dk2", log_text)
+        self.assertIn(f"payload directory selected from mounted MaSt volumes after retry: {volumes}/dk2/.samba4", log_text)
+        self.assertNotIn("payload discovery retry failed: payload still invalid", log_text)
+
+    def test_common_payload_discovery_logs_fresh_diagnostics_when_retry_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            (volumes / "dk2").mkdir()
+            script = tmp_path / "payload-retry-failure.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    is_volume_root_mounted() {{ [ "$1" = "{volumes}/dk2" ]; }}
+                    mount_hfs_bounded() {{ return 1; }}
+                    cat >"$TC_VOLUMES_TSV" <<'EOF'
+                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                    tc_resolve_payload "$TC_VOLUMES_TSV" || status=$?
+                    printf 'status=%s\\n' "${{status:-0}}"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "status=1\n")
+        self.assertIn(f"payload discovery first invalid payload check failed for {volumes}/dk2/.samba4", log_text)
+        self.assertIn("payload candidate diagnostics (first failure before retry)", log_text)
+        self.assertIn(f"payload discovery retry: mount_hfs retry failed for /dev/dk2 at {volumes}/dk2", log_text)
+        self.assertIn(f"payload discovery retry failed: payload still invalid after mount_hfs retry at {volumes}/dk2/.samba4", log_text)
+        self.assertIn("payload candidate diagnostics (after retry failure)", log_text)
+        self.assertIn(f"payload diagnostic command: df -k {volumes}/dk2", log_text)
+        self.assertIn(f"payload diagnostic command: ls -la {volumes}/dk2", log_text)
+        self.assertIn(f"payload diagnostic command: ls -la {volumes}/dk2/.samba4", log_text)
+        self.assertIn(f"payload diagnostic command: ls -la {volumes}/dk2/.samba4/private", log_text)
+        self.assertIn("no valid payload directory found on mounted MaSt volumes", log_text)
+
     def test_common_refresh_disk_state_succeeds_with_payload_and_one_share_when_external_optional_fails(self) -> None:
         fixture = SHELL_MAST_FIXTURES[0]
         with tempfile.TemporaryDirectory() as tmp:

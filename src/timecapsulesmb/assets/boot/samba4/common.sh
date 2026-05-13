@@ -1344,6 +1344,51 @@ tc_verify_payload_dir() {
     [ -f "$payload_dir/private/username.map" ] || return 1
 }
 
+tc_log_limited_command_output() {
+    label=$1
+    shift
+    output_file="$TC_STATE_DIR/payload-diagnostic.$$"
+    output_rc=0
+    output_line_count=0
+    output_max_lines=12
+
+    rm -f "$output_file"
+    "$@" >"$output_file" 2>&1 || output_rc=$?
+
+    tc_log "payload diagnostic command: $label"
+    if [ -s "$output_file" ]; then
+        while IFS= read -r output_line || [ -n "$output_line" ]; do
+            if [ "$output_line_count" -lt "$output_max_lines" ]; then
+                tc_log "payload diagnostic $label: $output_line"
+            fi
+            output_line_count=$((output_line_count + 1))
+        done <"$output_file"
+        if [ "$output_line_count" -gt "$output_max_lines" ]; then
+            tc_log "payload diagnostic $label: truncated after $output_max_lines lines"
+        fi
+    else
+        tc_log "payload diagnostic $label: (empty)"
+    fi
+    if [ "$output_rc" -ne 0 ]; then
+        tc_log "payload diagnostic $label: exit $output_rc"
+    fi
+    rm -f "$output_file"
+}
+
+tc_log_payload_candidate_diagnostics() {
+    diagnostic_context=$1
+    shift
+    volume_root=$1
+    payload_dir=$2
+    private_dir="$payload_dir/private"
+
+    tc_log "payload candidate diagnostics ($diagnostic_context): volume=$volume_root payload=$payload_dir"
+    tc_log_limited_command_output "df -k $volume_root" /bin/df -k "$volume_root"
+    tc_log_limited_command_output "ls -la $volume_root" /bin/ls -la "$volume_root"
+    tc_log_limited_command_output "ls -la $payload_dir" /bin/ls -la "$payload_dir"
+    tc_log_limited_command_output "ls -la $private_dir" /bin/ls -la "$private_dir"
+}
+
 tc_emit_payload_candidate_volumes() {
     volumes_file=${1:-$TC_VOLUMES_TSV}
 
@@ -1376,6 +1421,13 @@ tc_scan_payload_candidates_for_builtin() {
                 fi
             else
                 tc_log "payload candidate invalid: missing managed payload at $candidate"
+                if [ -z "$first_invalid_payload_dir" ]; then
+                    first_invalid_payload_dir=$candidate
+                    first_invalid_payload_volume=$volume_root
+                    first_invalid_payload_device="/dev/$part_device"
+                    tc_log "payload discovery first invalid payload check failed for $candidate"
+                    tc_log_payload_candidate_diagnostics "first failure before retry" "$volume_root" "$candidate"
+                fi
             fi
         else
             tc_log "payload candidate unavailable: /dev/$part_device at $volume_root is not mounted"
@@ -1391,6 +1443,9 @@ tc_resolve_payload() {
     selected_payload_dir=
     selected_payload_volume=
     selected_payload_device=
+    first_invalid_payload_dir=
+    first_invalid_payload_volume=
+    first_invalid_payload_device=
 
     tc_scan_payload_candidates_for_builtin "$volumes_file" 1
     tc_scan_payload_candidates_for_builtin "$volumes_file" 0
@@ -1401,6 +1456,32 @@ tc_resolve_payload() {
         TC_RESOLVED_PAYLOAD_DEVICE=$selected_payload_device
         tc_log "payload directory selected from mounted MaSt volumes: $TC_RESOLVED_PAYLOAD_DIR"
         return 0
+    fi
+
+    if [ -n "$first_invalid_payload_dir" ]; then
+        tc_log "payload discovery retry: manual mount_hfs retry for $first_invalid_payload_device at $first_invalid_payload_volume after invalid payload at $first_invalid_payload_dir"
+        if mount_hfs_bounded "$first_invalid_payload_device" "$first_invalid_payload_volume" 30 "payload discovery retry $first_invalid_payload_volume"; then
+            tc_log "payload discovery retry: mount_hfs retry completed for $first_invalid_payload_device at $first_invalid_payload_volume"
+        else
+            tc_log "payload discovery retry: mount_hfs retry failed for $first_invalid_payload_device at $first_invalid_payload_volume"
+        fi
+
+        selected_payload_dir=
+        selected_payload_volume=
+        selected_payload_device=
+        tc_scan_payload_candidates_for_builtin "$volumes_file" 1
+        tc_scan_payload_candidates_for_builtin "$volumes_file" 0
+
+        if [ -n "$selected_payload_dir" ]; then
+            TC_RESOLVED_PAYLOAD_DIR=$selected_payload_dir
+            TC_RESOLVED_PAYLOAD_VOLUME=$selected_payload_volume
+            TC_RESOLVED_PAYLOAD_DEVICE=$selected_payload_device
+            tc_log "payload directory selected from mounted MaSt volumes after retry: $TC_RESOLVED_PAYLOAD_DIR"
+            return 0
+        fi
+
+        tc_log "payload discovery retry failed: payload still invalid after mount_hfs retry at $first_invalid_payload_dir"
+        tc_log_payload_candidate_diagnostics "after retry failure" "$first_invalid_payload_volume" "$first_invalid_payload_dir"
     fi
 
     tc_log "no valid payload directory found on mounted MaSt volumes"
