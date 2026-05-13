@@ -37,11 +37,11 @@ REMOTE_LOG_TAIL_TIMEOUT_SECONDS = 10
 REMOTE_NETWORK_DIAGNOSTICS_TIMEOUT_SECONDS = 10
 REMOTE_RUNTIME_RAM_LOG_PATHS = {
     "remote_rc_local_log_tail": "/mnt/Memory/samba4/var/rc.local.log",
+    "remote_watchdog_log_tail": "/mnt/Memory/samba4/var/watchdog.log",
+    "remote_mdns_log_tail": "/mnt/Memory/samba4/var/mdns.log",
+    "remote_nbns_log_tail": "/mnt/Memory/samba4/var/nbns.log",
 }
 REMOTE_PAYLOAD_LOG_FILENAMES = {
-    "remote_watchdog_log_tail": "watchdog.log",
-    "remote_mdns_log_tail": "mdns.log",
-    "remote_nbns_log_tail": "nbns.log",
     "remote_smbd_log_tail": "log.smbd",
 }
 SMBD_STATUS_HELPERS = rf'''
@@ -1108,10 +1108,6 @@ def read_runtime_log_tails_conn(connection: SshConnection) -> dict[str, str]:
                 logs[key] = f"(unavailable: {e})"
     else:
         logs.setdefault("remote_payload_log_dir", f"(missing {RUNTIME_PAYLOAD_TSV})")
-        try:
-            logs["remote_watchdog_log_tail"] = read_remote_log_tail_conn(connection, "/mnt/Memory/samba4/var/watchdog.log")
-        except Exception as e:
-            logs["remote_watchdog_log_tail"] = f"(unavailable: {e})"
     return logs
 
 

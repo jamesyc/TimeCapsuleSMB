@@ -30,7 +30,7 @@ TC_LOG_PREFIX=runtime
 TC_LOG_MODE=ram_rewrite
 TC_LOG_FALLBACK_FILE=
 TC_LOG_VOLUME=
-TC_LOG_MAX_BYTES=131072
+TC_LOG_MAX_BYTES=32768
 TC_MDNS_BIN=/mnt/Flash/mdns-advertiser
 TC_NBNS_BIN="$RAM_SBIN/nbns-advertiser"
 TC_SMBD_BIN="$RAM_SBIN/smbd"
@@ -40,7 +40,7 @@ TC_NBNS_LOG_FILE="$RAM_VAR/nbns.log"
 TC_PAYLOAD_LOG_DIR=
 TC_PAYLOAD_LOG_VOLUME=
 TC_MDNS_CAPTURE_STATUS_FILE=
-TC_RUNTIME_LOG_MAX_BYTES=131072
+TC_RUNTIME_LOG_MAX_BYTES=32768
 TC_SMBD_DISK_LOGGING_ENABLED=0
 # The managed server is Samba, not Apple's legacy AFP stack. Keep the cloned
 # AirPort identity, but publish SMB Time Machine volume flags so macOS treats
@@ -77,7 +77,7 @@ tc_set_log() {
     TC_LOG_MODE=ram_rewrite
     TC_LOG_FALLBACK_FILE=
     TC_LOG_VOLUME=
-    TC_LOG_MAX_BYTES=131072
+    TC_LOG_MAX_BYTES=$TC_RUNTIME_LOG_MAX_BYTES
 }
 
 tc_set_payload_append_log() {
@@ -99,11 +99,7 @@ tc_runtime_logs_unbounded() {
 }
 
 tc_runtime_log_max_bytes() {
-    if tc_runtime_logs_unbounded; then
-        echo 0
-    else
-        echo "$TC_RUNTIME_LOG_MAX_BYTES"
-    fi
+    echo "$TC_RUNTIME_LOG_MAX_BYTES"
 }
 
 tc_smbd_max_log_size() {
@@ -191,6 +187,7 @@ tc_ram_rewrite_log_line() {
         echo "$line"
     } >"$tmp_log"
     mv "$tmp_log" "$log_path"
+    tc_trim_log_file_if_needed "$log_path" "$TC_LOG_MAX_BYTES"
 }
 
 tc_log() {
@@ -1251,90 +1248,6 @@ tc_build_share_state() {
     [ -s "$TC_SHARES_TSV" ]
 }
 
-tc_mount_active_volume_job() {
-    share_name=$1
-    share_path=$2
-    device_path=$3
-    volume_root=$4
-    context=$5
-    df_line=
-
-    tc_log "$context check starting: share=$share_name path=$share_path device=$device_path root=$volume_root"
-    if [ -z "$share_name" ] || [ -z "$share_path" ] || [ -z "$device_path" ] || [ -z "$volume_root" ]; then
-        tc_log "$context check failed: malformed active share row share=$share_name path=$share_path device=$device_path root=$volume_root"
-        return 1
-    fi
-
-    df_line=$(/bin/df -k "$volume_root" 2>/dev/null | /usr/bin/tail -n +2 || true)
-    if [ -n "$df_line" ]; then
-        tc_log "$context df before wake: $df_line"
-    else
-        tc_log "$context df before wake: no df output for $volume_root"
-    fi
-
-    if tc_watchdog_wake_or_mount_volume "$device_path" "$volume_root"; then
-        df_line=$(/bin/df -k "$volume_root" 2>/dev/null | /usr/bin/tail -n +2 || true)
-        if [ -n "$df_line" ]; then
-            tc_log "$context df after wake: $df_line"
-        else
-            tc_log "$context df after wake: no df output for $volume_root"
-        fi
-        if [ -d "$share_path" ]; then
-            tc_log "$context available: share=$share_name path=$share_path device=$device_path root=$volume_root"
-            return 0
-        else
-            tc_log "$context unavailable: share path missing after mount: $share_path"
-            return 1
-        fi
-    else
-        df_line=$(/bin/df -k "$volume_root" 2>/dev/null | /usr/bin/tail -n +2 || true)
-        if [ -n "$df_line" ]; then
-            tc_log "$context df after failed wake: $df_line"
-        else
-            tc_log "$context df after failed wake: no df output for $volume_root"
-        fi
-        tc_log "$context unavailable: $device_path at $volume_root for share=$share_name path=$share_path"
-        return 1
-    fi
-}
-
-tc_mount_active_volumes_from_state() {
-    state_file=$TC_SHARES_TSV
-    status=0
-    job_count=0
-
-    if [ ! -s "$state_file" ]; then
-        tc_log "active share state missing; runtime reload required"
-        return 2
-    fi
-
-    tc_log "active share check beginning: state=$state_file"
-
-    while IFS="$TC_TAB" read -r share_name share_path part_device builtin part_uuid; do
-        [ -n "$part_device" ] || continue
-        job_count=$((job_count + 1))
-        tc_log "active share check row $job_count: share=$share_name path=$share_path device=/dev/$part_device root=/Volumes/$part_device builtin=$builtin uuid=$part_uuid"
-        if tc_mount_active_volume_job "$share_name" "$share_path" "/dev/$part_device" "/Volumes/$part_device" "active share volume"; then
-            tc_log "active share check row $job_count succeeded"
-        else
-            tc_log "active share check row $job_count failed"
-            status=1
-        fi
-    done <"$state_file"
-
-    if [ "$job_count" -eq 0 ]; then
-        tc_log "active share check found no valid share rows; runtime reload required"
-        return 2
-    fi
-
-    if [ "$status" -eq 0 ]; then
-        tc_log "active share check complete: all $job_count active share volumes available"
-    else
-        tc_log "active share check complete: one or more of $job_count active share volumes unavailable"
-    fi
-    return "$status"
-}
-
 tc_verify_payload_dir() {
     payload_dir=$1
 
@@ -1510,11 +1423,6 @@ tc_read_payload_state() {
     return 1
 }
 
-tc_payload_available() {
-    tc_read_payload_state || return 1
-    tc_watchdog_wake_or_mount_volume "$TC_PAYLOAD_DEVICE" "$TC_PAYLOAD_VOLUME" && tc_verify_payload_dir "$TC_PAYLOAD_DIR"
-}
-
 tc_log_mast_volume_state() {
     volumes_file=$1
 
@@ -1556,9 +1464,9 @@ tc_refresh_disk_state() {
     tc_write_payload_state "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME" "$TC_RESOLVED_PAYLOAD_DEVICE"
     tc_set_payload_log_dir "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME"
     if tc_payload_log_dir_ready; then
-        tc_log "payload runtime logs enabled at $TC_PAYLOAD_LOG_DIR"
+        tc_log "payload smbd log directory ready at $TC_PAYLOAD_LOG_DIR"
     else
-        tc_log "payload runtime log directory unavailable at $TC_PAYLOAD_LOG_DIR"
+        tc_log "payload smbd log directory unavailable at $TC_PAYLOAD_LOG_DIR"
     fi
 
     tc_log "disk-state refresh complete: runtime state written"
@@ -1641,8 +1549,8 @@ tc_set_payload_log_dir() {
 
     TC_PAYLOAD_LOG_DIR="$payload_dir/logs"
     TC_PAYLOAD_LOG_VOLUME="$payload_volume"
-    TC_MDNS_LOG_FILE="$TC_PAYLOAD_LOG_DIR/mdns.log"
-    TC_NBNS_LOG_FILE="$TC_PAYLOAD_LOG_DIR/nbns.log"
+    TC_MDNS_LOG_FILE="$RAM_VAR/mdns.log"
+    TC_NBNS_LOG_FILE="$RAM_VAR/nbns.log"
 }
 
 tc_payload_log_dir_ready() {
@@ -2454,6 +2362,53 @@ tc_start_smbd() {
     return 1
 }
 
+tc_prepare_smbd_recovery_disk_runtime() {
+    recovery_status=0
+    recovery_share_count=0
+
+    if ! tc_read_payload_state; then
+        tc_log "watchdog recovery: smbd restart skipped; payload state is unavailable"
+        return 1
+    fi
+
+    tc_log "watchdog recovery: ensuring payload volume is mounted before smbd restart: device=$TC_PAYLOAD_DEVICE root=$TC_PAYLOAD_VOLUME"
+    if ! tc_watchdog_wake_or_mount_volume "$TC_PAYLOAD_DEVICE" "$TC_PAYLOAD_VOLUME"; then
+        tc_log "watchdog recovery: payload volume unavailable before smbd restart: device=$TC_PAYLOAD_DEVICE root=$TC_PAYLOAD_VOLUME"
+        return 1
+    fi
+
+    if ! tc_verify_payload_dir "$TC_PAYLOAD_DIR"; then
+        tc_log "watchdog recovery: payload directory is invalid before smbd restart: $TC_PAYLOAD_DIR"
+        return 1
+    fi
+
+    if [ ! -s "$TC_SHARES_TSV" ]; then
+        tc_log "watchdog recovery: active share state missing; smbd restart will use existing config"
+        return 0
+    fi
+
+    while IFS="$TC_TAB" read -r share_name share_path part_device builtin part_uuid; do
+        [ -n "$part_device" ] || continue
+        recovery_share_count=$((recovery_share_count + 1))
+        tc_log "watchdog recovery: ensuring active share volume is mounted before smbd restart: share=$share_name device=/dev/$part_device root=/Volumes/$part_device"
+        if tc_watchdog_wake_or_mount_volume "/dev/$part_device" "/Volumes/$part_device"; then
+            :
+        else
+            recovery_status=1
+        fi
+    done <"$TC_SHARES_TSV"
+
+    if [ "$recovery_share_count" -eq 0 ]; then
+        tc_log "watchdog recovery: active share state has no valid rows; smbd restart will use existing config"
+        return 0
+    fi
+
+    if [ "$recovery_status" -ne 0 ]; then
+        tc_log "watchdog recovery: one or more active share volumes are unavailable before smbd restart"
+    fi
+    return "$recovery_status"
+}
+
 tc_start_smbd_if_needed() {
     if runtime_process_present_by_ucomm smbd; then
         return 0
@@ -2465,6 +2420,9 @@ tc_start_smbd_if_needed() {
     fi
 
     tc_watchdog_refresh_runtime_identity_for_recovery
+    if ! tc_prepare_smbd_recovery_disk_runtime; then
+        return 1
+    fi
     rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true
     "$TC_SMBD_BIN" -D -s "$TC_SMBD_CONF" >/dev/null 2>&1 || true
     tc_log "watchdog recovery: smbd restart requested"
@@ -2639,7 +2597,7 @@ tc_watchdog_refresh_runtime_identity_for_recovery() {
 }
 
 tc_watchdog_iteration() {
-    tc_log "watchdog pass: checking topology, payload, active shares, and managed services"
+    tc_log "watchdog pass: checking topology and managed services"
     TC_WATCHDOG_RECOVERY_IDENTITY_REFRESHED=0
 
     if tc_topology_changed_debounced; then
@@ -2650,23 +2608,8 @@ tc_watchdog_iteration() {
         fi
     fi
 
-    if tc_payload_available; then
-        tc_log "watchdog pass: payload available at ${TC_PAYLOAD_DIR:-unknown}"
-        if tc_mount_active_volumes_from_state; then
-            :
-        else
-            active_mount_status=$?
-            if [ "$active_mount_status" -eq 2 ]; then
-                tc_exec_start_samba "active share state unavailable"
-            fi
-            tc_log "watchdog recovery: active share volume unavailable; stopping managed services and retrying"
-            tc_stop_managed_services
-            return 1
-        fi
-        tc_start_smbd_if_needed
-    else
-        tc_log "watchdog recovery: payload unavailable; stopping managed services"
-        tc_stop_managed_services
+    if ! tc_start_smbd_if_needed; then
+        tc_log "watchdog pass: smbd recovery did not complete"
         return 1
     fi
 
@@ -2686,47 +2629,12 @@ tc_watchdog_iteration() {
         fi
     fi
 
+    sleep 1
     if tc_all_managed_services_healthy; then
-        tc_log "watchdog pass: healthy"
+        tc_log "watchdog steady check: healthy"
         return 0
     fi
 
     tc_log "watchdog pass: one or more managed services are unhealthy"
     return 1
-}
-
-tc_sleep_with_runtime_checks() {
-    total_sleep=$1
-    slept=0
-    mount_poll_seconds=${MOUNT_POLL_SECONDS:-30}
-
-    while [ "$slept" -lt "$total_sleep" ]; do
-        sleep_seconds=$mount_poll_seconds
-        remaining=$((total_sleep - slept))
-        if [ "$remaining" -lt "$sleep_seconds" ]; then
-            sleep_seconds=$remaining
-        fi
-
-        sleep "$sleep_seconds"
-        slept=$((slept + sleep_seconds))
-        if tc_payload_available; then
-            :
-        else
-            tc_log "watchdog steady check: payload unavailable while sleeping"
-            return 1
-        fi
-        if tc_mount_active_volumes_from_state; then
-            :
-        else
-            active_mount_status=$?
-            if [ "$active_mount_status" -eq 2 ]; then
-                tc_log "watchdog steady check: active share state unavailable while sleeping"
-            else
-                tc_log "watchdog steady check: one or more active share volumes are unavailable while sleeping"
-            fi
-            return "$active_mount_status"
-        fi
-        tc_log "watchdog steady check: healthy after ${slept}s of ${total_sleep}s"
-    done
-    return 0
 }
