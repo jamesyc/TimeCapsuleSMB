@@ -16,7 +16,9 @@ PAYLOAD_FLUSH_SETTLE_SECONDS = 5
 FLUSH_REMOTE_FILESYSTEMS_COMMAND = (
     f"/bin/sh -c {shlex.quote(f'/bin/sync; /bin/sleep {PAYLOAD_FLUSH_SETTLE_SECONDS}; /bin/sync')}"
 )
-FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS = 30
+# Time Capsule HFS disks can spend well over 30 seconds flushing the Samba
+# payload after a slow upload. Keep this bounded, but long enough for real disks.
+FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS = 300
 
 
 def _flash_upload_tmp_path(destination: str) -> str:

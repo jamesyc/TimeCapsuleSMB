@@ -277,6 +277,7 @@ class DeployModuleTests(unittest.TestCase):
         )
         self.assertIn("/bin/sync", FLUSH_REMOTE_FILESYSTEMS_COMMAND)
         self.assertIn("/bin/sleep 5", FLUSH_REMOTE_FILESYSTEMS_COMMAND)
+        self.assertGreaterEqual(FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS, 300)
 
     def test_load_boot_asset_text_reads_packaged_asset(self) -> None:
         content = load_boot_asset_text("rc.local")
