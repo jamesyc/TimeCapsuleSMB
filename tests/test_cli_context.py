@@ -98,7 +98,7 @@ class CommandContextHelperTests(unittest.TestCase):
         context = self.make_context()
         connection = self.make_connection()
         volume = self.make_volume("dk2")
-        discovery = MaStDiscoveryResult((volume,), 3)
+        discovery = MaStDiscoveryResult((volume,), 3, "MaSt=valid")
         selection = PayloadHomeSelection(
             PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
             (PayloadCandidateCheck(volume, True, True),),
@@ -117,6 +117,20 @@ class CommandContextHelperTests(unittest.TestCase):
         self.assertEqual(selected.payload_home, PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"))
         self.assertEqual(context.debug_fields["mast_read_attempts"], 3)
         self.assertIn("mast_candidate_checks", context.debug_fields)
+        self.assertNotIn("mast_acp_output", context.debug_fields)
+
+    def test_wait_for_mast_volumes_records_raw_acp_output_when_empty(self) -> None:
+        context = self.make_context()
+        connection = self.make_connection()
+        raw_output = "MaSt=[]"
+        discovery = MaStDiscoveryResult((), 10, raw_output)
+
+        with mock.patch("timecapsulesmb.cli.context.wait_for_mast_volumes_conn", return_value=discovery):
+            result = context.wait_for_mast_volumes(connection, attempts=10, delay_seconds=3)
+
+        self.assertEqual(result.volumes, ())
+        self.assertEqual(context.debug_fields["mast_acp_output_chars"], len(raw_output))
+        self.assertEqual(context.debug_fields["mast_acp_output"], raw_output)
 
 
 if __name__ == "__main__":

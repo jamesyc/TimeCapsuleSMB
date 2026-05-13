@@ -54,6 +54,16 @@ COMMAND_FIELD_BLACKLIST = {
     "reboot_was_attempted",
     "device_came_back_after_reboot",
 }
+MAST_ACP_OUTPUT_DEBUG_LIMIT = 8192
+
+
+def _mast_acp_output_debug_text(raw_output: str) -> str:
+    if not raw_output:
+        return "<empty>"
+    if len(raw_output) <= MAST_ACP_OUTPUT_DEBUG_LIMIT:
+        return raw_output
+    omitted = len(raw_output) - MAST_ACP_OUTPUT_DEBUG_LIMIT
+    return f"{raw_output[:MAST_ACP_OUTPUT_DEBUG_LIMIT]}...<truncated {omitted} chars>"
 
 
 def _render_connection_debug_lines(connection: SshConnection | None, values: Mapping[str, str] | None) -> list[str]:
@@ -305,11 +315,15 @@ class CommandContext:
             delay_seconds=delay_seconds,
         )
         mast_volumes = mast_discovery.volumes
-        self.add_debug_fields(
-            mast_read_attempts=mast_discovery.attempts,
-            mast_volume_count=len(mast_volumes),
-            mast_candidates=mast_volumes_debug_summary(mast_volumes),
-        )
+        fields: dict[str, object] = {
+            "mast_read_attempts": mast_discovery.attempts,
+            "mast_volume_count": len(mast_volumes),
+            "mast_candidates": mast_volumes_debug_summary(mast_volumes),
+        }
+        if not mast_volumes:
+            fields["mast_acp_output_chars"] = len(mast_discovery.raw_output)
+            fields["mast_acp_output"] = _mast_acp_output_debug_text(mast_discovery.raw_output)
+        self.add_debug_fields(**fields)
         return mast_discovery
 
     def select_payload_home(

@@ -4246,10 +4246,11 @@ class CliTests(unittest.TestCase):
         self.assertIn("writable:false", telemetry_error)
 
     def test_deploy_exits_when_mast_discovery_never_finds_disks(self) -> None:
+        raw_mast_output = "MaSt=<plist><array/></plist>"
         result = self.run_deploy_cli(
             ["--yes"],
             mast_volumes=(),
-            mast_discovery=MaStDiscoveryResult((), 10),
+            mast_discovery=MaStDiscoveryResult((), 10, raw_mast_output),
             patch_actions=True,
             patch_upload=True,
             raises=SystemExit,
@@ -4268,6 +4269,8 @@ class CliTests(unittest.TestCase):
         self.assertIn("mast_read_attempts=10", telemetry_error)
         self.assertIn("mast_volume_count=0", telemetry_error)
         self.assertIn("mast_candidates=[]", telemetry_error)
+        self.assertIn(f"mast_acp_output_chars={len(raw_mast_output)}", telemetry_error)
+        self.assertIn(f"mast_acp_output={raw_mast_output}", telemetry_error)
 
     def test_deploy_no_reboot_stops_after_upload_phase(self) -> None:
         result = self.run_deploy_cli(

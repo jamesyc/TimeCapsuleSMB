@@ -15,6 +15,7 @@ from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE = "no writable persistent volume found"
 MAST_DISCOVERY_ATTEMPTS = 10
 MAST_DISCOVERY_DELAY_SECONDS = 3
+MAST_ACP_COMMAND = "/usr/bin/acp MaSt"
 DRY_RUN_VOLUME_ROOT_PLACEHOLDER = "resolved from MaSt at deploy time"
 DRY_RUN_DEVICE_PATH_PLACEHOLDER = "resolved from MaSt at deploy time"
 UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER = "resolved from MaSt at uninstall time"
@@ -58,6 +59,13 @@ class PayloadHome:
 class MaStDiscoveryResult:
     volumes: tuple[MaStVolume, ...]
     attempts: int
+    raw_output: str = ""
+
+
+@dataclass(frozen=True)
+class MaStReadResult:
+    volumes: tuple[MaStVolume, ...]
+    raw_output: str
 
 
 @dataclass(frozen=True)
@@ -309,9 +317,13 @@ def parse_mast_plist(content: str | bytes) -> tuple[MaStVolume, ...]:
         return _parse_mast_openstep(text)
 
 
+def read_mast_volumes_with_output_conn(connection: SshConnection) -> MaStReadResult:
+    proc = run_ssh(connection, MAST_ACP_COMMAND, timeout=60)
+    return MaStReadResult(parse_mast_plist(proc.stdout), proc.stdout)
+
+
 def read_mast_volumes_conn(connection: SshConnection) -> tuple[MaStVolume, ...]:
-    proc = run_ssh(connection, "/usr/bin/acp MaSt", timeout=60)
-    return parse_mast_plist(proc.stdout)
+    return read_mast_volumes_with_output_conn(connection).volumes
 
 
 def wait_for_mast_volumes_conn(
@@ -323,13 +335,16 @@ def wait_for_mast_volumes_conn(
     if attempts <= 0:
         attempts = 1
     volumes: tuple[MaStVolume, ...] = ()
+    raw_output = ""
     for attempt in range(1, attempts + 1):
-        volumes = read_mast_volumes_conn(connection)
+        read_result = read_mast_volumes_with_output_conn(connection)
+        volumes = read_result.volumes
+        raw_output = read_result.raw_output
         if volumes:
-            return MaStDiscoveryResult(volumes, attempt)
+            return MaStDiscoveryResult(volumes, attempt, raw_output)
         if attempt < attempts:
             time.sleep(delay_seconds)
-    return MaStDiscoveryResult(volumes, attempts)
+    return MaStDiscoveryResult(volumes, attempts, raw_output)
 
 
 def _remote_mounted_test(volume_root: str) -> str:
