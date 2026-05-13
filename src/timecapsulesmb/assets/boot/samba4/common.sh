@@ -206,18 +206,67 @@ tc_log() {
     tc_ram_rewrite_log_line "$TC_LOG_FILE" "$line"
 }
 
-get_iface_ipv4() {
+tc_runtime_ipv4_is_usable() {
+    case "$1" in
+        ""|0.0.0.0|127.*|169.254.*) return 1 ;;
+    esac
+    return 0
+}
+
+tc_iface_inet_line_to_cidr() {
+    iface_ip=$1
+    shift || true
+    iface_netmask=
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = "netmask" ]; then
+            shift || true
+            iface_netmask=${1:-}
+            break
+        fi
+        shift || true
+    done
+
+    iface_prefix=$(tc_netmask_to_prefix "$iface_netmask" || true)
+    [ -n "$iface_prefix" ] || iface_prefix=24
+    echo "$iface_ip/$iface_prefix"
+}
+
+get_runtime_iface_ipv4_cidr() {
     iface=$1
-    /sbin/ifconfig "$iface" 2>/dev/null | sed -n '
-        s/^[[:space:]]*inet[[:space:]]\([0-9.]*\).*/\1/p
+    hint_ip=${2:-}
+    if ! tc_runtime_ipv4_is_usable "$hint_ip"; then
+        hint_ip=
+    fi
+
+    if [ -n "$hint_ip" ]; then
+        hint_ip_pattern=$(printf '%s\n' "$hint_ip" | sed 's/\./\\./g')
+        iface_line=$(/sbin/ifconfig "$iface" 2>/dev/null | sed -n "s/^[[:space:]]*inet[[:space:]]$hint_ip_pattern[[:space:]]/$hint_ip /p" | sed -n '1p')
+        if [ -n "$iface_line" ]; then
+            tc_iface_inet_line_to_cidr $iface_line
+            return $?
+        fi
+    fi
+
+    iface_line=$(/sbin/ifconfig "$iface" 2>/dev/null | sed -n '
+        s/^[[:space:]]*inet[[:space:]]//p
     ' | sed -n '
         /^0\.0\.0\.0$/d
+        /^0\.0\.0\.0[[:space:]]/d
         /^127\./d
         /^169\.254\./d
         /^$/d
         p
         q
-    '
+    ')
+    [ -n "$iface_line" ] || return 1
+    tc_iface_inet_line_to_cidr $iface_line
+}
+
+get_iface_ipv4() {
+    iface=$1
+    iface_cidr=$(get_runtime_iface_ipv4_cidr "$iface" || true)
+    [ -n "$iface_cidr" ] || return 1
+    echo "${iface_cidr%%/*}"
 }
 
 tc_netmask_to_prefix() {
@@ -267,12 +316,28 @@ get_iface_ipv4_prefix() {
     target_ip=${2:-}
     if [ -n "$target_ip" ]; then
         target_ip_pattern=$(printf '%s\n' "$target_ip" | sed 's/\./\\./g')
-        iface_netmask=$(/sbin/ifconfig "$iface" 2>/dev/null | sed -n "s/^[[:space:]]*inet[[:space:]]$target_ip_pattern[[:space:]].*netmask[[:space:]]\([^[:space:]]*\).*/\1/p" | sed -n '1p')
+        iface_line=$(/sbin/ifconfig "$iface" 2>/dev/null | sed -n "s/^[[:space:]]*inet[[:space:]]$target_ip_pattern[[:space:]]//p" | sed -n '1p')
+        [ -n "$iface_line" ] || return 1
+        set -- $iface_line
+        iface_netmask=
+        while [ "$#" -gt 0 ]; do
+            if [ "$1" = "netmask" ]; then
+                shift || true
+                iface_netmask=${1:-}
+                break
+            fi
+            shift || true
+        done
+        iface_prefix=$(tc_netmask_to_prefix "$iface_netmask" || true)
+        [ -n "$iface_prefix" ] || iface_prefix=24
+        echo "$iface_prefix"
+        return 0
     else
-        iface_netmask=$(/sbin/ifconfig "$iface" 2>/dev/null | sed -n 's/^[[:space:]]*inet[[:space:]][0-9.][0-9.]*[[:space:]].*netmask[[:space:]]\([^[:space:]]*\).*/\1/p' | sed -n '1p')
+        iface_cidr=$(get_runtime_iface_ipv4_cidr "$iface" || true)
+        [ -n "$iface_cidr" ] || return 1
+        echo "${iface_cidr#*/}"
+        return 0
     fi
-    [ -n "$iface_netmask" ] || return 1
-    tc_netmask_to_prefix "$iface_netmask"
 }
 
 get_iface_mac() {
@@ -1881,12 +1946,10 @@ tc_wait_for_bind_interfaces() {
 
     sleep 1
     while [ "$attempt" -lt 60 ]; do
-        iface_ip=$(get_iface_ipv4 "$NET_IFACE" || true)
-        if [ -n "$iface_ip" ] && [ "$iface_ip" != "0.0.0.0" ]; then
-            iface_prefix=$(get_iface_ipv4_prefix "$NET_IFACE" "$iface_ip" || true)
-            [ -n "$iface_prefix" ] || iface_prefix=24
-            tc_log "network interface $NET_IFACE ready with IPv4 $iface_ip/$iface_prefix"
-            echo "127.0.0.1/8 $iface_ip/$iface_prefix"
+        iface_cidr=$(get_runtime_iface_ipv4_cidr "$NET_IFACE" "${NET_IPV4_HINT:-}" || true)
+        if [ -n "$iface_cidr" ]; then
+            tc_log "network interface $NET_IFACE ready with IPv4 $iface_cidr"
+            echo "127.0.0.1/8 $iface_cidr"
             return 0
         fi
 

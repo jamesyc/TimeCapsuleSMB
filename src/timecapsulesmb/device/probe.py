@@ -686,8 +686,12 @@ def is_runtime_usable_ipv4(value: str) -> bool:
     )
 
 
-def runtime_usable_ipv4_addrs(values: Iterable[str]) -> tuple[str, ...]:
+def runtime_usable_ipv4s(values: Iterable[str]) -> tuple[str, ...]:
     return tuple(value for value in values if is_runtime_usable_ipv4(value))
+
+
+def runtime_usable_ipv4_addrs(values: Iterable[str]) -> tuple[str, ...]:
+    return runtime_usable_ipv4s(values)
 
 
 def runtime_interface_candidates(
@@ -696,7 +700,7 @@ def runtime_interface_candidates(
     return tuple(
         candidate
         for candidate in candidates
-        if not candidate.loopback and runtime_usable_ipv4_addrs(candidate.ipv4_addrs)
+        if not candidate.loopback and runtime_usable_ipv4s(candidate.ipv4_addrs)
     )
 
 
@@ -792,12 +796,92 @@ def preferred_interface_name(
     *,
     target_ips: Iterable[str] = (),
 ) -> str | None:
-    eligible = [candidate for candidate in candidates if not candidate.loopback and candidate.ipv4_addrs]
+    eligible = [
+        candidate
+        for candidate in candidates
+        if not candidate.loopback and runtime_usable_ipv4s(candidate.ipv4_addrs)
+    ]
     if not eligible:
         return None
-    target_ip_tuple = tuple(value for value in target_ips if value)
+    target_ip_tuple = runtime_usable_ipv4s(target_ips)
     best = max(eligible, key=lambda candidate: (_interface_preference_key(candidate, target_ip_tuple), candidate.name))
     return best.name
+
+
+def _parse_netmask_value(value: str) -> int | None:
+    value = value.strip().lower()
+    if not value:
+        return None
+    try:
+        if value.startswith("0x"):
+            parsed = int(value, 16)
+        elif "." in value:
+            octets = value.split(".")
+            if len(octets) != 4:
+                return None
+            parsed = 0
+            for octet_text in octets:
+                if not octet_text.isdigit():
+                    return None
+                octet = int(octet_text, 10)
+                if octet < 0 or octet > 255:
+                    return None
+                parsed = (parsed << 8) | octet
+        else:
+            parsed = int(value, 10)
+    except ValueError:
+        return None
+    if parsed < 0 or parsed > 0xFFFFFFFF:
+        return None
+    return parsed
+
+
+def _netmask_to_prefix(value: str) -> int | None:
+    parsed = _parse_netmask_value(value)
+    if parsed is None:
+        return None
+    bits = f"{parsed:032b}"
+    if "01" in bits:
+        return None
+    return bits.count("1")
+
+
+def runtime_ipv4_cidr_from_ifconfig(output: str, hint_ip: str = "") -> str | None:
+    selected: tuple[str, int] | None = None
+    hinted: tuple[str, int] | None = None
+    usable_hint = hint_ip if is_runtime_usable_ipv4(hint_ip) else ""
+
+    for raw_line in output.splitlines():
+        stripped = raw_line.strip()
+        if not stripped.startswith("inet "):
+            continue
+        parts = stripped.split()
+        if len(parts) < 2:
+            continue
+        ip_addr = parts[1]
+        if not is_runtime_usable_ipv4(ip_addr):
+            continue
+        netmask = ""
+        for index, value in enumerate(parts):
+            if value == "netmask" and index + 1 < len(parts):
+                netmask = parts[index + 1]
+                break
+        prefix = _netmask_to_prefix(netmask)
+        if prefix is None:
+            prefix = 24
+        candidate = (ip_addr, prefix)
+        if selected is None:
+            selected = candidate
+        if usable_hint and ip_addr == usable_hint:
+            hinted = candidate
+
+    if hinted is not None:
+        ip_addr, prefix = hinted
+        return f"{ip_addr}/{prefix}"
+    if selected is not None:
+        ip_addr, prefix = selected
+        return f"{ip_addr}/{prefix}"
+    return None
 
 
 def probe_remote_interface_candidates_conn(
@@ -838,7 +922,7 @@ def probe_remote_interface_candidates_conn(
 
 def read_interface_ipv4_conn(connection: SshConnection, iface: str) -> str:
     iface_addrs = read_interface_ipv4_addrs_conn(connection, iface)
-    usable_addrs = runtime_usable_ipv4_addrs(iface_addrs)
+    usable_addrs = runtime_usable_ipv4s(iface_addrs)
     if usable_addrs:
         return usable_addrs[0]
     if iface_addrs:

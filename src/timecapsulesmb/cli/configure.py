@@ -40,7 +40,7 @@ from timecapsulesmb.device.probe import (
     probe_connection_state,
     probe_remote_interface_candidates_conn,
     runtime_interface_candidates,
-    runtime_usable_ipv4_addrs,
+    runtime_usable_ipv4s,
 )
 from timecapsulesmb.discovery.bonjour import (
     BonjourResolvedService,
@@ -248,7 +248,7 @@ def print_probed_interface_default(result: RemoteInterfaceCandidatesProbeResult,
     if candidates:
         print("Found network interfaces with non-link-local IPv4 on the device:")
         for candidate in candidates:
-            ipv4_addrs = runtime_usable_ipv4_addrs(candidate.ipv4_addrs)
+            ipv4_addrs = runtime_usable_ipv4s(candidate.ipv4_addrs)
             marker = " (suggested)" if candidate.name == preferred_iface else ""
             print(f"  {candidate.name}: {', '.join(ipv4_addrs)}{marker}")
     print(f"Using probed default for TC_NET_IFACE: {preferred_iface}")
@@ -542,7 +542,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     command_context.fail_with_error(message)
                     return 1
                 target_ips = interface_target_ips(values, discovered_record)
-                runtime_target_ips = runtime_usable_ipv4_addrs(target_ips)
+                runtime_target_ips = runtime_usable_ipv4s(target_ips)
                 exact_target_match = (
                     interface_candidate_for_ip(probed_interfaces, target_ips)
                     if probed_interfaces is not None

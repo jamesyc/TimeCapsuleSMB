@@ -31,7 +31,7 @@ from timecapsulesmb.device.probe import (
     probe_remote_interface_candidates_conn,
     probe_remote_interface_conn,
     read_interface_ipv4_addrs_conn,
-    runtime_usable_ipv4_addrs,
+    runtime_usable_ipv4s,
 )
 from timecapsulesmb.transport.ssh import SshConnection
 
@@ -257,7 +257,7 @@ def resolve_validated_managed_target(
             )
         )
     iface_addrs = read_interface_ipv4_addrs_conn(connection, config.require("TC_NET_IFACE"))
-    if not runtime_usable_ipv4_addrs(iface_addrs):
+    if not runtime_usable_ipv4s(iface_addrs):
         raise ConfigError(
             _invalid_interface_address_message(
                 iface=config.require("TC_NET_IFACE"),

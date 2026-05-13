@@ -11,7 +11,7 @@ from timecapsulesmb.core.config import (
 from timecapsulesmb.device.probe import (
     RemoteInterfaceCandidatesProbeResult,
     runtime_interface_candidates,
-    runtime_usable_ipv4_addrs,
+    runtime_usable_ipv4s,
 )
 from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 
@@ -97,9 +97,9 @@ def interface_candidate_for_ip(
     target_ips: tuple[str, ...],
 ) -> InterfaceIpMatch | None:
     runtime_candidates = runtime_interface_candidates(result.candidates)
-    runtime_target_ips = tuple(ip for ip in target_ips if runtime_usable_ipv4_addrs((ip,)))
+    runtime_target_ips = tuple(ip for ip in target_ips if runtime_usable_ipv4s((ip,)))
     for target_ip in runtime_target_ips:
         for candidate in runtime_candidates:
-            if target_ip in runtime_usable_ipv4_addrs(candidate.ipv4_addrs):
+            if target_ip in runtime_usable_ipv4s(candidate.ipv4_addrs):
                 return InterfaceIpMatch(iface=candidate.name, ip=target_ip)
     return None

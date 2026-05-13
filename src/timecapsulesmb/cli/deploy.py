@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
+import ipaddress
+import socket
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -14,7 +16,14 @@ from timecapsulesmb.cli.runtime import (
     print_json,
     require_supported_device_compatibility,
 )
-from timecapsulesmb.core.config import DEFAULTS, AppConfig, airport_family_display_name_from_config, parse_bool, shell_quote
+from timecapsulesmb.core.config import (
+    DEFAULTS,
+    AppConfig,
+    airport_family_display_name_from_config,
+    extract_host,
+    parse_bool,
+    shell_quote,
+)
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
@@ -49,6 +58,11 @@ from timecapsulesmb.device.storage import (
     build_dry_run_payload_home,
     verify_payload_home_conn,
 )
+from timecapsulesmb.device.probe import (
+    is_runtime_usable_ipv4,
+    read_interface_ipv4_addrs_conn,
+    runtime_usable_ipv4s,
+)
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_green, color_red
 
@@ -76,12 +90,64 @@ def _render_flash_config_assignment(key: str, value: str | int) -> str:
     return f"{key}={shell_quote(value)}"
 
 
+def _ipv4_literal(value: str) -> str | None:
+    value = value.strip()
+    try:
+        parsed = ipaddress.ip_address(value)
+    except ValueError:
+        parts = value.split(".")
+        if len(parts) != 4 or any(not part.isdigit() for part in parts):
+            return None
+        octets: list[str] = []
+        for part in parts:
+            octet = int(part, 10)
+            if octet < 0 or octet > 255:
+                return None
+            octets.append(str(octet))
+        return ".".join(octets)
+    if parsed.version != 4:
+        return None
+    return str(parsed)
+
+
+def _resolve_host_ipv4s(host: str) -> tuple[str, ...]:
+    if not host:
+        return ()
+    try:
+        results = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
+    except OSError:
+        return ()
+    ordered: list[str] = []
+    for result in results:
+        sockaddr = result[4]
+        if not sockaddr:
+            continue
+        ip_addr = sockaddr[0]
+        if ip_addr and ip_addr not in ordered:
+            ordered.append(ip_addr)
+    return tuple(ordered)
+
+
+def derive_net_ipv4_hint(config: AppConfig, iface_ipv4_addrs: tuple[str, ...]) -> str:
+    usable_iface_ips = set(runtime_usable_ipv4s(iface_ipv4_addrs))
+    if not usable_iface_ips:
+        return ""
+    host = extract_host(config.require("TC_HOST"))
+    literal = _ipv4_literal(host)
+    candidates = (literal,) if literal is not None else _resolve_host_ipv4s(host)
+    for ip_addr in candidates:
+        if is_runtime_usable_ipv4(ip_addr) and ip_addr in usable_iface_ips:
+            return ip_addr
+    return ""
+
+
 def render_flash_runtime_config(
     config: AppConfig,
     payload_home: PayloadHome,
     *,
     nbns_enabled: bool,
     debug_logging: bool,
+    net_ipv4_hint: str = "",
     apple_mount_wait_seconds: int = DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
 ) -> str:
     internal_root_default = config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])
@@ -90,6 +156,7 @@ def render_flash_runtime_config(
         ("TC_CONFIG_VERSION", 1),
         ("PAYLOAD_DIR_NAME", payload_home.payload_dir_name),
         ("NET_IFACE", config.require("TC_NET_IFACE")),
+        ("NET_IPV4_HINT", net_ipv4_hint),
         ("SMB_SAMBA_USER", config.require("TC_SAMBA_USER")),
         ("MDNS_DEVICE_MODEL", config.get("TC_MDNS_DEVICE_MODEL", DEFAULTS["TC_MDNS_DEVICE_MODEL"])),
         ("AIRPORT_SYAP", config.get("TC_AIRPORT_SYAP", DEFAULTS["TC_AIRPORT_SYAP"])),
@@ -249,11 +316,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         command_context.set_stage("pre_upload_actions")
         run_remote_actions(connection, plan.pre_upload_actions)
         command_context.set_stage("prepare_deployment_files")
+        iface_ipv4_addrs = read_interface_ipv4_addrs_conn(connection, config.require("TC_NET_IFACE"))
+        net_ipv4_hint = derive_net_ipv4_hint(config, iface_ipv4_addrs)
         flash_config_text = render_flash_runtime_config(
             config,
             payload_home,
             nbns_enabled=nbns_enabled,
             debug_logging=args.debug_logging,
+            net_ipv4_hint=net_ipv4_hint,
             apple_mount_wait_seconds=apple_mount_wait_seconds,
         )
 

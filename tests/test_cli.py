@@ -312,6 +312,12 @@ class CliTests(unittest.TestCase):
                 return_value=("192.168.1.217",),
             )
         )
+        self._exit_stack.enter_context(
+            mock.patch(
+                "timecapsulesmb.cli.deploy.read_interface_ipv4_addrs_conn",
+                return_value=("192.168.1.217",),
+            )
+        )
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.device.probe.tcp_open", return_value=False))
         self._exit_stack.enter_context(mock.patch("timecapsulesmb.cli.configure.missing_required_python_module", return_value=None))
         self._exit_stack.enter_context(

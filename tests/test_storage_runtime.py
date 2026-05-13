@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shlex
+import socket
 import subprocess
 import tempfile
 import textwrap
@@ -9,7 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from timecapsulesmb.core.config import AppConfig
-from timecapsulesmb.cli.deploy import render_flash_runtime_config
+from timecapsulesmb.cli.deploy import derive_net_ipv4_hint, render_flash_runtime_config
 from timecapsulesmb.deploy.executor import upload_flash_file
 from timecapsulesmb.deploy.planner import (
     GENERATED_FLASH_CONFIG_SOURCE,
@@ -19,6 +20,7 @@ from timecapsulesmb.device.probe import (
     normalize_runtime_mdns_host_label,
     normalize_runtime_mdns_instance_name,
     normalize_runtime_netbios_name,
+    runtime_ipv4_cidr_from_ifconfig,
 )
 from timecapsulesmb.device.storage import (
     PayloadVerificationResult,
@@ -95,6 +97,7 @@ class StorageRuntimeTests(unittest.TestCase):
                 TC_CONFIG_VERSION=1
                 PAYLOAD_DIR_NAME='.samba4'
                 NET_IFACE='bridge0'
+                NET_IPV4_HINT=''
                 SMB_SAMBA_USER='admin'
                 MDNS_DEVICE_MODEL='TimeCapsule6,106'
                 AIRPORT_SYAP='106'
@@ -242,6 +245,132 @@ class StorageRuntimeTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("127.0.0.1/8 192.168.1.2/24", proc.stdout)
         self.assertIn("network interface bridge0 ready with IPv4 192.168.1.2/24", proc.stdout)
+
+    def test_common_runtime_interface_ipv4_cidr_matches_python_policy(self) -> None:
+        multi_ipv4 = textwrap.dedent(
+            """\
+            bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+                    inet 10.0.1.3 netmask 0xffff0000 broadcast 10.0.255.255
+                    inet 192.168.1.2 netmask 0xffffff00 broadcast 192.168.1.255
+            """
+        )
+        cases = {
+            "exact_hint": (multi_ipv4, "192.168.1.2"),
+            "stale_hint": (multi_ipv4, "192.168.99.99"),
+            "absent_hint": (multi_ipv4, ""),
+            "usable_after_bad": (
+                textwrap.dedent(
+                    """\
+                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+                            inet 0.0.0.0 netmask 0xff000000 broadcast 255.255.255.255
+                            inet 127.0.0.1 netmask 0xff000000 broadcast 127.255.255.255
+                            inet 169.254.44.9 netmask 0xffff0000 broadcast 169.254.255.255
+                            inet 192.168.1.2 netmask 0xffffff00 broadcast 192.168.1.255
+                    """
+                ),
+                "169.254.44.9",
+            ),
+            "link_local_only": (
+                textwrap.dedent(
+                    """\
+                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+                            inet 0.0.0.0 netmask 0xff000000 broadcast 255.255.255.255
+                            inet 169.254.44.9 netmask 0xffff0000 broadcast 169.254.255.255
+                    """
+                ),
+                "169.254.44.9",
+            ),
+            "active_no_ipv4": (
+                textwrap.dedent(
+                    """\
+                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+                            status: active
+                    """
+                ),
+                "",
+            ),
+            "missing_netmask": (
+                textwrap.dedent(
+                    """\
+                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+                            inet 10.20.3.4 broadcast 10.20.3.255
+                    """
+                ),
+                "",
+            ),
+            "dotted_netmask": (
+                textwrap.dedent(
+                    """\
+                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+                            inet 10.20.3.4 netmask 255.255.254.0 broadcast 10.20.3.255
+                    """
+                ),
+                "",
+            ),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            case_dir = tmp_path / "ifconfig-cases"
+            case_dir.mkdir()
+            for name, (raw, hint) in cases.items():
+                (case_dir / f"{name}.txt").write_text(raw)
+                (case_dir / f"{name}.hint").write_text(hint)
+            fake_ifconfig = tmp_path / "ifconfig"
+            fake_ifconfig.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    case "$1" in
+                        bridge0)
+                            cat {shlex.quote(str(case_dir))}/"$IFCONFIG_CASE.txt"
+                            ;;
+                        *)
+                            exit 1
+                            ;;
+                    esac
+                    """
+                )
+            )
+            fake_ifconfig.chmod(0o755)
+            common_path = flash / "common.sh"
+            common_path.write_text(common_path.read_text().replace("/sbin/ifconfig", str(fake_ifconfig)))
+            case_names = " ".join(shlex.quote(name) for name in cases)
+            script = tmp_path / "runtime-interface-policy.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    for case_name in {case_names}; do
+                        IFCONFIG_CASE=$case_name
+                        IFCONFIG_HINT=$(cat {shlex.quote(str(case_dir))}/"$IFCONFIG_CASE.hint")
+                        export IFCONFIG_CASE
+                        export IFCONFIG_HINT
+                        status=0
+                        cidr=$(get_runtime_iface_ipv4_cidr bridge0 "$IFCONFIG_HINT") || status=$?
+                        printf '__TC_BEGIN__\\t%s\\t%s\\n' "$case_name" "$status"
+                        if [ "$status" -eq 0 ]; then
+                            printf '%s\\n' "$cidr"
+                        fi
+                        printf '__TC_END__\\t%s\\n' "$case_name"
+                    done
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        sections = self.parse_named_shell_sections(proc.stdout)
+        for name, (raw, hint) in cases.items():
+            with self.subTest(case=name):
+                expected_cidr = runtime_ipv4_cidr_from_ifconfig(raw, hint_ip=hint)
+                status, stdout = sections[name]
+                self.assertEqual(status, 0 if expected_cidr is not None else 1)
+                self.assertEqual(stdout, f"{expected_cidr}\n" if expected_cidr is not None else "")
 
     def write_fake_acp(self, tmp_path: Path, raw: str | bytes, *, final_newline: bool = True) -> Path:
         acp = tmp_path / "acp"
@@ -912,10 +1041,12 @@ MaSt = (
             PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
             nbns_enabled=True,
             debug_logging=True,
+            net_ipv4_hint="10.0.0.2",
             apple_mount_wait_seconds=12,
         )
 
         self.assertIn("PAYLOAD_DIR_NAME=.samba4\n", rendered)
+        self.assertIn("NET_IPV4_HINT=10.0.0.2\n", rendered)
         self.assertNotIn("PAYLOAD_VOLUME_HINT", rendered)
         self.assertNotIn("PAYLOAD_DEVICE_HINT", rendered)
         self.assertNotIn("PAYLOAD_INSTALL_ID", rendered)
@@ -926,6 +1057,41 @@ MaSt = (
         self.assertNotIn("MDNS_INSTANCE_NAME", rendered)
         self.assertNotIn("MDNS_HOST_LABEL", rendered)
         self.assertNotIn("TC_SHARE_NAME", rendered)
+
+    def test_deploy_net_ipv4_hint_uses_literal_host_on_interface(self) -> None:
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_NET_IFACE": "bridge0"})
+
+        hint = derive_net_ipv4_hint(config, ("169.254.44.9", "10.0.0.2"))
+
+        self.assertEqual(hint, "10.0.0.2")
+
+    def test_deploy_net_ipv4_hint_resolves_hostname_on_interface(self) -> None:
+        config = AppConfig.from_values({"TC_HOST": "root@timecapsule.local", "TC_NET_IFACE": "bridge0"})
+        resolved = [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("169.254.44.9", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("10.0.0.2", 0)),
+        ]
+
+        with mock.patch("timecapsulesmb.cli.deploy.socket.getaddrinfo", return_value=resolved):
+            hint = derive_net_ipv4_hint(config, ("10.0.0.2",))
+
+        self.assertEqual(hint, "10.0.0.2")
+
+    def test_deploy_net_ipv4_hint_omits_unresolved_or_unmatched_host(self) -> None:
+        config = AppConfig.from_values({"TC_HOST": "root@timecapsule.local", "TC_NET_IFACE": "bridge0"})
+        resolved = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("10.0.0.3", 0))]
+
+        with mock.patch("timecapsulesmb.cli.deploy.socket.getaddrinfo", return_value=resolved):
+            self.assertEqual(derive_net_ipv4_hint(config, ("10.0.0.2",)), "")
+        with mock.patch("timecapsulesmb.cli.deploy.socket.getaddrinfo", side_effect=OSError):
+            self.assertEqual(derive_net_ipv4_hint(config, ("10.0.0.2",)), "")
+
+    def test_deploy_net_ipv4_hint_rejects_link_local_host(self) -> None:
+        config = AppConfig.from_values({"TC_HOST": "root@169.254.44.9", "TC_NET_IFACE": "bridge0"})
+
+        hint = derive_net_ipv4_hint(config, ("169.254.44.9",))
+
+        self.assertEqual(hint, "")
 
     def test_common_runtime_identity_normalizers_match_python(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

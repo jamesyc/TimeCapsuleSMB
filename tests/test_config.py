@@ -144,6 +144,7 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn("TC_MDNS_INSTANCE_NAME", rendered)
         self.assertNotIn("TC_MDNS_HOST_LABEL", rendered)
         self.assertNotIn("TC_NETBIOS_NAME", rendered)
+        self.assertNotIn("NET_IPV4_HINT", rendered)
         self.assertIn("TC_MDNS_DEVICE_MODEL=TimeCapsule", rendered)
         self.assertIn("TC_AIRPORT_SYAP=''", rendered)
         self.assertIn("TC_INTERNAL_SHARE_USE_DISK_ROOT=false", rendered)

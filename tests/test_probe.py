@@ -156,7 +156,7 @@ TC_DIAG_END routes
         self.assertEqual(diagnostics["remote_network_probe_rc"], 0)
         self.assertIn("bridge0: flags=", str(diagnostics["remote_network_target_ifconfig"]))
         self.assertEqual(diagnostics["remote_network_target_ip_matches"], ["bcmeth1"])
-        self.assertEqual(diagnostics["remote_network_preferred_iface"], "bcmeth1")
+        self.assertIsNone(diagnostics["remote_network_preferred_iface"])
         self.assertEqual(diagnostics["remote_network_failure_hint"], "configured interface bridge0 has no IPv4 address")
         self.assertEqual(
             diagnostics["remote_network_ipv4_interfaces"],
@@ -347,7 +347,7 @@ bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu
             result = probe_remote_interface_candidates_conn(connection)
         self.assertEqual(result.preferred_iface, "bridge0")
 
-    def test_preferred_interface_name_exact_link_local_target_can_win(self) -> None:
+    def test_preferred_interface_name_link_local_target_does_not_win(self) -> None:
         ifconfig_output = """
 bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
 \tinet 169.254.44.9 netmask 0xffff0000 broadcast 169.254.255.255
@@ -360,7 +360,7 @@ bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu
         proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=ifconfig_output)
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
             result = probe_remote_interface_candidates_conn(connection)
-        self.assertEqual(preferred_interface_name(result.candidates, target_ips=("169.254.44.9",)), "bcmeth1")
+        self.assertEqual(preferred_interface_name(result.candidates, target_ips=("169.254.44.9",)), "bridge0")
 
     def test_read_interface_ipv4_conn_returns_first_runtime_usable_address(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")
