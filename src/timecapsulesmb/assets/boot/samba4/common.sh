@@ -55,16 +55,62 @@ TC_MDNS_CAPTURE_PID=
 TC_APPLE_MDNS_SNAPSHOT_START=
 TC_RUNTIME_IDENTITY_READY=
 SMB_SERVER_STRING=
+TC_DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=31
+TC_DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=3
+TC_RUNTIME_ENV_WARNING_LINES=
+TC_RUNTIME_ENV_WARNINGS_LOGGED=0
 
 LEGACY_PREFIX_NETBSD7=/root/tc-netbsd7
 LEGACY_PREFIX_NETBSD4=/root/tc-netbsd4
 LEGACY_PREFIX_NETBSD4LE=/root/tc-netbsd4le
 LEGACY_PREFIX_NETBSD4BE=/root/tc-netbsd4be
 
+tc_add_runtime_env_warning() {
+    warning_line=$1
+
+    if [ -n "$TC_RUNTIME_ENV_WARNING_LINES" ]; then
+        TC_RUNTIME_ENV_WARNING_LINES="$TC_RUNTIME_ENV_WARNING_LINES
+$warning_line"
+    else
+        TC_RUNTIME_ENV_WARNING_LINES=$warning_line
+    fi
+}
+
+tc_log_runtime_env_warnings() {
+    [ -n "$TC_RUNTIME_ENV_WARNING_LINES" ] || return 0
+    [ "$TC_RUNTIME_ENV_WARNINGS_LOGGED" = "1" ] && return 0
+
+    printf '%s\n' "$TC_RUNTIME_ENV_WARNING_LINES" | while IFS= read -r warning_line || [ -n "$warning_line" ]; do
+        [ -n "$warning_line" ] || continue
+        tc_log "$warning_line"
+    done
+    TC_RUNTIME_ENV_WARNINGS_LOGGED=1
+}
+
 tc_init_runtime_env() {
     DISKD_USE_VOLUME_ATTEMPTS=${DISKD_USE_VOLUME_ATTEMPTS:-2}
     DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=${DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS:-31}
     DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=${DISKD_USE_VOLUME_MOUNT_POLL_SECONDS:-3}
+    TC_RUNTIME_ENV_WARNING_LINES=
+    TC_RUNTIME_ENV_WARNINGS_LOGGED=0
+    case "$DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS" in
+        ""|*[!0123456789]*)
+            TC_DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=31
+            tc_add_runtime_env_warning "runtime config: invalid DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=$DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS; using 31s"
+            ;;
+        *)
+            TC_DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=$DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS
+            ;;
+    esac
+    case "$DISKD_USE_VOLUME_MOUNT_POLL_SECONDS" in
+        ""|*[!0123456789]*|0)
+            TC_DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=3
+            tc_add_runtime_env_warning "runtime config: invalid DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=$DISKD_USE_VOLUME_MOUNT_POLL_SECONDS; using 3s"
+            ;;
+        *)
+            TC_DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=$DISKD_USE_VOLUME_MOUNT_POLL_SECONDS
+            ;;
+    esac
     ATA_IDLE_SECONDS=${ATA_IDLE_SECONDS:-300}
     MAST_DISCOVERY_WAIT_SECONDS=${MAST_DISCOVERY_WAIT_SECONDS:-120}
     WATCHDOG_DISKD_USE_VOLUME_ATTEMPTS=${WATCHDOG_DISKD_USE_VOLUME_ATTEMPTS:-$DISKD_USE_VOLUME_ATTEMPTS}
@@ -785,24 +831,9 @@ tc_wait_for_diskd_volume_mount() {
     volume_root=$1
     mount_context=$2
 
-    case "$DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS" in
-        ""|*[!0123456789]*)
-            tc_log "$mount_context: invalid DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=$DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS; using 31s"
-            mount_timeout_seconds=31
-            ;;
-        *)
-            mount_timeout_seconds=$DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS
-            ;;
-    esac
-    case "$DISKD_USE_VOLUME_MOUNT_POLL_SECONDS" in
-        ""|*[!0123456789]*|0)
-            tc_log "$mount_context: invalid DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=$DISKD_USE_VOLUME_MOUNT_POLL_SECONDS; using 3s"
-            mount_poll_seconds=3
-            ;;
-        *)
-            mount_poll_seconds=$DISKD_USE_VOLUME_MOUNT_POLL_SECONDS
-            ;;
-    esac
+    tc_log_runtime_env_warnings
+    mount_timeout_seconds=${TC_DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS:-31}
+    mount_poll_seconds=${TC_DISKD_USE_VOLUME_MOUNT_POLL_SECONDS:-3}
 
     tc_log "$mount_context: waiting up to ${mount_timeout_seconds}s for diskd.useVolume to mount $volume_root"
     elapsed=0

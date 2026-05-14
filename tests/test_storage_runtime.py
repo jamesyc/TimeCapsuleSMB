@@ -3238,6 +3238,45 @@ MaSt = (
         self.assertNotIn("launching mount_hfs", log_text)
         self.assertNotIn("Apple mount", log_text)
 
+    def test_common_diskd_mount_wait_sanitizes_invalid_config_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "wake-invalid-wait-config.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=bogus
+                    DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=0
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    is_volume_root_mounted() {{ return 1; }}
+                    sleep() {{ :; }}
+                    tc_wait_for_diskd_volume_mount {volumes}/dk2 "test mount" || true
+                    tc_wait_for_diskd_volume_mount {volumes}/dk2 "test mount" || true
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            log_text.count("runtime config: invalid DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=bogus; using 31s"),
+            1,
+        )
+        self.assertEqual(
+            log_text.count("runtime config: invalid DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=0; using 3s"),
+            1,
+        )
+        self.assertEqual(log_text.count(f"test mount: waiting up to 31s for diskd.useVolume to mount {volumes}/dk2"), 2)
+
     def test_common_boot_and_watchdog_mount_policies_use_separate_attempt_counts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
