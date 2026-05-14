@@ -180,6 +180,38 @@ MaSt = (
         expected=(INTERNAL_DATA, EXTERNAL_UNTITLED),
     ),
     MaStFixture(
+        name="openstep_bare_partition_array_closer",
+        raw="""\
+MaSt = (
+    {
+        deviceName = "wd0";
+        builtin = true;
+        partitions = (
+            {
+                deviceName = "dk2";
+                name = "Data";
+                format = "hfs";
+                uuid = <f42bdb83 c2655522 a0872560 6a4d0abf>;
+            }
+        )
+    },
+    {
+        deviceName = "sd0";
+        builtin = false;
+        partitions = (
+            {
+                deviceName = "dk3";
+                name = "Untitled";
+                format = "hfs";
+                uuid = <51f93e6f dc69524d 986dcee4 d7cb3573>;
+            }
+        )
+    }
+);
+""",
+        expected=(INTERNAL_DATA, EXTERNAL_UNTITLED),
+    ),
+    MaStFixture(
         name="native_acp_array_internal_external",
         raw="""\
 [

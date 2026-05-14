@@ -775,103 +775,6 @@ MaSt = (
             (internal, external_a, external_b),
         )
 
-    def test_common_payload_candidate_order_is_internal_first_then_external_mast_order(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            script = tmp_path / "payload-order.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    mkdir -p "$RAM_VAR"
-                    cat >"$TC_VOLUMES_TSV" <<'EOF'
-                    sd0	0	dk3	{volumes}/dk3	USB A	51f93e6f-dc69-524d-986d-cee4d7cb3573
-                    wd0	1	dk2	{volumes}/dk2	Data	f42bdb83-c265-5522-a087-25606a4d0abf
-                    sd1	0	dk4	{volumes}/dk4	USB B	7d40eaac-182b-562b-a7b8-49bb5ed69c0f
-                    EOF
-                    tc_emit_payload_candidate_volumes "$TC_VOLUMES_TSV"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(
-            proc.stdout,
-            "\n".join(
-                (
-                    f"wd0\t1\tdk2\t{volumes}/dk2\tData\tf42bdb83-c265-5522-a087-25606a4d0abf",
-                    f"sd0\t0\tdk3\t{volumes}/dk3\tUSB A\t51f93e6f-dc69-524d-986d-cee4d7cb3573",
-                    f"sd1\t0\tdk4\t{volumes}/dk4\tUSB B\t7d40eaac-182b-562b-a7b8-49bb5ed69c0f",
-                    "",
-                )
-            ),
-        )
-
-    def test_common_payload_candidate_order_matches_python_for_shell_fixtures(self) -> None:
-        fixtures = tuple(fixture for fixture in SHELL_MAST_FIXTURES if fixture.expected)
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            cases = tmp_path / "payload-order-cases"
-            cases.mkdir()
-            for fixture in fixtures:
-                (cases / f"{fixture.name}.tsv").write_text(self.expected_topology_tsv(fixture, volumes))
-            names = " ".join(shlex.quote(fixture.name) for fixture in fixtures)
-            script = tmp_path / "payload-order-fixtures.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    mkdir -p "$RAM_VAR"
-                    for fixture_name in {names}; do
-                        printf '__TC_BEGIN__\\t%s\\t0\\n' "$fixture_name"
-                        cp {shlex.quote(str(cases))}/"$fixture_name.tsv" "$TC_VOLUMES_TSV"
-                        tc_emit_payload_candidate_volumes "$TC_VOLUMES_TSV"
-                        printf '__TC_END__\\t%s\\n' "$fixture_name"
-                    done
-                    """
-                )
-            )
-            script.chmod(0o755)
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        sections = self.parse_named_shell_sections(proc.stdout)
-        for fixture in fixtures:
-            with self.subTest(fixture=fixture.name):
-                ordered = ordered_payload_candidate_volumes(fixture.expected)
-                expected_lines = []
-                for volume in ordered:
-                    volume_root = self.mapped_volume_root(volume, volumes)
-                    builtin = "1" if volume.builtin else "0"
-                    expected_lines.append(
-                        "\t".join(
-                            (
-                                volume.disk_device,
-                                builtin,
-                                volume.partition_device,
-                                volume_root,
-                                volume.name,
-                                volume.adisk_uuid,
-                            )
-                        )
-                    )
-                status, stdout = sections[fixture.name]
-                self.assertEqual(status, 0)
-                self.assertEqual(stdout, "\n".join(expected_lines) + "\n")
-
     def test_select_payload_home_prefers_writable_internal_volume(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")
         internal = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
@@ -2222,81 +2125,7 @@ MaSt = (
         self.assertIn("max log size = 0", proc.stdout)
         self.assertIn("log level = 5 vfs:8 fruit:8", proc.stdout)
 
-    def test_common_payload_append_log_uses_payload_disk_and_bounds_normal_logs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            payload = volumes / "dk2/.samba4"
-            payload.mkdir(parents=True)
-            script = tmp_path / "payload-log.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    TC_RUNTIME_LOG_MAX_BYTES=120
-                    tc_init_runtime_env
-                    mkdir -p "$RAM_VAR"
-                    is_volume_root_mounted() {{ [ "$1" = "{volumes}/dk2" ]; }}
-                    tc_set_payload_log_dir {payload} {volumes}/dk2
-                    mkdir -p "$TC_PAYLOAD_LOG_DIR"
-                    printf 'old-old-old-old-old-old-old-old-old-old-old-old-old-old-old-old-old-old\\n' >"$TC_PAYLOAD_LOG_DIR/watchdog.log"
-                    tc_set_payload_append_log "$TC_PAYLOAD_LOG_DIR/watchdog.log" watchdog {volumes}/dk2 "$RAM_VAR/watchdog.log"
-                    tc_log "final payload line"
-                    size=$(/usr/bin/wc -c <"$TC_PAYLOAD_LOG_DIR/watchdog.log" | sed 's/[^0-9]//g')
-                    printf 'size=%s\\n' "$size"
-                    printf 'ram=%s\\n' "$([ -f "$RAM_VAR/watchdog.log" ] && echo yes || echo no)"
-                    cat "$TC_PAYLOAD_LOG_DIR/watchdog.log"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        first_line = proc.stdout.splitlines()[0]
-        self.assertTrue(first_line.startswith("size="), proc.stdout)
-        self.assertLessEqual(int(first_line.removeprefix("size=")), 120)
-        self.assertIn("ram=no\n", proc.stdout)
-        self.assertIn("final payload line", proc.stdout)
-
-    def test_common_payload_append_log_falls_back_to_ram_when_payload_unmounted(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            payload = volumes / "dk2/.samba4"
-            payload.mkdir(parents=True)
-            script = tmp_path / "payload-log-fallback.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    mkdir -p "$RAM_VAR"
-                    is_volume_root_mounted() {{ return 1; }}
-                    tc_set_payload_log_dir {payload} {volumes}/dk2
-                    tc_set_payload_append_log "$TC_PAYLOAD_LOG_DIR/watchdog.log" watchdog {volumes}/dk2 "$RAM_VAR/watchdog.log"
-                    tc_log "fallback line"
-                    printf 'payload=%s\\n' "$([ -f "$TC_PAYLOAD_LOG_DIR/watchdog.log" ] && echo yes || echo no)"
-                    cat "$RAM_VAR/watchdog.log"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("payload=no\n", proc.stdout)
-        self.assertIn("fallback line", proc.stdout)
-
-    def test_common_watchdog_iteration_writes_ram_health_log(self) -> None:
+    def test_common_watchdog_service_iteration_writes_ram_health_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
@@ -2312,11 +2141,10 @@ MaSt = (
                     tc_set_log "$RAM_VAR/watchdog.log" watchdog
                     mkdir -p "$RAM_VAR"
                     sleep() {{ :; }}
-                    tc_topology_changed() {{ return 1; }}
                     tc_start_smbd_if_needed() {{ return 0; }}
                     tc_all_managed_services_healthy() {{ return 0; }}
                     runtime_process_present_by_ucomm() {{ return 0; }}
-                    tc_watchdog_iteration
+                    tc_watchdog_service_iteration
                     """
                 )
             )
@@ -2327,10 +2155,10 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "")
-        self.assertIn("watchdog pass: checking topology and managed services", log_text)
+        self.assertIn("watchdog service pass: checking managed services", log_text)
         self.assertIn("watchdog steady check: healthy", log_text)
 
-    def test_common_watchdog_iteration_checks_daemons_after_topology(self) -> None:
+    def test_common_watchdog_service_iteration_checks_daemons(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
@@ -2346,11 +2174,10 @@ MaSt = (
                     tc_init_runtime_env
                     mkdir -p "$RAM_VAR"
                     sleep() {{ :; }}
-                    tc_topology_changed() {{ return 1; }}
                     tc_start_smbd_if_needed() {{ echo smbd; }}
                     runtime_process_present_by_ucomm() {{ echo "process $1"; return 0; }}
                     tc_all_managed_services_healthy() {{ echo healthy; return 0; }}
-                    tc_watchdog_iteration
+                    tc_watchdog_service_iteration
                     """
                 )
             )
@@ -2425,7 +2252,7 @@ MaSt = (
 
                     tc_read_payload_state() {{ return 1; }}
                     sleep() {{ echo "sleep $1"; }}
-                    tc_watchdog_iteration() {{
+                    tc_watchdog_disk_iteration() {{
                         count=$(cat {tmp_path}/watchdog-count 2>/dev/null || echo 0)
                         count=$((count + 1))
                         echo "$count" >{tmp_path}/watchdog-count
@@ -2435,6 +2262,7 @@ MaSt = (
                         fi
                         return 1
                     }}
+                    tc_watchdog_service_iteration() {{ echo service; }}
                     """
                 )
             )
@@ -2451,6 +2279,46 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "iteration 1\nsleep 10\niteration 2\n")
         self.assertIn("watchdog startup beginning", log_text)
+
+    def test_watchdog_startup_cleans_stale_mast_temp_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            state_dir = memory / "samba4/var"
+            state_dir.mkdir(parents=True)
+            stale_volumes = state_dir / "watchdog-volumes.tsv.123"
+            stale_raw = state_dir / "watchdog-mast.raw.123.debounce"
+            keep_file = state_dir / "topology.signature"
+            stale_volumes.write_text("stale volumes")
+            stale_raw.write_text("stale raw")
+            keep_file.write_text("keep")
+            common_path = flash / "common.sh"
+            common_path.write_text(
+                common_path.read_text()
+                + textwrap.dedent(
+                    f"""\
+
+                    tc_read_payload_state() {{ return 1; }}
+                    tc_watchdog_disk_iteration() {{
+                        [ ! -e {stale_volumes} ] || echo stale-volumes-present
+                        [ ! -e {stale_raw} ] || echo stale-raw-present
+                        [ -e {keep_file} ] && echo keep-present
+                        exit 0
+                    }}
+                    """
+                )
+            )
+
+            proc = subprocess.run(
+                [str(flash / "watchdog.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "keep-present\n")
 
     def test_common_mdns_capture_wait_times_out_and_continues_startup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2928,6 +2796,8 @@ MaSt = (
                     . {flash}/common.sh
                     . {flash}/tcapsulesmb.conf
                     DISKD_USE_VOLUME_ATTEMPTS=2
+                    DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=7
+                    DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=3
                     tc_init_runtime_env
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
@@ -2952,11 +2822,23 @@ MaSt = (
             proc.stdout.splitlines(),
             [
                 f"acp rpc diskd.useVolume path:s:{volumes}/dk2",
+                "sleep 3",
+                "sleep 3",
+                "sleep 1",
                 "sleep 1",
                 f"acp rpc diskd.useVolume path:s:{volumes}/dk2",
-                f"acp rpc diskd.useVolume path:s:{volumes}/dk3",
+                "sleep 3",
+                "sleep 3",
                 "sleep 1",
                 f"acp rpc diskd.useVolume path:s:{volumes}/dk3",
+                "sleep 3",
+                "sleep 3",
+                "sleep 1",
+                "sleep 1",
+                f"acp rpc diskd.useVolume path:s:{volumes}/dk3",
+                "sleep 3",
+                "sleep 3",
+                "sleep 1",
             ],
         )
         self.assertIn("boot disk load: activating MaSt volumes through diskd.useVolume", log_text)
@@ -3116,8 +2998,9 @@ MaSt = (
                         count=$(cat {tmp_path}/count 2>/dev/null || echo 0)
                         count=$((count + 1))
                         echo "$count" >{tmp_path}/count
-                        [ "$count" -ge 2 ]
+                        [ "$count" -ge 4 ]
                     }}
+                    sleep() {{ echo "sleep $1"; }}
                     tc_wake_or_mount_volume /dev/dk2 {volumes}/dk2
                     """
                 )
@@ -3129,6 +3012,7 @@ MaSt = (
             log_text = (memory / "samba4/var/test.log").read_text()
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "sleep 3\nsleep 3\n")
         self.assertIn(f"rpc diskd.useVolume path:s:{volumes}/dk2", acp_log)
         self.assertIn(
             f"MaSt volume {volumes}/dk2: mounted at {volumes}/dk2 after diskd.useVolume attempt 1/2",
@@ -3157,7 +3041,7 @@ MaSt = (
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR" {volumes}/dk2
                     is_volume_root_mounted() {{ return 0; }}
-                    sleep() {{ echo "unexpected sleep"; }}
+                    sleep() {{ echo "sleep $1"; }}
                     tc_wake_or_mount_volume /dev/dk2 {volumes}/dk2
                     """
                 )
@@ -3196,6 +3080,8 @@ MaSt = (
                     . {flash}/common.sh
                     . {flash}/tcapsulesmb.conf
                     DISKD_USE_VOLUME_ATTEMPTS=2
+                    DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=7
+                    DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=3
                     tc_init_runtime_env
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR" {volumes}/dk2
@@ -3211,13 +3097,92 @@ MaSt = (
             log_text = (memory / "samba4/var/test.log").read_text()
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "sleep 1\n")
+        self.assertEqual(proc.stdout, "sleep 3\nsleep 3\nsleep 1\nsleep 1\nsleep 3\nsleep 3\nsleep 1\n")
         self.assertIn(
             f"MaSt volume {volumes}/dk2: diskd.useVolume did not mount {volumes}/dk2 after 2 attempt(s); leaving volume unavailable without mount_hfs fallback",
             log_text,
         )
         self.assertNotIn("launching mount_hfs", log_text)
         self.assertNotIn("Apple mount", log_text)
+
+    def test_common_diskd_mount_wait_sanitizes_invalid_config_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "wake-invalid-wait-config.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=bogus
+                    DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=0
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    is_volume_root_mounted() {{ return 1; }}
+                    sleep() {{ :; }}
+                    tc_wait_for_diskd_volume_mount {volumes}/dk2 "test mount" || true
+                    tc_wait_for_diskd_volume_mount {volumes}/dk2 "test mount" || true
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            log_text.count("runtime config: invalid DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=bogus; using 31s"),
+            1,
+        )
+        self.assertEqual(
+            log_text.count("runtime config: invalid DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=0; using 3s"),
+            1,
+        )
+        self.assertEqual(log_text.count(f"test mount: waiting up to 31s for diskd.useVolume to mount {volumes}/dk2"), 2)
+
+    def test_common_diskd_mount_wait_zero_timeout_checks_once_without_sleeping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            count_file = tmp_path / "mount-check-count"
+            script = tmp_path / "wake-zero-timeout.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=0
+                    DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=3
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    is_volume_root_mounted() {{
+                        count=$(/bin/cat {count_file} 2>/dev/null || echo 0)
+                        count=$((count + 1))
+                        echo "$count" >{count_file}
+                        return 1
+                    }}
+                    sleep() {{ echo "unexpected sleep $1"; exit 99; }}
+                    status=0
+                    tc_wait_for_diskd_volume_mount {volumes}/dk2 "test mount" || status=$?
+                    printf 'status=%s checks=%s\\n' "$status" "$(/bin/cat {count_file})"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "status=1 checks=1\n")
+        self.assertIn(f"test mount: timed out after 0s waiting for {volumes}/dk2 to mount", log_text)
 
     def test_common_boot_and_watchdog_mount_policies_use_separate_attempt_counts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3240,7 +3205,7 @@ MaSt = (
                         printf '%s %s %s %s\\n' "$1" "$2" "$3" "$4"
                         return 1
                     }}
-                    tc_boot_wake_or_mount_volume /dev/dk2 {volumes}/dk2 || true
+                    tc_wake_or_mount_volume /dev/dk2 {volumes}/dk2 || true
                     tc_watchdog_wake_or_mount_volume /dev/dk2 {volumes}/dk2 || true
                     """
                 )
@@ -3254,7 +3219,317 @@ MaSt = (
         self.assertEqual(lines[0], f"/dev/dk2 {volumes}/dk2 7 MaSt volume {volumes}/dk2")
         self.assertEqual(lines[1], f"/dev/dk2 {volumes}/dk2 2 watchdog volume {volumes}/dk2")
 
-    def test_common_watchdog_iteration_checks_processes_without_mounting_active_shares(self) -> None:
+    def test_common_watchdog_mast_users_reclaims_only_active_zero_user_shares(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            events = tmp_path / "events.log"
+            acp = tmp_path / "acp"
+            acp.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    case "$*" in
+                        "-A MaSt")
+                            cat <<'OUT'
+                    [
+                        {{
+                            deviceName="wd0"
+                            partitions=
+                            [
+                                {{
+                                    deviceName="dk2"
+                                    format="hfs"
+                                    users=1
+                                    name="Data"
+                                    uuid=f42bdb83 c2655522 a0872560 6a4d0abf |binary| (16 bytes)
+                                }}
+                            ]
+                            builtin=true
+                        }}
+                        {{
+                            deviceName="sd0"
+                            partitions=
+                            [
+                                {{
+                                    deviceName="dk3"
+                                    format="hfs"
+                                    users=0
+                                    name="USB"
+                                    uuid=51f93e6f dc69524d 986dcee4 d7cb3573 |binary| (16 bytes)
+                                }}
+                                {{
+                                    deviceName="dk4"
+                                    format="hfs"
+                                    users=0
+                                    name="Ignored"
+                                    uuid=aaaaaaaa bbbbbbbb cccccccc dddddddd |binary| (16 bytes)
+                                }}
+                            ]
+                        }}
+                    ]
+                    OUT
+                            ;;
+                        rpc*diskd.useVolume*)
+                            echo "$@" >>{shlex.quote(str(events))}
+                            root=${{3#path:s:}}
+                            mkdir -p "$root"
+                            touch "$root/.mounted"
+                            ;;
+                    esac
+                    """
+                )
+            )
+            acp.chmod(0o755)
+            script = tmp_path / "watchdog-mast-users-reclaim.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR" {volumes}/dk2 {volumes}/dk3 {volumes}/dk4
+                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    USB	{volumes}/dk3	dk3	0	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+                    EOF
+                    is_volume_root_mounted() {{ [ -f "$1/.mounted" ]; }}
+                    sleep() {{ echo "sleep $1" >>{events}; }}
+                    tc_watchdog_capture_mast_state "$RAM_VAR/mast-users.tsv" "$RAM_VAR/mast-users.raw"
+                    tc_watchdog_check_active_mast_users "$RAM_VAR/mast-users.raw"
+                    cat {events}
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout.splitlines(),
+            [
+                f"rpc diskd.useVolume path:s:{volumes}/dk3",
+            ],
+        )
+        self.assertIn("watchdog disk check: managed volume dk3 users=0 requires diskd reclaim", log_text)
+        self.assertIn("watchdog disk check: reclaimed 1 managed volume(s) with users=0", log_text)
+        self.assertNotIn("dk4 requires diskd reclaim", log_text)
+
+    def test_common_watchdog_mast_users_requires_snapshot_argument_for_active_shares(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "watchdog-mast-users-requires-snapshot.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                    status=0
+                    tc_watchdog_check_active_mast_users || status=$?
+                    echo "status=$status"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "status=1\n")
+        self.assertIn("watchdog disk check: MaSt users snapshot argument is required", log_text)
+
+    def test_common_watchdog_mast_users_failure_falls_back_to_disk_runtime_reload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            acp = tmp_path / "acp"
+            acp.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/bin/sh
+                    case "$*" in
+                        "-A MaSt")
+                            cat <<'OUT'
+                    [
+                        {
+                            deviceName="sd0"
+                            partitions=
+                            [
+                                {
+                                    deviceName="dk3"
+                                    format="hfs"
+                                    users=0
+                                    name="USB"
+                                    uuid=51f93e6f dc69524d 986dcee4 d7cb3573 |binary| (16 bytes)
+                                }
+                            ]
+                        }
+                    ]
+                    OUT
+                            ;;
+                        rpc*diskd.useVolume*) exit 1 ;;
+                    esac
+                    """
+                )
+            )
+            acp.chmod(0o755)
+            script = tmp_path / "watchdog-mast-users-reload.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR" {volumes}/dk3
+                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    USB	{volumes}/dk3	dk3	0	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+                    EOF
+                    tc_topology_changed_debounced_from_snapshot() {{ return 1; }}
+                    is_volume_root_mounted() {{ return 1; }}
+                    sleep() {{ echo "sleep $1"; }}
+                    tc_live_reload_disk_runtime() {{ echo "reload $1"; return 0; }}
+                    tc_exec_start_samba() {{ echo "exec $1"; exit 42; }}
+                    tc_watchdog_disk_iteration
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "sleep 1\nreload managed diskd users dropped to zero\n")
+
+    def test_common_watchdog_disk_iteration_reuses_single_mast_snapshot_for_topology_and_users(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            count_file = tmp_path / "acp-count"
+            acp = tmp_path / "acp"
+            acp.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    count=$(cat {shlex.quote(str(count_file))} 2>/dev/null || echo 0)
+                    count=$((count + 1))
+                    echo "$count" >{shlex.quote(str(count_file))}
+                    case "$*" in
+                        "-A MaSt")
+                            cat <<'OUT'
+                    [
+                        {{
+                            deviceName="wd0"
+                            partitions=
+                            [
+                                {{
+                                    deviceName="dk2"
+                                    format="hfs"
+                                    users=1
+                                    name="Data"
+                                    uuid=f42bdb83 c2655522 a0872560 6a4d0abf |binary| (16 bytes)
+                                }}
+                            ]
+                            builtin=true
+                        }}
+                    ]
+                    OUT
+                            ;;
+                    esac
+                    """
+                )
+            )
+            acp.chmod(0o755)
+            script = tmp_path / "watchdog-single-mast-snapshot.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    cat >"$TC_TOPOLOGY_SIGNATURE" <<'EOF'
+                    wd0	1	dk2	{volumes}/dk2	Data	f42bdb83-c265-5522-a087-25606a4d0abf
+                    EOF
+                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	f42bdb83-c265-5522-a087-25606a4d0abf
+                    EOF
+                    sleep() {{ echo "unexpected sleep $1"; }}
+                    tc_live_reload_disk_runtime() {{ echo "unexpected reload $1"; return 0; }}
+                    tc_exec_start_samba() {{ echo "unexpected exec $1"; exit 42; }}
+                    tc_watchdog_wake_or_mount_volume() {{ echo "unexpected reclaim $1 $2"; return 0; }}
+                    tc_watchdog_disk_iteration
+                    printf 'acp_count=%s\\n' "$(cat {shlex.quote(str(count_file))})"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "acp_count=1\n")
+
+    def test_common_watchdog_disk_iteration_skips_users_check_when_mast_snapshot_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            acp = tmp_path / "acp"
+            acp.write_text("#!/bin/sh\nexit 1\n")
+            acp.chmod(0o755)
+            script = tmp_path / "watchdog-mast-snapshot-fails.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	f42bdb83-c265-5522-a087-25606a4d0abf
+                    EOF
+                    tc_live_reload_disk_runtime() {{ echo "unexpected reload $1"; return 0; }}
+                    tc_exec_start_samba() {{ echo "unexpected exec $1"; exit 42; }}
+                    tc_watchdog_wake_or_mount_volume() {{ echo "unexpected reclaim $1 $2"; return 0; }}
+                    tc_watchdog_disk_iteration
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "")
+        self.assertIn("watchdog disk check: MaSt snapshot read failed or produced no valid HFS volumes", log_text)
+        self.assertIn("watchdog disk check: skipping MaSt users check because snapshot is unavailable", log_text)
+        self.assertNotIn("MaSt users recovery requires full disk runtime reload", log_text)
+
+    def test_common_watchdog_service_iteration_checks_processes_without_mounting_active_shares(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
@@ -3276,11 +3551,10 @@ MaSt = (
                     USB	{volumes}/dk3	dk3	0	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
                     EOF
                     sleep() {{ :; }}
-                    tc_topology_changed() {{ return 1; }}
                     tc_watchdog_wake_or_mount_volume() {{ echo "mount $1 $2"; return 0; }}
                     tc_start_smbd_if_needed() {{ echo smbd; }}
                     runtime_process_present_by_ucomm() {{ return 0; }}
-                    tc_watchdog_iteration
+                    tc_watchdog_service_iteration
                     """
                 )
             )
@@ -3294,7 +3568,7 @@ MaSt = (
             "smbd\n",
         )
 
-    def test_common_watchdog_iteration_refreshes_identity_once_before_service_recovery(self) -> None:
+    def test_common_watchdog_service_iteration_refreshes_identity_once_before_service_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
@@ -3316,7 +3590,6 @@ MaSt = (
                     SMB_NETBIOS_NAME=StaleName
                     TC_RUNTIME_IDENTITY_READY=1
                     sleep() {{ :; }}
-                    tc_topology_changed() {{ return 1; }}
                     tc_start_smbd_if_needed() {{ return 0; }}
                     tc_init_runtime_identity() {{
                         echo identity-refresh
@@ -3336,7 +3609,7 @@ MaSt = (
                     tc_launch_nbns() {{ echo "nbns-name=$SMB_NETBIOS_NAME"; }}
                     tc_all_managed_services_healthy() {{ return 1; }}
                     status=0
-                    tc_watchdog_iteration || status=$?
+                    tc_watchdog_service_iteration || status=$?
                     echo "status=$status"
                     """
                 )
@@ -3407,7 +3680,7 @@ MaSt = (
         self.assertNotIn("start\n", proc.stdout)
         self.assertIn("watchdog recovery: one or more active share volumes are unavailable before smbd restart", log_text)
 
-    def test_common_watchdog_iteration_does_not_reexec_when_share_state_is_missing(self) -> None:
+    def test_common_watchdog_service_iteration_does_not_reexec_when_share_state_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
@@ -3426,11 +3699,10 @@ MaSt = (
                     chmod 755 "$TC_SMBD_BIN"
                     : >"$TC_SMBD_CONF"
                     sleep() {{ :; }}
-                    tc_topology_changed() {{ return 1; }}
                     tc_start_smbd_if_needed() {{ echo smbd; return 0; }}
                     runtime_process_present_by_ucomm() {{ return 0; }}
                     tc_exec_start_samba() {{ echo "exec $1"; exit 42; }}
-                    tc_watchdog_iteration
+                    tc_watchdog_service_iteration
                     """
                 )
             )
@@ -3441,7 +3713,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "smbd\n")
 
-    def test_common_watchdog_iteration_reexecs_start_samba_on_topology_change(self) -> None:
+    def test_common_watchdog_disk_iteration_reexecs_start_samba_on_topology_change(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
@@ -3456,9 +3728,10 @@ MaSt = (
                     tc_init_runtime_env
                     mkdir -p "$RAM_VAR"
                     sleep() {{ :; }}
-                    tc_topology_changed() {{ return 0; }}
+                    tc_watchdog_capture_mast_state() {{ : >"$1"; : >"$2"; return 0; }}
+                    tc_topology_changed_debounced_from_snapshot() {{ return 0; }}
                     tc_exec_start_samba() {{ echo "exec $1"; exit 42; }}
-                    tc_watchdog_iteration
+                    tc_watchdog_disk_iteration
                     """
                 )
             )
@@ -3469,7 +3742,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 42, proc.stderr)
         self.assertEqual(proc.stdout, "exec MaSt topology changed\n")
 
-    def test_common_watchdog_iteration_ignores_transient_topology_change_after_debounce(self) -> None:
+    def test_common_watchdog_disk_iteration_ignores_transient_topology_change_after_debounce(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
@@ -3484,16 +3757,12 @@ MaSt = (
                     tc_init_runtime_env
                     mkdir -p "$RAM_VAR"
                     sleep() {{ :; }}
-                    tc_topology_changed() {{
-                        count=$(cat {tmp_path}/topology-count 2>/dev/null || echo 0)
-                        count=$((count + 1))
-                        echo "$count" >{tmp_path}/topology-count
-                        [ "$count" -eq 1 ]
-                    }}
+                    tc_watchdog_capture_mast_state() {{ : >"$1"; : >"$2"; return 0; }}
+                    tc_topology_changed_debounced_from_snapshot() {{ return 1; }}
                     tc_start_smbd_if_needed() {{ echo smbd; }}
                     runtime_process_present_by_ucomm() {{ return 0; }}
                     tc_exec_start_samba() {{ echo "exec $1"; exit 42; }}
-                    tc_watchdog_iteration
+                    tc_watchdog_disk_iteration
                     """
                 )
             )
@@ -3502,9 +3771,9 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "smbd\n")
+        self.assertEqual(proc.stdout, "")
 
-    def test_common_watchdog_iteration_live_reloads_on_topology_change_without_reexec(self) -> None:
+    def test_common_watchdog_disk_iteration_live_reloads_on_topology_change_without_reexec(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
@@ -3525,7 +3794,8 @@ MaSt = (
                     chmod 755 "$TC_SMBD_BIN"
                     tc_write_payload_state {payload} {volumes}/dk2 /dev/dk2
                     sleep() {{ :; }}
-                    tc_topology_changed() {{ return 0; }}
+                    tc_watchdog_capture_mast_state() {{ : >"$1"; : >"$2"; return 0; }}
+                    tc_topology_changed_debounced_from_snapshot() {{ return 0; }}
                     tc_refresh_disk_state() {{
                         echo refresh
                         tc_write_payload_state {payload} {volumes}/dk2 /dev/dk2
@@ -3552,7 +3822,7 @@ MaSt = (
                     tc_start_smbd_if_needed() {{ echo smbd; }}
                     runtime_process_present_by_ucomm() {{ return 0; }}
                     tc_exec_start_samba() {{ echo "exec $1"; exit 42; }}
-                    tc_watchdog_iteration
+                    tc_watchdog_disk_iteration
                     """
                 )
             )
@@ -3572,7 +3842,6 @@ MaSt = (
                     f"generate {payload} 127.0.0.1/8 192.168.1.2/24",
                     "reload",
                     "mdns watchdog topology refresh 0 1 10",
-                    "smbd",
                     "",
                 )
             ),
@@ -3581,7 +3850,7 @@ MaSt = (
         self.assertIn("watchdog recovery: live disk runtime refresh complete", log_text)
         self.assertNotIn("re-execing start-samba.sh", log_text)
 
-    def test_common_watchdog_iteration_reexecs_when_live_topology_reload_changes_payload_home(self) -> None:
+    def test_common_watchdog_disk_iteration_reexecs_when_live_topology_reload_changes_payload_home(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
@@ -3603,14 +3872,15 @@ MaSt = (
                     chmod 755 "$TC_SMBD_BIN"
                     tc_write_payload_state {old_payload} {volumes}/dk2 /dev/dk2
                     sleep() {{ :; }}
-                    tc_topology_changed() {{ return 0; }}
+                    tc_watchdog_capture_mast_state() {{ : >"$1"; : >"$2"; return 0; }}
+                    tc_topology_changed_debounced_from_snapshot() {{ return 0; }}
                     tc_refresh_disk_state() {{
                         echo refresh
                         tc_write_payload_state {new_payload} {volumes}/dk3 /dev/dk3
                     }}
                     tc_reload_smbd_config() {{ echo reload; }}
                     tc_exec_start_samba() {{ echo "exec $1"; exit 42; }}
-                    tc_watchdog_iteration
+                    tc_watchdog_disk_iteration
                     """
                 )
             )
@@ -3649,7 +3919,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 43, proc.stderr)
         self.assertEqual(proc.stdout, "mode=--reload-disk-runtime\n")
 
-    def test_common_watchdog_iteration_fails_when_smbd_recovery_payload_state_is_unavailable(self) -> None:
+    def test_common_watchdog_service_iteration_fails_when_smbd_recovery_payload_state_is_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
@@ -3668,10 +3938,9 @@ MaSt = (
                     chmod 755 "$TC_SMBD_BIN"
                     : >"$TC_SMBD_CONF"
                     sleep() {{ :; }}
-                    tc_topology_changed() {{ return 1; }}
                     runtime_process_present_by_ucomm() {{ return 1; }}
                     tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
-                    tc_watchdog_iteration
+                    tc_watchdog_service_iteration
                     """
                 )
             )

@@ -27,9 +27,6 @@ TC_TAB=$(printf '\t')
 
 TC_LOG_FILE="$TC_STATE_DIR/runtime.log"
 TC_LOG_PREFIX=runtime
-TC_LOG_MODE=ram_rewrite
-TC_LOG_FALLBACK_FILE=
-TC_LOG_VOLUME=
 TC_LOG_MAX_BYTES=32768
 TC_MDNS_BIN=/mnt/Flash/mdns-advertiser
 TC_NBNS_BIN="$RAM_SBIN/nbns-advertiser"
@@ -55,17 +52,81 @@ TC_MDNS_CAPTURE_PID=
 TC_APPLE_MDNS_SNAPSHOT_START=
 TC_RUNTIME_IDENTITY_READY=
 SMB_SERVER_STRING=
+TC_DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=31
+TC_DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=3
+TC_RUNTIME_ENV_WARNING_LINES=
+TC_RUNTIME_ENV_WARNINGS_LOGGED=0
 
 LEGACY_PREFIX_NETBSD7=/root/tc-netbsd7
 LEGACY_PREFIX_NETBSD4=/root/tc-netbsd4
 LEGACY_PREFIX_NETBSD4LE=/root/tc-netbsd4le
 LEGACY_PREFIX_NETBSD4BE=/root/tc-netbsd4be
 
+tc_add_runtime_env_warning() {
+    warning_line=$1
+
+    if [ -n "$TC_RUNTIME_ENV_WARNING_LINES" ]; then
+        TC_RUNTIME_ENV_WARNING_LINES="$TC_RUNTIME_ENV_WARNING_LINES
+$warning_line"
+    else
+        TC_RUNTIME_ENV_WARNING_LINES=$warning_line
+    fi
+}
+
+tc_log_runtime_env_warnings() {
+    [ -n "$TC_RUNTIME_ENV_WARNING_LINES" ] || return 0
+    [ "$TC_RUNTIME_ENV_WARNINGS_LOGGED" = "1" ] && return 0
+
+    printf '%s\n' "$TC_RUNTIME_ENV_WARNING_LINES" | while IFS= read -r warning_line || [ -n "$warning_line" ]; do
+        [ -n "$warning_line" ] || continue
+        tc_log "$warning_line"
+    done
+    TC_RUNTIME_ENV_WARNINGS_LOGGED=1
+}
+
+tc_sanitize_unsigned_integer() {
+    value=$1
+    default_value=$2
+    case "$value" in
+        ""|*[!0123456789]*) echo "$default_value" ;;
+        *) echo "$value" ;;
+    esac
+}
+
+tc_sanitize_positive_integer() {
+    value=$1
+    default_value=$2
+    case "$value" in
+        ""|*[!0123456789]*|0) echo "$default_value" ;;
+        *) echo "$value" ;;
+    esac
+}
+
+tc_is_unsigned_integer() {
+    case "$1" in
+        ""|*[!0123456789]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
 tc_init_runtime_env() {
     DISKD_USE_VOLUME_ATTEMPTS=${DISKD_USE_VOLUME_ATTEMPTS:-2}
+    DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=${DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS:-31}
+    DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=${DISKD_USE_VOLUME_MOUNT_POLL_SECONDS:-3}
+    TC_RUNTIME_ENV_WARNING_LINES=
+    TC_RUNTIME_ENV_WARNINGS_LOGGED=0
+    TC_DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=$(tc_sanitize_unsigned_integer "$DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS" 31)
+    if [ "$TC_DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS" != "$DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS" ]; then
+        tc_add_runtime_env_warning "runtime config: invalid DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=$DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS; using 31s"
+    fi
+    TC_DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=$(tc_sanitize_positive_integer "$DISKD_USE_VOLUME_MOUNT_POLL_SECONDS" 3)
+    if [ "$TC_DISKD_USE_VOLUME_MOUNT_POLL_SECONDS" != "$DISKD_USE_VOLUME_MOUNT_POLL_SECONDS" ]; then
+        tc_add_runtime_env_warning "runtime config: invalid DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=$DISKD_USE_VOLUME_MOUNT_POLL_SECONDS; using 3s"
+    fi
     ATA_IDLE_SECONDS=${ATA_IDLE_SECONDS:-300}
     MAST_DISCOVERY_WAIT_SECONDS=${MAST_DISCOVERY_WAIT_SECONDS:-120}
     WATCHDOG_DISKD_USE_VOLUME_ATTEMPTS=${WATCHDOG_DISKD_USE_VOLUME_ATTEMPTS:-$DISKD_USE_VOLUME_ATTEMPTS}
+    WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS=${WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS:-5}
     MDNS_CAPTURE_WAIT_SECONDS=${MDNS_CAPTURE_WAIT_SECONDS:-75}
     INTERNAL_SHARE_USE_DISK_ROOT=${INTERNAL_SHARE_USE_DISK_ROOT:-0}
     NBNS_ENABLED=${NBNS_ENABLED:-0}
@@ -75,32 +136,11 @@ tc_init_runtime_env() {
 tc_set_log() {
     TC_LOG_FILE=$1
     TC_LOG_PREFIX=$2
-    TC_LOG_MODE=ram_rewrite
-    TC_LOG_FALLBACK_FILE=
-    TC_LOG_VOLUME=
     TC_LOG_MAX_BYTES=$TC_RUNTIME_LOG_MAX_BYTES
-}
-
-tc_set_payload_append_log() {
-    TC_LOG_FILE=$1
-    TC_LOG_PREFIX=$2
-    TC_LOG_VOLUME=$3
-    TC_LOG_FALLBACK_FILE=$4
-    TC_LOG_MODE=payload_append
-    TC_LOG_MAX_BYTES=$(tc_runtime_log_max_bytes)
-
-    line="$(date '+%Y-%m-%d %H:%M:%S') $TC_LOG_PREFIX: log target configured: payload=$TC_LOG_FILE volume=$TC_LOG_VOLUME fallback=${TC_LOG_FALLBACK_FILE:-none}"
-    if ! tc_payload_append_log_line "$line" && [ -n "$TC_LOG_FALLBACK_FILE" ]; then
-        tc_ram_rewrite_log_line "$TC_LOG_FALLBACK_FILE" "$line"
-    fi
 }
 
 tc_runtime_logs_unbounded() {
     [ "${SMBD_DEBUG_LOGGING:-0}" = "1" ] || [ "${MDNS_DEBUG_LOGGING:-0}" = "1" ]
-}
-
-tc_runtime_log_max_bytes() {
-    echo "$TC_RUNTIME_LOG_MAX_BYTES"
 }
 
 tc_smbd_max_log_size() {
@@ -155,25 +195,6 @@ tc_trim_log_file_if_needed() {
     tc_replace_log_with_trimmed_copy "$trim_log_path" "$trim_log_bytes" "$trim_log_tmp"
 }
 
-tc_append_bounded_log_line() {
-    log_path=$1
-    max_bytes=$2
-    line=$3
-
-    ensure_parent_dir "$log_path"
-    printf '%s\n' "$line" >>"$log_path" || return 1
-    tc_trim_log_file_if_needed "$log_path" "$max_bytes"
-}
-
-tc_payload_append_log_line() {
-    line=$1
-
-    [ -n "$TC_LOG_FILE" ] || return 1
-    [ -n "$TC_LOG_VOLUME" ] || return 1
-    is_volume_root_mounted "$TC_LOG_VOLUME" || return 1
-    tc_append_bounded_log_line "$TC_LOG_FILE" "$TC_LOG_MAX_BYTES" "$line"
-}
-
 tc_ram_rewrite_log_line() {
     log_path=$1
     line=$2
@@ -193,17 +214,6 @@ tc_ram_rewrite_log_line() {
 
 tc_log() {
     line="$(date '+%Y-%m-%d %H:%M:%S') $TC_LOG_PREFIX: $*"
-
-    if [ "$TC_LOG_MODE" = "payload_append" ]; then
-        if tc_payload_append_log_line "$line"; then
-            return 0
-        fi
-        if [ -n "$TC_LOG_FALLBACK_FILE" ]; then
-            tc_ram_rewrite_log_line "$TC_LOG_FALLBACK_FILE" "$line"
-            return 0
-        fi
-    fi
-
     tc_ram_rewrite_log_line "$TC_LOG_FILE" "$line"
 }
 
@@ -322,35 +332,6 @@ tc_netmask_to_prefix() {
         0x00000000|0x0|0|0.0.0.0) echo 0 ;;
         *) return 1 ;;
     esac
-}
-
-get_iface_ipv4_prefix() {
-    iface=$1
-    target_ip=${2:-}
-    if [ -n "$target_ip" ]; then
-        target_ip_pattern=$(printf '%s\n' "$target_ip" | sed 's/\./\\./g')
-        iface_line=$(/sbin/ifconfig "$iface" 2>/dev/null | sed -n "s/^[[:space:]]*inet[[:space:]]$target_ip_pattern[[:space:]]//p" | sed -n '1p')
-        [ -n "$iface_line" ] || return 1
-        set -- $iface_line
-        iface_netmask=
-        while [ "$#" -gt 0 ]; do
-            if [ "$1" = "netmask" ]; then
-                shift || true
-                iface_netmask=${1:-}
-                break
-            fi
-            shift || true
-        done
-        iface_prefix=$(tc_netmask_to_prefix "$iface_netmask" || true)
-        [ -n "$iface_prefix" ] || iface_prefix=24
-        echo "$iface_prefix"
-        return 0
-    else
-        iface_cidr=$(get_runtime_iface_ipv4_cidr "$iface" || true)
-        [ -n "$iface_cidr" ] || return 1
-        echo "${iface_cidr#*/}"
-        return 0
-    fi
 }
 
 get_iface_mac() {
@@ -778,6 +759,39 @@ tc_request_diskd_use_volume() {
     return 1
 }
 
+tc_wait_for_diskd_volume_mount() {
+    volume_root=$1
+    mount_context=$2
+
+    tc_log_runtime_env_warnings
+    mount_timeout_seconds=${TC_DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS:-31}
+    mount_poll_seconds=${TC_DISKD_USE_VOLUME_MOUNT_POLL_SECONDS:-3}
+
+    tc_log "$mount_context: waiting up to ${mount_timeout_seconds}s for diskd.useVolume to mount $volume_root"
+    elapsed=0
+    while :; do
+        if is_volume_root_mounted "$volume_root"; then
+            tc_log "$mount_context: $volume_root is mounted after ${elapsed}s"
+            return 0
+        fi
+        if [ "$elapsed" -ge "$mount_timeout_seconds" ]; then
+            tc_log "$mount_context: timed out after ${elapsed}s waiting for $volume_root to mount"
+            return 1
+        fi
+
+        remaining=$((mount_timeout_seconds - elapsed))
+        sleep_seconds=$mount_poll_seconds
+        if [ "$sleep_seconds" -gt "$remaining" ]; then
+            sleep_seconds=$remaining
+        fi
+        if [ "$sleep_seconds" -le 0 ]; then
+            sleep_seconds=1
+        fi
+        sleep "$sleep_seconds"
+        elapsed=$((elapsed + sleep_seconds))
+    done
+}
+
 tc_wake_or_mount_volume_with_policy() {
     device_path=$1
     volume_root=$2
@@ -789,12 +803,11 @@ tc_wake_or_mount_volume_with_policy() {
         return 1
     fi
 
-    case "$diskd_attempts" in
-        ""|*[!0123456789]*|0)
-            tc_log "$mount_context: invalid diskd attempt count '$diskd_attempts'; using 2 attempts"
-            diskd_attempts=2
-            ;;
-    esac
+    sanitized_diskd_attempts=$(tc_sanitize_positive_integer "$diskd_attempts" 2)
+    if [ "$sanitized_diskd_attempts" != "$diskd_attempts" ]; then
+        tc_log "$mount_context: invalid diskd attempt count '$diskd_attempts'; using 2 attempts"
+    fi
+    diskd_attempts=$sanitized_diskd_attempts
 
     mkdir -p "$volume_root"
     was_mounted=0
@@ -807,16 +820,27 @@ tc_wake_or_mount_volume_with_policy() {
     tc_log "$mount_context: diskd activation beginning for $device_path at $volume_root with ${diskd_attempts} attempt(s)"
     attempt=1
     while [ "$attempt" -le "$diskd_attempts" ]; do
-        tc_request_diskd_use_volume "$volume_root" "$mount_context" "attempt $attempt/$diskd_attempts" || true
-        if is_volume_root_mounted "$volume_root"; then
-            if [ "$was_mounted" -eq 1 ]; then
-                tc_log "$mount_context: diskd.useVolume claim complete; $volume_root remained mounted after attempt $attempt/$diskd_attempts"
-            else
-                tc_log "$mount_context: mounted at $volume_root after diskd.useVolume attempt $attempt/$diskd_attempts"
+        mounted_without_claim=0
+        diskd_request_status=0
+        tc_request_diskd_use_volume "$volume_root" "$mount_context" "attempt $attempt/$diskd_attempts" || diskd_request_status=$?
+        if [ "$diskd_request_status" -eq 0 ]; then
+            if tc_wait_for_diskd_volume_mount "$volume_root" "$mount_context"; then
+                if [ "$was_mounted" -eq 1 ]; then
+                    tc_log "$mount_context: diskd.useVolume claim complete; $volume_root remained mounted after attempt $attempt/$diskd_attempts"
+                else
+                    tc_log "$mount_context: mounted at $volume_root after diskd.useVolume attempt $attempt/$diskd_attempts"
+                fi
+                return 0
             fi
-            return 0
+        elif is_volume_root_mounted "$volume_root"; then
+            tc_log "$mount_context: diskd.useVolume command failed but $volume_root is mounted; diskd claim is not confirmed"
+            mounted_without_claim=1
         fi
-        tc_log "$mount_context: $volume_root is not mounted after diskd.useVolume attempt $attempt/$diskd_attempts"
+        if [ "$mounted_without_claim" -eq 1 ]; then
+            tc_log "$mount_context: diskd activation incomplete after attempt $attempt/$diskd_attempts"
+        else
+            tc_log "$mount_context: $volume_root is not mounted after diskd.useVolume attempt $attempt/$diskd_attempts"
+        fi
         if [ "$attempt" -lt "$diskd_attempts" ]; then
             tc_log "$mount_context: waiting 1s before diskd.useVolume retry"
             sleep 1
@@ -830,10 +854,6 @@ tc_wake_or_mount_volume_with_policy() {
 
 tc_wake_or_mount_volume() {
     tc_wake_or_mount_volume_with_policy "$1" "$2" "$DISKD_USE_VOLUME_ATTEMPTS" "MaSt volume $2"
-}
-
-tc_boot_wake_or_mount_volume() {
-    tc_wake_or_mount_volume "$1" "$2"
 }
 
 tc_watchdog_wake_or_mount_volume() {
@@ -852,7 +872,7 @@ tc_mount_mast_volumes_for_boot() {
         [ -n "$part_device" ] || continue
         volume_count=$((volume_count + 1))
         tc_log "boot disk load: activating volume $volume_count: disk=$disk_device builtin=$builtin device=/dev/$part_device root=$volume_root name=$part_name"
-        if tc_boot_wake_or_mount_volume "/dev/$part_device" "$volume_root"; then
+        if tc_wake_or_mount_volume "/dev/$part_device" "$volume_root"; then
             mounted_count=$((mounted_count + 1))
             tc_log "boot disk load: volume active: /dev/$part_device at $volume_root"
         else
@@ -867,16 +887,14 @@ tc_configure_ata_idle_for_mast_disks() {
     volumes_file=$1
 
     tc_log "ATA idle tuning: scanning built-in ATA disks after share-state build"
-    case "$ATA_IDLE_SECONDS" in
-        ""|*[!0123456789]*)
-            tc_log "ATA idle tuning skipped; invalid ATA_IDLE_SECONDS=$ATA_IDLE_SECONDS"
-            return 0
-            ;;
-        0)
-            tc_log "ATA idle tuning disabled"
-            return 0
-            ;;
-    esac
+    if ! tc_is_unsigned_integer "$ATA_IDLE_SECONDS"; then
+        tc_log "ATA idle tuning skipped; invalid ATA_IDLE_SECONDS=$ATA_IDLE_SECONDS"
+        return 0
+    fi
+    if [ "$ATA_IDLE_SECONDS" -eq 0 ]; then
+        tc_log "ATA idle tuning disabled"
+        return 0
+    fi
 
     configured_disks=" "
     while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid ||
@@ -919,6 +937,20 @@ tc_trim_plist_line() {
     printf '%s\n' "$1" | /usr/bin/sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
+tc_plist_is_object_end() {
+    case "$1" in
+        "}"|"};"*|"},"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+tc_plist_is_array_end() {
+    case "$1" in
+        "]"|"];"*|")"|");"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 tc_extract_plist_string_key() {
     extract_key=$1
     extract_line=$2
@@ -932,6 +964,12 @@ tc_extract_plist_bool_key() {
         -e 's/^[[:space:]]*'"$extract_key"'[[:space:]]*=[[:space:]]*\(true\)[[:space:]]*[;,]*[[:space:]]*$/\1/p' \
         -e 's/^[[:space:]]*'"$extract_key"'[[:space:]]*=[[:space:]]*\(false\)[[:space:]]*[;,]*[[:space:]]*$/\1/p')
     [ "$value" = "true" ] && echo 1 || echo 0
+}
+
+tc_extract_plist_number_key() {
+    extract_key=$1
+    extract_line=$2
+    printf '%s\n' "$extract_line" | /usr/bin/sed -n 's/^[[:space:]]*'"$extract_key"'[[:space:]]*=[[:space:]]*\([0-9][0-9]*\)[[:space:]]*[;,]*[[:space:]]*$/\1/p'
 }
 
 tc_format_uuid_key() {
@@ -993,24 +1031,21 @@ tc_read_mast_volumes_to() {
 
     while IFS= read -r line || [ -n "$line" ]; do
         trimmed_line=$(tc_trim_plist_line "$line")
-        case "$trimmed_line" in
-            "}"|"};"*|"},"*)
-                if [ "$in_partitions" -eq 1 ] && [ -n "$part_device" ]; then
-                    tc_emit_mast_volume "$pending_file"
-                    part_device=
-                    part_name=
-                    part_format=
-                    part_uuid=
-                elif [ -n "$disk_device" ]; then
-                    tc_flush_mast_disk "$pending_file" "$out_file" "$disk_device" "$disk_builtin"
-                    disk_device=
-                    disk_builtin=0
-                fi
-                ;;
-            "]"|"];"*|");"|");"*)
-                in_partitions=0
-                ;;
-        esac
+        if tc_plist_is_object_end "$trimmed_line"; then
+            if [ "$in_partitions" -eq 1 ] && [ -n "$part_device" ]; then
+                tc_emit_mast_volume "$pending_file"
+                part_device=
+                part_name=
+                part_format=
+                part_uuid=
+            elif [ -n "$disk_device" ]; then
+                tc_flush_mast_disk "$pending_file" "$out_file" "$disk_device" "$disk_builtin"
+                disk_device=
+                disk_builtin=0
+            fi
+        elif tc_plist_is_array_end "$trimmed_line"; then
+            in_partitions=0
+        fi
 
         key=$(tc_plist_key "$line")
         case "$key" in
@@ -1254,6 +1289,20 @@ tc_append_share_state_row() {
     printf '%s\t%s\t%s\t%s\n' "$share_name" "$part_device" "$part_uuid" "$TC_ADISK_DISK_ADVF" >>"$TC_ADISK_TSV"
 }
 
+tc_active_share_device_is_managed() {
+    wanted_part_device=$1
+    [ -s "$TC_SHARES_TSV" ] || return 1
+
+    while IFS="$TC_TAB" read -r share_name share_path part_device builtin part_uuid ||
+        [ -n "$share_name$share_path$part_device$builtin$part_uuid" ]; do
+        [ -n "$part_device" ] || continue
+        if [ "$part_device" = "$wanted_part_device" ]; then
+            return 0
+        fi
+    done <"$TC_SHARES_TSV"
+    return 1
+}
+
 tc_build_share_state() {
     volumes_file=${1:-$TC_VOLUMES_TSV}
     used_share_names_file="$TC_STATE_DIR/share-names.$$"
@@ -1352,19 +1401,6 @@ tc_log_payload_candidate_diagnostics() {
     tc_log_limited_command_output "ls -la $volume_root" /bin/ls -la "$volume_root"
     tc_log_limited_command_output "ls -la $payload_dir" /bin/ls -la "$payload_dir"
     tc_log_limited_command_output "ls -la $private_dir" /bin/ls -la "$private_dir"
-}
-
-tc_emit_payload_candidate_volumes() {
-    volumes_file=${1:-$TC_VOLUMES_TSV}
-
-    for desired_builtin in 1 0; do
-        while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid ||
-            [ -n "$disk_device$builtin$part_device$volume_root$part_name$part_uuid" ]; do
-            [ -n "$part_device" ] || continue
-            [ "$builtin" = "$desired_builtin" ] || continue
-            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$disk_device" "$builtin" "$part_device" "$volume_root" "$part_name" "$part_uuid"
-        done <"$volumes_file"
-    done
 }
 
 tc_scan_payload_candidates_for_builtin() {
@@ -1615,7 +1651,7 @@ tc_prepare_smbd_core_dir() {
 
 tc_prepare_runtime_log_file() {
     log_path=$1
-    max_bytes=$(tc_runtime_log_max_bytes)
+    max_bytes=$TC_RUNTIME_LOG_MAX_BYTES
 
     case "$log_path" in
         "$TC_PAYLOAD_LOG_DIR"/*)
@@ -1961,6 +1997,13 @@ tc_prepare_local_hostname_resolution() {
     else
         tc_log "local hostname resolution could not update /etc/hosts"
     fi
+}
+
+tc_prepare_bind_runtime_context() {
+    BIND_INTERFACES=$(tc_wait_for_bind_interfaces) || return 1
+    TC_NET_IFACE_IP=${BIND_INTERFACES#127.0.0.1/8 }
+    TC_NET_IFACE_IP=${TC_NET_IFACE_IP%%/*}
+    tc_prepare_local_hostname_resolution
 }
 
 ensure_parent_dir() {
@@ -2498,24 +2541,18 @@ tc_start_watchdog() {
     tc_log "watchdog launched as pid $watchdog_pid"
 }
 
-tc_stop_managed_services() {
-    stop_runtime_process_by_ucomm "smbd" "smbd" || true
-    stop_runtime_process_by_ucomm "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" || true
-    stop_runtime_process_by_ucomm "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" || true
-}
-
 tc_current_topology_signature() {
     [ -f "$TC_TOPOLOGY_SIGNATURE" ] || return 1
     /bin/cat "$TC_TOPOLOGY_SIGNATURE"
 }
 
-tc_fresh_topology_signature() {
-    /mnt/Flash/start-samba.sh --print-topology-signature 2>/dev/null
-}
-
-tc_topology_changed() {
+tc_topology_changed_from_file() {
+    fresh_file=$1
     current=$(tc_current_topology_signature || true)
-    fresh=$(tc_fresh_topology_signature || true)
+    fresh=
+    if [ -s "$fresh_file" ]; then
+        fresh=$(/bin/cat "$fresh_file" 2>/dev/null || true)
+    fi
     if [ -z "$fresh" ]; then
         tc_log "watchdog recovery: MaSt topology check failed"
         return 1
@@ -2523,17 +2560,73 @@ tc_topology_changed() {
     [ "$current" != "$fresh" ]
 }
 
-tc_topology_changed_debounced() {
-    if ! tc_topology_changed; then
+tc_watchdog_capture_mast_state() {
+    capture_volumes_file=$1
+    capture_raw_file=$2
+
+    rm -f "$capture_volumes_file" "$capture_raw_file"
+    if [ ! -x /usr/bin/acp ]; then
+        tc_log "watchdog disk check: MaSt snapshot skipped; /usr/bin/acp is unavailable"
+        : >"$capture_volumes_file"
+        : >"$capture_raw_file"
         return 1
     fi
 
-    tc_log "watchdog recovery: MaSt topology changed; debouncing 5s"
-    sleep 5
-    if tc_topology_changed; then
+    if tc_read_mast_volumes_to "$capture_volumes_file" "$capture_raw_file"; then
         return 0
     fi
 
+    tc_log "watchdog disk check: MaSt snapshot read failed or produced no valid HFS volumes"
+    return 1
+}
+
+tc_replace_watchdog_mast_snapshot() {
+    replace_volumes_file=$1
+    replace_raw_file=$2
+    replace_new_volumes_file=$3
+    replace_new_raw_file=$4
+
+    if [ -f "$replace_new_volumes_file" ]; then
+        mv -f "$replace_new_volumes_file" "$replace_volumes_file"
+    fi
+    if [ -f "$replace_new_raw_file" ]; then
+        mv -f "$replace_new_raw_file" "$replace_raw_file"
+    fi
+}
+
+tc_cleanup_watchdog_mast_temp_files() {
+    [ -d "$TC_STATE_DIR" ] || return 0
+    rm -f "$TC_STATE_DIR"/watchdog-volumes.tsv.* "$TC_STATE_DIR"/watchdog-mast.raw.*
+}
+
+tc_topology_changed_debounced_from_snapshot() {
+    snapshot_volumes_file=$1
+    snapshot_raw_file=$2
+
+    if ! tc_topology_changed_from_file "$snapshot_volumes_file"; then
+        return 1
+    fi
+
+    topology_debounce_seconds=$(tc_sanitize_unsigned_integer "$WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS" 5)
+    if [ "$topology_debounce_seconds" != "$WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS" ]; then
+        tc_log "watchdog recovery: invalid WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS=$WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS; using 5s"
+    fi
+
+    tc_log "watchdog recovery: MaSt topology changed; debouncing ${topology_debounce_seconds}s"
+    if [ "$topology_debounce_seconds" -gt 0 ]; then
+        sleep "$topology_debounce_seconds"
+    fi
+
+    debounce_volumes_file="$snapshot_volumes_file.debounce"
+    debounce_raw_file="$snapshot_raw_file.debounce"
+    debounce_status=0
+    tc_watchdog_capture_mast_state "$debounce_volumes_file" "$debounce_raw_file" || debounce_status=$?
+    if [ "$debounce_status" -eq 0 ] && tc_topology_changed_from_file "$debounce_volumes_file"; then
+        tc_replace_watchdog_mast_snapshot "$snapshot_volumes_file" "$snapshot_raw_file" "$debounce_volumes_file" "$debounce_raw_file"
+        return 0
+    fi
+
+    tc_replace_watchdog_mast_snapshot "$snapshot_volumes_file" "$snapshot_raw_file" "$debounce_volumes_file" "$debounce_raw_file"
     tc_log "watchdog recovery: MaSt topology change cleared after debounce"
     return 1
 }
@@ -2542,6 +2635,162 @@ tc_exec_start_samba() {
     reason=$1
     tc_log "watchdog recovery: re-execing start-samba.sh: $reason"
     exec /mnt/Flash/start-samba.sh --reload-disk-runtime
+}
+
+tc_watchdog_handle_mast_users_partition() {
+    [ "$mast_users_part_format" = "hfs" ] || return 0
+    case "$mast_users_part_device" in
+        dk[0-9]*) ;;
+        *) return 0 ;;
+    esac
+    tc_active_share_device_is_managed "$mast_users_part_device" || return 0
+
+    case "$TC_MAST_USERS_SEEN_PARTS" in
+        *" $mast_users_part_device "*) ;;
+        *) TC_MAST_USERS_SEEN_PARTS="$TC_MAST_USERS_SEEN_PARTS$mast_users_part_device " ;;
+    esac
+
+    case "$mast_users_part_users" in
+        ""|*[!0123456789]*)
+            tc_log "watchdog disk check: managed volume $mast_users_part_device has unavailable MaSt users value; skipping reclaim"
+            return 0
+            ;;
+    esac
+
+    if [ "$mast_users_part_users" -eq 0 ]; then
+        TC_MAST_USERS_ZERO_COUNT=$((TC_MAST_USERS_ZERO_COUNT + 1))
+        tc_log "watchdog disk check: managed volume $mast_users_part_device users=0 requires diskd reclaim"
+        if tc_watchdog_wake_or_mount_volume "/dev/$mast_users_part_device" "/Volumes/$mast_users_part_device"; then
+            tc_log "watchdog disk check: managed volume $mast_users_part_device reclaimed through diskd.useVolume"
+        else
+            TC_MAST_USERS_RECLAIM_FAILED=1
+            tc_log "watchdog disk check: managed volume $mast_users_part_device reclaim failed"
+        fi
+    fi
+}
+
+tc_watchdog_check_active_mast_users() {
+    mast_users_raw_file=${1:-}
+
+    [ -s "$TC_SHARES_TSV" ] || return 0
+
+    if [ -z "$mast_users_raw_file" ]; then
+        tc_log "watchdog disk check: MaSt users snapshot argument is required"
+        return 1
+    fi
+    if [ ! -f "$mast_users_raw_file" ]; then
+        tc_log "watchdog disk check: MaSt users snapshot is missing: $mast_users_raw_file"
+        return 1
+    fi
+
+    TC_MAST_USERS_ZERO_COUNT=0
+    TC_MAST_USERS_RECLAIM_FAILED=0
+    TC_MAST_USERS_SEEN_PARTS=" "
+    mast_users_in_partitions=0
+    mast_users_disk_device=
+    mast_users_part_device=
+    mast_users_part_format=
+    mast_users_part_users=
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        trimmed_line=$(tc_trim_plist_line "$line")
+        if tc_plist_is_object_end "$trimmed_line"; then
+            if [ "$mast_users_in_partitions" -eq 1 ] && [ -n "$mast_users_part_device" ]; then
+                tc_watchdog_handle_mast_users_partition
+                mast_users_part_device=
+                mast_users_part_format=
+                mast_users_part_users=
+            elif [ -n "$mast_users_disk_device" ]; then
+                mast_users_disk_device=
+            fi
+        elif tc_plist_is_array_end "$trimmed_line"; then
+            mast_users_in_partitions=0
+        fi
+
+        key=$(tc_plist_key "$line")
+        case "$key" in
+            partitions)
+                mast_users_in_partitions=1
+                ;;
+            deviceName)
+                value=$(tc_extract_plist_string_key deviceName "$line")
+                if [ "$mast_users_in_partitions" -eq 1 ]; then
+                    mast_users_part_device=$value
+                else
+                    mast_users_disk_device=$value
+                fi
+                ;;
+            format)
+                if [ "$mast_users_in_partitions" -eq 1 ]; then
+                    mast_users_part_format=$(tc_extract_plist_string_key format "$line" | /usr/bin/sed 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/')
+                fi
+                ;;
+            users)
+                if [ "$mast_users_in_partitions" -eq 1 ]; then
+                    mast_users_part_users=$(tc_extract_plist_number_key users "$line")
+                fi
+                ;;
+        esac
+    done <"$mast_users_raw_file"
+
+    if [ -n "$mast_users_part_device" ]; then
+        tc_watchdog_handle_mast_users_partition
+    fi
+
+    TC_MAST_USERS_MISSING_ACTIVE=0
+    while IFS="$TC_TAB" read -r share_name share_path part_device builtin part_uuid ||
+        [ -n "$share_name$share_path$part_device$builtin$part_uuid" ]; do
+        [ -n "$part_device" ] || continue
+        case "$TC_MAST_USERS_SEEN_PARTS" in
+            *" $part_device "*) ;;
+            *)
+                TC_MAST_USERS_MISSING_ACTIVE=1
+                tc_log "watchdog disk check: active managed share $share_name uses /dev/$part_device, but MaSt users snapshot did not include that HFS volume"
+                ;;
+        esac
+    done <"$TC_SHARES_TSV"
+
+    if [ "$TC_MAST_USERS_RECLAIM_FAILED" -ne 0 ] || [ "$TC_MAST_USERS_MISSING_ACTIVE" -ne 0 ]; then
+        tc_log "watchdog disk check: MaSt users recovery requires full disk runtime reload"
+        return 1
+    fi
+
+    if [ "$TC_MAST_USERS_ZERO_COUNT" -gt 0 ]; then
+        tc_log "watchdog disk check: reclaimed $TC_MAST_USERS_ZERO_COUNT managed volume(s) with users=0"
+    fi
+    return 0
+}
+
+tc_watchdog_disk_iteration() {
+    watchdog_mast_volumes_file="$TC_STATE_DIR/watchdog-volumes.tsv.$$"
+    watchdog_mast_raw_file="$TC_STATE_DIR/watchdog-mast.raw.$$"
+    watchdog_snapshot_status=0
+    tc_watchdog_capture_mast_state "$watchdog_mast_volumes_file" "$watchdog_mast_raw_file" || watchdog_snapshot_status=$?
+
+    if [ "$watchdog_snapshot_status" -eq 0 ] && tc_topology_changed_debounced_from_snapshot "$watchdog_mast_volumes_file" "$watchdog_mast_raw_file"; then
+        if tc_live_reload_disk_runtime "MaSt topology changed"; then
+            :
+        else
+            tc_exec_start_samba "MaSt topology changed"
+        fi
+        rm -f "$watchdog_mast_volumes_file" "$watchdog_mast_raw_file"
+        return 0
+    fi
+
+    if [ "$watchdog_snapshot_status" -eq 0 ]; then
+        if ! tc_watchdog_check_active_mast_users "$watchdog_mast_raw_file"; then
+            if tc_live_reload_disk_runtime "managed diskd users dropped to zero"; then
+                :
+            else
+                tc_exec_start_samba "managed diskd users dropped to zero"
+            fi
+        fi
+    else
+        tc_log "watchdog disk check: skipping MaSt users check because snapshot is unavailable"
+    fi
+
+    rm -f "$watchdog_mast_volumes_file" "$watchdog_mast_raw_file"
+    return 0
 }
 
 tc_live_reload_disk_runtime() {
@@ -2571,13 +2820,10 @@ tc_live_reload_disk_runtime() {
         return 1
     fi
 
-    BIND_INTERFACES=$(tc_wait_for_bind_interfaces) || {
+    if ! tc_prepare_bind_runtime_context; then
         tc_log "watchdog recovery: live disk runtime refresh failed; bind interface unavailable"
         return 1
-    }
-    TC_NET_IFACE_IP=${BIND_INTERFACES#127.0.0.1/8 }
-    TC_NET_IFACE_IP=${TC_NET_IFACE_IP%%/*}
-    tc_prepare_local_hostname_resolution
+    fi
     tc_init_runtime_identity
 
     if [ ! -x "$TC_SMBD_BIN" ]; then
@@ -2635,18 +2881,8 @@ tc_watchdog_refresh_runtime_identity_for_recovery() {
     fi
 }
 
-tc_watchdog_iteration() {
-    tc_log "watchdog pass: checking topology and managed services"
-    TC_WATCHDOG_RECOVERY_IDENTITY_REFRESHED=0
-
-    if tc_topology_changed_debounced; then
-        if tc_live_reload_disk_runtime "MaSt topology changed"; then
-            :
-        else
-            tc_exec_start_samba "MaSt topology changed"
-        fi
-    fi
-
+tc_watchdog_service_iteration() {
+    tc_log "watchdog service pass: checking managed services"
     if ! tc_start_smbd_if_needed; then
         tc_log "watchdog pass: smbd recovery did not complete"
         return 1

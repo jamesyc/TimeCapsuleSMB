@@ -48,13 +48,10 @@ else
     tc_log "managed Samba boot startup beginning"
 fi
 
-BIND_INTERFACES=$(tc_wait_for_bind_interfaces) || {
+if ! tc_prepare_bind_runtime_context; then
     tc_log "network startup failed: could not determine $NET_IFACE IPv4 address"
     exit 1
-}
-TC_NET_IFACE_IP=${BIND_INTERFACES#127.0.0.1/8 }
-TC_NET_IFACE_IP=${TC_NET_IFACE_IP%%/*}
-tc_prepare_local_hostname_resolution
+fi
 
 if ! tc_refresh_disk_state; then
     exit 1
