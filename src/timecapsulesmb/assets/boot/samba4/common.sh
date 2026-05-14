@@ -2594,6 +2594,11 @@ tc_replace_watchdog_mast_snapshot() {
     fi
 }
 
+tc_cleanup_watchdog_mast_temp_files() {
+    [ -d "$TC_STATE_DIR" ] || return 0
+    rm -f "$TC_STATE_DIR"/watchdog-volumes.tsv.* "$TC_STATE_DIR"/watchdog-mast.raw.*
+}
+
 tc_topology_changed_debounced_from_snapshot() {
     snapshot_volumes_file=$1
     snapshot_raw_file=$2

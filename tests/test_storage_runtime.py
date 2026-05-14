@@ -2280,6 +2280,46 @@ MaSt = (
         self.assertEqual(proc.stdout, "iteration 1\nsleep 10\niteration 2\n")
         self.assertIn("watchdog startup beginning", log_text)
 
+    def test_watchdog_startup_cleans_stale_mast_temp_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            state_dir = memory / "samba4/var"
+            state_dir.mkdir(parents=True)
+            stale_volumes = state_dir / "watchdog-volumes.tsv.123"
+            stale_raw = state_dir / "watchdog-mast.raw.123.debounce"
+            keep_file = state_dir / "topology.signature"
+            stale_volumes.write_text("stale volumes")
+            stale_raw.write_text("stale raw")
+            keep_file.write_text("keep")
+            common_path = flash / "common.sh"
+            common_path.write_text(
+                common_path.read_text()
+                + textwrap.dedent(
+                    f"""\
+
+                    tc_read_payload_state() {{ return 1; }}
+                    tc_watchdog_disk_iteration() {{
+                        [ ! -e {stale_volumes} ] || echo stale-volumes-present
+                        [ ! -e {stale_raw} ] || echo stale-raw-present
+                        [ -e {keep_file} ] && echo keep-present
+                        exit 0
+                    }}
+                    """
+                )
+            )
+
+            proc = subprocess.run(
+                [str(flash / "watchdog.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "keep-present\n")
+
     def test_common_mdns_capture_wait_times_out_and_continues_startup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -3103,6 +3143,46 @@ MaSt = (
             1,
         )
         self.assertEqual(log_text.count(f"test mount: waiting up to 31s for diskd.useVolume to mount {volumes}/dk2"), 2)
+
+    def test_common_diskd_mount_wait_zero_timeout_checks_once_without_sleeping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            count_file = tmp_path / "mount-check-count"
+            script = tmp_path / "wake-zero-timeout.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=0
+                    DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=3
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    is_volume_root_mounted() {{
+                        count=$(/bin/cat {count_file} 2>/dev/null || echo 0)
+                        count=$((count + 1))
+                        echo "$count" >{count_file}
+                        return 1
+                    }}
+                    sleep() {{ echo "unexpected sleep $1"; exit 99; }}
+                    status=0
+                    tc_wait_for_diskd_volume_mount {volumes}/dk2 "test mount" || status=$?
+                    printf 'status=%s checks=%s\\n' "$status" "$(/bin/cat {count_file})"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "status=1 checks=1\n")
+        self.assertIn(f"test mount: timed out after 0s waiting for {volumes}/dk2 to mount", log_text)
 
     def test_common_boot_and_watchdog_mount_policies_use_separate_attempt_counts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
