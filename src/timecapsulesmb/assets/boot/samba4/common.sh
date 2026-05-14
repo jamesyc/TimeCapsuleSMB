@@ -2592,7 +2592,6 @@ tc_replace_watchdog_mast_snapshot() {
     if [ -f "$replace_new_raw_file" ]; then
         mv -f "$replace_new_raw_file" "$replace_raw_file"
     fi
-    rm -f "$replace_new_volumes_file" "$replace_new_raw_file"
 }
 
 tc_topology_changed_debounced_from_snapshot() {
@@ -2645,7 +2644,6 @@ tc_watchdog_handle_mast_users_partition() {
         *" $mast_users_part_device "*) ;;
         *) TC_MAST_USERS_SEEN_PARTS="$TC_MAST_USERS_SEEN_PARTS$mast_users_part_device " ;;
     esac
-    TC_MAST_USERS_MANAGED_COUNT=$((TC_MAST_USERS_MANAGED_COUNT + 1))
 
     case "$mast_users_part_users" in
         ""|*[!0123456789]*)
@@ -2680,7 +2678,6 @@ tc_watchdog_check_active_mast_users() {
         return 1
     fi
 
-    TC_MAST_USERS_MANAGED_COUNT=0
     TC_MAST_USERS_ZERO_COUNT=0
     TC_MAST_USERS_RECLAIM_FAILED=0
     TC_MAST_USERS_SEEN_PARTS=" "
