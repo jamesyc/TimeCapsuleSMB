@@ -63,9 +63,12 @@ LEGACY_PREFIX_NETBSD4BE=/root/tc-netbsd4be
 
 tc_init_runtime_env() {
     DISKD_USE_VOLUME_ATTEMPTS=${DISKD_USE_VOLUME_ATTEMPTS:-2}
+    DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=${DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS:-31}
+    DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=${DISKD_USE_VOLUME_MOUNT_POLL_SECONDS:-3}
     ATA_IDLE_SECONDS=${ATA_IDLE_SECONDS:-300}
     MAST_DISCOVERY_WAIT_SECONDS=${MAST_DISCOVERY_WAIT_SECONDS:-120}
     WATCHDOG_DISKD_USE_VOLUME_ATTEMPTS=${WATCHDOG_DISKD_USE_VOLUME_ATTEMPTS:-$DISKD_USE_VOLUME_ATTEMPTS}
+    WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS=${WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS:-5}
     MDNS_CAPTURE_WAIT_SECONDS=${MDNS_CAPTURE_WAIT_SECONDS:-75}
     INTERNAL_SHARE_USE_DISK_ROOT=${INTERNAL_SHARE_USE_DISK_ROOT:-0}
     NBNS_ENABLED=${NBNS_ENABLED:-0}
@@ -778,6 +781,54 @@ tc_request_diskd_use_volume() {
     return 1
 }
 
+tc_wait_for_diskd_volume_mount() {
+    volume_root=$1
+    mount_context=$2
+
+    case "$DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS" in
+        ""|*[!0123456789]*)
+            tc_log "$mount_context: invalid DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=$DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS; using 31s"
+            mount_timeout_seconds=31
+            ;;
+        *)
+            mount_timeout_seconds=$DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS
+            ;;
+    esac
+    case "$DISKD_USE_VOLUME_MOUNT_POLL_SECONDS" in
+        ""|*[!0123456789]*|0)
+            tc_log "$mount_context: invalid DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=$DISKD_USE_VOLUME_MOUNT_POLL_SECONDS; using 3s"
+            mount_poll_seconds=3
+            ;;
+        *)
+            mount_poll_seconds=$DISKD_USE_VOLUME_MOUNT_POLL_SECONDS
+            ;;
+    esac
+
+    tc_log "$mount_context: waiting up to ${mount_timeout_seconds}s for diskd.useVolume to mount $volume_root"
+    elapsed=0
+    while :; do
+        if is_volume_root_mounted "$volume_root"; then
+            tc_log "$mount_context: $volume_root is mounted after ${elapsed}s"
+            return 0
+        fi
+        if [ "$elapsed" -ge "$mount_timeout_seconds" ]; then
+            tc_log "$mount_context: timed out after ${elapsed}s waiting for $volume_root to mount"
+            return 1
+        fi
+
+        remaining=$((mount_timeout_seconds - elapsed))
+        sleep_seconds=$mount_poll_seconds
+        if [ "$sleep_seconds" -gt "$remaining" ]; then
+            sleep_seconds=$remaining
+        fi
+        if [ "$sleep_seconds" -le 0 ]; then
+            sleep_seconds=1
+        fi
+        sleep "$sleep_seconds"
+        elapsed=$((elapsed + sleep_seconds))
+    done
+}
+
 tc_wake_or_mount_volume_with_policy() {
     device_path=$1
     volume_root=$2
@@ -807,16 +858,27 @@ tc_wake_or_mount_volume_with_policy() {
     tc_log "$mount_context: diskd activation beginning for $device_path at $volume_root with ${diskd_attempts} attempt(s)"
     attempt=1
     while [ "$attempt" -le "$diskd_attempts" ]; do
-        tc_request_diskd_use_volume "$volume_root" "$mount_context" "attempt $attempt/$diskd_attempts" || true
-        if is_volume_root_mounted "$volume_root"; then
-            if [ "$was_mounted" -eq 1 ]; then
-                tc_log "$mount_context: diskd.useVolume claim complete; $volume_root remained mounted after attempt $attempt/$diskd_attempts"
-            else
-                tc_log "$mount_context: mounted at $volume_root after diskd.useVolume attempt $attempt/$diskd_attempts"
+        mounted_without_claim=0
+        diskd_request_status=0
+        tc_request_diskd_use_volume "$volume_root" "$mount_context" "attempt $attempt/$diskd_attempts" || diskd_request_status=$?
+        if [ "$diskd_request_status" -eq 0 ]; then
+            if tc_wait_for_diskd_volume_mount "$volume_root" "$mount_context"; then
+                if [ "$was_mounted" -eq 1 ]; then
+                    tc_log "$mount_context: diskd.useVolume claim complete; $volume_root remained mounted after attempt $attempt/$diskd_attempts"
+                else
+                    tc_log "$mount_context: mounted at $volume_root after diskd.useVolume attempt $attempt/$diskd_attempts"
+                fi
+                return 0
             fi
-            return 0
+        elif is_volume_root_mounted "$volume_root"; then
+            tc_log "$mount_context: diskd.useVolume command failed but $volume_root is mounted; diskd claim is not confirmed"
+            mounted_without_claim=1
         fi
-        tc_log "$mount_context: $volume_root is not mounted after diskd.useVolume attempt $attempt/$diskd_attempts"
+        if [ "$mounted_without_claim" -eq 1 ]; then
+            tc_log "$mount_context: diskd activation incomplete after attempt $attempt/$diskd_attempts"
+        else
+            tc_log "$mount_context: $volume_root is not mounted after diskd.useVolume attempt $attempt/$diskd_attempts"
+        fi
         if [ "$attempt" -lt "$diskd_attempts" ]; then
             tc_log "$mount_context: waiting 1s before diskd.useVolume retry"
             sleep 1
@@ -932,6 +994,12 @@ tc_extract_plist_bool_key() {
         -e 's/^[[:space:]]*'"$extract_key"'[[:space:]]*=[[:space:]]*\(true\)[[:space:]]*[;,]*[[:space:]]*$/\1/p' \
         -e 's/^[[:space:]]*'"$extract_key"'[[:space:]]*=[[:space:]]*\(false\)[[:space:]]*[;,]*[[:space:]]*$/\1/p')
     [ "$value" = "true" ] && echo 1 || echo 0
+}
+
+tc_extract_plist_number_key() {
+    extract_key=$1
+    extract_line=$2
+    printf '%s\n' "$extract_line" | /usr/bin/sed -n 's/^[[:space:]]*'"$extract_key"'[[:space:]]*=[[:space:]]*\([0-9][0-9]*\)[[:space:]]*[;,]*[[:space:]]*$/\1/p'
 }
 
 tc_format_uuid_key() {
@@ -1252,6 +1320,20 @@ tc_append_share_state_row() {
 
     printf '%s\t%s\t%s\t%s\t%s\n' "$share_name" "$share_path" "$part_device" "$builtin" "$part_uuid" >>"$TC_SHARES_TSV"
     printf '%s\t%s\t%s\t%s\n' "$share_name" "$part_device" "$part_uuid" "$TC_ADISK_DISK_ADVF" >>"$TC_ADISK_TSV"
+}
+
+tc_active_share_device_is_managed() {
+    wanted_part_device=$1
+    [ -s "$TC_SHARES_TSV" ] || return 1
+
+    while IFS="$TC_TAB" read -r share_name share_path part_device builtin part_uuid ||
+        [ -n "$share_name$share_path$part_device$builtin$part_uuid" ]; do
+        [ -n "$part_device" ] || continue
+        if [ "$part_device" = "$wanted_part_device" ]; then
+            return 0
+        fi
+    done <"$TC_SHARES_TSV"
+    return 1
 }
 
 tc_build_share_state() {
@@ -2528,8 +2610,20 @@ tc_topology_changed_debounced() {
         return 1
     fi
 
-    tc_log "watchdog recovery: MaSt topology changed; debouncing 5s"
-    sleep 5
+    case "$WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS" in
+        ""|*[!0123456789]*)
+            tc_log "watchdog recovery: invalid WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS=$WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS; using 5s"
+            topology_debounce_seconds=5
+            ;;
+        *)
+            topology_debounce_seconds=$WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS
+            ;;
+    esac
+
+    tc_log "watchdog recovery: MaSt topology changed; debouncing ${topology_debounce_seconds}s"
+    if [ "$topology_debounce_seconds" -gt 0 ]; then
+        sleep "$topology_debounce_seconds"
+    fi
     if tc_topology_changed; then
         return 0
     fi
@@ -2542,6 +2636,157 @@ tc_exec_start_samba() {
     reason=$1
     tc_log "watchdog recovery: re-execing start-samba.sh: $reason"
     exec /mnt/Flash/start-samba.sh --reload-disk-runtime
+}
+
+tc_watchdog_handle_mast_users_partition() {
+    [ "$mast_users_part_format" = "hfs" ] || return 0
+    case "$mast_users_part_device" in
+        dk[0-9]*) ;;
+        *) return 0 ;;
+    esac
+    tc_active_share_device_is_managed "$mast_users_part_device" || return 0
+
+    case "$TC_MAST_USERS_SEEN_PARTS" in
+        *" $mast_users_part_device "*) ;;
+        *) TC_MAST_USERS_SEEN_PARTS="$TC_MAST_USERS_SEEN_PARTS$mast_users_part_device " ;;
+    esac
+    TC_MAST_USERS_MANAGED_COUNT=$((TC_MAST_USERS_MANAGED_COUNT + 1))
+
+    case "$mast_users_part_users" in
+        ""|*[!0123456789]*)
+            tc_log "watchdog disk check: managed volume $mast_users_part_device has unavailable MaSt users value; skipping reclaim"
+            return 0
+            ;;
+    esac
+
+    if [ "$mast_users_part_users" -eq 0 ]; then
+        TC_MAST_USERS_ZERO_COUNT=$((TC_MAST_USERS_ZERO_COUNT + 1))
+        tc_log "watchdog disk check: managed volume $mast_users_part_device users=0 requires diskd reclaim"
+        if tc_watchdog_wake_or_mount_volume "/dev/$mast_users_part_device" "/Volumes/$mast_users_part_device"; then
+            tc_log "watchdog disk check: managed volume $mast_users_part_device reclaimed through diskd.useVolume"
+        else
+            TC_MAST_USERS_RECLAIM_FAILED=1
+            tc_log "watchdog disk check: managed volume $mast_users_part_device reclaim failed"
+        fi
+    fi
+}
+
+tc_watchdog_check_active_mast_users() {
+    [ -s "$TC_SHARES_TSV" ] || return 0
+    if [ ! -x /usr/bin/acp ]; then
+        tc_log "watchdog disk check: MaSt users check skipped; /usr/bin/acp is unavailable"
+        return 0
+    fi
+
+    mast_users_raw_file="$TC_STATE_DIR/mast-users.raw.$$"
+    rm -f "$mast_users_raw_file"
+    if ! /usr/bin/acp -A MaSt >"$mast_users_raw_file" 2>/dev/null; then
+        tc_log "watchdog disk check: MaSt users read failed"
+        rm -f "$mast_users_raw_file"
+        return 1
+    fi
+
+    TC_MAST_USERS_MANAGED_COUNT=0
+    TC_MAST_USERS_ZERO_COUNT=0
+    TC_MAST_USERS_RECLAIM_FAILED=0
+    TC_MAST_USERS_SEEN_PARTS=" "
+    mast_users_in_partitions=0
+    mast_users_disk_device=
+    mast_users_part_device=
+    mast_users_part_format=
+    mast_users_part_users=
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        trimmed_line=$(tc_trim_plist_line "$line")
+        case "$trimmed_line" in
+            "}"|"};"*|"},"*)
+                if [ "$mast_users_in_partitions" -eq 1 ] && [ -n "$mast_users_part_device" ]; then
+                    tc_watchdog_handle_mast_users_partition
+                    mast_users_part_device=
+                    mast_users_part_format=
+                    mast_users_part_users=
+                elif [ -n "$mast_users_disk_device" ]; then
+                    mast_users_disk_device=
+                fi
+                ;;
+            "]"|"];"*|");"|");"*)
+                mast_users_in_partitions=0
+                ;;
+        esac
+
+        key=$(tc_plist_key "$line")
+        case "$key" in
+            partitions)
+                mast_users_in_partitions=1
+                ;;
+            deviceName)
+                value=$(tc_extract_plist_string_key deviceName "$line")
+                if [ "$mast_users_in_partitions" -eq 1 ]; then
+                    mast_users_part_device=$value
+                else
+                    mast_users_disk_device=$value
+                fi
+                ;;
+            format)
+                if [ "$mast_users_in_partitions" -eq 1 ]; then
+                    mast_users_part_format=$(tc_extract_plist_string_key format "$line" | /usr/bin/sed 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/')
+                fi
+                ;;
+            users)
+                if [ "$mast_users_in_partitions" -eq 1 ]; then
+                    mast_users_part_users=$(tc_extract_plist_number_key users "$line")
+                fi
+                ;;
+        esac
+    done <"$mast_users_raw_file"
+
+    if [ -n "$mast_users_part_device" ]; then
+        tc_watchdog_handle_mast_users_partition
+    fi
+    rm -f "$mast_users_raw_file"
+
+    TC_MAST_USERS_MISSING_ACTIVE=0
+    while IFS="$TC_TAB" read -r share_name share_path part_device builtin part_uuid ||
+        [ -n "$share_name$share_path$part_device$builtin$part_uuid" ]; do
+        [ -n "$part_device" ] || continue
+        case "$TC_MAST_USERS_SEEN_PARTS" in
+            *" $part_device "*) ;;
+            *)
+                TC_MAST_USERS_MISSING_ACTIVE=1
+                tc_log "watchdog disk check: active managed share $share_name uses /dev/$part_device, but MaSt users snapshot did not include that HFS volume"
+                ;;
+        esac
+    done <"$TC_SHARES_TSV"
+
+    if [ "$TC_MAST_USERS_RECLAIM_FAILED" -ne 0 ] || [ "$TC_MAST_USERS_MISSING_ACTIVE" -ne 0 ]; then
+        tc_log "watchdog disk check: MaSt users recovery requires full disk runtime reload"
+        return 1
+    fi
+
+    if [ "$TC_MAST_USERS_ZERO_COUNT" -gt 0 ]; then
+        tc_log "watchdog disk check: reclaimed $TC_MAST_USERS_ZERO_COUNT managed volume(s) with users=0"
+    fi
+    return 0
+}
+
+tc_watchdog_disk_iteration() {
+    if tc_topology_changed_debounced; then
+        if tc_live_reload_disk_runtime "MaSt topology changed"; then
+            :
+        else
+            tc_exec_start_samba "MaSt topology changed"
+        fi
+    fi
+
+    if ! tc_watchdog_check_active_mast_users; then
+        if tc_live_reload_disk_runtime "managed diskd users dropped to zero"; then
+            :
+        else
+            tc_exec_start_samba "managed diskd users dropped to zero"
+        fi
+    fi
+
+    return 0
 }
 
 tc_live_reload_disk_runtime() {
@@ -2639,14 +2884,15 @@ tc_watchdog_iteration() {
     tc_log "watchdog pass: checking topology and managed services"
     TC_WATCHDOG_RECOVERY_IDENTITY_REFRESHED=0
 
-    if tc_topology_changed_debounced; then
-        if tc_live_reload_disk_runtime "MaSt topology changed"; then
-            :
-        else
-            tc_exec_start_samba "MaSt topology changed"
-        fi
+    if ! tc_watchdog_disk_iteration; then
+        return 1
     fi
 
+    tc_watchdog_service_iteration
+}
+
+tc_watchdog_service_iteration() {
+    tc_log "watchdog service pass: checking managed services"
     if ! tc_start_smbd_if_needed; then
         tc_log "watchdog pass: smbd recovery did not complete"
         return 1

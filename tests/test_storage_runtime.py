@@ -2425,7 +2425,7 @@ MaSt = (
 
                     tc_read_payload_state() {{ return 1; }}
                     sleep() {{ echo "sleep $1"; }}
-                    tc_watchdog_iteration() {{
+                    tc_watchdog_disk_iteration() {{
                         count=$(cat {tmp_path}/watchdog-count 2>/dev/null || echo 0)
                         count=$((count + 1))
                         echo "$count" >{tmp_path}/watchdog-count
@@ -2435,6 +2435,7 @@ MaSt = (
                         fi
                         return 1
                     }}
+                    tc_watchdog_service_iteration() {{ echo service; }}
                     """
                 )
             )
@@ -2928,6 +2929,8 @@ MaSt = (
                     . {flash}/common.sh
                     . {flash}/tcapsulesmb.conf
                     DISKD_USE_VOLUME_ATTEMPTS=2
+                    DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=7
+                    DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=3
                     tc_init_runtime_env
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
@@ -2952,11 +2955,23 @@ MaSt = (
             proc.stdout.splitlines(),
             [
                 f"acp rpc diskd.useVolume path:s:{volumes}/dk2",
+                "sleep 3",
+                "sleep 3",
+                "sleep 1",
                 "sleep 1",
                 f"acp rpc diskd.useVolume path:s:{volumes}/dk2",
-                f"acp rpc diskd.useVolume path:s:{volumes}/dk3",
+                "sleep 3",
+                "sleep 3",
                 "sleep 1",
                 f"acp rpc diskd.useVolume path:s:{volumes}/dk3",
+                "sleep 3",
+                "sleep 3",
+                "sleep 1",
+                "sleep 1",
+                f"acp rpc diskd.useVolume path:s:{volumes}/dk3",
+                "sleep 3",
+                "sleep 3",
+                "sleep 1",
             ],
         )
         self.assertIn("boot disk load: activating MaSt volumes through diskd.useVolume", log_text)
@@ -3116,8 +3131,9 @@ MaSt = (
                         count=$(cat {tmp_path}/count 2>/dev/null || echo 0)
                         count=$((count + 1))
                         echo "$count" >{tmp_path}/count
-                        [ "$count" -ge 2 ]
+                        [ "$count" -ge 4 ]
                     }}
+                    sleep() {{ echo "sleep $1"; }}
                     tc_wake_or_mount_volume /dev/dk2 {volumes}/dk2
                     """
                 )
@@ -3129,6 +3145,7 @@ MaSt = (
             log_text = (memory / "samba4/var/test.log").read_text()
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "sleep 3\nsleep 3\n")
         self.assertIn(f"rpc diskd.useVolume path:s:{volumes}/dk2", acp_log)
         self.assertIn(
             f"MaSt volume {volumes}/dk2: mounted at {volumes}/dk2 after diskd.useVolume attempt 1/2",
@@ -3157,7 +3174,7 @@ MaSt = (
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR" {volumes}/dk2
                     is_volume_root_mounted() {{ return 0; }}
-                    sleep() {{ echo "unexpected sleep"; }}
+                    sleep() {{ echo "sleep $1"; }}
                     tc_wake_or_mount_volume /dev/dk2 {volumes}/dk2
                     """
                 )
@@ -3196,6 +3213,8 @@ MaSt = (
                     . {flash}/common.sh
                     . {flash}/tcapsulesmb.conf
                     DISKD_USE_VOLUME_ATTEMPTS=2
+                    DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=7
+                    DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=3
                     tc_init_runtime_env
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR" {volumes}/dk2
@@ -3211,7 +3230,7 @@ MaSt = (
             log_text = (memory / "samba4/var/test.log").read_text()
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "sleep 1\n")
+        self.assertEqual(proc.stdout, "sleep 3\nsleep 3\nsleep 1\nsleep 1\nsleep 3\nsleep 3\nsleep 1\n")
         self.assertIn(
             f"MaSt volume {volumes}/dk2: diskd.useVolume did not mount {volumes}/dk2 after 2 attempt(s); leaving volume unavailable without mount_hfs fallback",
             log_text,
@@ -3253,6 +3272,171 @@ MaSt = (
         lines = proc.stdout.splitlines()
         self.assertEqual(lines[0], f"/dev/dk2 {volumes}/dk2 7 MaSt volume {volumes}/dk2")
         self.assertEqual(lines[1], f"/dev/dk2 {volumes}/dk2 2 watchdog volume {volumes}/dk2")
+
+    def test_common_watchdog_mast_users_reclaims_only_active_zero_user_shares(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            events = tmp_path / "events.log"
+            acp = tmp_path / "acp"
+            acp.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    case "$*" in
+                        "-A MaSt")
+                            cat <<'OUT'
+                    [
+                        {{
+                            deviceName="wd0"
+                            partitions=
+                            [
+                                {{
+                                    deviceName="dk2"
+                                    format="hfs"
+                                    users=1
+                                    name="Data"
+                                    uuid=f42bdb83 c2655522 a0872560 6a4d0abf |binary| (16 bytes)
+                                }}
+                            ]
+                            builtin=true
+                        }}
+                        {{
+                            deviceName="sd0"
+                            partitions=
+                            [
+                                {{
+                                    deviceName="dk3"
+                                    format="hfs"
+                                    users=0
+                                    name="USB"
+                                    uuid=51f93e6f dc69524d 986dcee4 d7cb3573 |binary| (16 bytes)
+                                }}
+                                {{
+                                    deviceName="dk4"
+                                    format="hfs"
+                                    users=0
+                                    name="Ignored"
+                                    uuid=aaaaaaaa bbbbbbbb cccccccc dddddddd |binary| (16 bytes)
+                                }}
+                            ]
+                        }}
+                    ]
+                    OUT
+                            ;;
+                        rpc*diskd.useVolume*)
+                            echo "$@" >>{shlex.quote(str(events))}
+                            root=${{3#path:s:}}
+                            mkdir -p "$root"
+                            touch "$root/.mounted"
+                            ;;
+                    esac
+                    """
+                )
+            )
+            acp.chmod(0o755)
+            script = tmp_path / "watchdog-mast-users-reclaim.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR" {volumes}/dk2 {volumes}/dk3 {volumes}/dk4
+                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    USB	{volumes}/dk3	dk3	0	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+                    EOF
+                    is_volume_root_mounted() {{ [ -f "$1/.mounted" ]; }}
+                    sleep() {{ echo "sleep $1" >>{events}; }}
+                    tc_watchdog_check_active_mast_users
+                    cat {events}
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout.splitlines(),
+            [
+                f"rpc diskd.useVolume path:s:{volumes}/dk3",
+            ],
+        )
+        self.assertIn("watchdog disk check: managed volume dk3 users=0 requires diskd reclaim", log_text)
+        self.assertIn("watchdog disk check: reclaimed 1 managed volume(s) with users=0", log_text)
+        self.assertNotIn("dk4 requires diskd reclaim", log_text)
+
+    def test_common_watchdog_mast_users_failure_falls_back_to_disk_runtime_reload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            acp = tmp_path / "acp"
+            acp.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/bin/sh
+                    case "$*" in
+                        "-A MaSt")
+                            cat <<'OUT'
+                    [
+                        {
+                            deviceName="sd0"
+                            partitions=
+                            [
+                                {
+                                    deviceName="dk3"
+                                    format="hfs"
+                                    users=0
+                                    name="USB"
+                                    uuid=51f93e6f dc69524d 986dcee4 d7cb3573 |binary| (16 bytes)
+                                }
+                            ]
+                        }
+                    ]
+                    OUT
+                            ;;
+                        rpc*diskd.useVolume*) exit 1 ;;
+                    esac
+                    """
+                )
+            )
+            acp.chmod(0o755)
+            script = tmp_path / "watchdog-mast-users-reload.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR" {volumes}/dk3
+                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    USB	{volumes}/dk3	dk3	0	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+                    EOF
+                    tc_topology_changed_debounced() {{ return 1; }}
+                    is_volume_root_mounted() {{ return 1; }}
+                    sleep() {{ echo "sleep $1"; }}
+                    tc_live_reload_disk_runtime() {{ echo "reload $1"; return 0; }}
+                    tc_exec_start_samba() {{ echo "exec $1"; exit 42; }}
+                    tc_watchdog_disk_iteration
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "sleep 1\nreload managed diskd users dropped to zero\n")
 
     def test_common_watchdog_iteration_checks_processes_without_mounting_active_shares(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
