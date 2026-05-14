@@ -102,7 +102,8 @@ class StorageRuntimeTests(unittest.TestCase):
                 MDNS_DEVICE_MODEL='TimeCapsule6,106'
                 AIRPORT_SYAP='106'
                 INTERNAL_SHARE_USE_DISK_ROOT=0
-                APPLE_MOUNT_WAIT_SECONDS=0
+                DISKD_USE_VOLUME_ATTEMPTS=2
+                ATA_IDLE_SECONDS=300
                 NBNS_ENABLED=0
                 SMBD_DEBUG_LOGGING=0
                 MDNS_DEBUG_LOGGING=0
@@ -1042,7 +1043,6 @@ MaSt = (
             nbns_enabled=True,
             debug_logging=True,
             net_ipv4_hint="10.0.0.2",
-            apple_mount_wait_seconds=12,
         )
 
         self.assertIn("PAYLOAD_DIR_NAME=.samba4\n", rendered)
@@ -1051,6 +1051,8 @@ MaSt = (
         self.assertNotIn("PAYLOAD_DEVICE_HINT", rendered)
         self.assertNotIn("PAYLOAD_INSTALL_ID", rendered)
         self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=1\n", rendered)
+        self.assertIn("DISKD_USE_VOLUME_ATTEMPTS=2\n", rendered)
+        self.assertIn("ATA_IDLE_SECONDS=300\n", rendered)
         self.assertIn("NBNS_ENABLED=1\n", rendered)
         self.assertIn("SMBD_DEBUG_LOGGING=1\n", rendered)
         self.assertNotIn("SMB_NETBIOS_NAME", rendered)
@@ -1759,12 +1761,13 @@ MaSt = (
             self.assertEqual(proc.stdout, f"{volumes}/dk3/.samba4\n{volumes}/dk3\n/dev/dk3\n")
             self.assertIn(f"payload directory selected from mounted MaSt volumes: {volumes}/dk3/.samba4", log_text)
 
-    def test_common_payload_discovery_retries_manual_mount_after_first_invalid_payload(self) -> None:
+    def test_common_payload_discovery_does_not_manual_mount_after_first_invalid_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
             (volumes / "dk2").mkdir()
-            script = tmp_path / "payload-retry-success.sh"
+            mount_log = tmp_path / "mount.log"
+            script = tmp_path / "payload-no-manual-mount.sh"
             script.write_text(
                 textwrap.dedent(
                     f"""\
@@ -1777,18 +1780,14 @@ MaSt = (
                     mkdir -p "$RAM_VAR"
                     is_volume_root_mounted() {{ [ "$1" = "{volumes}/dk2" ]; }}
                     mount_hfs_bounded() {{
-                        mkdir -p {volumes}/dk2/.samba4/private
-                        : >{volumes}/dk2/.samba4/smbd
-                        chmod 755 {volumes}/dk2/.samba4/smbd
-                        : >{volumes}/dk2/.samba4/private/smbpasswd
-                        : >{volumes}/dk2/.samba4/private/username.map
+                        echo "unexpected manual mount" >>{mount_log}
                         return 0
                     }}
                     cat >"$TC_VOLUMES_TSV" <<'EOF'
                     wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     EOF
-                    tc_resolve_payload "$TC_VOLUMES_TSV"
-                    printf '%s\\n%s\\n%s\\n' "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME" "$TC_RESOLVED_PAYLOAD_DEVICE"
+                    tc_resolve_payload "$TC_VOLUMES_TSV" || status=$?
+                    printf 'status=%s\\n' "${{status:-0}}"
                     """
                 )
             )
@@ -1798,21 +1797,22 @@ MaSt = (
             log_text = (memory / "samba4/var/test.log").read_text()
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, f"{volumes}/dk2/.samba4\n{volumes}/dk2\n/dev/dk2\n")
+        self.assertEqual(proc.stdout, "status=1\n")
+        self.assertFalse(mount_log.exists())
         self.assertIn(f"payload discovery first invalid payload check failed for {volumes}/dk2/.samba4", log_text)
-        self.assertIn("payload candidate diagnostics (first failure before retry)", log_text)
+        self.assertIn("payload candidate diagnostics (first failure)", log_text)
         self.assertIn(f"payload diagnostic command: df -k {volumes}/dk2", log_text)
         self.assertIn(f"payload diagnostic command: ls -la {volumes}/dk2/.samba4", log_text)
-        self.assertIn(f"payload discovery retry: manual mount_hfs retry for /dev/dk2 at {volumes}/dk2", log_text)
-        self.assertIn(f"payload directory selected from mounted MaSt volumes after retry: {volumes}/dk2/.samba4", log_text)
-        self.assertNotIn("payload discovery retry failed: payload still invalid", log_text)
+        self.assertIn("payload discovery: mount_hfs retry skipped; runtime uses diskd.useVolume-only activation", log_text)
+        self.assertIn("payload candidate diagnostics (after final failure)", log_text)
+        self.assertIn("no valid payload directory found on mounted MaSt volumes", log_text)
 
-    def test_common_payload_discovery_logs_fresh_diagnostics_when_retry_fails(self) -> None:
+    def test_common_payload_discovery_logs_final_diagnostics_for_invalid_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
             (volumes / "dk2").mkdir()
-            script = tmp_path / "payload-retry-failure.sh"
+            script = tmp_path / "payload-final-failure.sh"
             script.write_text(
                 textwrap.dedent(
                     f"""\
@@ -1824,7 +1824,6 @@ MaSt = (
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
                     is_volume_root_mounted() {{ [ "$1" = "{volumes}/dk2" ]; }}
-                    mount_hfs_bounded() {{ return 1; }}
                     cat >"$TC_VOLUMES_TSV" <<'EOF'
                     wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     EOF
@@ -1841,10 +1840,10 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "status=1\n")
         self.assertIn(f"payload discovery first invalid payload check failed for {volumes}/dk2/.samba4", log_text)
-        self.assertIn("payload candidate diagnostics (first failure before retry)", log_text)
-        self.assertIn(f"payload discovery retry: mount_hfs retry failed for /dev/dk2 at {volumes}/dk2", log_text)
-        self.assertIn(f"payload discovery retry failed: payload still invalid after mount_hfs retry at {volumes}/dk2/.samba4", log_text)
-        self.assertIn("payload candidate diagnostics (after retry failure)", log_text)
+        self.assertIn("payload candidate diagnostics (first failure)", log_text)
+        self.assertIn("payload discovery failed: first mounted payload candidate is invalid", log_text)
+        self.assertIn("payload discovery: mount_hfs retry skipped; runtime uses diskd.useVolume-only activation", log_text)
+        self.assertIn("payload candidate diagnostics (after final failure)", log_text)
         self.assertIn(f"payload diagnostic command: df -k {volumes}/dk2", log_text)
         self.assertIn(f"payload diagnostic command: ls -la {volumes}/dk2", log_text)
         self.assertIn(f"payload diagnostic command: ls -la {volumes}/dk2/.samba4", log_text)
@@ -1928,6 +1927,59 @@ MaSt = (
         self.assertIn("status=1\n", proc.stdout)
         self.assertIn("no valid payload directory found on mounted MaSt volumes", proc.stdout)
         self.assertIn("payload discovery failed", proc.stdout)
+
+    def test_common_refresh_disk_state_sets_ata_idle_after_share_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            events = tmp_path / "events.log"
+            payload = volumes / "dk2/.samba4"
+            script = tmp_path / "refresh-order.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR" {payload}
+                    tc_wait_for_mast_volumes_to() {{
+                        cat >"$1" <<'EOF'
+                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                        : >"$2"
+                        return 0
+                    }}
+                    tc_mount_mast_volumes_for_boot() {{ echo mount >>{events}; }}
+                    tc_build_share_state() {{
+                        echo share >>{events}
+                        : >"$TC_SHARES_TSV"
+                        echo "Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" >>"$TC_SHARES_TSV"
+                        : >"$TC_ADISK_TSV"
+                        return 0
+                    }}
+                    tc_configure_ata_idle_for_mast_disks() {{ echo ata >>{events}; }}
+                    tc_resolve_payload() {{
+                        echo payload >>{events}
+                        TC_RESOLVED_PAYLOAD_DIR={payload}
+                        TC_RESOLVED_PAYLOAD_VOLUME={volumes}/dk2
+                        TC_RESOLVED_PAYLOAD_DEVICE=/dev/dk2
+                        return 0
+                    }}
+                    tc_payload_log_dir_ready() {{ return 0; }}
+                    tc_refresh_disk_state
+                    cat {events}
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.splitlines(), ["mount", "share", "ata", "payload"])
 
     def test_common_stage_disk_runtime_reads_payload_state_and_rebuilds_ram_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2777,15 +2829,24 @@ MaSt = (
         self.assertNotIn("--save-all-snapshot", proc.stdout)
         self.assertNotIn("unexpected-capture", proc.stdout)
 
-    def test_common_boot_mount_requests_all_apple_mounts_before_shared_wait(self) -> None:
+    def test_common_boot_mount_uses_diskd_usevolume_without_shared_wait_when_it_mounts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
             events = tmp_path / "events.log"
             acp = tmp_path / "acp"
-            acp.write_text(f"#!/bin/sh\necho \"acp $@\" >>{shlex.quote(str(events))}\n")
+            acp.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    echo "acp $@" >>{shlex.quote(str(events))}
+                    root=${{3#path:s:}}
+                    touch "$root/.mounted"
+                    """
+                )
+            )
             acp.chmod(0o755)
-            script = tmp_path / "boot-mount-shared-wait.sh"
+            script = tmp_path / "boot-mount-diskd.sh"
             script.write_text(
                 textwrap.dedent(
                     f"""\
@@ -2793,23 +2854,12 @@ MaSt = (
                     set -eu
                     . {flash}/common.sh
                     . {flash}/tcapsulesmb.conf
-                    APPLE_MOUNT_WAIT_SECONDS=5
+                    DISKD_USE_VOLUME_ATTEMPTS=5
                     tc_init_runtime_env
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
                     is_volume_root_mounted() {{ [ -f "$1/.mounted" ]; }}
-                    sleep() {{
-                        echo "sleep $1" >>{events}
-                        count=$(cat {tmp_path}/sleep-count 2>/dev/null || echo 0)
-                        count=$((count + 1))
-                        echo "$count" >{tmp_path}/sleep-count
-                        if [ "$count" -eq 1 ]; then
-                            touch {volumes}/dk2/.mounted
-                        elif [ "$count" -eq 2 ]; then
-                            touch {volumes}/dk3/.mounted
-                        fi
-                    }}
-                    mount_hfs_bounded() {{ echo "fallback $1 $2" >>{events}; return 1; }}
+                    sleep() {{ echo "sleep $1" >>{events}; }}
                     cat >"$TC_VOLUMES_TSV" <<'EOF'
                     wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     sd0	0	dk3	{volumes}/dk3	USB	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
@@ -2829,12 +2879,10 @@ MaSt = (
             [
                 f"acp rpc diskd.useVolume path:s:{volumes}/dk2",
                 f"acp rpc diskd.useVolume path:s:{volumes}/dk3",
-                "sleep 1",
-                "sleep 1",
             ],
         )
 
-    def test_common_boot_mount_uses_one_global_apple_wait_before_fallbacks(self) -> None:
+    def test_common_boot_mount_retries_diskd_per_volume_without_mount_hfs_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
@@ -2850,13 +2898,12 @@ MaSt = (
                     set -eu
                     . {flash}/common.sh
                     . {flash}/tcapsulesmb.conf
-                    APPLE_MOUNT_WAIT_SECONDS=2
+                    DISKD_USE_VOLUME_ATTEMPTS=2
                     tc_init_runtime_env
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
                     is_volume_root_mounted() {{ return 1; }}
                     sleep() {{ echo "sleep $1" >>{events}; }}
-                    mount_hfs_bounded() {{ echo "fallback $1 $2" >>{events}; return 1; }}
                     cat >"$TC_VOLUMES_TSV" <<'EOF'
                     wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     sd0	0	dk3	{volumes}/dk3	USB	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
@@ -2876,23 +2923,148 @@ MaSt = (
             proc.stdout.splitlines(),
             [
                 f"acp rpc diskd.useVolume path:s:{volumes}/dk2",
+                "sleep 1",
+                f"acp rpc diskd.useVolume path:s:{volumes}/dk2",
                 f"acp rpc diskd.useVolume path:s:{volumes}/dk3",
                 "sleep 1",
-                "sleep 1",
-                f"fallback /dev/dk2 {volumes}/dk2",
-                f"fallback /dev/dk3 {volumes}/dk3",
+                f"acp rpc diskd.useVolume path:s:{volumes}/dk3",
             ],
         )
-        self.assertIn("boot disk load: requesting diskd.useVolume for all MaSt volumes", log_text)
-        self.assertIn("MaSt volume diskd.useVolume wait beginning for up to 2s", log_text)
+        self.assertIn("boot disk load: activating MaSt volumes through diskd.useVolume", log_text)
         self.assertIn(
-            "MaSt volume diskd.useVolume wait timed out after 2s; manual fallback will handle remaining unmounted volumes",
+            f"MaSt volume {volumes}/dk2: diskd.useVolume did not mount {volumes}/dk2 after 2 attempt(s); leaving volume unavailable without mount_hfs fallback",
             log_text,
         )
-        self.assertIn("boot disk load: checking for unmounted volumes after shared diskd wait", log_text)
+        self.assertIn(
+            f"MaSt volume {volumes}/dk3: diskd.useVolume did not mount {volumes}/dk3 after 2 attempt(s); leaving volume unavailable without mount_hfs fallback",
+            log_text,
+        )
+        self.assertNotIn("MaSt volume diskd.useVolume wait beginning", log_text)
+        self.assertNotIn("launching mount_hfs", log_text)
         self.assertNotIn("Apple mount", log_text)
 
-    def test_common_wake_or_mount_uses_apple_diskd_before_mount_fallback(self) -> None:
+    def test_common_ata_idle_tunes_only_builtin_wd_disks_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            atactl_log = tmp_path / "atactl.log"
+            atactl = tmp_path / "atactl"
+            atactl.write_text(f"#!/bin/sh\necho \"$@\" >>{shlex.quote(str(atactl_log))}\n")
+            atactl.chmod(0o755)
+            common_path = flash / "common.sh"
+            common_path.write_text(common_path.read_text().replace("/sbin/atactl", str(atactl)))
+            script = tmp_path / "ata-idle.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    is_volume_root_mounted() {{ return 0; }}
+                    cat >"$TC_VOLUMES_TSV" <<'EOF'
+                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    wd0	1	dk3	{volumes}/dk3	More	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+                    sd0	0	dk4	{volumes}/dk4	USB	cccccccc-cccc-cccc-cccc-cccccccccccc
+                    sd1	1	dk5	{volumes}/dk5	SSD	dddddddd-dddd-dddd-dddd-dddddddddddd
+                    EOF
+                    tc_configure_ata_idle_for_mast_disks "$TC_VOLUMES_TSV"
+                    cat {atactl_log}
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "wd0 setidle 300\n")
+        self.assertIn("ATA idle tuning: set wd0 idle timer to 300s", log_text)
+        self.assertIn("ATA idle tuning: skipping sd0 for /dev/dk4; MaSt marks disk as external", log_text)
+        self.assertIn("ATA idle tuning: skipping sd1 for /dev/dk5; not a wd ATA disk", log_text)
+
+    def test_common_ata_idle_zero_disables_tuning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            atactl_log = tmp_path / "atactl.log"
+            atactl = tmp_path / "atactl"
+            atactl.write_text(f"#!/bin/sh\necho \"$@\" >>{shlex.quote(str(atactl_log))}\n")
+            atactl.chmod(0o755)
+            common_path = flash / "common.sh"
+            common_path.write_text(common_path.read_text().replace("/sbin/atactl", str(atactl)))
+            script = tmp_path / "ata-idle-disabled.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    ATA_IDLE_SECONDS=0
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    is_volume_root_mounted() {{ return 0; }}
+                    cat >"$TC_VOLUMES_TSV" <<'EOF'
+                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                    tc_configure_ata_idle_for_mast_disks "$TC_VOLUMES_TSV"
+                    [ ! -f {atactl_log} ]
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("ATA idle tuning disabled", log_text)
+
+    def test_common_ata_idle_failure_logs_and_continues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            atactl = tmp_path / "atactl"
+            atactl.write_text("#!/bin/sh\nexit 1\n")
+            atactl.chmod(0o755)
+            common_path = flash / "common.sh"
+            common_path.write_text(common_path.read_text().replace("/sbin/atactl", str(atactl)))
+            script = tmp_path / "ata-idle-failure.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    is_volume_root_mounted() {{ return 0; }}
+                    cat >"$TC_VOLUMES_TSV" <<'EOF'
+                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                    tc_configure_ata_idle_for_mast_disks "$TC_VOLUMES_TSV"
+                    echo continued
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "continued\n")
+        self.assertIn("ATA idle tuning: failed to set wd0 idle timer to 300s", log_text)
+
+    def test_common_wake_or_mount_uses_diskd_without_mount_hfs_fallback_when_it_mounts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
@@ -2907,7 +3079,7 @@ MaSt = (
                     set -eu
                     . {flash}/common.sh
                     . {flash}/tcapsulesmb.conf
-                    APPLE_MOUNT_WAIT_SECONDS=2
+                    DISKD_USE_VOLUME_ATTEMPTS=2
                     tc_init_runtime_env
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR" {volumes}/dk2
@@ -2917,7 +3089,6 @@ MaSt = (
                         echo "$count" >{tmp_path}/count
                         [ "$count" -ge 2 ]
                     }}
-                    mount_hfs_bounded() {{ echo fallback >>{tmp_path}/fallback.log; return 1; }}
                     tc_wake_or_mount_volume /dev/dk2 {volumes}/dk2
                     """
                 )
@@ -2926,20 +3097,18 @@ MaSt = (
 
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
             acp_log = (tmp_path / "acp.log").read_text()
-            fallback_exists = (tmp_path / "fallback.log").exists()
             log_text = (memory / "samba4/var/test.log").read_text()
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn(f"rpc diskd.useVolume path:s:{volumes}/dk2", acp_log)
-        self.assertFalse(fallback_exists)
-        self.assertIn(f"MaSt volume {volumes}/dk2: requesting diskd.useVolume for {volumes}/dk2", log_text)
         self.assertIn(
-            f"MaSt volume {volumes}/dk2: observed {volumes}/dk2 mounted after diskd.useVolume wait: 0s",
+            f"MaSt volume {volumes}/dk2: mounted at {volumes}/dk2 after diskd.useVolume attempt 1/2",
             log_text,
         )
+        self.assertNotIn("mount_hfs", log_text)
         self.assertNotIn("Apple mount", log_text)
 
-    def test_common_wake_or_mount_logs_diskd_timeout_before_manual_fallback(self) -> None:
+    def test_common_wake_or_mount_logs_diskd_failure_without_mount_hfs_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
@@ -2954,13 +3123,12 @@ MaSt = (
                     set -eu
                     . {flash}/common.sh
                     . {flash}/tcapsulesmb.conf
-                    APPLE_MOUNT_WAIT_SECONDS=1
+                    DISKD_USE_VOLUME_ATTEMPTS=2
                     tc_init_runtime_env
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR" {volumes}/dk2
                     is_volume_root_mounted() {{ return 1; }}
-                    sleep() {{ :; }}
-                    mount_hfs_bounded() {{ echo "fallback $1 $2"; return 1; }}
+                    sleep() {{ echo "sleep $1"; }}
                     tc_wake_or_mount_volume /dev/dk2 {volumes}/dk2 || true
                     """
                 )
@@ -2971,16 +3139,15 @@ MaSt = (
             log_text = (memory / "samba4/var/test.log").read_text()
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, f"fallback /dev/dk2 {volumes}/dk2\n")
+        self.assertEqual(proc.stdout, "sleep 1\n")
         self.assertIn(
-            f"MaSt volume {volumes}/dk2: diskd.useVolume wait timed out after 1s; "
-            "manual fallback will handle remaining unmounted volumes",
+            f"MaSt volume {volumes}/dk2: diskd.useVolume did not mount {volumes}/dk2 after 2 attempt(s); leaving volume unavailable without mount_hfs fallback",
             log_text,
         )
-        self.assertNotIn("manual mount fallback starting", log_text)
+        self.assertNotIn("launching mount_hfs", log_text)
         self.assertNotIn("Apple mount", log_text)
 
-    def test_common_boot_and_watchdog_mount_policies_use_separate_waits(self) -> None:
+    def test_common_boot_and_watchdog_mount_policies_use_separate_attempt_counts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
@@ -2992,13 +3159,13 @@ MaSt = (
                     set -eu
                     . {flash}/common.sh
                     . {flash}/tcapsulesmb.conf
-                    APPLE_MOUNT_WAIT_SECONDS=7
-                    WATCHDOG_MOUNT_WAIT_SECONDS=2
+                    DISKD_USE_VOLUME_ATTEMPTS=7
+                    WATCHDOG_DISKD_USE_VOLUME_ATTEMPTS=2
                     tc_init_runtime_env
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR" {volumes}/dk2
                     tc_wake_or_mount_volume_with_policy() {{
-                        printf '%s %s %s %s %s\\n' "$1" "$2" "$3" "$4" "$5"
+                        printf '%s %s %s %s\\n' "$1" "$2" "$3" "$4"
                         return 1
                     }}
                     tc_boot_wake_or_mount_volume /dev/dk2 {volumes}/dk2 || true
@@ -3012,8 +3179,8 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         lines = proc.stdout.splitlines()
-        self.assertEqual(lines[0], f"/dev/dk2 {volumes}/dk2 7 30 MaSt volume {volumes}/dk2")
-        self.assertEqual(lines[1], f"/dev/dk2 {volumes}/dk2 2 30 watchdog volume {volumes}/dk2")
+        self.assertEqual(lines[0], f"/dev/dk2 {volumes}/dk2 7 MaSt volume {volumes}/dk2")
+        self.assertEqual(lines[1], f"/dev/dk2 {volumes}/dk2 2 watchdog volume {volumes}/dk2")
 
     def test_common_watchdog_iteration_checks_processes_without_mounting_active_shares(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

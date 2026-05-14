@@ -62,9 +62,10 @@ LEGACY_PREFIX_NETBSD4LE=/root/tc-netbsd4le
 LEGACY_PREFIX_NETBSD4BE=/root/tc-netbsd4be
 
 tc_init_runtime_env() {
-    APPLE_MOUNT_WAIT_SECONDS=${APPLE_MOUNT_WAIT_SECONDS:-30}
+    DISKD_USE_VOLUME_ATTEMPTS=${DISKD_USE_VOLUME_ATTEMPTS:-2}
+    ATA_IDLE_SECONDS=${ATA_IDLE_SECONDS:-300}
     MAST_DISCOVERY_WAIT_SECONDS=${MAST_DISCOVERY_WAIT_SECONDS:-120}
-    WATCHDOG_MOUNT_WAIT_SECONDS=${WATCHDOG_MOUNT_WAIT_SECONDS:-$APPLE_MOUNT_WAIT_SECONDS}
+    WATCHDOG_DISKD_USE_VOLUME_ATTEMPTS=${WATCHDOG_DISKD_USE_VOLUME_ATTEMPTS:-$DISKD_USE_VOLUME_ATTEMPTS}
     MDNS_CAPTURE_WAIT_SECONDS=${MDNS_CAPTURE_WAIT_SECONDS:-75}
     INTERNAL_SHARE_USE_DISK_ROOT=${INTERNAL_SHARE_USE_DISK_ROOT:-0}
     NBNS_ENABLED=${NBNS_ENABLED:-0}
@@ -744,99 +745,73 @@ is_volume_root_mounted() {
     return 1
 }
 
-mount_hfs_bounded() {
-    dev_path=$1
-    volume_root=$2
-    timeout_seconds=${3:-30}
-    mount_context=${4:-mount candidate}
-    created_mountpoint=0
+# Disk mount policy helpers. Boot and watchdog share the low-level
+# Apple-first flow, but keep separate entry points so their timing can diverge.
+tc_request_diskd_use_volume() {
+    volume_root=$1
+    mount_context=$2
+    attempt_label=${3:-}
 
-    if [ ! -b "$dev_path" ]; then
-        tc_log "$mount_context skipped; missing block device $dev_path"
-        return 1
+    mkdir -p "$volume_root"
+    if [ -n "$attempt_label" ]; then
+        tc_log "$mount_context: requesting diskd.useVolume for $volume_root ($attempt_label)"
+    else
+        tc_log "$mount_context: requesting diskd.useVolume for $volume_root"
     fi
-
-    if [ ! -d "$volume_root" ]; then
-        mkdir -p "$volume_root"
-        created_mountpoint=1
-        tc_log "created mountpoint $volume_root for $dev_path"
-    fi
-
-    tc_log "launching mount_hfs for $dev_path at $volume_root"
-    /sbin/mount_hfs "$dev_path" "$volume_root" >/dev/null 2>&1 &
-    mount_pid=$!
-    attempt=0
-    while kill -0 "$mount_pid" >/dev/null 2>&1; do
-        if [ "$attempt" -ge "$timeout_seconds" ]; then
-            kill "$mount_pid" >/dev/null 2>&1 || true
-            sleep 1
-            kill -9 "$mount_pid" >/dev/null 2>&1 || true
-            wait "$mount_pid" >/dev/null 2>&1 || true
-            tc_log "mount_hfs command did not exit promptly for $dev_path at $volume_root; re-checking mount state"
-            if is_volume_root_mounted "$volume_root"; then
-                tc_log "mount_hfs command timed out, but volume is mounted"
-                return 0
-            fi
-            if [ "$created_mountpoint" -eq 1 ]; then
-                /bin/rmdir "$volume_root" >/dev/null 2>&1 || true
-            fi
-            tc_log "mount_hfs timed out for $dev_path at $volume_root and volume was not mounted at the immediate re-check"
-            return 1
-        fi
-        attempt=$((attempt + 1))
-        sleep 1
-    done
-    wait "$mount_pid" >/dev/null 2>&1 || true
-
-    if is_volume_root_mounted "$volume_root"; then
-        tc_log "mounted $dev_path at $volume_root after ${attempt}s"
+    if /usr/bin/acp rpc diskd.useVolume path:s:"$volume_root" >/dev/null 2>&1; then
+        tc_log "$mount_context: diskd.useVolume command completed for $volume_root"
         return 0
     fi
-
-    if [ "$created_mountpoint" -eq 1 ]; then
-        /bin/rmdir "$volume_root" >/dev/null 2>&1 || true
-    fi
-
-    tc_log "mount_hfs exited for $dev_path at $volume_root, but volume is not mounted"
+    tc_log "$mount_context: diskd.useVolume command failed for $volume_root"
     return 1
 }
 
-# Disk mount policy helpers. Boot and watchdog share the low-level
-# Apple-first flow, but keep separate entry points so their timing can diverge.
 tc_wake_or_mount_volume_with_policy() {
     device_path=$1
     volume_root=$2
-    apple_wait_seconds=$3
-    mount_timeout_seconds=$4
-    mount_context=$5
+    diskd_attempts=$3
+    mount_context=${4:-MaSt volume $2}
 
     if [ -z "$device_path" ] || [ -z "$volume_root" ]; then
+        tc_log "$mount_context: diskd activation skipped; missing device or volume root"
         return 1
     fi
 
     if is_volume_root_mounted "$volume_root"; then
+        tc_log "$mount_context: volume already mounted at $volume_root"
         return 0
     fi
 
+    case "$diskd_attempts" in
+        ""|*[!0123456789]*|0)
+            tc_log "$mount_context: invalid diskd attempt count '$diskd_attempts'; using 2 attempts"
+            diskd_attempts=2
+            ;;
+    esac
+
     mkdir -p "$volume_root"
-    tc_log "$mount_context: requesting diskd.useVolume for $volume_root"
-    /usr/bin/acp rpc diskd.useVolume path:s:"$volume_root" >/dev/null 2>&1 || true
-    attempt=0
-    while [ "$attempt" -lt "$apple_wait_seconds" ]; do
+    tc_log "$mount_context: diskd activation beginning for $device_path at $volume_root with ${diskd_attempts} attempt(s)"
+    attempt=1
+    while [ "$attempt" -le "$diskd_attempts" ]; do
+        tc_request_diskd_use_volume "$volume_root" "$mount_context" "attempt $attempt/$diskd_attempts" || true
         if is_volume_root_mounted "$volume_root"; then
-            tc_log "$mount_context: observed $volume_root mounted after diskd.useVolume wait: ${attempt}s"
+            tc_log "$mount_context: mounted at $volume_root after diskd.useVolume attempt $attempt/$diskd_attempts"
             return 0
         fi
+        tc_log "$mount_context: $volume_root is not mounted after diskd.useVolume attempt $attempt/$diskd_attempts"
+        if [ "$attempt" -lt "$diskd_attempts" ]; then
+            tc_log "$mount_context: waiting 1s before diskd.useVolume retry"
+            sleep 1
+        fi
         attempt=$((attempt + 1))
-        sleep 1
     done
 
-    tc_log "$mount_context: diskd.useVolume wait timed out after ${apple_wait_seconds}s; manual fallback will handle remaining unmounted volumes"
-    mount_hfs_bounded "$device_path" "$volume_root" "$mount_timeout_seconds" "$mount_context"
+    tc_log "$mount_context: diskd.useVolume did not mount $volume_root after ${diskd_attempts} attempt(s); leaving volume unavailable without mount_hfs fallback"
+    return 1
 }
 
 tc_wake_or_mount_volume() {
-    tc_wake_or_mount_volume_with_policy "$1" "$2" "$APPLE_MOUNT_WAIT_SECONDS" 30 "MaSt volume $2"
+    tc_wake_or_mount_volume_with_policy "$1" "$2" "$DISKD_USE_VOLUME_ATTEMPTS" "MaSt volume $2"
 }
 
 tc_boot_wake_or_mount_volume() {
@@ -844,106 +819,78 @@ tc_boot_wake_or_mount_volume() {
 }
 
 tc_watchdog_wake_or_mount_volume() {
-    tc_wake_or_mount_volume_with_policy "$1" "$2" "$WATCHDOG_MOUNT_WAIT_SECONDS" 30 "watchdog volume $2"
-}
-
-tc_request_apple_mount_for_volume() {
-    device_path=$1
-    volume_root=$2
-    mount_context=$3
-
-    if [ -z "$device_path" ] || [ -z "$volume_root" ]; then
-        return 1
-    fi
-
-    if is_volume_root_mounted "$volume_root"; then
-        return 0
-    fi
-
-    mkdir -p "$volume_root"
-    tc_log "$mount_context: requesting diskd.useVolume for $volume_root"
-    /usr/bin/acp rpc diskd.useVolume path:s:"$volume_root" >/dev/null 2>&1 || true
-    return 0
-}
-
-tc_request_apple_mounts_for_mast_volumes() {
-    volumes_file=$1
-
-    while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid ||
-        [ -n "$disk_device$builtin$part_device$volume_root$part_name$part_uuid" ]; do
-        [ -n "$part_device" ] || continue
-        tc_request_apple_mount_for_volume "/dev/$part_device" "$volume_root" "MaSt volume $volume_root"
-    done <"$volumes_file"
-}
-
-tc_all_mast_volumes_mounted() {
-    volumes_file=$1
-    found=0
-
-    while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid ||
-        [ -n "$disk_device$builtin$part_device$volume_root$part_name$part_uuid" ]; do
-        [ -n "$part_device" ] || continue
-        found=1
-        if ! is_volume_root_mounted "$volume_root"; then
-            return 1
-        fi
-    done <"$volumes_file"
-
-    [ "$found" -eq 1 ]
-}
-
-tc_wait_for_apple_mast_mounts() {
-    volumes_file=$1
-    wait_seconds=${2:-$APPLE_MOUNT_WAIT_SECONDS}
-    elapsed=0
-
-    if tc_all_mast_volumes_mounted "$volumes_file"; then
-        tc_log "MaSt volume diskd.useVolume wait skipped; all volumes already mounted"
-        return 0
-    fi
-
-    tc_log "MaSt volume diskd.useVolume wait beginning for up to ${wait_seconds}s"
-    while [ "$elapsed" -lt "$wait_seconds" ]; do
-        sleep 1
-        elapsed=$((elapsed + 1))
-        if tc_all_mast_volumes_mounted "$volumes_file"; then
-            tc_log "MaSt volume diskd.useVolume wait complete; all volumes mounted after ${elapsed}s"
-            return 0
-        fi
-    done
-
-    tc_log "MaSt volume diskd.useVolume wait timed out after ${wait_seconds}s; manual fallback will handle remaining unmounted volumes"
-    return 1
-}
-
-tc_mount_remaining_mast_volumes() {
-    volumes_file=$1
-    status=0
-
-    while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid ||
-        [ -n "$disk_device$builtin$part_device$volume_root$part_name$part_uuid" ]; do
-        [ -n "$part_device" ] || continue
-        if is_volume_root_mounted "$volume_root"; then
-            continue
-        fi
-        if mount_hfs_bounded "/dev/$part_device" "$volume_root" 30 "MaSt volume $volume_root"; then
-            :
-        else
-            status=1
-        fi
-    done <"$volumes_file"
-
-    return "$status"
+    tc_wake_or_mount_volume_with_policy "$1" "$2" "$WATCHDOG_DISKD_USE_VOLUME_ATTEMPTS" "watchdog volume $2"
 }
 
 tc_mount_mast_volumes_for_boot() {
     volumes_file=$1
+    volume_count=0
+    mounted_count=0
+    failed_count=0
 
-    tc_log "boot disk load: requesting diskd.useVolume for all MaSt volumes"
-    tc_request_apple_mounts_for_mast_volumes "$volumes_file"
-    tc_wait_for_apple_mast_mounts "$volumes_file" "$APPLE_MOUNT_WAIT_SECONDS" || true
-    tc_log "boot disk load: checking for unmounted volumes after shared diskd wait"
-    tc_mount_remaining_mast_volumes "$volumes_file" || true
+    tc_log "boot disk load: activating MaSt volumes through diskd.useVolume"
+    while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid ||
+        [ -n "$disk_device$builtin$part_device$volume_root$part_name$part_uuid" ]; do
+        [ -n "$part_device" ] || continue
+        volume_count=$((volume_count + 1))
+        tc_log "boot disk load: activating volume $volume_count: disk=$disk_device builtin=$builtin device=/dev/$part_device root=$volume_root name=$part_name"
+        if tc_boot_wake_or_mount_volume "/dev/$part_device" "$volume_root"; then
+            mounted_count=$((mounted_count + 1))
+            tc_log "boot disk load: volume active: /dev/$part_device at $volume_root"
+        else
+            failed_count=$((failed_count + 1))
+            tc_log "boot disk load: volume inactive after diskd attempts: /dev/$part_device at $volume_root"
+        fi
+    done <"$volumes_file"
+    tc_log "boot disk load: diskd activation complete: total=$volume_count mounted=$mounted_count failed=$failed_count"
+}
+
+tc_configure_ata_idle_for_mast_disks() {
+    volumes_file=$1
+
+    tc_log "ATA idle tuning: scanning built-in ATA disks after share-state build"
+    case "$ATA_IDLE_SECONDS" in
+        ""|*[!0123456789]*)
+            tc_log "ATA idle tuning skipped; invalid ATA_IDLE_SECONDS=$ATA_IDLE_SECONDS"
+            return 0
+            ;;
+        0)
+            tc_log "ATA idle tuning disabled"
+            return 0
+            ;;
+    esac
+
+    configured_disks=" "
+    while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid ||
+        [ -n "$disk_device$builtin$part_device$volume_root$part_name$part_uuid" ]; do
+        [ -n "$disk_device" ] || continue
+        if [ "$builtin" != "1" ]; then
+            tc_log "ATA idle tuning: skipping $disk_device for /dev/$part_device; MaSt marks disk as external"
+            continue
+        fi
+        case "$disk_device" in
+            wd[0-9]*) ;;
+            *)
+                tc_log "ATA idle tuning: skipping $disk_device for /dev/$part_device; not a wd ATA disk"
+                continue
+                ;;
+        esac
+        if ! is_volume_root_mounted "$volume_root"; then
+            tc_log "ATA idle tuning: skipping $disk_device for /dev/$part_device; $volume_root is not mounted"
+            continue
+        fi
+        case "$configured_disks" in
+            *" $disk_device "*) continue ;;
+        esac
+        configured_disks="$configured_disks$disk_device "
+
+        tc_log "ATA idle tuning: setting $disk_device idle timer to ${ATA_IDLE_SECONDS}s after mounted volume $volume_root"
+        if /sbin/atactl "$disk_device" setidle "$ATA_IDLE_SECONDS" >/dev/null 2>&1; then
+            tc_log "ATA idle tuning: set $disk_device idle timer to ${ATA_IDLE_SECONDS}s"
+        else
+            tc_log "ATA idle tuning: failed to set $disk_device idle timer to ${ATA_IDLE_SECONDS}s"
+        fi
+    done <"$volumes_file"
 }
 
 tc_plist_key() {
@@ -1292,11 +1239,14 @@ tc_append_share_state_row() {
 tc_build_share_state() {
     volumes_file=${1:-$TC_VOLUMES_TSV}
     used_share_names_file="$TC_STATE_DIR/share-names.$$"
+    candidate_count=0
+    share_count=0
     : >"$TC_SHARES_TSV"
     : >"$TC_ADISK_TSV"
     TC_USED_SHARE_NAMES_FILE=$used_share_names_file
     : >"$TC_USED_SHARE_NAMES_FILE"
 
+    tc_log "share state build: scanning mounted writable MaSt volumes"
     disk_device=
     builtin=
     part_device=
@@ -1306,7 +1256,9 @@ tc_build_share_state() {
     while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid ||
         [ -n "$disk_device$builtin$part_device$volume_root$part_name$part_uuid" ]; do
         [ -n "$part_device" ] || continue
+        candidate_count=$((candidate_count + 1))
         device_path="/dev/$part_device"
+        tc_log "share candidate: device=$device_path disk=$disk_device builtin=$builtin root=$volume_root name=$part_name"
         if ! is_volume_root_mounted "$volume_root"; then
             tc_log "share skipped: $device_path at $volume_root is not mounted"
             continue
@@ -1321,10 +1273,12 @@ tc_build_share_state() {
         share_name_budget=$(tc_adisk_share_name_budget "$part_device" "$part_uuid" "$TC_ADISK_DISK_ADVF")
         share_name=$(tc_unique_share_name "$base_name" "$part_device" "$share_name_budget")
         tc_append_share_state_row "$share_name" "$share_path" "$part_device" "$builtin" "$part_uuid"
+        share_count=$((share_count + 1))
         tc_log "share prepared: $share_name -> $share_path uuid=$part_uuid builtin=$builtin"
     done <"$volumes_file"
 
     rm -f "$TC_USED_SHARE_NAMES_FILE"
+    tc_log "share state build complete: candidates=$candidate_count shares=$share_count"
     [ -s "$TC_SHARES_TSV" ]
 }
 
@@ -1419,7 +1373,7 @@ tc_scan_payload_candidates_for_builtin() {
                     first_invalid_payload_volume=$volume_root
                     first_invalid_payload_device="/dev/$part_device"
                     tc_log "payload discovery first invalid payload check failed for $candidate"
-                    tc_log_payload_candidate_diagnostics "first failure before retry" "$volume_root" "$candidate"
+                    tc_log_payload_candidate_diagnostics "first failure" "$volume_root" "$candidate"
                 fi
             fi
         else
@@ -1452,29 +1406,9 @@ tc_resolve_payload() {
     fi
 
     if [ -n "$first_invalid_payload_dir" ]; then
-        tc_log "payload discovery retry: manual mount_hfs retry for $first_invalid_payload_device at $first_invalid_payload_volume after invalid payload at $first_invalid_payload_dir"
-        if mount_hfs_bounded "$first_invalid_payload_device" "$first_invalid_payload_volume" 30 "payload discovery retry $first_invalid_payload_volume"; then
-            tc_log "payload discovery retry: mount_hfs retry completed for $first_invalid_payload_device at $first_invalid_payload_volume"
-        else
-            tc_log "payload discovery retry: mount_hfs retry failed for $first_invalid_payload_device at $first_invalid_payload_volume"
-        fi
-
-        selected_payload_dir=
-        selected_payload_volume=
-        selected_payload_device=
-        tc_scan_payload_candidates_for_builtin "$volumes_file" 1
-        tc_scan_payload_candidates_for_builtin "$volumes_file" 0
-
-        if [ -n "$selected_payload_dir" ]; then
-            TC_RESOLVED_PAYLOAD_DIR=$selected_payload_dir
-            TC_RESOLVED_PAYLOAD_VOLUME=$selected_payload_volume
-            TC_RESOLVED_PAYLOAD_DEVICE=$selected_payload_device
-            tc_log "payload directory selected from mounted MaSt volumes after retry: $TC_RESOLVED_PAYLOAD_DIR"
-            return 0
-        fi
-
-        tc_log "payload discovery retry failed: payload still invalid after mount_hfs retry at $first_invalid_payload_dir"
-        tc_log_payload_candidate_diagnostics "after retry failure" "$first_invalid_payload_volume" "$first_invalid_payload_dir"
+        tc_log "payload discovery failed: first mounted payload candidate is invalid at $first_invalid_payload_dir"
+        tc_log "payload discovery: mount_hfs retry skipped; runtime uses diskd.useVolume-only activation"
+        tc_log_payload_candidate_diagnostics "after final failure" "$first_invalid_payload_volume" "$first_invalid_payload_dir"
     fi
 
     tc_log "no valid payload directory found on mounted MaSt volumes"
@@ -1517,24 +1451,32 @@ tc_refresh_disk_state() {
     volumes_file="$TC_STATE_DIR/mast-volumes.$$"
     raw_file="$TC_STATE_DIR/mast.raw.$$"
 
+    tc_log "disk-state refresh: discovering MaSt HFS volumes"
     rm -f "$volumes_file" "$raw_file"
     if ! tc_wait_for_mast_volumes_to "$volumes_file" "$raw_file" "$MAST_DISCOVERY_WAIT_SECONDS"; then
         tc_log "MaSt discovery failed or returned no valid HFS volumes"
         rm -f "$volumes_file" "$raw_file"
         return 1
     fi
+    tc_log "disk-state refresh: MaSt discovery complete; writing topology signature"
     /bin/cat "$volumes_file" >"$TC_TOPOLOGY_SIGNATURE"
     tc_log_mast_volume_state "$volumes_file"
 
+    tc_log "disk-state refresh: activating discovered MaSt volumes"
     tc_mount_mast_volumes_for_boot "$volumes_file"
 
-    tc_log "building share state from mounted writable MaSt volumes"
+    tc_log "disk-state refresh: building share state from mounted writable MaSt volumes"
     if ! tc_build_share_state "$volumes_file"; then
         tc_log "no writable MaSt share volumes are available"
         rm -f "$volumes_file" "$raw_file"
         return 1
     fi
+    tc_log "disk-state refresh: share state ready"
 
+    tc_log "disk-state refresh: applying ATA idle settings after share-state build"
+    tc_configure_ata_idle_for_mast_disks "$volumes_file" || true
+
+    tc_log "disk-state refresh: resolving payload directory"
     if ! tc_resolve_payload "$volumes_file"; then
         tc_log "payload discovery failed"
         rm -f "$volumes_file" "$raw_file"
@@ -1542,6 +1484,7 @@ tc_refresh_disk_state() {
     fi
 
     tc_write_payload_state "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME" "$TC_RESOLVED_PAYLOAD_DEVICE"
+    tc_log "disk-state refresh: payload state written: dir=$TC_RESOLVED_PAYLOAD_DIR volume=$TC_RESOLVED_PAYLOAD_VOLUME device=$TC_RESOLVED_PAYLOAD_DEVICE"
     tc_set_payload_log_dir "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME"
     if tc_payload_log_dir_ready; then
         tc_log "payload smbd log directory ready at $TC_PAYLOAD_LOG_DIR"

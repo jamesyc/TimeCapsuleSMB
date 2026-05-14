@@ -36,6 +36,8 @@ from timecapsulesmb.deploy.planner import (
     BINARY_NBNS_SOURCE,
     BINARY_SMBD_SOURCE,
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+    DEFAULT_ATA_IDLE_SECONDS,
+    DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_SMBPASSWD_SOURCE,
     GENERATED_USERNAME_MAP_SOURCE,
@@ -148,7 +150,8 @@ def render_flash_runtime_config(
     nbns_enabled: bool,
     debug_logging: bool,
     net_ipv4_hint: str = "",
-    apple_mount_wait_seconds: int = DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+    ata_idle_seconds: int = DEFAULT_ATA_IDLE_SECONDS,
+    diskd_use_volume_attempts: int = DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
 ) -> str:
     internal_root_default = config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])
 
@@ -161,7 +164,8 @@ def render_flash_runtime_config(
         ("MDNS_DEVICE_MODEL", config.get("TC_MDNS_DEVICE_MODEL", DEFAULTS["TC_MDNS_DEVICE_MODEL"])),
         ("AIRPORT_SYAP", config.get("TC_AIRPORT_SYAP", DEFAULTS["TC_AIRPORT_SYAP"])),
         ("INTERNAL_SHARE_USE_DISK_ROOT", 1 if parse_bool(internal_root_default) else 0),
-        ("APPLE_MOUNT_WAIT_SECONDS", apple_mount_wait_seconds),
+        ("DISKD_USE_VOLUME_ATTEMPTS", diskd_use_volume_attempts),
+        ("ATA_IDLE_SECONDS", ata_idle_seconds),
         ("NBNS_ENABLED", 1 if nbns_enabled else 0),
         ("SMBD_DEBUG_LOGGING", 1 if debug_logging else 0),
         ("MDNS_DEBUG_LOGGING", 1 if debug_logging else 0),
@@ -197,7 +201,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         type=_non_negative_int,
         default=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
         metavar="SECONDS",
-        help=f"Seconds to wait for Apple firmware to mount the data disk before manual mount fallback (default: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS})",
+        help=f"Seconds for deployment-time diskd.useVolume mount guards to wait before their manual fallback (default: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS})",
     )
     parser.add_argument("--debug-logging", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -324,7 +328,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             nbns_enabled=nbns_enabled,
             debug_logging=args.debug_logging,
             net_ipv4_hint=net_ipv4_hint,
-            apple_mount_wait_seconds=apple_mount_wait_seconds,
         )
 
         with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp, ExitStack() as boot_assets:
