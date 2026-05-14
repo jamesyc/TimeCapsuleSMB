@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import ipaddress
 from dataclasses import dataclass
 from typing import Optional
 
 from timecapsulesmb.core.config import (
     CONFIG_VALIDATORS,
-    extract_host,
 )
+from timecapsulesmb.core.net import extract_host, ipv4_literal
 from timecapsulesmb.device.probe import (
     RemoteInterfaceCandidatesProbeResult,
     runtime_interface_candidates,
@@ -57,26 +56,6 @@ def saved_syap_value_for_candidates(
     if candidate_syaps and saved_syap_choice.value not in candidate_syaps:
         return None
     return saved_syap_choice.value
-
-
-def ipv4_literal(value: str) -> str | None:
-    value = value.strip()
-    try:
-        parsed = ipaddress.ip_address(value)
-    except ValueError:
-        parts = value.split(".")
-        if len(parts) != 4 or any(not part.isdigit() for part in parts):
-            return None
-        octets: list[str] = []
-        for part in parts:
-            octet = int(part, 10)
-            if octet < 0 or octet > 255:
-                return None
-            octets.append(str(octet))
-        return ".".join(octets)
-    if parsed.version != 4:
-        return None
-    return str(parsed)
 
 
 def interface_target_ips(values: dict[str, str], discovered_record: BonjourResolvedService | None) -> tuple[str, ...]:

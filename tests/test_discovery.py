@@ -48,6 +48,10 @@ class DiscoveryTests(unittest.TestCase):
         record = Discovered(name="TC", hostname="capsule.local", ipv4=["169.254.1.2", "10.0.0.4"])
         self.assertEqual(discovered_record_root_host(record), "root@10.0.0.4")
 
+    def test_discovered_record_root_host_rejects_link_local_only_ipv4(self) -> None:
+        record = Discovered(name="TC", hostname="capsule.local", ipv4=["169.254.1.2"])
+        self.assertIsNone(discovered_record_root_host(record))
+
     def test_discovered_record_root_host_falls_back_to_hostname(self) -> None:
         record = Discovered(name="TC", hostname="capsule.local", ipv4=[])
         self.assertEqual(discovered_record_root_host(record), "root@capsule.local")

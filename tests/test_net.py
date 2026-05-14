@@ -1,0 +1,56 @@
+from __future__ import annotations
+
+import socket
+import sys
+import unittest
+from pathlib import Path
+from unittest import mock
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from timecapsulesmb.core.net import (  # noqa: E402
+    extract_host,
+    ipv4_literal,
+    is_link_local_ipv4,
+    is_loopback_ipv4,
+    resolve_host_ipv4s,
+)
+
+
+class NetTests(unittest.TestCase):
+    def test_extract_host_removes_user_prefix(self) -> None:
+        self.assertEqual(extract_host("root@10.0.0.5"), "10.0.0.5")
+        self.assertEqual(extract_host("10.0.0.5"), "10.0.0.5")
+
+    def test_ipv4_literal_accepts_zero_padded_ipv4_and_rejects_non_ipv4(self) -> None:
+        self.assertEqual(ipv4_literal("010.000.001.007"), "10.0.1.7")
+        self.assertIsNone(ipv4_literal("fe80::1"))
+        self.assertIsNone(ipv4_literal("10.0.1.999"))
+        self.assertIsNone(ipv4_literal("capsule.local"))
+
+    def test_link_local_and_loopback_detection(self) -> None:
+        self.assertTrue(is_link_local_ipv4("169.254.44.9"))
+        self.assertFalse(is_link_local_ipv4("10.0.0.2"))
+        self.assertTrue(is_loopback_ipv4("127.0.0.1"))
+        self.assertFalse(is_loopback_ipv4("169.254.44.9"))
+
+    def test_resolve_host_ipv4s_deduplicates_and_normalizes(self) -> None:
+        addrinfo = [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("010.000.000.002", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("10.0.0.2", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("169.254.44.9", 0)),
+        ]
+        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=addrinfo):
+            self.assertEqual(resolve_host_ipv4s("capsule.local"), ("10.0.0.2", "169.254.44.9"))
+
+    def test_resolve_host_ipv4s_returns_empty_on_resolution_failure(self) -> None:
+        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", side_effect=OSError("no dns")):
+            self.assertEqual(resolve_host_ipv4s("capsule.local"), ())
+
+
+if __name__ == "__main__":
+    unittest.main()

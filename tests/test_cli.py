@@ -4,6 +4,7 @@ import errno
 import io
 import json
 import plistlib
+import socket
 import struct
 import sys
 import tempfile
@@ -2055,7 +2056,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Found saved value: bridge0", result.text)
         self.assertIn("Probed target IP 10.0.1.1 is on bcmeth1, so bcmeth1 is suggested instead.", result.text)
 
-    def test_configure_private_discovered_ip_beats_link_local_ssh_target(self) -> None:
+    def test_configure_private_discovered_ip_beats_loopback_ssh_target(self) -> None:
         seen_defaults = {}
         record = Discovered(
             name="AirPort Time Capsule",
@@ -2076,7 +2077,7 @@ class CliTests(unittest.TestCase):
         def fake_prompt(label, default, _secret):
             seen_defaults[label] = default
             if label == "Device SSH target":
-                return "root@169.254.44.9"
+                return "root@127.0.0.1"
             if label == "Device root password":
                 return "rootpw"
             if label == "Network interface on the device":
@@ -2107,10 +2108,10 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_NET_IFACE"], "bridge0")
         self.assertIn("bridge0: 192.168.1.217 (suggested)", result.text)
 
-    def test_configure_link_local_target_ip_does_not_win_runtime_interface(self) -> None:
+    def test_configure_loopback_target_ip_does_not_win_runtime_interface(self) -> None:
         seen_defaults = {}
         prompt_values = iter([
-            "root@169.254.44.9",
+            "root@127.0.0.1",
             "rootpw",
             "Data",
             "admin",
@@ -2147,6 +2148,82 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_NET_IFACE"], "bridge0")
         self.assertIn("bridge0: 192.168.1.217 (suggested)", result.text)
         self.assertNotIn("bcmeth1: 169.254.44.9 (suggested)", result.text)
+
+    def test_configure_reprompts_link_local_ssh_target(self) -> None:
+        prompt_values = iter([
+            "root@169.254.44.9",
+            "root@10.0.0.2",
+            "rootpw",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            if label == "Network interface on the device":
+                return default
+            if label in {"Airport Utility syAP code", "mDNS device model hint"}:
+                raise AssertionError(f"{label} should be auto-filled")
+            return next(prompt_values)
+
+        interface_probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("10.0.0.2",), up=True, active=True, loopback=False),
+            ),
+            preferred_iface="bridge0",
+            detail="preferred interface bridge0",
+        )
+
+        result = self.run_configure_cli(
+            prompt_side_effect=fake_prompt,
+            probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
+            interface_probe=interface_probe,
+        )
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
+        self.assertIn("Device SSH target host must not be a 169.254.x.x link-local address", result.text)
+
+    def test_configure_reprompts_hostname_that_resolves_link_local(self) -> None:
+        prompt_values = iter([
+            "root@capsule.local",
+            "root@10.0.0.2",
+            "rootpw",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            if label == "Network interface on the device":
+                return default
+            if label in {"Airport Utility syAP code", "mDNS device model hint"}:
+                raise AssertionError(f"{label} should be auto-filled")
+            return next(prompt_values)
+
+        interface_probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("10.0.0.2",), up=True, active=True, loopback=False),
+            ),
+            preferred_iface="bridge0",
+            detail="preferred interface bridge0",
+        )
+        addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("169.254.44.9", 0))]
+
+        result = self.run_configure_cli(
+            prompt_side_effect=fake_prompt,
+            probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
+            interface_probe=interface_probe,
+            extra_patches={"timecapsulesmb.core.net.socket.getaddrinfo": mock.Mock(return_value=addrinfo)},
+        )
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
+        self.assertIn("capsule.local resolves to 169.254.x.x link-local IPv4 address 169.254.44.9", result.text)
 
     def test_configure_multiple_private_interfaces_without_exact_match_prints_candidates_and_prompts(self) -> None:
         seen_defaults = {}
@@ -2879,6 +2956,55 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_AIRPORT_SYAP"], "119")
         self.assertIn("Found devices:", result.text)
         self.assertIn(f"Discovery skipped. Falling back to {DEFAULTS['TC_HOST']}.", result.text)
+
+    def test_configure_does_not_default_to_discovered_link_local_ipv4(self) -> None:
+        seen_defaults = {}
+        record = Discovered(
+            name="Time Capsule Samba 4",
+            hostname="timecapsulesamba4.local",
+            ipv4=["169.254.44.9"],
+            services={"_airport._tcp.local."},
+            properties={"syAP": "119"},
+        )
+        prompt_values = iter([
+            "root@10.0.0.2",
+            "rootpw",
+            "Data",
+            "admin",
+            "TimeCapsule",
+            "samba4",
+            "Time Capsule Samba 4",
+            "timecapsulesamba4",
+        ])
+
+        def fake_prompt(label, default, _secret):
+            seen_defaults[label] = default
+            if label == "Network interface on the device":
+                return default
+            if label in {"Airport Utility syAP code", "mDNS device model hint"}:
+                raise AssertionError(f"{label} should be auto-filled")
+            return next(prompt_values)
+
+        interface_probe = RemoteInterfaceCandidatesProbeResult(
+            candidates=(
+                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("10.0.0.2",), up=True, active=True, loopback=False),
+            ),
+            preferred_iface="bridge0",
+            detail="preferred interface bridge0",
+        )
+
+        result = self.run_configure_cli(
+            discovered_records=[record],
+            input_side_effect=["1"],
+            prompt_side_effect=fake_prompt,
+            probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
+            interface_probe=interface_probe,
+        )
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(seen_defaults["Device SSH target"], DEFAULTS["TC_HOST"])
+        self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
+        self.assertIn("Selected device only advertised 169.254.x.x link-local IPv4", result.text)
+        self.assertNotIn("host: 169.254.44.9", result.text)
 
     def test_configure_ctrl_c_during_discovery_selection_cancels(self) -> None:
         record = Discovered(
@@ -4579,6 +4705,49 @@ class CliTests(unittest.TestCase):
 
         self.assertIn("TC_NET_IFACE is not usable", str(ctx.exception))
         self.assertIn("Reported IPv4 addresses on bridge0: 0.0.0.0, 169.254.44.9", str(ctx.exception))
+
+    def test_managed_target_rejects_hostname_that_resolves_link_local(self) -> None:
+        config = self.make_app_config(self.make_valid_env(TC_HOST="root@capsule.local"))
+        addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("169.254.44.9", 0))]
+        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=addrinfo):
+            with mock.patch(
+                "timecapsulesmb.cli.runtime.probe_remote_interface_conn",
+                side_effect=AssertionError("should fail before SSH probing"),
+            ):
+                with self.assertRaises(ConfigError) as ctx:
+                    cli_runtime.resolve_validated_managed_target(
+                        config,
+                        command_name="deploy",
+                        profile="deploy",
+                        include_probe=False,
+                    )
+
+        self.assertIn("TC_HOST host capsule.local resolves to 169.254.x.x link-local IPv4 address 169.254.44.9", str(ctx.exception))
+
+    def test_managed_target_allows_proxied_hostname_that_resolves_link_local(self) -> None:
+        config = self.make_app_config(
+            self.make_valid_env(
+                TC_HOST="root@capsule.local",
+                TC_SSH_OPTS="-o ProxyJump=bastion",
+            )
+        )
+        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", side_effect=AssertionError("should not resolve")):
+            with mock.patch(
+                "timecapsulesmb.cli.runtime.probe_remote_interface_conn",
+                return_value=RemoteInterfaceProbeResult("bridge0", True, "interface bridge0 exists"),
+            ):
+                with mock.patch(
+                    "timecapsulesmb.cli.runtime.read_interface_ipv4_addrs_conn",
+                    return_value=("10.0.0.2",),
+                ):
+                    target = cli_runtime.resolve_validated_managed_target(
+                        config,
+                        command_name="deploy",
+                        profile="deploy",
+                        include_probe=False,
+                    )
+
+        self.assertEqual(target.connection.host, "root@capsule.local")
 
     def test_activate_prompt_decline_cancels_before_remote_actions(self) -> None:
         output = io.StringIO()

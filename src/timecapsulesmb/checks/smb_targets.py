@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from timecapsulesmb.checks.bonjour import BonjourServiceTarget
-from timecapsulesmb.core.config import AppConfig, extract_host
+from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.device.probe import RuntimeNamingIdentityProbeResult
 
 

@@ -7,7 +7,8 @@ from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import wait_for_device_up, wait_for_tcp_port_state
 from timecapsulesmb.cli.runtime import LogCallback, add_config_argument, confirm, emit_progress, load_env_config
 from timecapsulesmb.cli.util import color_red
-from timecapsulesmb.core.config import ConfigError, extract_host
+from timecapsulesmb.core.config import ConfigError
+from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.deploy.executor import remote_request_reboot
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.integrations.acp import enable_ssh

@@ -27,7 +27,8 @@ from timecapsulesmb.cli.runtime import (
     write_json_file,
 )
 from timecapsulesmb.cli.util import color_green, color_red
-from timecapsulesmb.core.config import AIRPORT_IDENTITIES_BY_SYAP, extract_host
+from timecapsulesmb.core.config import AIRPORT_IDENTITIES_BY_SYAP
+from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.core.paths import default_user_data_dir
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.flash import (

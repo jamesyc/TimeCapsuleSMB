@@ -10,6 +10,7 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 from timecapsulesmb.core.errors import missing_dependency_message
+from timecapsulesmb.core.net import is_link_local_ipv4
 
 
 SERVICE_TYPES = [
@@ -130,11 +131,11 @@ class ServiceObservation:
 def discovered_record_root_host(rec: BonjourResolvedService) -> str | None:
     chosen_host = ""
     for ip in rec.ipv4:
-        if not ip.startswith("169.254."):
+        if not is_link_local_ipv4(ip):
             chosen_host = ip
             break
     if not chosen_host and rec.ipv4:
-        chosen_host = rec.ipv4[0]
+        return None
     if not chosen_host:
         chosen_host = rec.prefer_host()
     return f"root@{chosen_host}" if chosen_host else None

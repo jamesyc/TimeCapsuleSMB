@@ -8,6 +8,7 @@ from typing import Optional
 from urllib.parse import unquote
 
 from timecapsulesmb.core.config import AppConfig, validate_app_config
+from timecapsulesmb.core.net import extract_host
 
 
 DEFAULT_EXCLUDED_DIR_NAMES = {
@@ -89,7 +90,7 @@ def run_capture(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def ssh_target_host(target: str) -> str:
-    return target.rsplit("@", 1)[-1].strip()
+    return extract_host(target).strip()
 
 
 def parse_mounted_smb_shares(mount_output: str) -> list[MountedSmbShare]:

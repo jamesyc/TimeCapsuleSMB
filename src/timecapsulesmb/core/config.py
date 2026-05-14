@@ -7,6 +7,7 @@ from typing import Callable, Optional
 import ipaddress
 import re
 
+from timecapsulesmb.core.net import extract_host, ipv4_literal, is_link_local_ipv4
 from timecapsulesmb.core.paths import package_project_root, resolve_app_paths
 
 REPO_ROOT = package_project_root()
@@ -259,10 +260,6 @@ def shell_quote(value: str) -> str:
     return shlex.quote(value)
 
 
-def extract_host(target: str) -> str:
-    return target.split("@", 1)[1] if "@" in target else target
-
-
 def _contains_invalid_control_character(value: str) -> bool:
     return any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value)
 
@@ -408,6 +405,13 @@ def validate_ssh_target(value: str, field_name: str) -> Optional[str]:
         return f"{field_name} username may contain only letters, numbers, dots, underscores, and hyphens."
     if host.startswith("-"):
         return f"{field_name} host must not start with a hyphen."
+    host_ip = ipv4_literal(host)
+    if host_ip is not None and is_link_local_ipv4(host_ip):
+        return (
+            f"{field_name} host must not be a 169.254.x.x link-local address. "
+            "Use the device's LAN IP or a hostname that resolves to its LAN IP; "
+            "169.254.x.x is only suitable for temporary SSH recovery."
+        )
     return None
 
 

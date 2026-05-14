@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import ipaddress
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,10 +10,10 @@ from timecapsulesmb.core.config import (
     DEFAULTS,
     AppConfig,
     ConfigError,
-    extract_host,
     load_app_config,
     require_valid_app_config,
 )
+from timecapsulesmb.core.net import extract_host, ipv4_literal, is_link_local_ipv4, resolve_host_ipv4s
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.device.compat import (
     DeviceCompatibility,
@@ -33,7 +32,7 @@ from timecapsulesmb.device.probe import (
     read_interface_ipv4_addrs_conn,
     runtime_usable_ipv4s,
 )
-from timecapsulesmb.transport.ssh import SshConnection
+from timecapsulesmb.transport.ssh import SshConnection, ssh_opts_use_proxy
 
 
 LogCallback = Optional[Callable[[str], None]]
@@ -190,15 +189,26 @@ def inspect_managed_connection(
     return ManagedTargetState(connection=connection, interface_probe=interface_probe, probe_state=probe_state)
 
 
-def _ipv4_literal(value: str) -> str | None:
-    value = value.strip()
-    try:
-        parsed = ipaddress.ip_address(value)
-    except ValueError:
+def ssh_target_link_local_resolution_error(
+    target: str,
+    ssh_opts: str,
+    *,
+    field_name: str = "Device SSH target",
+) -> str | None:
+    if ssh_opts_use_proxy(ssh_opts):
         return None
-    if parsed.version != 4:
+    host = extract_host(target).strip()
+    if not host or ipv4_literal(host) is not None:
         return None
-    return str(parsed)
+    link_local_ips = tuple(ip for ip in resolve_host_ipv4s(host) if is_link_local_ipv4(ip))
+    if not link_local_ips:
+        return None
+    noun = "address" if len(link_local_ips) == 1 else "addresses"
+    return (
+        f"{field_name} host {host} resolves to 169.254.x.x link-local IPv4 {noun} "
+        f"{', '.join(link_local_ips)}. Use the device's LAN IP or a hostname that resolves "
+        "to its LAN IP; 169.254.x.x is only suitable for temporary SSH recovery."
+    )
 
 
 def _format_remote_interface(candidate: RemoteInterfaceCandidate) -> str:
@@ -227,7 +237,7 @@ def _invalid_interface_message(
     connection: SshConnection,
     detail: str,
 ) -> str:
-    target_ip = _ipv4_literal(extract_host(connection.host))
+    target_ip = ipv4_literal(extract_host(connection.host))
     target_ips = (target_ip,) if target_ip is not None else ()
     candidates_probe = probe_remote_interface_candidates_conn(connection, target_ips=target_ips)
     return (
@@ -245,6 +255,13 @@ def resolve_validated_managed_target(
     include_probe: bool = False,
 ) -> ManagedTargetState:
     require_valid_app_config(config, profile=profile, command_name=command_name)
+    resolution_error = ssh_target_link_local_resolution_error(
+        config.require("TC_HOST"),
+        config.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"]),
+        field_name="TC_HOST",
+    )
+    if resolution_error is not None:
+        raise ConfigError(resolution_error)
     connection = resolve_env_connection(config)
     if profile == "flash":
         return ManagedTargetState(connection=connection, interface_probe=None, probe_state=None)

@@ -871,20 +871,20 @@ class CheckTests(unittest.TestCase):
 
     def test_check_bonjour_host_ip_passes_with_dns_resolved_expected_ip(self) -> None:
         addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("10.0.1.1", 0))]
-        with mock.patch("timecapsulesmb.checks.bonjour.socket.getaddrinfo", return_value=addrinfo):
+        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=addrinfo):
             result = check_bonjour_host_ip("home.local", expected_ip="10.0.1.1")
         self.assertEqual(result.status, "PASS")
         self.assertIn("10.0.1.1", result.message)
 
     def test_check_bonjour_host_ip_passes_with_service_record_ip_when_dns_fails(self) -> None:
-        with mock.patch("timecapsulesmb.checks.bonjour.socket.getaddrinfo", side_effect=OSError("no dns")):
+        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", side_effect=OSError("no dns")):
             result = check_bonjour_host_ip("home.local", expected_ip="10.0.1.1", record_ips=["10.0.1.1"])
         self.assertEqual(result.status, "PASS")
         self.assertIn("from service record", result.message)
 
     def test_check_bonjour_host_ip_fails_when_dns_resolves_wrong_ip(self) -> None:
         addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("10.0.1.99", 0))]
-        with mock.patch("timecapsulesmb.checks.bonjour.socket.getaddrinfo", return_value=addrinfo):
+        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=addrinfo):
             result = check_bonjour_host_ip("home.local", expected_ip="10.0.1.1")
         self.assertEqual(result.status, "FAIL")
         self.assertIn("expected 10.0.1.1", result.message)
@@ -1560,7 +1560,7 @@ class CheckTests(unittest.TestCase):
                             return_value=(BonjourDiscoverySnapshot([bonjour_instance], [bonjour_record]), None, None),
                         ):
                             with mock.patch("timecapsulesmb.checks.doctor.resolve_smb_instance", return_value=(bonjour_record, None)):
-                                with mock.patch("timecapsulesmb.checks.bonjour.socket.getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("10.0.0.2", 0))]):
+                                with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("10.0.0.2", 0))]):
                                     with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=self.smb_listing_result()):
                                         with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops_detailed", return_value=[mock.Mock(status="PASS", message="file ops ok")]):
                                             with mock.patch("timecapsulesmb.checks.doctor.probe_remote_runtime_naming_identity_conn", return_value=self.runtime_identity_from_values(values)):
@@ -1620,7 +1620,7 @@ class CheckTests(unittest.TestCase):
                             "timecapsulesmb.checks.doctor.discover_smb_services_detailed",
                             return_value=(BonjourDiscoverySnapshot(instances, records), None, None),
                         ):
-                            with mock.patch("timecapsulesmb.checks.bonjour.socket.getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("192.168.1.217", 0))]):
+                            with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("192.168.1.217", 0))]):
                                 with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=self.smb_listing_result("james-s-airport-time-capsule.local")):
                                     with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops_detailed", return_value=[mock.Mock(status="PASS", message="file ops ok")]):
                                         with mock.patch("timecapsulesmb.checks.doctor.probe_remote_runtime_naming_identity_conn", return_value=probed_identity):
@@ -1664,7 +1664,7 @@ class CheckTests(unittest.TestCase):
                             return_value=(BonjourDiscoverySnapshot([bonjour_instance], [bonjour_record]), None, None),
                         ):
                             with mock.patch("timecapsulesmb.checks.doctor.resolve_smb_instance", side_effect=AssertionError("fallback resolve should not run")):
-                                with mock.patch("timecapsulesmb.checks.bonjour.socket.getaddrinfo", return_value=addrinfo):
+                                with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=addrinfo):
                                         with mock.patch("timecapsulesmb.checks.doctor.check_bonjour_host_ip", side_effect=check_bonjour_host_ip):
                                             with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", return_value=self.smb_listing_result()):
                                                 with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_file_ops_detailed", return_value=[mock.Mock(status="PASS", message="file ops ok")]):

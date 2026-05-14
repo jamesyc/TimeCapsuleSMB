@@ -424,6 +424,8 @@ class ConfigTests(unittest.TestCase):
 
     def test_validate_ssh_target_accepts_user_at_host_targets(self) -> None:
         self.assertIsNone(validate_ssh_target("root@10.0.0.2", "Device SSH target"))
+        self.assertIsNone(validate_ssh_target("root@127.0.0.1", "Device SSH target"))
+        self.assertIsNone(validate_ssh_target("root@localhost", "Device SSH target"))
         self.assertIsNone(validate_ssh_target("root@timecapsule.local", "Device SSH target"))
         self.assertIsNone(validate_ssh_target("admin_user@wan.example.com", "Device SSH target"))
 
@@ -438,6 +440,12 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(
             validate_ssh_target("root;reboot@10.0.0.2", "Device SSH target"),
             "Device SSH target username may contain only letters, numbers, dots, underscores, and hyphens.",
+        )
+        self.assertEqual(
+            validate_ssh_target("root@169.254.44.9", "Device SSH target"),
+            "Device SSH target host must not be a 169.254.x.x link-local address. "
+            "Use the device's LAN IP or a hostname that resolves to its LAN IP; "
+            "169.254.x.x is only suitable for temporary SSH recovery.",
         )
 
     def test_validate_app_config_uses_profiles(self) -> None:
@@ -502,6 +510,17 @@ class ConfigTests(unittest.TestCase):
         errors = validate_app_config(config, profile="deploy")
         self.assertEqual(errors[0].key, "TC_HOST")
         self.assertIn("must include a username", errors[0].message)
+
+    def test_validate_app_config_rejects_link_local_deploy_host(self) -> None:
+        values = dict(DEFAULTS)
+        values["TC_HOST"] = "root@169.254.44.9"
+        values["TC_PASSWORD"] = "pw"
+        values["TC_AIRPORT_SYAP"] = "119"
+        values["TC_MDNS_DEVICE_MODEL"] = "TimeCapsule8,119"
+        config = AppConfig.from_values(values, file_values=values)
+        errors = validate_app_config(config, profile="deploy")
+        self.assertEqual(errors[0].key, "TC_HOST")
+        self.assertIn("must not be a 169.254.x.x link-local address", errors[0].message)
 
     def test_app_config_require_raises_for_missing_value(self) -> None:
         config = AppConfig.from_values({"TC_HOST": ""})

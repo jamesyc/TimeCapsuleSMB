@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
-import ipaddress
-import socket
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -20,10 +18,10 @@ from timecapsulesmb.core.config import (
     DEFAULTS,
     AppConfig,
     airport_family_display_name_from_config,
-    extract_host,
     parse_bool,
     shell_quote,
 )
+from timecapsulesmb.core.net import extract_host, ipv4_literal, resolve_host_ipv4s
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
@@ -92,51 +90,13 @@ def _render_flash_config_assignment(key: str, value: str | int) -> str:
     return f"{key}={shell_quote(value)}"
 
 
-def _ipv4_literal(value: str) -> str | None:
-    value = value.strip()
-    try:
-        parsed = ipaddress.ip_address(value)
-    except ValueError:
-        parts = value.split(".")
-        if len(parts) != 4 or any(not part.isdigit() for part in parts):
-            return None
-        octets: list[str] = []
-        for part in parts:
-            octet = int(part, 10)
-            if octet < 0 or octet > 255:
-                return None
-            octets.append(str(octet))
-        return ".".join(octets)
-    if parsed.version != 4:
-        return None
-    return str(parsed)
-
-
-def _resolve_host_ipv4s(host: str) -> tuple[str, ...]:
-    if not host:
-        return ()
-    try:
-        results = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
-    except OSError:
-        return ()
-    ordered: list[str] = []
-    for result in results:
-        sockaddr = result[4]
-        if not sockaddr:
-            continue
-        ip_addr = sockaddr[0]
-        if ip_addr and ip_addr not in ordered:
-            ordered.append(ip_addr)
-    return tuple(ordered)
-
-
 def derive_net_ipv4_hint(config: AppConfig, iface_ipv4_addrs: tuple[str, ...]) -> str:
     usable_iface_ips = set(runtime_usable_ipv4s(iface_ipv4_addrs))
     if not usable_iface_ips:
         return ""
     host = extract_host(config.require("TC_HOST"))
-    literal = _ipv4_literal(host)
-    candidates = (literal,) if literal is not None else _resolve_host_ipv4s(host)
+    literal = ipv4_literal(host)
+    candidates = (literal,) if literal is not None else resolve_host_ipv4s(host)
     for ip_addr in candidates:
         if is_runtime_usable_ipv4(ip_addr) and ip_addr in usable_iface_ips:
             return ip_addr

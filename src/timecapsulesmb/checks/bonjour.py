@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import ipaddress
-import socket
 from dataclasses import dataclass
 
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.core.config import AppConfig, extract_host
+from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.core.net import extract_host, ipv4_literal, resolve_host_ipv4s
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoverySnapshot,
     BonjourDiscoveryDiagnostics,
@@ -58,13 +58,7 @@ def build_bonjour_expected_identity(
     target_ip = None
     candidate_ip = extract_host(config.get("TC_HOST")).strip()
     if candidate_ip:
-        try:
-            parsed_ip = ipaddress.ip_address(candidate_ip)
-        except ValueError:
-            pass
-        else:
-            if parsed_ip.version == 4:
-                target_ip = candidate_ip
+        target_ip = ipv4_literal(candidate_ip)
     return BonjourExpectedIdentity(
         instance_name=runtime_naming_identity.mdns_instance_name if runtime_naming_identity is not None else None,
         host_label=runtime_naming_identity.mdns_host_label if runtime_naming_identity is not None else None,
@@ -196,22 +190,6 @@ def check_smb_service_target(target: BonjourServiceTarget) -> CheckResult:
     )
 
 
-def resolve_host_ipv4(hostname: str) -> list[str]:
-    resolved: list[str] = []
-    try:
-        infos = socket.getaddrinfo(hostname, None, socket.AF_INET, socket.SOCK_STREAM)
-    except OSError:
-        return resolved
-    for info in infos:
-        sockaddr = info[4]
-        if not sockaddr:
-            continue
-        ip = sockaddr[0]
-        if ip and ip not in resolved:
-            resolved.append(ip)
-    return resolved
-
-
 def check_bonjour_host_ip(
     hostname: str,
     *,
@@ -222,7 +200,7 @@ def check_bonjour_host_ip(
     for ip in record_ips or []:
         if ip and ip not in known_ips:
             known_ips.append(ip)
-    for ip in resolve_host_ipv4(hostname):
+    for ip in resolve_host_ipv4s(hostname):
         if ip not in known_ips:
             known_ips.append(ip)
 

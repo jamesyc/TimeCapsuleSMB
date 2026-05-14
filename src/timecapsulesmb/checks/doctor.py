@@ -33,7 +33,8 @@ from timecapsulesmb.checks.smb_config import (
     parse_xattr_tdb_paths,
 )
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers
-from timecapsulesmb.core.config import AppConfig, extract_host, validate_app_config
+from timecapsulesmb.core.config import AppConfig, validate_app_config
+from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, is_netbsd6_payload_family, render_compatibility_message
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,

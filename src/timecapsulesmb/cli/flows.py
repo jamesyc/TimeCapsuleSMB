@@ -5,7 +5,7 @@ from typing import Iterable
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import LogCallback, emit_progress
-from timecapsulesmb.core.config import extract_host
+from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.deploy.executor import remote_request_reboot
 from timecapsulesmb.deploy.verify import (

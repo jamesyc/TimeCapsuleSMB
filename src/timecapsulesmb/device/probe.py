@@ -19,8 +19,8 @@ from timecapsulesmb.core.config import (
     AIRPORT_IDENTITIES_BY_SYAP,
     MAX_DNS_LABEL_BYTES,
     MAX_NETBIOS_NAME_BYTES,
-    extract_host,
 )
+from timecapsulesmb.core.net import extract_host, is_link_local_ipv4, is_loopback_ipv4
 
 if TYPE_CHECKING:
     from timecapsulesmb.device.compat import DeviceCompatibility
@@ -669,21 +669,13 @@ def probe_remote_interface_conn(connection: SshConnection, iface: str) -> Remote
     return RemoteInterfaceProbeResult(iface=iface, exists=False, detail=f"interface {iface} was not found on the device")
 
 
-def _is_link_local_ipv4(value: str) -> bool:
-    return value.startswith("169.254.")
-
-
-def _is_loopback_ipv4(value: str) -> bool:
-    return value.startswith("127.")
-
-
 def is_runtime_usable_ipv4(value: str) -> bool:
     return (
         bool(value)
         and not re.search(r"[^0-9.]", value)
         and value != "0.0.0.0"
-        and not _is_loopback_ipv4(value)
-        and not _is_link_local_ipv4(value)
+        and not is_loopback_ipv4(value)
+        and not is_link_local_ipv4(value)
     )
 
 
@@ -783,8 +775,8 @@ def _ifconfig_inet_parts(stripped: str) -> list[str]:
 def _interface_preference_key(candidate: RemoteInterfaceCandidate, target_ips: Iterable[str] = ()) -> tuple[int, int, int, int, int, int, int]:
     target_ip_tuple = tuple(value for value in target_ips if value)
     target_ip_set = set(target_ip_tuple)
-    non_loopback_ipv4 = tuple(addr for addr in candidate.ipv4_addrs if not _is_loopback_ipv4(addr))
-    non_link_local_ipv4 = tuple(addr for addr in non_loopback_ipv4 if not _is_link_local_ipv4(addr))
+    non_loopback_ipv4 = tuple(addr for addr in candidate.ipv4_addrs if not is_loopback_ipv4(addr))
+    non_link_local_ipv4 = tuple(addr for addr in non_loopback_ipv4 if not is_link_local_ipv4(addr))
     private_non_link_local_ipv4 = tuple(addr for addr in non_link_local_ipv4 if _is_private_ipv4(addr))
     bridge_bonus = 1 if candidate.name.startswith("bridge") else 0
     ethernet_bonus = 1 if candidate.name.startswith(("bcmeth", "gec", "en", "eth", "wm", "re")) else 0

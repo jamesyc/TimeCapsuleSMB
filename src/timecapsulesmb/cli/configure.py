@@ -20,7 +20,6 @@ from timecapsulesmb.core.config import (
     CONFIG_VALIDATORS,
     DEFAULTS,
     ENV_PATH,
-    extract_host,
     infer_mdns_device_model_from_airport_syap,
     parse_env_file,
     parse_bool,
@@ -28,8 +27,13 @@ from timecapsulesmb.core.config import (
 )
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import wait_for_tcp_port_state
-from timecapsulesmb.cli.runtime import add_config_argument, confirm as confirm_prompt
+from timecapsulesmb.cli.runtime import (
+    add_config_argument,
+    confirm as confirm_prompt,
+    ssh_target_link_local_resolution_error,
+)
 from timecapsulesmb.core.errors import missing_dependency_message, missing_required_python_module
+from timecapsulesmb.core.net import extract_host, is_link_local_ipv4
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.device.compat import DeviceCompatibility, render_compatibility_message
@@ -89,7 +93,8 @@ def confirm(prompt_text: str, default_no: bool = False) -> bool:
 def list_devices(records) -> None:
     print("Found devices:")
     for i, record in enumerate(records, start=1):
-        pref = record.prefer_host()
+        root_host = discovered_record_root_host(record)
+        pref = root_host.removeprefix("root@") if root_host else record.hostname or "-"
         ipv4 = ",".join(record.ipv4) if record.ipv4 else "-"
         print(f"  {i}. {record.name} | host: {pref} | IPv4: {ipv4}")
 
@@ -127,8 +132,18 @@ def discover_default_record(existing: dict[str, str]) -> Optional[BonjourResolve
         return None
 
     chosen_host = discovered_record_root_host(selected)
-    selected_host = chosen_host.removeprefix("root@") if chosen_host else selected.prefer_host()
+    selected_host = (
+        chosen_host.removeprefix("root@")
+        if chosen_host
+        else selected.hostname or "manual SSH target required"
+    )
     print(f"Selected: {selected.name} ({selected_host})\n", flush=True)
+    if chosen_host is None and any(is_link_local_ipv4(ip) for ip in selected.ipv4):
+        print(
+            "Selected device only advertised 169.254.x.x link-local IPv4. "
+            "Enter the device's LAN IP or LAN-resolving hostname manually.\n",
+            flush=True,
+        )
     return selected
 
 
@@ -138,14 +153,34 @@ def exception_summary(exc: BaseException) -> str:
     return f"{name}: {message}" if message else name
 
 
-def prompt_host_and_password(existing: dict[str, str], values: dict[str, str], discovered_host: Optional[str]) -> None:
+def prompt_ssh_target_value(
+    existing: dict[str, str],
+    values: dict[str, str],
+    discovered_host: Optional[str],
+    ssh_opts: str,
+) -> str:
     host_default = values.get("TC_HOST") or discovered_host or valid_existing_config_value(
         existing,
         "TC_HOST",
         "Device SSH target",
     ) or DEFAULTS["TC_HOST"]
+    while True:
+        candidate = prompt_valid_config_value("TC_HOST", "Device SSH target", host_default)
+        resolution_error = ssh_target_link_local_resolution_error(candidate, ssh_opts)
+        if resolution_error is None:
+            return candidate
+        print(resolution_error)
+        host_default = candidate
+
+
+def prompt_host_and_password(
+    existing: dict[str, str],
+    values: dict[str, str],
+    discovered_host: Optional[str],
+    ssh_opts: str,
+) -> None:
     password_default = values.get("TC_PASSWORD", existing.get("TC_PASSWORD", ""))
-    values["TC_HOST"] = prompt_valid_config_value("TC_HOST", "Device SSH target", host_default)
+    values["TC_HOST"] = prompt_ssh_target_value(existing, values, discovered_host, ssh_opts)
     values["TC_PASSWORD"] = prompt("Device root password", password_default, True)
 
 
@@ -396,7 +431,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             discovered_airport_syap = discovered_record.properties.get("syAP") or None
             command_context.add_debug_fields(discovered_airport_syap=discovered_airport_syap)
         command_context.set_stage("prompt_host_password")
-        prompt_host_and_password(existing, values, discovered_host)
+        prompt_host_and_password(existing, values, discovered_host, ssh_opts)
         while True:
             command_context.set_stage("ssh_probe")
             print("Checking login information...")
@@ -413,7 +448,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     print(str(exc))
                     print("Please enter the SSH target and password again.\n")
                     command_context.set_stage("prompt_host_password")
-                    prompt_host_and_password(existing, values, discovered_host)
+                    prompt_host_and_password(existing, values, discovered_host, ssh_opts)
                     continue
                 except ACPError as exc:
                     message = f"Failed to enable SSH via ACP: {exc}"
@@ -454,7 +489,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("Please enter the SSH target and password again.\n")
             command_context.add_debug_fields(configure_retry_reason="ssh_authentication_failed")
             command_context.set_stage("prompt_host_password")
-            prompt_host_and_password(existing, values, discovered_host)
+            prompt_host_and_password(existing, values, discovered_host, ssh_opts)
             continue
 
         command_context.set_stage("prompt_config_fields")

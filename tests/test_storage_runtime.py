@@ -1103,7 +1103,7 @@ MaSt = (
             (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("10.0.0.2", 0)),
         ]
 
-        with mock.patch("timecapsulesmb.cli.deploy.socket.getaddrinfo", return_value=resolved):
+        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=resolved):
             hint = derive_net_ipv4_hint(config, ("10.0.0.2",))
 
         self.assertEqual(hint, "10.0.0.2")
@@ -1112,9 +1112,9 @@ MaSt = (
         config = AppConfig.from_values({"TC_HOST": "root@timecapsule.local", "TC_NET_IFACE": "bridge0"})
         resolved = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("10.0.0.3", 0))]
 
-        with mock.patch("timecapsulesmb.cli.deploy.socket.getaddrinfo", return_value=resolved):
+        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=resolved):
             self.assertEqual(derive_net_ipv4_hint(config, ("10.0.0.2",)), "")
-        with mock.patch("timecapsulesmb.cli.deploy.socket.getaddrinfo", side_effect=OSError):
+        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", side_effect=OSError):
             self.assertEqual(derive_net_ipv4_hint(config, ("10.0.0.2",)), "")
 
     def test_deploy_net_ipv4_hint_rejects_link_local_host(self) -> None:
