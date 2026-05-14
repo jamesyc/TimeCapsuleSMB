@@ -2312,7 +2312,7 @@ MaSt = (
                     tc_set_log "$RAM_VAR/watchdog.log" watchdog
                     mkdir -p "$RAM_VAR"
                     sleep() {{ :; }}
-                    tc_topology_changed() {{ return 1; }}
+                    tc_watchdog_disk_iteration() {{ return 0; }}
                     tc_start_smbd_if_needed() {{ return 0; }}
                     tc_all_managed_services_healthy() {{ return 0; }}
                     runtime_process_present_by_ucomm() {{ return 0; }}
@@ -2346,7 +2346,7 @@ MaSt = (
                     tc_init_runtime_env
                     mkdir -p "$RAM_VAR"
                     sleep() {{ :; }}
-                    tc_topology_changed() {{ return 1; }}
+                    tc_watchdog_disk_iteration() {{ return 0; }}
                     tc_start_smbd_if_needed() {{ echo smbd; }}
                     runtime_process_present_by_ucomm() {{ echo "process $1"; return 0; }}
                     tc_all_managed_services_healthy() {{ echo healthy; return 0; }}
@@ -3461,7 +3461,7 @@ MaSt = (
                     cat >"$TC_SHARES_TSV" <<'EOF'
                     USB	{volumes}/dk3	dk3	0	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
                     EOF
-                    tc_topology_changed_debounced() {{ return 1; }}
+                    tc_topology_changed_debounced_from_snapshot() {{ return 1; }}
                     is_volume_root_mounted() {{ return 1; }}
                     sleep() {{ echo "sleep $1"; }}
                     tc_live_reload_disk_runtime() {{ echo "reload $1"; return 0; }}
@@ -3476,6 +3476,117 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "sleep 1\nreload managed diskd users dropped to zero\n")
+
+    def test_common_watchdog_disk_iteration_reuses_single_mast_snapshot_for_topology_and_users(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            count_file = tmp_path / "acp-count"
+            acp = tmp_path / "acp"
+            acp.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    count=$(cat {shlex.quote(str(count_file))} 2>/dev/null || echo 0)
+                    count=$((count + 1))
+                    echo "$count" >{shlex.quote(str(count_file))}
+                    case "$*" in
+                        "-A MaSt")
+                            cat <<'OUT'
+                    [
+                        {{
+                            deviceName="wd0"
+                            partitions=
+                            [
+                                {{
+                                    deviceName="dk2"
+                                    format="hfs"
+                                    users=1
+                                    name="Data"
+                                    uuid=f42bdb83 c2655522 a0872560 6a4d0abf |binary| (16 bytes)
+                                }}
+                            ]
+                            builtin=true
+                        }}
+                    ]
+                    OUT
+                            ;;
+                    esac
+                    """
+                )
+            )
+            acp.chmod(0o755)
+            script = tmp_path / "watchdog-single-mast-snapshot.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    cat >"$TC_TOPOLOGY_SIGNATURE" <<'EOF'
+                    wd0	1	dk2	{volumes}/dk2	Data	f42bdb83-c265-5522-a087-25606a4d0abf
+                    EOF
+                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	f42bdb83-c265-5522-a087-25606a4d0abf
+                    EOF
+                    sleep() {{ echo "unexpected sleep $1"; }}
+                    tc_live_reload_disk_runtime() {{ echo "unexpected reload $1"; return 0; }}
+                    tc_exec_start_samba() {{ echo "unexpected exec $1"; exit 42; }}
+                    tc_watchdog_wake_or_mount_volume() {{ echo "unexpected reclaim $1 $2"; return 0; }}
+                    tc_watchdog_disk_iteration
+                    printf 'acp_count=%s\\n' "$(cat {shlex.quote(str(count_file))})"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "acp_count=1\n")
+
+    def test_common_watchdog_disk_iteration_skips_users_check_when_mast_snapshot_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            acp = tmp_path / "acp"
+            acp.write_text("#!/bin/sh\nexit 1\n")
+            acp.chmod(0o755)
+            script = tmp_path / "watchdog-mast-snapshot-fails.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	f42bdb83-c265-5522-a087-25606a4d0abf
+                    EOF
+                    tc_live_reload_disk_runtime() {{ echo "unexpected reload $1"; return 0; }}
+                    tc_exec_start_samba() {{ echo "unexpected exec $1"; exit 42; }}
+                    tc_watchdog_wake_or_mount_volume() {{ echo "unexpected reclaim $1 $2"; return 0; }}
+                    tc_watchdog_disk_iteration
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "")
+        self.assertIn("watchdog disk check: MaSt snapshot read failed or produced no valid HFS volumes", log_text)
+        self.assertIn("watchdog disk check: skipping MaSt users check because snapshot is unavailable", log_text)
+        self.assertNotIn("MaSt users recovery requires full disk runtime reload", log_text)
 
     def test_common_watchdog_iteration_checks_processes_without_mounting_active_shares(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3499,7 +3610,7 @@ MaSt = (
                     USB	{volumes}/dk3	dk3	0	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
                     EOF
                     sleep() {{ :; }}
-                    tc_topology_changed() {{ return 1; }}
+                    tc_watchdog_disk_iteration() {{ return 0; }}
                     tc_watchdog_wake_or_mount_volume() {{ echo "mount $1 $2"; return 0; }}
                     tc_start_smbd_if_needed() {{ echo smbd; }}
                     runtime_process_present_by_ucomm() {{ return 0; }}
@@ -3539,7 +3650,7 @@ MaSt = (
                     SMB_NETBIOS_NAME=StaleName
                     TC_RUNTIME_IDENTITY_READY=1
                     sleep() {{ :; }}
-                    tc_topology_changed() {{ return 1; }}
+                    tc_watchdog_disk_iteration() {{ return 0; }}
                     tc_start_smbd_if_needed() {{ return 0; }}
                     tc_init_runtime_identity() {{
                         echo identity-refresh
@@ -3649,7 +3760,7 @@ MaSt = (
                     chmod 755 "$TC_SMBD_BIN"
                     : >"$TC_SMBD_CONF"
                     sleep() {{ :; }}
-                    tc_topology_changed() {{ return 1; }}
+                    tc_watchdog_disk_iteration() {{ return 0; }}
                     tc_start_smbd_if_needed() {{ echo smbd; return 0; }}
                     runtime_process_present_by_ucomm() {{ return 0; }}
                     tc_exec_start_samba() {{ echo "exec $1"; exit 42; }}
@@ -3679,7 +3790,8 @@ MaSt = (
                     tc_init_runtime_env
                     mkdir -p "$RAM_VAR"
                     sleep() {{ :; }}
-                    tc_topology_changed() {{ return 0; }}
+                    tc_watchdog_capture_mast_state() {{ : >"$1"; : >"$2"; return 0; }}
+                    tc_topology_changed_debounced_from_snapshot() {{ return 0; }}
                     tc_exec_start_samba() {{ echo "exec $1"; exit 42; }}
                     tc_watchdog_iteration
                     """
@@ -3707,12 +3819,8 @@ MaSt = (
                     tc_init_runtime_env
                     mkdir -p "$RAM_VAR"
                     sleep() {{ :; }}
-                    tc_topology_changed() {{
-                        count=$(cat {tmp_path}/topology-count 2>/dev/null || echo 0)
-                        count=$((count + 1))
-                        echo "$count" >{tmp_path}/topology-count
-                        [ "$count" -eq 1 ]
-                    }}
+                    tc_watchdog_capture_mast_state() {{ : >"$1"; : >"$2"; return 0; }}
+                    tc_topology_changed_debounced_from_snapshot() {{ return 1; }}
                     tc_start_smbd_if_needed() {{ echo smbd; }}
                     runtime_process_present_by_ucomm() {{ return 0; }}
                     tc_exec_start_samba() {{ echo "exec $1"; exit 42; }}
@@ -3748,7 +3856,8 @@ MaSt = (
                     chmod 755 "$TC_SMBD_BIN"
                     tc_write_payload_state {payload} {volumes}/dk2 /dev/dk2
                     sleep() {{ :; }}
-                    tc_topology_changed() {{ return 0; }}
+                    tc_watchdog_capture_mast_state() {{ : >"$1"; : >"$2"; return 0; }}
+                    tc_topology_changed_debounced_from_snapshot() {{ return 0; }}
                     tc_refresh_disk_state() {{
                         echo refresh
                         tc_write_payload_state {payload} {volumes}/dk2 /dev/dk2
@@ -3826,7 +3935,8 @@ MaSt = (
                     chmod 755 "$TC_SMBD_BIN"
                     tc_write_payload_state {old_payload} {volumes}/dk2 /dev/dk2
                     sleep() {{ :; }}
-                    tc_topology_changed() {{ return 0; }}
+                    tc_watchdog_capture_mast_state() {{ : >"$1"; : >"$2"; return 0; }}
+                    tc_topology_changed_debounced_from_snapshot() {{ return 0; }}
                     tc_refresh_disk_state() {{
                         echo refresh
                         tc_write_payload_state {new_payload} {volumes}/dk3 /dev/dk3
@@ -3891,7 +4001,7 @@ MaSt = (
                     chmod 755 "$TC_SMBD_BIN"
                     : >"$TC_SMBD_CONF"
                     sleep() {{ :; }}
-                    tc_topology_changed() {{ return 1; }}
+                    tc_watchdog_disk_iteration() {{ return 0; }}
                     runtime_process_present_by_ucomm() {{ return 1; }}
                     tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
                     tc_watchdog_iteration

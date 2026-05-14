@@ -2626,6 +2626,20 @@ tc_fresh_topology_signature() {
     /mnt/Flash/start-samba.sh --print-topology-signature 2>/dev/null
 }
 
+tc_topology_changed_from_file() {
+    fresh_file=$1
+    current=$(tc_current_topology_signature || true)
+    fresh=
+    if [ -s "$fresh_file" ]; then
+        fresh=$(/bin/cat "$fresh_file" 2>/dev/null || true)
+    fi
+    if [ -z "$fresh" ]; then
+        tc_log "watchdog recovery: MaSt topology check failed"
+        return 1
+    fi
+    [ "$current" != "$fresh" ]
+}
+
 tc_topology_changed() {
     current=$(tc_current_topology_signature || true)
     fresh=$(tc_fresh_topology_signature || true)
@@ -2659,6 +2673,78 @@ tc_topology_changed_debounced() {
         return 0
     fi
 
+    tc_log "watchdog recovery: MaSt topology change cleared after debounce"
+    return 1
+}
+
+tc_watchdog_capture_mast_state() {
+    capture_volumes_file=$1
+    capture_raw_file=$2
+
+    rm -f "$capture_volumes_file" "$capture_raw_file"
+    if [ ! -x /usr/bin/acp ]; then
+        tc_log "watchdog disk check: MaSt snapshot skipped; /usr/bin/acp is unavailable"
+        : >"$capture_volumes_file"
+        : >"$capture_raw_file"
+        return 1
+    fi
+
+    if tc_read_mast_volumes_to "$capture_volumes_file" "$capture_raw_file"; then
+        return 0
+    fi
+
+    tc_log "watchdog disk check: MaSt snapshot read failed or produced no valid HFS volumes"
+    return 1
+}
+
+tc_replace_watchdog_mast_snapshot() {
+    replace_volumes_file=$1
+    replace_raw_file=$2
+    replace_new_volumes_file=$3
+    replace_new_raw_file=$4
+
+    if [ -f "$replace_new_volumes_file" ]; then
+        mv -f "$replace_new_volumes_file" "$replace_volumes_file"
+    fi
+    if [ -f "$replace_new_raw_file" ]; then
+        mv -f "$replace_new_raw_file" "$replace_raw_file"
+    fi
+}
+
+tc_topology_changed_debounced_from_snapshot() {
+    snapshot_volumes_file=$1
+    snapshot_raw_file=$2
+
+    if ! tc_topology_changed_from_file "$snapshot_volumes_file"; then
+        return 1
+    fi
+
+    case "$WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS" in
+        ""|*[!0123456789]*)
+            tc_log "watchdog recovery: invalid WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS=$WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS; using 5s"
+            topology_debounce_seconds=5
+            ;;
+        *)
+            topology_debounce_seconds=$WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS
+            ;;
+    esac
+
+    tc_log "watchdog recovery: MaSt topology changed; debouncing ${topology_debounce_seconds}s"
+    if [ "$topology_debounce_seconds" -gt 0 ]; then
+        sleep "$topology_debounce_seconds"
+    fi
+
+    debounce_volumes_file="$snapshot_volumes_file.debounce"
+    debounce_raw_file="$snapshot_raw_file.debounce"
+    debounce_status=0
+    tc_watchdog_capture_mast_state "$debounce_volumes_file" "$debounce_raw_file" || debounce_status=$?
+    if [ "$debounce_status" -eq 0 ] && tc_topology_changed_from_file "$debounce_volumes_file"; then
+        tc_replace_watchdog_mast_snapshot "$snapshot_volumes_file" "$snapshot_raw_file" "$debounce_volumes_file" "$debounce_raw_file"
+        return 0
+    fi
+
+    tc_replace_watchdog_mast_snapshot "$snapshot_volumes_file" "$snapshot_raw_file" "$debounce_volumes_file" "$debounce_raw_file"
+    rm -f "$debounce_volumes_file" "$debounce_raw_file"
     tc_log "watchdog recovery: MaSt topology change cleared after debounce"
     return 1
 }
@@ -2703,17 +2789,26 @@ tc_watchdog_handle_mast_users_partition() {
 }
 
 tc_watchdog_check_active_mast_users() {
-    [ -s "$TC_SHARES_TSV" ] || return 0
-    if [ ! -x /usr/bin/acp ]; then
-        tc_log "watchdog disk check: MaSt users check skipped; /usr/bin/acp is unavailable"
-        return 0
-    fi
+    mast_users_raw_file=${1:-}
+    mast_users_remove_raw=0
 
-    mast_users_raw_file="$TC_STATE_DIR/mast-users.raw.$$"
-    rm -f "$mast_users_raw_file"
-    if ! /usr/bin/acp -A MaSt >"$mast_users_raw_file" 2>/dev/null; then
-        tc_log "watchdog disk check: MaSt users read failed"
+    [ -s "$TC_SHARES_TSV" ] || return 0
+
+    if [ -z "$mast_users_raw_file" ]; then
+        if [ ! -x /usr/bin/acp ]; then
+            tc_log "watchdog disk check: MaSt users check skipped; /usr/bin/acp is unavailable"
+            return 0
+        fi
+        mast_users_raw_file="$TC_STATE_DIR/mast-users.raw.$$"
+        mast_users_remove_raw=1
         rm -f "$mast_users_raw_file"
+        if ! /usr/bin/acp -A MaSt >"$mast_users_raw_file" 2>/dev/null; then
+            tc_log "watchdog disk check: MaSt users read failed"
+            rm -f "$mast_users_raw_file"
+            return 1
+        fi
+    elif [ ! -f "$mast_users_raw_file" ]; then
+        tc_log "watchdog disk check: MaSt users snapshot is missing: $mast_users_raw_file"
         return 1
     fi
 
@@ -2774,7 +2869,9 @@ tc_watchdog_check_active_mast_users() {
     if [ -n "$mast_users_part_device" ]; then
         tc_watchdog_handle_mast_users_partition
     fi
-    rm -f "$mast_users_raw_file"
+    if [ "$mast_users_remove_raw" -eq 1 ]; then
+        rm -f "$mast_users_raw_file"
+    fi
 
     TC_MAST_USERS_MISSING_ACTIVE=0
     while IFS="$TC_TAB" read -r share_name share_path part_device builtin part_uuid ||
@@ -2801,22 +2898,34 @@ tc_watchdog_check_active_mast_users() {
 }
 
 tc_watchdog_disk_iteration() {
-    if tc_topology_changed_debounced; then
+    watchdog_mast_volumes_file="$TC_STATE_DIR/watchdog-volumes.tsv.$$"
+    watchdog_mast_raw_file="$TC_STATE_DIR/watchdog-mast.raw.$$"
+    watchdog_snapshot_status=0
+    tc_watchdog_capture_mast_state "$watchdog_mast_volumes_file" "$watchdog_mast_raw_file" || watchdog_snapshot_status=$?
+
+    if [ "$watchdog_snapshot_status" -eq 0 ] && tc_topology_changed_debounced_from_snapshot "$watchdog_mast_volumes_file" "$watchdog_mast_raw_file"; then
         if tc_live_reload_disk_runtime "MaSt topology changed"; then
             :
         else
             tc_exec_start_samba "MaSt topology changed"
         fi
+        rm -f "$watchdog_mast_volumes_file" "$watchdog_mast_raw_file"
+        return 0
     fi
 
-    if ! tc_watchdog_check_active_mast_users; then
-        if tc_live_reload_disk_runtime "managed diskd users dropped to zero"; then
-            :
-        else
-            tc_exec_start_samba "managed diskd users dropped to zero"
+    if [ "$watchdog_snapshot_status" -eq 0 ]; then
+        if ! tc_watchdog_check_active_mast_users "$watchdog_mast_raw_file"; then
+            if tc_live_reload_disk_runtime "managed diskd users dropped to zero"; then
+                :
+            else
+                tc_exec_start_samba "managed diskd users dropped to zero"
+            fi
         fi
+    else
+        tc_log "watchdog disk check: skipping MaSt users check because snapshot is unavailable"
     fi
 
+    rm -f "$watchdog_mast_volumes_file" "$watchdog_mast_raw_file"
     return 0
 }
 
