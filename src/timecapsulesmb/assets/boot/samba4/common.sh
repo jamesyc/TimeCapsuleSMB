@@ -1106,7 +1106,7 @@ tc_read_mast_volumes_to() {
                     disk_builtin=0
                 fi
                 ;;
-            "]"|"];"*|");"|");"*)
+            "]"|"];"*|")"|");"*)
                 in_partitions=0
                 ;;
         esac
@@ -2740,7 +2740,7 @@ tc_watchdog_check_active_mast_users() {
                     mast_users_disk_device=
                 fi
                 ;;
-            "]"|"];"*|");"|");"*)
+            "]"|"];"*|")"|");"*)
                 mast_users_in_partitions=0
                 ;;
         esac
