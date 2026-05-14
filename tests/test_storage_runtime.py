@@ -271,6 +271,35 @@ class StorageRuntimeTests(unittest.TestCase):
                 ),
                 "169.254.44.9",
             ),
+            "netbsd_alias": (
+                textwrap.dedent(
+                    """\
+                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+                            inet alias 10.0.1.13 netmask 0xffffff00 broadcast 10.0.1.255
+                    """
+                ),
+                "",
+            ),
+            "netbsd_alias_hint": (
+                textwrap.dedent(
+                    """\
+                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+                            inet 10.0.1.3 netmask 0xffff0000 broadcast 10.0.255.255
+                            inet alias 192.168.1.2 netmask 0xffffff00 broadcast 192.168.1.255
+                    """
+                ),
+                "192.168.1.2",
+            ),
+            "link_local_alias_before_usable": (
+                textwrap.dedent(
+                    """\
+                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+                            inet alias 169.254.44.9 netmask 0xffff0000 broadcast 169.254.255.255
+                            inet 192.168.1.2 netmask 0xffffff00 broadcast 192.168.1.255
+                    """
+                ),
+                "",
+            ),
             "link_local_only": (
                 textwrap.dedent(
                     """\

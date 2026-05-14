@@ -209,14 +209,22 @@ tc_log() {
 
 tc_runtime_ipv4_is_usable() {
     case "$1" in
-        ""|0.0.0.0|127.*|169.254.*) return 1 ;;
+        ""|0.0.0.0|127.*|169.254.*|*[!0-9.]*) return 1 ;;
     esac
     return 0
 }
 
 tc_iface_inet_line_to_cidr() {
-    iface_ip=$1
+    if [ "${1:-}" = "alias" ]; then
+        shift || true
+    fi
+
+    iface_ip=${1:-}
     shift || true
+    if ! tc_runtime_ipv4_is_usable "$iface_ip"; then
+        return 1
+    fi
+
     iface_netmask=
     while [ "$#" -gt 0 ]; do
         if [ "$1" = "netmask" ]; then
@@ -241,7 +249,10 @@ get_runtime_iface_ipv4_cidr() {
 
     if [ -n "$hint_ip" ]; then
         hint_ip_pattern=$(printf '%s\n' "$hint_ip" | sed 's/\./\\./g')
-        iface_line=$(/sbin/ifconfig "$iface" 2>/dev/null | sed -n "s/^[[:space:]]*inet[[:space:]]$hint_ip_pattern[[:space:]]/$hint_ip /p" | sed -n '1p')
+        iface_line=$(/sbin/ifconfig "$iface" 2>/dev/null | sed -n "
+            s/^[[:space:]]*inet[[:space:]]$hint_ip_pattern[[:space:]]/$hint_ip /p
+            s/^[[:space:]]*inet[[:space:]]alias[[:space:]]$hint_ip_pattern[[:space:]]/$hint_ip /p
+        " | sed -n '1p')
         if [ -n "$iface_line" ]; then
             tc_iface_inet_line_to_cidr $iface_line
             return $?
@@ -249,6 +260,7 @@ get_runtime_iface_ipv4_cidr() {
     fi
 
     iface_line=$(/sbin/ifconfig "$iface" 2>/dev/null | sed -n '
+        s/^[[:space:]]*inet[[:space:]]alias[[:space:]]//p
         s/^[[:space:]]*inet[[:space:]]//p
     ' | sed -n '
         /^0\.0\.0\.0$/d

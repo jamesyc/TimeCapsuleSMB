@@ -680,6 +680,7 @@ def _is_loopback_ipv4(value: str) -> bool:
 def is_runtime_usable_ipv4(value: str) -> bool:
     return (
         bool(value)
+        and not re.search(r"[^0-9.]", value)
         and value != "0.0.0.0"
         and not _is_loopback_ipv4(value)
         and not _is_link_local_ipv4(value)
@@ -761,7 +762,7 @@ def _parse_ifconfig_candidates(output: str) -> tuple[RemoteInterfaceCandidate, .
             continue
         stripped = line.strip()
         if stripped.startswith("inet "):
-            parts = stripped.split()
+            parts = _ifconfig_inet_parts(stripped)
             if len(parts) >= 2:
                 current_ipv4.append(parts[1])
             continue
@@ -770,6 +771,13 @@ def _parse_ifconfig_candidates(output: str) -> tuple[RemoteInterfaceCandidate, .
 
     flush()
     return tuple(candidates)
+
+
+def _ifconfig_inet_parts(stripped: str) -> list[str]:
+    parts = stripped.split()
+    if len(parts) >= 2 and parts[1] == "alias":
+        return [parts[0], *parts[2:]]
+    return parts
 
 
 def _interface_preference_key(candidate: RemoteInterfaceCandidate, target_ips: Iterable[str] = ()) -> tuple[int, int, int, int, int, int, int]:
@@ -855,7 +863,7 @@ def runtime_ipv4_cidr_from_ifconfig(output: str, hint_ip: str = "") -> str | Non
         stripped = raw_line.strip()
         if not stripped.startswith("inet "):
             continue
-        parts = stripped.split()
+        parts = _ifconfig_inet_parts(stripped)
         if len(parts) < 2:
             continue
         ip_addr = parts[1]

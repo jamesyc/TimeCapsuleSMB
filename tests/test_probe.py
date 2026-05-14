@@ -270,6 +270,26 @@ lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> metric 0 mtu 33172
         self.assertEqual(result.preferred_iface, "bridge0")
         self.assertEqual([candidate.name for candidate in result.candidates], ["gec0", "bridge0", "lo0"])
 
+    def test_probe_remote_interface_candidates_parses_netbsd_inet_alias(self) -> None:
+        ifconfig_output = """
+bridge0: flags=e043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+\tinet alias 10.0.1.13 netmask 0xffffff00 broadcast 10.0.1.255
+\tstatus: active
+"""
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=ifconfig_output)
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            result = probe_remote_interface_candidates_conn(connection)
+        self.assertEqual(result.preferred_iface, "bridge0")
+        self.assertEqual(result.candidates[0].ipv4_addrs, ("10.0.1.13",))
+
+    def test_runtime_ipv4_cidr_from_ifconfig_parses_netbsd_inet_alias(self) -> None:
+        ifconfig_output = """
+bridge0: flags=e043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
+\tinet alias 10.0.1.13 netmask 0xffffff00 broadcast 10.0.1.255
+"""
+        self.assertEqual(probe.runtime_ipv4_cidr_from_ifconfig(ifconfig_output), "10.0.1.13/24")
+
     def test_probe_remote_interface_candidates_prefers_bcmeth1_when_bridge0_has_no_ipv4(self) -> None:
         ifconfig_output = """
 bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
