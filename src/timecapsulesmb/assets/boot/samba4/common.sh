@@ -27,9 +27,6 @@ TC_TAB=$(printf '\t')
 
 TC_LOG_FILE="$TC_STATE_DIR/runtime.log"
 TC_LOG_PREFIX=runtime
-TC_LOG_MODE=ram_rewrite
-TC_LOG_FALLBACK_FILE=
-TC_LOG_VOLUME=
 TC_LOG_MAX_BYTES=32768
 TC_MDNS_BIN=/mnt/Flash/mdns-advertiser
 TC_NBNS_BIN="$RAM_SBIN/nbns-advertiser"
@@ -124,24 +121,7 @@ tc_init_runtime_env() {
 tc_set_log() {
     TC_LOG_FILE=$1
     TC_LOG_PREFIX=$2
-    TC_LOG_MODE=ram_rewrite
-    TC_LOG_FALLBACK_FILE=
-    TC_LOG_VOLUME=
     TC_LOG_MAX_BYTES=$TC_RUNTIME_LOG_MAX_BYTES
-}
-
-tc_set_payload_append_log() {
-    TC_LOG_FILE=$1
-    TC_LOG_PREFIX=$2
-    TC_LOG_VOLUME=$3
-    TC_LOG_FALLBACK_FILE=$4
-    TC_LOG_MODE=payload_append
-    TC_LOG_MAX_BYTES=$(tc_runtime_log_max_bytes)
-
-    line="$(date '+%Y-%m-%d %H:%M:%S') $TC_LOG_PREFIX: log target configured: payload=$TC_LOG_FILE volume=$TC_LOG_VOLUME fallback=${TC_LOG_FALLBACK_FILE:-none}"
-    if ! tc_payload_append_log_line "$line" && [ -n "$TC_LOG_FALLBACK_FILE" ]; then
-        tc_ram_rewrite_log_line "$TC_LOG_FALLBACK_FILE" "$line"
-    fi
 }
 
 tc_runtime_logs_unbounded() {
@@ -204,25 +184,6 @@ tc_trim_log_file_if_needed() {
     tc_replace_log_with_trimmed_copy "$trim_log_path" "$trim_log_bytes" "$trim_log_tmp"
 }
 
-tc_append_bounded_log_line() {
-    log_path=$1
-    max_bytes=$2
-    line=$3
-
-    ensure_parent_dir "$log_path"
-    printf '%s\n' "$line" >>"$log_path" || return 1
-    tc_trim_log_file_if_needed "$log_path" "$max_bytes"
-}
-
-tc_payload_append_log_line() {
-    line=$1
-
-    [ -n "$TC_LOG_FILE" ] || return 1
-    [ -n "$TC_LOG_VOLUME" ] || return 1
-    is_volume_root_mounted "$TC_LOG_VOLUME" || return 1
-    tc_append_bounded_log_line "$TC_LOG_FILE" "$TC_LOG_MAX_BYTES" "$line"
-}
-
 tc_ram_rewrite_log_line() {
     log_path=$1
     line=$2
@@ -242,17 +203,6 @@ tc_ram_rewrite_log_line() {
 
 tc_log() {
     line="$(date '+%Y-%m-%d %H:%M:%S') $TC_LOG_PREFIX: $*"
-
-    if [ "$TC_LOG_MODE" = "payload_append" ]; then
-        if tc_payload_append_log_line "$line"; then
-            return 0
-        fi
-        if [ -n "$TC_LOG_FALLBACK_FILE" ]; then
-            tc_ram_rewrite_log_line "$TC_LOG_FALLBACK_FILE" "$line"
-            return 0
-        fi
-    fi
-
     tc_ram_rewrite_log_line "$TC_LOG_FILE" "$line"
 }
 
@@ -371,35 +321,6 @@ tc_netmask_to_prefix() {
         0x00000000|0x0|0|0.0.0.0) echo 0 ;;
         *) return 1 ;;
     esac
-}
-
-get_iface_ipv4_prefix() {
-    iface=$1
-    target_ip=${2:-}
-    if [ -n "$target_ip" ]; then
-        target_ip_pattern=$(printf '%s\n' "$target_ip" | sed 's/\./\\./g')
-        iface_line=$(/sbin/ifconfig "$iface" 2>/dev/null | sed -n "s/^[[:space:]]*inet[[:space:]]$target_ip_pattern[[:space:]]//p" | sed -n '1p')
-        [ -n "$iface_line" ] || return 1
-        set -- $iface_line
-        iface_netmask=
-        while [ "$#" -gt 0 ]; do
-            if [ "$1" = "netmask" ]; then
-                shift || true
-                iface_netmask=${1:-}
-                break
-            fi
-            shift || true
-        done
-        iface_prefix=$(tc_netmask_to_prefix "$iface_netmask" || true)
-        [ -n "$iface_prefix" ] || iface_prefix=24
-        echo "$iface_prefix"
-        return 0
-    else
-        iface_cidr=$(get_runtime_iface_ipv4_cidr "$iface" || true)
-        [ -n "$iface_cidr" ] || return 1
-        echo "${iface_cidr#*/}"
-        return 0
-    fi
 }
 
 get_iface_mac() {
@@ -925,10 +846,6 @@ tc_wake_or_mount_volume() {
     tc_wake_or_mount_volume_with_policy "$1" "$2" "$DISKD_USE_VOLUME_ATTEMPTS" "MaSt volume $2"
 }
 
-tc_boot_wake_or_mount_volume() {
-    tc_wake_or_mount_volume "$1" "$2"
-}
-
 tc_watchdog_wake_or_mount_volume() {
     tc_wake_or_mount_volume_with_policy "$1" "$2" "$WATCHDOG_DISKD_USE_VOLUME_ATTEMPTS" "watchdog volume $2"
 }
@@ -945,7 +862,7 @@ tc_mount_mast_volumes_for_boot() {
         [ -n "$part_device" ] || continue
         volume_count=$((volume_count + 1))
         tc_log "boot disk load: activating volume $volume_count: disk=$disk_device builtin=$builtin device=/dev/$part_device root=$volume_root name=$part_name"
-        if tc_boot_wake_or_mount_volume "/dev/$part_device" "$volume_root"; then
+        if tc_wake_or_mount_volume "/dev/$part_device" "$volume_root"; then
             mounted_count=$((mounted_count + 1))
             tc_log "boot disk load: volume active: /dev/$part_device at $volume_root"
         else
@@ -1465,19 +1382,6 @@ tc_log_payload_candidate_diagnostics() {
     tc_log_limited_command_output "ls -la $volume_root" /bin/ls -la "$volume_root"
     tc_log_limited_command_output "ls -la $payload_dir" /bin/ls -la "$payload_dir"
     tc_log_limited_command_output "ls -la $private_dir" /bin/ls -la "$private_dir"
-}
-
-tc_emit_payload_candidate_volumes() {
-    volumes_file=${1:-$TC_VOLUMES_TSV}
-
-    for desired_builtin in 1 0; do
-        while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid ||
-            [ -n "$disk_device$builtin$part_device$volume_root$part_name$part_uuid" ]; do
-            [ -n "$part_device" ] || continue
-            [ "$builtin" = "$desired_builtin" ] || continue
-            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$disk_device" "$builtin" "$part_device" "$volume_root" "$part_name" "$part_uuid"
-        done <"$volumes_file"
-    done
 }
 
 tc_scan_payload_candidates_for_builtin() {
@@ -2611,19 +2515,9 @@ tc_start_watchdog() {
     tc_log "watchdog launched as pid $watchdog_pid"
 }
 
-tc_stop_managed_services() {
-    stop_runtime_process_by_ucomm "smbd" "smbd" || true
-    stop_runtime_process_by_ucomm "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" || true
-    stop_runtime_process_by_ucomm "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" || true
-}
-
 tc_current_topology_signature() {
     [ -f "$TC_TOPOLOGY_SIGNATURE" ] || return 1
     /bin/cat "$TC_TOPOLOGY_SIGNATURE"
-}
-
-tc_fresh_topology_signature() {
-    /mnt/Flash/start-samba.sh --print-topology-signature 2>/dev/null
 }
 
 tc_topology_changed_from_file() {
@@ -2638,43 +2532,6 @@ tc_topology_changed_from_file() {
         return 1
     fi
     [ "$current" != "$fresh" ]
-}
-
-tc_topology_changed() {
-    current=$(tc_current_topology_signature || true)
-    fresh=$(tc_fresh_topology_signature || true)
-    if [ -z "$fresh" ]; then
-        tc_log "watchdog recovery: MaSt topology check failed"
-        return 1
-    fi
-    [ "$current" != "$fresh" ]
-}
-
-tc_topology_changed_debounced() {
-    if ! tc_topology_changed; then
-        return 1
-    fi
-
-    case "$WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS" in
-        ""|*[!0123456789]*)
-            tc_log "watchdog recovery: invalid WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS=$WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS; using 5s"
-            topology_debounce_seconds=5
-            ;;
-        *)
-            topology_debounce_seconds=$WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS
-            ;;
-    esac
-
-    tc_log "watchdog recovery: MaSt topology changed; debouncing ${topology_debounce_seconds}s"
-    if [ "$topology_debounce_seconds" -gt 0 ]; then
-        sleep "$topology_debounce_seconds"
-    fi
-    if tc_topology_changed; then
-        return 0
-    fi
-
-    tc_log "watchdog recovery: MaSt topology change cleared after debounce"
-    return 1
 }
 
 tc_watchdog_capture_mast_state() {
@@ -3018,17 +2875,6 @@ tc_watchdog_refresh_runtime_identity_for_recovery() {
         tc_init_runtime_identity
         TC_WATCHDOG_RECOVERY_IDENTITY_REFRESHED=1
     fi
-}
-
-tc_watchdog_iteration() {
-    tc_log "watchdog pass: checking topology and managed services"
-    TC_WATCHDOG_RECOVERY_IDENTITY_REFRESHED=0
-
-    if ! tc_watchdog_disk_iteration; then
-        return 1
-    fi
-
-    tc_watchdog_service_iteration
 }
 
 tc_watchdog_service_iteration() {
