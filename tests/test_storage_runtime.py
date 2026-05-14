@@ -3218,7 +3218,8 @@ MaSt = (
                     EOF
                     is_volume_root_mounted() {{ [ -f "$1/.mounted" ]; }}
                     sleep() {{ echo "sleep $1" >>{events}; }}
-                    tc_watchdog_check_active_mast_users
+                    tc_watchdog_capture_mast_state "$RAM_VAR/mast-users.tsv" "$RAM_VAR/mast-users.raw"
+                    tc_watchdog_check_active_mast_users "$RAM_VAR/mast-users.raw"
                     cat {events}
                     """
                 )
@@ -3238,6 +3239,39 @@ MaSt = (
         self.assertIn("watchdog disk check: managed volume dk3 users=0 requires diskd reclaim", log_text)
         self.assertIn("watchdog disk check: reclaimed 1 managed volume(s) with users=0", log_text)
         self.assertNotIn("dk4 requires diskd reclaim", log_text)
+
+    def test_common_watchdog_mast_users_requires_snapshot_argument_for_active_shares(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "watchdog-mast-users-requires-snapshot.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                    status=0
+                    tc_watchdog_check_active_mast_users || status=$?
+                    echo "status=$status"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "status=1\n")
+        self.assertIn("watchdog disk check: MaSt users snapshot argument is required", log_text)
 
     def test_common_watchdog_mast_users_failure_falls_back_to_disk_runtime_reload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

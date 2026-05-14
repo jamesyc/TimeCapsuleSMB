@@ -10,18 +10,9 @@ tc_init_runtime_env
 tc_set_log "$RAM_VAR/watchdog.log" "watchdog"
 tc_init_runtime_identity
 
-tc_watchdog_positive_seconds() {
-    value=$1
-    default_value=$2
-    case "$value" in
-        ""|*[!0123456789]*|0) echo "$default_value" ;;
-        *) echo "$value" ;;
-    esac
-}
-
-WATCHDOG_DISK_POLL_SECONDS=$(tc_watchdog_positive_seconds "${WATCHDOG_DISK_POLL_SECONDS:-10}" 10)
-WATCHDOG_SERVICE_POLL_SECONDS=$(tc_watchdog_positive_seconds "${WATCHDOG_SERVICE_POLL_SECONDS:-30}" 30)
-WATCHDOG_RECOVERY_POLL_SECONDS=$(tc_watchdog_positive_seconds "${WATCHDOG_RECOVERY_POLL_SECONDS:-10}" 10)
+WATCHDOG_DISK_POLL_SECONDS=$(tc_sanitize_positive_integer "${WATCHDOG_DISK_POLL_SECONDS:-10}" 10)
+WATCHDOG_SERVICE_POLL_SECONDS=$(tc_sanitize_positive_integer "${WATCHDOG_SERVICE_POLL_SECONDS:-30}" 30)
+WATCHDOG_RECOVERY_POLL_SECONDS=$(tc_sanitize_positive_integer "${WATCHDOG_RECOVERY_POLL_SECONDS:-10}" 10)
 WATCHDOG_SERVICE_TICKS=$(( (WATCHDOG_SERVICE_POLL_SECONDS + WATCHDOG_DISK_POLL_SECONDS - 1) / WATCHDOG_DISK_POLL_SECONDS ))
 if [ "$WATCHDOG_SERVICE_TICKS" -lt 1 ]; then
     WATCHDOG_SERVICE_TICKS=1

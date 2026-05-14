@@ -84,30 +84,45 @@ tc_log_runtime_env_warnings() {
     TC_RUNTIME_ENV_WARNINGS_LOGGED=1
 }
 
+tc_sanitize_unsigned_integer() {
+    value=$1
+    default_value=$2
+    case "$value" in
+        ""|*[!0123456789]*) echo "$default_value" ;;
+        *) echo "$value" ;;
+    esac
+}
+
+tc_sanitize_positive_integer() {
+    value=$1
+    default_value=$2
+    case "$value" in
+        ""|*[!0123456789]*|0) echo "$default_value" ;;
+        *) echo "$value" ;;
+    esac
+}
+
+tc_is_unsigned_integer() {
+    case "$1" in
+        ""|*[!0123456789]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
 tc_init_runtime_env() {
     DISKD_USE_VOLUME_ATTEMPTS=${DISKD_USE_VOLUME_ATTEMPTS:-2}
     DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=${DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS:-31}
     DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=${DISKD_USE_VOLUME_MOUNT_POLL_SECONDS:-3}
     TC_RUNTIME_ENV_WARNING_LINES=
     TC_RUNTIME_ENV_WARNINGS_LOGGED=0
-    case "$DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS" in
-        ""|*[!0123456789]*)
-            TC_DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=31
-            tc_add_runtime_env_warning "runtime config: invalid DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=$DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS; using 31s"
-            ;;
-        *)
-            TC_DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=$DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS
-            ;;
-    esac
-    case "$DISKD_USE_VOLUME_MOUNT_POLL_SECONDS" in
-        ""|*[!0123456789]*|0)
-            TC_DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=3
-            tc_add_runtime_env_warning "runtime config: invalid DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=$DISKD_USE_VOLUME_MOUNT_POLL_SECONDS; using 3s"
-            ;;
-        *)
-            TC_DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=$DISKD_USE_VOLUME_MOUNT_POLL_SECONDS
-            ;;
-    esac
+    TC_DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=$(tc_sanitize_unsigned_integer "$DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS" 31)
+    if [ "$TC_DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS" != "$DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS" ]; then
+        tc_add_runtime_env_warning "runtime config: invalid DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=$DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS; using 31s"
+    fi
+    TC_DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=$(tc_sanitize_positive_integer "$DISKD_USE_VOLUME_MOUNT_POLL_SECONDS" 3)
+    if [ "$TC_DISKD_USE_VOLUME_MOUNT_POLL_SECONDS" != "$DISKD_USE_VOLUME_MOUNT_POLL_SECONDS" ]; then
+        tc_add_runtime_env_warning "runtime config: invalid DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=$DISKD_USE_VOLUME_MOUNT_POLL_SECONDS; using 3s"
+    fi
     ATA_IDLE_SECONDS=${ATA_IDLE_SECONDS:-300}
     MAST_DISCOVERY_WAIT_SECONDS=${MAST_DISCOVERY_WAIT_SECONDS:-120}
     WATCHDOG_DISKD_USE_VOLUME_ATTEMPTS=${WATCHDOG_DISKD_USE_VOLUME_ATTEMPTS:-$DISKD_USE_VOLUME_ATTEMPTS}
@@ -126,10 +141,6 @@ tc_set_log() {
 
 tc_runtime_logs_unbounded() {
     [ "${SMBD_DEBUG_LOGGING:-0}" = "1" ] || [ "${MDNS_DEBUG_LOGGING:-0}" = "1" ]
-}
-
-tc_runtime_log_max_bytes() {
-    echo "$TC_RUNTIME_LOG_MAX_BYTES"
 }
 
 tc_smbd_max_log_size() {
@@ -792,12 +803,11 @@ tc_wake_or_mount_volume_with_policy() {
         return 1
     fi
 
-    case "$diskd_attempts" in
-        ""|*[!0123456789]*|0)
-            tc_log "$mount_context: invalid diskd attempt count '$diskd_attempts'; using 2 attempts"
-            diskd_attempts=2
-            ;;
-    esac
+    sanitized_diskd_attempts=$(tc_sanitize_positive_integer "$diskd_attempts" 2)
+    if [ "$sanitized_diskd_attempts" != "$diskd_attempts" ]; then
+        tc_log "$mount_context: invalid diskd attempt count '$diskd_attempts'; using 2 attempts"
+    fi
+    diskd_attempts=$sanitized_diskd_attempts
 
     mkdir -p "$volume_root"
     was_mounted=0
@@ -877,16 +887,14 @@ tc_configure_ata_idle_for_mast_disks() {
     volumes_file=$1
 
     tc_log "ATA idle tuning: scanning built-in ATA disks after share-state build"
-    case "$ATA_IDLE_SECONDS" in
-        ""|*[!0123456789]*)
-            tc_log "ATA idle tuning skipped; invalid ATA_IDLE_SECONDS=$ATA_IDLE_SECONDS"
-            return 0
-            ;;
-        0)
-            tc_log "ATA idle tuning disabled"
-            return 0
-            ;;
-    esac
+    if ! tc_is_unsigned_integer "$ATA_IDLE_SECONDS"; then
+        tc_log "ATA idle tuning skipped; invalid ATA_IDLE_SECONDS=$ATA_IDLE_SECONDS"
+        return 0
+    fi
+    if [ "$ATA_IDLE_SECONDS" -eq 0 ]; then
+        tc_log "ATA idle tuning disabled"
+        return 0
+    fi
 
     configured_disks=" "
     while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid ||
@@ -927,6 +935,20 @@ tc_plist_key() {
 
 tc_trim_plist_line() {
     printf '%s\n' "$1" | /usr/bin/sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+tc_plist_is_object_end() {
+    case "$1" in
+        "}"|"};"*|"},"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+tc_plist_is_array_end() {
+    case "$1" in
+        "]"|"];"*|")"|");"*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 tc_extract_plist_string_key() {
@@ -1009,24 +1031,21 @@ tc_read_mast_volumes_to() {
 
     while IFS= read -r line || [ -n "$line" ]; do
         trimmed_line=$(tc_trim_plist_line "$line")
-        case "$trimmed_line" in
-            "}"|"};"*|"},"*)
-                if [ "$in_partitions" -eq 1 ] && [ -n "$part_device" ]; then
-                    tc_emit_mast_volume "$pending_file"
-                    part_device=
-                    part_name=
-                    part_format=
-                    part_uuid=
-                elif [ -n "$disk_device" ]; then
-                    tc_flush_mast_disk "$pending_file" "$out_file" "$disk_device" "$disk_builtin"
-                    disk_device=
-                    disk_builtin=0
-                fi
-                ;;
-            "]"|"];"*|")"|");"*)
-                in_partitions=0
-                ;;
-        esac
+        if tc_plist_is_object_end "$trimmed_line"; then
+            if [ "$in_partitions" -eq 1 ] && [ -n "$part_device" ]; then
+                tc_emit_mast_volume "$pending_file"
+                part_device=
+                part_name=
+                part_format=
+                part_uuid=
+            elif [ -n "$disk_device" ]; then
+                tc_flush_mast_disk "$pending_file" "$out_file" "$disk_device" "$disk_builtin"
+                disk_device=
+                disk_builtin=0
+            fi
+        elif tc_plist_is_array_end "$trimmed_line"; then
+            in_partitions=0
+        fi
 
         key=$(tc_plist_key "$line")
         case "$key" in
@@ -1632,7 +1651,7 @@ tc_prepare_smbd_core_dir() {
 
 tc_prepare_runtime_log_file() {
     log_path=$1
-    max_bytes=$(tc_runtime_log_max_bytes)
+    max_bytes=$TC_RUNTIME_LOG_MAX_BYTES
 
     case "$log_path" in
         "$TC_PAYLOAD_LOG_DIR"/*)
@@ -1978,6 +1997,13 @@ tc_prepare_local_hostname_resolution() {
     else
         tc_log "local hostname resolution could not update /etc/hosts"
     fi
+}
+
+tc_prepare_bind_runtime_context() {
+    BIND_INTERFACES=$(tc_wait_for_bind_interfaces) || return 1
+    TC_NET_IFACE_IP=${BIND_INTERFACES#127.0.0.1/8 }
+    TC_NET_IFACE_IP=${TC_NET_IFACE_IP%%/*}
+    tc_prepare_local_hostname_resolution
 }
 
 ensure_parent_dir() {
@@ -2566,6 +2592,7 @@ tc_replace_watchdog_mast_snapshot() {
     if [ -f "$replace_new_raw_file" ]; then
         mv -f "$replace_new_raw_file" "$replace_raw_file"
     fi
+    rm -f "$replace_new_volumes_file" "$replace_new_raw_file"
 }
 
 tc_topology_changed_debounced_from_snapshot() {
@@ -2576,15 +2603,10 @@ tc_topology_changed_debounced_from_snapshot() {
         return 1
     fi
 
-    case "$WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS" in
-        ""|*[!0123456789]*)
-            tc_log "watchdog recovery: invalid WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS=$WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS; using 5s"
-            topology_debounce_seconds=5
-            ;;
-        *)
-            topology_debounce_seconds=$WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS
-            ;;
-    esac
+    topology_debounce_seconds=$(tc_sanitize_unsigned_integer "$WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS" 5)
+    if [ "$topology_debounce_seconds" != "$WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS" ]; then
+        tc_log "watchdog recovery: invalid WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS=$WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS; using 5s"
+    fi
 
     tc_log "watchdog recovery: MaSt topology changed; debouncing ${topology_debounce_seconds}s"
     if [ "$topology_debounce_seconds" -gt 0 ]; then
@@ -2601,7 +2623,6 @@ tc_topology_changed_debounced_from_snapshot() {
     fi
 
     tc_replace_watchdog_mast_snapshot "$snapshot_volumes_file" "$snapshot_raw_file" "$debounce_volumes_file" "$debounce_raw_file"
-    rm -f "$debounce_volumes_file" "$debounce_raw_file"
     tc_log "watchdog recovery: MaSt topology change cleared after debounce"
     return 1
 }
@@ -2647,24 +2668,14 @@ tc_watchdog_handle_mast_users_partition() {
 
 tc_watchdog_check_active_mast_users() {
     mast_users_raw_file=${1:-}
-    mast_users_remove_raw=0
 
     [ -s "$TC_SHARES_TSV" ] || return 0
 
     if [ -z "$mast_users_raw_file" ]; then
-        if [ ! -x /usr/bin/acp ]; then
-            tc_log "watchdog disk check: MaSt users check skipped; /usr/bin/acp is unavailable"
-            return 0
-        fi
-        mast_users_raw_file="$TC_STATE_DIR/mast-users.raw.$$"
-        mast_users_remove_raw=1
-        rm -f "$mast_users_raw_file"
-        if ! /usr/bin/acp -A MaSt >"$mast_users_raw_file" 2>/dev/null; then
-            tc_log "watchdog disk check: MaSt users read failed"
-            rm -f "$mast_users_raw_file"
-            return 1
-        fi
-    elif [ ! -f "$mast_users_raw_file" ]; then
+        tc_log "watchdog disk check: MaSt users snapshot argument is required"
+        return 1
+    fi
+    if [ ! -f "$mast_users_raw_file" ]; then
         tc_log "watchdog disk check: MaSt users snapshot is missing: $mast_users_raw_file"
         return 1
     fi
@@ -2681,21 +2692,18 @@ tc_watchdog_check_active_mast_users() {
 
     while IFS= read -r line || [ -n "$line" ]; do
         trimmed_line=$(tc_trim_plist_line "$line")
-        case "$trimmed_line" in
-            "}"|"};"*|"},"*)
-                if [ "$mast_users_in_partitions" -eq 1 ] && [ -n "$mast_users_part_device" ]; then
-                    tc_watchdog_handle_mast_users_partition
-                    mast_users_part_device=
-                    mast_users_part_format=
-                    mast_users_part_users=
-                elif [ -n "$mast_users_disk_device" ]; then
-                    mast_users_disk_device=
-                fi
-                ;;
-            "]"|"];"*|")"|");"*)
-                mast_users_in_partitions=0
-                ;;
-        esac
+        if tc_plist_is_object_end "$trimmed_line"; then
+            if [ "$mast_users_in_partitions" -eq 1 ] && [ -n "$mast_users_part_device" ]; then
+                tc_watchdog_handle_mast_users_partition
+                mast_users_part_device=
+                mast_users_part_format=
+                mast_users_part_users=
+            elif [ -n "$mast_users_disk_device" ]; then
+                mast_users_disk_device=
+            fi
+        elif tc_plist_is_array_end "$trimmed_line"; then
+            mast_users_in_partitions=0
+        fi
 
         key=$(tc_plist_key "$line")
         case "$key" in
@@ -2725,9 +2733,6 @@ tc_watchdog_check_active_mast_users() {
 
     if [ -n "$mast_users_part_device" ]; then
         tc_watchdog_handle_mast_users_partition
-    fi
-    if [ "$mast_users_remove_raw" -eq 1 ]; then
-        rm -f "$mast_users_raw_file"
     fi
 
     TC_MAST_USERS_MISSING_ACTIVE=0
@@ -2813,13 +2818,10 @@ tc_live_reload_disk_runtime() {
         return 1
     fi
 
-    BIND_INTERFACES=$(tc_wait_for_bind_interfaces) || {
+    if ! tc_prepare_bind_runtime_context; then
         tc_log "watchdog recovery: live disk runtime refresh failed; bind interface unavailable"
         return 1
-    }
-    TC_NET_IFACE_IP=${BIND_INTERFACES#127.0.0.1/8 }
-    TC_NET_IFACE_IP=${TC_NET_IFACE_IP%%/*}
-    tc_prepare_local_hostname_resolution
+    fi
     tc_init_runtime_identity
 
     if [ ! -x "$TC_SMBD_BIN" ]; then
