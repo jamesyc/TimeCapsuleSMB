@@ -3137,6 +3137,49 @@ MaSt = (
         self.assertNotIn("mount_hfs", log_text)
         self.assertNotIn("Apple mount", log_text)
 
+    def test_common_wake_or_mount_claims_diskd_user_even_when_already_mounted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            acp = tmp_path / "acp"
+            acp.write_text("#!/bin/sh\necho \"$@\" >>'%s/acp.log'\n" % tmp_path)
+            acp.chmod(0o755)
+            script = tmp_path / "wake-already-mounted.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    DISKD_USE_VOLUME_ATTEMPTS=2
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR" {volumes}/dk2
+                    is_volume_root_mounted() {{ return 0; }}
+                    sleep() {{ echo "unexpected sleep"; }}
+                    tc_wake_or_mount_volume /dev/dk2 {volumes}/dk2
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            acp_log = (tmp_path / "acp.log").read_text()
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "")
+        self.assertIn(f"rpc diskd.useVolume path:s:{volumes}/dk2", acp_log)
+        self.assertIn(
+            f"MaSt volume {volumes}/dk2: volume already mounted at {volumes}/dk2 before diskd.useVolume; claiming a diskd user anyway",
+            log_text,
+        )
+        self.assertIn(
+            f"MaSt volume {volumes}/dk2: diskd.useVolume claim complete; {volumes}/dk2 remained mounted after attempt 1/2",
+            log_text,
+        )
+
     def test_common_wake_or_mount_logs_diskd_failure_without_mount_hfs_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

@@ -789,11 +789,6 @@ tc_wake_or_mount_volume_with_policy() {
         return 1
     fi
 
-    if is_volume_root_mounted "$volume_root"; then
-        tc_log "$mount_context: volume already mounted at $volume_root"
-        return 0
-    fi
-
     case "$diskd_attempts" in
         ""|*[!0123456789]*|0)
             tc_log "$mount_context: invalid diskd attempt count '$diskd_attempts'; using 2 attempts"
@@ -802,12 +797,23 @@ tc_wake_or_mount_volume_with_policy() {
     esac
 
     mkdir -p "$volume_root"
+    was_mounted=0
+    if is_volume_root_mounted "$volume_root"; then
+        was_mounted=1
+        tc_log "$mount_context: volume already mounted at $volume_root before diskd.useVolume; claiming a diskd user anyway"
+    else
+        tc_log "$mount_context: volume is not mounted at $volume_root before diskd.useVolume"
+    fi
     tc_log "$mount_context: diskd activation beginning for $device_path at $volume_root with ${diskd_attempts} attempt(s)"
     attempt=1
     while [ "$attempt" -le "$diskd_attempts" ]; do
         tc_request_diskd_use_volume "$volume_root" "$mount_context" "attempt $attempt/$diskd_attempts" || true
         if is_volume_root_mounted "$volume_root"; then
-            tc_log "$mount_context: mounted at $volume_root after diskd.useVolume attempt $attempt/$diskd_attempts"
+            if [ "$was_mounted" -eq 1 ]; then
+                tc_log "$mount_context: diskd.useVolume claim complete; $volume_root remained mounted after attempt $attempt/$diskd_attempts"
+            else
+                tc_log "$mount_context: mounted at $volume_root after diskd.useVolume attempt $attempt/$diskd_attempts"
+            fi
             return 0
         fi
         tc_log "$mount_context: $volume_root is not mounted after diskd.useVolume attempt $attempt/$diskd_attempts"
