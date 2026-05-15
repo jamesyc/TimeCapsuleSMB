@@ -136,10 +136,12 @@ class StorageRuntimeTests(unittest.TestCase):
             tmp_path = Path(tmp)
             flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
             fake_ifconfig = tmp_path / "ifconfig"
+            ifconfig_calls = tmp_path / "ifconfig.calls"
             fake_ifconfig.write_text(
                 textwrap.dedent(
-                    """\
+                    f"""\
                     #!/bin/sh
+                    printf '%s\\n' "$1" >> {shlex.quote(str(ifconfig_calls))}
                     case "$1" in
                         bridge0)
                             cat <<'OUT'
@@ -190,9 +192,11 @@ class StorageRuntimeTests(unittest.TestCase):
             script.chmod(0o755)
 
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            bridge0_ifconfig_call_count = ifconfig_calls.read_text().splitlines().count("bridge0")
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("status=1\n", proc.stdout)
+        self.assertEqual(bridge0_ifconfig_call_count, 121)
         self.assertIn("timed out waiting for IPv4 on bridge0", proc.stdout)
         self.assertIn("network diagnostics: configured NET_IFACE=bridge0", proc.stdout)
         self.assertIn("network diagnostics: bridge0: bridge0: flags=", proc.stdout)

@@ -1942,7 +1942,7 @@ tc_wait_for_bind_interfaces() {
     attempt=0
 
     sleep 1
-    while [ "$attempt" -lt 60 ]; do
+    while [ "$attempt" -lt 120 ]; do
         iface_cidr=$(get_runtime_iface_ipv4_cidr "$NET_IFACE" "${NET_IPV4_HINT:-}" || true)
         if [ -n "$iface_cidr" ]; then
             tc_log "network interface $NET_IFACE ready with IPv4 $iface_cidr"
