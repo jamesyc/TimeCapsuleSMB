@@ -34,10 +34,12 @@ from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.flash import (
     FlashAnalysis,
     FlashAnalysisError,
-    BankAnalysis,
+    FlashInspection,
     STOCK_LOGIN_NETBSD4_DUMMY,
-    analysis_to_jsonable,
     analyze_flash_banks,
+    inspection_error_message,
+    inspection_to_jsonable,
+    inspect_flash_banks,
     require_zopfli_gzip_available,
     sha256_hex,
 )
@@ -46,7 +48,7 @@ from timecapsulesmb.flash_workflow import (
     FlashPlan,
     plan_check_apple,
     plan_download_only,
-    plan_patch_active,
+    plan_patch_primary,
     plan_restore_apple,
     require_patch_ready as require_write_ready,
     write_and_validate_plan,
@@ -86,7 +88,8 @@ class FlashInputs:
 
 @dataclass(frozen=True)
 class FlashAnalysisBundle:
-    analysis: FlashAnalysis
+    inspection: FlashInspection
+    analysis: FlashAnalysis | None
     backup_dir: Path
     manifest: dict[str, object]
 
@@ -175,14 +178,17 @@ def get_property_int_for_validation(
 def _manifest(
     *,
     operation: str,
-    analysis: FlashAnalysis,
+    inspection: FlashInspection,
     host: str,
     syap: str,
     live_login: bytes,
     backup_dir: Path,
     os_release: str,
 ) -> dict[str, object]:
-    payload = analysis_to_jsonable(analysis)
+    payload = inspection_to_jsonable(
+        inspection,
+        write_policy="primary_bank_patch" if operation == "patch" else "active_bank_only",
+    )
     if operation != "patch":
         _mark_manifest_no_write(payload, "backup only; no patch candidate built")
     files: dict[str, str] = {
@@ -190,9 +196,6 @@ def _manifest(
         "secondary": str(backup_dir / "secondary.raw"),
         "manifest": str(backup_dir / "manifest.json"),
     }
-    active = analysis.active
-    if operation == "patch" and active is not None and active.patch is not None:
-        files[f"{active.name}_patched"] = str(backup_dir / f"{active.name}.patched.raw")
     payload.update({
         "operation": operation,
         "host": host,
@@ -230,11 +233,19 @@ def _apply_flash_plan_to_manifest(manifest: dict[str, object], plan: FlashPlan) 
     for bank in _manifest_banks(manifest):
         if bank.get("name") != target_name:
             bank["would_write"] = False
-            if target_name is not None:
+            if target_name is not None and plan.mode == "patch":
+                bank["write_decision"] = "secondary backup left unmodified"
+            elif target_name is not None:
                 bank["write_decision"] = "inactive bank left unmodified"
             continue
 
-        if plan.mode == "restore":
+        if plan.mode == "patch":
+            bank["would_write"] = plan.write_requested
+            if plan.already_satisfied:
+                bank["write_decision"] = "primary bank already patched; no write needed"
+            elif plan.write_requested:
+                bank["write_decision"] = "primary bank patch planned"
+        elif plan.mode == "restore":
             bank["would_write"] = plan.write_requested
             if plan.write_requested:
                 bank["write_decision"] = "active bank restore from Apple firmware planned"
@@ -246,9 +257,6 @@ def _apply_flash_plan_to_manifest(manifest: dict[str, object], plan: FlashPlan) 
         elif plan.mode == "download_only":
             bank["would_write"] = False
             bank["write_decision"] = "download only; no firmware write planned"
-        elif plan.mode == "patch" and plan.already_satisfied:
-            bank["would_write"] = False
-            bank["write_decision"] = "active bank already patched; no write needed"
 
 
 def save_flash_banks(*, backup_dir: Path, primary: bytes, secondary: bytes) -> None:
@@ -261,12 +269,12 @@ def save_flash_manifest(*, backup_dir: Path, manifest: dict[str, object]) -> Non
     write_json_file(backup_dir / "manifest.json", manifest)
 
 
-def save_active_patched_bank_if_ready(*, backup_dir: Path, analysis: FlashAnalysis) -> Path | None:
-    active = analysis.active
-    if active is None or active.patch is None:
+def save_primary_patched_bank_if_ready(*, backup_dir: Path, inspection: FlashInspection) -> Path | None:
+    primary = inspection.primary.analysis
+    if primary is None or primary.patch is None:
         return None
-    path = backup_dir / f"{active.name}.patched.raw"
-    path.write_bytes(active.patch.target_bank)
+    path = backup_dir / "primary.patched.raw"
+    path.write_bytes(primary.patch.target_bank)
     return path
 
 
@@ -322,32 +330,32 @@ def print_flash_summary(manifest: dict[str, object]) -> None:
             candidate_text = "none"
         selected_by = selection.get("selected_by") or "none"
         print(f"Active selection: {selection.get('status')} selected_by={selected_by} candidates={candidate_text}")
-        requested = selection.get("requested_bank")
-        if requested:
-            requested_error = selection.get("requested_bank_error")
-            if requested_error:
-                print(f"  requested bank={requested} rejected: {requested_error}")
-            else:
-                print(f"  requested bank={requested}")
     for bank in manifest["banks"]:
         assert isinstance(bank, dict)
-        footer = bank["footer"]
-        gzip_info = bank["gzip"]
-        login = bank["login"]
-        patch = bank["patch"]
-        assert isinstance(footer, dict)
-        assert isinstance(gzip_info, dict)
-        assert isinstance(login, dict)
-        print(
-            f"{bank['name']}: size={bank['size']} sha256={bank['sha256']} "
-            f"footer={footer['checksum']} acp_match={bank['acp_checksum_matches']}"
-        )
-        print(
-            f"  gzip offset={gzip_info['offset']} consumed={gzip_info['consumed_length']} "
-            f"decompressed_sha256={gzip_info['decompressed_sha256']}"
-        )
-        print(f"  LOGIN={login['classification']} offset={login['offset']} length={login['length']}")
+        footer = bank.get("footer")
+        gzip_info = bank.get("gzip")
+        login = bank.get("login")
+        patch = bank.get("patch")
+        if isinstance(footer, dict):
+            footer_text = f"footer={footer['checksum']} acp_match={bank['acp_checksum_matches']}"
+        else:
+            footer_text = f"footer=unreadable acp_match={bank.get('acp_checksum_matches')}"
+        print(f"{bank['name']}: size={bank['size']} sha256={bank['sha256']} {footer_text}")
+        if isinstance(gzip_info, dict):
+            print(
+                f"  gzip offset={gzip_info['offset']} consumed={gzip_info['consumed_length']} "
+                f"decompressed_sha256={gzip_info['decompressed_sha256']}"
+            )
+        else:
+            print("  gzip unavailable")
+        if isinstance(login, dict):
+            print(f"  LOGIN={login['classification']} offset={login['offset']} length={login['length']}")
+        else:
+            print("  LOGIN=unavailable")
         print(f"  write decision={bank['write_decision']}")
+        backup_failures = bank.get("backup_failures")
+        if isinstance(backup_failures, list) and backup_failures:
+            print(f"  backup failures={'; '.join(str(failure) for failure in backup_failures)}")
         failures = bank.get("active_selection_failures")
         if isinstance(failures, list) and failures:
             print(f"  active selection failures={'; '.join(str(failure) for failure in failures)}")
@@ -398,18 +406,23 @@ def _operation_from_args(args: argparse.Namespace) -> str:
 def _plan_from_operation(
     *,
     operation: str,
-    analysis: FlashAnalysis,
+    inspection: FlashInspection,
+    analysis: FlashAnalysis | None,
+    force: bool,
     syap: str,
     firmware_template: Path | None,
     firmware_version: str | None,
 ) -> FlashPlan | None:
     if operation == "patch":
-        return plan_patch_active(
-            analysis,
+        return plan_patch_primary(
+            inspection,
+            force=force,
             syap=syap,
             firmware_template=firmware_template,
             firmware_version=firmware_version,
         )
+    if analysis is None:
+        raise FlashAnalysisError(inspection_error_message(inspection))
     if operation == "restore":
         return plan_restore_apple(
             analysis,
@@ -436,18 +449,15 @@ def _plan_from_operation(
 
 def _confirmation_prompt(plan: FlashPlan) -> str:
     assert plan.target_bank is not None
-    target_phrase = f"active {plan.target_bank.name} bank"
-    if any(warning.startswith("active bank selected by --active-bank ") for warning in plan.warnings):
-        target_phrase = f"requested {plan.target_bank.name} bank"
     if plan.mode == "restore":
         payload = plan.payload
         version = "unknown" if payload is None else payload.template_version or f"0x{payload.inner_version:08x}"
         product = "unknown" if payload is None else payload.template_product_id or str(payload.inner_model)
         return (
             f"This will flash Apple stock firmware {version} for product {product} "
-            f"to the {target_phrase}. Continue?"
+            f"to the active {plan.target_bank.name} bank. Continue?"
         )
-    return f"This will patch the {target_phrase}. Continue?"
+    return "This will patch the primary firmware bank. Continue?"
 
 
 def _update_context_with_plan(command_context: CommandContext, plan: FlashPlan, payload_path: Path | None) -> None:
@@ -533,7 +543,7 @@ def _build_parser() -> argparse.ArgumentParser:
     add_config_argument(parser)
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--read-only", action="store_true", help="Dump and back up firmware banks without patch planning")
-    mode_group.add_argument("--patch", action="store_true", help="Patch the active firmware bank LOGIN hook")
+    mode_group.add_argument("--patch", action="store_true", help="Patch the primary firmware bank LOGIN hook")
     mode_group.add_argument("--restore", action="store_true", help="Restore the active firmware bank from Apple stock firmware")
     mode_group.add_argument("--check-apple", action="store_true", help="Check whether the active bank matches Apple stock firmware")
     mode_group.add_argument("--download-only", action="store_true", help="Download and validate Apple firmware without writing")
@@ -543,10 +553,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true", help="Output the flash analysis and plan as JSON")
     parser.add_argument("--backup-dir", type=Path, default=None, help="Directory where this run's firmware backup should be saved")
     parser.add_argument(
-        "--active-bank",
-        choices=("primary", "secondary"),
-        default=None,
-        help="Use the specified firmware bank when automatic active-bank selection is ambiguous",
+        "--force",
+        action="store_true",
+        help="With --patch, bypass backup/active-candidate preflight and target the primary bank",
     )
     parser.add_argument(
         "--firmware-template",
@@ -565,6 +574,8 @@ def _parse_args(argv: Optional[list[str]]) -> tuple[argparse.Namespace, str]:
 
     if args.yes and operation not in WRITE_OPERATIONS:
         parser.error("--yes is only valid with --patch or --restore")
+    if args.force and operation != "patch":
+        parser.error("--force is only valid with --patch")
     if operation == "patch" and args.reboot:
         parser.error("flash --patch cannot use --reboot; power cycle manually after the validated write")
     if args.reboot and operation != "restore":
@@ -678,47 +689,39 @@ def _analyze_flash(
         emit_progress(log, "Analyzing flash banks and building patched gzip candidate...")
     else:
         emit_progress(log, "Analyzing flash banks...")
-    try:
-        analysis = analyze_flash_banks(
-            primary_data=inputs.primary,
-            secondary_data=inputs.secondary,
-            cks1=inputs.cks1,
-            cks2=inputs.cks2,
-            os_release=target.compatibility.os_release,
-            build_patch_candidate=operation == "patch",
-            active_bank_override=args.active_bank,
-        )
-    except FlashAnalysisError as exc:
-        message = str(exc)
-        record_flash_error(command_context, message, stage="analyze_flash", live_login=inputs.live_login)
-        print(message)
-        command_context.fail()
-        return None
-
-    command_context.update_fields(
-        active_bank=analysis.active_bank,
-        active_selection_status=analysis.active_selection.status,
-        active_selection_selected_by=analysis.active_selection.selected_by,
-        active_selection_requested_bank=analysis.active_selection.requested_bank,
-        primary_login=analysis.primary.login.classification,
-        secondary_login=analysis.secondary.login.classification,
+    inspection = inspect_flash_banks(
+        primary_data=inputs.primary,
+        secondary_data=inputs.secondary,
+        cks1=inputs.cks1,
+        cks2=inputs.cks2,
+        os_release=target.compatibility.os_release,
+        build_primary_patch_candidate=operation == "patch",
     )
-    patched_active_path = None
-    if operation == "patch":
-        patched_active_path = save_active_patched_bank_if_ready(backup_dir=backup_dir, analysis=analysis)
-    if patched_active_path is not None:
-        command_context.update_fields(patched_active_path=str(patched_active_path))
+    analysis = inspection.strict_analysis
 
+    primary_analysis = inspection.primary.analysis
+    secondary_analysis = inspection.secondary.analysis
+    command_context.update_fields(
+        active_bank=inspection.active_bank,
+        active_selection_status=inspection.active_selection.status,
+        active_selection_selected_by=inspection.active_selection.selected_by,
+        primary_backup_valid=inspection.primary.backup_valid,
+        secondary_backup_valid=inspection.secondary.backup_valid,
+        primary_active_candidate=inspection.primary.active_candidate,
+        secondary_active_candidate=inspection.secondary.active_candidate,
+        primary_login=None if primary_analysis is None else primary_analysis.login.classification,
+        secondary_login=None if secondary_analysis is None else secondary_analysis.login.classification,
+    )
     manifest = _manifest(
         operation=operation,
-        analysis=analysis,
+        inspection=inspection,
         host=target.acp_host,
         syap=inputs.syap,
         live_login=inputs.live_login,
         backup_dir=backup_dir,
         os_release=target.compatibility.os_release,
     )
-    return FlashAnalysisBundle(analysis=analysis, backup_dir=backup_dir, manifest=manifest)
+    return FlashAnalysisBundle(inspection=inspection, analysis=analysis, backup_dir=backup_dir, manifest=manifest)
 
 
 def _plan_flash(
@@ -736,7 +739,9 @@ def _plan_flash(
     try:
         plan = _plan_from_operation(
             operation=operation,
+            inspection=bundle.inspection,
             analysis=bundle.analysis,
+            force=args.force,
             syap=inputs.syap,
             firmware_template=args.firmware_template,
             firmware_version=args.firmware_version,
@@ -747,11 +752,14 @@ def _plan_flash(
             "stage": "plan_flash",
             "message": message,
         }
-        active_analysis = bundle.analysis.active
+        active_analysis = None if bundle.analysis is None else bundle.analysis.active
+        if operation == "patch":
+            active_analysis = bundle.inspection.primary.analysis
         include_login_mismatch = (
             operation == "patch"
             and active_analysis is not None
             and active_analysis.login.classification != "stock"
+            and active_analysis.login.classification != "already_patched"
         )
         record_flash_error(
             command_context,
@@ -764,6 +772,14 @@ def _plan_flash(
         command_context.fail()
         return False, None
     assert plan is not None
+    patched_primary_path = None
+    if operation == "patch":
+        patched_primary_path = save_primary_patched_bank_if_ready(backup_dir=bundle.backup_dir, inspection=bundle.inspection)
+        if patched_primary_path is not None:
+            files = bundle.manifest.get("files")
+            if isinstance(files, dict):
+                files["primary_patched"] = str(patched_primary_path)
+            command_context.update_fields(patched_primary_path=str(patched_primary_path))
     payload_path = save_acp_flash_payload(backup_dir=bundle.backup_dir, plan=plan)
     files = bundle.manifest.get("files")
     if isinstance(files, dict) and payload_path is not None and plan.target_bank is not None:
@@ -811,7 +827,7 @@ def _prepare_write(
 ) -> tuple[bool, int]:
     if plan.already_satisfied:
         if operation == "patch":
-            print("Active firmware bank is already patched; no write needed.")
+            print("Primary firmware bank is already patched; no write needed.")
         else:
             print("Active firmware bank already matches the requested Apple stock firmware; no write needed.")
         _record_write_outcome(
@@ -861,16 +877,18 @@ def _write_flash(
     live_login: bytes,
     log: ProgressLogger,
 ) -> dict[str, object] | None:
-    command_context.set_stage("write_active_bank")
     assert plan.target_bank is not None
-    emit_progress(log, f"Sending ACP flash command for active {plan.target_bank.name} bank...")
+    stage = "write_primary_bank" if plan.mode == "patch" else "write_active_bank"
+    target_text = "primary" if plan.mode == "patch" else f"active {plan.target_bank.name}"
+    command_context.set_stage(stage)
+    emit_progress(log, f"Sending ACP flash command for {target_text} bank...")
     _record_write_outcome(
         bundle=bundle,
         plan=plan,
         status="attempting",
         write_validated=False,
         write_may_have_modified_device=True,
-        stage="write_active_bank",
+        stage=stage,
     )
     try:
         write_result = write_and_validate_plan(

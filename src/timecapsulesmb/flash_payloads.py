@@ -134,22 +134,23 @@ def _payload_from_template(
 
 def build_patch_payload_from_template(
     *,
-    active: BankAnalysis,
+    bank: BankAnalysis,
     syap: str | int | None,
     candidate: FirmwareTemplateCandidate,
+    target_label: str = "target bank",
 ) -> AcpFlashPayload:
-    assert active.patch is not None
+    assert bank.patch is not None
     template = parse_firmware_template_for_syap(candidate=candidate, syap=syap)
-    live_prefix = active.data[: active.footer.end_offset]
+    live_prefix = bank.data[: bank.footer.end_offset]
     if len(template.inner.payload) != len(live_prefix):
         raise FlashAnalysisError(
-            "firmware template payload length does not match active bank prefix: "
-            f"template={len(template.inner.payload)}, active_prefix={len(live_prefix)}"
+            f"firmware template payload length does not match {target_label} prefix: "
+            f"template={len(template.inner.payload)}, target_prefix={len(live_prefix)}"
         )
     if template.inner.payload != live_prefix:
-        raise FlashAnalysisError("firmware template decrypted payload does not match the live active bank")
+        raise FlashAnalysisError(f"firmware template decrypted payload does not match the live {target_label}")
 
-    patched_prefix = active.patch.target_bank[: active.footer.end_offset]
+    patched_prefix = bank.patch.target_bank[: bank.footer.end_offset]
     payload = compose_nested_basebinary(template, patched_prefix)
     try:
         reparsed = parse_nested_basebinary(payload)
@@ -223,6 +224,7 @@ def _try_candidates(
     syap: str | int | None,
     candidates: Iterable[FirmwareTemplateCandidate],
     build: Callable[[FirmwareTemplateCandidate], T],
+    target_label: str = "active bank",
 ) -> T:
     normalized_syap = normalize_syap(syap)
     errors: list[str] = []
@@ -243,7 +245,7 @@ def _try_candidates(
     detail = "; ".join(errors[:3])
     if len(errors) > 3:
         detail += f"; ... {len(errors) - 3} more template errors"
-    raise FlashAnalysisError(f"no firmware template matched the active bank for syAP {normalized_syap}: {detail}")
+    raise FlashAnalysisError(f"no firmware template matched the {target_label} for syAP {normalized_syap}: {detail}")
 
 
 def _build_candidate_with_cache_refresh(
@@ -269,6 +271,33 @@ def _build_candidate_with_cache_refresh(
         return None, f"{initial_message}; after cache refresh: {refreshed_message}", is_missing_key_error(refreshed_message)
 
 
+def build_patch_payload_for_bank(
+    bank: BankAnalysis,
+    *,
+    syap: str | int | None,
+    firmware_template: Path | None,
+    firmware_version: str | None = None,
+    cache_dir: Path | None = None,
+) -> AcpFlashPayload:
+    candidates = resolve_firmware_template_candidates(
+        syap=syap,
+        firmware_template=firmware_template,
+        firmware_version=firmware_version,
+        cache_dir=cache_dir,
+    )
+    return _try_candidates(
+        syap=syap,
+        candidates=candidates,
+        target_label="target bank",
+        build=lambda candidate: build_patch_payload_from_template(
+            bank=bank,
+            syap=syap,
+            candidate=candidate,
+            target_label="target bank",
+        ),
+    )
+
+
 def build_patch_payload_for_active_bank(
     active: BankAnalysis,
     *,
@@ -286,7 +315,13 @@ def build_patch_payload_for_active_bank(
     return _try_candidates(
         syap=syap,
         candidates=candidates,
-        build=lambda candidate: build_patch_payload_from_template(active=active, syap=syap, candidate=candidate),
+        target_label="active bank",
+        build=lambda candidate: build_patch_payload_from_template(
+            bank=active,
+            syap=syap,
+            candidate=candidate,
+            target_label="active bank",
+        ),
     )
 
 

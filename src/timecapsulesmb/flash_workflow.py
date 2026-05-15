@@ -9,14 +9,16 @@ from timecapsulesmb.flash import (
     BankAnalysis,
     FlashAnalysis,
     FlashAnalysisError,
+    FlashInspection,
     active_selection_error_message,
     analyze_bank,
+    bank_inspection_status_line,
     sha256_hex,
 )
 from timecapsulesmb.flash_payloads import (
     AcpFlashPayload,
     AppleFirmwareMatch,
-    build_patch_payload_for_active_bank,
+    build_patch_payload_for_bank,
     build_restore_payload_for_active_bank,
     find_apple_firmware_match,
 )
@@ -57,16 +59,6 @@ def inactive_bank(analysis: FlashAnalysis) -> BankAnalysis | None:
     return None
 
 
-def active_selection_warnings(analysis: FlashAnalysis) -> tuple[str, ...]:
-    if analysis.active_selection.selected_by != "user_override":
-        return ()
-    requested = analysis.active_selection.requested_bank or analysis.active_bank or "unknown"
-    candidates = ", ".join(analysis.active_selection.candidates) or "none"
-    return (
-        f"active bank selected by --active-bank {requested}; automatic candidates were: {candidates}",
-    )
-
-
 def require_active_and_inactive_valid(analysis: FlashAnalysis) -> BankAnalysis:
     active = analysis.active
     inactive = inactive_bank(analysis)
@@ -89,6 +81,67 @@ def require_patch_ready(analysis: FlashAnalysis) -> BankAnalysis:
     return active
 
 
+def _patch_preflight_lines(reason: str, inspection: FlashInspection) -> list[str]:
+    return [
+        reason,
+        bank_inspection_status_line(inspection.primary),
+        bank_inspection_status_line(inspection.secondary),
+        "Use --force to patch the primary bank anyway after reviewing the backup status.",
+    ]
+
+
+def _both_backup_banks_valid(inspection: FlashInspection) -> bool:
+    return inspection.primary.backup_valid and inspection.secondary.backup_valid
+
+
+def _force_warnings(inspection: FlashInspection) -> tuple[str, ...]:
+    warnings: list[str] = []
+    if not _both_backup_banks_valid(inspection):
+        warnings.append("patch forced despite one or more invalid backup banks")
+    if not inspection.primary.active_candidate:
+        warnings.append("patch forced even though the primary bank did not pass active-candidate checks")
+    return tuple(warnings)
+
+
+def require_primary_patch_ready(inspection: FlashInspection, *, force: bool = False) -> BankAnalysis:
+    primary = inspection.primary
+    if primary.analysis is None:
+        lines = [
+            "refusing to patch primary because the primary firmware bank could not be analyzed",
+            bank_inspection_status_line(inspection.primary),
+            bank_inspection_status_line(inspection.secondary),
+        ]
+        raise FlashAnalysisError("\n".join(lines))
+
+    if not force and not _both_backup_banks_valid(inspection):
+        raise FlashAnalysisError(
+            "\n".join(_patch_preflight_lines(
+                "refusing to patch primary because both firmware banks must be valid backups",
+                inspection,
+            ))
+        )
+
+    if not force and not primary.active_candidate:
+        raise FlashAnalysisError(
+            "\n".join(_patch_preflight_lines(
+                "refusing to patch primary because primary is not an active firmware candidate",
+                inspection,
+            ))
+        )
+
+    analysis = primary.analysis
+    if analysis.login.classification == "already_patched":
+        return analysis
+    if analysis.login.classification != "stock":
+        raise FlashAnalysisError(
+            f"refusing to patch primary bank with LOGIN classification {analysis.login.classification}"
+        )
+    if analysis.patch is None:
+        detail = f": {analysis.patch_error}" if analysis.patch_error else ""
+        raise FlashAnalysisError(f"refusing to patch because primary bank has no patch candidate{detail}")
+    return analysis
+
+
 def require_active_for_read_plan(analysis: FlashAnalysis) -> BankAnalysis:
     active = analysis.active
     if active is None:
@@ -96,27 +149,28 @@ def require_active_for_read_plan(analysis: FlashAnalysis) -> BankAnalysis:
     return active
 
 
-def plan_patch_active(
-    analysis: FlashAnalysis,
+def plan_patch_primary(
+    inspection: FlashInspection,
     *,
+    force: bool = False,
     syap: str | int | None,
     firmware_template: Path | None,
     firmware_version: str | None = None,
     cache_dir: Path | None = None,
 ) -> FlashPlan:
-    active = require_patch_ready(analysis)
-    warnings = active_selection_warnings(analysis)
-    if active.login.classification == "already_patched":
+    primary = require_primary_patch_ready(inspection, force=force)
+    warnings = _force_warnings(inspection) if force else ()
+    if primary.login.classification == "already_patched":
         return FlashPlan(
             mode="patch",
-            target_bank=active,
+            target_bank=primary,
             payload=None,
             apple_match=None,
             already_satisfied=True,
             warnings=warnings,
         )
-    payload = build_patch_payload_for_active_bank(
-        active,
+    payload = build_patch_payload_for_bank(
+        primary,
         syap=syap,
         firmware_template=firmware_template,
         firmware_version=firmware_version,
@@ -124,7 +178,7 @@ def plan_patch_active(
     )
     return FlashPlan(
         mode="patch",
-        target_bank=active,
+        target_bank=primary,
         payload=payload,
         apple_match=None,
         already_satisfied=False,
@@ -141,7 +195,6 @@ def plan_restore_apple(
     cache_dir: Path | None = None,
 ) -> FlashPlan:
     active = require_active_and_inactive_valid(analysis)
-    warnings = active_selection_warnings(analysis)
     payload = build_restore_payload_for_active_bank(
         active,
         syap=syap,
@@ -157,7 +210,7 @@ def plan_restore_apple(
         payload=payload,
         apple_match=match,
         already_satisfied=already_satisfied,
-        warnings=warnings,
+        warnings=(),
     )
 
 
@@ -170,7 +223,6 @@ def plan_check_apple(
     cache_dir: Path | None = None,
 ) -> FlashPlan:
     active = require_active_for_read_plan(analysis)
-    warnings = active_selection_warnings(analysis)
     match = find_apple_firmware_match(
         active,
         syap=syap,
@@ -184,7 +236,7 @@ def plan_check_apple(
         payload=None,
         apple_match=match,
         already_satisfied=match.matched,
-        warnings=warnings,
+        warnings=(),
     )
 
 
@@ -197,7 +249,6 @@ def plan_download_only(
     cache_dir: Path | None = None,
 ) -> FlashPlan:
     active = require_active_for_read_plan(analysis)
-    warnings = active_selection_warnings(analysis)
     payload = build_restore_payload_for_active_bank(
         active,
         syap=syap,
@@ -213,7 +264,7 @@ def plan_download_only(
         payload=payload,
         apple_match=match,
         already_satisfied=already_satisfied,
-        warnings=warnings,
+        warnings=(),
     )
 
 

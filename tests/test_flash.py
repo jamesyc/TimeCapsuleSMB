@@ -25,6 +25,8 @@ from timecapsulesmb.flash import (
     classify_login,
     find_gzip_member,
     find_footer,
+    inspect_flash_banks,
+    inspection_to_jsonable,
 )
 
 
@@ -369,45 +371,50 @@ class FlashAnalysisTests(unittest.TestCase):
         self.assertEqual(analysis.active_selection.status, "multiple_candidates")
         self.assertEqual(analysis.active_selection.candidates, ("primary", "secondary"))
 
-    def test_active_bank_override_selects_requested_valid_candidate(self) -> None:
+    def test_inspect_flash_banks_marks_both_active_candidates_without_selecting_one(self) -> None:
         primary = make_bank()
         secondary = make_bank()
 
-        analysis = analyze_flash_banks(
+        inspection = inspect_flash_banks(
             primary_data=primary,
             secondary_data=secondary,
             cks1=find_footer(primary).checksum,
             cks2=find_footer(secondary).checksum,
             os_release="4.0",
-            active_bank_override="primary",
+            build_primary_patch_candidate=True,
         )
 
-        self.assertEqual(analysis.active_bank, "primary")
-        self.assertEqual(analysis.active_selection.status, "selected")
-        self.assertEqual(analysis.active_selection.selected_by, "user_override")
-        self.assertEqual(analysis.active_selection.requested_bank, "primary")
-        self.assertIsNotNone(analysis.primary.patch)
-        self.assertIsNone(analysis.secondary.patch)
+        self.assertIsNone(inspection.active_bank)
+        self.assertEqual(inspection.active_selection.status, "multiple_candidates")
+        self.assertEqual(inspection.active_selection.candidates, ("primary", "secondary"))
+        self.assertTrue(inspection.primary.backup_valid)
+        self.assertTrue(inspection.secondary.backup_valid)
+        self.assertTrue(inspection.primary.active_candidate)
+        self.assertTrue(inspection.secondary.active_candidate)
+        self.assertIsNotNone(inspection.primary.analysis)
+        assert inspection.primary.analysis is not None
+        self.assertIsNotNone(inspection.primary.analysis.patch)
 
-    def test_active_bank_override_rejects_requested_invalid_candidate(self) -> None:
-        primary = make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
+    def test_inspect_flash_banks_keeps_invalid_secondary_status_without_raising(self) -> None:
+        primary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")
         secondary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        corrupt_secondary = b"not a valid firmware bank"
 
-        analysis = analyze_flash_banks(
+        inspection = inspect_flash_banks(
             primary_data=primary,
-            secondary_data=secondary,
+            secondary_data=corrupt_secondary,
             cks1=find_footer(primary).checksum,
             cks2=find_footer(secondary).checksum,
             os_release="4.0_STABLE",
-            active_bank_override="primary",
         )
+        payload = inspection_to_jsonable(inspection)
 
-        self.assertIsNone(analysis.active_bank)
-        self.assertEqual(analysis.active_selection.status, "override_rejected")
-        self.assertEqual(analysis.active_selection.candidates, ("secondary",))
-        self.assertIn("not found", analysis.active_selection.requested_bank_error or "")
-        self.assertIsNone(analysis.primary.patch)
-        self.assertIsNone(analysis.secondary.patch)
+        self.assertEqual(inspection.active_bank, "primary")
+        self.assertTrue(inspection.primary.backup_valid)
+        self.assertFalse(inspection.secondary.backup_valid)
+        self.assertIn("expected exactly one valid footer", inspection.secondary.error or "")
+        self.assertEqual(payload["banks"][1]["footer"], None)
+        self.assertIn("expected exactly one valid footer", payload["banks"][1]["analysis_error"])
 
 
 if __name__ == "__main__":
