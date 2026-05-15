@@ -163,7 +163,7 @@ Advanced NetBSD 4 users can back up the firmware with:
 .venv/bin/tcapsule flash
 ```
 
-The command is read-only by default. On supported devices, `tcapsule flash --patch` can install the persistent boot hook and `tcapsule flash --restore` can restore the active bank from Apple stock firmware downloaded from Apple's catalog. Both write modes modify only the primary copy (does not touch the secondary backup copy on the flash), and run validation by reading the bank back after ACP accepts the write.
+The command is read-only by default. On supported devices, `tcapsule flash --patch` can install the persistent boot hook and `tcapsule flash --restore` can restore the selected active bank from Apple stock firmware downloaded from Apple's catalog. Both write modes modify only one bank and leave the other flash bank untouched, then run validation by reading the written bank back after ACP accepts the write. If both banks pass the active-bank checks, use `--active-bank primary` or `--active-bank secondary` to choose explicitly.
 
 Patch mode cannot send a reboot or poweroff command after a successful write. After `tcapsule flash --patch` reports success, a user needs to manually
 unplug the device to reboot, and then wait a few minutes for the device to boot to run `tcapsule doctor`. Restore mode can request a software reboot with `tcapsule flash --restore --reboot`; after that, use `tcapsule flash --check-apple` to verify the active bank matches Apple stock firmware.

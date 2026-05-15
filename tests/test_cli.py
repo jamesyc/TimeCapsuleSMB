@@ -5205,6 +5205,73 @@ class CliTests(unittest.TestCase):
         self.assertIsNone(manifest["banks"][1]["patch"])
         self.assertNotIn("patch file=", output.getvalue())
 
+    def test_flash_patch_refuses_multiple_active_candidates_without_override(self) -> None:
+        output = io.StringIO()
+        primary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_stable_compatibility())
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp) / "backup"
+            with self.flash_zopfli_available():
+                with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
+                    with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
+                        with mock.patch(
+                            "timecapsulesmb.cli.flash.read_flash_inputs",
+                            return_value=(
+                                primary,
+                                secondary,
+                                self.flash_bank_checksum(primary),
+                                self.flash_bank_checksum(secondary),
+                                113,
+                                STOCK_LOGIN_NETBSD4_DUMMY,
+                            ),
+                        ):
+                            with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank") as flash_mock:
+                                with redirect_stdout(output):
+                                    rc = cli_flash.main(["--patch", "--yes", "--backup-dir", str(backup_dir)])
+            manifest = json.loads((backup_dir / "manifest.json").read_text())
+
+        self.assertEqual(rc, 1)
+        flash_mock.assert_not_called()
+        self.assertEqual(manifest["active_selection"]["status"], "multiple_candidates")
+        self.assertEqual(manifest["active_selection"]["candidates"], ["primary", "secondary"])
+        self.assertIn("multiple firmware banks passed active selection checks: primary, secondary", output.getvalue())
+        self.assertIn("multiple firmware banks passed active selection checks", manifest["flash_plan_error"]["message"])
+
+    def test_flash_patch_refuses_when_no_active_candidates_pass(self) -> None:
+        output = io.StringIO()
+        primary = self.make_flash_bank(release=b"NetBSD 4.0_BETA2 #0: old")
+        secondary = self.make_flash_bank(release=b"NetBSD 4.0_BETA2 #0: old")
+        command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_stable_compatibility())
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp) / "backup"
+            with self.flash_zopfli_available():
+                with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
+                    with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
+                        with mock.patch(
+                            "timecapsulesmb.cli.flash.read_flash_inputs",
+                            return_value=(
+                                primary,
+                                secondary,
+                                self.flash_bank_checksum(primary),
+                                self.flash_bank_checksum(secondary),
+                                113,
+                                STOCK_LOGIN_NETBSD4_DUMMY,
+                            ),
+                        ):
+                            with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank") as flash_mock:
+                                with redirect_stdout(output):
+                                    rc = cli_flash.main(["--patch", "--yes", "--backup-dir", str(backup_dir)])
+            manifest = json.loads((backup_dir / "manifest.json").read_text())
+
+        self.assertEqual(rc, 1)
+        flash_mock.assert_not_called()
+        self.assertEqual(manifest["active_selection"]["status"], "no_candidates")
+        self.assertEqual(manifest["active_selection"]["candidates"], [])
+        self.assertIn("no firmware bank passed active selection checks", output.getvalue())
+        self.assertIn("primary rejected: running OS release", output.getvalue())
+        self.assertIn("secondary rejected: running OS release", output.getvalue())
+
     def test_flash_read_only_json_outputs_manifest(self) -> None:
         output = io.StringIO()
         primary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
@@ -5729,6 +5796,82 @@ class CliTests(unittest.TestCase):
         self.assertIn("POWER-CYCLE REQUIRED", output.getvalue())
         self.assertIn("Patch write successful.\x1b[0m The device needs to be manually rebooted.", output.getvalue())
         self.assertEqual(command_context.finish.call_args.kwargs["result"], "success")
+
+    def test_flash_active_bank_override_writes_requested_primary_candidate(self) -> None:
+        output = io.StringIO()
+        primary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        secondary = self.make_flash_bank(release=b"NetBSD 4.0_STABLE #0: current")
+        command_context = FakeCommandContext(compatibility=self.make_supported_netbsd4_stable_compatibility())
+        written: dict[str, bytes] = {}
+
+        def fake_flash(_host: str, _password: str, bank_name: str, payload: bytes, **_kwargs: object) -> SimpleNamespace:
+            written["bank_name"] = bank_name.encode()
+            written["payload"] = payload
+            return SimpleNamespace(command=0x03, reply_body=b"")
+
+        def fake_get_property(_host: str, _password: str, name: str, **_kwargs: object) -> int:
+            self.assertEqual(name, "cks1")
+            return self.flash_bank_checksum(fake_readback(None, ""))
+
+        def fake_readback(_conn: object, _dev: str) -> bytes:
+            reparsed = parse_nested_basebinary(written["payload"])
+            end_offset = self.flash_bank_end_offset(primary)
+            rebuilt = bytearray(primary)
+            rebuilt[:end_offset] = reparsed.inner.payload
+            checksum = zlib.adler32(bytes(rebuilt[:end_offset])) & 0xFFFFFFFF
+            for offset in range(max(0, len(primary) - 4096), len(primary) - 7):
+                _old_checksum, candidate_end = struct.unpack(">II", primary[offset : offset + 8])
+                if candidate_end == end_offset:
+                    rebuilt[offset : offset + 4] = struct.pack(">I", checksum)
+                    return bytes(rebuilt)
+            self.fail("synthetic flash bank footer not found")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp) / "backup"
+            template_path = Path(tmp) / "7.8.1.basebinary"
+            template_path.write_bytes(self.make_firmware_template(primary, product_id=113))
+            with self.flash_zopfli_available():
+                with mock.patch("timecapsulesmb.cli.flash.load_env_config", return_value=self.make_app_config(self.make_valid_env())):
+                    with mock.patch("timecapsulesmb.cli.flash.CommandContext", return_value=command_context):
+                        with mock.patch(
+                            "timecapsulesmb.cli.flash.read_flash_inputs",
+                            return_value=(
+                                primary,
+                                secondary,
+                                self.flash_bank_checksum(primary),
+                                self.flash_bank_checksum(secondary),
+                                113,
+                                STOCK_LOGIN_NETBSD4_DUMMY,
+                            ),
+                        ):
+                            with mock.patch("timecapsulesmb.cli.flash.flash_firmware_bank", side_effect=fake_flash):
+                                with mock.patch("timecapsulesmb.cli.flash.dump_remote_bank", side_effect=fake_readback):
+                                    with mock.patch("timecapsulesmb.cli.flash.get_property_int", side_effect=fake_get_property):
+                                        with redirect_stdout(output):
+                                            rc = cli_flash.main([
+                                                "--patch",
+                                                "--yes",
+                                                "--active-bank",
+                                                "primary",
+                                                "--firmware-template",
+                                                str(template_path),
+                                                "--backup-dir",
+                                                str(backup_dir),
+                                            ])
+            manifest = json.loads((backup_dir / "manifest.json").read_text())
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(written["bank_name"], b"primary")
+        self.assertEqual(manifest["active_bank"], "primary")
+        self.assertEqual(manifest["active_selection"]["status"], "selected")
+        self.assertEqual(manifest["active_selection"]["selected_by"], "user_override")
+        self.assertEqual(manifest["active_selection"]["requested_bank"], "primary")
+        self.assertEqual(manifest["active_selection"]["candidates"], ["primary", "secondary"])
+        self.assertEqual(manifest["flash_plan"]["target_bank"], "primary")
+        self.assertEqual(
+            manifest["flash_plan"]["warnings"],
+            ["active bank selected by --active-bank primary; automatic candidates were: primary, secondary"],
+        )
 
     def test_flash_patch_noops_when_active_bank_is_already_patched(self) -> None:
         output = io.StringIO()

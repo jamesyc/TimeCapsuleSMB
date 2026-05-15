@@ -9,6 +9,7 @@ from timecapsulesmb.flash import (
     BankAnalysis,
     FlashAnalysis,
     FlashAnalysisError,
+    active_selection_error_message,
     analyze_bank,
     sha256_hex,
 )
@@ -56,11 +57,21 @@ def inactive_bank(analysis: FlashAnalysis) -> BankAnalysis | None:
     return None
 
 
+def active_selection_warnings(analysis: FlashAnalysis) -> tuple[str, ...]:
+    if analysis.active_selection.selected_by != "user_override":
+        return ()
+    requested = analysis.active_selection.requested_bank or analysis.active_bank or "unknown"
+    candidates = ", ".join(analysis.active_selection.candidates) or "none"
+    return (
+        f"active bank selected by --active-bank {requested}; automatic candidates were: {candidates}",
+    )
+
+
 def require_active_and_inactive_valid(analysis: FlashAnalysis) -> BankAnalysis:
     active = analysis.active
     inactive = inactive_bank(analysis)
     if active is None:
-        raise FlashAnalysisError("refusing to write because active firmware bank selection is ambiguous")
+        raise FlashAnalysisError(active_selection_error_message(analysis, write=True))
     if inactive is None or not inactive.footer_valid or inactive.acp_checksum_matches is not True:
         raise FlashAnalysisError("refusing to write because inactive firmware bank backup did not validate")
     return active
@@ -81,7 +92,7 @@ def require_patch_ready(analysis: FlashAnalysis) -> BankAnalysis:
 def require_active_for_read_plan(analysis: FlashAnalysis) -> BankAnalysis:
     active = analysis.active
     if active is None:
-        raise FlashAnalysisError("active firmware bank selection is ambiguous")
+        raise FlashAnalysisError(active_selection_error_message(analysis, write=False))
     return active
 
 
@@ -94,8 +105,16 @@ def plan_patch_active(
     cache_dir: Path | None = None,
 ) -> FlashPlan:
     active = require_patch_ready(analysis)
+    warnings = active_selection_warnings(analysis)
     if active.login.classification == "already_patched":
-        return FlashPlan(mode="patch", target_bank=active, payload=None, apple_match=None, already_satisfied=True)
+        return FlashPlan(
+            mode="patch",
+            target_bank=active,
+            payload=None,
+            apple_match=None,
+            already_satisfied=True,
+            warnings=warnings,
+        )
     payload = build_patch_payload_for_active_bank(
         active,
         syap=syap,
@@ -103,7 +122,14 @@ def plan_patch_active(
         firmware_version=firmware_version,
         cache_dir=cache_dir,
     )
-    return FlashPlan(mode="patch", target_bank=active, payload=payload, apple_match=None, already_satisfied=False)
+    return FlashPlan(
+        mode="patch",
+        target_bank=active,
+        payload=payload,
+        apple_match=None,
+        already_satisfied=False,
+        warnings=warnings,
+    )
 
 
 def plan_restore_apple(
@@ -115,6 +141,7 @@ def plan_restore_apple(
     cache_dir: Path | None = None,
 ) -> FlashPlan:
     active = require_active_and_inactive_valid(analysis)
+    warnings = active_selection_warnings(analysis)
     payload = build_restore_payload_for_active_bank(
         active,
         syap=syap,
@@ -124,7 +151,14 @@ def plan_restore_apple(
     )
     already_satisfied = active.data[: len(payload.expected_prefix)] == payload.expected_prefix
     match = apple_match_from_restore_payload(payload=payload, matched=already_satisfied)
-    return FlashPlan(mode="restore", target_bank=active, payload=payload, apple_match=match, already_satisfied=already_satisfied)
+    return FlashPlan(
+        mode="restore",
+        target_bank=active,
+        payload=payload,
+        apple_match=match,
+        already_satisfied=already_satisfied,
+        warnings=warnings,
+    )
 
 
 def plan_check_apple(
@@ -136,6 +170,7 @@ def plan_check_apple(
     cache_dir: Path | None = None,
 ) -> FlashPlan:
     active = require_active_for_read_plan(analysis)
+    warnings = active_selection_warnings(analysis)
     match = find_apple_firmware_match(
         active,
         syap=syap,
@@ -143,7 +178,14 @@ def plan_check_apple(
         firmware_version=firmware_version,
         cache_dir=cache_dir,
     )
-    return FlashPlan(mode="check_apple", target_bank=active, payload=None, apple_match=match, already_satisfied=match.matched)
+    return FlashPlan(
+        mode="check_apple",
+        target_bank=active,
+        payload=None,
+        apple_match=match,
+        already_satisfied=match.matched,
+        warnings=warnings,
+    )
 
 
 def plan_download_only(
@@ -155,6 +197,7 @@ def plan_download_only(
     cache_dir: Path | None = None,
 ) -> FlashPlan:
     active = require_active_for_read_plan(analysis)
+    warnings = active_selection_warnings(analysis)
     payload = build_restore_payload_for_active_bank(
         active,
         syap=syap,
@@ -164,7 +207,14 @@ def plan_download_only(
     )
     already_satisfied = active.data[: len(payload.expected_prefix)] == payload.expected_prefix
     match = apple_match_from_restore_payload(payload=payload, matched=already_satisfied)
-    return FlashPlan(mode="download_only", target_bank=active, payload=payload, apple_match=match, already_satisfied=already_satisfied)
+    return FlashPlan(
+        mode="download_only",
+        target_bank=active,
+        payload=payload,
+        apple_match=match,
+        already_satisfied=already_satisfied,
+        warnings=warnings,
+    )
 
 
 def apple_match_from_restore_payload(*, payload: AcpFlashPayload, matched: bool) -> AppleFirmwareMatch:

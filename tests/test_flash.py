@@ -312,6 +312,8 @@ class FlashAnalysisTests(unittest.TestCase):
         self.assertIsNone(analysis.primary.patch)
         self.assertIsNone(analysis.secondary.patch)
         self.assertFalse(analysis.primary.valid_for_active_selection)
+        self.assertEqual(analysis.active_selection.status, "no_candidates")
+        self.assertIn("cks1 mismatch", analysis.primary.active_selection_failures[0])
 
     def test_patch_build_failure_is_reported_per_bank(self) -> None:
         bank = make_bank()
@@ -364,6 +366,48 @@ class FlashAnalysisTests(unittest.TestCase):
         )
 
         self.assertIsNone(analysis.active_bank)
+        self.assertEqual(analysis.active_selection.status, "multiple_candidates")
+        self.assertEqual(analysis.active_selection.candidates, ("primary", "secondary"))
+
+    def test_active_bank_override_selects_requested_valid_candidate(self) -> None:
+        primary = make_bank()
+        secondary = make_bank()
+
+        analysis = analyze_flash_banks(
+            primary_data=primary,
+            secondary_data=secondary,
+            cks1=find_footer(primary).checksum,
+            cks2=find_footer(secondary).checksum,
+            os_release="4.0",
+            active_bank_override="primary",
+        )
+
+        self.assertEqual(analysis.active_bank, "primary")
+        self.assertEqual(analysis.active_selection.status, "selected")
+        self.assertEqual(analysis.active_selection.selected_by, "user_override")
+        self.assertEqual(analysis.active_selection.requested_bank, "primary")
+        self.assertIsNotNone(analysis.primary.patch)
+        self.assertIsNone(analysis.secondary.patch)
+
+    def test_active_bank_override_rejects_requested_invalid_candidate(self) -> None:
+        primary = make_bank(release=b"NetBSD 4.0_BETA2 #0: old")
+        secondary = make_bank(release=b"NetBSD 4.0_STABLE #0: current")
+
+        analysis = analyze_flash_banks(
+            primary_data=primary,
+            secondary_data=secondary,
+            cks1=find_footer(primary).checksum,
+            cks2=find_footer(secondary).checksum,
+            os_release="4.0_STABLE",
+            active_bank_override="primary",
+        )
+
+        self.assertIsNone(analysis.active_bank)
+        self.assertEqual(analysis.active_selection.status, "override_rejected")
+        self.assertEqual(analysis.active_selection.candidates, ("secondary",))
+        self.assertIn("not found", analysis.active_selection.requested_bank_error or "")
+        self.assertIsNone(analysis.primary.patch)
+        self.assertIsNone(analysis.secondary.patch)
 
 
 if __name__ == "__main__":

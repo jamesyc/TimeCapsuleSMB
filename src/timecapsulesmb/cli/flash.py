@@ -313,6 +313,22 @@ def print_flash_summary(manifest: dict[str, object]) -> None:
     print(f"Backed up firmware banks to: {manifest['backup_dir']}")
     print(f"Operation: {manifest['operation']}")
     print(f"Active bank: {manifest['active_bank'] or 'unknown'}")
+    selection = manifest.get("active_selection")
+    if isinstance(selection, dict):
+        candidates = selection.get("candidates")
+        if isinstance(candidates, list) and candidates:
+            candidate_text = ", ".join(str(candidate) for candidate in candidates)
+        else:
+            candidate_text = "none"
+        selected_by = selection.get("selected_by") or "none"
+        print(f"Active selection: {selection.get('status')} selected_by={selected_by} candidates={candidate_text}")
+        requested = selection.get("requested_bank")
+        if requested:
+            requested_error = selection.get("requested_bank_error")
+            if requested_error:
+                print(f"  requested bank={requested} rejected: {requested_error}")
+            else:
+                print(f"  requested bank={requested}")
     for bank in manifest["banks"]:
         assert isinstance(bank, dict)
         footer = bank["footer"]
@@ -332,6 +348,9 @@ def print_flash_summary(manifest: dict[str, object]) -> None:
         )
         print(f"  LOGIN={login['classification']} offset={login['offset']} length={login['length']}")
         print(f"  write decision={bank['write_decision']}")
+        failures = bank.get("active_selection_failures")
+        if isinstance(failures, list) and failures:
+            print(f"  active selection failures={'; '.join(str(failure) for failure in failures)}")
         if bank.get("would_write"):
             if isinstance(patch, dict):
                 files = manifest.get("files", {})
@@ -346,6 +365,10 @@ def print_flash_summary(manifest: dict[str, object]) -> None:
                 print(f"  patch infeasible: {bank['patch_error']}")
     plan = manifest.get("flash_plan")
     if isinstance(plan, dict):
+        warnings = plan.get("warnings")
+        if isinstance(warnings, list):
+            for warning in warnings:
+                print(f"Warning: {warning}")
         payload = plan.get("payload")
         apple_match = plan.get("apple_match")
         if isinstance(payload, dict):
@@ -413,15 +436,18 @@ def _plan_from_operation(
 
 def _confirmation_prompt(plan: FlashPlan) -> str:
     assert plan.target_bank is not None
+    target_phrase = f"active {plan.target_bank.name} bank"
+    if any(warning.startswith("active bank selected by --active-bank ") for warning in plan.warnings):
+        target_phrase = f"requested {plan.target_bank.name} bank"
     if plan.mode == "restore":
         payload = plan.payload
         version = "unknown" if payload is None else payload.template_version or f"0x{payload.inner_version:08x}"
         product = "unknown" if payload is None else payload.template_product_id or str(payload.inner_model)
         return (
             f"This will flash Apple stock firmware {version} for product {product} "
-            f"to the active {plan.target_bank.name} bank. Continue?"
+            f"to the {target_phrase}. Continue?"
         )
-    return f"This will patch the active {plan.target_bank.name} firmware bank. Continue?"
+    return f"This will patch the {target_phrase}. Continue?"
 
 
 def _update_context_with_plan(command_context: CommandContext, plan: FlashPlan, payload_path: Path | None) -> None:
@@ -516,6 +542,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--poweroff", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--json", action="store_true", help="Output the flash analysis and plan as JSON")
     parser.add_argument("--backup-dir", type=Path, default=None, help="Directory where this run's firmware backup should be saved")
+    parser.add_argument(
+        "--active-bank",
+        choices=("primary", "secondary"),
+        default=None,
+        help="Use the specified firmware bank when automatic active-bank selection is ambiguous",
+    )
     parser.add_argument(
         "--firmware-template",
         type=Path,
@@ -654,6 +686,7 @@ def _analyze_flash(
             cks2=inputs.cks2,
             os_release=target.compatibility.os_release,
             build_patch_candidate=operation == "patch",
+            active_bank_override=args.active_bank,
         )
     except FlashAnalysisError as exc:
         message = str(exc)
@@ -664,6 +697,9 @@ def _analyze_flash(
 
     command_context.update_fields(
         active_bank=analysis.active_bank,
+        active_selection_status=analysis.active_selection.status,
+        active_selection_selected_by=analysis.active_selection.selected_by,
+        active_selection_requested_bank=analysis.active_selection.requested_bank,
         primary_login=analysis.primary.login.classification,
         secondary_login=analysis.secondary.login.classification,
     )
@@ -707,6 +743,10 @@ def _plan_flash(
         )
     except FlashAnalysisError as exc:
         message = str(exc)
+        bundle.manifest["flash_plan_error"] = {
+            "stage": "plan_flash",
+            "message": message,
+        }
         active_analysis = bundle.analysis.active
         include_login_mismatch = (
             operation == "patch"
@@ -748,6 +788,17 @@ def _save_and_report_manifest(
         print_json(bundle.manifest)
     else:
         print_flash_summary(bundle.manifest)
+
+
+def _save_manifest_after_plan_failure(
+    command_context: CommandContext,
+    *,
+    bundle: FlashAnalysisBundle,
+    log: ProgressLogger,
+) -> None:
+    command_context.set_stage("save_backup")
+    emit_progress(log, "Writing flash manifest...")
+    save_flash_manifest(backup_dir=bundle.backup_dir, manifest=bundle.manifest)
 
 
 def _prepare_write(
@@ -950,6 +1001,7 @@ def _run_flash(
         inputs=inputs,
     )
     if not plan_ok:
+        _save_manifest_after_plan_failure(command_context, bundle=bundle, log=log)
         return 1
 
     _save_and_report_manifest(command_context, args=args, bundle=bundle, log=log)

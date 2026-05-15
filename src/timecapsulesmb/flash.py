@@ -127,12 +127,22 @@ class BankAnalysis:
     login: LoginInfo
     kernel_identity_match: bool
     kernel_identity_detail: str
+    active_selection_failures: tuple[str, ...]
     patch: PatchBuildInfo | None
     patch_error: str | None
 
     @property
     def valid_for_active_selection(self) -> bool:
-        return self.footer_valid and self.acp_checksum_matches is True and self.kernel_identity_match
+        return not self.active_selection_failures
+
+
+@dataclass(frozen=True)
+class ActiveSelectionInfo:
+    status: str
+    candidates: tuple[str, ...]
+    selected_by: str | None
+    requested_bank: str | None
+    requested_bank_error: str | None
 
 
 @dataclass(frozen=True)
@@ -140,6 +150,7 @@ class FlashAnalysis:
     primary: BankAnalysis
     secondary: BankAnalysis
     active_bank: str | None
+    active_selection: ActiveSelectionInfo
 
     @property
     def active(self) -> BankAnalysis | None:
@@ -152,7 +163,13 @@ class FlashAnalysis:
 
 def write_decision_for_bank(analysis: FlashAnalysis, bank: BankAnalysis) -> str:
     if analysis.active_bank is None:
-        return "active bank selection ambiguous; no patched output written"
+        if analysis.active_selection.status == "no_candidates":
+            return "active bank selection failed: no candidates passed; no patched output written"
+        if analysis.active_selection.status == "multiple_candidates":
+            return "active bank selection failed: multiple candidates passed; no patched output written"
+        if analysis.active_selection.status == "override_rejected":
+            return "active bank selection failed: requested bank did not pass; no patched output written"
+        return "active bank selection failed; no patched output written"
     if bank.name != analysis.active_bank:
         return "inactive bank left unmodified"
     if bank.login.classification == "already_patched":
@@ -272,6 +289,40 @@ def _identity_matches(decompressed: bytes, *, os_release: str) -> tuple[bool, st
     return False, f"running OS release {release!r} not found in decompressed image"
 
 
+def _checksum_property_for_bank(name: str) -> str:
+    if name == "primary":
+        return "cks1"
+    if name == "secondary":
+        return "cks2"
+    return "ACP checksum"
+
+
+def _active_selection_failures(
+    *,
+    name: str,
+    footer_valid: bool,
+    footer_checksum: int,
+    acp_checksum: int | None,
+    acp_checksum_matches: bool | None,
+    kernel_identity_match: bool,
+    kernel_identity_detail: str,
+) -> tuple[str, ...]:
+    failures: list[str] = []
+    if not footer_valid:
+        failures.append("footer checksum invalid")
+    checksum_property = _checksum_property_for_bank(name)
+    if acp_checksum_matches is None:
+        failures.append(f"{checksum_property} missing")
+    elif not acp_checksum_matches:
+        detail = "unknown" if acp_checksum is None else f"0x{acp_checksum:08x}"
+        failures.append(
+            f"{checksum_property} mismatch: acp={detail} footer=0x{footer_checksum:08x}"
+        )
+    if not kernel_identity_match:
+        failures.append(kernel_identity_detail)
+    return tuple(failures)
+
+
 def _load_zopfli_gzip() -> object:
     return importlib.import_module("zopfli.gzip")
 
@@ -380,6 +431,15 @@ def analyze_bank(
     gzip_member = find_gzip_member(data, footer)
     login = classify_login(gzip_member.decompressed)
     identity_match, identity_detail = _identity_matches(gzip_member.decompressed, os_release=os_release)
+    selection_failures = _active_selection_failures(
+        name=name,
+        footer_valid=footer_valid,
+        footer_checksum=footer.checksum,
+        acp_checksum=acp_checksum,
+        acp_checksum_matches=acp_matches,
+        kernel_identity_match=identity_match,
+        kernel_identity_detail=identity_detail,
+    )
     analysis = BankAnalysis(
         name=name,
         device=device,
@@ -395,6 +455,7 @@ def analyze_bank(
         login=login,
         kernel_identity_match=identity_match,
         kernel_identity_detail=identity_detail,
+        active_selection_failures=selection_failures,
         patch=None,
         patch_error=None,
     )
@@ -411,6 +472,7 @@ def analyze_flash_banks(
     cks2: int | None,
     os_release: str,
     build_patch_candidate: bool = True,
+    active_bank_override: str | None = None,
 ) -> FlashAnalysis:
     primary = analyze_bank(
         name="primary",
@@ -428,13 +490,75 @@ def analyze_flash_banks(
         os_release=os_release,
         build_patch_candidate=False,
     )
-    active_candidates = [bank.name for bank in (primary, secondary) if bank.valid_for_active_selection]
-    active_bank = active_candidates[0] if len(active_candidates) == 1 else None
+    banks = (primary, secondary)
+    active_candidates = tuple(bank.name for bank in banks if bank.valid_for_active_selection)
+    if len(active_candidates) == 1:
+        active_bank = active_candidates[0]
+        active_selection = ActiveSelectionInfo(
+            status="selected",
+            candidates=active_candidates,
+            selected_by="automatic",
+            requested_bank=active_bank_override,
+            requested_bank_error=None,
+        )
+    elif not active_candidates:
+        active_bank = None
+        active_selection = ActiveSelectionInfo(
+            status="no_candidates",
+            candidates=active_candidates,
+            selected_by=None,
+            requested_bank=active_bank_override,
+            requested_bank_error=None,
+        )
+    else:
+        active_bank = None
+        active_selection = ActiveSelectionInfo(
+            status="multiple_candidates",
+            candidates=active_candidates,
+            selected_by=None,
+            requested_bank=active_bank_override,
+            requested_bank_error=None,
+        )
+    if active_bank_override is not None:
+        requested = active_bank_override.strip()
+        requested_bank = next((bank for bank in banks if bank.name == requested), None)
+        if requested_bank is None:
+            active_bank = None
+            active_selection = ActiveSelectionInfo(
+                status="override_rejected",
+                candidates=active_candidates,
+                selected_by=None,
+                requested_bank=requested,
+                requested_bank_error=f"unknown firmware bank {requested!r}",
+            )
+        elif not requested_bank.valid_for_active_selection:
+            active_bank = None
+            active_selection = ActiveSelectionInfo(
+                status="override_rejected",
+                candidates=active_candidates,
+                selected_by=None,
+                requested_bank=requested,
+                requested_bank_error=", ".join(requested_bank.active_selection_failures),
+            )
+        else:
+            active_bank = requested_bank.name
+            active_selection = ActiveSelectionInfo(
+                status="selected",
+                candidates=active_candidates,
+                selected_by="user_override",
+                requested_bank=requested,
+                requested_bank_error=None,
+            )
     if build_patch_candidate and active_bank == primary.name:
         primary = _with_patch_candidate(primary)
     elif build_patch_candidate and active_bank == secondary.name:
         secondary = _with_patch_candidate(secondary)
-    return FlashAnalysis(primary=primary, secondary=secondary, active_bank=active_bank)
+    return FlashAnalysis(
+        primary=primary,
+        secondary=secondary,
+        active_bank=active_bank,
+        active_selection=active_selection,
+    )
 
 
 def bank_to_jsonable(
@@ -474,6 +598,7 @@ def bank_to_jsonable(
         },
         "kernel_identity_match": bank.kernel_identity_match,
         "kernel_identity_detail": bank.kernel_identity_detail,
+        "active_selection_failures": list(bank.active_selection_failures),
         "patch": None if bank.patch is None else {
             "target_bank_sha256": bank.patch.target_bank_sha256,
             "patched_image_sha256": bank.patch.patched_image_sha256,
@@ -494,6 +619,13 @@ def analysis_to_jsonable(analysis: FlashAnalysis) -> dict[str, object]:
     return {
         "active_bank": analysis.active_bank,
         "write_policy": "active_bank_only",
+        "active_selection": {
+            "status": analysis.active_selection.status,
+            "candidates": list(analysis.active_selection.candidates),
+            "selected_by": analysis.active_selection.selected_by,
+            "requested_bank": analysis.active_selection.requested_bank,
+            "requested_bank_error": analysis.active_selection.requested_bank_error,
+        },
         "banks": [
             bank_to_jsonable(
                 analysis.primary,
@@ -507,3 +639,39 @@ def analysis_to_jsonable(analysis: FlashAnalysis) -> dict[str, object]:
             ),
         ],
     }
+
+
+def active_selection_error_message(analysis: FlashAnalysis, *, write: bool) -> str:
+    prefix = "refusing to write because " if write else ""
+    selection = analysis.active_selection
+    if selection.status == "no_candidates":
+        return "\n".join((
+            f"{prefix}no firmware bank passed active selection checks",
+            _bank_selection_line(analysis.primary),
+            _bank_selection_line(analysis.secondary),
+        ))
+    if selection.status == "multiple_candidates":
+        candidates = ", ".join(selection.candidates)
+        return f"{prefix}multiple firmware banks passed active selection checks: {candidates}"
+    if selection.status == "override_rejected":
+        requested = selection.requested_bank or "unknown"
+        error = selection.requested_bank_error or "requested bank did not pass active selection checks"
+        bank = None
+        if requested == analysis.primary.name:
+            bank = analysis.primary
+        elif requested == analysis.secondary.name:
+            bank = analysis.secondary
+        lines = [
+            f"{prefix}requested active firmware bank {requested} "
+            f"did not pass active selection checks: {error}"
+        ]
+        if bank is not None:
+            lines.append(_bank_selection_line(bank))
+        return "\n".join(lines)
+    return f"{prefix}active firmware bank selection failed"
+
+
+def _bank_selection_line(bank: BankAnalysis) -> str:
+    if bank.valid_for_active_selection:
+        return f"{bank.name} accepted"
+    return f"{bank.name} rejected: {', '.join(bank.active_selection_failures)}"
