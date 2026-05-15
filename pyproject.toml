@@ -12,7 +12,7 @@ dependencies = [
   "ifaddr>=0.2.0",
   "pexpect>=4.9.0",
   "pycryptodome>=3.20.0,<4",
-  "zopfli>=0.2.3.post1,<0.3",
+  "zopfli>=0.2.3.post1",
   "zeroconf>=0.132.2",
 ]
 
