@@ -60,7 +60,8 @@
 #define STARTUP_BURST_COUNT 7
 #define MAX_IFACE_CONTEXTS 16
 #define AUTO_IP_STABILIZE_SECONDS 3
-#define AUTO_IP_POLL_SECONDS 5
+#define AUTO_IP_STARTUP_POLL_SECONDS 2
+#define AUTO_IP_STABLE_POLL_SECONDS 30
 
 #define DNS_TYPE_A 1
 #define DNS_TYPE_PTR 12
@@ -76,6 +77,16 @@
 
 static volatile sig_atomic_t g_stop = 0;
 
+#ifndef TC_VA_COPY
+#if defined(va_copy)
+#define TC_VA_COPY(dst, src) va_copy(dst, src)
+#elif defined(__va_copy)
+#define TC_VA_COPY(dst, src) __va_copy(dst, src)
+#else
+#define TC_VA_COPY(dst, src) memcpy(&(dst), &(src), sizeof(va_list))
+#endif
+#endif
+
 static void log_timestamp_prefix(FILE *stream) {
     time_t now;
     struct tm *tm_info;
@@ -89,20 +100,8 @@ static void log_timestamp_prefix(FILE *stream) {
     }
 }
 
-static int timestamped_vfprintf(FILE *stream, const char *format, va_list ap) {
-    char message[4096];
+static int timestamped_write_message(FILE *stream, const char *message) {
     const char *cursor;
-    int result;
-
-    if (stream != stderr && stream != stdout) {
-        return vfprintf(stream, format, ap);
-    }
-
-    result = vsnprintf(message, sizeof(message), format, ap);
-    if (result < 0) {
-        return result;
-    }
-    message[sizeof(message) - 1] = '\0';
 
     cursor = message;
     while (*cursor != '\0') {
@@ -117,7 +116,55 @@ static int timestamped_vfprintf(FILE *stream, const char *format, va_list ap) {
             }
         }
     }
+    return 0;
+}
+
+static int timestamped_vfprintf(FILE *stream, const char *format, va_list ap) {
+    char stack_message[4096];
+    char *message = stack_message;
+    va_list sizing_ap;
+    va_list format_ap;
+    int result;
+
+    if (stream != stderr && stream != stdout) {
+        return vfprintf(stream, format, ap);
+    }
+
+    TC_VA_COPY(sizing_ap, ap);
+    result = vsnprintf(stack_message, sizeof(stack_message), format, sizing_ap);
+    va_end(sizing_ap);
+    if (result < 0) {
+        return result;
+    }
+
+    if ((size_t)result >= sizeof(stack_message)) {
+        size_t message_size = (size_t)result + 1;
+        message = malloc(message_size);
+        if (message == NULL) {
+            (void)timestamped_write_message(stream, stack_message);
+            (void)timestamped_write_message(stream, "\n[log message truncated: allocation failed]\n");
+            fflush(stream);
+            return result;
+        }
+        TC_VA_COPY(format_ap, ap);
+        result = vsnprintf(message, message_size, format, format_ap);
+        va_end(format_ap);
+        if (result < 0) {
+            free(message);
+            return result;
+        }
+    }
+
+    if (timestamped_write_message(stream, message) != 0) {
+        if (message != stack_message) {
+            free(message);
+        }
+        return -1;
+    }
     fflush(stream);
+    if (message != stack_message) {
+        free(message);
+    }
     return result;
 }
 
@@ -372,6 +419,19 @@ static size_t ifreq_entry_size(const struct ifreq *ifr, size_t remaining, int fi
     return step;
 }
 
+static int copy_ifreq_entry(struct ifreq *out, const char *cursor, size_t remaining) {
+    size_t copy_len;
+
+    if (remaining < IFNAMSIZ + sizeof(struct sockaddr)) {
+        return -1;
+    }
+
+    memset(out, 0, sizeof(*out));
+    copy_len = remaining < sizeof(*out) ? remaining : sizeof(*out);
+    memcpy(out, cursor, copy_len);
+    return 0;
+}
+
 static int append_iface_context(struct iface_context_set *out,
                                 const char *name,
                                 uint32_t ipv4_addr,
@@ -431,32 +491,40 @@ static int collect_iface_contexts_with_policy(struct iface_context_set *out, int
     end = cursor + ifc.ifc_len;
     fixed_entries = ifreq_table_uses_fixed_entries((size_t)ifc.ifc_len);
     while (cursor < end) {
-        struct ifreq *ifr = (struct ifreq *)cursor;
+        struct ifreq ifr_entry;
         struct ifreq flags_req;
         struct ifreq mask_req;
-        struct sockaddr_in *sin;
+        struct sockaddr_in sin;
         int flags;
         uint32_t netmask = 0;
         size_t remaining = (size_t)(end - cursor);
-        size_t step = ifreq_entry_size(ifr, remaining, fixed_entries);
+        size_t step;
 
+        if (copy_ifreq_entry(&ifr_entry, cursor, remaining) != 0) {
+            break;
+        }
+        step = ifreq_entry_size(&ifr_entry, remaining, fixed_entries);
         if (step == 0) {
             break;
         }
 
-        if (ifr->ifr_addr.sa_family == AF_INET) {
+        if (ifr_entry.ifr_addr.sa_family == AF_INET) {
             memset(&flags_req, 0, sizeof(flags_req));
-            strncpy(flags_req.ifr_name, ifr->ifr_name, sizeof(flags_req.ifr_name) - 1);
+            strncpy(flags_req.ifr_name, ifr_entry.ifr_name, sizeof(flags_req.ifr_name) - 1);
             if (ioctl(sockfd, SIOCGIFFLAGS, &flags_req) == 0) {
                 flags = flags_req.ifr_flags;
                 if (iface_flags_are_usable(flags, require_running)) {
                     memset(&mask_req, 0, sizeof(mask_req));
-                    strncpy(mask_req.ifr_name, ifr->ifr_name, sizeof(mask_req.ifr_name) - 1);
+                    strncpy(mask_req.ifr_name, ifr_entry.ifr_name, sizeof(mask_req.ifr_name) - 1);
                     if (ioctl(sockfd, SIOCGIFNETMASK, &mask_req) == 0) {
-                        netmask = ((struct sockaddr_in *)&mask_req.ifr_addr)->sin_addr.s_addr;
+                        struct sockaddr_in netmask_addr;
+                        memset(&netmask_addr, 0, sizeof(netmask_addr));
+                        memcpy(&netmask_addr, &mask_req.ifr_addr, sizeof(netmask_addr));
+                        netmask = netmask_addr.sin_addr.s_addr;
                     }
-                    sin = (struct sockaddr_in *)&ifr->ifr_addr;
-                    append_iface_context(out, ifr->ifr_name, sin->sin_addr.s_addr, netmask, flags);
+                    memset(&sin, 0, sizeof(sin));
+                    memcpy(&sin, &ifr_entry.ifr_addr, sizeof(sin));
+                    append_iface_context(out, ifr_entry.ifr_name, sin.sin_addr.s_addr, netmask, flags);
                 }
             }
         }
@@ -513,7 +581,7 @@ static int wait_for_auto_iface_contexts_with_provider(struct iface_context_set *
             }
             fprintf(stderr, "%s auto-ip: usable IPv4 disappeared during stabilization; retrying\n", role);
         }
-        sleep_fn(1, userdata);
+        sleep_fn(AUTO_IP_STARTUP_POLL_SECONDS, userdata);
     }
     return -1;
 }
@@ -1472,11 +1540,11 @@ static int add_service_record_answers(uint8_t *buf, size_t *off, size_t cap, con
 }
 
 static int add_snapshot_host_a_record(uint8_t *buf, size_t *off, size_t cap, const struct service_record *record,
-                                      const struct config *cfg, int *answers) {
+                                      uint32_t response_ipv4_addr, uint32_t ttl, int *answers) {
     if (record->host_fqdn[0] == '\0') {
         return 0;
     }
-    if (add_rr_a(buf, off, cap, record->host_fqdn, cfg->ipv4_addr, cfg->ttl) != 0) {
+    if (add_rr_a(buf, off, cap, record->host_fqdn, response_ipv4_addr, ttl) != 0) {
         fprintf(stderr,
                 "mdns snapshot rr failure: rr=A type=%s instance=%s host=%s port=%u txt_count=%lu packet_len=%lu\n",
                 record->service_type, record->instance_fqdn, record->host_fqdn,
@@ -2699,7 +2767,7 @@ static int send_dns_packet(const char *stage, int sockfd, const uint8_t *buf, si
     return 0;
 }
 
-static int add_adisk_records(uint8_t *buf, size_t *off, size_t cap, const struct config *cfg, int *answers) {
+static int add_adisk_records(uint8_t *buf, size_t *off, size_t cap, const struct config *cfg, uint32_t ttl, int *answers) {
     char instance_fqdn[MAX_NAME];
     char txt1[128];
     char disk_txts[ADISK_MAX_DISKS][256];
@@ -2725,9 +2793,9 @@ static int add_adisk_records(uint8_t *buf, size_t *off, size_t cap, const struct
         txts[i + 1] = disk_txts[i];
     }
 
-    if (add_rr_ptr(buf, off, cap, cfg->adisk_service_type, instance_fqdn, cfg->ttl) != 0 ||
-        add_rr_srv(buf, off, cap, instance_fqdn, cfg->host_fqdn, cfg->adisk_port, cfg->ttl) != 0 ||
-        add_rr_txt_strings(buf, off, cap, instance_fqdn, cfg->ttl, txts, cfg->adisk_disks.count + 1) != 0) {
+    if (add_rr_ptr(buf, off, cap, cfg->adisk_service_type, instance_fqdn, ttl) != 0 ||
+        add_rr_srv(buf, off, cap, instance_fqdn, cfg->host_fqdn, cfg->adisk_port, ttl) != 0 ||
+        add_rr_txt_strings(buf, off, cap, instance_fqdn, ttl, txts, cfg->adisk_disks.count + 1) != 0) {
         return -1;
     }
 
@@ -2735,7 +2803,7 @@ static int add_adisk_records(uint8_t *buf, size_t *off, size_t cap, const struct
     return 0;
 }
 
-static int add_device_info_records(uint8_t *buf, size_t *off, size_t cap, const struct config *cfg, int *answers) {
+static int add_device_info_records(uint8_t *buf, size_t *off, size_t cap, const struct config *cfg, uint32_t ttl, int *answers) {
     char instance_fqdn[MAX_NAME];
     char model_txt[MAX_NAME + 16];
     const char *txts[1];
@@ -2752,9 +2820,9 @@ static int add_device_info_records(uint8_t *buf, size_t *off, size_t cap, const 
     }
     txts[0] = model_txt;
 
-    if (add_rr_ptr(buf, off, cap, cfg->device_info_service_type, instance_fqdn, cfg->ttl) != 0 ||
-        add_rr_srv(buf, off, cap, instance_fqdn, cfg->host_fqdn, 0, cfg->ttl) != 0 ||
-        add_rr_txt_strings(buf, off, cap, instance_fqdn, cfg->ttl, txts, 1) != 0) {
+    if (add_rr_ptr(buf, off, cap, cfg->device_info_service_type, instance_fqdn, ttl) != 0 ||
+        add_rr_srv(buf, off, cap, instance_fqdn, cfg->host_fqdn, 0, ttl) != 0 ||
+        add_rr_txt_strings(buf, off, cap, instance_fqdn, ttl, txts, 1) != 0) {
         return -1;
     }
 
@@ -2762,7 +2830,7 @@ static int add_device_info_records(uint8_t *buf, size_t *off, size_t cap, const 
     return 0;
 }
 
-static int add_airport_records(uint8_t *buf, size_t *off, size_t cap, const struct config *cfg, int *answers) {
+static int add_airport_records(uint8_t *buf, size_t *off, size_t cap, const struct config *cfg, uint32_t ttl, int *answers) {
     char instance_fqdn[MAX_NAME];
     char airport_txt[256];
     const char *txts[1];
@@ -2779,9 +2847,9 @@ static int add_airport_records(uint8_t *buf, size_t *off, size_t cap, const stru
     }
     txts[0] = airport_txt;
 
-    if (add_rr_ptr(buf, off, cap, cfg->airport_service_type, instance_fqdn, cfg->ttl) != 0 ||
-        add_rr_srv(buf, off, cap, instance_fqdn, cfg->host_fqdn, cfg->airport_port, cfg->ttl) != 0 ||
-        add_rr_txt_strings(buf, off, cap, instance_fqdn, cfg->ttl, txts, 1) != 0) {
+    if (add_rr_ptr(buf, off, cap, cfg->airport_service_type, instance_fqdn, ttl) != 0 ||
+        add_rr_srv(buf, off, cap, instance_fqdn, cfg->host_fqdn, cfg->airport_port, ttl) != 0 ||
+        add_rr_txt_strings(buf, off, cap, instance_fqdn, ttl, txts, 1) != 0) {
         return -1;
     }
 
@@ -2810,23 +2878,23 @@ static int finalize_and_send_announcement_packet(int sockfd, uint8_t *buf, size_
 }
 
 static int append_generated_base_records(uint8_t *buf, size_t *off, size_t cap, const struct config *cfg,
-                                         int *answers) {
+                                         uint32_t response_ipv4_addr, uint32_t ttl, int *answers) {
     char instance_fqdn[MAX_NAME];
 
     if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->service_type) != 0) {
         return -1;
     }
-    if (add_rr_ptr(buf, off, cap, cfg->service_type, instance_fqdn, cfg->ttl) != 0 ||
-        add_rr_srv(buf, off, cap, instance_fqdn, cfg->host_fqdn, cfg->port, cfg->ttl) != 0 ||
-        add_rr_txt_empty(buf, off, cap, instance_fqdn, cfg->ttl) != 0 ||
-        add_rr_a(buf, off, cap, cfg->host_fqdn, cfg->ipv4_addr, cfg->ttl) != 0) {
+    if (add_rr_ptr(buf, off, cap, cfg->service_type, instance_fqdn, ttl) != 0 ||
+        add_rr_srv(buf, off, cap, instance_fqdn, cfg->host_fqdn, cfg->port, ttl) != 0 ||
+        add_rr_txt_empty(buf, off, cap, instance_fqdn, ttl) != 0 ||
+        add_rr_a(buf, off, cap, cfg->host_fqdn, response_ipv4_addr, ttl) != 0) {
         return -1;
     }
     *answers += 4;
-    if (add_adisk_records(buf, off, cap, cfg, answers) != 0) {
+    if (add_adisk_records(buf, off, cap, cfg, ttl, answers) != 0) {
         return -1;
     }
-    if (add_device_info_records(buf, off, cap, cfg, answers) != 0) {
+    if (add_device_info_records(buf, off, cap, cfg, ttl, answers) != 0) {
         return -1;
     }
     return 0;
@@ -2854,6 +2922,7 @@ static int remember_announced_host(char announced_hosts[][MAX_NAME], size_t *ann
 }
 
 static int send_announcement(int sockfd, const struct sockaddr_in *dest, const struct config *cfg,
+                             uint32_t response_ipv4_addr, uint32_t ttl,
                              const struct service_record_set *snapshot_records, int use_snapshot_records) {
     uint8_t buf[BUF_SIZE];
     size_t off;
@@ -2864,7 +2933,7 @@ static int send_announcement(int sockfd, const struct sockaddr_in *dest, const s
     static int logged_duplicate_host_suppression = 0;
 
     init_announcement_packet(&off, &answers);
-    if (append_generated_base_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {
+    if (append_generated_base_records(buf, &off, sizeof(buf), cfg, response_ipv4_addr, ttl, &answers) != 0) {
         log_packet_build_failure("announcement", "add_core_records", off, answers, use_snapshot_records);
         return -1;
     }
@@ -2881,7 +2950,7 @@ static int send_announcement(int sockfd, const struct sockaddr_in *dest, const s
                 continue;
             }
             init_announcement_packet(&off, &answers);
-            if (add_service_record_answers(buf, &off, sizeof(buf), &snapshot_records->records[i], cfg->ttl, &answers) != 0) {
+            if (add_service_record_answers(buf, &off, sizeof(buf), &snapshot_records->records[i], ttl, &answers) != 0) {
                 log_snapshot_record_build_failure("announcement", "add_service_record_answers", i,
                                                   &snapshot_records->records[i], off, answers);
                 log_packet_build_failure("announcement", "add_service_record_answers", off, answers, use_snapshot_records);
@@ -2893,14 +2962,14 @@ static int send_announcement(int sockfd, const struct sockaddr_in *dest, const s
             if (include_host_a) {
                 before_host_a_off = off;
                 before_host_a_answers = answers;
-                if (add_snapshot_host_a_record(buf, &off, sizeof(buf), &snapshot_records->records[i], cfg, &answers) != 0) {
+                if (add_snapshot_host_a_record(buf, &off, sizeof(buf), &snapshot_records->records[i], response_ipv4_addr, ttl, &answers) != 0) {
                     off = before_host_a_off;
                     answers = before_host_a_answers;
                     if (finalize_and_send_announcement_packet(sockfd, buf, off, answers, dest, use_snapshot_records) != 0) {
                         return -1;
                     }
                     init_announcement_packet(&off, &answers);
-                    if (add_snapshot_host_a_record(buf, &off, sizeof(buf), &snapshot_records->records[i], cfg, &answers) != 0) {
+                    if (add_snapshot_host_a_record(buf, &off, sizeof(buf), &snapshot_records->records[i], response_ipv4_addr, ttl, &answers) != 0) {
                         log_snapshot_record_build_failure("announcement", "add_snapshot_host_a_record", i,
                                                           &snapshot_records->records[i], off, answers);
                         log_packet_build_failure("announcement", "add_snapshot_host_a_record", off, answers, use_snapshot_records);
@@ -2927,14 +2996,14 @@ static int send_announcement(int sockfd, const struct sockaddr_in *dest, const s
     } else {
         size_t before_airport_off = off;
         int before_airport_answers = answers;
-        if (add_airport_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {
+        if (add_airport_records(buf, &off, sizeof(buf), cfg, ttl, &answers) != 0) {
             off = before_airport_off;
             answers = before_airport_answers;
             if (finalize_and_send_announcement_packet(sockfd, buf, off, answers, dest, use_snapshot_records) != 0) {
                 return -1;
             }
             init_announcement_packet(&off, &answers);
-            if (add_airport_records(buf, &off, sizeof(buf), cfg, &answers) != 0) {
+            if (add_airport_records(buf, &off, sizeof(buf), cfg, ttl, &answers) != 0) {
                 log_packet_build_failure("announcement", "add_airport_records", off, answers, use_snapshot_records);
                 return -1;
             }
@@ -2946,7 +3015,8 @@ static int send_announcement(int sockfd, const struct sockaddr_in *dest, const s
     return 0;
 }
 
-static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, const struct sockaddr_in *dest, const struct config *cfg,
+static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, const struct sockaddr_in *dest,
+                        const struct config *cfg, uint32_t response_ipv4_addr,
                         const struct service_record_set *snapshot_records, int use_snapshot_records) {
     struct dns_header hdr;
     size_t cursor = sizeof(struct dns_header);
@@ -3250,7 +3320,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
         }
     }
     if (want_a) {
-        if (add_rr_a(reply, &off, sizeof(reply), cfg->host_fqdn, cfg->ipv4_addr, cfg->ttl) != 0) {
+        if (add_rr_a(reply, &off, sizeof(reply), cfg->host_fqdn, response_ipv4_addr, cfg->ttl) != 0) {
             log_packet_build_failure("query_response", "add_a", off, answers, use_snapshot_records);
             return -1;
         }
@@ -3305,7 +3375,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
                 answers++;
             }
             if (want_snapshot_a[j]) {
-                if (add_rr_a(reply, &off, sizeof(reply), record->host_fqdn, cfg->ipv4_addr, cfg->ttl) != 0) {
+                if (add_rr_a(reply, &off, sizeof(reply), record->host_fqdn, response_ipv4_addr, cfg->ttl) != 0) {
                     log_snapshot_record_build_failure("query_response", "add_snapshot_a", j, record, off, answers);
                     log_packet_build_failure("query_response", "add_snapshot_a", off, answers, use_snapshot_records);
                     return -1;
@@ -3326,9 +3396,7 @@ static int send_context_announcement(const struct iface_context *ctx,
                                      const struct config *cfg,
                                      const struct service_record_set *snapshot_records,
                                      int use_snapshot_records) {
-    struct config context_cfg = *cfg;
-    context_cfg.ipv4_addr = ctx->ipv4_addr;
-    return send_announcement(ctx->sockfd, dest, &context_cfg, snapshot_records, use_snapshot_records);
+    return send_announcement(ctx->sockfd, dest, cfg, ctx->ipv4_addr, cfg->ttl, snapshot_records, use_snapshot_records);
 }
 
 static void send_context_goodbyes(struct iface_context_set *contexts,
@@ -3340,10 +3408,7 @@ static void send_context_goodbyes(struct iface_context_set *contexts,
 
     for (i = 0; i < contexts->count; i++) {
         if (contexts->contexts[i].sockfd >= 0) {
-            struct config goodbye_cfg = *cfg;
-            goodbye_cfg.ipv4_addr = contexts->contexts[i].ipv4_addr;
-            goodbye_cfg.ttl = 0;
-            (void)send_announcement(contexts->contexts[i].sockfd, dest, &goodbye_cfg, snapshot_records, use_snapshot_records);
+            (void)send_announcement(contexts->contexts[i].sockfd, dest, cfg, contexts->contexts[i].ipv4_addr, 0, snapshot_records, use_snapshot_records);
         }
     }
 }
@@ -3757,7 +3822,7 @@ int main(int argc, char **argv) {
             int maxfd = -1;
             size_t ctx_i;
 
-            if (time(NULL) - last_iface_poll >= AUTO_IP_POLL_SECONDS) {
+            if (time(NULL) - last_iface_poll >= AUTO_IP_STABLE_POLL_SECONDS) {
                 struct iface_context_set next_contexts;
                 memset(&next_contexts, 0, sizeof(next_contexts));
                 if (collect_usable_iface_contexts(&next_contexts) == 0 &&
@@ -3831,9 +3896,7 @@ int main(int argc, char **argv) {
                             socklen_t src_len = sizeof(src);
                             ssize_t nread = recvfrom(ctx->sockfd, packet, sizeof(packet), 0, (struct sockaddr *)&src, &src_len);
                             if (nread > 0) {
-                                struct config context_cfg = cfg;
-                                context_cfg.ipv4_addr = ctx->ipv4_addr;
-                                if (handle_query(ctx->sockfd, packet, (size_t)nread, &mdns_dest, &context_cfg, &snapshot_records, use_snapshot_records) != 0) {
+                                if (handle_query(ctx->sockfd, packet, (size_t)nread, &mdns_dest, &cfg, ctx->ipv4_addr, &snapshot_records, use_snapshot_records) != 0) {
                                     char detail[160];
                                     char ip_buf[INET_ADDRSTRLEN];
                                     snprintf(detail, sizeof(detail), "iface=%s ip=%s packet_len=%ld from=%s:%u",
@@ -3881,7 +3944,7 @@ int main(int argc, char **argv) {
         now_ms = monotonic_millis();
         while (startup_burst_index < STARTUP_BURST_COUNT &&
                now_ms - startup_burst_start_ms >= (long long)startup_burst_offsets_ms[startup_burst_index]) {
-            if (send_announcement(sockfd, &mdns_dest, &cfg, &snapshot_records, use_snapshot_records) != 0) {
+            if (send_announcement(sockfd, &mdns_dest, &cfg, cfg.ipv4_addr, cfg.ttl, &snapshot_records, use_snapshot_records) != 0) {
                 char detail[96];
                 snprintf(detail, sizeof(detail), "burst_index=%lu offset_ms=%u",
                          (unsigned long)startup_burst_index, startup_burst_offsets_ms[startup_burst_index]);
@@ -3910,7 +3973,7 @@ int main(int argc, char **argv) {
             socklen_t src_len = sizeof(src);
             nread = recvfrom(sockfd, packet, sizeof(packet), 0, (struct sockaddr *)&src, &src_len);
             if (nread > 0) {
-                if (handle_query(sockfd, packet, (size_t)nread, &mdns_dest, &cfg, &snapshot_records, use_snapshot_records) != 0) {
+                if (handle_query(sockfd, packet, (size_t)nread, &mdns_dest, &cfg, cfg.ipv4_addr, &snapshot_records, use_snapshot_records) != 0) {
                     char detail[128];
                     snprintf(detail, sizeof(detail), "packet_len=%ld from=%s:%u",
                              (long)nread, inet_ntoa(src.sin_addr), (unsigned int)ntohs(src.sin_port));
@@ -3920,7 +3983,7 @@ int main(int argc, char **argv) {
         }
 
         if (time(NULL) - last_announce >= ANNOUNCE_INTERVAL) {
-            if (send_announcement(sockfd, &mdns_dest, &cfg, &snapshot_records, use_snapshot_records) != 0) {
+            if (send_announcement(sockfd, &mdns_dest, &cfg, cfg.ipv4_addr, cfg.ttl, &snapshot_records, use_snapshot_records) != 0) {
                 char detail[96];
                 snprintf(detail, sizeof(detail), "interval=%d last_announce_age=%ld",
                          ANNOUNCE_INTERVAL, (long)(time(NULL) - last_announce));

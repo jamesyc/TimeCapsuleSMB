@@ -29,7 +29,8 @@
 #define NBNS_SUFFIX_SERVER 0x20
 #define MAX_IFACE_CONTEXTS 16
 #define AUTO_IP_STABILIZE_SECONDS 3
-#define AUTO_IP_POLL_SECONDS 5
+#define AUTO_IP_STARTUP_POLL_SECONDS 2
+#define AUTO_IP_STABLE_POLL_SECONDS 30
 
 static volatile sig_atomic_t g_stop = 0;
 
@@ -359,7 +360,7 @@ static int wait_for_auto_iface_contexts(struct iface_context_set *out) {
             }
             fprintf(stderr, "nbns auto-ip: usable IPv4 disappeared during stabilization; retrying\n");
         }
-        sleep(1);
+        sleep(AUTO_IP_STARTUP_POLL_SECONDS);
     }
     return -1;
 }
@@ -415,7 +416,7 @@ static uint32_t choose_response_ipv4(const struct iface_context_set *contexts, u
 
 static int refresh_auto_iface_contexts_if_needed(struct iface_context_set *contexts,
                                                 time_t *last_iface_poll) {
-    if (time(NULL) - *last_iface_poll >= AUTO_IP_POLL_SECONDS) {
+    if (time(NULL) - *last_iface_poll >= AUTO_IP_STABLE_POLL_SECONDS) {
         struct iface_context_set next_contexts;
         memset(&next_contexts, 0, sizeof(next_contexts));
         if (collect_usable_iface_contexts(&next_contexts) == 0 &&

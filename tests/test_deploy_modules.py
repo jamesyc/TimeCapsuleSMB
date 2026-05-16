@@ -1072,6 +1072,65 @@ int main(void) {{
         self.assertNotIn("serving summary", run.stderr)
         self.assertNotIn("mDNS takeover", run.stderr)
 
+    def test_mdns_timestamped_logging_preserves_long_lines(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = f'''
+#include <string.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+int main(void) {{
+    char message[5001];
+    memset(message, 'A', sizeof(message) - 1);
+    message[sizeof(message) - 1] = '\\0';
+    fprintf(stderr, "%s\\n", message);
+    return 0;
+}}
+'''
+        run = self._compile_and_run_c_helper(source, "mdns_long_timestamped_log")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("A" * 5000, run.stderr)
+        self.assertTrue(run.stderr.endswith("\n"))
+
+    def test_mdns_ifreq_copy_handles_unaligned_source_buffer(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = f'''
+#include <string.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+int main(void) {{
+    char raw[sizeof(struct ifreq) + 1];
+    struct ifreq source;
+    struct ifreq copied;
+
+    memset(raw, 0, sizeof(raw));
+    memset(&source, 0, sizeof(source));
+    memset(&copied, 0, sizeof(copied));
+    snprintf(source.ifr_name, sizeof(source.ifr_name), "%s", "bridge0");
+    source.ifr_addr.sa_family = AF_INET;
+    memcpy(raw + 1, &source, sizeof(source));
+
+    if (copy_ifreq_entry(&copied, raw + 1, sizeof(source)) != 0) {{
+        return 1;
+    }}
+    if (strcmp(copied.ifr_name, "bridge0") != 0) {{
+        return 2;
+    }}
+    if (copied.ifr_addr.sa_family != AF_INET) {{
+        return 3;
+    }}
+    if (ifreq_entry_size(&copied, sizeof(source), 1) != sizeof(struct ifreq)) {{
+        return 4;
+    }}
+    return 0;
+}}
+'''
+        run = self._compile_and_run_c_helper(source, "mdns_unaligned_ifreq_copy")
+        self.assertEqual(run.returncode, 0, run.stderr)
+
     def test_mdns_advertiser_can_skip_capture_when_snapshot_is_newer_than_boot(self) -> None:
         if sys.platform != "darwin" and not sys.platform.startswith("netbsd"):
             self.skipTest("snapshot freshness check requires BSD KERN_BOOTTIME")
@@ -1399,7 +1458,7 @@ int main(void) {{
 
 struct wait_plan {{
     int collect_calls;
-    int one_second_sleeps;
+    int startup_poll_sleeps;
     int stabilize_sleeps;
 }};
 
@@ -1415,8 +1474,8 @@ static int fake_collect_contexts(struct iface_context_set *out, void *userdata) 
 
 static void fake_sleep(unsigned int seconds, void *userdata) {{
     struct wait_plan *plan = (struct wait_plan *)userdata;
-    if (seconds == 1) {{
-        plan->one_second_sleeps++;
+    if (seconds == AUTO_IP_STARTUP_POLL_SECONDS) {{
+        plan->startup_poll_sleeps++;
     }} else if (seconds == AUTO_IP_STABILIZE_SECONDS) {{
         plan->stabilize_sleeps++;
     }}
@@ -1433,7 +1492,10 @@ int main(void) {{
     if (wait_for_auto_iface_contexts_with_provider(&out, "test", fake_collect_contexts, fake_sleep, &plan) != 0) {{
         return 1;
     }}
-    if (plan.collect_calls != 3 || plan.one_second_sleeps != 1 || plan.stabilize_sleeps != 1) {{
+    if (AUTO_IP_STARTUP_POLL_SECONDS != 2 || AUTO_IP_STABLE_POLL_SECONDS != 30) {{
+        return 4;
+    }}
+    if (plan.collect_calls != 3 || plan.startup_poll_sleeps != 1 || plan.stabilize_sleeps != 1) {{
         return 2;
     }}
     if (out.count != 1 || strcmp(out.contexts[0].name, "bridge0") != 0 ||
@@ -2245,7 +2307,7 @@ int main(void) {{
     dest.sin_port = htons(5353);
     dest.sin_addr.s_addr = inet_addr("224.0.0.251");
 
-    if (send_announcement(1, &dest, &cfg, &snapshot, 1) != 0) {{
+    if (send_announcement(1, &dest, &cfg, cfg.ipv4_addr, cfg.ttl, &snapshot, 1) != 0) {{
         return 10;
     }}
     if (captured_count < 3) {{
@@ -2382,6 +2444,10 @@ int main(void) {{
     struct iface_context_set contexts;
     struct ifreq sample_ifr;
     size_t expected_variable_step;
+
+    if (AUTO_IP_STARTUP_POLL_SECONDS != 2 || AUTO_IP_STABLE_POLL_SECONDS != 30) {{
+        return 10;
+    }}
 
     if (runtime_ipv4_is_usable(inet_addr("127.0.0.1")) ||
         runtime_ipv4_is_usable(inet_addr("169.254.1.9")) ||
