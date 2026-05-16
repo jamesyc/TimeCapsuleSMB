@@ -269,28 +269,52 @@ describe_managed_mdns_status() {{
     ps_out=$1
     fstat_out=$2
     status=0
-    mdns_auto_ip_available=0
-    if [ -x "$RUNTIME_MDNS_BIN" ] && "$RUNTIME_MDNS_BIN" --check-auto-ip >/dev/null 2>&1; then
-        mdns_auto_ip_available=1
+    mdns_auto_ip_state=waiting
+    mdns_auto_ip_failure=
+    if [ ! -e "$RUNTIME_MDNS_BIN" ]; then
+        mdns_auto_ip_state=failed
+        mdns_auto_ip_failure="mdns-advertiser binary missing at $RUNTIME_MDNS_BIN"
+    elif [ ! -x "$RUNTIME_MDNS_BIN" ]; then
+        mdns_auto_ip_state=failed
+        mdns_auto_ip_failure="mdns-advertiser binary is not executable at $RUNTIME_MDNS_BIN"
+    else
+        "$RUNTIME_MDNS_BIN" --check-auto-ip >/dev/null 2>&1
+        mdns_auto_ip_rc=$?
+        case "$mdns_auto_ip_rc" in
+            0) mdns_auto_ip_state=active ;;
+            11) mdns_auto_ip_state=waiting ;;
+            *)
+                mdns_auto_ip_state=failed
+                mdns_auto_ip_failure="mdns-advertiser auto-IP check failed with exit code $mdns_auto_ip_rc"
+                ;;
+        esac
+    fi
+
+    if [ "$mdns_auto_ip_state" = "failed" ]; then
+        echo "FAIL:$mdns_auto_ip_failure"
+        status=1
     fi
 
     if mdns_process_present "$ps_out"; then
         echo "PASS:mdns-advertiser process is running"
     else
-        if [ "$mdns_auto_ip_available" != "1" ]; then
+        if [ "$mdns_auto_ip_state" = "waiting" ]; then
             echo "FAIL:mDNS startup deferred; no usable IPv4 has appeared yet"
-            return 1
+        else
+            echo "FAIL:mdns-advertiser process is not running"
         fi
-        echo "FAIL:mdns-advertiser process is not running"
         status=1
     fi
     if mdns_bound_5353 "$fstat_out"; then
         echo "PASS:mdns-advertiser bound to UDP 5353"
-        if [ "$mdns_auto_ip_available" = "1" ]; then
+        if [ "$mdns_auto_ip_state" = "active" ]; then
             echo "PASS:mdns-advertiser auto-IP active"
+        else
+            echo "FAIL:mdns-advertiser bound to UDP 5353 but auto-IP is not active"
+            status=1
         fi
     else
-        if mdns_process_present "$ps_out" && [ "$mdns_auto_ip_available" != "1" ]; then
+        if mdns_process_present "$ps_out" && [ "$mdns_auto_ip_state" = "waiting" ]; then
             echo "FAIL:mdns-advertiser is waiting for auto-IP"
             status=1
         else

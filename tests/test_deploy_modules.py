@@ -2899,6 +2899,115 @@ fi
         self.assertIn("FAIL:watchdog is not running for managed runtime", result.stdout)
         self.assertIn("status=1", result.stdout)
 
+    def test_mdns_status_helper_reports_missing_binary_instead_of_network_defer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            missing_mdns = Path(tmpdir) / "missing-mdns-advertiser"
+            script = f"""
+RUNTIME_MDNS_BIN={shlex.quote(str(missing_mdns))}
+{SMBD_STATUS_HELPERS}
+ps_out=''
+fstat_out=''
+if describe_managed_mdns_status "$ps_out" "$fstat_out"; then
+    echo status=0
+else
+    echo status=$?
+fi
+"""
+
+            result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"FAIL:mdns-advertiser binary missing at {missing_mdns}", result.stdout)
+        self.assertIn("FAIL:mdns-advertiser process is not running", result.stdout)
+        self.assertIn("FAIL:mdns-advertiser is not bound to UDP 5353", result.stdout)
+        self.assertIn("PASS:Apple mDNSResponder is stopped", result.stdout)
+        self.assertIn("status=1", result.stdout)
+        self.assertNotIn("mDNS startup deferred; no usable IPv4 has appeared yet", result.stdout)
+
+    def test_mdns_status_helper_requires_auto_ip_when_process_is_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mdns_bin = Path(tmpdir) / "mdns-advertiser"
+            mdns_bin.write_text("#!/bin/sh\nexit 11\n")
+            mdns_bin.chmod(0o755)
+            ps_out = "201 1 S 0:00.00 mdns-advertiser /mnt/Flash/mdns-advertiser"
+            fstat_out = "root mdns-advertiser 201 10 internet dgram udp 0x0 *:5353"
+            script = f"""
+RUNTIME_MDNS_BIN={shlex.quote(str(mdns_bin))}
+{SMBD_STATUS_HELPERS}
+ps_out={shlex.quote(ps_out)}
+fstat_out={shlex.quote(fstat_out)}
+if describe_managed_mdns_status "$ps_out" "$fstat_out"; then
+    echo status=0
+else
+    echo status=$?
+fi
+"""
+
+            result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("PASS:mdns-advertiser process is running", result.stdout)
+        self.assertIn("PASS:mdns-advertiser bound to UDP 5353", result.stdout)
+        self.assertIn("FAIL:mdns-advertiser bound to UDP 5353 but auto-IP is not active", result.stdout)
+        self.assertIn("status=1", result.stdout)
+        self.assertNotIn("PASS:mdns-advertiser auto-IP active", result.stdout)
+
+    def test_mdns_status_helper_reports_unexpected_auto_ip_check_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mdns_bin = Path(tmpdir) / "mdns-advertiser"
+            mdns_bin.write_text("#!/bin/sh\nexit 3\n")
+            mdns_bin.chmod(0o755)
+            ps_out = "201 1 S 0:00.00 mdns-advertiser /mnt/Flash/mdns-advertiser"
+            fstat_out = "root mdns-advertiser 201 10 internet dgram udp 0x0 *:5353"
+            script = f"""
+RUNTIME_MDNS_BIN={shlex.quote(str(mdns_bin))}
+{SMBD_STATUS_HELPERS}
+ps_out={shlex.quote(ps_out)}
+fstat_out={shlex.quote(fstat_out)}
+if describe_managed_mdns_status "$ps_out" "$fstat_out"; then
+    echo status=0
+else
+    echo status=$?
+fi
+"""
+
+            result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("FAIL:mdns-advertiser auto-IP check failed with exit code 3", result.stdout)
+        self.assertIn("PASS:mdns-advertiser process is running", result.stdout)
+        self.assertIn("PASS:mdns-advertiser bound to UDP 5353", result.stdout)
+        self.assertIn("FAIL:mdns-advertiser bound to UDP 5353 but auto-IP is not active", result.stdout)
+        self.assertIn("status=1", result.stdout)
+
+    def test_mdns_status_helper_passes_only_when_bound_and_auto_ip_active(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mdns_bin = Path(tmpdir) / "mdns-advertiser"
+            mdns_bin.write_text("#!/bin/sh\nexit 0\n")
+            mdns_bin.chmod(0o755)
+            ps_out = "201 1 S 0:00.00 mdns-advertiser /mnt/Flash/mdns-advertiser"
+            fstat_out = "root mdns-advertiser 201 10 internet dgram udp 0x0 *:5353"
+            script = f"""
+RUNTIME_MDNS_BIN={shlex.quote(str(mdns_bin))}
+{SMBD_STATUS_HELPERS}
+ps_out={shlex.quote(ps_out)}
+fstat_out={shlex.quote(fstat_out)}
+if describe_managed_mdns_status "$ps_out" "$fstat_out"; then
+    echo status=0
+else
+    echo status=$?
+fi
+"""
+
+            result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("PASS:mdns-advertiser process is running", result.stdout)
+        self.assertIn("PASS:mdns-advertiser bound to UDP 5353", result.stdout)
+        self.assertIn("PASS:mdns-advertiser auto-IP active", result.stdout)
+        self.assertIn("PASS:Apple mDNSResponder is stopped", result.stdout)
+        self.assertIn("status=0", result.stdout)
+
     def test_probe_managed_smbd_reports_runtime_invariant_failures(self) -> None:
         stdout = "\n".join(
             [
