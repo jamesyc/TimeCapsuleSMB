@@ -107,13 +107,19 @@ from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshEr
 class DeployModuleTests(unittest.TestCase):
     _mdns_binary_tmpdir: tempfile.TemporaryDirectory[str] | None = None
     _mdns_binary_path: Path | None = None
+    _nbns_binary_tmpdir: tempfile.TemporaryDirectory[str] | None = None
+    _nbns_binary_path: Path | None = None
 
     @classmethod
     def tearDownClass(cls) -> None:
         if cls._mdns_binary_tmpdir is not None:
             cls._mdns_binary_tmpdir.cleanup()
+        if cls._nbns_binary_tmpdir is not None:
+            cls._nbns_binary_tmpdir.cleanup()
         cls._mdns_binary_tmpdir = None
         cls._mdns_binary_path = None
+        cls._nbns_binary_tmpdir = None
+        cls._nbns_binary_path = None
 
     def _payload_home(self, volume_root: str = "/Volumes/dk2", payload_dir_name: str = "samba4") -> PayloadHome:
         disk_key = volume_root.rstrip("/").rsplit("/", 1)[-1]
@@ -203,6 +209,33 @@ class DeployModuleTests(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.__class__._mdns_binary_path = bin_path
+        return bin_path
+
+    def _compile_nbns_advertiser_binary(self, tmp: Path) -> Path:
+        if shutil.which("cc") is None:
+            self.skipTest("cc not available")
+        if self.__class__._nbns_binary_path is not None:
+            return self.__class__._nbns_binary_path
+
+        self.__class__._nbns_binary_tmpdir = tempfile.TemporaryDirectory()
+        bin_path = Path(self.__class__._nbns_binary_tmpdir.name) / "nbns-advertiser"
+        proc = subprocess.run(
+            [
+                "cc",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                str(REPO_ROOT / "build" / "nbns-advertiser.c"),
+                "-o",
+                str(bin_path),
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.__class__._nbns_binary_path = bin_path
         return bin_path
 
     def _run_mdns_advertiser_until_ready_or_exit(self, bin_path: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -2410,18 +2443,8 @@ int main(void) {{
         if shutil.which("cc") is None:
             self.skipTest("cc not available")
 
-        source_path = REPO_ROOT / "build" / "nbns-advertiser.c"
         with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            bin_path = tmp / "nbns-advertiser"
-            proc = subprocess.run(
-                ["cc", "-Wall", "-Wextra", "-Werror", str(source_path), "-o", str(bin_path)],
-                cwd=REPO_ROOT,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(proc.returncode, 0, proc.stderr)
+            bin_path = self._compile_nbns_advertiser_binary(Path(tmpdir))
             run = subprocess.run(
                 [str(bin_path), "--name", "TimeCapsule", "--auto-ip", "--ipv4", "192.168.1.217"],
                 capture_output=True,
@@ -2523,18 +2546,8 @@ int main(void) {{
         if shutil.which("cc") is None:
             self.skipTest("cc not available")
 
-        source_path = REPO_ROOT / "build" / "nbns-advertiser.c"
         with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            bin_path = tmp / "nbns-advertiser"
-            proc = subprocess.run(
-                ["cc", "-Wall", "-Wextra", "-Werror", str(source_path), "-o", str(bin_path)],
-                cwd=REPO_ROOT,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(proc.returncode, 0, proc.stderr)
+            bin_path = self._compile_nbns_advertiser_binary(Path(tmpdir))
             run = subprocess.run(
                 [str(bin_path), "--name", "ABCDEFGHIJKLMNOP", "--ipv4", "192.168.1.217"],
                 capture_output=True,

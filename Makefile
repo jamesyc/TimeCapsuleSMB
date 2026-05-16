@@ -12,7 +12,8 @@
 # Targets:
 #   make venv                    - create local virtualenv at .venv
 #   make install                 - install Python dependencies into .venv
-#   make test                    - run C compile checks and Python unittest suite
+#   make test                    - run C compile checks and Python pytest suite
+#   make test-parallel           - run C compile checks and module-parallel test runner
 #   make coverage                - run Python tests with coverage and show missing lines
 #   make coverage-html           - write an HTML coverage report to htmlcov/
 #   make test-c                  - compile-check mdns/nbns helper sources
@@ -21,7 +22,7 @@
 #   make set-ssh                 - advanced SSH toggle helper
 #   make clean                   - remove the .venv directory
 
-.PHONY: venv install test coverage coverage-html test-c discover bootstrap-host set-ssh setup clean
+.PHONY: venv install test test-parallel coverage coverage-html test-c discover bootstrap-host set-ssh setup clean
 
 VENVDIR := .venv
 PYTHON := python3
@@ -38,10 +39,13 @@ install: venv
 	$(PIP) install -e .
 
 test: install test-c
-	PYTHONPATH=src $(PY) -m unittest discover -s tests -v
+	$(PY) -m pytest
+
+test-parallel: install test-c
+	PYTHONPATH=src $(PY) -m tests.run_parallel --jobs auto --verbose
 
 coverage: install
-	PYTHONPATH=src $(PY) -m coverage run -m unittest discover -s tests -v
+	$(PY) -m coverage run -m pytest
 	$(PY) -m coverage report
 
 coverage-html: coverage

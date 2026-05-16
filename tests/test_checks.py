@@ -59,6 +59,10 @@ from timecapsulesmb.discovery.bonjour import (
 from timecapsulesmb.transport.ssh import SshConnection, SshError
 
 
+DEFAULT_SMB_PORT_CHECK = object()
+REAL_SMB_PORT_CHECK = object()
+
+
 class CheckTests(unittest.TestCase):
     def smb_listing_result(self, server: str = "timecapsulesamba4.local") -> CheckResult:
         return CheckResult("PASS", "listing ok", {"server": server})
@@ -121,7 +125,7 @@ class CheckTests(unittest.TestCase):
         local_tools=None,
         artifacts=None,
         ssh_login=None,
-        smb_port=None,
+        smb_port=DEFAULT_SMB_PORT_CHECK,
         smb_instance=None,
         smb_listing=None,
         smb_file_ops=None,
@@ -157,7 +161,14 @@ class CheckTests(unittest.TestCase):
             )
             if ssh_login is not None:
                 mocks.check_ssh_login = stack.enter_context(mock.patch("timecapsulesmb.checks.doctor.check_ssh_login", return_value=ssh_login))
-            if smb_port is not None:
+            if smb_port is DEFAULT_SMB_PORT_CHECK:
+                mocks.check_smb_port = stack.enter_context(
+                    mock.patch(
+                        "timecapsulesmb.checks.doctor.check_smb_port",
+                        return_value=CheckResult("PASS", "SMB reachable at 10.0.0.2:445"),
+                    )
+                )
+            elif smb_port is not REAL_SMB_PORT_CHECK:
                 mocks.check_smb_port = stack.enter_context(mock.patch("timecapsulesmb.checks.doctor.check_smb_port", return_value=smb_port))
             if smb_instance is not None:
                 mocks.check_smb_instance = stack.enter_context(mock.patch("timecapsulesmb.checks.doctor.check_smb_instance", return_value=smb_instance))
@@ -1020,14 +1031,18 @@ class CheckTests(unittest.TestCase):
             "TC_AIRPORT_SYAP": "119",
         }
         with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
-            with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
-                results, fatal = run_doctor_checks(
-                    self.doctor_config(values),
-                    repo_root=REPO_ROOT,
-                    skip_ssh=True,
-                    skip_bonjour=True,
-                    skip_smb=True,
-                )
+                with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
+                    with mock.patch(
+                        "timecapsulesmb.checks.doctor.check_smb_port",
+                        return_value=CheckResult("PASS", "SMB reachable at 10.0.0.2:445"),
+                    ):
+                        results, fatal = run_doctor_checks(
+                            self.doctor_config(values),
+                            repo_root=REPO_ROOT,
+                            skip_ssh=True,
+                            skip_bonjour=True,
+                            skip_smb=True,
+                        )
         self.assertFalse(fatal)
         self.assertFalse(any("TC_MDNS_HOST_LABEL is invalid" in result.message for result in results))
 
@@ -1053,13 +1068,17 @@ class CheckTests(unittest.TestCase):
             )
             with mock.patch("timecapsulesmb.checks.doctor.check_required_local_tools", return_value=[]):
                 with mock.patch("timecapsulesmb.checks.doctor.check_required_artifacts", return_value=[]):
-                    results, fatal = run_doctor_checks(
-                        config,
-                        repo_root=REPO_ROOT,
-                        skip_ssh=True,
-                        skip_bonjour=True,
-                        skip_smb=True,
-                    )
+                    with mock.patch(
+                        "timecapsulesmb.checks.doctor.check_smb_port",
+                        return_value=CheckResult("PASS", "SMB reachable at 10.0.0.2:445"),
+                    ):
+                        results, fatal = run_doctor_checks(
+                            config,
+                            repo_root=REPO_ROOT,
+                            skip_ssh=True,
+                            skip_bonjour=True,
+                            skip_smb=True,
+                        )
         self.assertFalse(fatal)
         self.assertFalse(any(
             "Missing required setting" in result.message and "TC_AIRPORT_SYAP" in result.message

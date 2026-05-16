@@ -2,5 +2,6 @@ zeroconf>=0.132.2
 ifaddr>=0.2.0
 pexpect>=4.9.0
 pycryptodome>=3.20.0,<4
+pytest>=8.4.0,<9
 zopfli>=0.2.3.post1
 coverage>=7.6.0

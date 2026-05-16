@@ -128,6 +128,26 @@ class StorageRuntimeTests(unittest.TestCase):
             )
         return "\n".join(lines) + ("\n" if lines else "")
 
+    def write_fixture_state_files(self, tmp_path: Path, fixture: MaStFixture, volumes_root: Path) -> tuple[Path, Path]:
+        fixture_dir = tmp_path / "fixture-state"
+        fixture_dir.mkdir(exist_ok=True)
+        topology_path = fixture_dir / f"{fixture.name}.volumes.tsv"
+        raw_path = fixture_dir / f"{fixture.name}.raw"
+        topology_path.write_text(self.expected_topology_tsv(fixture, volumes_root))
+        if isinstance(fixture.raw, bytes):
+            raw_path.write_bytes(fixture.raw)
+        else:
+            raw_path.write_text(fixture.raw)
+        return topology_path, raw_path
+
+    def render_mast_wait_fixture_override(self, topology_path: Path, raw_path: Path) -> str:
+        return (
+            "tc_wait_for_mast_volumes_to() { "
+            f"/bin/cat {shlex.quote(str(topology_path))} >\"$1\"; "
+            f"/bin/cat {shlex.quote(str(raw_path))} >\"$2\"; "
+            "return 0; }"
+        )
+
     def test_common_select_advertise_mac_prefers_acp_lama(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -342,12 +362,13 @@ class StorageRuntimeTests(unittest.TestCase):
         *,
         internal_share_use_disk_root: bool,
     ) -> subprocess.CompletedProcess[str]:
-        selector = self.write_selectable_fixture_acp(tmp_path, fixtures)
         for fixture in fixtures:
             for volume in fixture.expected:
                 Path(self.mapped_volume_root(volume, volumes_root)).mkdir(parents=True, exist_ok=True)
+            self.write_fixture_state_files(tmp_path, fixture, volumes_root)
         override = "INTERNAL_SHARE_USE_DISK_ROOT=1" if internal_share_use_disk_root else ""
         names = " ".join(shlex.quote(fixture.name) for fixture in fixtures)
+        fixture_dir = tmp_path / "fixture-state"
         script = tmp_path / "share-state-fixtures.sh"
         script.write_text(
             textwrap.dedent(
@@ -362,10 +383,12 @@ class StorageRuntimeTests(unittest.TestCase):
                 mkdir -p "$RAM_VAR"
                 is_volume_root_mounted() {{ return 0; }}
                 for fixture_name in {names}; do
-                    echo "$fixture_name" >{shlex.quote(str(selector))}
-                    printf '__TC_BEGIN__\\t%s\\t0\\n' "$fixture_name"
-                    tc_read_mast_volumes_to "$RAM_VAR/test-volumes.tsv" "$RAM_VAR/test-mast.raw"
-                    tc_build_share_state "$RAM_VAR/test-volumes.tsv"
+                    topology_file={shlex.quote(str(fixture_dir))}/"$fixture_name.volumes.tsv"
+                    set +e
+                    tc_build_share_state "$topology_file"
+                    status=$?
+                    set -e
+                    printf '__TC_BEGIN__\\t%s\\t%s\\n' "$fixture_name" "$status"
                     printf 'shares\\n'
                     cat "$TC_SHARES_TSV"
                     printf 'adisk\\n'
@@ -994,7 +1017,6 @@ MaSt = (
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            start_path = flash / "start-samba.sh"
             selector = self.write_selectable_fixture_acp(tmp_path, SHELL_MAST_FIXTURES)
             names = " ".join(shlex.quote(fixture.name) for fixture in SHELL_MAST_FIXTURES)
             script = tmp_path / "signature-fixtures.sh"
@@ -1003,12 +1025,13 @@ MaSt = (
                     f"""\
                     #!/bin/sh
                     set -eu
+                    . {flash}/common.sh
                     for fixture_name in {names}; do
                         echo "$fixture_name" >{shlex.quote(str(selector))}
                         out={shlex.quote(str(tmp_path))}/"signature-$fixture_name.out"
                         err={shlex.quote(str(tmp_path))}/"signature-$fixture_name.err"
                         set +e
-                        /bin/sh {shlex.quote(str(start_path))} --print-topology-signature >"$out" 2>"$err"
+                        tc_print_topology_signature >"$out" 2>"$err"
                         status=$?
                         set -e
                         printf '__TC_BEGIN__\\t%s\\t%s\\n' "$fixture_name" "$status"
@@ -1089,7 +1112,7 @@ MaSt = (
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            self.write_fake_acp(tmp_path, fixture.raw)
+            topology_path, raw_path = self.write_fixture_state_files(tmp_path, fixture, volumes)
             payload = volumes / "dk5/.samba4"
             (payload / "private").mkdir(parents=True)
             (payload / "smbd").write_text("")
@@ -1102,6 +1125,7 @@ MaSt = (
                     textwrap.dedent(
                         f"""\
 
+                        {self.render_mast_wait_fixture_override(topology_path, raw_path)}
                         tc_mount_mast_volumes_for_boot() {{ :; }}
                         is_volume_root_mounted() {{ [ "$1" = "{volumes}/dk5" ]; }}
                         """
@@ -1549,7 +1573,7 @@ MaSt = (
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            self.write_fake_acp(tmp_path, fixture.raw)
+            topology_path, raw_path = self.write_fixture_state_files(tmp_path, fixture, volumes)
             (volumes / "dk2/.samba4/private").mkdir(parents=True)
             (volumes / "dk2/.samba4/smbd").write_text("")
             (volumes / "dk2/.samba4/smbd").chmod(0o755)
@@ -1566,6 +1590,7 @@ MaSt = (
                     tc_init_runtime_env
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR" {volumes}/dk2 {volumes}/dk3
+                    {self.render_mast_wait_fixture_override(topology_path, raw_path)}
                     tc_mount_mast_volumes_for_boot() {{ :; }}
                     is_volume_root_mounted() {{ [ "$1" = "{volumes}/dk2" ]; }}
                     tc_refresh_disk_state
@@ -1593,7 +1618,7 @@ MaSt = (
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            self.write_fake_acp(tmp_path, fixture.raw)
+            topology_path, raw_path = self.write_fixture_state_files(tmp_path, fixture, volumes)
             script = tmp_path / "refresh-disk-state-missing-payload.sh"
             script.write_text(
                 textwrap.dedent(
@@ -1605,6 +1630,7 @@ MaSt = (
                     tc_init_runtime_env
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR" {volumes}/dk2 {volumes}/dk3
+                    {self.render_mast_wait_fixture_override(topology_path, raw_path)}
                     tc_mount_mast_volumes_for_boot() {{ :; }}
                     is_volume_root_mounted() {{ return 0; }}
                     tc_refresh_disk_state || status=$?
@@ -1754,7 +1780,7 @@ MaSt = (
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            self.write_fake_acp(tmp_path, fixture.raw)
+            topology_path, raw_path = self.write_fixture_state_files(tmp_path, fixture, volumes)
             payload = volumes / "dk5/.samba4"
             (payload / "private").mkdir(parents=True)
             (payload / "smbd").write_text("#!/bin/sh\n")
@@ -1771,6 +1797,7 @@ MaSt = (
                     . {flash}/tcapsulesmb.conf
                     tc_init_runtime_env
                     tc_set_log "$RAM_VAR/test.log" test
+                    {self.render_mast_wait_fixture_override(topology_path, raw_path)}
                     tc_mount_mast_volumes_for_boot() {{ :; }}
                     is_volume_root_mounted() {{ return 0; }}
                     mkdir -p "$RAM_VAR" {volumes}/dk5

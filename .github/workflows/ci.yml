@@ -41,11 +41,7 @@ jobs:
         run: cc -Wall -Wextra -Werror -o /tmp/nbns-advertiser-test build/nbns-advertiser.c
 
       - name: Run artifact tests
-        env:
-          PYTHONPATH: src
-        run: python -m unittest tests.test_artifacts tests.test_artifact_resolver -v
+        run: python -m pytest tests/test_artifacts.py tests/test_artifact_resolver.py
 
       - name: Run full test suite
-        env:
-          PYTHONPATH: src
-        run: python -m unittest discover -s tests -v
+        run: python -m pytest
