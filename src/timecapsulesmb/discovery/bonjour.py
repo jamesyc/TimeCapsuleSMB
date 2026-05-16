@@ -29,6 +29,7 @@ PENDING_RESOLVE_TIMEOUT_MS = 500
 FINAL_PENDING_RESOLVE_TIMEOUT_MS = 3000
 MAX_DIAGNOSTIC_OBSERVATIONS = 100
 DNS_RECORD_TYPE_PTR = 12
+MDNS_PORT = 5353
 
 
 @dataclass
@@ -253,6 +254,37 @@ def _installed_zeroconf_version() -> str:
     return value if isinstance(value, str) else ""
 
 
+def _source_ipv4_for_target(target_ip: str | None) -> str | None:
+    if not target_ip:
+        return None
+    try:
+        parsed = ipaddress.ip_address(target_ip)
+    except ValueError:
+        return None
+    if parsed.version != 4:
+        return None
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    except OSError:
+        return None
+    try:
+        sock.connect((target_ip, MDNS_PORT))
+        source_ip = sock.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        sock.close()
+
+    if not source_ip or source_ip == "0.0.0.0":
+        return None
+    try:
+        source = ipaddress.ip_address(source_ip)
+    except ValueError:
+        return None
+    return source_ip if source.version == 4 else None
+
+
 class Collector:
     def __init__(self, zc: Any, services: list[str], *, start_time: float | None = None):
         self.zc = zc
@@ -271,10 +303,10 @@ class Collector:
         self.resolve_error_count = 0
 
     def start(self) -> None:
-        from zeroconf import ServiceBrowser
+        from zeroconf import DNSQuestionType, ServiceBrowser
 
         for stype in self.services:
-            browser = ServiceBrowser(self.zc, stype, handlers=[self._on_service_state_change])
+            browser = ServiceBrowser(self.zc, stype, handlers=[self._on_service_state_change], question_type=DNSQuestionType.QM)
             self._browsers.append(browser)
 
     def _on_service_state_change(self, *, zeroconf: Any, service_type: str, name: str, state_change: Any) -> None:
@@ -313,13 +345,15 @@ class Collector:
             return list(self.events)
 
     def resolve_pending(self, timeout_ms: int = FINAL_PENDING_RESOLVE_TIMEOUT_MS) -> None:
+        from zeroconf import DNSQuestionType
+
         with self.lock:
             pending = sorted(self.pending)
 
         for service_type, name in pending:
             try:
                 self.resolve_attempt_count += 1
-                info = self.zc.get_service_info(service_type, name, timeout_ms)
+                info = self.zc.get_service_info(service_type, name, timeout_ms, question_type=DNSQuestionType.QM)
             except Exception:
                 self.resolve_error_count += 1
                 info = None
@@ -517,7 +551,7 @@ def resolved_service_from_info(stype: str, info: Any) -> BonjourResolvedService:
     )
 
 
-def _open_zeroconf() -> Any:
+def _open_zeroconf(interface_ip: str | None = None) -> Any:
     try:
         from zeroconf import IPVersion, Zeroconf
     except Exception as e:
@@ -525,13 +559,26 @@ def _open_zeroconf() -> Any:
 
     # Our Time Capsule targets advertise over IPv4, and zeroconf 0.147.x can
     # miss _smb._tcp browse results on macOS when run in dual-stack mode.
+    if interface_ip:
+        return Zeroconf(interfaces=[interface_ip], ip_version=IPVersion.V4Only)
     return Zeroconf(ip_version=IPVersion.V4Only)
 
 
-def resolve_service_instance(instance: BonjourServiceInstance, timeout_ms: int = FINAL_PENDING_RESOLVE_TIMEOUT_MS) -> BonjourResolvedService | None:
-    zc = _open_zeroconf()
+def resolve_service_instance(
+    instance: BonjourServiceInstance,
+    timeout_ms: int = FINAL_PENDING_RESOLVE_TIMEOUT_MS,
+    *,
+    target_ip: str | None = None,
+) -> BonjourResolvedService | None:
     try:
-        info = zc.get_service_info(instance.service_type, instance.fullname, timeout_ms)
+        from zeroconf import DNSQuestionType
+    except Exception as e:
+        raise RuntimeError(missing_dependency_message("zeroconf", e)) from e
+
+    interface_ip = _source_ipv4_for_target(target_ip)
+    zc = _open_zeroconf(interface_ip)
+    try:
+        info = zc.get_service_info(instance.service_type, instance.fullname, timeout_ms, question_type=DNSQuestionType.QM)
     finally:
         try:
             zc.close()
@@ -553,10 +600,13 @@ def _sort_records(records: list[BonjourResolvedService]) -> list[BonjourResolved
 def discover_snapshot_detailed(
     service: str | None = None,
     timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC,
+    *,
+    target_ip: str | None = None,
 ) -> tuple[BonjourDiscoverySnapshot, BonjourDiscoveryDiagnostics]:
     service_types = _matching_service_types(service)
     start = time.monotonic()
-    zc = _open_zeroconf()
+    zeroconf_interface = _source_ipv4_for_target(target_ip)
+    zc = _open_zeroconf(zeroconf_interface)
     ptr_observer: PtrRecordObserver | None = None
     ptr_records: list[BonjourPtrRecordObservation] = []
     ptr_record_error: str | None = None
@@ -607,7 +657,7 @@ def discover_snapshot_detailed(
         resolve_success_count=collector.resolve_success_count,
         resolve_error_count=collector.resolve_error_count,
         zeroconf_version=_installed_zeroconf_version(),
-        zeroconf_interfaces="All",
+        zeroconf_interfaces=zeroconf_interface or "All",
         zeroconf_apple_p2p=False,
         instances=sorted_instances,
         resolved=sorted_records,
@@ -618,8 +668,13 @@ def discover_snapshot_detailed(
     return snapshot, diagnostics
 
 
-def discover_snapshot(service: str | None = None, timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC) -> BonjourDiscoverySnapshot:
-    snapshot, _diagnostics = discover_snapshot_detailed(service=service, timeout=timeout)
+def discover_snapshot(
+    service: str | None = None,
+    timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC,
+    *,
+    target_ip: str | None = None,
+) -> BonjourDiscoverySnapshot:
+    snapshot, _diagnostics = discover_snapshot_detailed(service=service, timeout=timeout, target_ip=target_ip)
     return snapshot
 
 
@@ -640,12 +695,17 @@ def _records_with_unresolved_instances(snapshot: BonjourDiscoverySnapshot) -> li
     return _sort_records(records)
 
 
-def discover_resolved_records(service: str | None = None, timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC) -> list[BonjourResolvedService]:
-    return discover_snapshot(service=service, timeout=timeout).resolved
+def discover_resolved_records(
+    service: str | None = None,
+    timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC,
+    *,
+    target_ip: str | None = None,
+) -> list[BonjourResolvedService]:
+    return discover_snapshot(service=service, timeout=timeout, target_ip=target_ip).resolved
 
 
-def discover(timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC) -> list[BonjourResolvedService]:
-    return _records_with_unresolved_instances(discover_snapshot(timeout=timeout))
+def discover(timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC, *, target_ip: str | None = None) -> list[BonjourResolvedService]:
+    return _records_with_unresolved_instances(discover_snapshot(timeout=timeout, target_ip=target_ip))
 
 
 def record_has_service(record: BonjourResolvedService, service: str) -> bool:

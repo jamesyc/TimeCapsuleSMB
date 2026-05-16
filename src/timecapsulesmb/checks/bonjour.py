@@ -70,9 +70,10 @@ def discover_smb_services_detailed(
     timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC,
     *,
     include_related: bool = False,
+    target_ip: str | None = None,
 ) -> tuple[BonjourDiscoverySnapshot | None, CheckResult | None, BonjourDiscoveryDiagnostics | None]:
     try:
-        snapshot, diagnostics = discover_snapshot_detailed(None if include_related else SMB_SERVICE, timeout=timeout)
+        snapshot, diagnostics = discover_snapshot_detailed(None if include_related else SMB_SERVICE, timeout=timeout, target_ip=target_ip)
         return snapshot, None, diagnostics
     except Exception as e:
         return None, CheckResult("FAIL", f"Bonjour check failed: {e}"), None
@@ -152,9 +153,14 @@ def select_resolved_smb_record(
     return sorted(matching_name, key=lambda record: (record.hostname or "", record.fullname or ""))[0]
 
 
-def resolve_smb_instance(instance: BonjourServiceInstance, timeout_ms: int = FINAL_PENDING_RESOLVE_TIMEOUT_MS) -> tuple[BonjourResolvedService | None, CheckResult | None]:
+def resolve_smb_instance(
+    instance: BonjourServiceInstance,
+    timeout_ms: int = FINAL_PENDING_RESOLVE_TIMEOUT_MS,
+    *,
+    target_ip: str | None = None,
+) -> tuple[BonjourResolvedService | None, CheckResult | None]:
     try:
-        record = resolve_service_instance(instance, timeout_ms=timeout_ms)
+        record = resolve_service_instance(instance, timeout_ms=timeout_ms, target_ip=target_ip)
     except Exception as e:
         return None, CheckResult("FAIL", f"Bonjour check failed: {e}")
     if record is None:

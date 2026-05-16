@@ -774,7 +774,7 @@ class CheckTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.checks.bonjour.discover_snapshot_detailed", return_value=(snapshot, diagnostics)) as discover_mock:
             result, error, result_diagnostics = discover_smb_services_detailed(timeout=3.5)
 
-        discover_mock.assert_called_once_with("_smb", timeout=3.5)
+        discover_mock.assert_called_once_with("_smb", timeout=3.5, target_ip=None)
         self.assertIs(result, snapshot)
         self.assertIsNone(error)
         self.assertIs(result_diagnostics, diagnostics)
@@ -800,7 +800,33 @@ class CheckTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.checks.bonjour.discover_snapshot_detailed", return_value=(snapshot, diagnostics)) as discover_mock:
             result, error, result_diagnostics = discover_smb_services_detailed(timeout=3.5, include_related=True)
 
-        discover_mock.assert_called_once_with(None, timeout=3.5)
+        discover_mock.assert_called_once_with(None, timeout=3.5, target_ip=None)
+        self.assertIs(result, snapshot)
+        self.assertIsNone(error)
+        self.assertIs(result_diagnostics, diagnostics)
+
+    def test_discover_smb_services_detailed_passes_target_ip_to_discovery_backend(self) -> None:
+        snapshot = BonjourDiscoverySnapshot([], [])
+        diagnostics = BonjourDiscoveryDiagnostics(
+            service=None,
+            service_types=["_smb._tcp.local."],
+            timeout_sec=3.5,
+            elapsed_sec=3.5,
+            ip_version="V4Only",
+            instance_count=0,
+            resolved_count=0,
+            pending_count=0,
+            service_added_count=0,
+            service_updated_count=0,
+            resolve_attempt_count=0,
+            resolve_success_count=0,
+            resolve_error_count=0,
+        )
+
+        with mock.patch("timecapsulesmb.checks.bonjour.discover_snapshot_detailed", return_value=(snapshot, diagnostics)) as discover_mock:
+            result, error, result_diagnostics = discover_smb_services_detailed(timeout=3.5, include_related=True, target_ip="10.0.1.77")
+
+        discover_mock.assert_called_once_with(None, timeout=3.5, target_ip="10.0.1.77")
         self.assertIs(result, snapshot)
         self.assertIsNone(error)
         self.assertIs(result_diagnostics, diagnostics)
@@ -858,12 +884,22 @@ class CheckTests(unittest.TestCase):
         instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
         with mock.patch("timecapsulesmb.checks.bonjour.resolve_service_instance", return_value=None) as resolve_mock:
             record, error = resolve_smb_instance(instance)
-        resolve_mock.assert_called_once_with(instance, timeout_ms=3000)
+        resolve_mock.assert_called_once_with(instance, timeout_ms=3000, target_ip=None)
         self.assertIsNone(record)
         self.assertIsNotNone(error)
         assert error is not None
         self.assertEqual(error.status, "FAIL")
         self.assertIn("could not resolve service target", error.message)
+
+    def test_resolve_smb_instance_passes_target_ip_to_discovery_backend(self) -> None:
+        instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
+        resolved = BonjourResolvedService("Home", "home.local", "_smb._tcp.local.", port=445, ipv4=["10.0.1.77"])
+        with mock.patch("timecapsulesmb.checks.bonjour.resolve_service_instance", return_value=resolved) as resolve_mock:
+            record, error = resolve_smb_instance(instance, target_ip="10.0.1.77")
+
+        resolve_mock.assert_called_once_with(instance, timeout_ms=3000, target_ip="10.0.1.77")
+        self.assertIs(record, resolved)
+        self.assertIsNone(error)
 
     def test_resolve_smb_service_target_uses_resolved_hostname_and_port(self) -> None:
         record = BonjourResolvedService("Home", "home.local", "_smb._tcp.local.", port=445)

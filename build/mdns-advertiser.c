@@ -72,6 +72,8 @@
 #define DNS_CLASS_IN 1
 #define DNS_CLASS_CACHE_FLUSH 0x8000
 #define DNS_CLASS_IN_UNIQUE (DNS_CLASS_IN | DNS_CLASS_CACHE_FLUSH)
+#define MDNS_REPLY_UNICAST 1
+#define MDNS_REPLY_MULTICAST 2
 #define DNS_FLAG_QR 0x8000
 #define DNS_FLAG_AA 0x0400
 
@@ -301,6 +303,26 @@ struct service_record_set {
 struct service_type_set {
     char types[SNAPSHOT_MAX_SERVICE_TYPES][MAX_NAME];
     size_t count;
+};
+
+struct query_answer_routes {
+    int smb_ptr;
+    int smb_srv;
+    int smb_txt;
+    int host_a;
+    int adisk_ptr;
+    int adisk_srv;
+    int adisk_txt;
+    int device_info_ptr;
+    int device_info_srv;
+    int device_info_txt;
+    int airport_ptr;
+    int airport_srv;
+    int airport_txt;
+    int snapshot_ptr[SNAPSHOT_MAX_RECORDS];
+    int snapshot_srv[SNAPSHOT_MAX_RECORDS];
+    int snapshot_txt[SNAPSHOT_MAX_RECORDS];
+    int snapshot_a[SNAPSHOT_MAX_RECORDS];
 };
 
 static int name_equals(const char *a, const char *b);
@@ -3015,205 +3037,71 @@ static int send_announcement(int sockfd, const struct sockaddr_in *dest, const s
     return 0;
 }
 
-static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, const struct sockaddr_in *dest,
-                        const struct config *cfg, uint32_t response_ipv4_addr,
-                        const struct service_record_set *snapshot_records, int use_snapshot_records) {
+static int query_routes_have_destination(const struct query_answer_routes *routes,
+                                         const struct service_record_set *snapshot_records,
+                                         int use_snapshot_records,
+                                         int route) {
+    size_t j;
+
+    if ((routes->smb_ptr | routes->smb_srv | routes->smb_txt | routes->host_a |
+         routes->adisk_ptr | routes->adisk_srv | routes->adisk_txt |
+         routes->device_info_ptr | routes->device_info_srv | routes->device_info_txt |
+         routes->airport_ptr | routes->airport_srv | routes->airport_txt) & route) {
+        return 1;
+    }
+    if (!use_snapshot_records) {
+        return 0;
+    }
+    for (j = 0; j < snapshot_records->count; j++) {
+        if ((routes->snapshot_ptr[j] | routes->snapshot_srv[j] |
+             routes->snapshot_txt[j] | routes->snapshot_a[j]) & route) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int build_query_response_packet(uint8_t *reply, size_t reply_cap, size_t *reply_len, int *answer_count,
+                                       uint16_t response_id, int route,
+                                       const struct query_answer_routes *routes,
+                                       const char *instance_fqdn,
+                                       const char *adisk_instance_fqdn,
+                                       const char *device_info_instance_fqdn,
+                                       const char *airport_instance_fqdn,
+                                       const struct config *cfg,
+                                       uint32_t response_ipv4_addr,
+                                       const struct service_record_set *snapshot_records,
+                                       int use_snapshot_records) {
     struct dns_header hdr;
-    size_t cursor = sizeof(struct dns_header);
-    uint16_t qdcount;
-    uint8_t reply[BUF_SIZE];
     size_t off = sizeof(struct dns_header);
-    char instance_fqdn[MAX_NAME];
-    char adisk_instance_fqdn[MAX_NAME];
-    char device_info_instance_fqdn[MAX_NAME];
-    char airport_instance_fqdn[MAX_NAME];
-    int want_ptr = 0;
-    int want_srv = 0;
-    int want_txt = 0;
-    int want_a = 0;
-    int want_adisk_ptr = 0;
-    int want_adisk_srv = 0;
-    int want_adisk_txt = 0;
-    int want_device_info_ptr = 0;
-    int want_device_info_srv = 0;
-    int want_device_info_txt = 0;
-    int want_airport_ptr = 0;
-    int want_airport_srv = 0;
-    int want_airport_txt = 0;
     int answers = 0;
-    uint16_t i;
-    int want_snapshot_ptr[SNAPSHOT_MAX_RECORDS];
-    int want_snapshot_srv[SNAPSHOT_MAX_RECORDS];
-    int want_snapshot_txt[SNAPSHOT_MAX_RECORDS];
-    int want_snapshot_a[SNAPSHOT_MAX_RECORDS];
-
-    memset(want_snapshot_ptr, 0, sizeof(want_snapshot_ptr));
-    memset(want_snapshot_srv, 0, sizeof(want_snapshot_srv));
-    memset(want_snapshot_txt, 0, sizeof(want_snapshot_txt));
-    memset(want_snapshot_a, 0, sizeof(want_snapshot_a));
-
-    if (packet_len < sizeof(struct dns_header)) {
-        return 0;
-    }
-    memcpy(&hdr, packet, sizeof(hdr));
-    if (ntohs(hdr.flags) & DNS_FLAG_QR) {
-        return 0;
-    }
-
-    qdcount = ntohs(hdr.qdcount);
-    if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->service_type) != 0) {
-        log_packet_build_failure("query_response", "build_instance_fqdn", off, answers, use_snapshot_records);
-        return 0;
-    }
-    if (cfg->adisk_disks.count > 0 &&
-        build_instance_fqdn(adisk_instance_fqdn, sizeof(adisk_instance_fqdn), cfg->instance_name, cfg->adisk_service_type) != 0) {
-        log_packet_build_failure("query_response", "build_adisk_instance_fqdn", off, answers, use_snapshot_records);
-        return 0;
-    }
-    if (cfg->device_model[0] != '\0' &&
-        build_instance_fqdn(device_info_instance_fqdn, sizeof(device_info_instance_fqdn), cfg->instance_name, cfg->device_info_service_type) != 0) {
-        log_packet_build_failure("query_response", "build_device_info_instance_fqdn", off, answers, use_snapshot_records);
-        return 0;
-    }
-    if (!use_snapshot_records && is_airport_enabled(cfg) &&
-        build_instance_fqdn(airport_instance_fqdn, sizeof(airport_instance_fqdn), cfg->instance_name, cfg->airport_service_type) != 0) {
-        log_packet_build_failure("query_response", "build_airport_instance_fqdn", off, answers, use_snapshot_records);
-        return 0;
-    }
-
-    for (i = 0; i < qdcount; i++) {
-        char qname[MAX_NAME];
-        uint16_t qtype;
-        uint16_t qclass;
-
-        if (decode_name(packet, packet_len, &cursor, qname, sizeof(qname)) != 0 ||
-            cursor + 4 > packet_len) {
-            return 0;
-        }
-        memcpy(&qtype, packet + cursor, 2);
-        memcpy(&qclass, packet + cursor + 2, 2);
-        cursor += 4;
-        qtype = ntohs(qtype);
-        qclass = ntohs(qclass) & 0x7FFF;
-        if (qclass != DNS_CLASS_IN) {
-            continue;
-        }
-
-        if (name_equals(qname, cfg->service_type) && (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
-            want_ptr = 1;
-        } else if (cfg->adisk_disks.count > 0 &&
-                   name_equals(qname, cfg->adisk_service_type) &&
-                   (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
-            want_adisk_ptr = 1;
-        } else if (cfg->device_model[0] != '\0' &&
-                   name_equals(qname, cfg->device_info_service_type) &&
-                   (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
-            want_device_info_ptr = 1;
-        } else if (!use_snapshot_records && is_airport_enabled(cfg) &&
-                   name_equals(qname, cfg->airport_service_type) &&
-                   (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
-            want_airport_ptr = 1;
-        } else if (name_equals(qname, instance_fqdn) && (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY)) {
-            want_srv = 1;
-        } else if (name_equals(qname, instance_fqdn) && (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY)) {
-            want_txt = 1;
-        } else if (cfg->adisk_disks.count > 0 &&
-                   name_equals(qname, adisk_instance_fqdn)) {
-            if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
-                want_adisk_srv = 1;
-            }
-            if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
-                want_adisk_txt = 1;
-            }
-        } else if (cfg->device_model[0] != '\0' &&
-                   name_equals(qname, device_info_instance_fqdn)) {
-            if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
-                want_device_info_srv = 1;
-            }
-            if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
-                want_device_info_txt = 1;
-            }
-        } else if (!use_snapshot_records && is_airport_enabled(cfg) &&
-                   name_equals(qname, airport_instance_fqdn)) {
-            if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
-                want_airport_srv = 1;
-            }
-            if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
-                want_airport_txt = 1;
-            }
-        } else if (name_equals(qname, cfg->host_fqdn) && (qtype == DNS_TYPE_A || qtype == DNS_TYPE_ANY)) {
-            want_a = 1;
-        } else if (use_snapshot_records) {
-            size_t j;
-            for (j = 0; j < snapshot_records->count; j++) {
-                const struct service_record *record = &snapshot_records->records[j];
-                if (is_suppressed_snapshot_service_type(record->service_type)) {
-                    continue;
-                }
-                if (name_equals(qname, record->service_type) && (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
-                    want_snapshot_ptr[j] = 1;
-                } else if (name_equals(qname, record->instance_fqdn)) {
-                    if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
-                        want_snapshot_srv[j] = 1;
-                    }
-                    if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
-                        want_snapshot_txt[j] = 1;
-                    }
-                } else if (name_equals(qname, record->host_fqdn) && (qtype == DNS_TYPE_A || qtype == DNS_TYPE_ANY)) {
-                    want_snapshot_a[j] = 1;
-                }
-            }
-        }
-    }
-
-    if (!want_ptr && !want_srv && !want_txt && !want_a &&
-        !want_adisk_ptr && !want_adisk_srv && !want_adisk_txt &&
-        !want_device_info_ptr && !want_device_info_srv && !want_device_info_txt &&
-        !want_airport_ptr && !want_airport_srv && !want_airport_txt) {
-        int any_snapshot = 0;
-        if (use_snapshot_records) {
-            size_t j;
-            for (j = 0; j < snapshot_records->count; j++) {
-                if (want_snapshot_ptr[j] || want_snapshot_srv[j] || want_snapshot_txt[j]) {
-                    any_snapshot = 1;
-                    break;
-                }
-                if (want_snapshot_a[j]) {
-                    any_snapshot = 1;
-                    break;
-                }
-            }
-        }
-        if (!any_snapshot) {
-            return 0;
-        }
-    }
 
     memset(&hdr, 0, sizeof(hdr));
+    hdr.id = response_id;
     hdr.flags = htons(DNS_FLAG_QR | DNS_FLAG_AA);
 
-    if (want_ptr) {
-        if (add_rr_ptr(reply, &off, sizeof(reply), cfg->service_type, instance_fqdn, cfg->ttl) != 0) {
+    if (routes->smb_ptr & route) {
+        if (add_rr_ptr(reply, &off, reply_cap, cfg->service_type, instance_fqdn, cfg->ttl) != 0) {
             log_packet_build_failure("query_response", "add_ptr", off, answers, use_snapshot_records);
             return -1;
         }
         answers++;
     }
-    if (want_srv) {
-        if (add_rr_srv(reply, &off, sizeof(reply), instance_fqdn, cfg->host_fqdn, cfg->port, cfg->ttl) != 0) {
+    if (routes->smb_srv & route) {
+        if (add_rr_srv(reply, &off, reply_cap, instance_fqdn, cfg->host_fqdn, cfg->port, cfg->ttl) != 0) {
             log_packet_build_failure("query_response", "add_srv", off, answers, use_snapshot_records);
             return -1;
         }
         answers++;
     }
-    if (want_txt) {
-        if (add_rr_txt_empty(reply, &off, sizeof(reply), instance_fqdn, cfg->ttl) != 0) {
+    if (routes->smb_txt & route) {
+        if (add_rr_txt_empty(reply, &off, reply_cap, instance_fqdn, cfg->ttl) != 0) {
             log_packet_build_failure("query_response", "add_txt", off, answers, use_snapshot_records);
             return -1;
         }
         answers++;
     }
-    if (want_adisk_ptr || want_adisk_srv || want_adisk_txt) {
+    if ((routes->adisk_ptr | routes->adisk_srv | routes->adisk_txt) & route) {
         char txt1[128];
         char disk_txts[ADISK_MAX_DISKS][256];
         const char *txts[ADISK_MAX_DISKS + 1];
@@ -3233,29 +3121,29 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
             txts[disk_i + 1] = disk_txts[disk_i];
         }
 
-        if (want_adisk_ptr) {
-            if (add_rr_ptr(reply, &off, sizeof(reply), cfg->adisk_service_type, adisk_instance_fqdn, cfg->ttl) != 0) {
+        if (routes->adisk_ptr & route) {
+            if (add_rr_ptr(reply, &off, reply_cap, cfg->adisk_service_type, adisk_instance_fqdn, cfg->ttl) != 0) {
                 log_packet_build_failure("query_response", "add_adisk_ptr", off, answers, use_snapshot_records);
                 return -1;
             }
             answers++;
         }
-        if (want_adisk_srv) {
-            if (add_rr_srv(reply, &off, sizeof(reply), adisk_instance_fqdn, cfg->host_fqdn, cfg->adisk_port, cfg->ttl) != 0) {
+        if (routes->adisk_srv & route) {
+            if (add_rr_srv(reply, &off, reply_cap, adisk_instance_fqdn, cfg->host_fqdn, cfg->adisk_port, cfg->ttl) != 0) {
                 log_packet_build_failure("query_response", "add_adisk_srv", off, answers, use_snapshot_records);
                 return -1;
             }
             answers++;
         }
-        if (want_adisk_txt) {
-            if (add_rr_txt_strings(reply, &off, sizeof(reply), adisk_instance_fqdn, cfg->ttl, txts, cfg->adisk_disks.count + 1) != 0) {
+        if (routes->adisk_txt & route) {
+            if (add_rr_txt_strings(reply, &off, reply_cap, adisk_instance_fqdn, cfg->ttl, txts, cfg->adisk_disks.count + 1) != 0) {
                 log_packet_build_failure("query_response", "add_adisk_txt", off, answers, use_snapshot_records);
                 return -1;
             }
             answers++;
         }
     }
-    if (want_device_info_ptr || want_device_info_srv || want_device_info_txt) {
+    if ((routes->device_info_ptr | routes->device_info_srv | routes->device_info_txt) & route) {
         char model_txt[MAX_NAME + 16];
         const char *txts[1];
 
@@ -3265,29 +3153,29 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
         }
         txts[0] = model_txt;
 
-        if (want_device_info_ptr) {
-            if (add_rr_ptr(reply, &off, sizeof(reply), cfg->device_info_service_type, device_info_instance_fqdn, cfg->ttl) != 0) {
+        if (routes->device_info_ptr & route) {
+            if (add_rr_ptr(reply, &off, reply_cap, cfg->device_info_service_type, device_info_instance_fqdn, cfg->ttl) != 0) {
                 log_packet_build_failure("query_response", "add_device_info_ptr", off, answers, use_snapshot_records);
                 return -1;
             }
             answers++;
         }
-        if (want_device_info_srv) {
-            if (add_rr_srv(reply, &off, sizeof(reply), device_info_instance_fqdn, cfg->host_fqdn, 0, cfg->ttl) != 0) {
+        if (routes->device_info_srv & route) {
+            if (add_rr_srv(reply, &off, reply_cap, device_info_instance_fqdn, cfg->host_fqdn, 0, cfg->ttl) != 0) {
                 log_packet_build_failure("query_response", "add_device_info_srv", off, answers, use_snapshot_records);
                 return -1;
             }
             answers++;
         }
-        if (want_device_info_txt) {
-            if (add_rr_txt_strings(reply, &off, sizeof(reply), device_info_instance_fqdn, cfg->ttl, txts, 1) != 0) {
+        if (routes->device_info_txt & route) {
+            if (add_rr_txt_strings(reply, &off, reply_cap, device_info_instance_fqdn, cfg->ttl, txts, 1) != 0) {
                 log_packet_build_failure("query_response", "add_device_info_txt", off, answers, use_snapshot_records);
                 return -1;
             }
             answers++;
         }
     }
-    if (!use_snapshot_records && (want_airport_ptr || want_airport_srv || want_airport_txt)) {
+    if (!use_snapshot_records && ((routes->airport_ptr | routes->airport_srv | routes->airport_txt) & route)) {
         char airport_txt[256];
         const char *txts[1];
 
@@ -3297,30 +3185,30 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
         }
         txts[0] = airport_txt;
 
-        if (want_airport_ptr) {
-            if (add_rr_ptr(reply, &off, sizeof(reply), cfg->airport_service_type, airport_instance_fqdn, cfg->ttl) != 0) {
+        if (routes->airport_ptr & route) {
+            if (add_rr_ptr(reply, &off, reply_cap, cfg->airport_service_type, airport_instance_fqdn, cfg->ttl) != 0) {
                 log_packet_build_failure("query_response", "add_airport_ptr", off, answers, use_snapshot_records);
                 return -1;
             }
             answers++;
         }
-        if (want_airport_srv) {
-            if (add_rr_srv(reply, &off, sizeof(reply), airport_instance_fqdn, cfg->host_fqdn, cfg->airport_port, cfg->ttl) != 0) {
+        if (routes->airport_srv & route) {
+            if (add_rr_srv(reply, &off, reply_cap, airport_instance_fqdn, cfg->host_fqdn, cfg->airport_port, cfg->ttl) != 0) {
                 log_packet_build_failure("query_response", "add_airport_srv", off, answers, use_snapshot_records);
                 return -1;
             }
             answers++;
         }
-        if (want_airport_txt) {
-            if (add_rr_txt_strings(reply, &off, sizeof(reply), airport_instance_fqdn, cfg->ttl, txts, 1) != 0) {
+        if (routes->airport_txt & route) {
+            if (add_rr_txt_strings(reply, &off, reply_cap, airport_instance_fqdn, cfg->ttl, txts, 1) != 0) {
                 log_packet_build_failure("query_response", "add_airport_txt", off, answers, use_snapshot_records);
                 return -1;
             }
             answers++;
         }
     }
-    if (want_a) {
-        if (add_rr_a(reply, &off, sizeof(reply), cfg->host_fqdn, response_ipv4_addr, cfg->ttl) != 0) {
+    if (routes->host_a & route) {
+        if (add_rr_a(reply, &off, reply_cap, cfg->host_fqdn, response_ipv4_addr, cfg->ttl) != 0) {
             log_packet_build_failure("query_response", "add_a", off, answers, use_snapshot_records);
             return -1;
         }
@@ -3329,6 +3217,9 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
 
     if (use_snapshot_records) {
         size_t j;
+        char announced_hosts[SNAPSHOT_MAX_RECORDS][MAX_NAME];
+        size_t announced_host_count = 0;
+
         for (j = 0; j < snapshot_records->count; j++) {
             const struct service_record *record = &snapshot_records->records[j];
             const char *txts[SNAPSHOT_MAX_TXT_ITEMS];
@@ -3342,31 +3233,31 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
                 txts[k] = record->txt[k];
                 txt_lengths[k] = record->txt_len[k];
             }
-            if (want_snapshot_ptr[j]) {
-                if (add_rr_ptr(reply, &off, sizeof(reply), record->service_type, record->instance_fqdn, cfg->ttl) != 0) {
+            if (routes->snapshot_ptr[j] & route) {
+                if (add_rr_ptr(reply, &off, reply_cap, record->service_type, record->instance_fqdn, cfg->ttl) != 0) {
                     log_snapshot_record_build_failure("query_response", "add_snapshot_ptr", j, record, off, answers);
                     log_packet_build_failure("query_response", "add_snapshot_ptr", off, answers, use_snapshot_records);
                     return -1;
                 }
                 answers++;
             }
-            if (want_snapshot_srv[j]) {
-                if (add_rr_srv(reply, &off, sizeof(reply), record->instance_fqdn, record->host_fqdn, record->port, cfg->ttl) != 0) {
+            if (routes->snapshot_srv[j] & route) {
+                if (add_rr_srv(reply, &off, reply_cap, record->instance_fqdn, record->host_fqdn, record->port, cfg->ttl) != 0) {
                     log_snapshot_record_build_failure("query_response", "add_snapshot_srv", j, record, off, answers);
                     log_packet_build_failure("query_response", "add_snapshot_srv", off, answers, use_snapshot_records);
                     return -1;
                 }
                 answers++;
             }
-            if (want_snapshot_txt[j]) {
+            if (routes->snapshot_txt[j] & route) {
                 if (record->txt_count > 0) {
-                    if (add_rr_txt_items(reply, &off, sizeof(reply), record->instance_fqdn, cfg->ttl, txts, txt_lengths, record->txt_count) != 0) {
+                    if (add_rr_txt_items(reply, &off, reply_cap, record->instance_fqdn, cfg->ttl, txts, txt_lengths, record->txt_count) != 0) {
                         log_snapshot_record_build_failure("query_response", "add_snapshot_txt", j, record, off, answers);
                         log_packet_build_failure("query_response", "add_snapshot_txt", off, answers, use_snapshot_records);
                         return -1;
                     }
                 } else {
-                    if (add_rr_txt_empty(reply, &off, sizeof(reply), record->instance_fqdn, cfg->ttl) != 0) {
+                    if (add_rr_txt_empty(reply, &off, reply_cap, record->instance_fqdn, cfg->ttl) != 0) {
                         log_snapshot_record_build_failure("query_response", "add_snapshot_txt_empty", j, record, off, answers);
                         log_packet_build_failure("query_response", "add_snapshot_txt_empty", off, answers, use_snapshot_records);
                         return -1;
@@ -3374,10 +3265,15 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
                 }
                 answers++;
             }
-            if (want_snapshot_a[j]) {
-                if (add_rr_a(reply, &off, sizeof(reply), record->host_fqdn, response_ipv4_addr, cfg->ttl) != 0) {
+            if ((routes->snapshot_a[j] & route) && record->host_fqdn[0] != '\0' &&
+                !host_already_announced(announced_hosts, announced_host_count, record->host_fqdn)) {
+                if (add_rr_a(reply, &off, reply_cap, record->host_fqdn, response_ipv4_addr, cfg->ttl) != 0) {
                     log_snapshot_record_build_failure("query_response", "add_snapshot_a", j, record, off, answers);
                     log_packet_build_failure("query_response", "add_snapshot_a", off, answers, use_snapshot_records);
+                    return -1;
+                }
+                if (remember_announced_host(announced_hosts, &announced_host_count, record->host_fqdn) != 0) {
+                    log_packet_build_failure("query_response", "remember_snapshot_a_host", off, answers, use_snapshot_records);
                     return -1;
                 }
                 answers++;
@@ -3387,8 +3283,200 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len, co
 
     hdr.ancount = htons((uint16_t)answers);
     memcpy(reply, &hdr, sizeof(hdr));
+    *reply_len = off;
+    *answer_count = answers;
+    return 0;
+}
 
-    return send_dns_packet("query_response", sockfd, reply, off, dest, answers, use_snapshot_records);
+static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len,
+                        const struct sockaddr_in *multicast_dest, const struct sockaddr_in *source,
+                        const struct config *cfg, uint32_t response_ipv4_addr,
+                        const struct service_record_set *snapshot_records, int use_snapshot_records) {
+    struct dns_header hdr;
+    size_t cursor = sizeof(struct dns_header);
+    uint16_t qdcount;
+    uint16_t query_id;
+    uint8_t reply[BUF_SIZE];
+    char instance_fqdn[MAX_NAME];
+    char adisk_instance_fqdn[MAX_NAME];
+    char device_info_instance_fqdn[MAX_NAME];
+    char airport_instance_fqdn[MAX_NAME];
+    struct query_answer_routes routes;
+    uint16_t i;
+    int status = 0;
+
+    memset(&routes, 0, sizeof(routes));
+
+    if (packet_len < sizeof(struct dns_header)) {
+        return 0;
+    }
+    memcpy(&hdr, packet, sizeof(hdr));
+    if (ntohs(hdr.flags) & DNS_FLAG_QR) {
+        return 0;
+    }
+
+    qdcount = ntohs(hdr.qdcount);
+    query_id = hdr.id;
+    if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->service_type) != 0) {
+        log_packet_build_failure("query_response", "build_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
+        return 0;
+    }
+    if (cfg->adisk_disks.count > 0 &&
+        build_instance_fqdn(adisk_instance_fqdn, sizeof(adisk_instance_fqdn), cfg->instance_name, cfg->adisk_service_type) != 0) {
+        log_packet_build_failure("query_response", "build_adisk_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
+        return 0;
+    }
+    if (cfg->device_model[0] != '\0' &&
+        build_instance_fqdn(device_info_instance_fqdn, sizeof(device_info_instance_fqdn), cfg->instance_name, cfg->device_info_service_type) != 0) {
+        log_packet_build_failure("query_response", "build_device_info_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
+        return 0;
+    }
+    if (!use_snapshot_records && is_airport_enabled(cfg) &&
+        build_instance_fqdn(airport_instance_fqdn, sizeof(airport_instance_fqdn), cfg->instance_name, cfg->airport_service_type) != 0) {
+        log_packet_build_failure("query_response", "build_airport_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
+        return 0;
+    }
+
+    for (i = 0; i < qdcount; i++) {
+        char qname[MAX_NAME];
+        uint16_t qtype;
+        uint16_t qclass;
+        uint16_t qclass_raw;
+        uint16_t qclass_base;
+        int reply_route;
+
+        if (decode_name(packet, packet_len, &cursor, qname, sizeof(qname)) != 0 ||
+            cursor + 4 > packet_len) {
+            return 0;
+        }
+        memcpy(&qtype, packet + cursor, 2);
+        memcpy(&qclass, packet + cursor + 2, 2);
+        cursor += 4;
+        qtype = ntohs(qtype);
+        qclass_raw = ntohs(qclass);
+        qclass_base = (uint16_t)(qclass_raw & 0x7FFF);
+        if (qclass_base != DNS_CLASS_IN) {
+            continue;
+        }
+        reply_route = (qclass_raw & DNS_CLASS_CACHE_FLUSH) ? MDNS_REPLY_UNICAST : MDNS_REPLY_MULTICAST;
+
+        if (name_equals(qname, cfg->service_type) && (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
+            routes.smb_ptr |= reply_route;
+            routes.smb_srv |= reply_route;
+            routes.smb_txt |= reply_route;
+            routes.host_a |= reply_route;
+        } else if (cfg->adisk_disks.count > 0 &&
+                   name_equals(qname, cfg->adisk_service_type) &&
+                   (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
+            routes.adisk_ptr |= reply_route;
+            routes.adisk_srv |= reply_route;
+            routes.adisk_txt |= reply_route;
+            routes.host_a |= reply_route;
+        } else if (cfg->device_model[0] != '\0' &&
+                   name_equals(qname, cfg->device_info_service_type) &&
+                   (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
+            routes.device_info_ptr |= reply_route;
+            routes.device_info_srv |= reply_route;
+            routes.device_info_txt |= reply_route;
+            routes.host_a |= reply_route;
+        } else if (!use_snapshot_records && is_airport_enabled(cfg) &&
+                   name_equals(qname, cfg->airport_service_type) &&
+                   (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
+            routes.airport_ptr |= reply_route;
+            routes.airport_srv |= reply_route;
+            routes.airport_txt |= reply_route;
+            routes.host_a |= reply_route;
+        } else if (name_equals(qname, instance_fqdn)) {
+            if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
+                routes.smb_srv |= reply_route;
+                routes.host_a |= reply_route;
+            }
+            if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
+                routes.smb_txt |= reply_route;
+            }
+        } else if (cfg->adisk_disks.count > 0 &&
+                   name_equals(qname, adisk_instance_fqdn)) {
+            if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
+                routes.adisk_srv |= reply_route;
+                routes.host_a |= reply_route;
+            }
+            if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
+                routes.adisk_txt |= reply_route;
+            }
+        } else if (cfg->device_model[0] != '\0' &&
+                   name_equals(qname, device_info_instance_fqdn)) {
+            if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
+                routes.device_info_srv |= reply_route;
+                routes.host_a |= reply_route;
+            }
+            if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
+                routes.device_info_txt |= reply_route;
+            }
+        } else if (!use_snapshot_records && is_airport_enabled(cfg) &&
+                   name_equals(qname, airport_instance_fqdn)) {
+            if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
+                routes.airport_srv |= reply_route;
+                routes.host_a |= reply_route;
+            }
+            if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
+                routes.airport_txt |= reply_route;
+            }
+        } else if (name_equals(qname, cfg->host_fqdn) && (qtype == DNS_TYPE_A || qtype == DNS_TYPE_ANY)) {
+            routes.host_a |= reply_route;
+        } else if (use_snapshot_records) {
+            size_t j;
+            for (j = 0; j < snapshot_records->count; j++) {
+                const struct service_record *record = &snapshot_records->records[j];
+                if (is_suppressed_snapshot_service_type(record->service_type)) {
+                    continue;
+                }
+                if (name_equals(qname, record->service_type) && (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
+                    routes.snapshot_ptr[j] |= reply_route;
+                    routes.snapshot_srv[j] |= reply_route;
+                    routes.snapshot_txt[j] |= reply_route;
+                    routes.snapshot_a[j] |= reply_route;
+                } else if (name_equals(qname, record->instance_fqdn)) {
+                    if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
+                        routes.snapshot_srv[j] |= reply_route;
+                        routes.snapshot_a[j] |= reply_route;
+                    }
+                    if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
+                        routes.snapshot_txt[j] |= reply_route;
+                    }
+                } else if (name_equals(qname, record->host_fqdn) && (qtype == DNS_TYPE_A || qtype == DNS_TYPE_ANY)) {
+                    routes.snapshot_a[j] |= reply_route;
+                }
+            }
+        }
+    }
+
+    if (query_routes_have_destination(&routes, snapshot_records, use_snapshot_records, MDNS_REPLY_UNICAST)) {
+        size_t reply_len;
+        int answers;
+        if (build_query_response_packet(reply, sizeof(reply), &reply_len, &answers, query_id, MDNS_REPLY_UNICAST,
+                                        &routes, instance_fqdn, adisk_instance_fqdn, device_info_instance_fqdn,
+                                        airport_instance_fqdn, cfg, response_ipv4_addr,
+                                        snapshot_records, use_snapshot_records) != 0 ||
+            (answers > 0 &&
+             send_dns_packet("query_response", sockfd, reply, reply_len, source, answers, use_snapshot_records) != 0)) {
+            status = -1;
+        }
+    }
+
+    if (query_routes_have_destination(&routes, snapshot_records, use_snapshot_records, MDNS_REPLY_MULTICAST)) {
+        size_t reply_len;
+        int answers;
+        if (build_query_response_packet(reply, sizeof(reply), &reply_len, &answers, 0, MDNS_REPLY_MULTICAST,
+                                        &routes, instance_fqdn, adisk_instance_fqdn, device_info_instance_fqdn,
+                                        airport_instance_fqdn, cfg, response_ipv4_addr,
+                                        snapshot_records, use_snapshot_records) != 0 ||
+            (answers > 0 &&
+             send_dns_packet("query_response", sockfd, reply, reply_len, multicast_dest, answers, use_snapshot_records) != 0)) {
+            status = -1;
+        }
+    }
+
+    return status;
 }
 
 static int send_context_announcement(const struct iface_context *ctx,
@@ -3896,7 +3984,7 @@ int main(int argc, char **argv) {
                             socklen_t src_len = sizeof(src);
                             ssize_t nread = recvfrom(ctx->sockfd, packet, sizeof(packet), 0, (struct sockaddr *)&src, &src_len);
                             if (nread > 0) {
-                                if (handle_query(ctx->sockfd, packet, (size_t)nread, &mdns_dest, &cfg, ctx->ipv4_addr, &snapshot_records, use_snapshot_records) != 0) {
+                                if (handle_query(ctx->sockfd, packet, (size_t)nread, &mdns_dest, &src, &cfg, ctx->ipv4_addr, &snapshot_records, use_snapshot_records) != 0) {
                                     char detail[160];
                                     char ip_buf[INET_ADDRSTRLEN];
                                     snprintf(detail, sizeof(detail), "iface=%s ip=%s packet_len=%ld from=%s:%u",
@@ -3973,7 +4061,7 @@ int main(int argc, char **argv) {
             socklen_t src_len = sizeof(src);
             nread = recvfrom(sockfd, packet, sizeof(packet), 0, (struct sockaddr *)&src, &src_len);
             if (nread > 0) {
-                if (handle_query(sockfd, packet, (size_t)nread, &mdns_dest, &cfg, cfg.ipv4_addr, &snapshot_records, use_snapshot_records) != 0) {
+                if (handle_query(sockfd, packet, (size_t)nread, &mdns_dest, &src, &cfg, cfg.ipv4_addr, &snapshot_records, use_snapshot_records) != 0) {
                     char detail[128];
                     snprintf(detail, sizeof(detail), "packet_len=%ld from=%s:%u",
                              (long)nread, inet_ntoa(src.sin_addr), (unsigned int)ntohs(src.sin_port));

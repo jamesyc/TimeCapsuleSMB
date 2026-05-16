@@ -362,7 +362,10 @@ def _add_bonjour_results(
                     expected_debug=bonjour_expected_debug,
                     zeroconf_debug=None,
                 )
-            smb_snapshot, discovery_error, bonjour_zeroconf_debug = discover_smb_services_detailed(include_related=True)
+            smb_snapshot, discovery_error, bonjour_zeroconf_debug = discover_smb_services_detailed(
+                include_related=True,
+                target_ip=bonjour_expected.target_ip,
+            )
             bonjour_reason = ""
             if discovery_error is not None:
                 bonjour_reason = discovery_error.message
@@ -387,7 +390,10 @@ def _add_bonjour_results(
                         resolved_record = select_resolved_smb_record(smb_records, selection.instance)
                         resolve_error = None
                         if resolved_record is None:
-                            resolved_record, resolve_error = resolve_smb_instance(selection.instance)
+                            resolved_record, resolve_error = resolve_smb_instance(
+                                selection.instance,
+                                target_ip=bonjour_expected.target_ip,
+                            )
                         if resolve_error is not None:
                             bonjour_reason = resolve_error.message
                             bonjour_debug_needed = True
