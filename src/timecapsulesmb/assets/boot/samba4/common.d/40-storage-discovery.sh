@@ -223,7 +223,10 @@ tc_plist_is_array_end() {
 tc_extract_plist_string_key() {
     extract_key=$1
     extract_line=$2
-    printf '%s\n' "$extract_line" | /usr/bin/sed -n 's/^[[:space:]]*'"$extract_key"'[[:space:]]*=[[:space:]]*"\(.*\)"[[:space:]]*[;,]*[[:space:]]*$/\1/p'
+    printf '%s\n' "$extract_line" | /usr/bin/sed -n \
+        -e 's/^[[:space:]]*'"$extract_key"'[[:space:]]*=[[:space:]]*"\(.*\)"[[:space:]]*[;,]*[[:space:]]*$/\1/p' \
+        -e 's/^[[:space:]]*'"$extract_key"'[[:space:]]*=[[:space:]]*\([^";,[:space:]][^;,]*[^;,[:space:]]\)[[:space:]]*[;,]*[[:space:]]*$/\1/p' \
+        -e 's/^[[:space:]]*'"$extract_key"'[[:space:]]*=[[:space:]]*\([^";,[:space:]]\)[[:space:]]*[;,]*[[:space:]]*$/\1/p'
 }
 
 tc_extract_plist_bool_key() {
@@ -781,4 +784,3 @@ tc_log_mast_volume_state() {
         tc_log "MaSt volume: disk=$disk_device builtin=$builtin part=$part_device root=$volume_root name=$part_name uuid=$part_uuid"
     done <"$volumes_file"
 }
-
