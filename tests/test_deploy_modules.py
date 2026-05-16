@@ -2443,6 +2443,8 @@ int main(void) {{
 int main(void) {{
     struct iface_context_set contexts;
     struct ifreq sample_ifr;
+    struct ifreq copied_ifr;
+    char raw_ifr[sizeof(struct ifreq) + 1];
     size_t expected_variable_step;
 
     if (AUTO_IP_STARTUP_POLL_SECONDS != 2 || AUTO_IP_STABLE_POLL_SECONDS != 30) {{
@@ -2482,6 +2484,18 @@ int main(void) {{
     }}
     if (ifreq_entry_size(&sample_ifr, expected_variable_step, 0) != expected_variable_step) {{
         return 8;
+    }}
+    memset(raw_ifr, 0, sizeof(raw_ifr));
+    memset(&sample_ifr, 0, sizeof(sample_ifr));
+    memset(&copied_ifr, 0, sizeof(copied_ifr));
+    snprintf(sample_ifr.ifr_name, sizeof(sample_ifr.ifr_name), "%s", "bridge0");
+    sample_ifr.ifr_addr.sa_family = AF_INET;
+    memcpy(raw_ifr + 1, &sample_ifr, sizeof(sample_ifr));
+    if (copy_ifreq_entry(&copied_ifr, raw_ifr + 1, sizeof(sample_ifr)) != 0) {{
+        return 11;
+    }}
+    if (strcmp(copied_ifr.ifr_name, "bridge0") != 0 || copied_ifr.ifr_addr.sa_family != AF_INET) {{
+        return 12;
     }}
 
     memset(&contexts, 0, sizeof(contexts));

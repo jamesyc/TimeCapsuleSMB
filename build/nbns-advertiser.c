@@ -241,6 +241,19 @@ static size_t ifreq_entry_size(const struct ifreq *ifr, size_t remaining, int fi
     return step;
 }
 
+static int copy_ifreq_entry(struct ifreq *out, const char *cursor, size_t remaining) {
+    size_t copy_len;
+
+    if (remaining < IFNAMSIZ + sizeof(struct sockaddr)) {
+        return -1;
+    }
+
+    memset(out, 0, sizeof(*out));
+    copy_len = remaining < sizeof(*out) ? remaining : sizeof(*out);
+    memcpy(out, cursor, copy_len);
+    return 0;
+}
+
 static int append_iface_context(struct iface_context_set *out,
                                 const char *name,
                                 uint32_t ipv4_addr,
@@ -299,32 +312,40 @@ static int collect_iface_contexts_with_policy(struct iface_context_set *out, int
     end = cursor + ifc.ifc_len;
     fixed_entries = ifreq_table_uses_fixed_entries((size_t)ifc.ifc_len);
     while (cursor < end) {
-        struct ifreq *ifr = (struct ifreq *)cursor;
+        struct ifreq ifr_entry;
         struct ifreq flags_req;
         struct ifreq mask_req;
-        struct sockaddr_in *sin;
+        struct sockaddr_in sin;
         int flags;
         uint32_t netmask = 0;
         size_t remaining = (size_t)(end - cursor);
-        size_t step = ifreq_entry_size(ifr, remaining, fixed_entries);
+        size_t step;
 
+        if (copy_ifreq_entry(&ifr_entry, cursor, remaining) != 0) {
+            break;
+        }
+        step = ifreq_entry_size(&ifr_entry, remaining, fixed_entries);
         if (step == 0) {
             break;
         }
 
-        if (ifr->ifr_addr.sa_family == AF_INET) {
+        if (ifr_entry.ifr_addr.sa_family == AF_INET) {
             memset(&flags_req, 0, sizeof(flags_req));
-            strncpy(flags_req.ifr_name, ifr->ifr_name, sizeof(flags_req.ifr_name) - 1);
+            strncpy(flags_req.ifr_name, ifr_entry.ifr_name, sizeof(flags_req.ifr_name) - 1);
             if (ioctl(sockfd, SIOCGIFFLAGS, &flags_req) == 0) {
                 flags = flags_req.ifr_flags;
                 if (iface_flags_are_usable(flags, require_running)) {
                     memset(&mask_req, 0, sizeof(mask_req));
-                    strncpy(mask_req.ifr_name, ifr->ifr_name, sizeof(mask_req.ifr_name) - 1);
+                    strncpy(mask_req.ifr_name, ifr_entry.ifr_name, sizeof(mask_req.ifr_name) - 1);
                     if (ioctl(sockfd, SIOCGIFNETMASK, &mask_req) == 0) {
-                        netmask = ((struct sockaddr_in *)&mask_req.ifr_addr)->sin_addr.s_addr;
+                        struct sockaddr_in netmask_addr;
+                        memset(&netmask_addr, 0, sizeof(netmask_addr));
+                        memcpy(&netmask_addr, &mask_req.ifr_addr, sizeof(netmask_addr));
+                        netmask = netmask_addr.sin_addr.s_addr;
                     }
-                    sin = (struct sockaddr_in *)&ifr->ifr_addr;
-                    append_iface_context(out, ifr->ifr_name, sin->sin_addr.s_addr, netmask, flags);
+                    memset(&sin, 0, sizeof(sin));
+                    memcpy(&sin, &ifr_entry.ifr_addr, sizeof(sin));
+                    append_iface_context(out, ifr_entry.ifr_name, sin.sin_addr.s_addr, netmask, flags);
                 }
             }
         }

@@ -14,15 +14,15 @@
     },
     "nbns-advertiser": {
       "path": "bin/nbns/nbns-advertiser",
-      "sha256": "5597c1012d83605e5ea39d2c17b57a6adaab77602b16cf1bf451f4f154f63a09"
+      "sha256": "f0773ab1a1e55c1d047be8782c2811f25bfc0beec79c43cbf4e1b8518752ef9f"
     },
     "nbns-advertiser-netbsd4le": {
       "path": "bin/nbns-netbsd4le/nbns-advertiser",
-      "sha256": "4622aecd9d58cb8ed71f78fba1604c870590ef0d892c809231ab57958a9f85d6"
+      "sha256": "760f61b15cfb47036b3d5e7ee9b7132616e800d5ef0d35d40fd10711897f2f3b"
     },
     "nbns-advertiser-netbsd4be": {
       "path": "bin/nbns-netbsd4be/nbns-advertiser",
-      "sha256": "fa80eb4098ad95dba8f5fa7b9631091d4a98e08d4fb7530c3b480c7afbe5e629"
+      "sha256": "474e41b3db6e9acf6bb0e255c506960f2c3c74d728305cd6fd5322326f79fcbc"
     },
     "smbd": {
       "path": "bin/samba4/smbd",
