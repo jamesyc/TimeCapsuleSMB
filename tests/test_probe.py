@@ -86,11 +86,44 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(logs["remote_nbns_log_tail"], "nbns log")
         self.assertEqual(logs["remote_smbd_log_tail"], "smbd log")
         self.assertEqual(run_ssh_mock.call_count, 6)
+        commands = [call.args[1] for call in run_ssh_mock.call_args_list]
+        self.assertTrue(any("/Volumes/dk2/.samba4/logs/mdns.log" in command for command in commands))
+        self.assertTrue(any("/Volumes/dk2/.samba4/logs/nbns.log" in command for command in commands))
+        self.assertFalse(any("/mnt/Memory/samba4/var/mdns.log" in command for command in commands))
+        self.assertFalse(any("/mnt/Memory/samba4/var/nbns.log" in command for command in commands))
         for call in run_ssh_mock.call_args_list:
             args, kwargs = call
             self.assertEqual(args[0], connection)
             self.assertFalse(kwargs["check"])
             self.assertEqual(kwargs["timeout"], probe.REMOTE_LOG_TAIL_TIMEOUT_SECONDS)
+
+    def test_read_runtime_log_tails_conn_falls_back_to_ram_advertiser_logs_without_payload_state(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+
+        def fake_run_ssh(
+            _connection: SshConnection,
+            remote_cmd: str,
+            **_kwargs: object,
+        ) -> subprocess.CompletedProcess[str]:
+            if "payload.tsv" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=1, stdout="", stderr="")
+            if "rc.local.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rc log\n", stderr="")
+            if "watchdog.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="watchdog log\n", stderr="")
+            if "/mnt/Memory/samba4/var/mdns.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="ram mdns log\n", stderr="")
+            if "/mnt/Memory/samba4/var/nbns.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="ram nbns log\n", stderr="")
+            self.fail(f"unexpected remote command: {remote_cmd}")
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=fake_run_ssh) as run_ssh_mock:
+            logs = read_runtime_log_tails_conn(connection)
+
+        self.assertEqual(logs["remote_payload_log_dir"], f"(missing {probe.RUNTIME_PAYLOAD_TSV})")
+        self.assertEqual(logs["remote_mdns_log_tail"], "ram mdns log")
+        self.assertEqual(logs["remote_nbns_log_tail"], "ram nbns log")
+        self.assertEqual(run_ssh_mock.call_count, 5)
 
     def test_read_remote_service_socket_diagnostics_conn_scopes_fstat_to_service_processes(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
@@ -109,13 +142,12 @@ class ProbeTests(unittest.TestCase):
         self.assertFalse(kwargs["check"])
         self.assertEqual(kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
 
-    def test_runtime_startup_failure_debug_fields_classifies_network_ipv4_timeout(self) -> None:
+    def test_runtime_startup_failure_debug_fields_classifies_auto_ip_unavailable(self) -> None:
         fields = runtime_startup_failure_debug_fields(
             {
-                "remote_rc_local_log_tail": (
-                    "rc.local: managed Samba boot startup beginning\n"
-                    "rc.local: timed out waiting for IPv4 on bridge0\n"
-                    "rc.local: network startup failed: could not determine bridge0 IPv4 address\n"
+                "remote_watchdog_log_tail": (
+                    "watchdog: mDNS auto-ip check: no usable IPv4 yet\n"
+                    "watchdog: mDNS startup deferred; no usable IPv4 has appeared yet\n"
                 )
             }
         )
@@ -123,19 +155,22 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(
             fields,
             {
-                "runtime_startup_failure": "network_ipv4_timeout",
-                "runtime_startup_failed_iface": "bridge0",
+                "runtime_startup_failure": "network_auto_ip_unavailable",
+                "runtime_startup_waiting_for_auto_ip": True,
             },
         )
 
-    def test_read_remote_network_diagnostics_conn_summarizes_configured_iface_and_candidates(self) -> None:
+    def test_runtime_startup_failure_debug_fields_classifies_probe_auto_ip_waiting_detail(self) -> None:
+        fields = runtime_startup_failure_debug_fields(
+            {},
+            verification_detail="runtime verification timed out; mdns-advertiser is waiting for auto-IP",
+        )
+
+        self.assertEqual(fields["runtime_startup_failure"], "network_auto_ip_unavailable")
+
+    def test_read_remote_network_diagnostics_conn_summarizes_live_candidates(self) -> None:
         connection = SshConnection("root@169.254.44.9", "pw", "-o StrictHostKeyChecking=no")
         stdout = """\
-NET_IFACE=bridge0
-TC_DIAG_BEGIN target_ifconfig
-bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-\tstatus: active
-TC_DIAG_END target_ifconfig
 TC_DIAG_BEGIN ifconfig_a
 bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
 \tinet 169.254.44.9 netmask 0xffff0000 broadcast 169.254.255.255
@@ -152,12 +187,11 @@ TC_DIAG_END routes
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
             diagnostics = read_remote_network_diagnostics_conn(connection)
 
-        self.assertEqual(diagnostics["remote_network_config"], {"NET_IFACE": "bridge0", "ssh_target_host": "169.254.44.9"})
+        self.assertEqual(diagnostics["remote_network_config"], {"ssh_target_host": "169.254.44.9"})
         self.assertEqual(diagnostics["remote_network_probe_rc"], 0)
-        self.assertIn("bridge0: flags=", str(diagnostics["remote_network_target_ifconfig"]))
         self.assertEqual(diagnostics["remote_network_target_ip_matches"], ["bcmeth1"])
         self.assertIsNone(diagnostics["remote_network_preferred_iface"])
-        self.assertEqual(diagnostics["remote_network_failure_hint"], "configured interface bridge0 has no IPv4 address")
+        self.assertNotIn("remote_network_failure_hint", diagnostics)
         self.assertEqual(
             diagnostics["remote_network_ipv4_interfaces"],
             [
@@ -169,7 +203,7 @@ TC_DIAG_END routes
         args, kwargs = run_ssh_mock.call_args
         self.assertEqual(args[0], connection)
         self.assertIn("/sbin/ifconfig -a", args[1])
-        self.assertIn("/mnt/Flash/tcapsulesmb.conf", args[1])
+        self.assertNotIn("/mnt/Flash/tcapsulesmb.conf", args[1])
         self.assertFalse(kwargs["check"])
         self.assertEqual(kwargs["timeout"], probe.REMOTE_NETWORK_DIAGNOSTICS_TIMEOUT_SECONDS)
 

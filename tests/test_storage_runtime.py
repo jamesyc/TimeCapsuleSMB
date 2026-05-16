@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import shlex
-import socket
 import subprocess
 import tempfile
 import textwrap
@@ -10,8 +9,9 @@ from pathlib import Path
 from unittest import mock
 
 from timecapsulesmb.core.config import AppConfig
-from timecapsulesmb.cli.deploy import derive_net_ipv4_hint, render_flash_runtime_config
+from timecapsulesmb.cli.deploy import render_flash_runtime_config
 from timecapsulesmb.deploy.executor import upload_flash_file
+from timecapsulesmb.deploy.boot_assets import load_boot_asset_text
 from timecapsulesmb.deploy.planner import (
     GENERATED_FLASH_CONFIG_SOURCE,
     build_deployment_plan,
@@ -20,7 +20,6 @@ from timecapsulesmb.device.probe import (
     normalize_runtime_mdns_host_label,
     normalize_runtime_mdns_instance_name,
     normalize_runtime_netbios_name,
-    runtime_ipv4_cidr_from_ifconfig,
 )
 from timecapsulesmb.device.storage import (
     PayloadVerificationResult,
@@ -50,7 +49,7 @@ class StorageRuntimeTests(unittest.TestCase):
         if cls._runtime_asset_texts is None:
             repo_root = Path(__file__).resolve().parent.parent
             cls._runtime_asset_texts = (
-                (repo_root / "src/timecapsulesmb/assets/boot/samba4/common.sh").read_text(),
+                load_boot_asset_text("common.sh"),
                 (repo_root / "src/timecapsulesmb/assets/boot/samba4/start-samba.sh").read_text(),
                 (repo_root / "src/timecapsulesmb/assets/boot/samba4/watchdog.sh").read_text(),
             )
@@ -94,10 +93,8 @@ class StorageRuntimeTests(unittest.TestCase):
         (flash / "tcapsulesmb.conf").write_text(
             textwrap.dedent(
                 f"""\
-                TC_CONFIG_VERSION=1
+                TC_CONFIG_VERSION=2
                 PAYLOAD_DIR_NAME='.samba4'
-                NET_IFACE='bridge0'
-                NET_IPV4_HINT=''
                 SMB_SAMBA_USER='admin'
                 MDNS_DEVICE_MODEL='TimeCapsule6,106'
                 AIRPORT_SYAP='106'
@@ -131,115 +128,67 @@ class StorageRuntimeTests(unittest.TestCase):
             )
         return "\n".join(lines) + ("\n" if lines else "")
 
-    def test_common_wait_for_bind_interfaces_logs_filtered_network_diagnostics_on_timeout(self) -> None:
+    def test_common_select_advertise_mac_prefers_acp_lama(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            fake_ifconfig = tmp_path / "ifconfig"
-            ifconfig_calls = tmp_path / "ifconfig.calls"
-            fake_ifconfig.write_text(
+            acp = tmp_path / "acp"
+            acp.write_text(
                 textwrap.dedent(
-                    f"""\
+                    """\
                     #!/bin/sh
-                    printf '%s\\n' "$1" >> {shlex.quote(str(ifconfig_calls))}
-                    case "$1" in
-                        bridge0)
-                            cat <<'OUT'
-                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-                            ether 00:11:22:33:44:55
-                            status: active
-                    OUT
-                            ;;
-                        -a)
-                            cat <<'OUT'
-                    bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-                            ether 66:77:88:99:aa:bb
-                            inet 169.254.44.9 netmask 0xffff0000 broadcast 169.254.255.255
-                            status: active
-                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-                            ether 00:11:22:33:44:55
-                            status: active
-                    OUT
-                            ;;
-                        *)
-                            exit 1
-                            ;;
+                    case "$1:$2" in
+                        -q:laMA) echo 80:EA:96:E6:58:68 ;;
+                        -q:waMA) echo 80:EA:96:E6:58:69 ;;
+                        *) exit 1 ;;
                     esac
                     """
                 )
             )
-            fake_ifconfig.chmod(0o755)
-            common_path = flash / "common.sh"
-            common_path.write_text(common_path.read_text().replace("/sbin/ifconfig", str(fake_ifconfig)))
-            script = tmp_path / "network-timeout-diagnostics.sh"
+            acp.chmod(0o755)
+            script = tmp_path / "advertise-mac.sh"
             script.write_text(
                 textwrap.dedent(
                     f"""\
                     #!/bin/sh
                     set -eu
                     . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    sleep() {{ :; }}
-                    tc_wait_for_bind_interfaces || status=$?
-                    printf 'status=%s\\n' "${{status:-0}}"
-                    cat "$RAM_VAR/test.log"
+                    mac=$(tc_select_advertise_mac || true)
+                    printf 'mac=%s\\n' "$mac"
                     """
                 )
             )
             script.chmod(0o755)
 
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            bridge0_ifconfig_call_count = ifconfig_calls.read_text().splitlines().count("bridge0")
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("status=1\n", proc.stdout)
-        self.assertEqual(bridge0_ifconfig_call_count, 121)
-        self.assertIn("timed out waiting for IPv4 on bridge0", proc.stdout)
-        self.assertIn("network diagnostics: configured NET_IFACE=bridge0", proc.stdout)
-        self.assertIn("network diagnostics: bridge0: bridge0: flags=", proc.stdout)
-        self.assertIn("network diagnostics: ifconfig -a: bcmeth1: flags=", proc.stdout)
-        self.assertIn("network diagnostics: ifconfig -a:         inet 169.254.44.9", proc.stdout)
-        self.assertNotIn("00:11:22:33:44:55", proc.stdout)
-        self.assertNotIn("66:77:88:99:aa:bb", proc.stdout)
+        self.assertEqual(proc.stdout, "mac=80:EA:96:E6:58:68\n")
 
-    def test_common_wait_for_bind_interfaces_uses_first_non_link_local_ipv4(self) -> None:
+    def test_common_select_advertise_mac_falls_back_to_live_interface_mac(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
             fake_ifconfig = tmp_path / "ifconfig"
             fake_ifconfig.write_text(
-                textwrap.dedent(
-                    """\
-                    #!/bin/sh
-                    cat <<'OUT'
-                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-                            inet 0.0.0.0 netmask 0xff000000 broadcast 255.255.255.255
-                            inet 169.254.44.9 netmask 0xffff0000 broadcast 169.254.255.255
-                            inet 192.168.1.2 netmask 0xffffff00 broadcast 192.168.1.255
-                    OUT
-                    """
-                )
+                "#!/bin/sh\n"
+                "cat <<'OUT'\n"
+                "bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500\n"
+                "        address: 80:ea:96:e6:58:70\n"
+                "OUT\n"
             )
             fake_ifconfig.chmod(0o755)
             common_path = flash / "common.sh"
             common_path.write_text(common_path.read_text().replace("/sbin/ifconfig", str(fake_ifconfig)))
-            script = tmp_path / "network-ready.sh"
+            script = tmp_path / "advertise-mac-fallback.sh"
             script.write_text(
                 textwrap.dedent(
                     f"""\
                     #!/bin/sh
                     set -eu
                     . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    sleep() {{ :; }}
-                    tc_wait_for_bind_interfaces
-                    cat "$RAM_VAR/test.log"
+                    mac=$(tc_select_advertise_mac || true)
+                    printf 'mac=%s\\n' "$mac"
                     """
                 )
             )
@@ -248,163 +197,7 @@ class StorageRuntimeTests(unittest.TestCase):
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("127.0.0.1/8 192.168.1.2/24", proc.stdout)
-        self.assertIn("network interface bridge0 ready with IPv4 192.168.1.2/24", proc.stdout)
-
-    def test_common_runtime_interface_ipv4_cidr_matches_python_policy(self) -> None:
-        multi_ipv4 = textwrap.dedent(
-            """\
-            bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-                    inet 10.0.1.3 netmask 0xffff0000 broadcast 10.0.255.255
-                    inet 192.168.1.2 netmask 0xffffff00 broadcast 192.168.1.255
-            """
-        )
-        cases = {
-            "exact_hint": (multi_ipv4, "192.168.1.2"),
-            "stale_hint": (multi_ipv4, "192.168.99.99"),
-            "absent_hint": (multi_ipv4, ""),
-            "usable_after_bad": (
-                textwrap.dedent(
-                    """\
-                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-                            inet 0.0.0.0 netmask 0xff000000 broadcast 255.255.255.255
-                            inet 127.0.0.1 netmask 0xff000000 broadcast 127.255.255.255
-                            inet 169.254.44.9 netmask 0xffff0000 broadcast 169.254.255.255
-                            inet 192.168.1.2 netmask 0xffffff00 broadcast 192.168.1.255
-                    """
-                ),
-                "169.254.44.9",
-            ),
-            "netbsd_alias": (
-                textwrap.dedent(
-                    """\
-                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-                            inet alias 10.0.1.13 netmask 0xffffff00 broadcast 10.0.1.255
-                    """
-                ),
-                "",
-            ),
-            "netbsd_alias_hint": (
-                textwrap.dedent(
-                    """\
-                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-                            inet 10.0.1.3 netmask 0xffff0000 broadcast 10.0.255.255
-                            inet alias 192.168.1.2 netmask 0xffffff00 broadcast 192.168.1.255
-                    """
-                ),
-                "192.168.1.2",
-            ),
-            "link_local_alias_before_usable": (
-                textwrap.dedent(
-                    """\
-                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-                            inet alias 169.254.44.9 netmask 0xffff0000 broadcast 169.254.255.255
-                            inet 192.168.1.2 netmask 0xffffff00 broadcast 192.168.1.255
-                    """
-                ),
-                "",
-            ),
-            "link_local_only": (
-                textwrap.dedent(
-                    """\
-                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-                            inet 0.0.0.0 netmask 0xff000000 broadcast 255.255.255.255
-                            inet 169.254.44.9 netmask 0xffff0000 broadcast 169.254.255.255
-                    """
-                ),
-                "169.254.44.9",
-            ),
-            "active_no_ipv4": (
-                textwrap.dedent(
-                    """\
-                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-                            status: active
-                    """
-                ),
-                "",
-            ),
-            "missing_netmask": (
-                textwrap.dedent(
-                    """\
-                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-                            inet 10.20.3.4 broadcast 10.20.3.255
-                    """
-                ),
-                "",
-            ),
-            "dotted_netmask": (
-                textwrap.dedent(
-                    """\
-                    bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-                            inet 10.20.3.4 netmask 255.255.254.0 broadcast 10.20.3.255
-                    """
-                ),
-                "",
-            ),
-        }
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            case_dir = tmp_path / "ifconfig-cases"
-            case_dir.mkdir()
-            for name, (raw, hint) in cases.items():
-                (case_dir / f"{name}.txt").write_text(raw)
-                (case_dir / f"{name}.hint").write_text(hint)
-            fake_ifconfig = tmp_path / "ifconfig"
-            fake_ifconfig.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    case "$1" in
-                        bridge0)
-                            cat {shlex.quote(str(case_dir))}/"$IFCONFIG_CASE.txt"
-                            ;;
-                        *)
-                            exit 1
-                            ;;
-                    esac
-                    """
-                )
-            )
-            fake_ifconfig.chmod(0o755)
-            common_path = flash / "common.sh"
-            common_path.write_text(common_path.read_text().replace("/sbin/ifconfig", str(fake_ifconfig)))
-            case_names = " ".join(shlex.quote(name) for name in cases)
-            script = tmp_path / "runtime-interface-policy.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    for case_name in {case_names}; do
-                        IFCONFIG_CASE=$case_name
-                        IFCONFIG_HINT=$(cat {shlex.quote(str(case_dir))}/"$IFCONFIG_CASE.hint")
-                        export IFCONFIG_CASE
-                        export IFCONFIG_HINT
-                        status=0
-                        cidr=$(get_runtime_iface_ipv4_cidr bridge0 "$IFCONFIG_HINT") || status=$?
-                        printf '__TC_BEGIN__\\t%s\\t%s\\n' "$case_name" "$status"
-                        if [ "$status" -eq 0 ]; then
-                            printf '%s\\n' "$cidr"
-                        fi
-                        printf '__TC_END__\\t%s\\n' "$case_name"
-                    done
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        sections = self.parse_named_shell_sections(proc.stdout)
-        for name, (raw, hint) in cases.items():
-            with self.subTest(case=name):
-                expected_cidr = runtime_ipv4_cidr_from_ifconfig(raw, hint_ip=hint)
-                status, stdout = sections[name]
-                self.assertEqual(status, 0 if expected_cidr is not None else 1)
-                self.assertEqual(stdout, f"{expected_cidr}\n" if expected_cidr is not None else "")
+        self.assertEqual(proc.stdout, "mac=80:ea:96:e6:58:70\n")
 
     def write_fake_acp(self, tmp_path: Path, raw: str | bytes, *, final_newline: bool = True) -> Path:
         acp = tmp_path / "acp"
@@ -571,8 +364,8 @@ class StorageRuntimeTests(unittest.TestCase):
                 for fixture_name in {names}; do
                     echo "$fixture_name" >{shlex.quote(str(selector))}
                     printf '__TC_BEGIN__\\t%s\\t0\\n' "$fixture_name"
-                    tc_read_mast_volumes_to "$TC_VOLUMES_TSV" "$TC_MAST_RAW"
-                    tc_build_share_state "$TC_VOLUMES_TSV"
+                    tc_read_mast_volumes_to "$RAM_VAR/test-volumes.tsv" "$RAM_VAR/test-mast.raw"
+                    tc_build_share_state "$RAM_VAR/test-volumes.tsv"
                     printf 'shares\\n'
                     cat "$TC_SHARES_TSV"
                     printf 'adisk\\n'
@@ -707,9 +500,9 @@ MaSt = (
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
                     sleep() {{ :; }}
-                    tc_wait_for_mast_volumes_to "$TC_VOLUMES_TSV" "$TC_MAST_RAW" 6
+                    tc_wait_for_mast_volumes_to "$RAM_VAR/test-volumes.tsv" "$RAM_VAR/test-mast.raw" 6
                     printf 'count=%s\\n' "$(cat {acp_counter})"
-                    cat "$TC_VOLUMES_TSV"
+                    cat "$RAM_VAR/test-volumes.tsv"
                     cat "$RAM_VAR/test.log"
                     """
                 )
@@ -753,7 +546,7 @@ MaSt = (
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
                     sleep() {{ :; }}
-                    tc_wait_for_mast_volumes_to "$TC_VOLUMES_TSV" "$TC_MAST_RAW" 6 || status=$?
+                    tc_wait_for_mast_volumes_to "$RAM_VAR/test-volumes.tsv" "$RAM_VAR/test-mast.raw" 6 || status=$?
                     printf 'status=%s\\n' "${{status:-0}}"
                     printf 'count=%s\\n' "$(cat {acp_counter})"
                     cat "$RAM_VAR/test.log"
@@ -965,7 +758,6 @@ MaSt = (
     def test_flash_runtime_config_contains_runtime_settings_and_no_share_name(self) -> None:
         config = AppConfig.from_values(
             {
-                "TC_NET_IFACE": "bridge0",
                 "TC_SAMBA_USER": "admin",
                 "TC_MDNS_DEVICE_MODEL": "TimeCapsule6,106",
                 "TC_AIRPORT_SYAP": "106",
@@ -978,11 +770,14 @@ MaSt = (
             PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
             nbns_enabled=True,
             debug_logging=True,
-            net_ipv4_hint="10.0.0.2",
         )
 
-        self.assertIn("PAYLOAD_DIR_NAME=.samba4\n", rendered)
-        self.assertIn("NET_IPV4_HINT=10.0.0.2\n", rendered)
+        self.assertNotIn("PAYLOAD_DIR_NAME", rendered)
+        self.assertNotIn("SMB_SAMBA_USER", rendered)
+        self.assertNotIn("MDNS_DEVICE_MODEL", rendered)
+        self.assertNotIn("AIRPORT_SYAP", rendered)
+        self.assertNotIn("NET_IFACE", rendered)
+        self.assertNotIn("NET_IPV4_HINT", rendered)
         self.assertNotIn("PAYLOAD_VOLUME_HINT", rendered)
         self.assertNotIn("PAYLOAD_DEVICE_HINT", rendered)
         self.assertNotIn("PAYLOAD_INSTALL_ID", rendered)
@@ -995,41 +790,6 @@ MaSt = (
         self.assertNotIn("MDNS_INSTANCE_NAME", rendered)
         self.assertNotIn("MDNS_HOST_LABEL", rendered)
         self.assertNotIn("TC_SHARE_NAME", rendered)
-
-    def test_deploy_net_ipv4_hint_uses_literal_host_on_interface(self) -> None:
-        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_NET_IFACE": "bridge0"})
-
-        hint = derive_net_ipv4_hint(config, ("169.254.44.9", "10.0.0.2"))
-
-        self.assertEqual(hint, "10.0.0.2")
-
-    def test_deploy_net_ipv4_hint_resolves_hostname_on_interface(self) -> None:
-        config = AppConfig.from_values({"TC_HOST": "root@timecapsule.local", "TC_NET_IFACE": "bridge0"})
-        resolved = [
-            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("169.254.44.9", 0)),
-            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("10.0.0.2", 0)),
-        ]
-
-        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=resolved):
-            hint = derive_net_ipv4_hint(config, ("10.0.0.2",))
-
-        self.assertEqual(hint, "10.0.0.2")
-
-    def test_deploy_net_ipv4_hint_omits_unresolved_or_unmatched_host(self) -> None:
-        config = AppConfig.from_values({"TC_HOST": "root@timecapsule.local", "TC_NET_IFACE": "bridge0"})
-        resolved = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("10.0.0.3", 0))]
-
-        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", return_value=resolved):
-            self.assertEqual(derive_net_ipv4_hint(config, ("10.0.0.2",)), "")
-        with mock.patch("timecapsulesmb.core.net.socket.getaddrinfo", side_effect=OSError):
-            self.assertEqual(derive_net_ipv4_hint(config, ("10.0.0.2",)), "")
-
-    def test_deploy_net_ipv4_hint_rejects_link_local_host(self) -> None:
-        config = AppConfig.from_values({"TC_HOST": "root@169.254.44.9", "TC_NET_IFACE": "bridge0"})
-
-        hint = derive_net_ipv4_hint(config, ("169.254.44.9",))
-
-        self.assertEqual(hint, "")
 
     def test_common_runtime_identity_normalizers_match_python(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1146,21 +906,20 @@ MaSt = (
                             syVs) echo 7.9.1 ;;
                             srcv) echo 79100.2 ;;
                             syAP) echo 119 ;;
+                            laMA) echo 80:EA:96:E6:58:68 ;;
                             *) return 1 ;;
                         esac
                     }}
                     get_iface_mac() {{ echo 80:EA:96:E6:58:68; }}
                     get_radio_mac() {{ return 1; }}
-                    get_iface_ipv4() {{ echo 192.168.1.2; }}
                     stop_nbns_conflicts() {{ return 0; }}
-                    TC_NET_IFACE_IP=192.168.1.2
                     tc_set_payload_log_dir {payload} {volumes}/dk2
                     cat >"$TC_SHARES_TSV" <<'EOF'
                     Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     EOF
                     tc_init_runtime_identity
-                    tc_generate_smb_conf {payload} "127.0.0.1/8 192.168.1.2/24"
-                    tc_launch_mdns_advertiser "mdns test" 0 0 0
+                    tc_generate_smb_conf {payload}
+                    tc_launch_mdns_advertiser "mdns test" 0 0
                     wait "$mdns_launch_pid" || true
                     tc_launch_nbns "nbns test" 0
                     wait "$!" || true
@@ -1182,7 +941,9 @@ MaSt = (
         self.assertIn("server string = James's AirPort Time Capsule\n", proc.stdout)
         self.assertIn("--instance James's AirPort Time Capsule", proc.stdout)
         self.assertIn("--host time-capsule", proc.stdout)
-        self.assertIn("nbns_args=--name TimeCapsule --ipv4 192.168.1.2", proc.stdout)
+        self.assertIn("--auto-ip", proc.stdout)
+        self.assertIn("nbns_args=--name TimeCapsule", proc.stdout)
+        self.assertIn("--auto-ip", proc.stdout)
         self.assertIn("runtime identity: mdns_instance=James's AirPort Time Capsule mdns_host=time-capsule netbios=TimeCapsule server_string=James's AirPort Time Capsule", proc.stdout)
         self.assertNotIn("LegacyInstance", proc.stdout)
         self.assertNotIn("legacy-host", proc.stdout)
@@ -1218,7 +979,7 @@ MaSt = (
         connection = SshConnection("root@10.0.0.2", "pw", "")
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "tcapsulesmb.conf"
-            source.write_text("TC_CONFIG_VERSION=1\n")
+            source.write_text("TC_CONFIG_VERSION=2\n")
 
             with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
                 with mock.patch("timecapsulesmb.deploy.executor.run_scp") as run_scp_mock:
@@ -1392,8 +1153,6 @@ MaSt = (
                         tc_tune_kernel_memory() {{ echo tune; }}
                         tc_prepare_locks_ramdisk() {{ echo locks; return 0; }}
                         tc_prepare_legacy_prefix() {{ echo legacy; }}
-                        tc_wait_for_bind_interfaces() {{ echo "127.0.0.1/8 192.168.1.2/24"; }}
-                        tc_prepare_local_hostname_resolution() {{ echo hostname; }}
                         tc_init_runtime_identity() {{ echo identity; }}
                         tc_refresh_disk_state() {{
                             echo refresh
@@ -1408,11 +1167,8 @@ MaSt = (
                         Data	dk2	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa	0x82
                         EOF
                         }}
-                        tc_start_mdns_capture() {{ echo mdns-capture; }}
-                        tc_stage_disk_runtime() {{ echo "stage $1"; }}
+                        tc_stage_disk_runtime() {{ echo stage; }}
                         tc_start_smbd() {{ echo smbd; }}
-                        tc_start_mdns_advertiser() {{ echo mdns; }}
-                        tc_start_nbns() {{ echo nbns; }}
                         tc_start_watchdog() {{ echo watchdog; }}
                         """
                     )
@@ -1436,14 +1192,10 @@ MaSt = (
                     "tune",
                     "locks",
                     "legacy",
-                    "hostname",
                     "refresh",
-                    "mdns-capture",
                     "identity",
-                    "stage 127.0.0.1/8 192.168.1.2/24",
+                    "stage",
                     "smbd",
-                    "mdns",
-                    "nbns",
                     "watchdog",
                     "",
                 )
@@ -1478,8 +1230,8 @@ MaSt = (
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
                     is_volume_root_mounted() {{ return 0; }}
-                    printf %s {shlex.quote(row)} >"$TC_VOLUMES_TSV"
-                    tc_build_share_state "$TC_VOLUMES_TSV"
+                    printf %s {shlex.quote(row)} >"$RAM_VAR/test-volumes.tsv"
+                    tc_build_share_state "$RAM_VAR/test-volumes.tsv"
                     printf 'shares\\n'
                     cat "$TC_SHARES_TSV"
                     printf 'adisk\\n'
@@ -1587,11 +1339,11 @@ MaSt = (
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
                     is_volume_root_mounted() {{ return 0; }}
-                    cat >"$TC_VOLUMES_TSV" <<'EOF'
+                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
                     wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     sd0	0	dk3	{volumes}/dk3	Data	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
                     EOF
-                    tc_build_share_state "$TC_VOLUMES_TSV"
+                    tc_build_share_state "$RAM_VAR/test-volumes.tsv"
                     printf 'shares\\n'
                     cat "$TC_SHARES_TSV"
                     printf 'adisk\\n'
@@ -1632,11 +1384,11 @@ MaSt = (
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
                     is_volume_root_mounted() {{ return 0; }}
-                    cat >"$TC_VOLUMES_TSV" <<'EOF'
+                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
                     wd0	1	dk2	{volumes}/dk2	{long_name}	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     sd0	0	dk3	{volumes}/dk3	{long_name}	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
                     EOF
-                    tc_build_share_state "$TC_VOLUMES_TSV"
+                    tc_build_share_state "$RAM_VAR/test-volumes.tsv"
                     cat "$TC_ADISK_TSV"
                     """
                 )
@@ -1677,14 +1429,15 @@ MaSt = (
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
                     is_volume_root_mounted() {{ return 0; }}
-                    cat >"$TC_VOLUMES_TSV" <<'EOF'
+                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
                     wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     sd0	0	dk3	{volumes}/dk3	USB	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
                     EOF
-                    tc_resolve_payload "$TC_VOLUMES_TSV"
+                    tc_resolve_payload "$RAM_VAR/test-volumes.tsv"
                     tc_write_payload_state "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME" "$TC_RESOLVED_PAYLOAD_DEVICE"
-                    tc_read_payload_state
+                    tc_load_payload_state
                     printf '%s\\n%s\\n%s\\n' "$TC_PAYLOAD_DIR" "$TC_PAYLOAD_VOLUME" "$TC_PAYLOAD_DEVICE"
+                    printf 'mdns-log=%s\\nnbns-log=%s\\n' "$TC_MDNS_LOG_FILE" "$TC_NBNS_LOG_FILE"
                     """
                 )
             )
@@ -1694,7 +1447,12 @@ MaSt = (
             log_text = (memory / "samba4/var/test.log").read_text()
 
             self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertEqual(proc.stdout, f"{volumes}/dk3/.samba4\n{volumes}/dk3\n/dev/dk3\n")
+            self.assertEqual(
+                proc.stdout,
+                f"{volumes}/dk3/.samba4\n{volumes}/dk3\n/dev/dk3\n"
+                f"mdns-log={volumes}/dk3/.samba4/logs/mdns.log\n"
+                f"nbns-log={volumes}/dk3/.samba4/logs/nbns.log\n",
+            )
             self.assertIn(f"payload directory selected from mounted MaSt volumes: {volumes}/dk3/.samba4", log_text)
 
     def test_common_payload_discovery_does_not_manual_mount_after_first_invalid_payload(self) -> None:
@@ -1719,10 +1477,10 @@ MaSt = (
                         echo "unexpected manual mount" >>{mount_log}
                         return 0
                     }}
-                    cat >"$TC_VOLUMES_TSV" <<'EOF'
+                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
                     wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     EOF
-                    tc_resolve_payload "$TC_VOLUMES_TSV" || status=$?
+                    tc_resolve_payload "$RAM_VAR/test-volumes.tsv" || status=$?
                     printf 'status=%s\\n' "${{status:-0}}"
                     """
                 )
@@ -1760,10 +1518,10 @@ MaSt = (
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
                     is_volume_root_mounted() {{ [ "$1" = "{volumes}/dk2" ]; }}
-                    cat >"$TC_VOLUMES_TSV" <<'EOF'
+                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
                     wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     EOF
-                    tc_resolve_payload "$TC_VOLUMES_TSV" || status=$?
+                    tc_resolve_payload "$RAM_VAR/test-volumes.tsv" || status=$?
                     printf 'status=%s\\n' "${{status:-0}}"
                     """
                 )
@@ -1942,7 +1700,7 @@ MaSt = (
                     cat >"$TC_SHARES_TSV" <<'EOF'
                     Data	{volumes}/dk2/ShareRoot	dk2	1	f42bdb83-c265-5522-a087-25606a4d0abf
                     EOF
-                    tc_stage_disk_runtime "127.0.0.1/8 192.168.1.2/24"
+                    tc_stage_disk_runtime
                     [ -x {memory}/samba4/sbin/smbd ] && echo smbd-staged
                     [ -f {memory}/samba4/private/smbpasswd ] && echo private-staged
                     cat {memory}/samba4/etc/smb.conf
@@ -1957,7 +1715,8 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("smbd-staged\n", proc.stdout)
         self.assertIn("private-staged\n", proc.stdout)
-        self.assertIn("interfaces = 127.0.0.1/8 192.168.1.2/24", proc.stdout)
+        self.assertIn("interfaces = 0.0.0.0/0", proc.stdout)
+        self.assertNotIn("bind interfaces only", proc.stdout)
         self.assertIn("nbns runtime staging skipped", log_text)
         self.assertNotIn("nbns binary not found", log_text)
 
@@ -1976,7 +1735,7 @@ MaSt = (
                     tc_init_runtime_env
                     tc_set_log "$RAM_VAR/test.log" test
                     tc_prepare_ram_root
-                    tc_stage_disk_runtime "127.0.0.1/8" || status=$?
+                    tc_stage_disk_runtime || status=$?
                     printf 'status=%s\\n' "${{status:-0}}"
                     cat "$RAM_VAR/test.log"
                     """
@@ -2017,7 +1776,7 @@ MaSt = (
                     mkdir -p "$RAM_VAR" {volumes}/dk5
                     tc_refresh_disk_state
                     tc_prepare_ram_root
-                    tc_stage_disk_runtime "127.0.0.1/8 192.168.1.2/24"
+                    tc_stage_disk_runtime
                     printf 'payload\\n'
                     cat "$TC_PAYLOAD_TSV"
                     printf 'shares\\n'
@@ -2065,7 +1824,7 @@ MaSt = (
                     Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     USB	{volumes}/dk3	dk3	0	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
                     EOF
-                    tc_generate_smb_conf {payload} "127.0.0.1/8 192.168.1.2/24"
+                    tc_generate_smb_conf {payload}
                     cat "$TC_SMBD_CONF"
                     """
                 )
@@ -2115,7 +1874,7 @@ MaSt = (
                     cat >"$TC_SHARES_TSV" <<'EOF'
                     Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     EOF
-                    tc_generate_smb_conf {payload} "127.0.0.1/8 192.168.1.2/24"
+                    tc_generate_smb_conf {payload}
                     cat "$TC_SMBD_CONF"
                     """
                 )
@@ -2145,6 +1904,7 @@ MaSt = (
                     tc_set_log "$RAM_VAR/watchdog.log" watchdog
                     mkdir -p "$RAM_VAR"
                     sleep() {{ :; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
                     tc_start_smbd_if_needed() {{ return 0; }}
                     tc_all_managed_services_healthy() {{ return 0; }}
                     runtime_process_present_by_ucomm() {{ return 0; }}
@@ -2178,6 +1938,7 @@ MaSt = (
                     tc_init_runtime_env
                     mkdir -p "$RAM_VAR"
                     sleep() {{ :; }}
+                    tc_prepare_local_hostname_resolution() {{ echo hosts; }}
                     tc_start_smbd_if_needed() {{ echo smbd; }}
                     runtime_process_present_by_ucomm() {{ echo "process $1"; return 0; }}
                     tc_all_managed_services_healthy() {{ echo healthy; return 0; }}
@@ -2190,7 +1951,135 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "smbd\nprocess mdns-advertiser\nprocess nbns-advertiser\nhealthy\n")
+        self.assertEqual(proc.stdout, "hosts\nsmbd\nprocess mdns-advertiser\nprocess nbns-advertiser\nhealthy\n")
+
+    def test_common_watchdog_defers_first_mdns_start_until_auto_ip_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            (flash / "mdns-advertiser").write_text("#!/bin/sh\nexit 1\n")
+            (flash / "mdns-advertiser").chmod(0o755)
+            script = tmp_path / "watchdog-mdns-defer.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    runtime_process_present_by_ucomm() {{ return 1; }}
+                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_mdns_auto_ip_available() {{ echo check-auto-ip; return 1; }}
+                    tc_start_mdns_capture() {{ echo capture; }}
+                    tc_start_mdns_advertiser() {{ echo advertise; }}
+                    tc_watchdog_start_mdns_if_needed
+                    echo "deferred=$TC_WATCHDOG_MDNS_DEFERRED_NO_IP"
+                    cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("check-auto-ip\n", proc.stdout)
+        self.assertNotIn("capture\n", proc.stdout)
+        self.assertNotIn("advertise\n", proc.stdout)
+        self.assertIn("deferred=1\n", proc.stdout)
+        self.assertIn("mDNS auto-ip check: running", proc.stdout)
+        self.assertIn("--check-auto-ip", proc.stdout)
+        self.assertIn("mDNS auto-ip check: no usable IPv4 yet", proc.stdout)
+        self.assertIn("mDNS startup deferred; no usable IPv4 has appeared yet", proc.stdout)
+
+    def test_common_watchdog_starts_first_mdns_capture_after_auto_ip_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            (flash / "mdns-advertiser").write_text("#!/bin/sh\nexit 0\n")
+            (flash / "mdns-advertiser").chmod(0o755)
+            script = tmp_path / "watchdog-mdns-auto-ip-ready.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    runtime_process_present_by_ucomm() {{ return 1; }}
+                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_mdns_auto_ip_available() {{ echo check-auto-ip; return 0; }}
+                    tc_start_mdns_capture() {{ echo capture; }}
+                    tc_start_mdns_advertiser() {{ echo advertise; }}
+                    tc_watchdog_start_mdns_if_needed
+                    echo "seen=$TC_MDNS_AUTO_IP_SEEN"
+                    echo "capture_attempted=$TC_MDNS_CAPTURE_ATTEMPTED"
+                    cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("check-auto-ip\n", proc.stdout)
+        self.assertIn("capture\n", proc.stdout)
+        self.assertIn("advertise\n", proc.stdout)
+        self.assertLess(proc.stdout.index("capture\n"), proc.stdout.index("advertise\n"))
+        self.assertIn("seen=1\n", proc.stdout)
+        self.assertIn("capture_attempted=1\n", proc.stdout)
+        self.assertIn("mDNS auto-ip check: running", proc.stdout)
+        self.assertIn("--check-auto-ip", proc.stdout)
+        self.assertIn("mDNS auto-ip check: usable IPv4 is available", proc.stdout)
+        self.assertIn("mDNS auto-ip is available; starting capture and advertiser", proc.stdout)
+
+    def test_common_watchdog_later_mdns_restart_skips_capture(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            (flash / "mdns-advertiser").write_text("#!/bin/sh\nexit 0\n")
+            (flash / "mdns-advertiser").chmod(0o755)
+            script = tmp_path / "watchdog-mdns-restart-skips-capture.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    TC_MDNS_CAPTURE_ATTEMPTED=1
+                    runtime_process_present_by_ucomm() {{ return 1; }}
+                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_mdns_auto_ip_available() {{ echo check-auto-ip; return 0; }}
+                    tc_start_mdns_capture() {{ echo capture; }}
+                    tc_start_mdns_advertiser() {{ echo advertise; }}
+                    tc_restart_mdns() {{ echo restart; }}
+                    tc_watchdog_start_mdns_if_needed
+                    echo "capture_attempted=$TC_MDNS_CAPTURE_ATTEMPTED"
+                    cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("check-auto-ip\n", proc.stdout)
+        self.assertNotIn("capture\n", proc.stdout)
+        self.assertNotIn("advertise\n", proc.stdout)
+        self.assertIn("restart\n", proc.stdout)
+        self.assertIn("capture_attempted=1\n", proc.stdout)
 
     def test_common_smbd_recovery_mounts_payload_and_share_volumes_before_restart(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2254,7 +2143,7 @@ MaSt = (
                 + textwrap.dedent(
                     f"""\
 
-                    tc_read_payload_state() {{ return 1; }}
+                    tc_load_payload_state() {{ return 1; }}
                     sleep() {{ echo "sleep $1"; }}
                     tc_watchdog_disk_iteration() {{
                         count=$(cat {tmp_path}/watchdog-count 2>/dev/null || echo 0)
@@ -2302,7 +2191,7 @@ MaSt = (
                 + textwrap.dedent(
                     f"""\
 
-                    tc_read_payload_state() {{ return 1; }}
+                    tc_load_payload_state() {{ return 1; }}
                     tc_watchdog_disk_iteration() {{
                         [ ! -e {stale_volumes} ] || echo stale-volumes-present
                         [ ! -e {stale_raw} ] || echo stale-raw-present
@@ -2324,12 +2213,11 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "keep-present\n")
 
-    def test_common_mdns_capture_wait_times_out_and_continues_startup(self) -> None:
+    def test_common_mdns_capture_has_no_async_wait_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            events = tmp_path / "events.log"
-            script = tmp_path / "mdns-capture-timeout.sh"
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "mdns-capture-no-async-state.sh"
             script.write_text(
                 textwrap.dedent(
                     f"""\
@@ -2338,20 +2226,26 @@ MaSt = (
                     . {flash}/common.sh
                     . {flash}/tcapsulesmb.conf
                     tc_init_runtime_env
-                    MDNS_CAPTURE_WAIT_SECONDS=2
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
-                    TC_MDNS_CAPTURE_PID=12345
-                    TC_MDNS_CAPTURE_STATUS_FILE="$RAM_VAR/mdns-capture.status.test"
-                    kill() {{ echo "kill $*" >>{events}; return 0; }}
-                    wait() {{ echo "wait $*" >>{events}; return 0; }}
-                    sleep() {{ echo "sleep $*" >>{events}; }}
-                    stop_runtime_process_by_ucomm() {{ echo "stop $1 $2" >>{events}; return 0; }}
-                    tc_wait_for_mdns_capture
-                    [ -z "$TC_MDNS_CAPTURE_PID" ] && echo pid-cleared
-                    [ -z "$TC_MDNS_CAPTURE_STATUS_FILE" ] && echo status-cleared
-                    cat {events}
-                    cat "$RAM_VAR/test.log"
+                    if command -v tc_wait_for_mdns_capture >/dev/null 2>&1; then
+                        echo wait-function-present
+                    else
+                        echo wait-function-missing
+                    fi
+                    if command -v tc_finish_mdns_capture_wait >/dev/null 2>&1; then
+                        echo finish-function-present
+                    else
+                        echo finish-function-missing
+                    fi
+                    case "${{TC_MDNS_CAPTURE_PID+set}}" in
+                        set) echo pid-var-set ;;
+                        *) echo pid-var-unset ;;
+                    esac
+                    case "${{MDNS_CAPTURE_WAIT_SECONDS+set}}" in
+                        set) echo timeout-var-set ;;
+                        *) echo timeout-var-unset ;;
+                    esac
                     """
                 )
             )
@@ -2360,34 +2254,24 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("pid-cleared\n", proc.stdout)
-        self.assertIn("status-cleared\n", proc.stdout)
-        self.assertIn("stop mdns-advertiser mdns-advertiser\n", proc.stdout)
-        self.assertIn("kill -9 12345\n", proc.stdout)
-        self.assertIn(
-            "mDNS snapshot capture timed out after 2s; stopping capture and continuing with generated records if needed",
-            proc.stdout,
-        )
+        self.assertIn("wait-function-missing\n", proc.stdout)
+        self.assertIn("finish-function-missing\n", proc.stdout)
+        self.assertIn("pid-var-unset\n", proc.stdout)
+        self.assertIn("timeout-var-unset\n", proc.stdout)
 
-    def test_common_mdns_capture_launch_sets_pid_and_status_file(self) -> None:
+    def test_common_mdns_capture_runs_foreground_without_status_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
             marker = tmp_path / "capture.started"
-            release = tmp_path / "capture.release"
-            fake_sleep = tmp_path / "sleep"
-            fake_sleep.write_text("#!/bin/sh\n/bin/sleep 0.05\n")
-            fake_sleep.chmod(0o755)
             (flash / "mdns-advertiser").write_text(
                 "#!/bin/sh\n"
                 "printf 'capture-args:%s\\n' \"$*\"\n"
                 f"echo started >{shlex.quote(str(marker))}\n"
-                f"while [ ! -f {shlex.quote(str(release))} ]; do sleep 1; done\n"
-                "echo capture-release\n"
                 "exit 7\n"
             )
             (flash / "mdns-advertiser").chmod(0o755)
-            script = tmp_path / "mdns-capture-async.sh"
+            script = tmp_path / "mdns-capture-foreground.sh"
             script.write_text(
                 textwrap.dedent(
                     f"""\
@@ -2395,9 +2279,7 @@ MaSt = (
                     set -eu
                     . {flash}/common.sh
                     . {flash}/tcapsulesmb.conf
-                    PATH={shlex.quote(str(tmp_path))}:$PATH
                     tc_init_runtime_env
-                    MDNS_CAPTURE_WAIT_SECONDS=5
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
                     echo stale >"$APPLE_MDNS_SNAPSHOT"
@@ -2423,26 +2305,8 @@ MaSt = (
                         esac
                     }}
                     get_airport_rast() {{ echo 3; }}
-                    TC_NET_IFACE_IP=192.168.1.2
                     tc_start_mdns_capture
-                    case "$TC_MDNS_CAPTURE_STATUS_FILE" in
-                        "$RAM_VAR"/mdns-capture.status.*) echo status-path-ok ;;
-                        *) echo "status-path-bad=$TC_MDNS_CAPTURE_STATUS_FILE" ;;
-                    esac
-                    [ -n "$TC_MDNS_CAPTURE_PID" ] && echo pid-set
-                    count=0
-                    while [ ! -f {shlex.quote(str(marker))} ] && [ "$count" -lt 5 ]; do
-                        count=$((count + 1))
-                        sleep 1
-                    done
                     [ -f {shlex.quote(str(marker))} ] || exit 99
-                    [ ! -f "$APPLE_MDNS_SNAPSHOT" ] && echo stale-apple-removed
-                    [ ! -f "$ALL_MDNS_SNAPSHOT" ] && echo stale-all-removed
-                    [ ! -f "$TC_MDNS_CAPTURE_STATUS_FILE" ] && echo status-pending
-                    touch {shlex.quote(str(release))}
-                    tc_wait_for_mdns_capture
-                    [ -z "$TC_MDNS_CAPTURE_PID" ] && echo pid-cleared
-                    [ -z "$TC_MDNS_CAPTURE_STATUS_FILE" ] && echo status-cleared
                     cat "$TC_MDNS_LOG_FILE"
                     cat "$RAM_VAR/test.log"
                     """
@@ -2453,17 +2317,67 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("status-path-ok\n", proc.stdout)
-        self.assertIn("pid-set\n", proc.stdout)
-        self.assertIn("stale-apple-removed\n", proc.stdout)
-        self.assertIn("stale-all-removed\n", proc.stdout)
-        self.assertIn("status-pending\n", proc.stdout)
-        self.assertIn("pid-cleared\n", proc.stdout)
-        self.assertIn("status-cleared\n", proc.stdout)
         self.assertIn("launching mdns-advertiser capture", proc.stdout)
         self.assertIn("--save-all-snapshot", proc.stdout)
         self.assertIn("--save-snapshot", proc.stdout)
+        self.assertIn("--skip-capture-if-snapshot-newer-than-boot", proc.stdout)
+        self.assertIn("--auto-ip", proc.stdout)
         self.assertIn("mDNS snapshot capture exited with failure; final advertiser will use generated records if needed", proc.stdout)
+
+    def test_common_mdns_capture_skips_when_snapshot_is_newer_than_boot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            marker = tmp_path / "capture.started"
+            (flash / "mdns-advertiser").write_text(
+                "#!/bin/sh\n"
+                "while [ \"$#\" -gt 0 ]; do\n"
+                "  case \"$1\" in\n"
+                "    --skip-capture-if-snapshot-newer-than-boot) shift; echo \"mDNS snapshot capture skipped; $1 is newer than current boot\" >&2; exit 0 ;;\n"
+                "  esac\n"
+                "  shift\n"
+                "done\n"
+                f"echo started >{shlex.quote(str(marker))}\n"
+                "printf 'capture-args:%s\\n' \"$*\"\n"
+                "exit 0\n"
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            script = tmp_path / "mdns-capture-skip-fresh-snapshot.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    echo trusted >"$APPLE_MDNS_SNAPSHOT"
+                    echo raw >"$ALL_MDNS_SNAPSHOT"
+                    tc_start_mdns_capture
+                    [ ! -f {shlex.quote(str(marker))} ] && echo capture-skipped
+                    printf 'apple='
+                    cat "$APPLE_MDNS_SNAPSHOT"
+                    printf 'all='
+                    cat "$ALL_MDNS_SNAPSHOT"
+                    cat "$TC_MDNS_LOG_FILE"
+                    cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("capture-skipped\n", proc.stdout)
+        self.assertIn("apple=trusted\n", proc.stdout)
+        self.assertIn("all=raw\n", proc.stdout)
+        self.assertIn("mDNS snapshot capture skipped;", proc.stdout)
+        self.assertIn("is newer than current boot", proc.stdout)
+        self.assertNotIn("capture-args:", proc.stdout)
+        self.assertIn("launching mdns-advertiser capture", proc.stdout)
 
     def test_common_mdns_advertiser_uses_capture_snapshot_without_generation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2505,10 +2419,9 @@ MaSt = (
                             *) return 1 ;;
                         esac
                     }}
-                    TC_NET_IFACE_IP=192.168.1.2
                     tc_start_mdns_capture
-                    wait "$TC_MDNS_CAPTURE_PID" || true
-                    tc_launch_mdns_advertiser "mdns test" 1 0 0
+                    tc_finalize_mdns_snapshot_after_capture
+                    tc_launch_mdns_advertiser "mdns test" 1 0
                     wait "$mdns_launch_pid" || true
                     cat "$APPLE_MDNS_SNAPSHOT"
                     cat "$TC_MDNS_LOG_FILE"
@@ -2525,8 +2438,9 @@ MaSt = (
         self.assertIn("launching mdns-advertiser capture", proc.stdout)
         self.assertIn("--save-all-snapshot", proc.stdout)
         self.assertIn("--save-snapshot", proc.stdout)
+        self.assertIn("--auto-ip", proc.stdout)
         self.assertNotIn("--save-airport-snapshot", proc.stdout)
-        self.assertIn("trusted Apple mDNS snapshot was created during this boot run", proc.stdout)
+        self.assertIn("trusted Apple mDNS snapshot present:", proc.stdout)
         self.assertIn("--load-snapshot", proc.stdout)
 
     def test_common_mdns_advertiser_generates_airport_snapshot_when_capture_has_no_trusted_snapshot(self) -> None:
@@ -2569,10 +2483,9 @@ MaSt = (
                             *) return 1 ;;
                         esac
                     }}
-                    TC_NET_IFACE_IP=192.168.1.2
                     tc_start_mdns_capture
-                    wait "$TC_MDNS_CAPTURE_PID" || true
-                    tc_launch_mdns_advertiser "mdns test" 1 0 0
+                    tc_finalize_mdns_snapshot_after_capture
+                    tc_launch_mdns_advertiser "mdns test" 1 0
                     wait "$mdns_launch_pid" || true
                     cat "$APPLE_MDNS_SNAPSHOT"
                     cat "$TC_MDNS_LOG_FILE"
@@ -2588,12 +2501,13 @@ MaSt = (
         self.assertIn("generated\n", proc.stdout)
         self.assertIn("launching mdns-advertiser capture", proc.stdout)
         self.assertIn("--save-all-snapshot", proc.stdout)
+        self.assertIn("--auto-ip", proc.stdout)
         self.assertIn("mDNS snapshot capture did not produce trusted Apple snapshot; generating AirPort fallback", proc.stdout)
         self.assertIn("launching mdns-advertiser airport snapshot", proc.stdout)
         self.assertIn("--save-airport-snapshot", proc.stdout)
         self.assertIn("--load-snapshot", proc.stdout)
 
-    def test_common_mdns_and_nbns_write_ram_logs_in_normal_mode(self) -> None:
+    def test_common_mdns_and_nbns_write_payload_logs_in_normal_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
@@ -2603,7 +2517,7 @@ MaSt = (
             (flash / "mdns-advertiser").chmod(0o755)
             nbns_bin = memory / "samba4/sbin/nbns-advertiser"
             nbns_bin.parent.mkdir(parents=True)
-            nbns_bin.write_text("#!/bin/sh\necho nbns-stdout\necho nbns-stderr >&2\n")
+            nbns_bin.write_text("#!/bin/sh\nprintf 'nbns-args:%s\\n' \"$*\"\necho nbns-stdout\necho nbns-stderr >&2\n")
             nbns_bin.chmod(0o755)
             script = tmp_path / "process-logs.sh"
             script.write_text(
@@ -2639,7 +2553,6 @@ MaSt = (
                     }}
                     get_airport_rast() {{ echo 3; }}
                     stop_nbns_conflicts() {{ return 0; }}
-                    TC_NET_IFACE_IP=192.168.1.2
                     tc_set_payload_log_dir {payload} {volumes}/dk2
                     printf 'mdns-path=%s\\n' "$TC_MDNS_LOG_FILE"
                     printf 'nbns-path=%s\\n' "$TC_NBNS_LOG_FILE"
@@ -2659,8 +2572,8 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("mdns-path=", proc.stdout)
-        self.assertIn("/samba4/var/mdns.log", proc.stdout)
-        self.assertIn("/samba4/var/nbns.log", proc.stdout)
+        self.assertIn("/.samba4/logs/mdns.log", proc.stdout)
+        self.assertIn("/.samba4/logs/nbns.log", proc.stdout)
         self.assertIn("mdns\n", proc.stdout)
         self.assertIn("launching mdns-advertiser airport snapshot", proc.stdout)
         self.assertIn("--save-airport-snapshot", proc.stdout)
@@ -2671,6 +2584,7 @@ MaSt = (
         self.assertIn("mdns-stderr", proc.stdout)
         self.assertIn("nbns\n", proc.stdout)
         self.assertIn("launching nbns-advertiser", proc.stdout)
+        self.assertIn("--auto-ip", proc.stdout)
         self.assertIn("nbns-stdout", proc.stdout)
         self.assertIn("nbns-stderr", proc.stdout)
 
@@ -2710,7 +2624,6 @@ MaSt = (
                             *) return 1 ;;
                         esac
                     }}
-                    TC_NET_IFACE_IP=192.168.1.2
                     tc_set_log "$RAM_VAR/test.log" test
                     tc_generate_mdns
                     cat "$TC_MDNS_LOG_FILE"
@@ -2761,11 +2674,11 @@ MaSt = (
                     mkdir -p "$RAM_VAR"
                     is_volume_root_mounted() {{ [ -f "$1/.mounted" ]; }}
                     sleep() {{ echo "sleep $1" >>{events}; }}
-                    cat >"$TC_VOLUMES_TSV" <<'EOF'
+                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
                     wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     sd0	0	dk3	{volumes}/dk3	USB	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
                     EOF
-                    tc_mount_mast_volumes_for_boot "$TC_VOLUMES_TSV"
+                    tc_mount_mast_volumes_for_boot "$RAM_VAR/test-volumes.tsv"
                     cat {events}
                     """
                 )
@@ -2807,11 +2720,11 @@ MaSt = (
                     mkdir -p "$RAM_VAR"
                     is_volume_root_mounted() {{ return 1; }}
                     sleep() {{ echo "sleep $1" >>{events}; }}
-                    cat >"$TC_VOLUMES_TSV" <<'EOF'
+                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
                     wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     sd0	0	dk3	{volumes}/dk3	USB	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
                     EOF
-                    tc_mount_mast_volumes_for_boot "$TC_VOLUMES_TSV"
+                    tc_mount_mast_volumes_for_boot "$RAM_VAR/test-volumes.tsv"
                     cat {events}
                     """
                 )
@@ -2880,13 +2793,13 @@ MaSt = (
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
                     is_volume_root_mounted() {{ return 0; }}
-                    cat >"$TC_VOLUMES_TSV" <<'EOF'
+                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
                     wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     wd0	1	dk3	{volumes}/dk3	More	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
                     sd0	0	dk4	{volumes}/dk4	USB	cccccccc-cccc-cccc-cccc-cccccccccccc
                     sd1	1	dk5	{volumes}/dk5	SSD	dddddddd-dddd-dddd-dddd-dddddddddddd
                     EOF
-                    tc_configure_ata_idle_for_mast_disks "$TC_VOLUMES_TSV"
+                    tc_configure_ata_idle_for_mast_disks "$RAM_VAR/test-volumes.tsv"
                     cat {atactl_log}
                     """
                 )
@@ -2925,10 +2838,10 @@ MaSt = (
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
                     is_volume_root_mounted() {{ return 0; }}
-                    cat >"$TC_VOLUMES_TSV" <<'EOF'
+                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
                     wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     EOF
-                    tc_configure_ata_idle_for_mast_disks "$TC_VOLUMES_TSV"
+                    tc_configure_ata_idle_for_mast_disks "$RAM_VAR/test-volumes.tsv"
                     [ ! -f {atactl_log} ]
                     """
                 )
@@ -2962,10 +2875,10 @@ MaSt = (
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
                     is_volume_root_mounted() {{ return 0; }}
-                    cat >"$TC_VOLUMES_TSV" <<'EOF'
+                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
                     wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     EOF
-                    tc_configure_ata_idle_for_mast_disks "$TC_VOLUMES_TSV"
+                    tc_configure_ata_idle_for_mast_disks "$RAM_VAR/test-volumes.tsv"
                     echo continued
                     """
                 )
@@ -3576,6 +3489,8 @@ MaSt = (
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            (flash / "mdns-advertiser").write_text("#!/bin/sh\nexit 0\n")
+            (flash / "mdns-advertiser").chmod(0o755)
             script = tmp_path / "watchdog-identity-refresh.sh"
             script.write_text(
                 textwrap.dedent(
@@ -3611,6 +3526,7 @@ MaSt = (
                     }}
                     tc_launch_mdns_advertiser() {{ echo "mdns-host=$MDNS_HOST_LABEL"; }}
                     tc_launch_nbns() {{ echo "nbns-name=$SMB_NETBIOS_NAME"; }}
+                    tc_mdns_auto_ip_available() {{ return 0; }}
                     tc_all_managed_services_healthy() {{ return 1; }}
                     status=0
                     tc_watchdog_service_iteration || status=$?
@@ -3624,6 +3540,84 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "identity-refresh\nmdns-host=fresh-host\nnbns-name=FreshName\nstatus=1\n")
+
+    def test_common_watchdog_service_iteration_reloads_services_on_identity_change(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            payload.mkdir(parents=True)
+            script = tmp_path / "watchdog-identity-change.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    NBNS_ENABLED=1
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    TC_WATCHDOG_LAST_IDENTITY_SIGNATURE=$(printf 'Old\\nold\\nOld\\nOld\\n')
+                    TC_WATCHDOG_IDENTITY_SIGNATURE_READY=1
+                    sleep() {{ :; }}
+                    tc_prepare_local_hostname_resolution() {{ echo hosts; }}
+                    tc_init_runtime_identity() {{
+                        echo identity
+                        MDNS_INSTANCE_NAME=Fresh
+                        MDNS_HOST_LABEL=fresh
+                        SMB_NETBIOS_NAME=Fresh
+                        SMB_SERVER_STRING=Fresh
+                        TC_RUNTIME_IDENTITY_READY=1
+                    }}
+                    tc_load_payload_state() {{
+                        TC_PAYLOAD_DIR={payload}
+                        TC_PAYLOAD_VOLUME={volumes}/dk2
+                        TC_PAYLOAD_DEVICE=/dev/dk2
+                        return 0
+                    }}
+                    tc_generate_smb_conf() {{ echo "generate $1"; }}
+                    runtime_process_present_by_ucomm() {{ echo "process $1"; return 0; }}
+                    tc_reload_smbd_config() {{ echo reload; }}
+                    stop_runtime_process_by_ucomm() {{ echo "stop $1"; }}
+                    tc_start_smbd_if_needed() {{ echo smbd; }}
+                    tc_watchdog_reconcile_mdns() {{ echo mdns-if-needed; }}
+                    tc_all_managed_services_healthy() {{ echo healthy; return 0; }}
+                    tc_watchdog_service_iteration
+                    printf 'signature\\n'
+                    printf '%s\\n' "$TC_WATCHDOG_LAST_IDENTITY_SIGNATURE"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            "\n".join(
+                (
+                    "hosts",
+                    "identity",
+                    f"generate {payload}",
+                    "process smbd",
+                    "reload",
+                    "stop mdns-advertiser",
+                    "stop nbns-advertiser",
+                    "smbd",
+                    "mdns-if-needed",
+                    "process nbns-advertiser",
+                    "healthy",
+                    "signature",
+                    "Fresh",
+                    "fresh",
+                    "Fresh",
+                    "Fresh",
+                    "",
+                )
+            ),
+        )
 
     def test_common_smbd_recovery_fails_when_active_share_mount_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3810,7 +3804,6 @@ MaSt = (
                     Data	dk2	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa	0x82
                     EOF
                     }}
-                    tc_wait_for_bind_interfaces() {{ echo "127.0.0.1/8 192.168.1.2/24"; }}
                     tc_prepare_local_hostname_resolution() {{ echo hostname; }}
                     tc_init_runtime_identity() {{
                         echo identity
@@ -3820,9 +3813,10 @@ MaSt = (
                         SMB_SERVER_STRING=Live
                         TC_RUNTIME_IDENTITY_READY=1
                     }}
-                    tc_generate_smb_conf() {{ echo "generate $1 $2"; }}
+                    tc_generate_smb_conf() {{ echo "generate $1"; }}
                     tc_reload_smbd_config() {{ echo reload; }}
-                    tc_launch_mdns_advertiser() {{ echo "mdns $1 $2 $3 $4"; }}
+                    tc_launch_mdns_advertiser() {{ echo "mdns $1 $2 $3"; }}
+                    tc_mdns_auto_ip_available() {{ return 0; }}
                     tc_start_smbd_if_needed() {{ echo smbd; }}
                     runtime_process_present_by_ucomm() {{ return 0; }}
                     tc_exec_start_samba() {{ echo "exec $1"; exit 42; }}
@@ -3843,14 +3837,14 @@ MaSt = (
                     "refresh",
                     "hostname",
                     "identity",
-                    f"generate {payload} 127.0.0.1/8 192.168.1.2/24",
+                    f"generate {payload}",
                     "reload",
-                    "mdns watchdog topology refresh 0 1 10",
                     "",
                 )
             ),
         )
         self.assertIn("watchdog recovery: attempting live disk runtime refresh: MaSt topology changed", log_text)
+        self.assertIn("mDNS auto-ip check failed; missing", log_text)
         self.assertIn("watchdog recovery: live disk runtime refresh complete", log_text)
         self.assertNotIn("re-execing start-samba.sh", log_text)
 

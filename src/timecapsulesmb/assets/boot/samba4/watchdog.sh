@@ -10,6 +10,7 @@ tc_init_runtime_env
 tc_set_log "$RAM_VAR/watchdog.log" "watchdog"
 tc_cleanup_watchdog_mast_temp_files
 tc_init_runtime_identity
+tc_watchdog_write_identity_signature
 
 WATCHDOG_DISK_POLL_SECONDS=$(tc_sanitize_positive_integer "${WATCHDOG_DISK_POLL_SECONDS:-10}" 10)
 WATCHDOG_SERVICE_POLL_SECONDS=$(tc_sanitize_positive_integer "${WATCHDOG_SERVICE_POLL_SECONDS:-30}" 30)
@@ -20,7 +21,7 @@ if [ "$WATCHDOG_SERVICE_TICKS" -lt 1 ]; then
 fi
 
 tc_log "watchdog startup beginning"
-if tc_read_payload_state; then
+if tc_load_payload_state; then
     :
 else
     TC_PAYLOAD_DIR=

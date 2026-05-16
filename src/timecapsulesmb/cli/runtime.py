@@ -23,14 +23,10 @@ from timecapsulesmb.device.compat import (
 )
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
-    RemoteInterfaceCandidate,
-    RemoteInterfaceCandidatesProbeResult,
     RemoteInterfaceProbeResult,
     probe_connection_state,
-    probe_remote_interface_candidates_conn,
     probe_remote_interface_conn,
     read_interface_ipv4_addrs_conn,
-    runtime_usable_ipv4s,
 )
 from timecapsulesmb.transport.ssh import SshConnection, ssh_opts_use_proxy
 
@@ -211,42 +207,6 @@ def ssh_target_link_local_resolution_error(
     )
 
 
-def _format_remote_interface(candidate: RemoteInterfaceCandidate) -> str:
-    ipv4_text = "/".join(candidate.ipv4_addrs) if candidate.ipv4_addrs else "no IPv4"
-    return f"{candidate.name}={ipv4_text}"
-
-
-def _format_remote_interface_candidates(result: RemoteInterfaceCandidatesProbeResult) -> str:
-    candidates = tuple(candidate for candidate in result.candidates if not candidate.loopback)
-    if not candidates:
-        return "Found remote interfaces: none."
-    return "Found remote interfaces: " + ", ".join(_format_remote_interface(candidate) for candidate in candidates) + "."
-
-
-def _invalid_interface_address_message(*, iface: str, ipv4_addrs: tuple[str, ...]) -> str:
-    reported = ", ".join(ipv4_addrs) if ipv4_addrs else "none"
-    return (
-        "TC_NET_IFACE is not usable. Run the `configure` command again.\n"
-        f"Configured interface {iface} must have a non-link-local IPv4 address for Samba/mDNS.\n"
-        f"Reported IPv4 addresses on {iface}: {reported}."
-    )
-
-
-def _invalid_interface_message(
-    *,
-    connection: SshConnection,
-    detail: str,
-) -> str:
-    target_ip = ipv4_literal(extract_host(connection.host))
-    target_ips = (target_ip,) if target_ip is not None else ()
-    candidates_probe = probe_remote_interface_candidates_conn(connection, target_ips=target_ips)
-    return (
-        "TC_NET_IFACE is invalid. Run the `configure` command again.\n"
-        f"{detail}.\n"
-        f"{_format_remote_interface_candidates(candidates_probe)}"
-    )
-
-
 def resolve_validated_managed_target(
     config: AppConfig,
     *,
@@ -265,23 +225,8 @@ def resolve_validated_managed_target(
     connection = resolve_env_connection(config)
     if profile == "flash":
         return ManagedTargetState(connection=connection, interface_probe=None, probe_state=None)
-    target = inspect_managed_connection(connection, config.require("TC_NET_IFACE"), include_probe=include_probe)
-    if not target.interface_probe.exists:
-        raise ConfigError(
-            _invalid_interface_message(
-                connection=connection,
-                detail=target.interface_probe.detail,
-            )
-        )
-    iface_addrs = read_interface_ipv4_addrs_conn(connection, config.require("TC_NET_IFACE"))
-    if not runtime_usable_ipv4s(iface_addrs):
-        raise ConfigError(
-            _invalid_interface_address_message(
-                iface=config.require("TC_NET_IFACE"),
-                ipv4_addrs=iface_addrs,
-            )
-        )
-    return target
+    probe_state = probe_connection_state(connection) if include_probe else None
+    return ManagedTargetState(connection=connection, interface_probe=None, probe_state=probe_state)
 
 
 def require_connection_compatibility(connection: SshConnection) -> DeviceCompatibility:

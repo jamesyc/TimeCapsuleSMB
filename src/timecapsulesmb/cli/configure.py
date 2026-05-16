@@ -7,8 +7,6 @@ from typing import Optional
 
 from timecapsulesmb.configure_defaults import (
     ConfigureValueChoice,
-    interface_candidate_for_ip,
-    interface_target_ips,
     saved_syap_value_for_candidates,
     saved_value_choice,
     valid_existing_config_value,
@@ -40,11 +38,8 @@ from timecapsulesmb.device.compat import DeviceCompatibility, render_compatibili
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
     RemoteInterfaceCandidatesProbeResult,
-    preferred_interface_name,
     probe_connection_state,
     probe_remote_interface_candidates_conn,
-    runtime_interface_candidates,
-    runtime_usable_ipv4s,
 )
 from timecapsulesmb.discovery.bonjour import (
     BonjourResolvedService,
@@ -63,11 +58,6 @@ HIDDEN_CONFIG_KEYS = {"TC_SSH_OPTS", "TC_CONFIGURE_ID"}
 NO_SAVED_VALUE_HINT_KEYS = {"TC_PASSWORD", *HIDDEN_CONFIG_KEYS}
 REQUIRED_PYTHON_MODULES = ("zeroconf", "pexpect", "ifaddr")
 CONFIGURE_DETAIL_FIELDS = [
-    ("TC_NET_IFACE", "Network interface on the device", DEFAULTS["TC_NET_IFACE"], False),
-    ("TC_SAMBA_USER", "Samba username", DEFAULTS["TC_SAMBA_USER"], False),
-    ("TC_PAYLOAD_DIR_NAME", "Persistent payload directory name", DEFAULTS["TC_PAYLOAD_DIR_NAME"], False),
-    ("TC_AIRPORT_SYAP", "Airport Utility syAP code", DEFAULTS["TC_AIRPORT_SYAP"], False),
-    ("TC_MDNS_DEVICE_MODEL", "mDNS device model hint", DEFAULTS["TC_MDNS_DEVICE_MODEL"], False),
 ]
 
 
@@ -243,52 +233,6 @@ def print_automatic_value_choice(key: str, choice: ConfigureValueChoice) -> None
         print(f"Using {key} derived from TC_AIRPORT_SYAP: {choice.value}")
 
 
-def runtime_interface_invalid_message(allowed_values: tuple[str, ...]) -> str:
-    allowed = ", ".join(allowed_values)
-    return f"Network interface on the device must be one of the probed non-link-local IPv4 interfaces: {allowed}"
-
-
-def prompt_runtime_interface_value(
-    key: str,
-    label: str,
-    current: str,
-    allowed_values: tuple[str, ...],
-) -> str:
-    return prompt_config_value_from_candidates(
-        key,
-        label,
-        current,
-        allowed_values,
-        invalid_message=runtime_interface_invalid_message(allowed_values),
-    )
-
-
-def no_runtime_interface_message(result: RemoteInterfaceCandidatesProbeResult) -> str:
-    reported: list[str] = []
-    for candidate in result.candidates:
-        if candidate.loopback:
-            continue
-        ipv4 = ", ".join(candidate.ipv4_addrs) if candidate.ipv4_addrs else "no IPv4"
-        reported.append(f"{candidate.name}: {ipv4}")
-    reported_text = "; ".join(reported) if reported else "none"
-    return (
-        "No usable runtime network interface was found. TimeCapsuleSMB needs a non-link-local LAN IPv4 "
-        "address for Samba and mDNS; 169.254.x.x self-assigned addresses are only suitable for temporary "
-        f"SSH recovery. Fix LAN/DHCP connectivity, then run configure again. Reported interfaces: {reported_text}."
-    )
-
-
-def print_probed_interface_default(result: RemoteInterfaceCandidatesProbeResult, preferred_iface: str) -> None:
-    candidates = runtime_interface_candidates(result.candidates)
-    if candidates:
-        print("Found network interfaces with non-link-local IPv4 on the device:")
-        for candidate in candidates:
-            ipv4_addrs = runtime_usable_ipv4s(candidate.ipv4_addrs)
-            marker = " (suggested)" if candidate.name == preferred_iface else ""
-            print(f"  {candidate.name}: {', '.join(ipv4_addrs)}{marker}")
-    print(f"Using probed default for TC_NET_IFACE: {preferred_iface}")
-
-
 def prompt_config_value(
     existing: dict[str, str],
     key: str,
@@ -373,7 +317,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     values: dict[str, str] = {}
     discovered_airport_syap: Optional[str] = None
     probed_device: DeviceCompatibility | None = None
-    probed_interfaces: RemoteInterfaceCandidatesProbeResult | None = None
     with CommandContext(
         telemetry,
         "configure",
@@ -476,9 +419,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                 if probed_device is not None and not probed_device.supported:
                     command_context.add_debug_fields(configure_failure_reason="unsupported_device")
                     raise SystemExit(render_compatibility_message(probed_device))
-                command_context.set_stage("interface_probe")
-                probed_interfaces = probe_remote_interface_candidates_conn(connection)
-                command_context.add_debug_fields(interface_candidates=probed_interfaces)
                 break
             print("\nThe provided AirPort SSH target and password did not work.")
             if probe_result.ssh_port_reachable:
@@ -492,210 +432,40 @@ def main(argv: Optional[list[str]] = None) -> int:
             prompt_host_and_password(existing, values, discovered_host, ssh_opts)
             continue
 
-        command_context.set_stage("prompt_config_fields")
-        discovered_airport_identity = (
-            record_has_service(discovered_record, AIRPORT_SERVICE)
-            if discovered_record is not None
-            else False
-        )
-        valid_discovered_syap = validated_value_or_empty(
-            "TC_AIRPORT_SYAP",
-            discovered_airport_syap or "",
-            "Airport Utility syAP code",
-        )
-        discovered_syap_choice = (
-            ConfigureValueChoice(value=valid_discovered_syap, source="discovered")
-            if valid_discovered_syap
-            else None
-        )
-        inferred_syap_choice = None
-        if probed_device and probed_device.exact_syap:
-            inferred_syap_choice = ConfigureValueChoice(value=probed_device.exact_syap, source="probed")
-        inferred_model_choice = None
-        if probed_device and probed_device.exact_model:
-            inferred_model_choice = ConfigureValueChoice(value=probed_device.exact_model, source="probed")
-        saved_syap_choice = saved_value_choice(existing, "TC_AIRPORT_SYAP", "Airport Utility syAP code")
-        saved_model_choice = saved_value_choice(existing, "TC_MDNS_DEVICE_MODEL", "mDNS device model hint")
+        observed_syap_source = "probed"
+        observed_syap = None if probed_device is None else probed_device.exact_syap
+        if observed_syap is None:
+            observed_syap = validated_value_or_empty(
+                "TC_AIRPORT_SYAP",
+                discovered_airport_syap or "",
+                "Airport Utility syAP code",
+            ) or None
+            observed_syap_source = "discovered"
+        observed_model_source = "probed"
+        observed_model = None if probed_device is None else probed_device.exact_model
+        if observed_model is None and observed_syap is not None:
+            observed_model = infer_mdns_device_model_from_airport_syap(observed_syap)
+            observed_model_source = "derived"
+        if observed_syap is not None:
+            values["TC_AIRPORT_SYAP"] = observed_syap
+            print_automatic_value_choice(
+                "TC_AIRPORT_SYAP",
+                ConfigureValueChoice(value=observed_syap, source=observed_syap_source),
+            )
+        if observed_model is not None:
+            values["TC_MDNS_DEVICE_MODEL"] = observed_model
+            print_automatic_value_choice(
+                "TC_MDNS_DEVICE_MODEL",
+                ConfigureValueChoice(value=observed_model, source=observed_model_source),
+            )
 
-        for key, label, default, secret in CONFIGURE_DETAIL_FIELDS:
-            if key == "TC_AIRPORT_SYAP":
-                candidate_syaps = probed_device.syap_candidates if probed_device is not None else ()
-                saved_syap_value = saved_syap_value_for_candidates(saved_syap_choice, candidate_syaps)
-                if discovered_syap_choice is not None:
-                    print_automatic_value_choice(key, discovered_syap_choice)
-                    values[key] = discovered_syap_choice.value
-                    continue
-                if inferred_syap_choice is not None:
-                    print_automatic_value_choice(key, inferred_syap_choice)
-                    values[key] = inferred_syap_choice.value
-                    continue
-                if discovered_airport_identity:
-                    print_syap_prompt_help(candidate_syaps or None)
-                    if saved_syap_choice is not None:
-                        print_saved_value_hint(saved_syap_choice.value)
-                    if candidate_syaps:
-                        values[key] = prompt_config_value_from_candidates(
-                            key,
-                            label,
-                            saved_syap_value or "",
-                            candidate_syaps,
-                            invalid_message=f"From detected connection, syAP code should be one of: {', '.join(candidate_syaps)}",
-                        )
-                    else:
-                        values[key] = prompt_valid_config_value(key, label, saved_syap_choice.value if saved_syap_choice is not None else "")
-                    continue
-                if saved_syap_choice is not None and saved_syap_value is not None:
-                    print_automatic_value_choice(key, saved_syap_choice)
-                    values[key] = saved_syap_value
-                    continue
-                if candidate_syaps:
-                    if saved_syap_choice is not None:
-                        print_saved_value_hint(saved_syap_choice.value)
-                    print_syap_prompt_help(candidate_syaps)
-                    values[key] = prompt_config_value_from_candidates(
-                        key,
-                        label,
-                        "",
-                        candidate_syaps,
-                        invalid_message=f"From detected connection, syAP code should be one of: {', '.join(candidate_syaps)}",
-                    )
-                    continue
-                print_syap_prompt_help()
-                values[key] = prompt_valid_config_value(key, label, DEFAULTS["TC_AIRPORT_SYAP"])
-                continue
-            if key == "TC_NET_IFACE":
-                saved_iface_choice = saved_value_choice(existing, key, label)
-                runtime_candidates = runtime_interface_candidates(
-                    probed_interfaces.candidates if probed_interfaces is not None else ()
-                )
-                candidate_names = tuple(candidate.name for candidate in runtime_candidates)
-                candidate_name_set = set(candidate_names)
-                if probed_interfaces is not None and probed_interfaces.candidates and not candidate_names:
-                    message = no_runtime_interface_message(probed_interfaces)
-                    print(color_red(message))
-                    command_context.add_debug_fields(configure_failure_reason="no_runtime_usable_net_iface")
-                    command_context.fail_with_error(message)
-                    return 1
-                target_ips = interface_target_ips(values, discovered_record)
-                runtime_target_ips = runtime_usable_ipv4s(target_ips)
-                exact_target_match = (
-                    interface_candidate_for_ip(probed_interfaces, target_ips)
-                    if probed_interfaces is not None
-                    else None
-                )
-                if saved_iface_choice is not None and (
-                    not candidate_names or saved_iface_choice.value in candidate_name_set
-                ):
-                    if exact_target_match and exact_target_match.iface != saved_iface_choice.value:
-                        print_saved_value_hint(saved_iface_choice.value)
-                        print(
-                            f"Probed target IP {exact_target_match.ip} is on {exact_target_match.iface}, "
-                            f"so {exact_target_match.iface} is suggested instead."
-                        )
-                    else:
-                        print_saved_value_hint(saved_iface_choice.value)
-                        command_context.add_debug_fields(
-                            selected_net_iface=saved_iface_choice.value,
-                            selected_net_iface_source="saved",
-                        )
-                        if candidate_names:
-                            values[key] = prompt_runtime_interface_value(
-                                key,
-                                label,
-                                saved_iface_choice.value,
-                                candidate_names,
-                            )
-                        else:
-                            values[key] = prompt_valid_config_value(key, label, saved_iface_choice.value)
-                        continue
-                if exact_target_match and probed_interfaces is not None:
-                    print_probed_interface_default(probed_interfaces, exact_target_match.iface)
-                    command_context.add_debug_fields(
-                        selected_net_iface=exact_target_match.iface,
-                        selected_net_iface_source="target_ip_match",
-                    )
-                    values[key] = prompt_runtime_interface_value(key, label, exact_target_match.iface, candidate_names)
-                    continue
-                if saved_iface_choice is not None and not candidate_names:
-                    print_saved_value_hint(saved_iface_choice.value)
-                    command_context.add_debug_fields(
-                        selected_net_iface=saved_iface_choice.value,
-                        selected_net_iface_source="saved_no_probe_candidates",
-                    )
-                    values[key] = prompt_valid_config_value(key, label, saved_iface_choice.value)
-                    continue
-                if runtime_candidates:
-                    preferred_iface = preferred_interface_name(runtime_candidates, target_ips=runtime_target_ips)
-                    if preferred_iface:
-                        print_probed_interface_default(probed_interfaces, preferred_iface)
-                        command_context.add_debug_fields(
-                            selected_net_iface=preferred_iface,
-                            selected_net_iface_source="probed_preferred_for_target_ips",
-                        )
-                        values[key] = prompt_runtime_interface_value(key, label, preferred_iface, candidate_names)
-                        continue
-                if (
-                    probed_interfaces is not None
-                    and probed_interfaces.preferred_iface
-                    and probed_interfaces.preferred_iface in candidate_name_set
-                ):
-                    print_probed_interface_default(probed_interfaces, probed_interfaces.preferred_iface)
-                    command_context.add_debug_fields(
-                        selected_net_iface=probed_interfaces.preferred_iface,
-                        selected_net_iface_source="probed_preferred",
-                    )
-                    values[key] = prompt_runtime_interface_value(
-                        key,
-                        label,
-                        probed_interfaces.preferred_iface,
-                        candidate_names,
-                    )
-                    continue
-                command_context.add_debug_fields(selected_net_iface_source="manual_or_default")
-                values[key] = prompt_config_value(existing, key, label, default, secret=secret)
-                continue
-            if key == "TC_MDNS_DEVICE_MODEL":
-                syap_derived_model = infer_mdns_device_model_from_airport_syap(values.get("TC_AIRPORT_SYAP", ""))
-                derived_model_choice = (
-                    ConfigureValueChoice(value=syap_derived_model, source="derived")
-                    if syap_derived_model
-                    else None
-                )
-                automatic_model_choice = inferred_model_choice or derived_model_choice
-                if automatic_model_choice is not None:
-                    print_automatic_value_choice(key, automatic_model_choice)
-                    values[key] = automatic_model_choice.value
-                    continue
-                if discovered_airport_identity:
-                    if saved_model_choice is not None:
-                        print_saved_value_hint(saved_model_choice.value)
-                        values[key] = prompt_valid_config_value(key, label, saved_model_choice.value)
-                    else:
-                        values[key] = DEFAULTS["TC_MDNS_DEVICE_MODEL"]
-                    continue
-                if saved_model_choice is not None:
-                    print_automatic_value_choice(key, saved_model_choice)
-                    values[key] = saved_model_choice.value
-                    continue
-                if probed_device and probed_device.model_candidates:
-                    values[key] = prompt_config_value_from_candidates(
-                        key,
-                        label,
-                        DEFAULTS["TC_MDNS_DEVICE_MODEL"] if DEFAULTS["TC_MDNS_DEVICE_MODEL"] in probed_device.model_candidates else "",
-                        probed_device.model_candidates,
-                    )
-                    continue
-                values[key] = prompt_valid_config_value(key, label, DEFAULTS["TC_MDNS_DEVICE_MODEL"])
-                continue
-            values[key] = prompt_config_value(existing, key, label, default, secret=secret)
-
-        values["TC_CONFIGURE_ID"] = configure_id
         command_context.set_stage("write_env")
+        values["TC_CONFIGURE_ID"] = configure_id
         write_env_file(env_path, values)
         command_context.update_fields(
             configure_id=configure_id,
-            device_syap=values.get("TC_AIRPORT_SYAP"),
-            device_model=values.get("TC_MDNS_DEVICE_MODEL"),
+            device_syap=observed_syap,
+            device_model=observed_model,
         )
         print(f"\nReview the .env file configuration: wrote {env_path}")
         print("Next steps:")

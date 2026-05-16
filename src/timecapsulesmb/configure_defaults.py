@@ -6,25 +6,12 @@ from typing import Optional
 from timecapsulesmb.core.config import (
     CONFIG_VALIDATORS,
 )
-from timecapsulesmb.core.net import extract_host, ipv4_literal
-from timecapsulesmb.device.probe import (
-    RemoteInterfaceCandidatesProbeResult,
-    runtime_interface_candidates,
-    runtime_usable_ipv4s,
-)
-from timecapsulesmb.discovery.bonjour import BonjourResolvedService
 
 
 @dataclass(frozen=True)
 class ConfigureValueChoice:
     value: str
     source: str
-
-
-@dataclass(frozen=True)
-class InterfaceIpMatch:
-    iface: str
-    ip: str
 
 
 def validated_value_or_empty(key: str, value: str, label: str) -> str:
@@ -56,29 +43,3 @@ def saved_syap_value_for_candidates(
     if candidate_syaps and saved_syap_choice.value not in candidate_syaps:
         return None
     return saved_syap_choice.value
-
-
-def interface_target_ips(values: dict[str, str], discovered_record: BonjourResolvedService | None) -> tuple[str, ...]:
-    ordered: list[str] = []
-    host_ip = ipv4_literal(extract_host(values.get("TC_HOST", "")))
-    if host_ip:
-        ordered.append(host_ip)
-    if discovered_record is not None:
-        for value in discovered_record.ipv4:
-            ip_value = ipv4_literal(value)
-            if ip_value and ip_value not in ordered:
-                ordered.append(ip_value)
-    return tuple(ordered)
-
-
-def interface_candidate_for_ip(
-    result: RemoteInterfaceCandidatesProbeResult,
-    target_ips: tuple[str, ...],
-) -> InterfaceIpMatch | None:
-    runtime_candidates = runtime_interface_candidates(result.candidates)
-    runtime_target_ips = tuple(ip for ip in target_ips if runtime_usable_ipv4s((ip,)))
-    for target_ip in runtime_target_ips:
-        for candidate in runtime_candidates:
-            if target_ip in runtime_usable_ipv4s(candidate.ipv4_addrs):
-                return InterfaceIpMatch(iface=candidate.name, ip=target_ip)
-    return None

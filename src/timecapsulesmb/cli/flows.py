@@ -206,21 +206,24 @@ def verify_managed_runtime_flow(
     for line in render_managed_runtime_verification(verification, heading=heading):
         print(line)
     if not managed_runtime_ready(verification):
+        detail = verification.detail.strip()
         runtime_log_fields: dict[str, object] = {}
         try:
             runtime_log_fields = read_runtime_log_tails_conn(connection)
             command_context.add_debug_fields(**runtime_log_fields)
         except Exception as exc:
             command_context.add_debug_fields(remote_runtime_log_tail_error=system_exit_message(exc))
-        startup_failure_fields = runtime_startup_failure_debug_fields(runtime_log_fields)
+        startup_failure_fields = runtime_startup_failure_debug_fields(
+            runtime_log_fields,
+            verification_detail=detail,
+        )
         if startup_failure_fields:
             command_context.add_debug_fields(**startup_failure_fields)
-            if startup_failure_fields.get("runtime_startup_failure") == "network_ipv4_timeout":
+            if startup_failure_fields.get("runtime_startup_failure") == "network_auto_ip_unavailable":
                 try:
                     command_context.add_debug_fields(**read_remote_network_diagnostics_conn(connection))
                 except Exception as exc:
                     command_context.add_debug_fields(remote_network_diagnostics_error=system_exit_message(exc))
-        detail = verification.detail.strip()
         if detail:
             failure_message = f"{failure_message.rstrip()} {detail}"
         print(failure_message)

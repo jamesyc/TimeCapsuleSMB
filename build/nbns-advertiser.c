@@ -1,15 +1,19 @@
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <errno.h>
+#include <net/if.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #define NBNS_PORT 137
@@ -23,8 +27,92 @@
 #define NBNS_RCODE_POSITIVE 0x0000
 #define NBNS_SUFFIX_WORKSTATION 0x00
 #define NBNS_SUFFIX_SERVER 0x20
+#define MAX_IFACE_CONTEXTS 16
+#define AUTO_IP_STABILIZE_SECONDS 3
+#define AUTO_IP_STARTUP_POLL_SECONDS 2
+#define AUTO_IP_STABLE_POLL_SECONDS 30
 
 static volatile sig_atomic_t g_stop = 0;
+
+static void log_timestamp_prefix(FILE *stream) {
+    time_t now;
+    struct tm *tm_info;
+    char stamp[32];
+
+    now = time(NULL);
+    tm_info = localtime(&now);
+    if (tm_info != NULL && strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", tm_info) > 0) {
+        fputs(stamp, stream);
+        fputc(' ', stream);
+    }
+}
+
+static int timestamped_vfprintf(FILE *stream, const char *format, va_list ap) {
+    char message[4096];
+    const char *cursor;
+    int result;
+
+    if (stream != stderr && stream != stdout) {
+        return vfprintf(stream, format, ap);
+    }
+
+    result = vsnprintf(message, sizeof(message), format, ap);
+    if (result < 0) {
+        return result;
+    }
+    message[sizeof(message) - 1] = '\0';
+
+    cursor = message;
+    while (*cursor != '\0') {
+        log_timestamp_prefix(stream);
+        while (*cursor != '\0') {
+            int ch = (unsigned char)*cursor++;
+            if (fputc(ch, stream) == EOF) {
+                return -1;
+            }
+            if (ch == '\n') {
+                break;
+            }
+        }
+    }
+    fflush(stream);
+    return result;
+}
+
+static int timestamped_fprintf(FILE *stream, const char *format, ...) {
+    va_list ap;
+    int result;
+
+    va_start(ap, format);
+    result = timestamped_vfprintf(stream, format, ap);
+    va_end(ap);
+    return result;
+}
+
+static void timestamped_perror(const char *message) {
+    int saved_errno = errno;
+
+    if (message != NULL && message[0] != '\0') {
+        timestamped_fprintf(stderr, "%s: %s\n", message, strerror(saved_errno));
+    } else {
+        timestamped_fprintf(stderr, "%s\n", strerror(saved_errno));
+    }
+}
+
+#define fprintf timestamped_fprintf
+#define perror timestamped_perror
+
+struct iface_context {
+    char name[IFNAMSIZ];
+    uint32_t ipv4_addr;
+    uint32_t netmask;
+    int flags;
+};
+
+struct iface_context_set {
+    struct iface_context contexts[MAX_IFACE_CONTEXTS];
+    size_t count;
+};
 
 static ssize_t sendto_retry(int sockfd, const void *buf, size_t len, int flags,
                             const struct sockaddr *dest, socklen_t dest_len) {
@@ -59,10 +147,315 @@ static void on_signal(int signo) {
 
 static void usage(const char *prog) {
     fprintf(stderr,
-            "Usage: %s --name <netbios-name> --ipv4 <address> [options]\n"
+            "Usage: %s --name <netbios-name> (--ipv4 <address>|--auto-ip) [options]\n"
             "Options:\n"
+            "  --auto-ip          Answer with the matching live interface IPv4\n"
+            "  --check-auto-ip    Exit 0 if at least one usable live IPv4 exists\n"
             "  --ttl <seconds>    Record TTL (default: 300)\n",
             prog);
+}
+
+static const char *ipv4_to_string(uint32_t ipv4_addr, char *out, size_t out_len) {
+    struct in_addr addr;
+
+    addr.s_addr = ipv4_addr;
+    if (inet_ntop(AF_INET, &addr, out, out_len) == NULL) {
+        strncpy(out, "invalid", out_len - 1);
+        out[out_len - 1] = '\0';
+    }
+    return out;
+}
+
+static int runtime_ipv4_is_usable(uint32_t ipv4_addr) {
+    uint32_t host_order = ntohl(ipv4_addr);
+    unsigned int first_octet = (unsigned int)((host_order >> 24) & 0xff);
+    unsigned int second_octet = (unsigned int)((host_order >> 16) & 0xff);
+
+    if (ipv4_addr == 0) {
+        return 0;
+    }
+    if (first_octet == 127) {
+        return 0;
+    }
+    if (first_octet == 169 && second_octet == 254) {
+        return 0;
+    }
+    return 1;
+}
+
+static int iface_flags_are_usable(int flags, int require_running) {
+    if ((flags & IFF_UP) == 0) {
+        return 0;
+    }
+    if ((flags & IFF_LOOPBACK) != 0) {
+        return 0;
+    }
+    if (require_running && (flags & IFF_RUNNING) == 0) {
+        return 0;
+    }
+    return 1;
+}
+
+static int ifreq_table_uses_fixed_entries(size_t ifc_len) {
+    /*
+     * NetBSD 6/7 uses fixed-size struct ifreq records here, while NetBSD 4
+     * returns the older variable-length layout with sa_len-sized sockaddr
+     * payloads.  The fixed layout has the large ifreq union; the old layout
+     * stays close to IFNAMSIZ + struct sockaddr.
+     */
+    return sizeof(struct ifreq) > 64 && ifc_len > 0 && (ifc_len % sizeof(struct ifreq)) == 0;
+}
+
+static size_t ifreq_entry_size(const struct ifreq *ifr, size_t remaining, int fixed_entries) {
+    size_t sockaddr_len = sizeof(struct sockaddr);
+    size_t step;
+    size_t align;
+
+    if (fixed_entries) {
+        if (remaining < sizeof(*ifr)) {
+            return 0;
+        }
+        return sizeof(*ifr);
+    }
+
+    if (remaining < IFNAMSIZ + sizeof(struct sockaddr)) {
+        return 0;
+    }
+#if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
+    if (ifr->ifr_addr.sa_len > sockaddr_len) {
+        sockaddr_len = ifr->ifr_addr.sa_len;
+    }
+#endif
+
+    step = IFNAMSIZ + sockaddr_len;
+    align = sizeof(long);
+    if (align > 0 && (step % align) != 0) {
+        step += align - (step % align);
+    }
+    if (step < sizeof(*ifr)) {
+        step = sizeof(*ifr);
+    }
+    if (step > remaining) {
+        return 0;
+    }
+    return step;
+}
+
+static int copy_ifreq_entry(struct ifreq *out, const char *cursor, size_t remaining) {
+    size_t copy_len;
+
+    if (remaining < IFNAMSIZ + sizeof(struct sockaddr)) {
+        return -1;
+    }
+
+    memset(out, 0, sizeof(*out));
+    copy_len = remaining < sizeof(*out) ? remaining : sizeof(*out);
+    memcpy(out, cursor, copy_len);
+    return 0;
+}
+
+static int append_iface_context(struct iface_context_set *out,
+                                const char *name,
+                                uint32_t ipv4_addr,
+                                uint32_t netmask,
+                                int flags) {
+    size_t i;
+    struct iface_context *ctx;
+
+    if (!runtime_ipv4_is_usable(ipv4_addr)) {
+        return 0;
+    }
+    for (i = 0; i < out->count; i++) {
+        if (out->contexts[i].ipv4_addr == ipv4_addr) {
+            return 0;
+        }
+    }
+    if (out->count >= MAX_IFACE_CONTEXTS) {
+        return 0;
+    }
+
+    ctx = &out->contexts[out->count++];
+    memset(ctx, 0, sizeof(*ctx));
+    strncpy(ctx->name, name, sizeof(ctx->name) - 1);
+    ctx->ipv4_addr = ipv4_addr;
+    ctx->netmask = netmask;
+    ctx->flags = flags;
+    return 1;
+}
+
+static int collect_iface_contexts_with_policy(struct iface_context_set *out, int require_running) {
+    int sockfd;
+    char buffer[8192];
+    struct ifconf ifc;
+    char *cursor;
+    char *end;
+    int fixed_entries;
+
+    memset(out, 0, sizeof(*out));
+
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sockfd < 0) {
+        perror("socket interface enumeration");
+        return -1;
+    }
+
+    memset(&ifc, 0, sizeof(ifc));
+    ifc.ifc_len = sizeof(buffer);
+    ifc.ifc_buf = buffer;
+    if (ioctl(sockfd, SIOCGIFCONF, &ifc) < 0) {
+        perror("ioctl(SIOCGIFCONF)");
+        close(sockfd);
+        return -1;
+    }
+
+    cursor = ifc.ifc_buf;
+    end = cursor + ifc.ifc_len;
+    fixed_entries = ifreq_table_uses_fixed_entries((size_t)ifc.ifc_len);
+    while (cursor < end) {
+        struct ifreq ifr_entry;
+        struct ifreq flags_req;
+        struct ifreq mask_req;
+        struct sockaddr_in sin;
+        int flags;
+        uint32_t netmask = 0;
+        size_t remaining = (size_t)(end - cursor);
+        size_t step;
+
+        if (copy_ifreq_entry(&ifr_entry, cursor, remaining) != 0) {
+            break;
+        }
+        step = ifreq_entry_size(&ifr_entry, remaining, fixed_entries);
+        if (step == 0) {
+            break;
+        }
+
+        if (ifr_entry.ifr_addr.sa_family == AF_INET) {
+            memset(&flags_req, 0, sizeof(flags_req));
+            strncpy(flags_req.ifr_name, ifr_entry.ifr_name, sizeof(flags_req.ifr_name) - 1);
+            if (ioctl(sockfd, SIOCGIFFLAGS, &flags_req) == 0) {
+                flags = flags_req.ifr_flags;
+                if (iface_flags_are_usable(flags, require_running)) {
+                    memset(&mask_req, 0, sizeof(mask_req));
+                    strncpy(mask_req.ifr_name, ifr_entry.ifr_name, sizeof(mask_req.ifr_name) - 1);
+                    if (ioctl(sockfd, SIOCGIFNETMASK, &mask_req) == 0) {
+                        struct sockaddr_in netmask_addr;
+                        memset(&netmask_addr, 0, sizeof(netmask_addr));
+                        memcpy(&netmask_addr, &mask_req.ifr_addr, sizeof(netmask_addr));
+                        netmask = netmask_addr.sin_addr.s_addr;
+                    }
+                    memset(&sin, 0, sizeof(sin));
+                    memcpy(&sin, &ifr_entry.ifr_addr, sizeof(sin));
+                    append_iface_context(out, ifr_entry.ifr_name, sin.sin_addr.s_addr, netmask, flags);
+                }
+            }
+        }
+        cursor += step;
+    }
+
+    close(sockfd);
+    return 0;
+}
+
+static int collect_usable_iface_contexts(struct iface_context_set *out) {
+    if (collect_iface_contexts_with_policy(out, 1) != 0) {
+        return -1;
+    }
+    if (out->count > 0) {
+        return 0;
+    }
+    return collect_iface_contexts_with_policy(out, 0);
+}
+
+static int wait_for_auto_iface_contexts(struct iface_context_set *out) {
+    struct iface_context_set first;
+
+    memset(out, 0, sizeof(*out));
+    while (!g_stop) {
+        memset(&first, 0, sizeof(first));
+        if (collect_usable_iface_contexts(&first) == 0 && first.count > 0) {
+            fprintf(stderr, "nbns auto-ip: first usable IPv4 observed; waiting %ds for network stabilization\n",
+                    AUTO_IP_STABILIZE_SECONDS);
+            sleep(AUTO_IP_STABILIZE_SECONDS);
+            if (collect_usable_iface_contexts(out) == 0 && out->count > 0) {
+                return 0;
+            }
+            fprintf(stderr, "nbns auto-ip: usable IPv4 disappeared during stabilization; retrying\n");
+        }
+        sleep(AUTO_IP_STARTUP_POLL_SECONDS);
+    }
+    return -1;
+}
+
+static int iface_context_sets_equal(const struct iface_context_set *a, const struct iface_context_set *b) {
+    size_t i;
+
+    if (a->count != b->count) {
+        return 0;
+    }
+    for (i = 0; i < a->count; i++) {
+        if (strcmp(a->contexts[i].name, b->contexts[i].name) != 0 ||
+            a->contexts[i].ipv4_addr != b->contexts[i].ipv4_addr ||
+            a->contexts[i].netmask != b->contexts[i].netmask) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void log_iface_contexts(const char *prefix, const struct iface_context_set *set) {
+    size_t i;
+
+    fprintf(stderr, "%s: contexts=%lu\n", prefix, (unsigned long)set->count);
+    for (i = 0; i < set->count; i++) {
+        char ip_buf[INET_ADDRSTRLEN];
+        char mask_buf[INET_ADDRSTRLEN];
+        fprintf(stderr, "%s: context[%lu] iface=%s ip=%s netmask=%s flags=0x%x\n",
+                prefix,
+                (unsigned long)i,
+                set->contexts[i].name,
+                ipv4_to_string(set->contexts[i].ipv4_addr, ip_buf, sizeof(ip_buf)),
+                ipv4_to_string(set->contexts[i].netmask, mask_buf, sizeof(mask_buf)),
+                (unsigned int)set->contexts[i].flags);
+    }
+}
+
+static uint32_t choose_response_ipv4(const struct iface_context_set *contexts, uint32_t peer_addr) {
+    size_t i;
+
+    for (i = 0; i < contexts->count; i++) {
+        uint32_t mask = contexts->contexts[i].netmask;
+        if (mask != 0 &&
+            (peer_addr & mask) == (contexts->contexts[i].ipv4_addr & mask)) {
+            return contexts->contexts[i].ipv4_addr;
+        }
+    }
+    if (contexts->count > 0) {
+        return contexts->contexts[0].ipv4_addr;
+    }
+    return 0;
+}
+
+static int refresh_auto_iface_contexts_if_needed(struct iface_context_set *contexts,
+                                                time_t *last_iface_poll) {
+    if (time(NULL) - *last_iface_poll >= AUTO_IP_STABLE_POLL_SECONDS) {
+        struct iface_context_set next_contexts;
+        memset(&next_contexts, 0, sizeof(next_contexts));
+        if (collect_usable_iface_contexts(&next_contexts) == 0 &&
+            !iface_context_sets_equal(contexts, &next_contexts)) {
+            fprintf(stderr, "nbns auto-ip: interface table changed; rebuilding contexts after %ds stabilization\n",
+                    AUTO_IP_STABILIZE_SECONDS);
+            log_iface_contexts("nbns auto-ip observed", &next_contexts);
+            sleep(AUTO_IP_STABILIZE_SECONDS);
+            if (collect_usable_iface_contexts(&next_contexts) == 0 && next_contexts.count > 0) {
+                *contexts = next_contexts;
+            } else if (wait_for_auto_iface_contexts(contexts) != 0) {
+                return -1;
+            }
+            log_iface_contexts("nbns auto-ip active", contexts);
+        }
+        *last_iface_poll = time(NULL);
+    }
+    return 0;
 }
 
 static void normalize_netbios_name(char out[16], const char *name) {
@@ -320,8 +713,14 @@ int main(int argc, char **argv) {
     int sock = -1;
     int yes = 1;
     int i;
+    int auto_ip = 0;
+    int explicit_ipv4 = 0;
+    int check_auto_ip = 0;
+    time_t last_iface_poll = 0;
+    struct iface_context_set iface_contexts;
 
     memset(&cfg, 0, sizeof(cfg));
+    memset(&iface_contexts, 0, sizeof(iface_contexts));
     cfg.ttl = 300;
 
     for (i = 1; i < argc; i++) {
@@ -338,10 +737,15 @@ int main(int argc, char **argv) {
             }
             memcpy(cfg.netbios_name, name_arg, name_len + 1);
         } else if (strcmp(argv[i], "--ipv4") == 0 && i + 1 < argc) {
+            explicit_ipv4 = 1;
             if (inet_aton(argv[++i], (struct in_addr *)&cfg.ipv4_addr) == 0) {
                 fprintf(stderr, "invalid IPv4 address\n");
                 return 2;
             }
+        } else if (strcmp(argv[i], "--auto-ip") == 0) {
+            auto_ip = 1;
+        } else if (strcmp(argv[i], "--check-auto-ip") == 0) {
+            check_auto_ip = 1;
         } else if (strcmp(argv[i], "--ttl") == 0 && i + 1 < argc) {
             long ttl = strtol(argv[++i], NULL, 10);
             if (ttl <= 0 || ttl > 86400) {
@@ -358,13 +762,33 @@ int main(int argc, char **argv) {
         }
     }
 
+    if (check_auto_ip) {
+        struct iface_context_set check_contexts;
+        memset(&check_contexts, 0, sizeof(check_contexts));
+        if (collect_usable_iface_contexts(&check_contexts) == 0 && check_contexts.count > 0) {
+            return 0;
+        }
+        return 1;
+    }
+
     if (cfg.netbios_name[0] == '\0') {
         fprintf(stderr, "missing required option: --name\n");
         return 2;
     }
-    if (cfg.ipv4_addr == 0) {
+    if (auto_ip && explicit_ipv4) {
+        fprintf(stderr, "--auto-ip and --ipv4 are mutually exclusive\n");
+        return 2;
+    }
+    if (!auto_ip && cfg.ipv4_addr == 0) {
         fprintf(stderr, "missing required option: --ipv4\n");
         return 2;
+    }
+    if (auto_ip) {
+        if (wait_for_auto_iface_contexts(&iface_contexts) != 0) {
+            return 1;
+        }
+        log_iface_contexts("nbns auto-ip active", &iface_contexts);
+        last_iface_poll = time(NULL);
     }
 
     signal(SIGINT, on_signal);
@@ -416,6 +840,10 @@ int main(int argc, char **argv) {
         timeout.tv_sec = 1;
         timeout.tv_usec = 0;
 
+        if (auto_ip && refresh_auto_iface_contexts_if_needed(&iface_contexts, &last_iface_poll) != 0) {
+            break;
+        }
+
         if (select(sock + 1, &readfds, NULL, NULL, &timeout) < 0) {
             if (errno == EINTR) {
                 continue;
@@ -439,9 +867,23 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        (void)maybe_respond_to_query(sock, &cfg, buf, (size_t)nread, &peer, peer_len);
+        if (auto_ip) {
+            uint32_t response_ip;
+            struct config context_cfg = cfg;
+            response_ip = choose_response_ipv4(&iface_contexts, peer.sin_addr.s_addr);
+            if (response_ip == 0) {
+                continue;
+            }
+            context_cfg.ipv4_addr = response_ip;
+            (void)maybe_respond_to_query(sock, &context_cfg, buf, (size_t)nread, &peer, peer_len);
+        } else {
+            (void)maybe_respond_to_query(sock, &cfg, buf, (size_t)nread, &peer, peer_len);
+        }
     }
 
     close(sock);
     return 0;
 }
+
+#undef fprintf
+#undef perror

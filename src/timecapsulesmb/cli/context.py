@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import time
+import threading
 import uuid
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from timecapsulesmb.cli import runtime
-from timecapsulesmb.core.config import ConfigError
+from timecapsulesmb.core.config import ConfigError, airport_exact_display_name_from_identity
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.device.errors import DeviceError
+from timecapsulesmb.device.probe import probe_connection_state, probe_remote_airport_identity_conn
 from timecapsulesmb.device.storage import (
     mast_volumes_debug_summary,
     mounted_mast_volumes_conn,
@@ -35,6 +37,8 @@ COMMAND_VALUE_BLACKLIST = {
     "TC_PASSWORD",
     # Removed naming keys may still exist in old .env files. They are
     # intentionally ignored and should not appear as command inputs.
+    "TC_SAMBA_USER",
+    "TC_PAYLOAD_DIR_NAME",
     "TC_MDNS_HOST_LABEL",
     "TC_MDNS_INSTANCE_NAME",
     "TC_NETBIOS_NAME",
@@ -55,6 +59,7 @@ COMMAND_FIELD_BLACKLIST = {
     "device_came_back_after_reboot",
 }
 MAST_ACP_OUTPUT_DEBUG_LIMIT = 8192
+OPTIONAL_IDENTITY_PROBE_FINISH_TIMEOUT_SECONDS = 0.1
 
 
 def _mast_acp_output_debug_text(raw_output: str) -> str:
@@ -145,6 +150,8 @@ class CommandContext:
         self.interface_probe: RemoteInterfaceProbeResult | None = None
         self.probe_state: ProbedDeviceState | None = None
         self.compatibility: DeviceCompatibility | None = None
+        self._optional_airport_identity_thread: threading.Thread | None = None
+        self._optional_airport_identity: tuple[str | None, str | None] | None = None
         self._emit_telemetry(started_event, command_id=self.command_id, **fields)
 
     def __enter__(self) -> "CommandContext":
@@ -195,6 +202,58 @@ class CommandContext:
         for key, value in fields.items():
             if value is not None:
                 self.finish_fields[key] = value
+
+    def _update_device_identity_fields(self, *, model: str | None, syap: str | None) -> None:
+        self.update_fields(device_model=model, device_syap=syap)
+
+    def _update_device_identity_from_probe_state(self, probe_state: ProbedDeviceState) -> None:
+        probe = probe_state.probe_result
+        self._update_device_identity_fields(
+            model=probe.airport_model,
+            syap=probe.airport_syap,
+        )
+
+    def start_optional_airport_identity_probe(self, connection: SshConnection | None = None) -> None:
+        if self.finish_fields.get("device_model") or self.finish_fields.get("device_syap"):
+            return
+        if self._optional_airport_identity_thread is not None:
+            return
+        connection = connection or self.connection
+        if connection is None:
+            return
+
+        def probe_identity() -> None:
+            try:
+                identity = probe_remote_airport_identity_conn(connection)
+            except Exception:
+                return
+            self._optional_airport_identity = (identity.model, identity.syap)
+
+        thread = threading.Thread(target=probe_identity, name=f"{self.command_name}-airport-identity", daemon=True)
+        self._optional_airport_identity_thread = thread
+        thread.start()
+
+    def harvest_optional_airport_identity_probe(self, *, timeout_seconds: float = 0.0) -> None:
+        thread = self._optional_airport_identity_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=max(0.0, timeout_seconds))
+        if thread is not None and thread.is_alive():
+            return
+        if self._optional_airport_identity is None:
+            self._optional_airport_identity_thread = None
+            return
+        model, syap = self._optional_airport_identity
+        self._update_device_identity_fields(model=model, syap=syap)
+        self._optional_airport_identity_thread = None
+
+    def optional_airport_display_name(self, *, timeout_seconds: float = 0.0) -> str:
+        self.harvest_optional_airport_identity_probe(timeout_seconds=timeout_seconds)
+        model = self.finish_fields.get("device_model")
+        syap = self.finish_fields.get("device_syap")
+        return airport_exact_display_name_from_identity(
+            model=model if isinstance(model, str) else None,
+            syap=syap if isinstance(syap, str) else None,
+        )
 
     def set_stage(self, stage: str) -> None:
         self.debug_stage = stage
@@ -377,6 +436,7 @@ class CommandContext:
         if target.probe_state is not None:
             self.probe_state = target.probe_state
             self.compatibility = target.probe_state.compatibility
+            self._update_device_identity_from_probe_state(target.probe_state)
             if self.compatibility is not None:
                 self.update_fields(
                     device_os_version=build_device_os_version(
@@ -407,10 +467,13 @@ class CommandContext:
     def require_compatibility(self) -> DeviceCompatibility:
         if self.connection is None:
             raise RuntimeError("CommandContext connection is not set.")
-        self.compatibility = runtime.require_connection_compatibility(self.connection) if self.probe_state is None else runtime.require_compatibility(
+        if self.probe_state is None:
+            self.probe_state = probe_connection_state(self.connection)
+        self.compatibility = runtime.require_compatibility(
             self.probe_state.compatibility,
             fallback_error=self.probe_state.probe_result.error or "Failed to determine remote device OS compatibility.",
         )
+        self._update_device_identity_from_probe_state(self.probe_state)
         self.update_fields(device_os_version=build_device_os_version(
             self.compatibility.os_name,
             self.compatibility.os_release,
@@ -423,6 +486,9 @@ class CommandContext:
         if self.finished:
             return
         self.finished = True
+        self.harvest_optional_airport_identity_probe(timeout_seconds=OPTIONAL_IDENTITY_PROBE_FINISH_TIMEOUT_SECONDS)
+        emit_fields = dict(self.finish_fields)
+        emit_fields.update(fields)
         duration_sec = round(time.monotonic() - self.start_time, 3)
         error = None if result == "success" else self.build_error()
         if result != "success" and error is None:
@@ -434,5 +500,5 @@ class CommandContext:
             result=result,
             duration_sec=duration_sec,
             error=error,
-            **fields,
+            **emit_fields,
         )

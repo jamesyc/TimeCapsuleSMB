@@ -350,7 +350,6 @@ class CheckTests(unittest.TestCase):
             "connection_context",
             "ssh_login",
             "runtime_naming_identity",
-            "remote_interface",
             "device_compatibility",
             "managed_smbd",
             "managed_mdns",
@@ -1032,7 +1031,7 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(fatal)
         self.assertFalse(any("TC_MDNS_HOST_LABEL is invalid" in result.message for result in results))
 
-    def test_run_doctor_checks_reports_missing_airport_syap_from_config_validation(self) -> None:
+    def test_run_doctor_checks_does_not_require_saved_airport_syap(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "pw",
@@ -1057,14 +1056,17 @@ class CheckTests(unittest.TestCase):
                     results, fatal = run_doctor_checks(
                         config,
                         repo_root=REPO_ROOT,
+                        skip_ssh=True,
+                        skip_bonjour=True,
+                        skip_smb=True,
                     )
-        self.assertTrue(fatal)
-        self.assertTrue(any(
+        self.assertFalse(fatal)
+        self.assertFalse(any(
             "Missing required setting" in result.message and "TC_AIRPORT_SYAP" in result.message
             for result in results
         ))
 
-    def test_run_doctor_checks_reports_missing_remote_interface(self) -> None:
+    def test_run_doctor_checks_ignores_stale_net_iface(self) -> None:
         run = self.run_doctor_with_mocks(
             self.valid_doctor_values(TC_NET_IFACE="bridge9"),
             ssh_login=mock.Mock(status="PASS", message="ssh ok"),
@@ -1079,8 +1081,9 @@ class CheckTests(unittest.TestCase):
             ),
             mdns_probe=mock.Mock(ready=True, detail="managed mDNS takeover active"),
         )
-        self.assertTrue(run.fatal)
-        self.assertTrue(any("TC_NET_IFACE is invalid" in result.message for result in run.results))
+        self.assertFalse(run.fatal)
+        self.assertFalse(any("TC_NET_IFACE is invalid" in result.message for result in run.results))
+        run.mocks.probe_remote_interface_conn.assert_not_called()
 
     def test_run_doctor_checks_uses_precomputed_connection_and_interface_probe(self) -> None:
         connection = SshConnection("root@10.0.0.9", "pw", "-o injected")
@@ -1110,7 +1113,7 @@ class CheckTests(unittest.TestCase):
         run.mocks.check_ssh_login.assert_called_once_with(connection)
         run.mocks.probe_remote_interface_conn.assert_not_called()
 
-    def test_run_doctor_checks_reprobes_when_precomputed_interface_is_for_other_iface(self) -> None:
+    def test_run_doctor_checks_does_not_reprobe_precomputed_interface(self) -> None:
         connection = SshConnection("root@10.0.0.9", "pw", "-o injected")
         stale_interface_probe = RemoteInterfaceProbeResult(
             iface="bridge1",
@@ -1134,7 +1137,7 @@ class CheckTests(unittest.TestCase):
             skip_bonjour=True,
             skip_smb=True,
         )
-        run.mocks.probe_remote_interface_conn.assert_called_once_with(connection, "bridge0")
+        run.mocks.probe_remote_interface_conn.assert_not_called()
 
     def test_run_doctor_checks_reports_managed_mdns_takeover_state(self) -> None:
         debug_fields: dict[str, object] = {}
@@ -2156,8 +2159,8 @@ class CheckTests(unittest.TestCase):
         nbns_index = results.index(nbns_result)
         listing_index = next(i for i, result in enumerate(results) if result.message == "listing ok")
         self.assertLess(nbns_index, listing_index)
-        self.assertEqual(run_ssh_mock.call_count, 4)
-        nbns_mock.assert_called_once_with("TimeCapsule", "10.0.0.2", "192.168.1.217")
+        self.assertEqual(run_ssh_mock.call_count, 3)
+        nbns_mock.assert_called_once_with("TimeCapsule", "10.0.0.2", "10.0.0.2")
 
     def test_run_doctor_checks_resolves_nbns_expected_ip_from_hostname(self) -> None:
         values = {
@@ -2191,8 +2194,9 @@ class CheckTests(unittest.TestCase):
                                                     mock.Mock(stdout="192.168.1.217\n"),
                                                 ],
                                             ):
-                                                with mock.patch("timecapsulesmb.checks.doctor.check_nbns_name_resolution", return_value=mock.Mock(status="PASS", message="nbns ok")) as nbns_mock:
-                                                    results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
+                                                with mock.patch("timecapsulesmb.checks.doctor.resolve_host_ipv4s", return_value=("192.168.1.217",)):
+                                                    with mock.patch("timecapsulesmb.checks.doctor.check_nbns_name_resolution", return_value=mock.Mock(status="PASS", message="nbns ok")) as nbns_mock:
+                                                        results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
         self.assertFalse(fatal)
         self.assertEqual(next(result for result in results if result.message == "nbns ok").status, "PASS")
         nbns_mock.assert_called_once_with("TimeCapsule", "timecapsule.local", "192.168.1.217")
@@ -2229,8 +2233,9 @@ class CheckTests(unittest.TestCase):
                                                     mock.Mock(stdout="192.168.1.217\n"),
                                                 ],
                                             ):
-                                                with mock.patch("timecapsulesmb.checks.doctor.check_nbns_name_resolution", return_value=mock.Mock(status="PASS", message="nbns ok")) as nbns_mock:
-                                                    results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
+                                                with mock.patch("timecapsulesmb.checks.doctor.resolve_host_ipv4s", return_value=("192.168.1.217",)):
+                                                    with mock.patch("timecapsulesmb.checks.doctor.check_nbns_name_resolution", return_value=mock.Mock(status="PASS", message="nbns ok")) as nbns_mock:
+                                                        results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
         self.assertFalse(fatal)
         self.assertEqual(next(result for result in results if result.message == "nbns ok").status, "PASS")
         nbns_mock.assert_called_once_with("TimeCapsule", "wan.example.com", "192.168.1.217")

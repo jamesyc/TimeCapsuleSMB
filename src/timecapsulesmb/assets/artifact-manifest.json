@@ -2,27 +2,27 @@
   "artifacts": {
     "mdns-advertiser": {
       "path": "bin/mdns/mdns-advertiser",
-      "sha256": "fc11d127064af17347e7ae850f1ac1705dc75f814366f6f0f8041e32d24264c6"
+      "sha256": "1f4c50308a32d8304fb092daed0d5cee0f5c26c7d11ef8937a77e49576803359"
     },
     "mdns-advertiser-netbsd4le": {
       "path": "bin/mdns-netbsd4le/mdns-advertiser",
-      "sha256": "7b1f273612737399e4a6e3a149c258a05b0edbe1540e4e4f00271cdfceccf6cf"
+      "sha256": "a49b75e0c324d16d19169fe6d6a4d9624e94f45deeab63e4454dfc9070536b36"
     },
     "mdns-advertiser-netbsd4be": {
       "path": "bin/mdns-netbsd4be/mdns-advertiser",
-      "sha256": "d4afa4fff389a9cea66eeaafba659fb6f42e194bfbc74cd377cda8a149bc378b"
+      "sha256": "3ab26253462dcc8deedeecce1a12436e98d651aee96d21a18ded9d851173b5d6"
     },
     "nbns-advertiser": {
       "path": "bin/nbns/nbns-advertiser",
-      "sha256": "3818f9b118f59900f81b3d805356f2a4b55b8a26c284a9cdccd7d738f8df0861"
+      "sha256": "f0773ab1a1e55c1d047be8782c2811f25bfc0beec79c43cbf4e1b8518752ef9f"
     },
     "nbns-advertiser-netbsd4le": {
       "path": "bin/nbns-netbsd4le/nbns-advertiser",
-      "sha256": "e42b7e0887c72d9ac6a6ae812dd10acd45960c302816bb6ac5b0a054130a6e74"
+      "sha256": "760f61b15cfb47036b3d5e7ee9b7132616e800d5ef0d35d40fd10711897f2f3b"
     },
     "nbns-advertiser-netbsd4be": {
       "path": "bin/nbns-netbsd4be/nbns-advertiser",
-      "sha256": "21032245bc736cd34facf3bd782b21b6502f3aeae6cd7c8adcc38c3f0736dc1f"
+      "sha256": "474e41b3db6e9acf6bb0e255c506960f2c3c74d728305cd6fd5322326f79fcbc"
     },
     "smbd": {
       "path": "bin/samba4/smbd",

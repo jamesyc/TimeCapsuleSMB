@@ -24,6 +24,9 @@ ADISK_DISK_TXT_ADVF_PREFIX = "=adVF="
 ADISK_DISK_TXT_ADVN_MID = ",adVN="
 ADISK_DISK_TXT_SUFFIX = ",adVU="
 MAX_SAMBA_USER_BYTES = 32
+MANAGED_PAYLOAD_DIR_NAME = ".samba4"
+DEFAULT_SAMBA_AUTH_USER = "admin"
+DEFAULT_MDNS_DEVICE_MODEL = "TimeCapsule"
 
 
 @dataclass(frozen=True)
@@ -69,11 +72,6 @@ def airport_identity_from_values(values: dict[str, str]) -> AirportDeviceIdentit
 DEFAULTS = {
     "TC_HOST": "root@192.168.1.101",
     "TC_SSH_OPTS": "-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
-    "TC_NET_IFACE": "bridge0",
-    "TC_SAMBA_USER": "admin",
-    "TC_PAYLOAD_DIR_NAME": ".samba4",
-    "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
-    "TC_AIRPORT_SYAP": "",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT": "false",
 }
 
@@ -81,11 +79,6 @@ ENV_FILE_KEYS = [
     "TC_HOST",
     "TC_PASSWORD",
     "TC_SSH_OPTS",
-    "TC_NET_IFACE",
-    "TC_SAMBA_USER",
-    "TC_PAYLOAD_DIR_NAME",
-    "TC_MDNS_DEVICE_MODEL",
-    "TC_AIRPORT_SYAP",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT",
     "TC_CONFIGURE_ID",
 ]
@@ -167,6 +160,42 @@ def airport_identity_from_config(config: AppConfig) -> AirportDeviceIdentity | N
         AIRPORT_IDENTITIES_BY_SYAP.get(config.get("TC_AIRPORT_SYAP"))
         or AIRPORT_IDENTITIES_BY_MODEL.get(config.get("TC_MDNS_DEVICE_MODEL"))
     )
+
+
+def airport_identity_from_model_or_syap(
+    *,
+    model: str | None = None,
+    syap: str | None = None,
+) -> AirportDeviceIdentity | None:
+    return (
+        AIRPORT_IDENTITIES_BY_SYAP.get(syap or "")
+        or AIRPORT_IDENTITIES_BY_MODEL.get(model or "")
+    )
+
+
+def airport_family_display_name_from_identity(
+    *,
+    model: str | None = None,
+    syap: str | None = None,
+) -> str:
+    identity = airport_identity_from_model_or_syap(model=model, syap=syap)
+    family = identity.family if identity is not None else ""
+    if family == "time_capsule" or model == "TimeCapsule":
+        return "Time Capsule"
+    if family == "airport_extreme" or model == "AirPort":
+        return "AirPort Extreme"
+    return "AirPort storage device"
+
+
+def airport_exact_display_name_from_identity(
+    *,
+    model: str | None = None,
+    syap: str | None = None,
+) -> str:
+    identity = airport_identity_from_model_or_syap(model=model, syap=syap)
+    if identity is not None:
+        return identity.display_name
+    return airport_family_display_name_from_identity(model=model, syap=syap)
 
 
 def airport_family_display_name_from_config(config: AppConfig) -> str:
@@ -453,7 +482,6 @@ def validate_mdns_device_model_matches_syap(syap: str, device_model: str) -> Opt
 
 CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
     "TC_HOST": validate_ssh_target,
-    "TC_NET_IFACE": validate_net_iface,
     "TC_SAMBA_USER": validate_samba_user,
     "TC_PAYLOAD_DIR_NAME": validate_payload_dir_name,
     "TC_AIRPORT_SYAP": validate_airport_syap,
@@ -472,29 +500,14 @@ class ConfigProfile:
 
 
 CONFIGURE_VALIDATED_KEYS = (
-    "TC_NET_IFACE",
-    "TC_SAMBA_USER",
-    "TC_PAYLOAD_DIR_NAME",
-    "TC_MDNS_DEVICE_MODEL",
-    "TC_AIRPORT_SYAP",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT",
 )
 MANAGED_VALIDATED_KEYS = (
     "TC_HOST",
-    "TC_NET_IFACE",
-    "TC_SAMBA_USER",
-    "TC_PAYLOAD_DIR_NAME",
-    "TC_MDNS_DEVICE_MODEL",
-    "TC_AIRPORT_SYAP",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT",
 )
 MANAGED_REQUIRED_FILE_KEYS = (
     "TC_HOST",
-    "TC_NET_IFACE",
-    "TC_SAMBA_USER",
-    "TC_PAYLOAD_DIR_NAME",
-    "TC_MDNS_DEVICE_MODEL",
-    "TC_AIRPORT_SYAP",
 )
 FLASH_REQUIRED_FILE_KEYS = (
     "TC_HOST",
@@ -512,21 +525,18 @@ CONFIG_PROFILES: dict[str, ConfigProfile] = {
     "deploy": ConfigProfile(
         required_file_values=MANAGED_REQUIRED_FILE_KEYS,
         validated_keys=MANAGED_VALIDATED_KEYS,
-        cross_check_syap_model=True,
     ),
     "activate": ConfigProfile(
         required_file_values=MANAGED_REQUIRED_FILE_KEYS,
         validated_keys=MANAGED_VALIDATED_KEYS,
-        cross_check_syap_model=True,
     ),
     "doctor": ConfigProfile(
         required_file_values=(*MANAGED_REQUIRED_FILE_KEYS, "TC_PASSWORD"),
         validated_keys=MANAGED_VALIDATED_KEYS,
-        cross_check_syap_model=True,
     ),
     "uninstall": ConfigProfile(
-        required_file_values=("TC_HOST", "TC_PAYLOAD_DIR_NAME"),
-        validated_keys=("TC_HOST", "TC_PAYLOAD_DIR_NAME"),
+        required_file_values=("TC_HOST",),
+        validated_keys=("TC_HOST",),
     ),
     "fsck": ConfigProfile(
         required_file_values=("TC_HOST",),

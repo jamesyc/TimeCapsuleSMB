@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import sys
@@ -39,7 +42,7 @@ def telemetry_client_from_values(
 
 
 class TelemetryTests(unittest.TestCase):
-    def test_emit_builds_schema_v3_payload(self) -> None:
+    def test_emit_builds_schema_v3_payload_without_stale_config_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bootstrap_path = Path(tmp) / ".bootstrap"
             bootstrap_path.write_text("INSTALL_ID=test-install\n")
@@ -60,8 +63,8 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(payload["event"], "deploy_started")
         self.assertEqual(payload["install_id"], "test-install")
         self.assertEqual(payload["configure_id"], "config-id")
-        self.assertEqual(payload["device_model"], "TimeCapsule8,119")
-        self.assertEqual(payload["device_syap"], "119")
+        self.assertNotIn("device_model", payload)
+        self.assertNotIn("device_syap", payload)
         self.assertTrue(payload["nbns_enabled"])
         self.assertEqual(payload["host_os"], "macOS" if sys.platform == "darwin" else payload["host_os"])
         self.assertNotIn("command_id", payload)
@@ -167,6 +170,8 @@ class TelemetryTests(unittest.TestCase):
                 os_release="6.0",
                 arch="earmv4",
                 elf_endianness="little",
+                airport_model="TimeCapsule8,119",
+                airport_syap="119",
             ),
             compatibility=compatibility,
         )
@@ -210,8 +215,59 @@ class TelemetryTests(unittest.TestCase):
         self.assertIs(context.compatibility, compatibility)
         self.assertEqual(context.finish_fields["device_family"], "netbsd6_samba4")
         self.assertEqual(context.finish_fields["device_os_version"], "NetBSD 6.0 (earmv4)")
+        self.assertEqual(context.finish_fields["device_model"], "TimeCapsule8,119")
+        self.assertEqual(context.finish_fields["device_syap"], "119")
         resolve_mock.assert_called_once()
         inspect_mock.assert_called_once_with(connection, "bridge0", include_probe=True)
+
+    def test_command_context_finish_harvests_fast_optional_airport_identity_probe(self) -> None:
+        telemetry = mock.Mock()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        context = CommandContext(
+            telemetry,
+            "fsck",
+            "fsck_started",
+            "fsck_finished",
+        )
+
+        with mock.patch(
+            "timecapsulesmb.cli.context.probe_remote_airport_identity_conn",
+            return_value=SimpleNamespace(model="AirPort7,120", syap="120"),
+        ):
+            context.start_optional_airport_identity_probe(connection)
+            context.finish(result="success")
+
+        payload = telemetry.emit.call_args_list[-1].kwargs
+        self.assertEqual(payload["device_model"], "AirPort7,120")
+        self.assertEqual(payload["device_syap"], "120")
+
+    def test_command_context_finish_only_waits_briefly_for_slow_optional_airport_identity_probe(self) -> None:
+        telemetry = mock.Mock()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        release_probe = threading.Event()
+
+        def slow_probe(_connection: SshConnection) -> SimpleNamespace:
+            release_probe.wait(1)
+            return SimpleNamespace(model="AirPort7,120", syap="120")
+
+        context = CommandContext(
+            telemetry,
+            "fsck",
+            "fsck_started",
+            "fsck_finished",
+        )
+
+        with mock.patch("timecapsulesmb.cli.context.probe_remote_airport_identity_conn", side_effect=slow_probe):
+            context.start_optional_airport_identity_probe(connection)
+            started = time.monotonic()
+            context.finish(result="success")
+            elapsed = time.monotonic() - started
+            release_probe.set()
+
+        payload = telemetry.emit.call_args_list[-1].kwargs
+        self.assertLess(elapsed, 0.5)
+        self.assertNotIn("device_model", payload)
+        self.assertNotIn("device_syap", payload)
 
     def test_command_context_resolve_env_connection_requires_config(self) -> None:
         command = CommandContext(
