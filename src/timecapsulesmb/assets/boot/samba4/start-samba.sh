@@ -8,8 +8,6 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
 tc_init_runtime_env
 tc_set_log "$RAM_VAR/rc.local.log" "rc.local"
-TC_MDNS_CAPTURE_PID=
-TC_APPLE_MDNS_SNAPSHOT_START=$(/bin/ls -lnT "$APPLE_MDNS_SNAPSHOT" 2>/dev/null || true)
 TC_START_MODE=${1:-}
 
 case "$TC_START_MODE" in
@@ -48,19 +46,13 @@ else
     tc_log "managed Samba boot startup beginning"
 fi
 
-if ! tc_prepare_bind_runtime_context; then
-    tc_log "network startup failed: could not determine $NET_IFACE IPv4 address"
-    exit 1
-fi
-
 if ! tc_refresh_disk_state; then
     exit 1
 fi
 
-tc_start_mdns_capture
 tc_init_runtime_identity
 
-if ! tc_stage_disk_runtime "$BIND_INTERFACES"; then
+if ! tc_stage_disk_runtime; then
     exit 1
 fi
 
@@ -70,8 +62,6 @@ tc_start_smbd || {
 }
 tc_log "smbd startup complete: process observed"
 
-tc_start_mdns_advertiser
-tc_start_nbns
 tc_start_watchdog
 
 exit 0

@@ -54,8 +54,10 @@ from timecapsulesmb.core.config import (
     AppConfig,
     ConfigError,
     DEFAULTS,
+    MANAGED_PAYLOAD_DIR_NAME,
     airport_exact_display_name_from_config,
     airport_family_display_name_from_config,
+    render_env_text,
 )
 from timecapsulesmb.core.paths import AppPaths
 from timecapsulesmb.device.compat import DeviceCompatibility, compatibility_from_probe_result
@@ -171,6 +173,22 @@ class FakeCommandContext:
         for key, value in fields.items():
             if value is not None:
                 self.finish_fields[key] = value
+
+    def start_optional_airport_identity_probe(self, _connection=None) -> None:
+        pass
+
+    def harvest_optional_airport_identity_probe(self, *, timeout_seconds: float = 0.0) -> None:
+        pass
+
+    def optional_airport_display_name(self, *, timeout_seconds: float = 0.0) -> str:
+        model = self.finish_fields.get("device_model")
+        syap = self.finish_fields.get("device_syap")
+        from timecapsulesmb.core.config import airport_exact_display_name_from_identity
+
+        return airport_exact_display_name_from_identity(
+            model=model if isinstance(model, str) else None,
+            syap=syap if isinstance(syap, str) else None,
+        )
 
     def set_stage(self, stage: str) -> None:
         self.stages.append(stage)
@@ -816,7 +834,7 @@ class CliTests(unittest.TestCase):
         if artifacts is None:
             artifacts = [("smbd", True, "ok"), ("mdns", True, "ok"), ("nbns", True, "ok")]
         config_values = values or self.make_valid_env()
-        payload_home = self._payload_home(mount_root, config_values.get("TC_PAYLOAD_DIR_NAME", DEFAULTS["TC_PAYLOAD_DIR_NAME"]))
+        payload_home = self._payload_home(mount_root, MANAGED_PAYLOAD_DIR_NAME)
         if mast_volumes is None:
             mast_volumes = (self._mast_volume(mount_root.rstrip("/").rsplit("/", 1)[-1]),)
         if mast_discovery is None:
@@ -1406,8 +1424,7 @@ class CliTests(unittest.TestCase):
         prompt_values = iter([
             "root@10.0.0.2",
             "pw",
-            "bridge0",
-                        "admin",
+            "admin",
             "TimeCapsule",
             "samba4",
             "Time Capsule Samba 4",
@@ -1425,7 +1442,14 @@ class CliTests(unittest.TestCase):
         )
         fake_values = result.values
         self.assertEqual(result.rc, 0)
-        self.assertEqual(fake_values["TC_SAMBA_USER"], "admin")
+        self.assertNotIn("TC_SAMBA_USER", fake_values)
+        self.assertNotIn("TC_PAYLOAD_DIR_NAME", fake_values)
+        self.assertEqual(fake_values["TC_AIRPORT_SYAP"], "119")
+        self.assertEqual(fake_values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
+        rendered_env = render_env_text(fake_values)
+        self.assertNotIn("TC_AIRPORT_SYAP", rendered_env)
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", rendered_env)
+        self.assertNotIn("TC_NET_IFACE", fake_values)
         self.assertEqual(fake_values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "false")
         uuid.UUID(fake_values["TC_CONFIGURE_ID"])
         telemetry_values = result.mocks.telemetry_factory.call_args.args[0].values
@@ -1433,8 +1457,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.mocks.command_context_factory.call_args.kwargs["configure_id"], fake_values["TC_CONFIGURE_ID"])
         command_context.finish.assert_called_once()
         self.assertEqual(command_context.finish.call_args.kwargs["configure_id"], fake_values["TC_CONFIGURE_ID"])
-        self.assertEqual(command_context.finish.call_args.kwargs["device_syap"], fake_values["TC_AIRPORT_SYAP"])
-        self.assertEqual(command_context.finish.call_args.kwargs["device_model"], fake_values["TC_MDNS_DEVICE_MODEL"])
+        self.assertEqual(command_context.finish.call_args.kwargs["device_syap"], "119")
+        self.assertEqual(command_context.finish.call_args.kwargs["device_model"], "TimeCapsule8,119")
         text = result.text
         self.assertIn("This writes a local .env configuration file", text)
         self.assertIn(f"Review the .env file configuration: wrote {configure.ENV_PATH}", text)
@@ -1519,8 +1543,8 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_AIRPORT_SYAP"], "120")
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "AirPort7,120")
+        self.assertNotIn("TC_AIRPORT_SYAP", result.values)
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         self.assertEqual(result.values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "false")
 
     def test_configure_ensures_install_id_before_telemetry(self) -> None:
@@ -1783,33 +1807,19 @@ class CliTests(unittest.TestCase):
         self.assertIn("probe_supported=false", error)
         self.assertIn("probe_reason_code=", error)
 
-    def test_configure_telemetry_records_interface_candidates_and_exact_match_source(self) -> None:
-        interface_probe = RemoteInterfaceCandidatesProbeResult(
-            candidates=(
-                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.1.1",), up=True, active=True, loopback=False),
-                RemoteInterfaceCandidate(name="bridge0", ipv4_addrs=("192.168.1.217",), up=True, active=True, loopback=False),
-            ),
-            preferred_iface="bridge0",
-            detail="preferred interface bridge0",
-        )
-
+    def test_configure_telemetry_does_not_record_runtime_interface_selection(self) -> None:
         self.run_configure_cli(
             ensure_install_id=True,
             prompt_side_effect=self.configure_prompt_defaults(host="root@10.0.1.1"),
             probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
-            interface_probe=interface_probe,
             write_side_effect=RuntimeError("cannot write env"),
             raises=RuntimeError,
         )
 
         error = self.configure_finished_error()
         self.assertIn("RuntimeError: cannot write env", error)
-        self.assertIn("interface_candidates=[", error)
-        self.assertIn("name:bcmeth1", error)
-        self.assertIn("ipv4:[10.0.1.1]", error)
-        self.assertIn("name:bridge0", error)
-        self.assertIn("selected_net_iface=bcmeth1", error)
-        self.assertIn("selected_net_iface_source=target_ip_match", error)
+        self.assertNotIn("interface_candidates=[", error)
+        self.assertNotIn("selected_net_iface=", error)
 
     def test_configure_uses_discovered_host_when_available(self) -> None:
         record = Discovered(
@@ -1879,6 +1889,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("mDNS device model hint", seen_defaults)
         self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
 
+    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
     def test_configure_uses_target_ip_interface_default_instead_of_static_bridge0(self) -> None:
         seen_defaults = {}
         prompt_values = iter([
@@ -1921,6 +1932,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("bcmeth1: 10.0.1.1 (suggested)", result.text)
         self.assertIn("Using probed default for TC_NET_IFACE: bcmeth1", result.text)
 
+    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
     def test_configure_uses_discovered_ip_for_interface_default_when_host_is_name(self) -> None:
         seen_defaults = {}
         record = Discovered(
@@ -1970,6 +1982,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_NET_IFACE"], "bcmeth1")
         self.assertIn("bcmeth1: 10.0.1.1 (suggested)", result.text)
 
+    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
     def test_configure_keeps_saved_interface_when_it_matches_probed_candidates(self) -> None:
         seen_defaults = {}
         existing = {"TC_NET_IFACE": "bcmeth1"}
@@ -2012,6 +2025,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_NET_IFACE"], "bcmeth1")
         self.assertIn("Found saved value: bcmeth1", result.text)
 
+    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
     def test_configure_target_ip_match_overrides_conflicting_saved_interface(self) -> None:
         seen_defaults = {}
         existing = {"TC_NET_IFACE": "bridge0"}
@@ -2056,6 +2070,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Found saved value: bridge0", result.text)
         self.assertIn("Probed target IP 10.0.1.1 is on bcmeth1, so bcmeth1 is suggested instead.", result.text)
 
+    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
     def test_configure_private_discovered_ip_beats_loopback_ssh_target(self) -> None:
         seen_defaults = {}
         record = Discovered(
@@ -2108,6 +2123,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_NET_IFACE"], "bridge0")
         self.assertIn("bridge0: 192.168.1.217 (suggested)", result.text)
 
+    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
     def test_configure_loopback_target_ip_does_not_win_runtime_interface(self) -> None:
         seen_defaults = {}
         prompt_values = iter([
@@ -2225,6 +2241,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
         self.assertIn("capsule.local resolves to 169.254.x.x link-local IPv4 address 169.254.44.9", result.text)
 
+    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
     def test_configure_multiple_private_interfaces_without_exact_match_prints_candidates_and_prompts(self) -> None:
         seen_defaults = {}
         prompt_values = iter([
@@ -2268,6 +2285,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("bcmeth1: 10.0.1.1", text)
         self.assertIn("bridge0: 192.168.1.217 (suggested)", text)
 
+    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
     def test_configure_uses_ssh_target_ip_before_discovered_ip_for_interface_default(self) -> None:
         seen_defaults = {}
         record = Discovered(
@@ -2320,6 +2338,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_NET_IFACE"], "bcmeth1")
         self.assertIn("bcmeth1: 10.0.1.1 (suggested)", result.text)
 
+    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
     def test_configure_fails_when_probe_has_no_runtime_usable_ipv4_candidates(self) -> None:
         seen_defaults = {}
         prompt_values = iter([
@@ -2530,16 +2549,11 @@ class CliTests(unittest.TestCase):
             probe_state=self.make_probe_state(self.make_probe_result_netbsd4le()),
         )
         self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_AIRPORT_SYAP"], "113")
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,113")
+        self.assertNotIn("TC_AIRPORT_SYAP", result.values)
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         text = result.text
-        self.assertIn("Device                           Model identifier    syAP", text)
-        self.assertIn("AirPort Extreme 3rd generation   AirPort5,108        108", text)
-        self.assertIn("Time Capsule 3rd generation      TimeCapsule6,113    113", text)
-        self.assertIn("AirPort Extreme 4th generation   AirPort5,114        114", text)
-        self.assertIn("Time Capsule 4th generation      TimeCapsule6,116    116", text)
-        self.assertIn("AirPort Extreme 5th generation   AirPort5,117        117", text)
-        self.assertIn("From detected connection, syAP code should be one of: 108, 113, 114, 116, 117", text)
+        self.assertNotIn("Device                           Model identifier    syAP", text)
+        self.assertNotIn("Airport Utility syAP code", text)
 
     def test_configure_probed_netbsd4be_shows_syap_table_and_restricts_candidates(self) -> None:
         syap_defaults: list[str] = []
@@ -2553,7 +2567,6 @@ class CliTests(unittest.TestCase):
         prompt_values = iter([
             "root@10.0.0.2",
             "rootpw",
-            "bridge0",
             "admin",
             "samba4",
             "119",
@@ -2574,16 +2587,12 @@ class CliTests(unittest.TestCase):
             probe_state=self.make_probe_state(self.make_probe_result_netbsd4be()),
         )
         self.assertEqual(result.rc, 0)
-        self.assertEqual(syap_defaults, ["", ""])
-        self.assertEqual(result.values["TC_AIRPORT_SYAP"], "106")
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,106")
+        self.assertEqual(syap_defaults, [])
+        self.assertNotIn("TC_AIRPORT_SYAP", result.values)
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         text = result.text
-        self.assertIn("Device                           Model identifier    syAP", text)
-        self.assertIn("AirPort Extreme 1st generation   AirPort5,104        104", text)
-        self.assertIn("AirPort Extreme 2nd generation   AirPort5,105        105", text)
-        self.assertIn("Time Capsule 1st generation      TimeCapsule6,106    106", text)
-        self.assertIn("Time Capsule 2nd generation      TimeCapsule6,109    109", text)
-        self.assertIn("From detected connection, syAP code should be one of: 104, 105, 106, 109", text)
+        self.assertNotIn("Device                           Model identifier    syAP", text)
+        self.assertNotIn("Airport Utility syAP code", text)
 
     def test_configure_probed_netbsd4be_airport_identity_identity_autofills_generation(self) -> None:
         prompt_values = iter([
@@ -2674,7 +2683,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_AIRPORT_SYAP"], "119")
         self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
-        self.assertIn("Using discovered TC_AIRPORT_SYAP: 119", result.text)
+        self.assertIn("Using probed TC_AIRPORT_SYAP: 119", result.text)
 
     def test_configure_discovered_syap_beats_invalid_existing_syap(self) -> None:
         seen_labels: list[str] = []
@@ -2825,11 +2834,11 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_AIRPORT_SYAP"], "120")
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "AirPort7,120")
+        self.assertNotIn("TC_AIRPORT_SYAP", result.values)
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         text = result.text
-        self.assertIn("Found saved value: 113", text)
-        self.assertIn("From detected connection, syAP code should be one of: 119, 120", text)
+        self.assertNotIn("Found saved value: 113", text)
+        self.assertNotIn("Airport Utility syAP code", text)
 
     def test_configure_discovered_invalid_syap_uses_probed_syap_after_acp(self) -> None:
         seen_defaults = {}
@@ -2913,10 +2922,10 @@ class CliTests(unittest.TestCase):
             confirm=True,
         )
         self.assertEqual(result.rc, 0)
-        self.assertEqual(syap_defaults, ["", ""])
-        self.assertEqual(result.values["TC_AIRPORT_SYAP"], "113")
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,113")
-        self.assertIn("The configured syAP is invalid.", result.text)
+        self.assertEqual(syap_defaults, [])
+        self.assertNotIn("TC_AIRPORT_SYAP", result.values)
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
+        self.assertNotIn("The configured syAP is invalid.", result.text)
 
     def test_configure_can_skip_single_discovered_device(self) -> None:
         record = Discovered(
@@ -3058,10 +3067,10 @@ class CliTests(unittest.TestCase):
             confirm=True,
         )
         self.assertEqual(result.rc, 0)
-        self.assertEqual(syap_defaults, ["", ""])
-        self.assertEqual(result.values["TC_AIRPORT_SYAP"], "116")
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,116")
-        self.assertIn("The configured syAP is invalid.", result.text)
+        self.assertEqual(syap_defaults, [])
+        self.assertNotIn("TC_AIRPORT_SYAP", result.values)
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
+        self.assertNotIn("The configured syAP is invalid.", result.text)
 
     def test_configure_skipped_discovery_prints_when_reusing_existing_syap(self) -> None:
         existing = {
@@ -3089,8 +3098,8 @@ class CliTests(unittest.TestCase):
             confirm=True,
         )
         self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_AIRPORT_SYAP"], "116")
-        self.assertIn("Using TC_AIRPORT_SYAP from .env: 116", result.text)
+        self.assertNotIn("TC_AIRPORT_SYAP", result.values)
+        self.assertNotIn("Using TC_AIRPORT_SYAP from .env: 116", result.text)
 
     def test_configure_ignores_legacy_existing_share_name(self) -> None:
         existing = {
@@ -3227,10 +3236,10 @@ class CliTests(unittest.TestCase):
             extra_patches={"timecapsulesmb.cli.configure.infer_mdns_device_model_from_airport_syap": mock.Mock(return_value=None)},
         )
         self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_AIRPORT_SYAP"], "119")
-        self.assertEqual(seen_defaults["mDNS device model hint"], "TimeCapsule")
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule")
-        self.assertIn("Using TC_AIRPORT_SYAP from .env: 119", result.text)
+        self.assertNotIn("TC_AIRPORT_SYAP", result.values)
+        self.assertNotIn("mDNS device model hint", seen_defaults)
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
+        self.assertNotIn("Using TC_AIRPORT_SYAP from .env: 119", result.text)
 
     def test_configure_existing_syap_autofills_mdns_device_model_when_undetected(self) -> None:
         existing = {
@@ -3262,11 +3271,11 @@ class CliTests(unittest.TestCase):
             confirm=True,
         )
         self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_AIRPORT_SYAP"], "116")
+        self.assertNotIn("TC_AIRPORT_SYAP", result.values)
         self.assertNotIn("mDNS device model hint", seen_defaults)
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,116")
-        self.assertIn("Using TC_AIRPORT_SYAP from .env: 116", result.text)
-        self.assertIn("Using TC_MDNS_DEVICE_MODEL derived from TC_AIRPORT_SYAP: TimeCapsule6,116", result.text)
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
+        self.assertNotIn("Using TC_AIRPORT_SYAP from .env: 116", result.text)
+        self.assertNotIn("Using TC_MDNS_DEVICE_MODEL derived from TC_AIRPORT_SYAP", result.text)
 
     def test_configure_prompted_syap_overrides_existing_mdns_device_model(self) -> None:
         existing = {
@@ -3300,10 +3309,10 @@ class CliTests(unittest.TestCase):
             confirm=True,
         )
         self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_AIRPORT_SYAP"], "116")
+        self.assertNotIn("TC_AIRPORT_SYAP", result.values)
         self.assertNotIn("mDNS device model hint", seen_defaults)
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,116")
-        self.assertIn("Using TC_MDNS_DEVICE_MODEL derived from TC_AIRPORT_SYAP: TimeCapsule6,116", result.text)
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
+        self.assertNotIn("Using TC_MDNS_DEVICE_MODEL derived from TC_AIRPORT_SYAP", result.text)
 
     def test_configure_skipped_discovery_prints_when_reusing_existing_mdns_device_model(self) -> None:
         existing = {
@@ -3334,8 +3343,8 @@ class CliTests(unittest.TestCase):
             extra_patches={"timecapsulesmb.cli.configure.infer_mdns_device_model_from_airport_syap": mock.Mock(return_value=None)},
         )
         self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule")
-        self.assertIn("Using TC_MDNS_DEVICE_MODEL from .env: TimeCapsule", result.text)
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
+        self.assertNotIn("Using TC_MDNS_DEVICE_MODEL from .env: TimeCapsule", result.text)
 
     def test_configure_invalid_saved_mdns_device_model_stays_silent_when_prompted(self) -> None:
         existing = {
@@ -3368,8 +3377,8 @@ class CliTests(unittest.TestCase):
             extra_patches={"timecapsulesmb.cli.configure.infer_mdns_device_model_from_airport_syap": mock.Mock(return_value=None)},
         )
         self.assertEqual(result.rc, 0)
-        self.assertEqual(seen_defaults["mDNS device model hint"], "TimeCapsule")
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule")
+        self.assertNotIn("mDNS device model hint", seen_defaults)
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         self.assertNotIn("Found saved value: NotATimeCapsule", result.text)
         self.assertNotIn("Using TC_MDNS_DEVICE_MODEL from .env: NotATimeCapsule", result.text)
 
@@ -3680,8 +3689,8 @@ class CliTests(unittest.TestCase):
             confirm=True,
         )
         self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_AIRPORT_SYAP"], "116")
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,116")
+        self.assertNotIn("TC_AIRPORT_SYAP", result.values)
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
 
     def test_configure_prompted_syap_autofills_mdns_device_model_from_lookup(self) -> None:
         prompt_values = iter([
@@ -3707,9 +3716,9 @@ class CliTests(unittest.TestCase):
             confirm=True,
         )
         self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_AIRPORT_SYAP"], "116")
+        self.assertNotIn("TC_AIRPORT_SYAP", result.values)
         self.assertNotIn("mDNS device model hint", seen_defaults)
-        self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule6,116")
+        self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
 
     def test_doctor_returns_failure_when_checks_fatal(self) -> None:
         output = io.StringIO()
@@ -3835,7 +3844,7 @@ class CliTests(unittest.TestCase):
                 [
                     "mDNS snapshot capture did not produce trusted Apple snapshot; generating AirPort fallback",
                     "mDNS AirPort snapshot generated",
-                    "trusted Apple mDNS snapshot was updated during this boot run: /mnt/Flash/applemdns.txt",
+                    "trusted Apple mDNS snapshot is newer than current boot: /mnt/Flash/applemdns.txt",
                 ]
             )
             kwargs["debug_fields"]["remote_mdns_log_tail"] = "\n".join(
@@ -3884,9 +3893,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
         self.assertIn("Doctor failures:", telemetry_error)
-        self.assertIn("preflight_error=doctor pre-inspection failed: Connecting to the device failed, SSH error: bind failed", telemetry_error)
+        self.assertNotIn("preflight_error=doctor pre-inspection failed", telemetry_error)
 
-    def test_doctor_passes_preinspection_state_to_checks(self) -> None:
+    def test_doctor_does_not_preinspect_runtime_interface(self) -> None:
         output = io.StringIO()
         values = self.make_valid_env()
         command_context = FakeCommandContext()
@@ -3904,13 +3913,10 @@ class CliTests(unittest.TestCase):
                             rc = doctor.main([])
 
         self.assertEqual(rc, 0)
-        command_context.inspect_managed_connection.assert_called_once_with(
-            iface=values["TC_NET_IFACE"],
-            include_probe=True,
-        )
+        command_context.inspect_managed_connection.assert_not_called()
         checks_kwargs = checks_mock.call_args.kwargs
         self.assertIs(checks_kwargs["connection"], command_context.connection)
-        self.assertIs(checks_kwargs["precomputed_interface_probe"], command_context.interface_probe)
+        self.assertIsNone(checks_kwargs["precomputed_interface_probe"])
         self.assertIs(checks_kwargs["precomputed_probe_state"], probe_state)
 
     def test_doctor_streams_results_in_human_mode(self) -> None:
@@ -4326,10 +4332,13 @@ class CliTests(unittest.TestCase):
         self.assertIn("root:0:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX:", captured["smbpasswd"])
         self.assertEqual(captured["username_map"], "!root = root\nroot = *\n")
         flash_config = str(captured["flash_config"])
-        self.assertIn("TC_CONFIG_VERSION=1\n", flash_config)
-        self.assertIn("PAYLOAD_DIR_NAME=.samba4\n", flash_config)
+        self.assertIn("TC_CONFIG_VERSION=2\n", flash_config)
+        self.assertNotIn("PAYLOAD_DIR_NAME=", flash_config)
         self.assertIn("NBNS_ENABLED=1\n", flash_config)
         self.assertIn("SMBD_DEBUG_LOGGING=1\n", flash_config)
+        self.assertNotIn("SMB_SAMBA_USER", flash_config)
+        self.assertNotIn("MDNS_DEVICE_MODEL", flash_config)
+        self.assertNotIn("AIRPORT_SYAP", flash_config)
         self.assertNotIn("PAYLOAD_VOLUME_HINT", flash_config)
         self.assertNotIn("PAYLOAD_DEVICE_HINT", flash_config)
         self.assertNotIn("PAYLOAD_INSTALL_ID", flash_config)
@@ -4632,7 +4641,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("managed smbd parent process is running", text)
         self.assertIn("smbd is bound to TCP 445", text)
         self.assertIn("mdns-advertiser is bound to UDP 5353", text)
-        self.assertIn("This will start the deployed Samba payload on the Time Capsule 5th generation.", text)
+        self.assertIn("This will start the deployed Samba payload on the AirPort storage device.", text)
         self.assertIn("NetBSD 4 devices cannot auto-run Samba after a reboot.", text)
 
     def test_activate_ensures_install_id_before_telemetry(self) -> None:
@@ -4658,53 +4667,19 @@ class CliTests(unittest.TestCase):
                     activate.main(["--dry-run"])
         self.assertIn("only supported for NetBSD4", str(cm.exception))
 
-    def test_activate_rejects_missing_remote_interface(self) -> None:
-        values = self.make_valid_env()
-        candidates = RemoteInterfaceCandidatesProbeResult(
-            candidates=(
-                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.0.2",), up=True, active=True, loopback=False),
-            ),
-            preferred_iface="bcmeth1",
-            detail="preferred interface bcmeth1",
-            target_ip_matches=(
-                RemoteInterfaceCandidate(name="bcmeth1", ipv4_addrs=("10.0.0.2",), up=True, active=True, loopback=False),
-            ),
-        )
-        with self.assertRaises(SystemExit) as ctx:
-            with mock.patch("timecapsulesmb.cli.activate.load_env_config", return_value=self.make_app_config(values)):
-                with mock.patch(
-                    "timecapsulesmb.cli.runtime.probe_remote_interface_conn",
-                    return_value=RemoteInterfaceProbeResult(
-                        iface="bridge0",
-                        exists=False,
-                        detail="interface bridge0 was not found on the device",
-                    ),
-                ):
-                    with mock.patch(
-                        "timecapsulesmb.cli.runtime.probe_remote_interface_candidates_conn",
-                        return_value=candidates,
-                    ):
-                        activate.main(["--dry-run"])
-        self.assertIn("TC_NET_IFACE is invalid", str(ctx.exception))
-        self.assertIn("bridge0 was not found", str(ctx.exception))
-        self.assertIn("Found remote interfaces: bcmeth1=10.0.0.2.", str(ctx.exception))
-
-    def test_managed_target_rejects_link_local_runtime_interface(self) -> None:
+    def test_managed_target_does_not_probe_runtime_interface(self) -> None:
         config = self.make_app_config(self.make_valid_env())
-        with mock.patch(
-            "timecapsulesmb.cli.runtime.read_interface_ipv4_addrs_conn",
-            return_value=("0.0.0.0", "169.254.44.9"),
-        ):
-            with self.assertRaises(ConfigError) as ctx:
-                cli_runtime.resolve_validated_managed_target(
+        with mock.patch("timecapsulesmb.cli.runtime.probe_remote_interface_conn", side_effect=AssertionError("interface should not be probed")):
+            with mock.patch("timecapsulesmb.cli.runtime.read_interface_ipv4_addrs_conn", side_effect=AssertionError("interface IPv4 should not be read")):
+                target = cli_runtime.resolve_validated_managed_target(
                     config,
                     command_name="deploy",
                     profile="deploy",
                     include_probe=False,
                 )
 
-        self.assertIn("TC_NET_IFACE is not usable", str(ctx.exception))
-        self.assertIn("Reported IPv4 addresses on bridge0: 0.0.0.0, 169.254.44.9", str(ctx.exception))
+        self.assertEqual(target.connection.host, config.require("TC_HOST"))
+        self.assertIsNone(target.interface_probe)
 
     def test_managed_target_rejects_hostname_that_resolves_link_local(self) -> None:
         config = self.make_app_config(self.make_valid_env(TC_HOST="root@capsule.local"))
@@ -4763,7 +4738,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         actions_mock.assert_not_called()
         text = output.getvalue()
-        self.assertIn("This will start the deployed Samba payload on the Time Capsule 5th generation.", text)
+        self.assertIn("This will start the deployed Samba payload on the AirPort storage device.", text)
         self.assertIn("Activation cancelled.", text)
         command_context.finish.assert_called_once()
         self.assertEqual(command_context.finish.call_args.kwargs["result"], "cancelled")
@@ -6923,7 +6898,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Dry run: uninstall plan", text)
         self.assertIn("host: root@10.0.0.2", text)
         self.assertIn("volume roots:\n    resolved from MaSt at uninstall time", text)
-        self.assertIn(f"payload dirs:\n    resolved from MaSt at uninstall time/{values['TC_PAYLOAD_DIR_NAME']}", text)
+        self.assertIn(f"payload dirs:\n    resolved from MaSt at uninstall time/{MANAGED_PAYLOAD_DIR_NAME}", text)
         self.assertIn("request: attempt device reboot", text)
         self.assertIn("follow-up: wait for SSH down, then SSH up", text)
         started = self.telemetry_payload("uninstall_started")
@@ -6931,7 +6906,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(started["command_id"], finished["command_id"])
         self.assertEqual(finished["result"], "success")
         self.assertEqual(finished["volume_roots"], ["resolved from MaSt at uninstall time"])
-        self.assertEqual(finished["payload_dirs"], [f"resolved from MaSt at uninstall time/{values['TC_PAYLOAD_DIR_NAME']}"])
+        self.assertEqual(finished["payload_dirs"], [f"resolved from MaSt at uninstall time/{MANAGED_PAYLOAD_DIR_NAME}"])
         self.assertEqual(finished["reboot_was_attempted"], False)
         mast_mocks.read_mast_volumes_conn.assert_not_called()
         mast_mocks.mounted_mast_volumes_conn.assert_not_called()
@@ -6955,7 +6930,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Post-uninstall checks:\n  none", text)
         self.assertNotIn("SSH returns after reboot", text)
 
-    def test_uninstall_validates_only_host_and_payload_dir(self) -> None:
+    def test_uninstall_validates_only_host_and_ignores_legacy_payload_dir(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "",
@@ -6970,17 +6945,21 @@ class CliTests(unittest.TestCase):
                 rc = uninstall.main(["--dry-run"])
         self.assertEqual(rc, 0)
 
-    def test_uninstall_rejects_unsafe_payload_dir(self) -> None:
+    def test_uninstall_ignores_unsafe_legacy_payload_dir(self) -> None:
+        output = io.StringIO()
         values = {
             "TC_HOST": "root@10.0.0.2",
             "TC_PASSWORD": "",
             "TC_SSH_OPTS": "-o foo",
             "TC_PAYLOAD_DIR_NAME": "../samba4",
         }
-        with self.assertRaises(SystemExit) as ctx:
-            with mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)):
-                uninstall.main(["--dry-run"])
-        self.assertIn("TC_PAYLOAD_DIR_NAME is invalid", str(ctx.exception))
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "uninstall")
+            with redirect_stdout(output):
+                rc = uninstall.main(["--dry-run"])
+        self.assertEqual(rc, 0)
+        self.assertIn(f"resolved from MaSt at uninstall time/{MANAGED_PAYLOAD_DIR_NAME}", output.getvalue())
 
     def test_uninstall_json_outputs_plan(self) -> None:
         output = io.StringIO()
@@ -6999,7 +6978,7 @@ class CliTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["host"], "root@10.0.0.2")
         self.assertEqual(payload["volume_roots"], ["resolved from MaSt at uninstall time"])
-        self.assertEqual(payload["payload_dirs"], ["resolved from MaSt at uninstall time/samba4"])
+        self.assertEqual(payload["payload_dirs"], [f"resolved from MaSt at uninstall time/{MANAGED_PAYLOAD_DIR_NAME}"])
         self.assertEqual(
             payload["reboot_request"],
             {
@@ -7172,6 +7151,12 @@ class CliTests(unittest.TestCase):
             self._patch_mast_volume_flow(stack, "uninstall")
             stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
             stack.enter_context(mock.patch("builtins.input", side_effect=fake_input))
+            stack.enter_context(
+                mock.patch(
+                    "timecapsulesmb.cli.context.probe_remote_airport_identity_conn",
+                    return_value=SimpleNamespace(model="AirPort7,120", syap="120"),
+                )
+            )
             run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"))
             with redirect_stdout(output):
                 rc = uninstall.main([])
@@ -7323,6 +7308,12 @@ class CliTests(unittest.TestCase):
             stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
             self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
             stack.enter_context(mock.patch("builtins.input", side_effect=fake_input))
+            stack.enter_context(
+                mock.patch(
+                    "timecapsulesmb.cli.context.probe_remote_airport_identity_conn",
+                    return_value=SimpleNamespace(model="AirPort7,120", syap="120"),
+                )
+            )
             run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.run_ssh"))
             with redirect_stdout(output):
                 rc = fsck.main([])

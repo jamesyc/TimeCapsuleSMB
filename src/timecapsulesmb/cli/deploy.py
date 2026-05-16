@@ -16,12 +16,12 @@ from timecapsulesmb.cli.runtime import (
 )
 from timecapsulesmb.core.config import (
     DEFAULTS,
+    MANAGED_PAYLOAD_DIR_NAME,
     AppConfig,
-    airport_family_display_name_from_config,
+    airport_family_display_name_from_identity,
     parse_bool,
     shell_quote,
 )
-from timecapsulesmb.core.net import extract_host, ipv4_literal, resolve_host_ipv4s
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
@@ -58,11 +58,7 @@ from timecapsulesmb.device.storage import (
     build_dry_run_payload_home,
     verify_payload_home_conn,
 )
-from timecapsulesmb.device.probe import (
-    is_runtime_usable_ipv4,
-    read_interface_ipv4_addrs_conn,
-    runtime_usable_ipv4s,
-)
+from timecapsulesmb.device.probe import read_interface_ipv4_addrs_conn
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_green, color_red
 
@@ -90,39 +86,19 @@ def _render_flash_config_assignment(key: str, value: str | int) -> str:
     return f"{key}={shell_quote(value)}"
 
 
-def derive_net_ipv4_hint(config: AppConfig, iface_ipv4_addrs: tuple[str, ...]) -> str:
-    usable_iface_ips = set(runtime_usable_ipv4s(iface_ipv4_addrs))
-    if not usable_iface_ips:
-        return ""
-    host = extract_host(config.require("TC_HOST"))
-    literal = ipv4_literal(host)
-    candidates = (literal,) if literal is not None else resolve_host_ipv4s(host)
-    for ip_addr in candidates:
-        if is_runtime_usable_ipv4(ip_addr) and ip_addr in usable_iface_ips:
-            return ip_addr
-    return ""
-
-
 def render_flash_runtime_config(
     config: AppConfig,
     payload_home: PayloadHome,
     *,
     nbns_enabled: bool,
     debug_logging: bool,
-    net_ipv4_hint: str = "",
     ata_idle_seconds: int = DEFAULT_ATA_IDLE_SECONDS,
     diskd_use_volume_attempts: int = DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
 ) -> str:
     internal_root_default = config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])
 
     values: list[tuple[str, str | int]] = [
-        ("TC_CONFIG_VERSION", 1),
-        ("PAYLOAD_DIR_NAME", payload_home.payload_dir_name),
-        ("NET_IFACE", config.require("TC_NET_IFACE")),
-        ("NET_IPV4_HINT", net_ipv4_hint),
-        ("SMB_SAMBA_USER", config.require("TC_SAMBA_USER")),
-        ("MDNS_DEVICE_MODEL", config.get("TC_MDNS_DEVICE_MODEL", DEFAULTS["TC_MDNS_DEVICE_MODEL"])),
-        ("AIRPORT_SYAP", config.get("TC_AIRPORT_SYAP", DEFAULTS["TC_AIRPORT_SYAP"])),
+        ("TC_CONFIG_VERSION", 2),
         ("INTERNAL_SHARE_USE_DISK_ROOT", 1 if parse_bool(internal_root_default) else 0),
         ("DISKD_USE_VOLUME_ATTEMPTS", diskd_use_volume_attempts),
         ("ATA_IDLE_SECONDS", ata_idle_seconds),
@@ -131,6 +107,14 @@ def render_flash_runtime_config(
         ("MDNS_DEBUG_LOGGING", 1 if debug_logging else 0),
     ]
     return "\n".join(_render_flash_config_assignment(key, value) for key, value in values) + "\n"
+
+
+def _target_family_display_name(target) -> str:
+    probe = target.probe_state.probe_result if target.probe_state is not None else None
+    return airport_family_display_name_from_identity(
+        model=None if probe is None else probe.airport_model,
+        syap=None if probe is None else probe.airport_syap,
+    )
 
 
 def _payload_verification_error(payload_home: PayloadHome, result: PayloadVerificationResult) -> str:
@@ -212,7 +196,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         mdns_path = resolved_artifacts["mdns-advertiser"].absolute_path
         nbns_path = resolved_artifacts["nbns-advertiser"].absolute_path
         if args.dry_run:
-            payload_home = build_dry_run_payload_home(config.require("TC_PAYLOAD_DIR_NAME"))
+            payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
         else:
             mast_discovery = command_context.wait_for_mast_volumes(
                 connection,
@@ -230,7 +214,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             selection = command_context.select_payload_home(
                 connection,
                 mast_volumes,
-                config.require("TC_PAYLOAD_DIR_NAME"),
+                MANAGED_PAYLOAD_DIR_NAME,
                 wait_seconds=apple_mount_wait_seconds,
             )
             if selection.payload_home is None:
@@ -280,14 +264,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         command_context.set_stage("pre_upload_actions")
         run_remote_actions(connection, plan.pre_upload_actions)
         command_context.set_stage("prepare_deployment_files")
-        iface_ipv4_addrs = read_interface_ipv4_addrs_conn(connection, config.require("TC_NET_IFACE"))
-        net_ipv4_hint = derive_net_ipv4_hint(config, iface_ipv4_addrs)
         flash_config_text = render_flash_runtime_config(
             config,
             payload_home,
             nbns_enabled=nbns_enabled,
             debug_logging=args.debug_logging,
-            net_ipv4_hint=net_ipv4_hint,
         )
 
         with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp, ExitStack() as boot_assets:
@@ -296,7 +277,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             generated_smbpasswd = tmpdir / "smbpasswd"
             generated_username_map = tmpdir / "username.map"
             generated_flash_config.write_text(flash_config_text)
-            smbpasswd_text, username_map_text = render_smbpasswd(config.require("TC_SAMBA_USER"), smb_password)
+            smbpasswd_text, username_map_text = render_smbpasswd(smb_password)
             generated_smbpasswd.write_text(smbpasswd_text)
             generated_username_map.write_text(username_map_text)
             upload_sources = {
@@ -379,7 +360,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 0
 
         if not args.yes:
-            device_name = airport_family_display_name_from_config(config)
+            device_name = _target_family_display_name(target)
             proceed = command_context.confirm_or_fail(
                 f"This will reboot the {device_name} now. Continue?",
                 default=True,

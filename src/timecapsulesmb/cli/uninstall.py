@@ -6,7 +6,7 @@ from typing import Optional
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import request_reboot_and_wait
 from timecapsulesmb.cli.runtime import add_config_argument, load_env_config, print_json
-from timecapsulesmb.core.config import airport_exact_display_name_from_config
+from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.deploy.dry_run import format_uninstall_plan, uninstall_plan_to_jsonable
 from timecapsulesmb.deploy.executor import remote_uninstall_payload
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS, build_uninstall_plan
@@ -48,21 +48,21 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         command_context.set_stage("validate_config")
         command_context.require_valid_config(profile="uninstall")
-        device_name = airport_exact_display_name_from_config(config)
         command_context.set_stage("resolve_connection")
         connection = command_context.resolve_env_connection(allow_empty_password=True)
+        if connection.password:
+            command_context.start_optional_airport_identity_probe(connection)
 
-        payload_dir_name = config.require("TC_PAYLOAD_DIR_NAME")
         if args.dry_run:
             volume_roots = [UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER]
-            payload_dirs = [f"{UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER}/{payload_dir_name}"]
+            payload_dirs = [f"{UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER}/{MANAGED_PAYLOAD_DIR_NAME}"]
         else:
             mounted_volumes = command_context.mount_mast_volumes(
                 connection,
                 wait_seconds=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
             )
             volume_roots = [volume.volume_root for volume in mounted_volumes]
-            payload_dirs = [f"{volume_root}/{payload_dir_name}" for volume_root in volume_roots]
+            payload_dirs = [f"{volume_root}/{MANAGED_PAYLOAD_DIR_NAME}" for volume_root in volume_roots]
         command_context.update_fields(volume_roots=volume_roots, payload_dirs=payload_dirs)
         command_context.set_stage("build_uninstall_plan")
         plan = build_uninstall_plan(connection.host, volume_roots, payload_dirs, reboot_after_uninstall=not args.no_reboot)
@@ -92,6 +92,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if not args.yes:
             command_context.set_stage("confirm_reboot")
+            device_name = command_context.optional_airport_display_name(timeout_seconds=0.1)
             proceed = command_context.confirm_or_fail(
                 f"This will reboot the {device_name} now. Continue?",
                 default=True,

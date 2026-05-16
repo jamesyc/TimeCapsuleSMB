@@ -404,7 +404,7 @@ class CliFlowTests(unittest.TestCase):
         self.assertEqual(command_context.debug_fields["remote_rc_local_log_tail"], "rc log")
         self.assertEqual(command_context.debug_fields["remote_mdns_log_tail"], "mdns log")
 
-    def test_verify_managed_runtime_flow_collects_network_diagnostics_after_ipv4_timeout(self) -> None:
+    def test_verify_managed_runtime_flow_collects_network_diagnostics_after_auto_ip_unavailable(self) -> None:
         command_context = FakeCommandContext()
         output = io.StringIO()
         with (
@@ -412,14 +412,14 @@ class CliFlowTests(unittest.TestCase):
             mock.patch(
                 "timecapsulesmb.cli.flows.read_runtime_log_tails_conn",
                 return_value={
-                    "remote_rc_local_log_tail": "rc.local: timed out waiting for IPv4 on bridge0",
+                    "remote_watchdog_log_tail": "watchdog: mDNS startup deferred; no usable IPv4 has appeared yet",
                 },
             ),
             mock.patch(
                 "timecapsulesmb.cli.flows.read_remote_network_diagnostics_conn",
                 return_value={
-                    "remote_network_config": {"NET_IFACE": "bridge0", "ssh_target_host": "169.254.44.9"},
-                    "remote_network_failure_hint": "configured interface bridge0 has no IPv4 address",
+                    "remote_network_config": {"ssh_target_host": "169.254.44.9"},
+                    "remote_network_target_ip_matches": [],
                 },
             ) as network_mock,
         ):
@@ -435,10 +435,10 @@ class CliFlowTests(unittest.TestCase):
 
         self.assertFalse(ok)
         network_mock.assert_called_once()
-        self.assertEqual(command_context.debug_fields["runtime_startup_failure"], "network_ipv4_timeout")
-        self.assertEqual(command_context.debug_fields["runtime_startup_failed_iface"], "bridge0")
-        self.assertEqual(command_context.debug_fields["remote_network_config"]["NET_IFACE"], "bridge0")
-        self.assertEqual(command_context.debug_fields["remote_network_failure_hint"], "configured interface bridge0 has no IPv4 address")
+        self.assertEqual(command_context.debug_fields["runtime_startup_failure"], "network_auto_ip_unavailable")
+        self.assertTrue(command_context.debug_fields["runtime_startup_waiting_for_auto_ip"])
+        self.assertEqual(command_context.debug_fields["remote_network_config"], {"ssh_target_host": "169.254.44.9"})
+        self.assertEqual(command_context.debug_fields["remote_network_target_ip_matches"], [])
 
     def test_verify_managed_runtime_flow_keeps_original_failure_when_log_tail_fails(self) -> None:
         command_context = FakeCommandContext()

@@ -38,17 +38,22 @@ REMOTE_NETWORK_DIAGNOSTICS_TIMEOUT_SECONDS = 10
 REMOTE_RUNTIME_RAM_LOG_PATHS = {
     "remote_rc_local_log_tail": "/mnt/Memory/samba4/var/rc.local.log",
     "remote_watchdog_log_tail": "/mnt/Memory/samba4/var/watchdog.log",
-    "remote_mdns_log_tail": "/mnt/Memory/samba4/var/mdns.log",
-    "remote_nbns_log_tail": "/mnt/Memory/samba4/var/nbns.log",
 }
 REMOTE_PAYLOAD_LOG_FILENAMES = {
     "remote_smbd_log_tail": "log.smbd",
+    "remote_mdns_log_tail": "mdns.log",
+    "remote_nbns_log_tail": "nbns.log",
+}
+REMOTE_RUNTIME_FALLBACK_LOG_PATHS = {
+    "remote_mdns_log_tail": "/mnt/Memory/samba4/var/mdns.log",
+    "remote_nbns_log_tail": "/mnt/Memory/samba4/var/nbns.log",
 }
 SMBD_STATUS_HELPERS = rf'''
-RUNTIME_RAM_ROOT=${{RUNTIME_RAM_ROOT:-/mnt/Memory/samba4}}
-RUNTIME_RAM_SBIN="$RUNTIME_RAM_ROOT/sbin"
-RUNTIME_RAM_PRIVATE="$RUNTIME_RAM_ROOT/private"
-RUNTIME_SMB_CONF_PATH=${{RUNTIME_SMB_CONF_PATH:-{RUNTIME_SMB_CONF}}}
+    RUNTIME_RAM_ROOT=${{RUNTIME_RAM_ROOT:-/mnt/Memory/samba4}}
+    RUNTIME_RAM_SBIN="$RUNTIME_RAM_ROOT/sbin"
+    RUNTIME_RAM_PRIVATE="$RUNTIME_RAM_ROOT/private"
+    RUNTIME_MDNS_BIN=${{RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}}
+    RUNTIME_SMB_CONF_PATH=${{RUNTIME_SMB_CONF_PATH:-{RUNTIME_SMB_CONF}}}
 RUNTIME_SHARES_TSV_PATH=${{RUNTIME_SHARES_TSV_PATH:-{RUNTIME_SHARES_TSV}}}
 RUNTIME_PERSISTENT_ROOT_PREFIX=${{RUNTIME_PERSISTENT_ROOT_PREFIX:-/Volumes/}}
 RUNTIME_TAB=$(printf '\t')
@@ -264,17 +269,34 @@ describe_managed_mdns_status() {{
     ps_out=$1
     fstat_out=$2
     status=0
+    mdns_auto_ip_available=0
+    if [ -x "$RUNTIME_MDNS_BIN" ] && "$RUNTIME_MDNS_BIN" --check-auto-ip >/dev/null 2>&1; then
+        mdns_auto_ip_available=1
+    fi
+
     if mdns_process_present "$ps_out"; then
         echo "PASS:mdns-advertiser process is running"
     else
+        if [ "$mdns_auto_ip_available" != "1" ]; then
+            echo "FAIL:mDNS startup deferred; no usable IPv4 has appeared yet"
+            return 1
+        fi
         echo "FAIL:mdns-advertiser process is not running"
         status=1
     fi
     if mdns_bound_5353 "$fstat_out"; then
         echo "PASS:mdns-advertiser bound to UDP 5353"
+        if [ "$mdns_auto_ip_available" = "1" ]; then
+            echo "PASS:mdns-advertiser auto-IP active"
+        fi
     else
-        echo "FAIL:mdns-advertiser is not bound to UDP 5353"
-        status=1
+        if mdns_process_present "$ps_out" && [ "$mdns_auto_ip_available" != "1" ]; then
+            echo "FAIL:mdns-advertiser is waiting for auto-IP"
+            status=1
+        else
+            echo "FAIL:mdns-advertiser is not bound to UDP 5353"
+            status=1
+        fi
     fi
     if apple_mdns_present "$ps_out"; then
         echo "FAIL:Apple mDNSResponder is still running"
@@ -1225,18 +1247,44 @@ def read_runtime_log_tails_conn(connection: SshConnection) -> dict[str, str]:
                 logs[key] = f"(unavailable: {e})"
     else:
         logs.setdefault("remote_payload_log_dir", f"(missing {RUNTIME_PAYLOAD_TSV})")
+    for key, path in REMOTE_RUNTIME_FALLBACK_LOG_PATHS.items():
+        if key in logs:
+            continue
+        try:
+            logs[key] = read_remote_log_tail_conn(connection, path)
+        except Exception as e:
+            logs[key] = f"(unavailable: {e})"
     return logs
 
 
-def runtime_startup_failure_debug_fields(logs: Mapping[str, object]) -> dict[str, object]:
-    rc_local_log = str(logs.get("remote_rc_local_log_tail") or "")
-    match = re.search(r"timed out waiting for IPv4 on ([^ \n\r\t]+)", rc_local_log)
-    if not match:
-        return {}
-    return {
-        "runtime_startup_failure": "network_ipv4_timeout",
-        "runtime_startup_failed_iface": match.group(1),
-    }
+def runtime_startup_failure_debug_fields(
+    logs: Mapping[str, object],
+    *,
+    verification_detail: str = "",
+) -> dict[str, object]:
+    combined = "\n".join(
+        str(value)
+        for value in (
+            logs.get("remote_watchdog_log_tail"),
+            logs.get("remote_mdns_log_tail"),
+            logs.get("remote_nbns_log_tail"),
+            verification_detail,
+        )
+        if value
+    )
+    if any(
+        marker in combined
+        for marker in (
+            "mDNS startup deferred; no usable IPv4 has appeared yet",
+            "mdns-advertiser is waiting for auto-IP",
+            "watchdog steady check: core services healthy; mDNS deferred waiting for usable IPv4",
+        )
+    ):
+        return {
+            "runtime_startup_failure": "network_auto_ip_unavailable",
+            "runtime_startup_waiting_for_auto_ip": True,
+        }
+    return {}
 
 
 def _parse_remote_diagnostic_sections(text: str) -> tuple[dict[str, str], dict[str, str]]:
@@ -1283,7 +1331,7 @@ def _network_failure_hint(
     target_host: str,
 ) -> str | None:
     if not configured_iface:
-        return "NET_IFACE is not set in flash runtime config"
+        return None
 
     configured_candidate = next((candidate for candidate in candidates if candidate.name == configured_iface), None)
     if configured_candidate is None:
@@ -1306,21 +1354,7 @@ def _network_failure_hint(
 
 
 def read_remote_network_diagnostics_conn(connection: SshConnection) -> dict[str, object]:
-    quoted_config = shlex.quote(FLASH_RUNTIME_CONFIG)
-    script = rf'''
-CONFIG={quoted_config}
-NET_IFACE=
-if [ -f "$CONFIG" ]; then
-    . "$CONFIG" >/dev/null 2>&1 || true
-fi
-printf 'NET_IFACE=%s\n' "${{NET_IFACE:-}}"
-printf 'TC_DIAG_BEGIN target_ifconfig\n'
-if [ -n "${{NET_IFACE:-}}" ]; then
-    /sbin/ifconfig "$NET_IFACE" 2>&1
-else
-    echo "(NET_IFACE unset)"
-fi | /usr/bin/sed -n '/ether /d;/address /d;p'
-printf 'TC_DIAG_END target_ifconfig\n'
+    script = r'''
 printf 'TC_DIAG_BEGIN ifconfig_a\n'
 /sbin/ifconfig -a 2>&1 | /usr/bin/sed -n '/ether /d;/address /d;p'
 printf 'TC_DIAG_END ifconfig_a\n'
@@ -1340,8 +1374,7 @@ printf 'TC_DIAG_END routes\n'
         check=False,
         timeout=REMOTE_NETWORK_DIAGNOSTICS_TIMEOUT_SECONDS,
     )
-    values, sections = _parse_remote_diagnostic_sections(proc.stdout or "")
-    configured_iface = values.get("NET_IFACE") or None
+    _values, sections = _parse_remote_diagnostic_sections(proc.stdout or "")
     all_ifconfig = sections.get("ifconfig_a", "")
     candidates = _parse_ifconfig_candidates(all_ifconfig)
     target_host = extract_host(connection.host)
@@ -1350,25 +1383,16 @@ printf 'TC_DIAG_END routes\n'
         for candidate in candidates
         if target_host and target_host in candidate.ipv4_addrs and not candidate.loopback
     )
-    hint = _network_failure_hint(
-        configured_iface=configured_iface,
-        candidates=candidates,
-        target_host=target_host,
-    )
     diagnostics: dict[str, object] = {
         "remote_network_config": {
-            "NET_IFACE": configured_iface,
             "ssh_target_host": target_host,
         },
         "remote_network_probe_rc": proc.returncode,
-        "remote_network_target_ifconfig": _limit_remote_log_tail(sections.get("target_ifconfig", "")),
         "remote_network_ipv4_interfaces": _remote_interface_debug_summary(candidates),
         "remote_network_preferred_iface": preferred_interface_name(candidates, target_ips=(target_host,)),
         "remote_network_target_ip_matches": [candidate.name for candidate in target_ip_matches],
         "remote_network_routes": _limit_remote_log_tail(sections.get("routes", "")),
     }
-    if hint:
-        diagnostics["remote_network_failure_hint"] = hint
     stderr = (proc.stderr or "").strip()
     if stderr:
         diagnostics["remote_network_probe_stderr"] = _limit_remote_log_tail(stderr)

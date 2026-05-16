@@ -10,7 +10,7 @@ from timecapsulesmb.cli.runtime import (
     load_env_config,
     require_netbsd4_device_compatibility,
 )
-from timecapsulesmb.core.config import airport_exact_display_name_from_config
+from timecapsulesmb.core.config import airport_exact_display_name_from_identity
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.dry_run import format_activation_plan
 from timecapsulesmb.deploy.executor import run_remote_actions
@@ -18,6 +18,17 @@ from timecapsulesmb.deploy.planner import build_netbsd4_activation_plan
 from timecapsulesmb.device.probe import probe_managed_runtime_conn
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_red
+
+
+def _target_device_display_name(target) -> str:
+    probe_state = target.probe_state
+    if probe_state is None:
+        return "AirPort storage device"
+    probe_result = probe_state.probe_result
+    return airport_exact_display_name_from_identity(
+        model=probe_result.airport_model,
+        syap=probe_result.airport_syap,
+    )
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -44,7 +55,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         command_context.set_stage("build_activation_plan")
         plan = build_netbsd4_activation_plan()
-        device_name = airport_exact_display_name_from_config(config)
+        device_name = _target_device_display_name(target)
         command_context.update_fields(activation_action_count=len(plan.actions))
 
         if args.dry_run:

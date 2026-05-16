@@ -33,8 +33,8 @@ from timecapsulesmb.checks.smb_config import (
     parse_xattr_tdb_paths,
 )
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers
-from timecapsulesmb.core.config import AppConfig, validate_app_config
-from timecapsulesmb.core.net import extract_host
+from timecapsulesmb.core.config import AppConfig, DEFAULT_SAMBA_AUTH_USER, validate_app_config
+from timecapsulesmb.core.net import extract_host, ipv4_literal, is_link_local_ipv4, resolve_host_ipv4s
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, is_netbsd6_payload_family, render_compatibility_message
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
@@ -475,6 +475,16 @@ def _doctor_share_name(connection: SshConnection, active_smb_conf: str | None) -
     raise RuntimeError("could not determine active Samba share name")
 
 
+def _expected_nbns_ipv4(host: str) -> str | None:
+    literal = ipv4_literal(host)
+    if literal is not None:
+        return literal
+    for candidate in resolve_host_ipv4s(host):
+        if not is_link_local_ipv4(candidate):
+            return candidate
+    return None
+
+
 def _add_nbns_results(
     connection: SshConnection,
     config: AppConfig,
@@ -496,7 +506,10 @@ def _add_nbns_results(
                 if expected_name is None:
                     add_result(CheckResult("SKIP", "NBNS check skipped; active/probed NetBIOS name unavailable"))
                     return
-                expected_ip = read_interface_ipv4_conn(connection, config.require("TC_NET_IFACE"))
+                expected_ip = _expected_nbns_ipv4(host)
+                if expected_ip is None:
+                    add_result(CheckResult("SKIP", "NBNS check skipped; configured SSH host did not resolve to a non-link-local IPv4 address"))
+                    return
                 nbns_result = check_nbns_name_resolution(expected_name, host, expected_ip)
                 if nbns_result.status == "FAIL":
                     nbns_result = CheckResult(
@@ -542,7 +555,7 @@ def _add_authenticated_smb_results(
                 remote_port=445,
             ):
                 listing_result = check_authenticated_smb_listing(
-                    config.require("TC_SAMBA_USER"),
+                    DEFAULT_SAMBA_AUTH_USER,
                     smb_password,
                     "127.0.0.1",
                     expected_share_name=share_name,
@@ -552,7 +565,7 @@ def _add_authenticated_smb_results(
                     debug_fields["authenticated_smb_listing_attempts"] = listing_result.details["attempts"]
                 add_result(listing_result)
                 for result in check_authenticated_smb_file_ops_detailed(
-                    config.require("TC_SAMBA_USER"),
+                    DEFAULT_SAMBA_AUTH_USER,
                     smb_password,
                     "127.0.0.1",
                     share_name,
@@ -568,7 +581,7 @@ def _add_authenticated_smb_results(
         debug_fields["authenticated_smb_listing_servers"] = smb_servers
         debug_fields["authenticated_smb_listing_expected_share"] = share_name
     listing_result = check_authenticated_smb_listing(
-        config.require("TC_SAMBA_USER"),
+        DEFAULT_SAMBA_AUTH_USER,
         smb_password,
         smb_servers,
         expected_share_name=share_name,
@@ -584,7 +597,7 @@ def _add_authenticated_smb_results(
         add_result(CheckResult("FAIL", "authenticated SMB listing did not report the server used for file-ops checks"))
         return
     for result in check_authenticated_smb_file_ops_detailed(
-        config.require("TC_SAMBA_USER"),
+        DEFAULT_SAMBA_AUTH_USER,
         smb_password,
         smb_server,
         share_name,
@@ -647,27 +660,6 @@ def _doctor_check_runtime_naming_identity(context: DoctorRunContext) -> None:
         context.add_result(CheckResult("WARN", f"runtime naming identity probe skipped: {e}"))
 
 
-def _doctor_check_remote_interface(context: DoctorRunContext) -> None:
-    if context.skip_ssh or not context.ssh_ok:
-        return
-
-    assert context.connection is not None
-    if (
-        context.precomputed_interface_probe is not None
-        and context.precomputed_interface_probe.iface == context.config.require("TC_NET_IFACE")
-    ):
-        interface_probe = context.precomputed_interface_probe
-    else:
-        interface_probe = probe_remote_interface_conn(context.connection, context.config.require("TC_NET_IFACE"))
-    if not interface_probe.exists:
-        context.add_result(
-            CheckResult(
-                "FAIL",
-                f"TC_NET_IFACE is invalid. Run the `configure` command again. {interface_probe.detail}.",
-            )
-        )
-
-
 def _doctor_check_device_compatibility(context: DoctorRunContext) -> None:
     if context.skip_ssh or not context.ssh_ok:
         return
@@ -694,9 +686,12 @@ def _doctor_check_managed_smbd(context: DoctorRunContext) -> None:
 
     assert context.connection is not None
     smbd_probe = probe_managed_smbd_conn(context.connection)
+    smbd_probe_lines = getattr(smbd_probe, "lines", ())
+    if not isinstance(smbd_probe_lines, (list, tuple)):
+        smbd_probe_lines = ()
     _add_probe_line_results(
         context.add_result,
-        getattr(smbd_probe, "lines", ()),
+        smbd_probe_lines,
         fallback_ready=smbd_probe.ready,
         fallback_pass_message="managed smbd is ready",
         fallback_fail_message=f"managed smbd is not ready ({smbd_probe.detail})",
@@ -709,10 +704,16 @@ def _doctor_check_managed_mdns(context: DoctorRunContext) -> None:
 
     assert context.connection is not None
     mdns_probe = probe_managed_mdns_takeover_conn(context.connection)
-    if mdns_probe.ready:
-        context.add_result(CheckResult("PASS", "managed mDNS takeover is active"))
-    else:
-        context.add_result(CheckResult("FAIL", f"managed mDNS takeover is not active ({mdns_probe.detail})"))
+    mdns_probe_lines = getattr(mdns_probe, "lines", ())
+    if not isinstance(mdns_probe_lines, (list, tuple)):
+        mdns_probe_lines = ()
+    _add_probe_line_results(
+        context.add_result,
+        mdns_probe_lines,
+        fallback_ready=mdns_probe.ready,
+        fallback_pass_message="managed mDNS takeover is active",
+        fallback_fail_message=f"managed mDNS takeover is not active ({mdns_probe.detail})",
+    )
 
 
 def _add_remote_service_socket_debug(context: DoctorRunContext) -> None:
@@ -864,12 +865,6 @@ DOCTOR_CHECKS: tuple[DoctorCheck, ...] = (
         requires=("connection", "ssh_status"),
         provides=("runtime_naming_identity",),
         run=_doctor_check_runtime_naming_identity,
-    ),
-    DoctorCheck(
-        id="remote_interface",
-        requires=("connection", "ssh_status"),
-        provides=("remote_interface",),
-        run=_doctor_check_remote_interface,
     ),
     DoctorCheck(
         id="device_compatibility",

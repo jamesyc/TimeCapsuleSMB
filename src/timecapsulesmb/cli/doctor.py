@@ -10,12 +10,8 @@ from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import add_config_argument, load_env_config, print_json
 from timecapsulesmb.cli.util import color_green, color_red
-from timecapsulesmb.core.config import ConfigError
-from timecapsulesmb.core.errors import system_exit_message
-from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.telemetry import TelemetryClient
-from timecapsulesmb.transport.errors import TransportError
 from timecapsulesmb.core.paths import resolve_app_paths
 
 
@@ -267,16 +263,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             skip_smb=args.skip_smb,
             json_output=args.json,
         )
-        if config.exists and not args.skip_ssh and config.get("TC_NET_IFACE"):
-            command_context.set_stage("preinspect_device")
-            try:
-                command_context.inspect_managed_connection(
-                    iface=config.require("TC_NET_IFACE"),
-                    include_probe=True,
-                )
-            except (ConfigError, TransportError, DeviceError) as exc:
-                command_context.preflight_error = f"doctor pre-inspection failed: {system_exit_message(exc)}"
-
+        if not args.skip_ssh and config.has_value("TC_HOST"):
+            command_context.set_stage("resolve_connection")
+            connection = command_context.resolve_env_connection(allow_empty_password=True)
+            if connection.password:
+                command_context.start_optional_airport_identity_probe(connection)
         command_context.set_stage("run_checks")
         doctor_debug: dict[str, object] = {}
         results, fatal = run_doctor_checks(

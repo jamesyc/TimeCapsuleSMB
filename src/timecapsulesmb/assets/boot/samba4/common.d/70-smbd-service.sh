@@ -1,0 +1,203 @@
+tc_start_smbd() {
+    tc_log "starting smbd from $TC_SMBD_BIN with config $TC_SMBD_CONF"
+    "$TC_SMBD_BIN" -D -s "$TC_SMBD_CONF"
+    if wait_for_process smbd 15; then
+        return 0
+    fi
+    tc_log "smbd process was not observed after launch"
+    return 1
+}
+
+tc_prepare_smbd_recovery_disk_runtime() {
+    recovery_status=0
+    recovery_share_count=0
+
+    if ! tc_load_payload_state; then
+        tc_log "watchdog recovery: smbd restart skipped; payload state is unavailable"
+        return 1
+    fi
+
+    tc_log "watchdog recovery: ensuring payload volume is mounted before smbd restart: device=$TC_PAYLOAD_DEVICE root=$TC_PAYLOAD_VOLUME"
+    if ! tc_watchdog_wake_or_mount_volume "$TC_PAYLOAD_DEVICE" "$TC_PAYLOAD_VOLUME"; then
+        tc_log "watchdog recovery: payload volume unavailable before smbd restart: device=$TC_PAYLOAD_DEVICE root=$TC_PAYLOAD_VOLUME"
+        return 1
+    fi
+
+    if ! tc_verify_payload_dir "$TC_PAYLOAD_DIR"; then
+        tc_log "watchdog recovery: payload directory is invalid before smbd restart: $TC_PAYLOAD_DIR"
+        return 1
+    fi
+
+    if [ ! -s "$TC_SHARES_TSV" ]; then
+        tc_log "watchdog recovery: active share state missing; smbd restart will use existing config"
+        return 0
+    fi
+
+    while IFS="$TC_TAB" read -r share_name share_path part_device builtin part_uuid; do
+        [ -n "$part_device" ] || continue
+        recovery_share_count=$((recovery_share_count + 1))
+        tc_log "watchdog recovery: ensuring active share volume is mounted before smbd restart: share=$share_name device=/dev/$part_device root=/Volumes/$part_device"
+        if tc_watchdog_wake_or_mount_volume "/dev/$part_device" "/Volumes/$part_device"; then
+            :
+        else
+            recovery_status=1
+        fi
+    done <"$TC_SHARES_TSV"
+
+    if [ "$recovery_share_count" -eq 0 ]; then
+        tc_log "watchdog recovery: active share state has no valid rows; smbd restart will use existing config"
+        return 0
+    fi
+
+    if [ "$recovery_status" -ne 0 ]; then
+        tc_log "watchdog recovery: one or more active share volumes are unavailable before smbd restart"
+    fi
+    return "$recovery_status"
+}
+
+tc_start_smbd_if_needed() {
+    if runtime_process_present_by_ucomm smbd; then
+        return 0
+    fi
+
+    if [ ! -x "$TC_SMBD_BIN" ] || [ ! -f "$TC_SMBD_CONF" ]; then
+        tc_log "watchdog recovery: smbd is not running, but runtime is not staged yet"
+        return 0
+    fi
+
+    tc_watchdog_refresh_runtime_identity_for_recovery
+    if ! tc_prepare_smbd_recovery_disk_runtime; then
+        return 1
+    fi
+    rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true
+    "$TC_SMBD_BIN" -D -s "$TC_SMBD_CONF" >/dev/null 2>&1 || true
+    tc_log "watchdog recovery: smbd restart requested"
+}
+
+tc_reload_smbd_config() {
+    smbd_pid=$(tc_smbd_parent_pid || true)
+    if [ -z "$smbd_pid" ]; then
+        tc_log "watchdog recovery: smbd config reload skipped; missing valid $RAM_VAR/smbd.pid"
+        return 1
+    fi
+
+    # Samba's parent process reloads services on SIGHUP. Signal only the
+    # parent pid file instead of pkilling every smbd child, so active SMB
+    # sessions can keep running while new share definitions are loaded.
+    if kill -HUP "$smbd_pid" >/dev/null 2>&1; then
+        tc_log "watchdog recovery: smbd config reload requested with SIGHUP pid $smbd_pid"
+        return 0
+    fi
+
+    tc_log "watchdog recovery: smbd config reload failed for pid $smbd_pid"
+    return 1
+}
+
+tc_start_watchdog() {
+    if runtime_watchdog_present; then
+        tc_log "watchdog already running"
+        return 0
+    fi
+
+    tc_log "starting watchdog"
+    /mnt/Flash/watchdog.sh </dev/null >/dev/null 2>&1 &
+    watchdog_pid=$!
+    tc_log "watchdog launched as pid $watchdog_pid"
+}
+
+tc_current_topology_signature() {
+    [ -f "$TC_TOPOLOGY_SIGNATURE" ] || return 1
+    /bin/cat "$TC_TOPOLOGY_SIGNATURE"
+}
+
+tc_topology_changed_from_file() {
+    fresh_file=$1
+    current=$(tc_current_topology_signature || true)
+    fresh=
+    if [ -s "$fresh_file" ]; then
+        fresh=$(/bin/cat "$fresh_file" 2>/dev/null || true)
+    fi
+    if [ -z "$fresh" ]; then
+        tc_log "watchdog recovery: MaSt topology check failed"
+        return 1
+    fi
+    [ "$current" != "$fresh" ]
+}
+
+tc_watchdog_capture_mast_state() {
+    capture_volumes_file=$1
+    capture_raw_file=$2
+
+    rm -f "$capture_volumes_file" "$capture_raw_file"
+    if [ ! -x /usr/bin/acp ]; then
+        tc_log "watchdog disk check: MaSt snapshot skipped; /usr/bin/acp is unavailable"
+        : >"$capture_volumes_file"
+        : >"$capture_raw_file"
+        return 1
+    fi
+
+    if tc_read_mast_volumes_to "$capture_volumes_file" "$capture_raw_file"; then
+        return 0
+    fi
+
+    tc_log "watchdog disk check: MaSt snapshot read failed or produced no valid HFS volumes"
+    return 1
+}
+
+tc_replace_watchdog_mast_snapshot() {
+    replace_volumes_file=$1
+    replace_raw_file=$2
+    replace_new_volumes_file=$3
+    replace_new_raw_file=$4
+
+    if [ -f "$replace_new_volumes_file" ]; then
+        mv -f "$replace_new_volumes_file" "$replace_volumes_file"
+    fi
+    if [ -f "$replace_new_raw_file" ]; then
+        mv -f "$replace_new_raw_file" "$replace_raw_file"
+    fi
+}
+
+tc_cleanup_watchdog_mast_temp_files() {
+    [ -d "$TC_STATE_DIR" ] || return 0
+    rm -f "$TC_STATE_DIR"/watchdog-volumes.tsv.* "$TC_STATE_DIR"/watchdog-mast.raw.*
+}
+
+tc_topology_changed_debounced_from_snapshot() {
+    snapshot_volumes_file=$1
+    snapshot_raw_file=$2
+
+    if ! tc_topology_changed_from_file "$snapshot_volumes_file"; then
+        return 1
+    fi
+
+    topology_debounce_seconds=$(tc_sanitize_unsigned_integer "$WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS" 5)
+    if [ "$topology_debounce_seconds" != "$WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS" ]; then
+        tc_log "watchdog recovery: invalid WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS=$WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS; using 5s"
+    fi
+
+    tc_log "watchdog recovery: MaSt topology changed; debouncing ${topology_debounce_seconds}s"
+    if [ "$topology_debounce_seconds" -gt 0 ]; then
+        sleep "$topology_debounce_seconds"
+    fi
+
+    debounce_volumes_file="$snapshot_volumes_file.debounce"
+    debounce_raw_file="$snapshot_raw_file.debounce"
+    debounce_status=0
+    tc_watchdog_capture_mast_state "$debounce_volumes_file" "$debounce_raw_file" || debounce_status=$?
+    if [ "$debounce_status" -eq 0 ] && tc_topology_changed_from_file "$debounce_volumes_file"; then
+        tc_replace_watchdog_mast_snapshot "$snapshot_volumes_file" "$snapshot_raw_file" "$debounce_volumes_file" "$debounce_raw_file"
+        return 0
+    fi
+
+    tc_replace_watchdog_mast_snapshot "$snapshot_volumes_file" "$snapshot_raw_file" "$debounce_volumes_file" "$debounce_raw_file"
+    tc_log "watchdog recovery: MaSt topology change cleared after debounce"
+    return 1
+}
+
+tc_exec_start_samba() {
+    reason=$1
+    tc_log "watchdog recovery: re-execing start-samba.sh: $reason"
+    exec /mnt/Flash/start-samba.sh --reload-disk-runtime
+}
+

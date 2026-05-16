@@ -26,6 +26,7 @@ package-dir = {"" = "src"}
 timecapsulesmb = [
   "assets/artifact-manifest.json",
   "assets/boot/samba4/*",
+  "assets/boot/samba4/common.d/*",
 ]
 
 [tool.setuptools.packages.find]

@@ -8,7 +8,6 @@ from typing import Optional
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import observe_reboot_cycle
 from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
-from timecapsulesmb.core.config import airport_exact_display_name_from_config
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.device.processes import render_direct_pkill9_by_ucomm, render_direct_pkill9_watchdog
 from timecapsulesmb.identity import ensure_install_id
@@ -117,9 +116,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         command_context.set_stage("validate_config")
         command_context.require_valid_config(profile="fsck")
-        device_name = airport_exact_display_name_from_config(config)
         command_context.set_stage("resolve_connection")
         connection = command_context.resolve_env_connection(allow_empty_password=True)
+        if connection.password:
+            command_context.start_optional_airport_identity_probe(connection)
 
         mounted_volumes = command_context.mount_mast_volumes(
             connection,
@@ -141,6 +141,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         if not args.yes:
             command_context.set_stage("confirm_fsck")
+            device_name = command_context.optional_airport_display_name(timeout_seconds=0.1)
             proceed = command_context.confirm_or_fail(
                 f"This will stop file sharing, unmount the disk, run fsck_hfs, and reboot the {device_name}. Continue?",
                 default=True,
