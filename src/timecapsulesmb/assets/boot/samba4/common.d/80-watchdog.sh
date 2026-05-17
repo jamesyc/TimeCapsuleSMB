@@ -158,6 +158,8 @@ tc_watchdog_disk_iteration() {
 
 tc_live_reload_disk_runtime() {
     reason=$1
+    old_bind_interfaces=${TC_SMB_BIND_INTERFACES:-}
+    bind_interfaces_changed=0
 
     if ! tc_load_payload_state; then
         tc_log "watchdog recovery: live disk runtime refresh skipped; current payload state is unavailable"
@@ -185,20 +187,46 @@ tc_live_reload_disk_runtime() {
 
     tc_prepare_local_hostname_resolution
     tc_init_runtime_identity
+    if fresh_bind_interfaces=$(tc_probe_smb_bind_interfaces); then
+        if [ -z "$old_bind_interfaces" ] || [ "$fresh_bind_interfaces" != "$old_bind_interfaces" ]; then
+            TC_SMB_BIND_INTERFACES=$fresh_bind_interfaces
+            bind_interfaces_changed=1
+            tc_log "watchdog recovery: Samba IPv4 bind interfaces changed during live refresh: ${old_bind_interfaces:-none} -> $TC_SMB_BIND_INTERFACES"
+        fi
+    else
+        bind_probe_status=$?
+        if [ -z "${TC_SMB_BIND_INTERFACES:-}" ]; then
+            tc_log "watchdog recovery: live disk runtime refresh failed; no usable IPv4 bind interface is available"
+            return 1
+        fi
+        if ! tc_auto_ip_unavailable_status "$bind_probe_status"; then
+            tc_log "watchdog recovery: live disk runtime refresh failed; Samba IPv4 bind probe exited $bind_probe_status"
+            return 1
+        fi
+    fi
 
     if [ ! -x "$TC_SMBD_BIN" ]; then
         tc_log "watchdog recovery: live disk runtime refresh failed; RAM smbd binary is missing"
         return 1
     fi
-    tc_generate_smb_conf "$TC_PAYLOAD_DIR"
+    if ! tc_generate_smb_conf "$TC_PAYLOAD_DIR"; then
+        if [ "$bind_interfaces_changed" -eq 1 ]; then
+            TC_SMB_BIND_INTERFACES=$old_bind_interfaces
+        fi
+        return 1
+    fi
     tc_watchdog_write_identity_signature
 
     if runtime_process_present_by_ucomm smbd; then
-        if ! tc_reload_smbd_config; then
-            return 1
+        if [ "$bind_interfaces_changed" -eq 1 ]; then
+            tc_restart_smbd_for_bind_change "live disk runtime refresh" || return 1
+        else
+            if ! tc_reload_smbd_config; then
+                return 1
+            fi
         fi
     else
-        tc_start_smbd_if_needed
+        tc_start_smbd_if_needed || return 1
     fi
 
     if tc_ensure_mdns_auto_ip_seen; then
@@ -220,7 +248,14 @@ tc_nbns_enabled() {
 }
 
 tc_all_managed_services_healthy() {
+    if [ "${TC_WATCHDOG_SMB_DEFERRED_NO_IP:-0}" = "1" ]; then
+        return 1
+    fi
+
     if ! runtime_process_present_by_ucomm smbd; then
+        return 1
+    fi
+    if ! tc_smbd_bound_ipv4_445; then
         return 1
     fi
 
@@ -297,10 +332,25 @@ tc_watchdog_apply_identity_change() {
 }
 
 tc_watchdog_reset_pass_state() {
+    TC_WATCHDOG_SMB_DEFERRED_NO_IP=0
     TC_WATCHDOG_MDNS_DEFERRED_NO_IP=0
     TC_WATCHDOG_MDNS_UNAVAILABLE=0
     TC_AIRPORT_FIELDS_READY=0
     TC_AIRPORT_FIELDS_ADVERTISE_MAC=
+}
+
+tc_watchdog_initialize_smb_bind_interfaces() {
+    if [ -n "${TC_SMB_BIND_INTERFACES:-}" ]; then
+        return 0
+    fi
+
+    if tc_refresh_smb_bind_interfaces; then
+        tc_log "watchdog startup: initialized Samba IPv4 bind interfaces from live probe"
+        return 0
+    fi
+
+    tc_log "watchdog startup: Samba IPv4 bind interface initialization deferred"
+    return 0
 }
 
 tc_watchdog_reconcile_identity() {
@@ -318,6 +368,44 @@ tc_watchdog_reconcile_smbd() {
         tc_log "watchdog pass: smbd recovery did not complete"
         return 1
     fi
+}
+
+tc_watchdog_reconcile_smb_bind_interfaces() {
+    if fresh_bind_interfaces=$(tc_probe_smb_bind_interfaces); then
+        if [ -z "${TC_SMB_BIND_INTERFACES:-}" ]; then
+            TC_SMB_BIND_INTERFACES=$fresh_bind_interfaces
+            tc_log "watchdog pass: initialized Samba IPv4 bind interfaces: $TC_SMB_BIND_INTERFACES"
+            return 0
+        fi
+        if [ "$fresh_bind_interfaces" = "$TC_SMB_BIND_INTERFACES" ]; then
+            return 0
+        fi
+
+        old_bind_interfaces=$TC_SMB_BIND_INTERFACES
+        TC_SMB_BIND_INTERFACES=$fresh_bind_interfaces
+        tc_log "watchdog pass: Samba IPv4 bind interfaces changed: $old_bind_interfaces -> $TC_SMB_BIND_INTERFACES"
+        if ! tc_prepare_smbd_recovery_disk_runtime; then
+            TC_SMB_BIND_INTERFACES=$old_bind_interfaces
+            tc_log "watchdog pass: cannot apply Samba bind change; disk runtime preparation failed"
+            return 1
+        fi
+        if ! tc_generate_smb_conf "$TC_PAYLOAD_DIR"; then
+            TC_SMB_BIND_INTERFACES=$old_bind_interfaces
+            return 1
+        fi
+        tc_restart_smbd_for_bind_change "IPv4 bind interfaces changed" || return 1
+        return 0
+    else
+        bind_probe_status=$?
+    fi
+
+    if tc_auto_ip_unavailable_status "$bind_probe_status"; then
+        tc_mark_smb_deferred_no_ip
+        return 0
+    fi
+
+    tc_log "watchdog pass: Samba IPv4 bind probe failed with exit code $bind_probe_status"
+    return 1
 }
 
 tc_watchdog_reconcile_mdns() {
@@ -367,6 +455,10 @@ tc_watchdog_report_service_health() {
         return 0
     fi
 
+    if [ "${TC_WATCHDOG_SMB_DEFERRED_NO_IP:-0}" = "1" ]; then
+        tc_log "watchdog pass: Samba IPv4 bind interface is unavailable"
+        return 1
+    fi
     tc_log "watchdog pass: one or more managed services are unhealthy"
     return 1
 }
@@ -375,6 +467,7 @@ tc_watchdog_service_iteration() {
     tc_log "watchdog service pass: checking managed services"
     tc_watchdog_reset_pass_state
     tc_watchdog_reconcile_identity || return 1
+    tc_watchdog_reconcile_smb_bind_interfaces || return 1
     tc_watchdog_reconcile_smbd || return 1
     tc_watchdog_reconcile_mdns
     tc_watchdog_reconcile_nbns

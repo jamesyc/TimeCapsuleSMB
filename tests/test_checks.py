@@ -328,7 +328,7 @@ class CheckTests(unittest.TestCase):
                     lines=(
                         "PASS:managed runtime smb.conf present",
                         "PASS:managed smbd parent process is running",
-                        "PASS:smbd bound to TCP 445",
+                        "PASS:smbd bound to IPv4 TCP 445",
                     ),
                 ),
             )
@@ -1220,11 +1220,11 @@ class CheckTests(unittest.TestCase):
     def test_run_doctor_checks_reports_managed_smbd_subchecks(self) -> None:
         smbd_probe = mock.Mock(
             ready=False,
-            detail="smbd is not bound to TCP 445",
+            detail="smbd is not bound to IPv4 TCP 445",
             lines=(
                 "PASS:managed runtime smb.conf present",
                 "PASS:managed smbd parent process is running",
-                "FAIL:smbd is not bound to TCP 445",
+                "FAIL:smbd is not bound to IPv4 TCP 445",
             ),
         )
         run = self.run_doctor_with_mocks(
@@ -1239,7 +1239,7 @@ class CheckTests(unittest.TestCase):
         )
         self.assertTrue(run.fatal)
         self.assertTrue(any(result.status == "PASS" and result.message == "managed smbd parent process is running" for result in run.results))
-        self.assertTrue(any(result.status == "FAIL" and result.message == "smbd is not bound to TCP 445" for result in run.results))
+        self.assertTrue(any(result.status == "FAIL" and result.message == "smbd is not bound to IPv4 TCP 445" for result in run.results))
         self.assertFalse(any(result.message.startswith("managed smbd is not ready") for result in run.results))
 
     def test_run_doctor_checks_reports_supported_device_compatibility(self) -> None:

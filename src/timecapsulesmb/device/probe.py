@@ -180,7 +180,7 @@ runtime_share_volumes_mounted() {{
 
 smbd_bound_445() {{
     case "$1" in
-        *smbd*":445"*) return 0 ;;
+        *smbd*" internet stream tcp "*":445"*) return 0 ;;
         *) return 1 ;;
     esac
 }}
@@ -257,9 +257,9 @@ describe_managed_smbd_status() {{
         status=1
     fi
     if smbd_bound_445 "$fstat_out"; then
-        echo "PASS:smbd bound to TCP 445"
+        echo "PASS:smbd bound to IPv4 TCP 445"
     else
-        echo "FAIL:smbd is not bound to TCP 445"
+        echo "FAIL:smbd is not bound to IPv4 TCP 445"
         status=1
     fi
     return "$status"
@@ -278,14 +278,14 @@ describe_managed_mdns_status() {{
         mdns_auto_ip_state=failed
         mdns_auto_ip_failure="mdns-advertiser binary is not executable at $RUNTIME_MDNS_BIN"
     else
-        "$RUNTIME_MDNS_BIN" --check-auto-ip >/dev/null 2>&1
+        "$RUNTIME_MDNS_BIN" --print-auto-ip-cidrs >/dev/null 2>&1
         mdns_auto_ip_rc=$?
         case "$mdns_auto_ip_rc" in
             0) mdns_auto_ip_state=active ;;
             11) mdns_auto_ip_state=waiting ;;
             *)
                 mdns_auto_ip_state=failed
-                mdns_auto_ip_failure="mdns-advertiser auto-IP check failed with exit code $mdns_auto_ip_rc"
+                mdns_auto_ip_failure="mdns-advertiser auto-IP CIDR probe failed with exit code $mdns_auto_ip_rc"
                 ;;
         esac
     fi

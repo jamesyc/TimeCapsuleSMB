@@ -20,6 +20,7 @@ COMMON_SH_FRAGMENTS = (
     "common.d/20-airport-identity.sh",
     "common.d/30-processes.sh",
     "common.d/40-storage-discovery.sh",
+    "common.d/45-network-bind.sh",
     "common.d/50-runtime-staging.sh",
     "common.d/60-advertisers.sh",
     "common.d/70-smbd-service.sh",

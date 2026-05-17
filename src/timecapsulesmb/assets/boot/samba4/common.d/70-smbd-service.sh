@@ -1,10 +1,101 @@
+tc_fstat_line_is_ipv4_tcp_445() {
+    case "$1" in
+        *" internet stream tcp "*":445"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+tc_smbd_bound_ipv4_445() {
+    if ps_out=$(/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null); then
+        old_ifs=$IFS
+        IFS='
+'
+        for line in $ps_out; do
+            [ -n "$line" ] || continue
+            line_ifs=$IFS
+            IFS=' 	'
+            set -- $line
+            IFS=$line_ifs
+            [ "$#" -ge 3 ] || continue
+            case "$2" in
+                Z*) continue ;;
+            esac
+            [ "$3" = "smbd" ] || continue
+
+            if fstat_out=$(/usr/bin/fstat -p "$1" 2>/dev/null); then
+                fstat_ifs=$IFS
+                IFS='
+'
+                for fstat_line in $fstat_out; do
+                    if tc_fstat_line_is_ipv4_tcp_445 "$fstat_line"; then
+                        IFS=$old_ifs
+                        return 0
+                    fi
+                done
+                IFS=$fstat_ifs
+            fi
+        done
+        IFS=$old_ifs
+    fi
+
+    return 1
+}
+
+tc_wait_for_smbd_ipv4_445() {
+    max_attempts=${1:-10}
+    attempt=0
+    while [ "$attempt" -lt "$max_attempts" ]; do
+        if tc_smbd_bound_ipv4_445; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+    return 1
+}
+
+tc_log_smbd_socket_diagnostics() {
+    if ps_out=$(/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null); then
+        old_ifs=$IFS
+        IFS='
+'
+        for line in $ps_out; do
+            [ -n "$line" ] || continue
+            line_ifs=$IFS
+            IFS=' 	'
+            set -- $line
+            IFS=$line_ifs
+            [ "$#" -ge 3 ] || continue
+            case "$2" in
+                Z*) continue ;;
+            esac
+            [ "$3" = "smbd" ] || continue
+
+            if fstat_out=$(/usr/bin/fstat -p "$1" 2>/dev/null); then
+                fstat_ifs=$IFS
+                IFS='
+'
+                for fstat_line in $fstat_out; do
+                    case "$fstat_line" in
+                        *":445"*) tc_log "smbd socket diagnostic: $fstat_line" ;;
+                    esac
+                done
+                IFS=$fstat_ifs
+            fi
+        done
+        IFS=$old_ifs
+    fi
+}
+
 tc_start_smbd() {
     tc_log "starting smbd from $TC_SMBD_BIN with config $TC_SMBD_CONF"
     "$TC_SMBD_BIN" -D -s "$TC_SMBD_CONF"
-    if wait_for_process smbd 15; then
+    if wait_for_process smbd 15 && tc_wait_for_smbd_ipv4_445 15; then
         return 0
     fi
-    tc_log "smbd process was not observed after launch"
+    tc_log "smbd IPv4 TCP 445 listener was not observed after launch"
+    tc_log_smbd_socket_diagnostics
+    stop_runtime_process_by_ucomm "smbd" smbd || true
     return 1
 }
 
@@ -57,7 +148,12 @@ tc_prepare_smbd_recovery_disk_runtime() {
 
 tc_start_smbd_if_needed() {
     if runtime_process_present_by_ucomm smbd; then
-        return 0
+        if tc_smbd_bound_ipv4_445; then
+            return 0
+        fi
+        tc_log "watchdog recovery: smbd is running without IPv4 TCP 445; restarting"
+        tc_log_smbd_socket_diagnostics
+        stop_runtime_process_by_ucomm "smbd" smbd || return 1
     fi
 
     if [ ! -x "$TC_SMBD_BIN" ] || [ ! -f "$TC_SMBD_CONF" ]; then
@@ -72,6 +168,20 @@ tc_start_smbd_if_needed() {
     rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true
     "$TC_SMBD_BIN" -D -s "$TC_SMBD_CONF" >/dev/null 2>&1 || true
     tc_log "watchdog recovery: smbd restart requested"
+    if wait_for_process smbd 15 && tc_wait_for_smbd_ipv4_445 15; then
+        return 0
+    fi
+    tc_log "watchdog recovery: smbd restart failed to bind IPv4 TCP 445"
+    tc_log_smbd_socket_diagnostics
+    stop_runtime_process_by_ucomm "smbd" smbd || true
+    return 1
+}
+
+tc_restart_smbd_for_bind_change() {
+    restart_reason=$1
+    tc_log "watchdog recovery: restarting smbd after bind interface change: $restart_reason"
+    stop_runtime_process_by_ucomm "smbd" smbd || return 1
+    tc_start_smbd_if_needed
 }
 
 tc_reload_smbd_config() {
@@ -100,7 +210,7 @@ tc_start_watchdog() {
     fi
 
     tc_log "starting watchdog"
-    /mnt/Flash/watchdog.sh </dev/null >/dev/null 2>&1 &
+    TC_SMB_BIND_INTERFACES="$TC_SMB_BIND_INTERFACES" /mnt/Flash/watchdog.sh </dev/null >/dev/null 2>&1 &
     watchdog_pid=$!
     tc_log "watchdog launched as pid $watchdog_pid"
 }
@@ -200,4 +310,3 @@ tc_exec_start_samba() {
     tc_log "watchdog recovery: re-execing start-samba.sh: $reason"
     exec /mnt/Flash/start-samba.sh --reload-disk-runtime
 }
-

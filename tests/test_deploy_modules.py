@@ -1480,6 +1480,101 @@ int main(void) {{
         run = self._compile_and_run_c_helper(source, "mdns_auto_ip_helpers")
         self.assertEqual(run.returncode, 0, run.stderr)
 
+    def test_mdns_auto_ip_cidr_helpers_format_valid_bind_output(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <arpa/inet.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+int main(void) {{
+    struct iface_context_set set;
+    char cidr[INET_ADDRSTRLEN + 4];
+
+    if (netmask_prefix_length(inet_addr("255.255.255.0")) != 24 ||
+        netmask_prefix_length(inet_addr("255.255.0.0")) != 16 ||
+        netmask_prefix_length(0) != 24 ||
+        netmask_prefix_length(inet_addr("255.0.255.0")) != 24) {{
+        return 1;
+    }}
+
+    memset(&set, 0, sizeof(set));
+    if (print_iface_context_cidrs(stdout, &set) == 0) {{
+        return 5;
+    }}
+    append_iface_context(&set, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    append_iface_context(&set, "bcmeth0", inet_addr("192.168.1.40"), 0, IFF_UP | IFF_RUNNING);
+    append_iface_context(&set, "lo0", inet_addr("127.0.0.1"), inet_addr("255.0.0.0"), IFF_UP | IFF_RUNNING);
+    append_iface_context(&set, "ll0", inet_addr("169.254.1.9"), inet_addr("255.255.0.0"), IFF_UP | IFF_RUNNING);
+    if (set.count != 2) {{
+        return 2;
+    }}
+    if (iface_context_cidr(cidr, sizeof(cidr), &set.contexts[1]) != 0 || strcmp(cidr, "192.168.1.40/24") != 0) {{
+        return 3;
+    }}
+    if (print_iface_context_cidrs(stdout, &set) != 0) {{
+        return 4;
+    }}
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_auto_ip_cidrs")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout, "10.0.1.1/24 192.168.1.40/24\n")
+
+    def test_mdns_print_auto_ip_cidrs_returns_distinct_probe_failure_status(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <arpa/inet.h>
+#include <string.h>
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+
+struct fake_auto_ip_plan {{
+    int mode;
+}};
+
+static int fake_collect_contexts(struct iface_context_set *out, void *userdata) {{
+    struct fake_auto_ip_plan *plan = (struct fake_auto_ip_plan *)userdata;
+    memset(out, 0, sizeof(*out));
+    if (plan->mode == 1) {{
+        return -1;
+    }}
+    if (plan->mode == 2) {{
+        append_iface_context(out, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    }}
+    return 0;
+}}
+
+int main(void) {{
+    struct fake_auto_ip_plan plan;
+
+    memset(&plan, 0, sizeof(plan));
+    plan.mode = 2;
+    if (print_auto_ip_cidrs_with_provider(stdout, fake_collect_contexts, &plan) != EXIT_OK) {{
+        return 1;
+    }}
+    plan.mode = 0;
+    if (print_auto_ip_cidrs_with_provider(stdout, fake_collect_contexts, &plan) != EXIT_AUTO_IP_UNAVAILABLE) {{
+        return 2;
+    }}
+    plan.mode = 1;
+    if (print_auto_ip_cidrs_with_provider(stdout, fake_collect_contexts, &plan) != EXIT_AUTO_IP_PROBE_FAILED) {{
+        return 3;
+    }}
+    if (print_auto_ip_cidrs_with_provider(stdout, NULL, &plan) != EXIT_AUTO_IP_PROBE_FAILED) {{
+        return 4;
+    }}
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_print_auto_ip_cidrs_status")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout, "10.0.1.1/24\n")
+
     def test_mdns_auto_ip_wait_stabilizes_after_first_usable_ipv4(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
         source = '''
@@ -3360,8 +3455,32 @@ printf 'status=%s\\n' "$?"
         self.assertIn("PASS:active smb.conf xattr_tdb:file is persistent", result.stdout)
         self.assertIn("PASS:all managed share volumes are mounted", result.stdout)
         self.assertIn("PASS:watchdog is running for managed runtime", result.stdout)
-        self.assertIn("PASS:smbd bound to TCP 445", result.stdout)
+        self.assertIn("PASS:smbd bound to IPv4 TCP 445", result.stdout)
         self.assertIn("status=0", result.stdout)
+
+    def test_smbd_status_helper_rejects_ipv6_only_smbd_listener(self) -> None:
+        script = (
+            SMBD_STATUS_HELPERS
+            + r'''
+ipv4='root smbd 101 10 internet stream tcp 0x0 *:445'
+ipv6='root smbd 101 10 internet6 stream tcp 0x0 *:445'
+both=$(cat <<'EOF'
+root smbd 101 10 internet6 stream tcp 0x0 *:445
+root smbd 101 11 internet stream tcp 0x0 *:445
+EOF
+)
+smbd_bound_445 "$ipv4"; echo "ipv4=$?"
+smbd_bound_445 "$ipv6"; echo "ipv6=$?"
+smbd_bound_445 "$both"; echo "both=$?"
+'''
+        )
+
+        result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ipv4=0", result.stdout)
+        self.assertIn("ipv6=1", result.stdout)
+        self.assertIn("both=0", result.stdout)
 
     def test_smbd_status_helpers_fail_for_disk_auth_unmounted_volume_and_missing_watchdog(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -3486,7 +3605,7 @@ fi
             result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("FAIL:mdns-advertiser auto-IP check failed with exit code 3", result.stdout)
+        self.assertIn("FAIL:mdns-advertiser auto-IP CIDR probe failed with exit code 3", result.stdout)
         self.assertIn("PASS:mdns-advertiser process is running", result.stdout)
         self.assertIn("PASS:mdns-advertiser bound to UDP 5353", result.stdout)
         self.assertIn("FAIL:mdns-advertiser bound to UDP 5353 but auto-IP is not active", result.stdout)
@@ -3577,6 +3696,8 @@ fi
         self.assertIn('capture_fstat_for_ucomm "$ps_out" mdns-advertiser', remote_command)
         self.assertIn('/usr/bin/fstat -p "$1"', remote_command)
         self.assertIn("mdns_bound_5353()", remote_command)
+        self.assertIn("--print-auto-ip-cidrs", remote_command)
+        self.assertNotIn("--check-auto-ip", remote_command)
         self.assertNotIn('out="$(fstat 2>&1)"', remote_command)
         self.assertNotIn("max_attempts", remote_command)
         self.assertNotIn("sleep 5", remote_command)
@@ -3719,7 +3840,7 @@ fi
         self.assertIn("NetBSD 4 devices cannot auto-run Samba after a reboot.", text)
         self.assertIn("Run `activate` after a reboot if the device did not auto-start Samba.", text)
         self.assertIn("managed runtime smb.conf is present", text)
-        self.assertIn("smbd is bound to TCP 445", text)
+        self.assertIn("smbd is bound to IPv4 TCP 445", text)
         self.assertIn("mdns-advertiser is bound to UDP 5353", text)
 
     def test_netbsd6_no_reboot_plan_has_no_reboot_checks(self) -> None:

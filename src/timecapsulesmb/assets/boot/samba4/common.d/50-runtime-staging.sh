@@ -70,6 +70,12 @@ tc_stage_disk_runtime() {
     fi
 
     tc_stage_runtime "$TC_PAYLOAD_DIR" "$SMBD_SRC" "$NBNS_SRC"
+    if [ -z "$TC_SMB_BIND_INTERFACES" ]; then
+        tc_refresh_smb_bind_interfaces || {
+            tc_log "runtime staging failed: no usable IPv4 bind interface is available"
+            return 1
+        }
+    fi
     tc_generate_smb_conf "$TC_PAYLOAD_DIR"
     tc_log "runtime staging complete under $RAM_ROOT"
 }
@@ -194,6 +200,10 @@ tc_stage_runtime() {
 tc_generate_smb_conf() {
     payload_dir=$1
     tc_ensure_runtime_identity
+    if [ -z "$TC_SMB_BIND_INTERFACES" ]; then
+        tc_log "smb.conf generation failed: TC_SMB_BIND_INTERFACES is empty"
+        return 1
+    fi
     cache_directory=$(tc_select_cache_directory "$payload_dir")
     smbd_log="$payload_dir/logs/log.smbd"
     smbd_max_log_size=$(tc_smbd_max_log_size)
@@ -215,10 +225,10 @@ tc_generate_smb_conf() {
 [global]
     netbios name = $SMB_NETBIOS_NAME
     workgroup = WORKGROUP
-    # NetBSD 4 Samba cannot always discover interfaces itself.  This wildcard
-    # keeps smbd startup independent of a selected interface while leaving
-    # Samba's interface-only bind mode disabled.
-    interfaces = 0.0.0.0/0
+    # Samba's interface enumeration can race boot networking on Time Capsule.
+    # Bind to the IPv4 CIDRs discovered immediately before rendering config.
+    interfaces = $TC_SMB_BIND_INTERFACES
+    bind interfaces only = yes
     server string = $SMB_SERVER_STRING
     security = user
     map to guest = Never
@@ -288,4 +298,3 @@ EOF
         done <"$TC_SHARES_TSV"
     } >"$TC_SMBD_CONF"
 }
-

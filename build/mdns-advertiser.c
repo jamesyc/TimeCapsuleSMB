@@ -217,7 +217,8 @@ enum exit_code {
     EXIT_INVALID_DEVICE_MODEL = 9,
     EXIT_INVALID_AIRPORT_TXT = 10,
     EXIT_AUTO_IP_UNAVAILABLE = 11,
-    EXIT_SNAPSHOT_CAPTURE_FAILED = 12
+    EXIT_SNAPSHOT_CAPTURE_FAILED = 12,
+    EXIT_AUTO_IP_PROBE_FAILED = 13
 };
 
 struct iface_context {
@@ -330,6 +331,7 @@ static int build_instance_fqdn(char *out, size_t out_len, const char *instance_n
 static int open_mdns_socket(int shared_bind, int log_bind_errors, uint32_t ipv4_addr, const char *socket_role);
 static int collect_usable_iface_contexts(struct iface_context_set *out);
 static int iface_context_sets_equal(const struct iface_context_set *a, const struct iface_context_set *b);
+static int print_iface_context_cidrs(FILE *stream, const struct iface_context_set *set);
 static int is_airport_enabled(const struct config *cfg);
 static int cfg_has_airport_identity_macs(const struct config *cfg);
 static int add_rr_ptr(uint8_t *buf, size_t *off, size_t cap, const char *owner, const char *target, uint32_t ttl);
@@ -632,6 +634,91 @@ static int iface_context_sets_equal(const struct iface_context_set *a, const str
     return 1;
 }
 
+static int netmask_prefix_length(uint32_t netmask) {
+    uint32_t mask = ntohl(netmask);
+    int prefix = 0;
+    int saw_zero = 0;
+    int bit;
+
+    if (mask == 0) {
+        return 24;
+    }
+
+    for (bit = 31; bit >= 0; bit--) {
+        if ((mask & (1U << bit)) != 0) {
+            if (saw_zero) {
+                return 24;
+            }
+            prefix++;
+        } else {
+            saw_zero = 1;
+        }
+    }
+
+    return prefix;
+}
+
+static int iface_context_cidr(char *out, size_t out_len, const struct iface_context *ctx) {
+    char ip_buf[INET_ADDRSTRLEN];
+    int written;
+
+    written = snprintf(out,
+                       out_len,
+                       "%s/%d",
+                       ipv4_to_string(ctx->ipv4_addr, ip_buf, sizeof(ip_buf)),
+                       netmask_prefix_length(ctx->netmask));
+    if (written < 0 || (size_t)written >= out_len) {
+        return -1;
+    }
+    return 0;
+}
+
+static int print_iface_context_cidrs(FILE *stream, const struct iface_context_set *set) {
+    size_t i;
+
+    if (set->count == 0) {
+        return -1;
+    }
+    for (i = 0; i < set->count; i++) {
+        char cidr[INET_ADDRSTRLEN + 4];
+        if (iface_context_cidr(cidr, sizeof(cidr), &set->contexts[i]) != 0) {
+            return -1;
+        }
+        if (i > 0 && fputc(' ', stream) == EOF) {
+            return -1;
+        }
+        if (fputs(cidr, stream) == EOF) {
+            return -1;
+        }
+    }
+    if (fputc('\n', stream) == EOF) {
+        return -1;
+    }
+    return 0;
+}
+
+static int print_auto_ip_cidrs_with_provider(FILE *stream,
+                                             mdns_collect_iface_contexts_fn collect_contexts,
+                                             void *userdata) {
+    struct iface_context_set contexts;
+
+    if (collect_contexts == NULL) {
+        return EXIT_AUTO_IP_PROBE_FAILED;
+    }
+
+    memset(&contexts, 0, sizeof(contexts));
+    if (collect_contexts(&contexts, userdata) != 0) {
+        return EXIT_AUTO_IP_PROBE_FAILED;
+    }
+    if (contexts.count == 0) {
+        return EXIT_AUTO_IP_UNAVAILABLE;
+    }
+    if (print_iface_context_cidrs(stream, &contexts) != 0) {
+        return EXIT_AUTO_IP_PROBE_FAILED;
+    }
+    return EXIT_OK;
+}
+
 static void log_iface_contexts(const char *prefix, const struct iface_context_set *set) {
     size_t i;
 
@@ -877,10 +964,10 @@ static void usage(const char *prog) {
             "Usage: %s --instance <name> --host <label> (--ipv4 <address>|--auto-ip) [options]\n"
             "       %s --save-snapshot <path> [--save-all-snapshot <path>] [airport identity options]\n"
             "       %s --save-airport-snapshot <path> --instance <name> --host <label> [airport identity options]\n"
-            "       %s --check-auto-ip\n"
+            "       %s --print-auto-ip-cidrs\n"
             "Options:\n"
             "  --auto-ip          Serve every usable live IPv4 interface and track IP changes\n"
-            "  --check-auto-ip    Exit 0 if at least one usable live IPv4 exists\n"
+            "  --print-auto-ip-cidrs Print usable live IPv4 CIDRs and exit 0, or exit 11 if none exist\n"
             "  --save-all-snapshot <path> Capture raw LAN-wide mDNS records into a snapshot file\n"
             "  --save-snapshot <path> Capture Apple mDNS records into a snapshot file; without --load-snapshot, capture and exit\n"
             "  --skip-capture-if-snapshot-newer-than-boot <path> Reuse an existing snapshot created after boot\n"
@@ -3582,7 +3669,7 @@ int main(int argc, char **argv) {
     int shared_bind = 0;
     int auto_ip = 0;
     int explicit_ipv4 = 0;
-    int check_auto_ip = 0;
+    int print_auto_ip_cidrs = 0;
     int auto_contexts_ready = 0;
     struct iface_context_set auto_contexts;
     int capture_only = 0;
@@ -3624,8 +3711,8 @@ int main(int argc, char **argv) {
             shared_bind = 1;
         } else if (strcmp(argv[i], "--auto-ip") == 0) {
             auto_ip = 1;
-        } else if (strcmp(argv[i], "--check-auto-ip") == 0) {
-            check_auto_ip = 1;
+        } else if (strcmp(argv[i], "--print-auto-ip-cidrs") == 0) {
+            print_auto_ip_cidrs = 1;
         } else if (strcmp(argv[i], "--service") == 0 && i + 1 < argc) {
             strncpy(cfg.service_type, argv[++i], sizeof(cfg.service_type) - 1);
         } else if (strcmp(argv[i], "--adisk-share") == 0 && i + 1 < argc) {
@@ -3684,13 +3771,10 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (check_auto_ip) {
-        struct iface_context_set check_contexts;
-        memset(&check_contexts, 0, sizeof(check_contexts));
-        if (collect_usable_iface_contexts(&check_contexts) == 0 && check_contexts.count > 0) {
-            return EXIT_OK;
-        }
-        return EXIT_AUTO_IP_UNAVAILABLE;
+    if (print_auto_ip_cidrs) {
+        return print_auto_ip_cidrs_with_provider(stdout,
+                                                 collect_usable_iface_contexts_provider,
+                                                 NULL);
     }
 
     capture_only = (cfg.load_snapshot_path[0] == '\0' &&

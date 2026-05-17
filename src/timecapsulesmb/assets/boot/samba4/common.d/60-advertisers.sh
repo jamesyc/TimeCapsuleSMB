@@ -229,8 +229,7 @@ tc_run_mdns_snapshot_command() {
 }
 
 tc_mdns_auto_ip_available() {
-    [ -x "$TC_MDNS_BIN" ] || return 1
-    "$TC_MDNS_BIN" --check-auto-ip >/dev/null 2>&1
+    tc_probe_auto_ip_cidrs >/dev/null 2>&1
 }
 
 tc_mark_mdns_deferred_no_ip() {
@@ -252,16 +251,23 @@ tc_ensure_mdns_auto_ip_seen() {
         return 1
     fi
 
-    tc_log "mDNS auto-ip check: running $TC_MDNS_BIN --check-auto-ip"
+    tc_log "mDNS auto-ip check: running $TC_MDNS_BIN --print-auto-ip-cidrs"
     if tc_mdns_auto_ip_available; then
         TC_MDNS_AUTO_IP_SEEN=1
         tc_log "mDNS auto-ip check: usable IPv4 is available"
         tc_log "mDNS auto-ip is available; starting capture and advertiser"
         return 0
+    else
+        mdns_auto_ip_status=$?
     fi
 
-    tc_log "mDNS auto-ip check: no usable IPv4 yet"
-    tc_mark_mdns_deferred_no_ip
+    if tc_auto_ip_unavailable_status "$mdns_auto_ip_status"; then
+        tc_log "mDNS auto-ip check: no usable IPv4 yet"
+        tc_mark_mdns_deferred_no_ip
+    else
+        TC_WATCHDOG_MDNS_UNAVAILABLE=1
+        tc_log "mDNS auto-ip check failed with exit code $mdns_auto_ip_status"
+    fi
     return 1
 }
 
@@ -490,4 +496,3 @@ tc_launch_nbns() {
 tc_restart_nbns() {
     tc_launch_nbns "watchdog recovery" 0
 }
-

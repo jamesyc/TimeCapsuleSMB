@@ -11,6 +11,7 @@ tc_set_log "$RAM_VAR/watchdog.log" "watchdog"
 tc_cleanup_watchdog_mast_temp_files
 tc_init_runtime_identity
 tc_watchdog_write_identity_signature
+tc_watchdog_initialize_smb_bind_interfaces
 
 WATCHDOG_DISK_POLL_SECONDS=$(tc_sanitize_positive_integer "${WATCHDOG_DISK_POLL_SECONDS:-10}" 10)
 WATCHDOG_SERVICE_POLL_SECONDS=$(tc_sanitize_positive_integer "${WATCHDOG_SERVICE_POLL_SECONDS:-30}" 30)

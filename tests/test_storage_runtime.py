@@ -940,6 +940,7 @@ MaSt = (
                     cat >"$TC_SHARES_TSV" <<'EOF'
                     Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     EOF
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
                     tc_init_runtime_identity
                     tc_generate_smb_conf {payload}
                     tc_launch_mdns_advertiser "mdns test" 0 0
@@ -1178,6 +1179,7 @@ MaSt = (
                         tc_prepare_locks_ramdisk() {{ echo locks; return 0; }}
                         tc_prepare_legacy_prefix() {{ echo legacy; }}
                         tc_init_runtime_identity() {{ echo identity; }}
+                        tc_prepare_smb_bind_context() {{ echo bind; }}
                         tc_refresh_disk_state() {{
                             echo refresh
                             mkdir -p "$RAM_VAR"
@@ -1216,6 +1218,7 @@ MaSt = (
                     "tune",
                     "locks",
                     "legacy",
+                    "bind",
                     "refresh",
                     "identity",
                     "stage",
@@ -1722,6 +1725,7 @@ MaSt = (
                     tc_init_runtime_env
                     tc_set_log "$RAM_VAR/test.log" test
                     tc_prepare_ram_root
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
                     tc_write_payload_state {payload} {volumes}/dk2 /dev/dk2
                     cat >"$TC_SHARES_TSV" <<'EOF'
                     Data	{volumes}/dk2/ShareRoot	dk2	1	f42bdb83-c265-5522-a087-25606a4d0abf
@@ -1741,8 +1745,8 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("smbd-staged\n", proc.stdout)
         self.assertIn("private-staged\n", proc.stdout)
-        self.assertIn("interfaces = 0.0.0.0/0", proc.stdout)
-        self.assertNotIn("bind interfaces only", proc.stdout)
+        self.assertIn("interfaces = 127.0.0.1/8 192.168.1.40/24", proc.stdout)
+        self.assertIn("bind interfaces only = yes", proc.stdout)
         self.assertIn("nbns runtime staging skipped", log_text)
         self.assertNotIn("nbns binary not found", log_text)
 
@@ -1775,6 +1779,123 @@ MaSt = (
         self.assertIn("status=1\n", proc.stdout)
         self.assertIn("payload discovery failed: payload state is unavailable", proc.stdout)
 
+    def test_common_smb_bind_context_waits_settles_and_uses_fresh_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            probe_count = tmp_path / "probe-count"
+            (flash / "mdns-advertiser").write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    [ "$1" = "--print-auto-ip-cidrs" ] || exit 2
+                    if [ -f {probe_count} ]; then
+                        echo 192.168.1.40/24
+                    else
+                        : >{probe_count}
+                        echo 192.168.1.39/24
+                    fi
+                    """
+                )
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            script = tmp_path / "smb-bind-context.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    sleep() {{ echo "sleep $1"; }}
+                    tc_prepare_smb_bind_context
+                    printf 'bind=%s\\n' "$TC_SMB_BIND_INTERFACES"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "sleep 3\nbind=127.0.0.1/8 192.168.1.40/24\n")
+        self.assertIn("first usable IPv4 observed: 192.168.1.39/24", log_text)
+        self.assertIn("Samba IPv4 bind interfaces: 127.0.0.1/8 192.168.1.40/24", log_text)
+
+    def test_common_smb_bind_probe_rejects_invalid_cidr_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            (flash / "mdns-advertiser").write_text("#!/bin/sh\necho '192.168.1.40 bad/value'\n")
+            (flash / "mdns-advertiser").chmod(0o755)
+            script = tmp_path / "smb-bind-invalid.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    if tc_refresh_smb_bind_interfaces; then
+                        echo status=0
+                    else
+                        echo status=$?
+                    fi
+                    printf 'bind=%s\\n' "${{TC_SMB_BIND_INTERFACES:-}}"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=1\n", proc.stdout)
+        self.assertIn("bind=\n", proc.stdout)
+        self.assertIn("Samba IPv4 bind interface probe failed with exit code 1", log_text)
+
+    def test_common_smb_bind_context_fails_hard_on_probe_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            (flash / "mdns-advertiser").write_text("#!/bin/sh\nexit 13\n")
+            (flash / "mdns-advertiser").chmod(0o755)
+            script = tmp_path / "smb-bind-hard-fail.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    sleep() {{ echo "unexpected sleep"; }}
+                    tc_prepare_smb_bind_context || status=$?
+                    printf 'status=%s\\n' "${{status:-0}}"
+                    cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=1\n", proc.stdout)
+        self.assertIn("Samba IPv4 bind discovery failed with exit code 13", proc.stdout)
+        self.assertNotIn("no usable IPv4 has appeared yet", proc.stdout)
+        self.assertNotIn("unexpected sleep", proc.stdout)
+
     def test_payload_on_external_disk_is_also_served_as_share_and_hidden_in_smb_conf(self) -> None:
         fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_external_only")
         with tempfile.TemporaryDirectory() as tmp:
@@ -1800,6 +1921,7 @@ MaSt = (
                     {self.render_mast_wait_fixture_override(topology_path, raw_path)}
                     tc_mount_mast_volumes_for_boot() {{ :; }}
                     is_volume_root_mounted() {{ return 0; }}
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
                     mkdir -p "$RAM_VAR" {volumes}/dk5
                     tc_refresh_disk_state
                     tc_prepare_ram_root
@@ -1847,6 +1969,7 @@ MaSt = (
                     . {flash}/tcapsulesmb.conf
                     tc_init_runtime_env
                     mkdir -p "$RAM_ETC" "$RAM_VAR"
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
                     cat >"$TC_SHARES_TSV" <<'EOF'
                     Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     USB	{volumes}/dk3	dk3	0	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
@@ -1898,6 +2021,7 @@ MaSt = (
                     SMBD_DEBUG_LOGGING=1
                     tc_init_runtime_env
                     mkdir -p "$RAM_ETC" "$RAM_VAR"
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
                     cat >"$TC_SHARES_TSV" <<'EOF'
                     Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     EOF
@@ -1932,6 +2056,7 @@ MaSt = (
                     mkdir -p "$RAM_VAR"
                     sleep() {{ :; }}
                     tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_watchdog_reconcile_smb_bind_interfaces() {{ :; }}
                     tc_start_smbd_if_needed() {{ return 0; }}
                     tc_all_managed_services_healthy() {{ return 0; }}
                     runtime_process_present_by_ucomm() {{ return 0; }}
@@ -1966,6 +2091,7 @@ MaSt = (
                     mkdir -p "$RAM_VAR"
                     sleep() {{ :; }}
                     tc_prepare_local_hostname_resolution() {{ echo hosts; }}
+                    tc_watchdog_reconcile_smb_bind_interfaces() {{ :; }}
                     tc_start_smbd_if_needed() {{ echo smbd; }}
                     runtime_process_present_by_ucomm() {{ echo "process $1"; return 0; }}
                     tc_all_managed_services_healthy() {{ echo healthy; return 0; }}
@@ -1979,6 +2105,252 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "hosts\nsmbd\nprocess mdns-advertiser\nprocess nbns-advertiser\nhealthy\n")
+
+    def test_common_watchdog_smb_bind_reconcile_skips_restart_when_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "watchdog-bind-unchanged.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
+                    tc_probe_smb_bind_interfaces() {{ echo "127.0.0.1/8 192.168.1.40/24"; }}
+                    tc_generate_smb_conf() {{ echo "generate $1"; }}
+                    tc_restart_smbd_for_bind_change() {{ echo restart; }}
+                    tc_watchdog_reconcile_smb_bind_interfaces
+                    printf 'bind=%s\\n' "$TC_SMB_BIND_INTERFACES"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "bind=127.0.0.1/8 192.168.1.40/24\n")
+
+    def test_common_watchdog_smb_bind_reconcile_restarts_when_changed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            private = payload / "private"
+            private.mkdir(parents=True)
+            (payload / "smbd").write_text("#!/bin/sh\n")
+            (payload / "smbd").chmod(0o755)
+            (private / "smbpasswd").write_text("root:x\n")
+            (private / "username.map").write_text("root = *\n")
+            script = tmp_path / "watchdog-bind-changed.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
+                    tc_probe_smb_bind_interfaces() {{ echo "127.0.0.1/8 192.168.1.41/24"; }}
+                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    USB	{volumes}/dk3	dk3	0	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+                    EOF
+                    tc_load_payload_state() {{
+                        TC_PAYLOAD_DIR={payload}
+                        TC_PAYLOAD_VOLUME={volumes}/dk2
+                        TC_PAYLOAD_DEVICE=/dev/dk2
+                        return 0
+                    }}
+                    tc_watchdog_wake_or_mount_volume() {{ echo "mount $1 $2"; return 0; }}
+                    tc_generate_smb_conf() {{ echo "generate $1 $TC_SMB_BIND_INTERFACES"; }}
+                    tc_restart_smbd_for_bind_change() {{ echo "restart $1"; }}
+                    tc_watchdog_reconcile_smb_bind_interfaces
+                    printf 'bind=%s\\n' "$TC_SMB_BIND_INTERFACES"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            f"mount /dev/dk2 {volumes}/dk2\nmount /dev/dk2 {volumes}/dk2\nmount /dev/dk3 {volumes}/dk3\ngenerate {payload} 127.0.0.1/8 192.168.1.41/24\nrestart IPv4 bind interfaces changed\nbind=127.0.0.1/8 192.168.1.41/24\n",
+        )
+
+    def test_common_watchdog_smb_bind_reconcile_restores_bind_when_disk_prepare_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            private = payload / "private"
+            private.mkdir(parents=True)
+            (payload / "smbd").write_text("#!/bin/sh\n")
+            (payload / "smbd").chmod(0o755)
+            (private / "smbpasswd").write_text("root:x\n")
+            (private / "username.map").write_text("root = *\n")
+            script = tmp_path / "watchdog-bind-prepare-fails.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
+                    tc_probe_smb_bind_interfaces() {{ echo "127.0.0.1/8 192.168.1.41/24"; }}
+                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    USB	{volumes}/dk3	dk3	0	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+                    EOF
+                    tc_load_payload_state() {{
+                        TC_PAYLOAD_DIR={payload}
+                        TC_PAYLOAD_VOLUME={volumes}/dk2
+                        TC_PAYLOAD_DEVICE=/dev/dk2
+                        return 0
+                    }}
+                    tc_watchdog_wake_or_mount_volume() {{
+                        echo "mount $1 $2"
+                        [ "$1" != "/dev/dk3" ]
+                    }}
+                    tc_generate_smb_conf() {{ echo generate; }}
+                    tc_restart_smbd_for_bind_change() {{ echo restart; }}
+                    tc_watchdog_reconcile_smb_bind_interfaces || status=$?
+                    printf 'status=%s\\n' "${{status:-0}}"
+                    printf 'bind=%s\\n' "$TC_SMB_BIND_INTERFACES"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn(f"mount /dev/dk2 {volumes}/dk2\n", proc.stdout)
+        self.assertIn(f"mount /dev/dk3 {volumes}/dk3\n", proc.stdout)
+        self.assertIn("status=1\n", proc.stdout)
+        self.assertIn("bind=127.0.0.1/8 192.168.1.40/24\n", proc.stdout)
+        self.assertNotIn("generate\n", proc.stdout)
+        self.assertNotIn("restart\n", proc.stdout)
+
+    def test_common_watchdog_smb_bind_reconcile_restores_bind_when_config_generation_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "watchdog-bind-generate-fails.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
+                    TC_PAYLOAD_DIR=/payload
+                    tc_probe_smb_bind_interfaces() {{ echo "127.0.0.1/8 192.168.1.41/24"; }}
+                    tc_prepare_smbd_recovery_disk_runtime() {{ echo prepare; return 0; }}
+                    tc_generate_smb_conf() {{ echo "generate $TC_SMB_BIND_INTERFACES"; return 1; }}
+                    tc_restart_smbd_for_bind_change() {{ echo restart; }}
+                    tc_watchdog_reconcile_smb_bind_interfaces || status=$?
+                    printf 'status=%s\\n' "${{status:-0}}"
+                    printf 'bind=%s\\n' "$TC_SMB_BIND_INTERFACES"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            "prepare\ngenerate 127.0.0.1/8 192.168.1.41/24\nstatus=1\nbind=127.0.0.1/8 192.168.1.40/24\n",
+        )
+        self.assertNotIn("restart\n", proc.stdout)
+
+    def test_common_watchdog_smb_bind_reconcile_fails_hard_on_probe_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "watchdog-bind-hard-fail.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
+                    tc_probe_smb_bind_interfaces() {{ return 13; }}
+                    tc_generate_smb_conf() {{ echo generate; }}
+                    tc_restart_smbd_for_bind_change() {{ echo restart; }}
+                    tc_watchdog_reconcile_smb_bind_interfaces || status=$?
+                    printf 'status=%s\\n' "${{status:-0}}"
+                    printf 'deferred=%s\\n' "$TC_WATCHDOG_SMB_DEFERRED_NO_IP"
+                    printf 'bind=%s\\n' "$TC_SMB_BIND_INTERFACES"
+                    cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=1\n", proc.stdout)
+        self.assertIn("deferred=0\n", proc.stdout)
+        self.assertIn("bind=127.0.0.1/8 192.168.1.40/24\n", proc.stdout)
+        self.assertIn("watchdog pass: Samba IPv4 bind probe failed with exit code 13", proc.stdout)
+        self.assertNotIn("generate\n", proc.stdout)
+        self.assertNotIn("restart\n", proc.stdout)
+
+    def test_common_watchdog_initializes_smb_bind_interfaces_without_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            (flash / "mdns-advertiser").write_text("#!/bin/sh\necho 192.168.1.40/24\n")
+            (flash / "mdns-advertiser").chmod(0o755)
+            script = tmp_path / "watchdog-bind-init.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    TC_SMB_BIND_INTERFACES=
+                    tc_watchdog_initialize_smb_bind_interfaces
+                    printf 'bind=%s\\n' "$TC_SMB_BIND_INTERFACES"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "bind=127.0.0.1/8 192.168.1.40/24\n")
+        self.assertIn("watchdog startup: initialized Samba IPv4 bind interfaces from live probe", log_text)
 
     def test_common_watchdog_defers_first_mdns_start_until_auto_ip_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1999,7 +2371,7 @@ MaSt = (
                     mkdir -p "$RAM_VAR"
                     runtime_process_present_by_ucomm() {{ return 1; }}
                     tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
-                    tc_mdns_auto_ip_available() {{ echo check-auto-ip; return 1; }}
+                    tc_mdns_auto_ip_available() {{ echo print-auto-ip-cidrs; return 11; }}
                     tc_start_mdns_capture() {{ echo capture; }}
                     tc_start_mdns_advertiser() {{ echo advertise; }}
                     tc_watchdog_start_mdns_if_needed
@@ -2013,14 +2385,56 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("check-auto-ip\n", proc.stdout)
+        self.assertIn("print-auto-ip-cidrs\n", proc.stdout)
         self.assertNotIn("capture\n", proc.stdout)
         self.assertNotIn("advertise\n", proc.stdout)
         self.assertIn("deferred=1\n", proc.stdout)
         self.assertIn("mDNS auto-ip check: running", proc.stdout)
-        self.assertIn("--check-auto-ip", proc.stdout)
+        self.assertIn("--print-auto-ip-cidrs", proc.stdout)
         self.assertIn("mDNS auto-ip check: no usable IPv4 yet", proc.stdout)
         self.assertIn("mDNS startup deferred; no usable IPv4 has appeared yet", proc.stdout)
+
+    def test_common_watchdog_reports_mdns_auto_ip_probe_failure_without_deferral(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            (flash / "mdns-advertiser").write_text("#!/bin/sh\nexit 13\n")
+            (flash / "mdns-advertiser").chmod(0o755)
+            script = tmp_path / "watchdog-mdns-hard-fail.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    runtime_process_present_by_ucomm() {{ return 1; }}
+                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_mdns_auto_ip_available() {{ echo print-auto-ip-cidrs; return 13; }}
+                    tc_start_mdns_capture() {{ echo capture; }}
+                    tc_start_mdns_advertiser() {{ echo advertise; }}
+                    tc_watchdog_start_mdns_if_needed
+                    echo "deferred=$TC_WATCHDOG_MDNS_DEFERRED_NO_IP"
+                    echo "unavailable=$TC_WATCHDOG_MDNS_UNAVAILABLE"
+                    cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("print-auto-ip-cidrs\n", proc.stdout)
+        self.assertNotIn("capture\n", proc.stdout)
+        self.assertNotIn("advertise\n", proc.stdout)
+        self.assertIn("deferred=0\n", proc.stdout)
+        self.assertIn("unavailable=1\n", proc.stdout)
+        self.assertIn("mDNS auto-ip check failed with exit code 13", proc.stdout)
+        self.assertNotIn("mDNS startup deferred; no usable IPv4 has appeared yet", proc.stdout)
 
     def test_common_watchdog_starts_first_mdns_capture_after_auto_ip_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2041,7 +2455,7 @@ MaSt = (
                     mkdir -p "$RAM_VAR"
                     runtime_process_present_by_ucomm() {{ return 1; }}
                     tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
-                    tc_mdns_auto_ip_available() {{ echo check-auto-ip; return 0; }}
+                    tc_mdns_auto_ip_available() {{ echo print-auto-ip-cidrs; return 0; }}
                     tc_start_mdns_capture() {{ echo capture; }}
                     tc_start_mdns_advertiser() {{ echo advertise; }}
                     tc_watchdog_start_mdns_if_needed
@@ -2056,14 +2470,14 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("check-auto-ip\n", proc.stdout)
+        self.assertIn("print-auto-ip-cidrs\n", proc.stdout)
         self.assertIn("capture\n", proc.stdout)
         self.assertIn("advertise\n", proc.stdout)
         self.assertLess(proc.stdout.index("capture\n"), proc.stdout.index("advertise\n"))
         self.assertIn("seen=1\n", proc.stdout)
         self.assertIn("capture_attempted=1\n", proc.stdout)
         self.assertIn("mDNS auto-ip check: running", proc.stdout)
-        self.assertIn("--check-auto-ip", proc.stdout)
+        self.assertIn("--print-auto-ip-cidrs", proc.stdout)
         self.assertIn("mDNS auto-ip check: usable IPv4 is available", proc.stdout)
         self.assertIn("mDNS auto-ip is available; starting capture and advertiser", proc.stdout)
 
@@ -2087,7 +2501,7 @@ MaSt = (
                     TC_MDNS_CAPTURE_ATTEMPTED=1
                     runtime_process_present_by_ucomm() {{ return 1; }}
                     tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
-                    tc_mdns_auto_ip_available() {{ echo check-auto-ip; return 0; }}
+                    tc_mdns_auto_ip_available() {{ echo print-auto-ip-cidrs; return 0; }}
                     tc_start_mdns_capture() {{ echo capture; }}
                     tc_start_mdns_advertiser() {{ echo advertise; }}
                     tc_restart_mdns() {{ echo restart; }}
@@ -2102,7 +2516,7 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("check-auto-ip\n", proc.stdout)
+        self.assertIn("print-auto-ip-cidrs\n", proc.stdout)
         self.assertNotIn("capture\n", proc.stdout)
         self.assertNotIn("advertise\n", proc.stdout)
         self.assertIn("restart\n", proc.stdout)
@@ -2143,6 +2557,8 @@ MaSt = (
                     : >"$TC_SMBD_CONF"
                     tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
                     runtime_process_present_by_ucomm() {{ return 1; }}
+                    wait_for_process() {{ return 0; }}
+                    tc_smbd_bound_ipv4_445() {{ return 0; }}
                     tc_watchdog_wake_or_mount_volume() {{ echo "mount $1 $2"; return 0; }}
                     tc_start_smbd_if_needed
                     """
@@ -3495,9 +3911,12 @@ MaSt = (
                     USB	{volumes}/dk3	dk3	0	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
                     EOF
                     sleep() {{ :; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_watchdog_reconcile_smb_bind_interfaces() {{ :; }}
                     tc_watchdog_wake_or_mount_volume() {{ echo "mount $1 $2"; return 0; }}
                     tc_start_smbd_if_needed() {{ echo smbd; }}
                     runtime_process_present_by_ucomm() {{ return 0; }}
+                    tc_all_managed_services_healthy() {{ return 0; }}
                     tc_watchdog_service_iteration
                     """
                 )
@@ -3536,6 +3955,7 @@ MaSt = (
                     SMB_NETBIOS_NAME=StaleName
                     TC_RUNTIME_IDENTITY_READY=1
                     sleep() {{ :; }}
+                    tc_watchdog_reconcile_smb_bind_interfaces() {{ :; }}
                     tc_start_smbd_if_needed() {{ return 0; }}
                     tc_init_runtime_identity() {{
                         echo identity-refresh
@@ -3589,6 +4009,7 @@ MaSt = (
                     TC_WATCHDOG_IDENTITY_SIGNATURE_READY=1
                     sleep() {{ :; }}
                     tc_prepare_local_hostname_resolution() {{ echo hosts; }}
+                    tc_watchdog_reconcile_smb_bind_interfaces() {{ :; }}
                     tc_init_runtime_identity() {{
                         echo identity
                         MDNS_INSTANCE_NAME=Fresh
@@ -3724,8 +4145,11 @@ MaSt = (
                     chmod 755 "$TC_SMBD_BIN"
                     : >"$TC_SMBD_CONF"
                     sleep() {{ :; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_watchdog_reconcile_smb_bind_interfaces() {{ :; }}
                     tc_start_smbd_if_needed() {{ echo smbd; return 0; }}
                     runtime_process_present_by_ucomm() {{ return 0; }}
+                    tc_all_managed_services_healthy() {{ return 0; }}
                     tc_exec_start_samba() {{ echo "exec $1"; exit 42; }}
                     tc_watchdog_service_iteration
                     """
@@ -3817,8 +4241,10 @@ MaSt = (
                     mkdir -p "$RAM_VAR" "$RAM_SBIN" "$RAM_ETC"
                     : >"$TC_SMBD_BIN"
                     chmod 755 "$TC_SMBD_BIN"
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
                     tc_write_payload_state {payload} {volumes}/dk2 /dev/dk2
                     sleep() {{ :; }}
+                    tc_probe_smb_bind_interfaces() {{ echo "$TC_SMB_BIND_INTERFACES"; }}
                     tc_watchdog_capture_mast_state() {{ : >"$1"; : >"$2"; return 0; }}
                     tc_topology_changed_debounced_from_snapshot() {{ return 0; }}
                     tc_refresh_disk_state() {{
@@ -3874,6 +4300,53 @@ MaSt = (
         self.assertIn("mDNS auto-ip check failed; missing", log_text)
         self.assertIn("watchdog recovery: live disk runtime refresh complete", log_text)
         self.assertNotIn("re-execing start-samba.sh", log_text)
+
+    def test_common_watchdog_live_reload_restores_bind_when_config_generation_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            script = tmp_path / "watchdog-live-bind-generate-fails.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR" "$RAM_SBIN" "$RAM_ETC"
+                    : >"$TC_SMBD_BIN"
+                    chmod 755 "$TC_SMBD_BIN"
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
+                    tc_load_payload_state() {{
+                        TC_PAYLOAD_DIR={payload}
+                        TC_PAYLOAD_VOLUME={volumes}/dk2
+                        TC_PAYLOAD_DEVICE=/dev/dk2
+                        return 0
+                    }}
+                    tc_refresh_disk_state() {{ echo refresh; return 0; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{ :; }}
+                    tc_probe_smb_bind_interfaces() {{ echo "127.0.0.1/8 192.168.1.41/24"; }}
+                    tc_generate_smb_conf() {{ echo "generate $TC_SMB_BIND_INTERFACES"; return 1; }}
+                    runtime_process_present_by_ucomm() {{ echo unexpected; return 0; }}
+                    tc_live_reload_disk_runtime "unit" || status=$?
+                    printf 'status=%s\\n' "${{status:-0}}"
+                    printf 'bind=%s\\n' "$TC_SMB_BIND_INTERFACES"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            "refresh\ngenerate 127.0.0.1/8 192.168.1.41/24\nstatus=1\nbind=127.0.0.1/8 192.168.1.40/24\n",
+        )
+        self.assertNotIn("unexpected\n", proc.stdout)
 
     def test_common_watchdog_disk_iteration_reexecs_when_live_topology_reload_changes_payload_home(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3963,6 +4436,8 @@ MaSt = (
                     chmod 755 "$TC_SMBD_BIN"
                     : >"$TC_SMBD_CONF"
                     sleep() {{ :; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_watchdog_reconcile_smb_bind_interfaces() {{ :; }}
                     runtime_process_present_by_ucomm() {{ return 1; }}
                     tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
                     tc_watchdog_service_iteration
