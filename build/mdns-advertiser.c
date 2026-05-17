@@ -62,6 +62,7 @@
 #define AUTO_IP_STABILIZE_SECONDS 3
 #define AUTO_IP_STARTUP_POLL_SECONDS 2
 #define AUTO_IP_STABLE_POLL_SECONDS 30
+#define ADVERTISER_VERSION_CODE 2104
 
 #define DNS_TYPE_A 1
 #define DNS_TYPE_PTR 12
@@ -965,9 +966,11 @@ static void usage(const char *prog) {
             "       %s --save-snapshot <path> [--save-all-snapshot <path>] [airport identity options]\n"
             "       %s --save-airport-snapshot <path> --instance <name> --host <label> [airport identity options]\n"
             "       %s --print-auto-ip-cidrs\n"
+            "       %s --version\n"
             "Options:\n"
             "  --auto-ip          Serve every usable live IPv4 interface and track IP changes\n"
             "  --print-auto-ip-cidrs Print usable live IPv4 CIDRs and exit 0, or exit 11 if none exist\n"
+            "  --version          Print advertiser version code and exit\n"
             "  --save-all-snapshot <path> Capture raw LAN-wide mDNS records into a snapshot file\n"
             "  --save-snapshot <path> Capture Apple mDNS records into a snapshot file; without --load-snapshot, capture and exit\n"
             "  --skip-capture-if-snapshot-newer-than-boot <path> Reuse an existing snapshot created after boot\n"
@@ -995,7 +998,7 @@ static void usage(const char *prog) {
             "  --airport-port <p> _airport._tcp service port (default: 5009)\n"
             "  --port <port>      Service port (default: 445)\n"
             "  --ttl <seconds>    Record TTL (default: 120)\n",
-            prog, prog, prog, prog);
+            prog, prog, prog, prog, prog);
 }
 
 static int append_bytes(uint8_t *buf, size_t *off, size_t cap, const void *src, size_t len) {
@@ -3713,6 +3716,9 @@ int main(int argc, char **argv) {
             auto_ip = 1;
         } else if (strcmp(argv[i], "--print-auto-ip-cidrs") == 0) {
             print_auto_ip_cidrs = 1;
+        } else if (strcmp(argv[i], "--version") == 0) {
+            printf("%d\n", ADVERTISER_VERSION_CODE);
+            return EXIT_OK;
         } else if (strcmp(argv[i], "--service") == 0 && i + 1 < argc) {
             strncpy(cfg.service_type, argv[++i], sizeof(cfg.service_type) - 1);
         } else if (strcmp(argv[i], "--adisk-share") == 0 && i + 1 < argc) {

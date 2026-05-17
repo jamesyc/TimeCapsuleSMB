@@ -33,6 +33,7 @@ from timecapsulesmb.checks.smb_config import (
     parse_xattr_tdb_paths,
 )
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers
+from timecapsulesmb.cli.util import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.core.config import AppConfig, DEFAULT_SAMBA_AUTH_USER, validate_app_config
 from timecapsulesmb.core.net import extract_host, ipv4_literal, is_link_local_ipv4, resolve_host_ipv4s
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, is_netbsd6_payload_family, render_compatibility_message
@@ -47,6 +48,7 @@ from timecapsulesmb.device.probe import (
     probe_managed_smbd_conn,
     probe_remote_interface_conn,
     probe_remote_runtime_naming_identity_conn,
+    read_deployed_version_conn,
     read_remote_service_socket_diagnostics_conn,
     read_active_smb_conf_conn,
     read_interface_ipv4_conn,
@@ -647,6 +649,57 @@ def _doctor_check_ssh_login(context: DoctorRunContext) -> None:
         context.active_smb_conf_reason = "SSH login failed"
 
 
+def _doctor_check_deployed_version(context: DoctorRunContext) -> None:
+    if context.skip_ssh or not context.ssh_ok:
+        return
+
+    assert context.connection is not None
+    try:
+        deployed_version = read_deployed_version_conn(context.connection)
+    except Exception as e:
+        context.add_result(CheckResult("FAIL", f"deployed payload version probe failed: {e}"))
+        context.stop = True
+        return
+
+    if context.debug_fields is not None:
+        context.debug_fields["deployed_release_tag"] = deployed_version.release_tag
+        context.debug_fields["deployed_cli_version_code"] = deployed_version.cli_version_code
+
+    deployed_release_tag = deployed_version.release_tag
+    deployed_cli_version_code = deployed_version.cli_version_code
+    if deployed_release_tag is None or deployed_cli_version_code is None:
+        context.add_result(
+            CheckResult(
+                "FAIL",
+                f"deployed payload has no version metadata; current version is {RELEASE_TAG}; please run deploy to update your device",
+            )
+        )
+        context.stop = True
+        return
+
+    if deployed_cli_version_code < CLI_VERSION_CODE:
+        context.add_result(
+            CheckResult(
+                "FAIL",
+                f"deployed version {deployed_release_tag} is older than current {RELEASE_TAG}; please run deploy to update your device",
+            )
+        )
+        context.stop = True
+        return
+
+    if deployed_cli_version_code > CLI_VERSION_CODE:
+        context.add_result(
+            CheckResult(
+                "FAIL",
+                f"deployed version {deployed_release_tag} is newer than this doctor {RELEASE_TAG}; please update before running doctor",
+            )
+        )
+        context.stop = True
+        return
+
+    context.add_result(CheckResult("PASS", f"deployed version matches current CLI {RELEASE_TAG}"))
+
+
 def _doctor_check_runtime_naming_identity(context: DoctorRunContext) -> None:
     if context.skip_ssh or not context.ssh_ok:
         return
@@ -867,8 +920,14 @@ DOCTOR_CHECKS: tuple[DoctorCheck, ...] = (
         run=_doctor_check_ssh_login,
     ),
     DoctorCheck(
-        id="runtime_naming_identity",
+        id="deployed_version",
         requires=("connection", "ssh_status"),
+        provides=("deployed_version",),
+        run=_doctor_check_deployed_version,
+    ),
+    DoctorCheck(
+        id="runtime_naming_identity",
+        requires=("connection", "ssh_status", "deployed_version"),
         provides=("runtime_naming_identity",),
         run=_doctor_check_runtime_naming_identity,
     ),

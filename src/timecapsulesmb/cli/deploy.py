@@ -60,7 +60,14 @@ from timecapsulesmb.device.storage import (
 )
 from timecapsulesmb.device.probe import read_interface_ipv4_addrs_conn
 from timecapsulesmb.telemetry import TelemetryClient
-from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_green, color_red
+from timecapsulesmb.cli.util import (
+    CLI_VERSION_CODE,
+    NETBSD4_REBOOT_FOLLOWUP,
+    NETBSD4_REBOOT_GUIDANCE,
+    RELEASE_TAG,
+    color_green,
+    color_red,
+)
 
 
 REBOOT_NO_DOWN_MESSAGE = (
@@ -99,6 +106,8 @@ def render_flash_runtime_config(
 
     values: list[tuple[str, str | int]] = [
         ("TC_CONFIG_VERSION", 2),
+        ("TC_DEPLOY_RELEASE_TAG", RELEASE_TAG),
+        ("TC_DEPLOY_CLI_VERSION_CODE", CLI_VERSION_CODE),
         ("INTERNAL_SHARE_USE_DISK_ROOT", 1 if parse_bool(internal_root_default) else 0),
         ("DISKD_USE_VOLUME_ATTEMPTS", diskd_use_volume_attempts),
         ("ATA_IDLE_SECONDS", ata_idle_seconds),

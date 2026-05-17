@@ -10,6 +10,7 @@ from unittest import mock
 
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.cli.deploy import render_flash_runtime_config
+from timecapsulesmb.cli.util import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.deploy.executor import upload_flash_file
 from timecapsulesmb.deploy.boot_assets import load_boot_asset_text
 from timecapsulesmb.deploy.planner import (
@@ -804,6 +805,8 @@ MaSt = (
         self.assertNotIn("PAYLOAD_VOLUME_HINT", rendered)
         self.assertNotIn("PAYLOAD_DEVICE_HINT", rendered)
         self.assertNotIn("PAYLOAD_INSTALL_ID", rendered)
+        self.assertIn(f"TC_DEPLOY_RELEASE_TAG={RELEASE_TAG}\n", rendered)
+        self.assertIn(f"TC_DEPLOY_CLI_VERSION_CODE={CLI_VERSION_CODE}\n", rendered)
         self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=1\n", rendered)
         self.assertIn("DISKD_USE_VOLUME_ATTEMPTS=2\n", rendered)
         self.assertIn("ATA_IDLE_SECONDS=300\n", rendered)

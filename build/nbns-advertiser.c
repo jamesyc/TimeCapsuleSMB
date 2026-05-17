@@ -31,6 +31,7 @@
 #define AUTO_IP_STABILIZE_SECONDS 3
 #define AUTO_IP_STARTUP_POLL_SECONDS 2
 #define AUTO_IP_STABLE_POLL_SECONDS 30
+#define ADVERTISER_VERSION_CODE 2104
 
 static volatile sig_atomic_t g_stop = 0;
 
@@ -151,6 +152,7 @@ static void usage(const char *prog) {
             "Options:\n"
             "  --auto-ip          Answer with the matching live interface IPv4\n"
             "  --check-auto-ip    Exit 0 if at least one usable live IPv4 exists\n"
+            "  --version          Print advertiser version code and exit\n"
             "  --ttl <seconds>    Record TTL (default: 300)\n",
             prog);
 }
@@ -746,6 +748,9 @@ int main(int argc, char **argv) {
             auto_ip = 1;
         } else if (strcmp(argv[i], "--check-auto-ip") == 0) {
             check_auto_ip = 1;
+        } else if (strcmp(argv[i], "--version") == 0) {
+            printf("%d\n", ADVERTISER_VERSION_CODE);
+            return 0;
         } else if (strcmp(argv[i], "--ttl") == 0 && i + 1 < argc) {
             long ttl = strtol(argv[++i], NULL, 10);
             if (ttl <= 0 || ttl > 86400) {

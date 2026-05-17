@@ -366,6 +366,13 @@ class RemoteInterfaceProbeResult:
 
 
 @dataclass(frozen=True)
+class DeployedVersionProbeResult:
+    release_tag: str | None
+    cli_version_code: int | None
+    detail: str
+
+
+@dataclass(frozen=True)
 class RemoteInterfaceCandidate:
     name: str
     ipv4_addrs: tuple[str, ...]
@@ -1193,6 +1200,38 @@ def read_runtime_share_names_conn(connection: SshConnection) -> list[str]:
         if name:
             names.append(name)
     return names
+
+
+def read_deployed_version_conn(connection: SshConnection) -> DeployedVersionProbeResult:
+    script = (
+        f"config={shlex.quote(FLASH_RUNTIME_CONFIG)}; "
+        "TC_DEPLOY_RELEASE_TAG=; "
+        "TC_DEPLOY_CLI_VERSION_CODE=; "
+        'if [ -f "$config" ]; then . "$config" >/dev/null 2>&1 || true; fi; '
+        'printf "release_tag=%s\\n" "$TC_DEPLOY_RELEASE_TAG"; '
+        'printf "cli_version_code=%s\\n" "$TC_DEPLOY_CLI_VERSION_CODE"'
+    )
+    proc = run_ssh(
+        connection,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
+    )
+    values: dict[str, str] = {}
+    for raw_line in proc.stdout.splitlines():
+        key, sep, value = raw_line.partition("=")
+        if sep:
+            values[key.strip()] = value.strip()
+
+    release_tag = values.get("release_tag") or None
+    raw_version_code = values.get("cli_version_code") or ""
+    try:
+        version_code = int(raw_version_code)
+    except ValueError:
+        version_code = None
+
+    detail = "ok" if release_tag is not None and version_code is not None else "missing version metadata"
+    return DeployedVersionProbeResult(release_tag, version_code, detail)
 
 
 def _limit_remote_log_tail(text: str) -> str:

@@ -96,7 +96,7 @@ from timecapsulesmb.flash import PATCHED_LOGIN_SCRIPT, STOCK_LOGIN_NETBSD4_DUMMY
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourServiceInstance, Discovered
 from timecapsulesmb.cli.version_check import DEFAULT_DOWNLOAD_URL, VERSION_CHECK_URL, VersionCheckResult
-from timecapsulesmb.cli.util import ANSI_RED, ANSI_RESET
+from timecapsulesmb.cli.util import ANSI_RED, ANSI_RESET, CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
 from timecapsulesmb.install_validation import InstallCheckResult
 
@@ -4375,6 +4375,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(captured["username_map"], "!root = root\nroot = *\n")
         flash_config = str(captured["flash_config"])
         self.assertIn("TC_CONFIG_VERSION=2\n", flash_config)
+        self.assertIn(f"TC_DEPLOY_RELEASE_TAG={RELEASE_TAG}\n", flash_config)
+        self.assertIn(f"TC_DEPLOY_CLI_VERSION_CODE={CLI_VERSION_CODE}\n", flash_config)
         self.assertNotIn("PAYLOAD_DIR_NAME=", flash_config)
         self.assertIn("NBNS_ENABLED=1\n", flash_config)
         self.assertIn("SMBD_DEBUG_LOGGING=1\n", flash_config)

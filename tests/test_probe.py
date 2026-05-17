@@ -15,6 +15,7 @@ if str(SRC_ROOT) not in sys.path:
 import timecapsulesmb.device.probe as probe
 from timecapsulesmb.device.probe import (
     preferred_interface_name,
+    read_deployed_version_conn,
     probe_remote_interface_candidates_conn,
     probe_remote_interface_conn,
     read_remote_network_diagnostics_conn,
@@ -53,6 +54,38 @@ class ProbeTests(unittest.TestCase):
             result = read_runtime_share_names_conn(connection)
 
         self.assertEqual(result, [])
+
+    def test_read_deployed_version_conn_sources_flash_runtime_config(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        proc = subprocess.CompletedProcess(
+            args=["ssh"],
+            returncode=0,
+            stdout="release_tag=v2.1.0-rc4b\ncli_version_code=20118\n",
+        )
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
+            result = read_deployed_version_conn(connection)
+
+        self.assertEqual(result.release_tag, "v2.1.0-rc4b")
+        self.assertEqual(result.cli_version_code, 20118)
+        self.assertEqual(result.detail, "ok")
+        args, kwargs = run_ssh_mock.call_args
+        self.assertEqual(args[0], connection)
+        self.assertIn(probe.FLASH_RUNTIME_CONFIG, args[1])
+        self.assertIn("TC_DEPLOY_RELEASE_TAG", args[1])
+        self.assertFalse(kwargs["check"])
+        self.assertEqual(kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
+
+    def test_read_deployed_version_conn_reports_missing_metadata(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="release_tag=\ncli_version_code=\n")
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            result = read_deployed_version_conn(connection)
+
+        self.assertIsNone(result.release_tag)
+        self.assertIsNone(result.cli_version_code)
+        self.assertEqual(result.detail, "missing version metadata")
 
     def test_read_runtime_log_tails_conn_fetches_ram_and_payload_logs_with_short_timeout(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")

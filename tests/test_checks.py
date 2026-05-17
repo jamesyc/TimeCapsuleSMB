@@ -49,7 +49,8 @@ from timecapsulesmb.checks.smb import (
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.device.compat import DeviceCompatibility
-from timecapsulesmb.device.probe import RemoteInterfaceProbeResult, RuntimeNamingIdentityProbeResult
+from timecapsulesmb.cli.util import CLI_VERSION_CODE, RELEASE_TAG
+from timecapsulesmb.device.probe import DeployedVersionProbeResult, RemoteInterfaceProbeResult, RuntimeNamingIdentityProbeResult
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoveryDiagnostics,
     BonjourDiscoverySnapshot,
@@ -148,6 +149,7 @@ class CheckTests(unittest.TestCase):
         debug_fields=None,
         on_result=None,
         runtime_naming_identity: RuntimeNamingIdentityProbeResult | None = None,
+        deployed_version: DeployedVersionProbeResult | None = None,
         extra_patches: dict[str, object] | None = None,
     ):
         resolved_values = values or self.valid_doctor_values()
@@ -221,6 +223,12 @@ class CheckTests(unittest.TestCase):
                 mock.patch(
                     "timecapsulesmb.checks.doctor.probe_remote_runtime_naming_identity_conn",
                     return_value=runtime_naming_identity or self.runtime_identity_from_values(resolved_values),
+                )
+            )
+            mocks.read_deployed_version_conn = stack.enter_context(
+                mock.patch(
+                    "timecapsulesmb.checks.doctor.read_deployed_version_conn",
+                    return_value=deployed_version or DeployedVersionProbeResult(RELEASE_TAG, CLI_VERSION_CODE, "ok"),
                 )
             )
             for index, (target, replacement) in enumerate((extra_patches or {}).items()):
@@ -321,6 +329,12 @@ class CheckTests(unittest.TestCase):
         )
         self._exit_stack.enter_context(
             mock.patch(
+                "timecapsulesmb.checks.doctor.read_deployed_version_conn",
+                return_value=DeployedVersionProbeResult(RELEASE_TAG, CLI_VERSION_CODE, "ok"),
+            )
+        )
+        self._exit_stack.enter_context(
+            mock.patch(
                 "timecapsulesmb.checks.doctor.probe_managed_smbd_conn",
                 return_value=mock.Mock(
                     ready=True,
@@ -360,6 +374,7 @@ class CheckTests(unittest.TestCase):
             "config_validation",
             "connection_context",
             "ssh_login",
+            "deployed_version",
             "runtime_naming_identity",
             "device_compatibility",
             "managed_smbd",
@@ -381,6 +396,65 @@ class CheckTests(unittest.TestCase):
             missing = [dependency for dependency in check.requires if dependency not in provided]
             self.assertEqual(missing, [], f"{check.id} has unsatisfied dependencies")
             provided.update(check.provides)
+
+    def test_run_doctor_checks_passes_when_deployed_version_matches_current_cli(self) -> None:
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            skip_bonjour=True,
+            skip_smb=True,
+        )
+
+        self.assertTrue(
+            any(
+                result.status == "PASS" and result.message == f"deployed version matches current CLI {RELEASE_TAG}"
+                for result in run.results
+            )
+        )
+
+    def test_run_doctor_checks_stops_when_deployed_version_metadata_is_missing(self) -> None:
+        managed_smbd = mock.Mock()
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            deployed_version=DeployedVersionProbeResult(None, None, "missing version metadata"),
+            extra_patches={"timecapsulesmb.checks.doctor.probe_managed_smbd_conn": managed_smbd},
+        )
+
+        self.assertTrue(run.fatal)
+        self.assertEqual(
+            run.results[-1].message,
+            f"deployed payload has no version metadata; current version is {RELEASE_TAG}; please run deploy to update your device",
+        )
+        managed_smbd.assert_not_called()
+
+    def test_run_doctor_checks_stops_when_deployed_version_is_older(self) -> None:
+        managed_smbd = mock.Mock()
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            deployed_version=DeployedVersionProbeResult("v2.1.0-rc3", CLI_VERSION_CODE - 1, "ok"),
+            extra_patches={"timecapsulesmb.checks.doctor.probe_managed_smbd_conn": managed_smbd},
+        )
+
+        self.assertTrue(run.fatal)
+        self.assertEqual(
+            run.results[-1].message,
+            f"deployed version v2.1.0-rc3 is older than current {RELEASE_TAG}; please run deploy to update your device",
+        )
+        managed_smbd.assert_not_called()
+
+    def test_run_doctor_checks_stops_when_deployed_version_is_newer(self) -> None:
+        managed_smbd = mock.Mock()
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            deployed_version=DeployedVersionProbeResult("v2.1.0-rc5", CLI_VERSION_CODE + 1, "ok"),
+            extra_patches={"timecapsulesmb.checks.doctor.probe_managed_smbd_conn": managed_smbd},
+        )
+
+        self.assertTrue(run.fatal)
+        self.assertEqual(
+            run.results[-1].message,
+            f"deployed version v2.1.0-rc5 is newer than this doctor {RELEASE_TAG}; please update before running doctor",
+        )
+        managed_smbd.assert_not_called()
 
     def test_doctor_registry_runner_rejects_missing_dependency(self) -> None:
         check = DoctorCheck(

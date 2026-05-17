@@ -1093,6 +1093,14 @@ int main(void) {{
             self.assertRegex(line, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ")
         self.assertNotIn("serving summary", run.stderr)
 
+    def test_mdns_advertiser_version_prints_version_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bin_path = self._compile_mdns_advertiser_binary(Path(tmpdir))
+            run = subprocess.run([str(bin_path), "--version"], capture_output=True, text=True, check=False)
+        self.assertEqual(run.returncode, 0)
+        self.assertEqual(run.stdout, "2104\n")
+        self.assertEqual(run.stderr, "")
+
     def test_mdns_advertiser_save_args_capture_and_exit_without_takeover(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
@@ -2982,6 +2990,17 @@ int main(void) {{
             )
         self.assertEqual(run.returncode, 2)
         self.assertIn("mutually exclusive", run.stderr)
+
+    def test_nbns_advertiser_version_prints_version_code(self) -> None:
+        if shutil.which("cc") is None:
+            self.skipTest("cc not available")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bin_path = self._compile_nbns_advertiser_binary(Path(tmpdir))
+            run = subprocess.run([str(bin_path), "--version"], capture_output=True, text=True, check=False)
+        self.assertEqual(run.returncode, 0)
+        self.assertEqual(run.stdout, "2104\n")
+        self.assertEqual(run.stderr, "")
 
     def test_nbns_auto_ip_helpers_filter_and_choose_subnet_response(self) -> None:
         nbns_source = (REPO_ROOT / "build" / "nbns-advertiser.c").as_posix()
