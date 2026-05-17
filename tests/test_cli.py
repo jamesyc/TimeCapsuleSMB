@@ -787,7 +787,7 @@ class CliTests(unittest.TestCase):
     def run_configure_after_bonjour_error(self, error: BaseException):
         def fake_prompt(label, default, _secret):
             if label == "Device SSH target":
-                return default
+                return "root@10.0.0.2"
             if label == "Device root password":
                 return "pw"
             if label == "Airport Utility syAP code":
@@ -1520,6 +1520,8 @@ class CliTests(unittest.TestCase):
 
     def test_configure_airport_extreme_keeps_hidden_internal_share_root_default(self) -> None:
         def fake_prompt(label, default, _secret):
+            if label == "Device SSH target":
+                return "root@10.0.0.2"
             if label == "Device root password":
                 return "rootpw"
             if label == "Airport Utility syAP code":
@@ -1636,7 +1638,7 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(rc, 0)
-        self.assertEqual(values["TC_HOST"], DEFAULTS["TC_HOST"])
+        self.assertEqual(values["TC_HOST"], "root@10.0.0.2")
         self.assertIn("Warning: mDNS discovery failed:", text)
         self.assertIn("PermissionError: [Errno 13] Permission denied", text)
         self.assertIn("This only affects automatic device discovery.", text)
@@ -1705,7 +1707,7 @@ class CliTests(unittest.TestCase):
     def test_configure_preserves_bonjour_permission_fallback_on_later_failure(self) -> None:
         def fake_prompt(label, default, _secret):
             if label == "Device SSH target":
-                return default
+                return "root@10.0.0.2"
             if label == "Device root password":
                 return "pw"
             if label == "Airport Utility syAP code":
@@ -1843,7 +1845,7 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, default, _secret):
             if label == "Device SSH target":
-                return default
+                return "root@10.0.0.2"
             if label == "mDNS device model hint":
                 return default
             return next(prompt_values)
@@ -2648,7 +2650,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Using probed TC_AIRPORT_SYAP: 113", result.text)
         self.assertIn("Using probed TC_MDNS_DEVICE_MODEL: TimeCapsule6,113", result.text)
 
-    def test_configure_saves_airport_syap_from_discovery_without_prompting(self) -> None:
+    def test_configure_uses_discovered_airport_syap_without_prompting(self) -> None:
         record = Discovered(
             name="Time Capsule Samba 4",
             hostname="timecapsulesamba4.local",
@@ -2668,7 +2670,7 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, default, _secret):
             if label == "Device SSH target":
-                return default
+                return "root@10.0.0.2"
             if label == "mDNS device model hint":
                 return default
             return next(prompt_values)
@@ -2806,10 +2808,12 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("Airport Utility syAP code", seen_labels)
         self.assertIn("Using probed TC_AIRPORT_SYAP: 119", result.text)
 
-    def test_configure_rejects_saved_syap_outside_probed_candidates(self) -> None:
+    def test_configure_ignores_legacy_saved_syap_when_identity_is_unobserved(self) -> None:
         syap_answers = iter(["113", "120"])
 
         def fake_prompt(label, default, _secret):
+            if label == "Device SSH target":
+                return "root@10.0.0.2"
             if label == "Device root password":
                 return "rootpw"
             if label == "Airport Utility syAP code":
@@ -2948,7 +2952,7 @@ class CliTests(unittest.TestCase):
 
         def fake_prompt(label, default, _secret):
             if label == "Device SSH target":
-                return default
+                return "root@10.0.0.2"
             if label == "mDNS device model hint":
                 return default
             return next(prompt_values)
@@ -2961,7 +2965,7 @@ class CliTests(unittest.TestCase):
             confirm=True,
         )
         self.assertEqual(result.rc, 0)
-        self.assertEqual(result.values["TC_HOST"], DEFAULTS["TC_HOST"])
+        self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
         self.assertEqual(result.values["TC_AIRPORT_SYAP"], "119")
         self.assertIn("Found devices:", result.text)
         self.assertIn(f"Discovery skipped. Falling back to {DEFAULTS['TC_HOST']}.", result.text)
@@ -3072,7 +3076,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         self.assertNotIn("The configured syAP is invalid.", result.text)
 
-    def test_configure_skipped_discovery_prints_when_reusing_existing_syap(self) -> None:
+    def test_configure_skipped_discovery_ignores_legacy_existing_syap(self) -> None:
         existing = {
             "TC_AIRPORT_SYAP": "116",
         }
@@ -3205,7 +3209,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Using probed TC_AIRPORT_SYAP: 119", result.text)
         self.assertIn("Using probed TC_MDNS_DEVICE_MODEL: TimeCapsule8,119", result.text)
 
-    def test_configure_skipped_discovery_uses_generic_model_default_when_syap_has_no_model_mapping(self) -> None:
+    def test_configure_skipped_discovery_ignores_legacy_syap_model_when_unusable(self) -> None:
         existing = {
             "TC_AIRPORT_SYAP": "119",
             "TC_MDNS_DEVICE_MODEL": "NotATimeCapsule",
@@ -3241,7 +3245,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         self.assertNotIn("Using TC_AIRPORT_SYAP from .env: 119", result.text)
 
-    def test_configure_existing_syap_autofills_mdns_device_model_when_undetected(self) -> None:
+    def test_configure_ignores_legacy_existing_syap_when_identity_is_undetected(self) -> None:
         existing = {
             "TC_AIRPORT_SYAP": "116",
         }
@@ -3314,7 +3318,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         self.assertNotIn("Using TC_MDNS_DEVICE_MODEL derived from TC_AIRPORT_SYAP", result.text)
 
-    def test_configure_skipped_discovery_prints_when_reusing_existing_mdns_device_model(self) -> None:
+    def test_configure_skipped_discovery_ignores_legacy_existing_mdns_device_model(self) -> None:
         existing = {
             "TC_MDNS_DEVICE_MODEL": "TimeCapsule",
         }
@@ -3503,6 +3507,32 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
         self.assertEqual(password_prompts, 1)
         self.assertIn("Device SSH target must include a username", result.text)
+
+    def test_configure_reprompts_placeholder_ssh_target_before_password(self) -> None:
+        password_prompts = 0
+        host_values = iter([DEFAULTS["TC_HOST"], "root@10.0.0.2"])
+
+        def fake_prompt(label, default, _secret):
+            nonlocal password_prompts
+            if label == "Device SSH target":
+                return next(host_values)
+            if label == "Device root password":
+                password_prompts += 1
+                return "goodpw"
+            if label == "mDNS device model hint":
+                return default
+            return default
+
+        result = self.run_configure_cli(
+            prompt_side_effect=fake_prompt,
+            probe_state=self.make_probe_state(self.make_probe_result_netbsd6()),
+        )
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
+        self.assertEqual(password_prompts, 1)
+        self.assertIn("Device SSH target IP address is invalid", result.text)
+        probed_connection = result.mocks.probe_connection_state.call_args.args[0]
+        self.assertEqual(probed_connection.host, "root@10.0.0.2")
 
     def test_configure_can_save_even_when_validation_fails(self) -> None:
         prompt_values = iter([

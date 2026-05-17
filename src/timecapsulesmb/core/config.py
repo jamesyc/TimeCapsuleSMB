@@ -61,6 +61,7 @@ AIRPORT_SYAP_TO_MODEL = {
     identity.syap: identity.mdns_model
     for identity in AIRPORT_DEVICE_IDENTITIES
 }
+DEFAULT_SSH_TARGET_PLACEHOLDER = "root@192.168.x.x"
 
 
 def airport_identity_from_values(values: dict[str, str]) -> AirportDeviceIdentity | None:
@@ -70,7 +71,7 @@ def airport_identity_from_values(values: dict[str, str]) -> AirportDeviceIdentit
 
 
 DEFAULTS = {
-    "TC_HOST": "root@192.168.1.101",
+    "TC_HOST": DEFAULT_SSH_TARGET_PLACEHOLDER,
     "TC_SSH_OPTS": "-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT": "false",
 }
@@ -424,12 +425,17 @@ def validate_ssh_target(value: str, field_name: str) -> Optional[str]:
     if _contains_whitespace(value):
         return f"{field_name} must not contain whitespace."
     if "@" not in value:
-        return f"{field_name} must include a username, like root@192.168.1.101."
+        return f"{field_name} must include a username, like {DEFAULT_SSH_TARGET_PLACEHOLDER}"
     user, host = value.split("@", 1)
     if not user:
         return f"{field_name} must include a username before @."
     if not host:
         return f"{field_name} must include a host after @."
+    if host.lower() == "192.168.x.x":
+        return (
+            f"{field_name} IP address is invalid. "
+            "Replace 192.168.x.x with the device's actual IP address."
+        )
     if not _has_only_safe_chars(user, r"[A-Za-z0-9._-]+"):
         return f"{field_name} username may contain only letters, numbers, dots, underscores, and hyphens."
     if host.startswith("-"):

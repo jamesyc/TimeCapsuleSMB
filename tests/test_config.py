@@ -431,7 +431,7 @@ class ConfigTests(unittest.TestCase):
     def test_validate_ssh_target_rejects_bare_or_unsafe_targets(self) -> None:
         self.assertEqual(
             validate_ssh_target("10.0.0.2", "Device SSH target"),
-            "Device SSH target must include a username, like root@192.168.1.101.",
+            "Device SSH target must include a username, like root@192.168.x.x",
         )
         self.assertEqual(validate_ssh_target("@10.0.0.2", "Device SSH target"), "Device SSH target must include a username before @.")
         self.assertEqual(validate_ssh_target("root@", "Device SSH target"), "Device SSH target must include a host after @.")
@@ -446,6 +446,14 @@ class ConfigTests(unittest.TestCase):
             "Use the device's LAN IP or a hostname that resolves to its LAN IP; "
             "169.254.x.x is only suitable for temporary SSH recovery.",
         )
+
+    def test_validate_ssh_target_rejects_placeholder_default_ip(self) -> None:
+        self.assertEqual(
+            validate_ssh_target("root@192.168.x.x", "Device SSH target"),
+            "Device SSH target IP address is invalid. "
+            "Replace 192.168.x.x with the device's actual IP address.",
+        )
+        self.assertIsNone(validate_ssh_target("root@192.168.1.101", "Device SSH target"))
 
     def test_validate_app_config_uses_profiles(self) -> None:
         values = dict(DEFAULTS)

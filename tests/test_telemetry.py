@@ -613,7 +613,7 @@ class TelemetryTests(unittest.TestCase):
             stage="ssh_probe",
             connection=SshConnection("root@192.168.1.217", "secret", "-o ProxyJump=bastion"),
             values={
-                "TC_HOST": "root@192.168.1.101",
+                "TC_HOST": "root@10.0.1.1",
                 "TC_PASSWORD": "secret",
                 "TC_SSH_OPTS": "-o ProxyJump=old",
                 "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
@@ -635,7 +635,7 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(lines[0:3], ["Debug context:", "command=configure", "stage=ssh_probe"])
         self.assertIn("host=root@192.168.1.217", lines)
         self.assertIn("ssh_opts=-o ProxyJump=bastion", lines)
-        self.assertIn("TC_HOST=root@192.168.1.101", lines)
+        self.assertIn("TC_HOST=root@10.0.1.1", lines)
         self.assertIn("TC_INTERNAL_SHARE_USE_DISK_ROOT=true", lines)
         self.assertIn("preflight_error=preflight failed", lines)
         self.assertIn("custom_finish=kept", lines)
