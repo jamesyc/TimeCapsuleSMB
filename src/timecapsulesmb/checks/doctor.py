@@ -697,7 +697,7 @@ def _doctor_check_deployed_version(context: DoctorRunContext) -> None:
         context.stop = True
         return
 
-    context.add_result(CheckResult("PASS", f"deployed version matches current CLI {RELEASE_TAG}"))
+    context.add_result(CheckResult("PASS", f"deployed version matches current release {RELEASE_TAG}"))
 
 
 def _doctor_check_runtime_naming_identity(context: DoctorRunContext) -> None:

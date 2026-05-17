@@ -406,7 +406,7 @@ class CheckTests(unittest.TestCase):
 
         self.assertTrue(
             any(
-                result.status == "PASS" and result.message == f"deployed version matches current CLI {RELEASE_TAG}"
+                result.status == "PASS" and result.message == f"deployed version matches current release {RELEASE_TAG}"
                 for result in run.results
             )
         )
