@@ -40,6 +40,7 @@ from timecapsulesmb.device.compat import is_netbsd4_payload_family, is_netbsd6_p
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
     RemoteInterfaceProbeResult,
+    RUNTIME_RAM_ROOT,
     RUNTIME_SMB_CONF,
     RuntimeNamingIdentityProbeResult,
     nbns_flash_config_enabled_conn,
@@ -54,6 +55,7 @@ from timecapsulesmb.device.probe import (
     read_interface_ipv4_conn,
     read_runtime_share_names_conn,
     read_runtime_log_tails_conn,
+    runtime_ram_root_present_conn,
 )
 from timecapsulesmb.discovery.native_dns_sd import browse_native_dns_sd
 from timecapsulesmb.transport.local import find_free_local_port
@@ -700,6 +702,31 @@ def _doctor_check_deployed_version(context: DoctorRunContext) -> None:
     context.add_result(CheckResult("PASS", f"deployed version matches current release {RELEASE_TAG}"))
 
 
+def _doctor_check_runtime_ram_root(context: DoctorRunContext) -> None:
+    if context.skip_ssh or not context.ssh_ok:
+        return
+
+    assert context.connection is not None
+    try:
+        runtime_ram_root_present = runtime_ram_root_present_conn(context.connection)
+    except Exception as e:
+        context.add_result(CheckResult("FAIL", f"managed runtime directory check failed: {e}"))
+        context.stop = True
+        return
+
+    if not runtime_ram_root_present:
+        context.add_result(
+            CheckResult(
+                "FAIL",
+                f"managed runtime directory {RUNTIME_RAM_ROOT} is missing; run deploy or activate to start the managed runtime",
+            )
+        )
+        context.stop = True
+        return
+
+    context.add_result(CheckResult("PASS", f"managed runtime directory {RUNTIME_RAM_ROOT} exists"))
+
+
 def _doctor_check_runtime_naming_identity(context: DoctorRunContext) -> None:
     if context.skip_ssh or not context.ssh_ok:
         return
@@ -926,8 +953,14 @@ DOCTOR_CHECKS: tuple[DoctorCheck, ...] = (
         run=_doctor_check_deployed_version,
     ),
     DoctorCheck(
-        id="runtime_naming_identity",
+        id="runtime_ram_root",
         requires=("connection", "ssh_status", "deployed_version"),
+        provides=("runtime_ram_root",),
+        run=_doctor_check_runtime_ram_root,
+    ),
+    DoctorCheck(
+        id="runtime_naming_identity",
+        requires=("connection", "ssh_status", "deployed_version", "runtime_ram_root"),
         provides=("runtime_naming_identity",),
         run=_doctor_check_runtime_naming_identity,
     ),

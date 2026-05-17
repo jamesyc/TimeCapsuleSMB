@@ -26,9 +26,10 @@ if TYPE_CHECKING:
     from timecapsulesmb.device.compat import DeviceCompatibility
 
 
-RUNTIME_SMB_CONF = "/mnt/Memory/samba4/etc/smb.conf"
-RUNTIME_SHARES_TSV = "/mnt/Memory/samba4/var/shares.tsv"
-RUNTIME_PAYLOAD_TSV = "/mnt/Memory/samba4/var/payload.tsv"
+RUNTIME_RAM_ROOT = "/mnt/Memory/samba4"
+RUNTIME_SMB_CONF = f"{RUNTIME_RAM_ROOT}/etc/smb.conf"
+RUNTIME_SHARES_TSV = f"{RUNTIME_RAM_ROOT}/var/shares.tsv"
+RUNTIME_PAYLOAD_TSV = f"{RUNTIME_RAM_ROOT}/var/payload.tsv"
 FLASH_RUNTIME_CONFIG = "/mnt/Flash/tcapsulesmb.conf"
 REMOTE_STATE_PROBE_TIMEOUT_SECONDS = 10
 REMOTE_LOG_TAIL_LINES = 80
@@ -1232,6 +1233,17 @@ def read_deployed_version_conn(connection: SshConnection) -> DeployedVersionProb
 
     detail = "ok" if release_tag is not None and version_code is not None else "missing version metadata"
     return DeployedVersionProbeResult(release_tag, version_code, detail)
+
+
+def runtime_ram_root_present_conn(connection: SshConnection) -> bool:
+    script = f"[ -d {shlex.quote(RUNTIME_RAM_ROOT)} ]"
+    proc = run_ssh(
+        connection,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
+    )
+    return proc.returncode == 0
 
 
 def _limit_remote_log_tail(text: str) -> str:

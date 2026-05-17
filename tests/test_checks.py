@@ -50,7 +50,12 @@ from timecapsulesmb.checks.smb_targets import doctor_smb_servers
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.cli.util import CLI_VERSION_CODE, RELEASE_TAG
-from timecapsulesmb.device.probe import DeployedVersionProbeResult, RemoteInterfaceProbeResult, RuntimeNamingIdentityProbeResult
+from timecapsulesmb.device.probe import (
+    DeployedVersionProbeResult,
+    RemoteInterfaceProbeResult,
+    RUNTIME_RAM_ROOT,
+    RuntimeNamingIdentityProbeResult,
+)
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoveryDiagnostics,
     BonjourDiscoverySnapshot,
@@ -150,6 +155,7 @@ class CheckTests(unittest.TestCase):
         on_result=None,
         runtime_naming_identity: RuntimeNamingIdentityProbeResult | None = None,
         deployed_version: DeployedVersionProbeResult | None = None,
+        runtime_ram_root_present: bool = True,
         extra_patches: dict[str, object] | None = None,
     ):
         resolved_values = values or self.valid_doctor_values()
@@ -229,6 +235,12 @@ class CheckTests(unittest.TestCase):
                 mock.patch(
                     "timecapsulesmb.checks.doctor.read_deployed_version_conn",
                     return_value=deployed_version or DeployedVersionProbeResult(RELEASE_TAG, CLI_VERSION_CODE, "ok"),
+                )
+            )
+            mocks.runtime_ram_root_present_conn = stack.enter_context(
+                mock.patch(
+                    "timecapsulesmb.checks.doctor.runtime_ram_root_present_conn",
+                    return_value=runtime_ram_root_present,
                 )
             )
             for index, (target, replacement) in enumerate((extra_patches or {}).items()):
@@ -333,6 +345,7 @@ class CheckTests(unittest.TestCase):
                 return_value=DeployedVersionProbeResult(RELEASE_TAG, CLI_VERSION_CODE, "ok"),
             )
         )
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.checks.doctor.runtime_ram_root_present_conn", return_value=True))
         self._exit_stack.enter_context(
             mock.patch(
                 "timecapsulesmb.checks.doctor.probe_managed_smbd_conn",
@@ -375,6 +388,7 @@ class CheckTests(unittest.TestCase):
             "connection_context",
             "ssh_login",
             "deployed_version",
+            "runtime_ram_root",
             "runtime_naming_identity",
             "device_compatibility",
             "managed_smbd",
@@ -410,6 +424,35 @@ class CheckTests(unittest.TestCase):
                 for result in run.results
             )
         )
+
+    def test_run_doctor_checks_passes_when_runtime_ram_root_exists(self) -> None:
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            skip_bonjour=True,
+            skip_smb=True,
+        )
+
+        self.assertTrue(
+            any(
+                result.status == "PASS" and result.message == f"managed runtime directory {RUNTIME_RAM_ROOT} exists"
+                for result in run.results
+            )
+        )
+
+    def test_run_doctor_checks_stops_when_runtime_ram_root_is_missing(self) -> None:
+        managed_smbd = mock.Mock()
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            runtime_ram_root_present=False,
+            extra_patches={"timecapsulesmb.checks.doctor.probe_managed_smbd_conn": managed_smbd},
+        )
+
+        self.assertTrue(run.fatal)
+        self.assertEqual(
+            run.results[-1].message,
+            f"managed runtime directory {RUNTIME_RAM_ROOT} is missing; run deploy or activate to start the managed runtime",
+        )
+        managed_smbd.assert_not_called()
 
     def test_run_doctor_checks_stops_when_deployed_version_metadata_is_missing(self) -> None:
         managed_smbd = mock.Mock()

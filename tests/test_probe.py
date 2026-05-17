@@ -21,6 +21,7 @@ from timecapsulesmb.device.probe import (
     read_remote_network_diagnostics_conn,
     read_runtime_share_names_conn,
     read_runtime_log_tails_conn,
+    runtime_ram_root_present_conn,
     runtime_startup_failure_debug_fields,
 )
 from timecapsulesmb.transport.ssh import SshConnection
@@ -86,6 +87,29 @@ class ProbeTests(unittest.TestCase):
         self.assertIsNone(result.release_tag)
         self.assertIsNone(result.cli_version_code)
         self.assertEqual(result.detail, "missing version metadata")
+
+    def test_runtime_ram_root_present_conn_returns_true_when_directory_exists(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="")
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
+            result = runtime_ram_root_present_conn(connection)
+
+        self.assertTrue(result)
+        args, kwargs = run_ssh_mock.call_args
+        self.assertEqual(args[0], connection)
+        self.assertIn(probe.RUNTIME_RAM_ROOT, args[1])
+        self.assertFalse(kwargs["check"])
+        self.assertEqual(kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
+
+    def test_runtime_ram_root_present_conn_returns_false_when_directory_is_missing(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=1, stdout="")
+
+        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
+            result = runtime_ram_root_present_conn(connection)
+
+        self.assertFalse(result)
 
     def test_read_runtime_log_tails_conn_fetches_ram_and_payload_logs_with_short_timeout(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
