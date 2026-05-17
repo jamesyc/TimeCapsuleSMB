@@ -17,6 +17,7 @@ from timecapsulesmb.cli.flows import (
     ACP_REBOOT_REQUEST_TIMEOUT_SECONDS,
     REBOOT_UP_TIMEOUT_MESSAGE,
     observe_reboot_cycle,
+    request_deploy_reboot_and_wait,
     request_reboot_and_wait,
     request_ssh_reboot,
     wait_for_device_up,
@@ -149,6 +150,31 @@ class CliFlowTests(unittest.TestCase):
         self.assertEqual(command_context.debug_fields["acp_reboot_succeeded"], True)
         self.assertIsNone(command_context.error)
         self.assertIn("ACP reboot requested.", output.getvalue())
+        self.assertIn("Waiting for the device to go down...", output.getvalue())
+
+    def test_request_deploy_reboot_and_wait_uses_ssh_shutdown_request(self) -> None:
+        command_context = FakeCommandContext()
+        output = io.StringIO()
+        with mock.patch("timecapsulesmb.cli.flows.remote_request_shutdown_reboot") as shutdown_reboot_mock:
+            with mock.patch("timecapsulesmb.cli.flows.acp_reboot", side_effect=AssertionError("deploy should not use ACP reboot")):
+                with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, True]) as wait_mock:
+                    with redirect_stdout(output):
+                        ok = request_deploy_reboot_and_wait(
+                            self.make_connection(),
+                            command_context,
+                            reboot_no_down_message="did not go down",
+                        )
+
+        self.assertTrue(ok)
+        shutdown_reboot_mock.assert_called_once()
+        self.assertEqual(wait_mock.call_args_list[0].kwargs, {"expected_up": False, "timeout_seconds": 60})
+        self.assertEqual(wait_mock.call_args_list[1].kwargs, {"expected_up": True, "timeout_seconds": 240})
+        self.assertEqual(command_context.finish_fields["reboot_was_attempted"], True)
+        self.assertEqual(command_context.finish_fields["device_came_back_after_reboot"], True)
+        self.assertEqual(command_context.debug_fields["reboot_request_strategy"], "ssh_shutdown_then_reboot")
+        self.assertEqual(command_context.debug_fields["ssh_reboot_attempted"], True)
+        self.assertEqual(command_context.debug_fields["ssh_reboot_succeeded"], True)
+        self.assertIn("SSH reboot requested.", output.getvalue())
         self.assertIn("Waiting for the device to go down...", output.getvalue())
 
     def test_request_reboot_and_wait_uses_ssh_fallback_when_acp_fails(self) -> None:

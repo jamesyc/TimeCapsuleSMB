@@ -7,19 +7,24 @@ from timecapsulesmb.deploy.commands import remote_actions_to_jsonable, render_re
 from timecapsulesmb.deploy.planner import ActivationPlan, DeploymentPlan, UninstallPlan
 
 
-def _append_reboot_request(lines: list[str], reboot_required: bool) -> None:
+DEPLOY_REBOOT_STRATEGY = "ssh_shutdown_then_reboot"
+UNINSTALL_REBOOT_STRATEGY = "acp_then_ssh"
+
+
+def _append_reboot_request(lines: list[str], reboot_required: bool, *, strategy: str) -> None:
     if not reboot_required:
         return
     lines.append("  request: attempt device reboot")
+    lines.append(f"  strategy: {strategy}")
     lines.append("  follow-up: wait for SSH down, then SSH up")
 
 
-def _add_reboot_request_json(data: dict[str, object], reboot_required: bool) -> None:
+def _add_reboot_request_json(data: dict[str, object], reboot_required: bool, *, strategy: str) -> None:
     if not reboot_required:
         return
     data["reboot_request"] = {
         "mode": "device_reboot",
-        "strategy": "acp_then_ssh",
+        "strategy": strategy,
         "follow_up": ["wait_for_ssh_down", "wait_for_ssh_up"],
     }
 
@@ -56,7 +61,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
         lines.append("")
     lines.append("Reboot:")
     lines.append(f"  {'yes' if plan.reboot_required else 'no'}")
-    _append_reboot_request(lines, plan.reboot_required)
+    _append_reboot_request(lines, plan.reboot_required, strategy=DEPLOY_REBOOT_STRATEGY)
     if plan.activation_actions:
         lines.append("  Deploy will activate Samba immediately without rebooting.")
         lines.append(f"  {NETBSD4_REBOOT_GUIDANCE}")
@@ -79,7 +84,7 @@ def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
     data["pre_upload_actions"] = remote_actions_to_jsonable(plan.pre_upload_actions)
     data["post_upload_actions"] = remote_actions_to_jsonable(plan.post_upload_actions)
     data["activation_actions"] = remote_actions_to_jsonable(plan.activation_actions)
-    _add_reboot_request_json(data, plan.reboot_required)
+    _add_reboot_request_json(data, plan.reboot_required, strategy=DEPLOY_REBOOT_STRATEGY)
     return data
 
 
@@ -128,7 +133,7 @@ def format_uninstall_plan(plan: UninstallPlan) -> str:
     lines.append("")
     lines.append("Reboot:")
     lines.append(f"  {'yes' if plan.reboot_required else 'no'}")
-    _append_reboot_request(lines, plan.reboot_required)
+    _append_reboot_request(lines, plan.reboot_required, strategy=UNINSTALL_REBOOT_STRATEGY)
     lines.append("")
     lines.append("Post-uninstall checks:")
     if plan.post_uninstall_checks:
@@ -142,5 +147,5 @@ def format_uninstall_plan(plan: UninstallPlan) -> str:
 def uninstall_plan_to_jsonable(plan: UninstallPlan) -> dict[str, object]:
     data = asdict(plan)
     data["remote_actions"] = remote_actions_to_jsonable(plan.remote_actions)
-    _add_reboot_request_json(data, plan.reboot_required)
+    _add_reboot_request_json(data, plan.reboot_required, strategy=UNINSTALL_REBOOT_STRATEGY)
     return data

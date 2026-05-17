@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.flows import request_reboot_and_wait, verify_managed_runtime_flow
+from timecapsulesmb.cli.flows import request_deploy_reboot_and_wait, verify_managed_runtime_flow
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
     load_env_config,
@@ -373,7 +373,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.cancel_with_error("Cancelled by user at reboot confirmation prompt.")
                 return 0
 
-        if not request_reboot_and_wait(
+        if not request_deploy_reboot_and_wait(
             connection,
             command_context,
             reboot_no_down_message=REBOOT_NO_DOWN_MESSAGE,
