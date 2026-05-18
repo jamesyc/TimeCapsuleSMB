@@ -1462,6 +1462,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("TC_MDNS_DEVICE_MODEL", rendered_env)
         self.assertNotIn("TC_NET_IFACE", fake_values)
         self.assertEqual(fake_values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "false")
+        self.assertEqual(fake_values["TC_ANY_PROTOCOL"], "false")
         uuid.UUID(fake_values["TC_CONFIGURE_ID"])
         telemetry_values = result.mocks.telemetry_factory.call_args.args[0].values
         self.assertEqual(telemetry_values["TC_CONFIGURE_ID"], fake_values["TC_CONFIGURE_ID"])
@@ -1506,7 +1507,7 @@ class CliTests(unittest.TestCase):
         self.assertIn(f"Writing {env_path.resolve()}", result.text)
         self.assertIn(f"Review the .env file configuration: wrote {env_path.resolve()}", result.text)
 
-    def test_configure_hidden_share_use_disk_root_arg_writes_true(self) -> None:
+    def test_configure_hidden_internal_share_use_disk_root_arg_writes_true(self) -> None:
         prompt_values = iter([
             "root@10.0.0.2",
             "pw",
@@ -1520,7 +1521,7 @@ class CliTests(unittest.TestCase):
         ])
 
         result = self.run_configure_cli(
-            ["--share-use-disk-root"],
+            ["--internal-share-use-disk-root"],
             prompt_side_effect=lambda label, default, _secret: default if label == "mDNS device model hint" else next(prompt_values),
             probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
             confirm=True,
@@ -1528,6 +1529,17 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "true")
+
+    def test_configure_hidden_any_protocol_arg_writes_true(self) -> None:
+        result = self.run_configure_cli(
+            ["--any-protocol"],
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            confirm=True,
+            command_context=FakeCommandContext(),
+        )
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_ANY_PROTOCOL"], "true")
 
     def test_configure_airport_extreme_keeps_hidden_internal_share_root_default(self) -> None:
         def fake_prompt(label, default, _secret):
@@ -1559,6 +1571,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("TC_AIRPORT_SYAP", result.values)
         self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         self.assertEqual(result.values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "false")
+        self.assertEqual(result.values["TC_ANY_PROTOCOL"], "false")
 
     def test_configure_ensures_install_id_before_telemetry(self) -> None:
         prompt_values = iter([
@@ -4379,6 +4392,7 @@ class CliTests(unittest.TestCase):
         self.assertIn(f"TC_DEPLOY_CLI_VERSION_CODE={CLI_VERSION_CODE}\n", flash_config)
         self.assertNotIn("PAYLOAD_DIR_NAME=", flash_config)
         self.assertIn("NBNS_ENABLED=1\n", flash_config)
+        self.assertIn("ANY_PROTOCOL=0\n", flash_config)
         self.assertIn("SMBD_DEBUG_LOGGING=1\n", flash_config)
         self.assertNotIn("SMB_SAMBA_USER", flash_config)
         self.assertNotIn("MDNS_DEVICE_MODEL", flash_config)

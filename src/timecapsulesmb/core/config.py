@@ -74,6 +74,7 @@ DEFAULTS = {
     "TC_HOST": DEFAULT_SSH_TARGET_PLACEHOLDER,
     "TC_SSH_OPTS": "-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT": "false",
+    "TC_ANY_PROTOCOL": "false",
 }
 
 ENV_FILE_KEYS = [
@@ -81,6 +82,7 @@ ENV_FILE_KEYS = [
     "TC_PASSWORD",
     "TC_SSH_OPTS",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT",
+    "TC_ANY_PROTOCOL",
     "TC_CONFIGURE_ID",
 ]
 
@@ -493,6 +495,7 @@ CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
     "TC_AIRPORT_SYAP": validate_airport_syap,
     "TC_MDNS_DEVICE_MODEL": validate_mdns_device_model,
     "TC_INTERNAL_SHARE_USE_DISK_ROOT": validate_bool,
+    "TC_ANY_PROTOCOL": validate_bool,
 }
 
 
@@ -507,10 +510,12 @@ class ConfigProfile:
 
 CONFIGURE_VALIDATED_KEYS = (
     "TC_INTERNAL_SHARE_USE_DISK_ROOT",
+    "TC_ANY_PROTOCOL",
 )
 MANAGED_VALIDATED_KEYS = (
     "TC_HOST",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT",
+    "TC_ANY_PROTOCOL",
 )
 MANAGED_REQUIRED_FILE_KEYS = (
     "TC_HOST",

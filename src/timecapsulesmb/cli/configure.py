@@ -296,7 +296,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Create or update the local TimeCapsuleSMB .env configuration.")
     add_config_argument(parser)
     parser.add_argument("--internal-share-use-disk-root", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--share-use-disk-root", dest="internal_share_use_disk_root", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--any-protocol", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     ensure_install_id()
@@ -350,6 +350,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         values["TC_INTERNAL_SHARE_USE_DISK_ROOT"] = (
             "true" if args.internal_share_use_disk_root or existing_internal_share_use_disk_root else "false"
+        )
+        existing_any_protocol = parse_bool(
+            existing.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])
+        )
+        values["TC_ANY_PROTOCOL"] = (
+            "true" if args.any_protocol or existing_any_protocol else "false"
         )
         command_context.set_stage("bonjour_discovery")
         try:

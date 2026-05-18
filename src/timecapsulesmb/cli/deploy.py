@@ -103,12 +103,14 @@ def render_flash_runtime_config(
     diskd_use_volume_attempts: int = DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
 ) -> str:
     internal_root_default = config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])
+    any_protocol_default = config.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])
 
     values: list[tuple[str, str | int]] = [
         ("TC_CONFIG_VERSION", 2),
         ("TC_DEPLOY_RELEASE_TAG", RELEASE_TAG),
         ("TC_DEPLOY_CLI_VERSION_CODE", CLI_VERSION_CODE),
         ("INTERNAL_SHARE_USE_DISK_ROOT", 1 if parse_bool(internal_root_default) else 0),
+        ("ANY_PROTOCOL", 1 if parse_bool(any_protocol_default) else 0),
         ("DISKD_USE_VOLUME_ATTEMPTS", diskd_use_volume_attempts),
         ("ATA_IDLE_SECONDS", ata_idle_seconds),
         ("NBNS_ENABLED", 1 if nbns_enabled else 0),

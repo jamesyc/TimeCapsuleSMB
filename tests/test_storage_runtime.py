@@ -100,6 +100,7 @@ class StorageRuntimeTests(unittest.TestCase):
                 MDNS_DEVICE_MODEL='TimeCapsule6,106'
                 AIRPORT_SYAP='106'
                 INTERNAL_SHARE_USE_DISK_ROOT=0
+                ANY_PROTOCOL=0
                 DISKD_USE_VOLUME_ATTEMPTS=2
                 ATA_IDLE_SECONDS=300
                 NBNS_ENABLED=0
@@ -786,6 +787,7 @@ MaSt = (
                 "TC_MDNS_DEVICE_MODEL": "TimeCapsule6,106",
                 "TC_AIRPORT_SYAP": "106",
                 "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
+                "TC_ANY_PROTOCOL": "true",
             }
         )
 
@@ -808,6 +810,7 @@ MaSt = (
         self.assertIn(f"TC_DEPLOY_RELEASE_TAG={RELEASE_TAG}\n", rendered)
         self.assertIn(f"TC_DEPLOY_CLI_VERSION_CODE={CLI_VERSION_CODE}\n", rendered)
         self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=1\n", rendered)
+        self.assertIn("ANY_PROTOCOL=1\n", rendered)
         self.assertIn("DISKD_USE_VOLUME_ATTEMPTS=2\n", rendered)
         self.assertIn("ATA_IDLE_SECONDS=300\n", rendered)
         self.assertIn("NBNS_ENABLED=1\n", rendered)
@@ -2000,12 +2003,49 @@ MaSt = (
         self.assertIn(f"path = {volumes}/dk3", proc.stdout)
         self.assertIn(f"log file = {payload}/logs/log.smbd", proc.stdout)
         self.assertIn("max log size = 128", proc.stdout)
+        self.assertIn("min protocol = SMB2", proc.stdout)
+        self.assertIn("max protocol = SMB3", proc.stdout)
         self.assertIn("max open files = 512", proc.stdout)
         self.assertIn("max smbd processes = 16", proc.stdout)
         self.assertNotIn("log level = 5", proc.stdout)
         self.assertTrue(smbd_core_dir_exists)
         self.assertEqual(smbd_core_parent_mode, 0o700)
         self.assertEqual(smbd_core_dir_mode, 0o700)
+
+    def test_common_generate_smb_conf_omits_protocol_bounds_when_any_protocol_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            (payload / "private").mkdir(parents=True)
+            script = tmp_path / "smb-conf-any-protocol.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    ANY_PROTOCOL=1
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_ETC" "$RAM_VAR"
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
+                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                    tc_generate_smb_conf {payload}
+                    cat "$TC_SMBD_CONF"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("[Data]\n", proc.stdout)
+        self.assertNotIn("min protocol =", proc.stdout)
+        self.assertNotIn("max protocol =", proc.stdout)
 
     def test_common_generate_smb_conf_makes_smbd_debug_log_unbounded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

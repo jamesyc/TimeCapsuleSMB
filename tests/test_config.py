@@ -145,6 +145,7 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn("TC_SAMBA_USER", rendered)
         self.assertNotIn("TC_PAYLOAD_DIR_NAME", rendered)
         self.assertIn("TC_INTERNAL_SHARE_USE_DISK_ROOT=false", rendered)
+        self.assertIn("TC_ANY_PROTOCOL=false", rendered)
         self.assertIn("TC_CONFIGURE_ID=12345678-1234-1234-1234-123456789012", rendered)
 
     def test_env_example_does_not_include_runtime_derived_settings(self) -> None:
@@ -467,6 +468,11 @@ class ConfigTests(unittest.TestCase):
         config = AppConfig.from_values(values, file_values=values)
         errors = validate_app_config(config, profile="deploy")
         self.assertEqual(errors, [])
+        values["TC_ANY_PROTOCOL"] = "not-bool"
+        config = AppConfig.from_values(values, file_values=values)
+        errors = validate_app_config(config, profile="deploy")
+        self.assertEqual(errors[0].kind, "invalid_value")
+        self.assertEqual(errors[0].key, "TC_ANY_PROTOCOL")
 
     def test_flash_profile_ignores_deploy_only_settings(self) -> None:
         values = dict(DEFAULTS)
@@ -478,6 +484,7 @@ class ConfigTests(unittest.TestCase):
         values["TC_SAMBA_USER"] = "bad user"
         values["TC_PAYLOAD_DIR_NAME"] = "/bad"
         values["TC_INTERNAL_SHARE_USE_DISK_ROOT"] = "not-bool"
+        values["TC_ANY_PROTOCOL"] = "not-bool"
         config = AppConfig.from_values(values, file_values=values)
 
         self.assertEqual(validate_app_config(config, profile="flash"), [])

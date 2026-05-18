@@ -208,6 +208,7 @@ tc_generate_smb_conf() {
     smbd_log="$payload_dir/logs/log.smbd"
     smbd_max_log_size=$(tc_smbd_max_log_size)
     smbd_log_level_line=
+    smbd_protocol_lines=
 
     mkdir -p "$payload_dir/logs"
     chmod 755 "$payload_dir/logs" >/dev/null 2>&1 || true
@@ -218,6 +219,10 @@ tc_generate_smb_conf() {
         tc_log "smbd debug logging enabled at $smbd_log"
     else
         tc_prepare_log_file "$smbd_log" "$TC_RUNTIME_LOG_MAX_BYTES"
+    fi
+    if [ "$ANY_PROTOCOL" != "1" ]; then
+        smbd_protocol_lines="    min protocol = SMB2
+    max protocol = SMB3"
     fi
 
     {
@@ -239,8 +244,7 @@ tc_generate_smb_conf() {
     passdb backend = smbpasswd:$RAM_PRIVATE/smbpasswd
     username map = $RAM_PRIVATE/username.map
     dos charset = ASCII
-    min protocol = SMB2
-    max protocol = SMB3
+$smbd_protocol_lines
     server multi channel support = no
     load printers = no
     disable spoolss = yes
