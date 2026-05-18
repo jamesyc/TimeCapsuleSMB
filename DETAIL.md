@@ -23,7 +23,9 @@ What is working now:
   - Apple-cloned `_afpovertcp._tcp`
   - other Apple-cloned records
 - authenticated SMB access using:
-  - Samba username: `admin`
+  - examples and docs use Samba username `admin`
+  - generated auth stores a `root` Samba account
+  - incoming SMB usernames are mapped to Unix `root`
   - password: the same password provided in `.env` as `TC_PASSWORD`
 - guest access disabled
 - deploy-time device compatibility detection
@@ -47,7 +49,7 @@ Current user experience:
   - `smb://<advertised-host>.local/<volume name>`
 
 Current auth model:
-- SMB login user: `admin`
+- the docs and examples use SMB login user `admin`
 - `TC_PASSWORD` is reused as the SMB password
 - generated Samba auth stores a `root` SMB account hash
 - the username map currently maps incoming SMB usernames to Unix `root`
@@ -61,7 +63,7 @@ The important target families are:
 - NetBSD 6.x `evbarm`: 5th generation Time Capsules and same-era AirPort storage devices
 - NetBSD 4.x `evbarm`: older little-endian AirPort storage devices
 - NetBSD 4.x `armeb`: older big-endian AirPort storage devices
-- AirPort Extreme devices with attached USB storage are supported by the same deploy/runtime model, with device-specific defaults chosen during configuration
+- AirPort Extreme devices with attached USB storage are supported by the same deploy/runtime model, but are less broadly validated than Time Capsule hardware
 
 The details differ by generation, but the important shared constraints are:
 - root fs is tiny
@@ -116,13 +118,13 @@ However, Apple may later unmount or sleep the disk. Running `smbd` directly from
 The actual working split is:
 
 - persistent payload on HDD:
-  - `/Volumes/dkX/<TC_PAYLOAD_DIR_NAME>/smbd`
-  - `/Volumes/dkX/<TC_PAYLOAD_DIR_NAME>/mdns-advertiser`
-  - `/Volumes/dkX/<TC_PAYLOAD_DIR_NAME>/nbns-advertiser`
-  - `/Volumes/dkX/<TC_PAYLOAD_DIR_NAME>/private/smbpasswd`
-  - `/Volumes/dkX/<TC_PAYLOAD_DIR_NAME>/private/username.map`
-  - `/Volumes/dkX/<TC_PAYLOAD_DIR_NAME>/private/xattr.tdb`
-  - `/Volumes/dkX/<TC_PAYLOAD_DIR_NAME>/cache`
+  - `/Volumes/dkX/.samba4/smbd`
+  - `/Volumes/dkX/.samba4/mdns-advertiser`
+  - `/Volumes/dkX/.samba4/nbns-advertiser`
+  - `/Volumes/dkX/.samba4/private/smbpasswd`
+  - `/Volumes/dkX/.samba4/private/username.map`
+  - `/Volumes/dkX/.samba4/private/xattr.tdb`
+  - `/Volumes/dkX/.samba4/cache`
 - tiny persistent boot hook on flash:
   - `/mnt/Flash/rc.local`
   - `/mnt/Flash/common.sh`
@@ -143,7 +145,7 @@ This gives:
 - only tiny always-mounted files on flash
 
 Current naming split:
-- `TC_PAYLOAD_DIR_NAME` controls the persistent HDD payload directory
+- `.samba4` is the fixed managed persistent HDD payload directory
 - the live RAM runtime path is intentionally fixed at `/mnt/Memory/samba4`
 - share names are not configured locally; runtime sanitizes and de-duplicates the Apple `MaSt` partition names
 
@@ -307,9 +309,8 @@ The mDNS snapshot files are:
 - `/mnt/Flash/applemdns.txt`
 
 Current behavior:
-- `start-samba.sh` gives Apple a short chance to start its own stack
-- `start-samba.sh` starts `mdns-advertiser --save-all-snapshot ... --save-snapshot ...` asynchronously after disk state is refreshed
-- startup continues staging Samba while capture runs
+- `start-samba.sh` stages the managed Samba runtime and launches `watchdog.sh`
+- the watchdog starts `mdns-advertiser --save-all-snapshot ... --save-snapshot ...` once a usable IPv4 is available
 - the final `mdns-advertiser --load-snapshot` phase waits for capture to finish or time out before killing `mDNSResponder`
 - if capture does not produce `applemdns.txt`, `mdns-advertiser --save-airport-snapshot` writes a generated local `_airport._tcp` fallback from values read directly on the device
 - `mdns-advertiser --load-snapshot` then kills `mDNSResponder` and replays the captured or generated snapshot
@@ -352,14 +353,12 @@ This matters because:
 2. kills any prior managed `smbd`, mDNS advertiser, NBNS responder, and watchdog
 3. prepares the dedicated Samba lock ramdisk at `/mnt/Locks`
 4. recreates the RAM runtime tree under `/mnt/Memory/samba4`
-5. waits for the device IP on the configured network interface
-   - default: `bridge0`
-   - timeout: `60` seconds after an initial `1` second delay
+5. auto-discovers usable IPv4 CIDRs for Samba binding from the current device interfaces
 6. reads valid HFS partitions from `/usr/bin/acp -A MaSt`
 7. writes the current `MaSt` rows to the runtime topology signature
 8. requests `diskd.useVolume` for every valid `MaSt` volume
 9. polls all candidate volumes for one shared `APPLE_MOUNT_WAIT_SECONDS` window, default `30`
-10. falls back to bounded `mount_hfs` attempts only for volumes still unmounted after that shared window
+10. leaves still-unmounted volumes unavailable; the boot runtime no longer falls back to `mount_hfs`
 11. builds RAM state files under `/mnt/Memory/samba4/var`:
    - `shares.tsv`
    - `adisk.tsv`
@@ -368,16 +367,15 @@ This matters because:
    - external volumes always share `/Volumes/dkN`
    - internal volumes share `/Volumes/dkN/ShareRoot` unless `INTERNAL_SHARE_USE_DISK_ROOT=1`
    - internal `ShareRoot` is created when needed
-13. resolves the persistent payload by scanning mounted `MaSt` volumes in internal-first order for `<PAYLOAD_DIR_NAME>`
+13. resolves the persistent payload by scanning mounted `MaSt` volumes in internal-first order for `.samba4`
 14. writes `payload.tsv` so the watchdog can find the selected payload volume/device later
 15. configures payload runtime logs under `<payload>/logs/`
-16. starts an asynchronous mDNS capture without taking over UDP 5353 yet
-17. copies `smbd`, auth files, and optional `nbns-advertiser` into RAM
-18. generates `/mnt/Memory/samba4/etc/smb.conf` directly from runtime state
-19. starts `smbd` and waits up to `15` seconds for the process to appear
-20. waits for mDNS capture if still running, generates an AirPort-only fallback if capture did not produce `applemdns.txt`, then starts the final `mdns-advertiser` phase
-21. starts the NBNS responder if `NBNS_ENABLED=1`
-22. starts `watchdog.sh` with no disk/root positional arguments
+16. copies `smbd`, auth files, and optional `nbns-advertiser` into RAM
+17. generates `/mnt/Memory/samba4/etc/smb.conf` directly from runtime state
+18. starts `smbd` and waits up to `15` seconds for the IPv4 TCP `445` listener
+19. starts `watchdog.sh` with no disk/root positional arguments
+
+The watchdog owns mDNS and NBNS startup after `smbd` is running. This keeps advertiser recovery in the same supervisor path that handles later service failures.
 
 The boot log is written to:
 - `/mnt/Memory/samba4/var/rc.local.log`
@@ -423,16 +421,15 @@ Operational behavior:
 `watchdog.sh` is a simple long-running supervisor launched at boot from flash.
 
 Current behavior:
-- sleeps `30` seconds before the first management pass
-- uses real elapsed wall-clock time since watchdog start
-- polls every `10` seconds while any managed service is unhealthy
-- polls every `300` seconds once all managed services are healthy
-- re-reads `MaSt` through `start-samba.sh --print-topology-signature`
-- if disk topology changed, re-execs `/mnt/Flash/start-samba.sh --reload-disk-runtime`
+- runs a disk/topology pass every `10` seconds
+- runs a managed service pass every `30` seconds
+- sleeps `10` seconds after a failed recovery pass before trying again
+- reads `MaSt` directly through the shared runtime helpers
+- if disk topology changed, live-reloads when possible and falls back to `/mnt/Flash/start-samba.sh --reload-disk-runtime` when a full runtime restart is required
 - remounts every active share volume from `shares.tsv`; if share state is unavailable, the runtime is treated as unhealthy and reloaded
 - if the payload volume is unavailable, stops managed Samba/mDNS/NBNS and retries later
 - if only `smbd` is missing, starts it again from the RAM-staged binary and config
-- if only `mdns-advertiser` is missing, restarts it from the existing `adisk.tsv`
+- if `mdns-advertiser` is missing, starts the snapshot capture/load path the first time and restarts it from the existing `adisk.tsv` after that
 - if `NBNS_ENABLED=1` and `nbns-advertiser` is missing, restarts it
 
 This is intentionally simple:
@@ -491,7 +488,7 @@ Current rendered Samba config characteristics:
 - `min protocol = SMB2`
 - `max protocol = SMB3`
 - `guest ok = no`
-- `valid users = <TC_SAMBA_USER> root`
+- `valid users = root`
 - `force user = root`
 - `force group = wheel`
 - `reset on zero vc = yes`
@@ -515,15 +512,15 @@ Current rendered Samba config characteristics:
 - `fruit:posix_rename = yes`
 - `acl_xattr:ignore system acls = yes`
 - `xattr_tdb:file = /Volumes/dkX/.samba4/private/xattr.tdb`
-- `veto files = /<PAYLOAD_DIR_NAME>/` on every share so the payload is hidden when it lives on a shared disk root
+- `veto files = /.samba4/` on every share so the payload is hidden when it lives on a shared disk root
 
 Current auth mapping:
-- the configured `TC_SAMBA_USER` is the normal user-facing SMB login name
+- the docs and examples use `admin` as the normal user-facing SMB login name
 - the `smbpasswd` backend contains a `root` entry with the configured password hash
 - `username.map` contains:
   - `!root = root`
   - `root = *`
-- incoming SMB usernames are mapped to Unix `root`; the CLI and docs still guide users toward the configured `TC_SAMBA_USER`
+- incoming SMB usernames are mapped to Unix `root`
 
 This is intentionally pragmatic:
 - login is authenticated
@@ -561,7 +558,7 @@ At runtime it can:
 - generate an AirPort-only Apple snapshot with `--save-airport-snapshot`
 - save an Apple snapshot with `--save-snapshot`
 - load and replay an Apple snapshot with `--load-snapshot`
-- answer A queries for loaded snapshot host targets using the current configured IPv4
+- answer A queries for loaded snapshot host targets using the current runtime IPv4
 
 Current validation and behavior notes:
 - mDNS host labels are validated as DNS-label-safe host labels
@@ -594,7 +591,7 @@ Current behavior:
 - replies for both NetBIOS suffixes:
   - `0x00`
   - `0x20`
-- returns the current IPv4 for the configured interface
+- returns the current runtime IPv4 selected from the device interfaces
 
 Enablement model:
 - the binary is uploaded to `/Volumes/dkX/.samba4/nbns-advertiser` on every deploy
@@ -631,11 +628,7 @@ The intended user flow is:
 Current important `.env` values include:
 - `TC_HOST`
 - `TC_PASSWORD`
-- `TC_NET_IFACE`
-- `TC_SAMBA_USER`
-- `TC_PAYLOAD_DIR_NAME`
-- `TC_MDNS_DEVICE_MODEL`
-- `TC_AIRPORT_SYAP`
+- `TC_SSH_OPTS`
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT`
 - `TC_CONFIGURE_ID`
 
@@ -648,8 +641,8 @@ Current `.bootstrap` values include:
 Fresh clones install `coverage.py` through `requirements.txt` during `./tcapsule bootstrap` or `make install`.
 
 Coverage entry points:
-- `make test` runs C compile checks plus the Python unittest suite
-- `make coverage` runs the Python unittest suite with branch coverage and prints missing source lines
+- `make test` runs C compile checks plus the pytest suite
+- `make coverage` runs the pytest suite with branch coverage and prints missing source lines
 - `make coverage-html` writes the browsable report to `htmlcov/index.html`
 
 Optional deploy flag:
@@ -657,22 +650,18 @@ Optional deploy flag:
   - disables the bundled NBNS responder on the next boot by writing `NBNS_ENABLED=0` to `/mnt/Flash/tcapsulesmb.conf`
 
 Current defaults:
-- `TC_SAMBA_USER=admin`
-- `TC_PAYLOAD_DIR_NAME=.samba4`
-- `TC_MDNS_DEVICE_MODEL=TimeCapsule`
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT=false`
+- `TC_SSH_OPTS` includes the legacy SSH algorithms required by AirPort firmware
+- docs and examples use SMB username `admin`
+- the managed payload directory is fixed at `.samba4`
 
 Samba NetBIOS, Samba server string, Bonjour instance, and Bonjour host labels are derived on the device at runtime from `/usr/bin/acp -q syNm` and `/bin/hostname`; they are not configured in `.env`.
 
 Current validation behavior:
 - `TC_HOST`: must be non-empty.
-- `TC_NET_IFACE`: must be a safe interface name.
-- `TC_SAMBA_USER`: must be non-empty, fit Samba's username length limit, and avoid whitespace or control characters.
-- `TC_PAYLOAD_DIR_NAME`: must be one safe path component; slashes, `.`/`..`, control characters, traversal, and shell-hostile characters are rejected.
-- `TC_MDNS_DEVICE_MODEL`: must be `TimeCapsule`, `AirPort`, or one of the supported exact Time Capsule or AirPort Extreme model identifiers.
-- `TC_AIRPORT_SYAP`: must be one of the known Apple syAP codes.
+- `TC_PASSWORD`: must be present for commands that authenticate to the device or generate Samba auth.
+- `TC_SSH_OPTS`: is written by `configure` with the legacy SSH options needed for AirPort firmware.
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT`: hidden boolean; internal disks use `ShareRoot` by default, and external disks always use the disk root.
-- when `TC_AIRPORT_SYAP` is one of the known exact generation values, `TC_MDNS_DEVICE_MODEL` must match it rather than remaining a mismatched generic or wrong generation.
 - `TC_CONFIGURE_ID`: is a local configuration revision ID and is not user-validated.
 
 Workflow details:
@@ -680,14 +669,9 @@ Workflow details:
 - if SSH is already reachable, `configure` validates the SSH target/password and then probes the device directly
 - if SSH is closed, `configure` enables SSH with the built-in Python 3 ACP client, reboots the device through ACP, waits for SSH to come back, and then probes the device directly
 - ACP authentication failures during `configure` reprompt for the Time Capsule password; non-authentication ACP failures stop configuration with the underlying error
-- `configure` can now choose `TC_AIRPORT_SYAP` and `TC_MDNS_DEVICE_MODEL` from several sources, in priority order:
-  - discovered `_airport._tcp` `syAP`
-  - exact probed compatibility match
-  - probed Apple identity from on-device `acp` output
-  - model derived from the chosen `syAP`
-  - saved valid values from `.env`
-- for NetBSD 4 devices, the probe/compatibility layer narrows the allowed `syAP` and model candidates by endianness and then narrows further when on-device `acp` identifies the exact generation
-- `configure` validates user-facing identity and runtime inputs before writing `.env`
+- `configure` uses discovered and probed Apple identity metadata to classify compatibility and present device details, but it does not persist model or `syAP` hints in managed `.env`
+- for NetBSD 4 devices, the probe/compatibility layer uses endianness and on-device `acp` identity data to classify the exact generation when possible
+- `configure` validates managed `.env` inputs before writing `.env`
 - `deploy`, `activate`, and `doctor` fail early when managed `.env` config values are invalid
 - the command entrypoints live under [src/timecapsulesmb/cli/](src/timecapsulesmb/cli)
 - the deploy/runtime logic lives under [src/timecapsulesmb/deploy/](src/timecapsulesmb/deploy) and [src/timecapsulesmb/device/](src/timecapsulesmb/device)
@@ -728,6 +712,7 @@ It checks:
 - `.env` completeness and invalid `.env` values
 - required local tools
 - whether the required checked-in binaries exist and match the expected checksums
+- deployed release/version metadata in `/mnt/Flash/tcapsulesmb.conf`
 - SSH reachability
 - remote network/interface problems
 - advertised Bonjour instance name
@@ -844,7 +829,7 @@ Current deploy flow:
   - else fails with `no writable persistent volume found`
 - computes the device-specific runtime and payload paths from that payload home
 - builds a deployment plan before execution
-- creates the persistent payload dir under `/Volumes/dkX/<TC_PAYLOAD_DIR_NAME>` (usually `/Volumes/dkX/.samba4`)
+- creates the persistent payload dir under `/Volumes/dkX/.samba4`
 - uploads the checked-in binaries:
   - `smbd`
   - `mdns-advertiser`
@@ -864,15 +849,17 @@ Current deploy flow:
   - `NBNS_ENABLED=1` in flash config unless `--no-nbns` is used
 - applies the required permissions on files and directories
 - reboots by default
-- waits for managed `smbd` readiness after reboot
-- waits for managed mDNS takeover after reboot
-- then verifies Bonjour and authenticated SMB access using the same shared checks used by `doctor`
+- verifies managed runtime readiness after reboot:
+  - managed `smbd` on TCP `445`
+  - managed mDNS takeover on UDP `5353`
 - on NetBSD 4, deploy uploads the NetBSD 4 artifact set and immediately runs the activation sequence instead of rebooting
+
+Full Bonjour browse/resolve checks, authenticated SMB listings, SMB CRUD checks, share checks, NBNS checks, xattr persistence checks, and deployed-version checks are handled by `doctor`.
 
 Current compatibility behavior:
 - NetBSD 6 `evbarm` devices are accepted for the current `samba4` payload family
 - NetBSD 4 `evbarm` devices are accepted as older hardware and use either the `netbsd4le_samba4` or `netbsd4be_samba4` payload family
-- `configure` reuses the same classification logic to choose a better default Finder model hint
+- `configure` reuses the same classification logic for compatibility and displayed device identity
 
 NetBSD 4 activation behavior:
 - `tcapsule deploy` uploads the NetBSD 4 payload, stops the old watchdog plus `wcifsfs`, runs `/mnt/Flash/rc.local`, and verifies `smbd` on TCP `445` plus `mdns-advertiser` on UDP `5353`
@@ -913,9 +900,11 @@ Client telemetry is now emitted by:
 - `tcapsule bootstrap`
 - `tcapsule paths`
 - `tcapsule validate-install`
+- `tcapsule discover`
 - `tcapsule configure`
 - `tcapsule set-ssh`
 - `tcapsule deploy`
+- `tcapsule flash`
 - `tcapsule activate`
 - `tcapsule doctor`
 - `tcapsule fsck`
@@ -929,12 +918,16 @@ Current event model:
 - `paths_finished`
 - `validate_install_started`
 - `validate_install_finished`
+- `discover_started`
+- `discover_finished`
 - `configure_started`
 - `configure_finished`
 - `set_ssh_started`
 - `set_ssh_finished`
 - `deploy_started`
 - `deploy_finished`
+- `flash_started`
+- `flash_finished`
 - `activate_started`
 - `activate_finished`
 - `doctor_started`
@@ -996,14 +989,14 @@ Current important outputs:
 
 Current active deploy artifact sizes:
 - NetBSD 6 `smbd`: about `9.7M`
-- NetBSD 6 `mdns-advertiser`: about `265K`
-- NetBSD 6 `nbns-advertiser`: about `184K`
+- NetBSD 6 `mdns-advertiser`: about `276K`
+- NetBSD 6 `nbns-advertiser`: about `190K`
 - NetBSD 4 little-endian `smbd`: about `9.7M`
 - NetBSD 4 big-endian `smbd`: about `9.7M`
-- NetBSD 4 little-endian `mdns-advertiser`: about `192K`
-- NetBSD 4 big-endian `mdns-advertiser`: about `191K`
-- NetBSD 4 little-endian `nbns-advertiser`: about `113K`
-- NetBSD 4 big-endian `nbns-advertiser`: about `112K`
+- NetBSD 4 little-endian `mdns-advertiser`: about `218K`
+- NetBSD 4 big-endian `mdns-advertiser`: about `216K`
+- NetBSD 4 little-endian `nbns-advertiser`: about `133K`
+- NetBSD 4 big-endian `nbns-advertiser`: about `132K`
 
 It assumes:
 - a NetBSD VM
@@ -1090,7 +1083,7 @@ That is why the current authenticated design still maps to `root`.
 - The current authenticated design still maps file access to `root`.
 - `/mnt/Memory` is tight; only about `1-2 MiB` may remain free after staging.
 - The repo still assumes AirPort storage firmware behavior such as:
-  - `bridge0`
+  - AirPort-style IPv4/interface layout
   - `dk1` / `dk2` / `dk3`
   - `ShareRoot` / `Shared`
 - Apple firmware behavior may still change runtime mount timing or disk state in edge cases.
@@ -1148,7 +1141,7 @@ The current system is no longer just an experiment:
 - survives reboot on the NetBSD 6 path
 - can be manually reactivated after reboot on tested NetBSD 4 gen1 hardware
 - advertises itself over Bonjour
-- authenticates as `admin`
+- authenticates with the configured password; docs and examples use SMB username `admin`
 - serves the internal disk through Samba 4.24.1
 - supports Time Machine via `vfs_fruit`
 

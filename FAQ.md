@@ -11,7 +11,7 @@ Gen 1-4 Time Capsules - supported with manual activation after each reboot
 
 #### What AirPort Extreme models are supported?
 
-None of them, officially. Unofficially, they might work. I don't own an Airport Extreme, though, so I cannot test to see if anything is working or broken. Use at your own risk. 
+AirPort Extreme models with attached USB storage are supported by the same deploy/runtime model, but they are less broadly validated than Time Capsule hardware. Use `tcapsule configure` and `tcapsule doctor` to confirm the specific device.
 
 #### Is this safe to use?
 
@@ -21,7 +21,9 @@ Yep. This doesn't touch anything that will permanently brick a Time Capsule. Thi
 
 #### What is the "Device Password" mode?
 
-Your Time Capsule must be set to **"Device Password"** mode, not "With accounts" mode; you will get errors if you use "With accounts" mode.
+TimeCapsuleSMB needs the device/root password during setup. That password is used to enable or access SSH and is also used to generate the managed Samba password.
+
+AirPort Utility commonly exposes this as **"With device password"** under disk sharing. This project does not validate the AirPort disk-sharing mode directly, but using the device password mode keeps the password model aligned with what `tcapsule configure` expects.
 
 To check/change this:
 1. Open AirPort Utility on your Mac
@@ -30,7 +32,7 @@ To check/change this:
 4. Look for the "Secure Shared Disks" setting
 5. Ensure it's set to "With device password" mode
 
-The device password you enter during setup will become the SMB password.
+The device password you enter during setup becomes the SMB password.
 
 #### Do I need to keep the TimeCapsuleSMB folder after setup?
 
@@ -49,7 +51,7 @@ Once deployment is complete, you can connect via:
 - **Direct URL:** `smb://<advertised-host>.local/<share-name>` or `smb://<yourtimecapsuleIP>/<share-name>`
 
 **Credentials:**
-- Username: `admin`
+- Username: `admin` in the docs/examples. The managed Samba config maps incoming SMB usernames to Unix `root`.
 - Password: Your Time Capsule password
 
 #### Do I need to `uninstall` before updating?
@@ -67,7 +69,7 @@ A reboot and clean deploy will fix 90% of issues. This is especially useful for 
 
 #### Time Machine backups are broken on certain macOS versions
 
-Time Machine backups on macOS 26.4.x and 15.7.5 are currently broken. See [this article](https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups) for details.
+Time Machine network backups have known macOS-side regressions on macOS 26.4.x and macOS 15.7.5-15.7.7. See this [Cult of Mac report](https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups) and this later [MacObserver report about a 26.5 beta fix](https://www.macobserver.com/news/macos-tahoe-26-4-breaks-time-machine-users-report-widespread-failures/) for context.
 
 **Workaround:** Macs running these versions can still use the device as a standard Samba network share in Finder, but Time Machine backups will not work properly. You can also try the workaround mentioned in the article.
 
@@ -124,7 +126,7 @@ The `deploy` script installs files in:
   - These files are created by `mdns-advertiser`
     - `/mnt/Flash/allmdns.txt`
     - `/mnt/Flash/applemdns.txt`
-- `.samba4` folder on the root of the hard drive (Samba files). This folder name can be changed in the `.env` settings.
+- `.samba4` folder on the root of the hard drive (Samba files). This is the fixed managed payload folder name.
 
 All other files/folders are stored on ramdisks and will be deleted after a reboot.
 
@@ -153,11 +155,11 @@ Yes! If you want to rebuild `smbd` yourself, run the scripts in `build/` on a Ne
 
 #### Can I customize the configuration?
 
-Yes! During `tcapsule configure`, you can customize:
-- Samba username
-- persistent payload folder name
-- device network interface
-- AirPort model hints used for Bonjour metadata
+Only a small set of local configuration is managed now:
+- device host
+- device/root password
+- legacy SSH options
+- the hidden internal-disk share-root behavior
 
 Share names and Bonjour names come from the Time Capsule itself. For most users, the defaults are recommended.
 
@@ -181,4 +183,4 @@ This removes the managed payload and boot files. After a reboot, your Time Capsu
 
 #### What if I want to keep the project folder but remove it from my Mac?
 
-You can safely delete the TimeCapsuleSMB folder from your Mac after setup. All the important files are stored on the Time Capsule itself. However, it is recommended to keep it for maintenance purposes (see above).
+The deployed runtime can keep working without the local TimeCapsuleSMB folder, because the managed runtime files are stored on the Time Capsule. Keep the local folder if you want to update, redeploy, run `doctor`, run `fsck`, activate older Gen 1-4 devices, or uninstall cleanly.
