@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import shlex
+import socket
 import subprocess
 import sys
 import selectors
@@ -1816,10 +1817,21 @@ ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
     return (ssize_t)len;
 }}
 
+int fake_setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen) {{
+    (void)sockfd;
+    (void)level;
+    (void)optname;
+    (void)optval;
+    (void)optlen;
+    return 0;
+}}
+
 #define sendto fake_sendto
+#define setsockopt fake_setsockopt
 #define main mdns_advertiser_main
 #include "{mdns_source}"
 #undef main
+#undef setsockopt
 #undef sendto
 
 static int contains_ipv4(const unsigned char *needle) {{
@@ -1858,13 +1870,12 @@ int main(void) {{
 
     snprintf(ctx.name, sizeof(ctx.name), "%s", "bridge0");
     ctx.ipv4_addr = inet_addr("10.0.1.1");
-    ctx.sockfd = 1;
 
     dest.sin_family = AF_INET;
     dest.sin_port = htons(5353);
     dest.sin_addr.s_addr = inet_addr("224.0.0.251");
 
-    if (send_context_announcement(&ctx, &dest, &cfg, &snapshot, 0) != 0) {{
+    if (send_context_announcement(1, &ctx, &dest, &cfg, &snapshot, 0) != 0) {{
         return 1;
     }}
     context_ip.s_addr = inet_addr("10.0.1.1");
@@ -1880,6 +1891,329 @@ int main(void) {{
 '''.format(mdns_source=mdns_source)
         run = self._compile_and_run_c_helper(source, "mdns_context_announcement_ip")
         self.assertEqual(run.returncode, 0, run.stderr)
+
+    def test_mdns_auto_ip_takeover_uses_one_exclusive_socket(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = r'''
+#include <arpa/inet.h>
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+static int fake_socket(int domain, int type, int protocol);
+static int fake_setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen);
+static int fake_bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+static int fake_close(int fd);
+static int fake_system(const char *cmd);
+static int fake_usleep(useconds_t usec);
+static FILE *fake_popen(const char *cmd, const char *mode);
+static char *fake_fgets(char *s, int size, FILE *stream);
+static int fake_pclose(FILE *fp);
+
+#define socket fake_socket
+#define setsockopt fake_setsockopt
+#define bind fake_bind
+#define close fake_close
+#define system fake_system
+#define usleep fake_usleep
+#define popen fake_popen
+#define fgets fake_fgets
+#define pclose fake_pclose
+#define main mdns_advertiser_main
+#include "@MDNS_SOURCE@"
+#undef main
+#undef pclose
+#undef fgets
+#undef popen
+#undef usleep
+#undef system
+#undef close
+#undef bind
+#undef setsockopt
+#undef socket
+
+static int socket_calls;
+static int bind_calls;
+static int close_calls;
+static int reuseaddr_sets;
+static int reuseport_sets;
+static int membership_sets;
+static int outbound_sets;
+static int system_calls;
+static int fake_mdns_alive;
+static int fake_fgets_served;
+static int next_fd = 100;
+
+static void reset_fakes(void) {
+    socket_calls = 0;
+    bind_calls = 0;
+    close_calls = 0;
+    reuseaddr_sets = 0;
+    reuseport_sets = 0;
+    membership_sets = 0;
+    outbound_sets = 0;
+    system_calls = 0;
+    fake_mdns_alive = 0;
+    fake_fgets_served = 0;
+    next_fd = 100;
+}
+
+static int fake_socket(int domain, int type, int protocol) {
+    (void)domain;
+    (void)type;
+    (void)protocol;
+    socket_calls++;
+    return next_fd++;
+}
+
+static int fake_setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen) {
+    (void)sockfd;
+    (void)optval;
+    (void)optlen;
+    if (level == SOL_SOCKET && optname == SO_REUSEADDR) {
+        reuseaddr_sets++;
+    }
+#ifdef SO_REUSEPORT
+    if (level == SOL_SOCKET && optname == SO_REUSEPORT) {
+        reuseport_sets++;
+    }
+#endif
+    if (level == IPPROTO_IP && optname == IP_ADD_MEMBERSHIP) {
+        membership_sets++;
+    }
+    if (level == IPPROTO_IP && optname == IP_MULTICAST_IF) {
+        outbound_sets++;
+    }
+    return 0;
+}
+
+static int fake_bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+    (void)sockfd;
+    (void)addr;
+    (void)addrlen;
+    bind_calls++;
+    return 0;
+}
+
+static int fake_close(int fd) {
+    (void)fd;
+    close_calls++;
+    return 0;
+}
+
+static int fake_system(const char *cmd) {
+    (void)cmd;
+    system_calls++;
+    return 0;
+}
+
+static int fake_usleep(useconds_t usec) {
+    (void)usec;
+    return 0;
+}
+
+static FILE *fake_popen(const char *cmd, const char *mode) {
+    (void)cmd;
+    (void)mode;
+    if (!fake_mdns_alive) {
+        return NULL;
+    }
+    fake_fgets_served = 0;
+    return (FILE *)1;
+}
+
+static char *fake_fgets(char *s, int size, FILE *stream) {
+    const char *line = "S mDNSResponder\n";
+    (void)stream;
+    if (!fake_mdns_alive || fake_fgets_served || size <= 0) {
+        return NULL;
+    }
+    snprintf(s, (size_t)size, "%s", line);
+    fake_fgets_served = 1;
+    return s;
+}
+
+static int fake_pclose(FILE *fp) {
+    (void)fp;
+    return 0;
+}
+
+static void add_contexts(struct iface_context_set *contexts) {
+    memset(contexts, 0, sizeof(*contexts));
+    append_iface_context(contexts, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    append_iface_context(contexts, "bcmeth0", inet_addr("192.168.1.217"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+}
+
+int main(void) {
+    struct iface_context_set contexts;
+    struct sockaddr_in source;
+    int fd;
+
+    add_contexts(&contexts);
+    if (contexts.count != 2) {
+        return 1;
+    }
+    memset(&source, 0, sizeof(source));
+    source.sin_addr.s_addr = inet_addr("192.168.1.88");
+    if (select_response_context(&contexts, &source) != &contexts.contexts[1]) {
+        return 6;
+    }
+    source.sin_addr.s_addr = inet_addr("172.16.0.10");
+    if (select_response_context(&contexts, &source) != &contexts.contexts[0]) {
+        return 7;
+    }
+
+    reset_fakes();
+    fd = acquire_mdns_auto_socket(0, &contexts);
+    if (fd < 0 || socket_calls != 1 || bind_calls != 1 || close_calls != 0 ||
+        reuseaddr_sets != 0 || reuseport_sets != 0 || membership_sets != 2 || outbound_sets != 1) {
+        return 2;
+    }
+
+    reset_fakes();
+    fake_mdns_alive = 1;
+    fd = acquire_mdns_auto_socket(0, &contexts);
+    if (fd >= 0 || socket_calls != TAKEOVER_RETRY_COUNT * 2 ||
+        close_calls != TAKEOVER_RETRY_COUNT * 2 || reuseaddr_sets != 0 || reuseport_sets != 0) {
+        return 3;
+    }
+
+    reset_fakes();
+    fd = acquire_mdns_auto_socket(1, &contexts);
+    if (fd < 0 || socket_calls != 1 || reuseaddr_sets != 1 || membership_sets != 2) {
+        return 4;
+    }
+#ifdef SO_REUSEPORT
+    if (reuseport_sets != 1) {
+        return 5;
+    }
+#endif
+
+    return 0;
+}
+'''.replace("@MDNS_SOURCE@", mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_auto_ip_takeover_socket_shape")
+        self.assertEqual(run.returncode, 0, run.stderr)
+
+    def test_mdns_auto_ip_runtime_socket_is_exclusive(self) -> None:
+        if shutil.which("cc") is None:
+            self.skipTest("cc not available")
+
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as free_sock:
+            free_sock.bind(("", 0))
+            port = free_sock.getsockname()[1]
+
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = f'''
+#include <stdio.h>
+
+static int fake_system(const char *cmd) {{
+    (void)cmd;
+    return 0;
+}}
+
+static FILE *fake_popen(const char *cmd, const char *mode) {{
+    (void)cmd;
+    (void)mode;
+    return NULL;
+}}
+
+#define system fake_system
+#define popen fake_popen
+#include "{mdns_source}"
+#undef popen
+#undef system
+'''
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            c_path = tmp / "mdns_exclusive_port.c"
+            bin_path = tmp / "mdns_exclusive_port"
+            c_path.write_text(source)
+            proc = subprocess.run(
+                [
+                    "cc",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    f"-DMDNS_PORT={port}",
+                    str(c_path),
+                    "-o",
+                    str(bin_path),
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+            probe = subprocess.run(
+                [str(bin_path), "--print-auto-ip-cidrs"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+            if probe.returncode == 11:
+                self.skipTest("host has no usable non-loopback IPv4 for auto-IP test")
+            self.assertEqual(probe.returncode, 0, probe.stderr)
+
+            run = subprocess.Popen(
+                [
+                    str(bin_path),
+                    "--auto-ip",
+                    "--instance",
+                    "TimeCapsule",
+                    "--host",
+                    "timecapsule",
+                    "--airport-wama",
+                    "80:EA:96:E6:58:68",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            stderr_chunks: list[str] = []
+            selector = selectors.DefaultSelector()
+            assert run.stderr is not None
+            selector.register(run.stderr, selectors.EVENT_READ)
+            deadline = time.monotonic() + 8
+            ready = False
+            try:
+                while run.poll() is None and time.monotonic() < deadline:
+                    events = selector.select(max(0.0, min(0.05, deadline - time.monotonic())))
+                    if not events:
+                        continue
+                    line = run.stderr.readline()
+                    if line:
+                        stderr_chunks.append(line)
+                        if "mDNS auto-ip takeover established" in line:
+                            ready = True
+                            break
+                self.assertTrue(ready, "".join(stderr_chunks))
+
+                competitor = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                try:
+                    competitor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    if hasattr(socket, "SO_REUSEPORT"):
+                        competitor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+                    with self.assertRaises(OSError):
+                        competitor.bind(("", port))
+                finally:
+                    competitor.close()
+            finally:
+                selector.close()
+                run.terminate()
+                try:
+                    stdout, stderr = run.communicate(timeout=2)
+                except subprocess.TimeoutExpired:
+                    run.kill()
+                    stdout, stderr = run.communicate(timeout=2)
+                stderr_chunks.append(stderr)
+                self.assertIsNotNone(stdout)
 
     def test_mdns_advertiser_extracts_service_type_from_arbitrary_instance_fqdn(self) -> None:
         if shutil.which("cc") is None:
