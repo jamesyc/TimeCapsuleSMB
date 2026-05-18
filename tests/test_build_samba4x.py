@@ -22,6 +22,20 @@ class Samba4XBuildScriptTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
 
+    def make_fake_cross_execute(self, path: Path) -> None:
+        self.make_executable(
+            path,
+            textwrap.dedent(
+                """\
+                #!/bin/sh
+                if [ -n "${TEST_CROSS_EXEC_ARGS:-}" ]; then
+                    printf '%s\\n' "$@" >> "$TEST_CROSS_EXEC_ARGS"
+                fi
+                exit "${TEST_CROSS_EXEC_RC:-0}"
+                """
+            ),
+        )
+
     def prepare_fake_toolchain(self, out: Path, triple: str) -> None:
         tools = out / "tools" / "bin"
         tools.mkdir(parents=True, exist_ok=True)
@@ -90,9 +104,31 @@ class Samba4XBuildScriptTests(unittest.TestCase):
                 """\
                 #!/bin/sh
                 : > "$TEST_CONFIGURE_ARGS"
+                cross_answers=
                 for arg in "$@"; do
                     printf '%s\\n' "$arg" >> "$TEST_CONFIGURE_ARGS"
+                    case "$arg" in
+                        --cross-answers=*)
+                            cross_answers="${arg#--cross-answers=}"
+                            ;;
+                    esac
                 done
+                if [ -n "${TEST_SEED_CAPTURE:-}" ] && [ -n "$cross_answers" ]; then
+                    cp "$cross_answers" "$TEST_SEED_CAPTURE"
+                fi
+                if [ "${TEST_CONFIGURE_WRITES_ANSWERS:-0}" = "1" ] && [ -n "$cross_answers" ]; then
+                    printf '%s: %s\\n' \
+                        'Checking whether the realpath function allows a NULL argument' \
+                        "${TEST_REALPATH_ANSWER:-OK}" >> "$cross_answers"
+                    if [ -n "${TEST_DUPLICATE_REALPATH_ANSWER:-}" ]; then
+                        printf '%s: %s\\n' \
+                            'Checking whether the realpath function allows a NULL argument' \
+                            "$TEST_DUPLICATE_REALPATH_ANSWER" >> "$cross_answers"
+                    fi
+                    if [ -n "${TEST_EXTRA_GENERATED_ANSWER:-}" ]; then
+                        printf '%s\\n' "$TEST_EXTRA_GENERATED_ANSWER" >> "$cross_answers"
+                    fi
+                fi
                 mkdir -p bin/c4che bin/default/include bin/default/source3/include bin/default/source4/include
                 cat > bin/c4che/default.py <<'EOF'
                 ENABLE_PIE = True
@@ -217,34 +253,100 @@ class Samba4XBuildScriptTests(unittest.TestCase):
         self.assertEqual(len(matches), 1)
         return matches[0]
 
+    def cross_execute_args(self, args: list[str]) -> list[str]:
+        return [arg for arg in args if arg.startswith("--cross-execute=")]
+
     def test_default_build_uses_cross_answers_without_cross_execute(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             capture = root / "configure-args.txt"
+            cross_exec_capture = root / "cross-exec-args.txt"
+            cross_exec = root / "cross-exec.sh"
+            self.make_fake_cross_execute(cross_exec)
             env = self.env_for_lane(root, "netbsd7", capture)
+            env["SAMBA4X_CROSS_EXECUTE"] = str(cross_exec)
+            env["TEST_CROSS_EXEC_ARGS"] = str(cross_exec_capture)
 
             result = self.run_wrapper("samba4x.sh", env)
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             args = self.configure_args(capture)
             self.assertIn("--cross-compile", args)
-            self.assertNotIn("--cross-execute=", "\n".join(args))
+            self.assertEqual(self.cross_execute_args(args), [])
             cross_answers = self.cross_answer_arg(args)
             self.assertTrue(cross_answers.endswith("/samba4x-4.24.1-netbsd7.answers"))
+            self.assertFalse(cross_exec_capture.exists())
 
-    def test_refresh_mode_keeps_cross_answers_and_adds_cross_execute(self) -> None:
+    def test_generation_helper_starts_from_fresh_seed_and_ignores_stale_answers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             capture = root / "configure-args.txt"
+            seed_capture = root / "seed-before-configure.answers"
+            output_dir = root / "generated"
+            cross_exec_capture = root / "cross-exec-args.txt"
+            cross_exec = root / "cross-exec.sh"
+            stale_answers = root / "stale.answers"
+            stale_answers.write_text(
+                "Checking stale tracked answer: CARRIED-FORWARD\n"
+                "Checking whether the realpath function allows a NULL argument: OK\n"
+            )
+            self.make_fake_cross_execute(cross_exec)
+            env = self.env_for_lane(root, "netbsd4be", capture)
+            env.update(
+                {
+                    "SAMBA4X_CROSS_ANSWERS": str(stale_answers),
+                    "SAMBA4X_CROSS_EXECUTE": str(cross_exec),
+                    "SAMBA4X_GENERATED_CROSS_ANSWERS_DIR": str(output_dir),
+                    "TEST_CONFIGURE_WRITES_ANSWERS": "1",
+                    "TEST_REALPATH_ANSWER": "NO",
+                    "TEST_SEED_CAPTURE": str(seed_capture),
+                    "TEST_CROSS_EXEC_ARGS": str(cross_exec_capture),
+                    "TEST_CROSS_EXEC_RC": "1",
+                }
+            )
+
+            result = self.run_wrapper("generate-samba4x-cross-answers-oldbe.sh", env)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            args = self.configure_args(capture)
+            cross_answers = self.cross_answer_arg(args)
+            self.assertTrue(cross_answers.endswith("/generated-samba4x-4.24.1-netbsd4be.answers"))
+            self.assertEqual(len(self.cross_execute_args(args)), 1)
+            seed = seed_capture.read_text()
+            self.assertIn('Checking uname sysname type: "NetBSD"', seed)
+            self.assertNotIn("CARRIED-FORWARD", seed)
+            generated = output_dir / "samba4x-4.24.1-netbsd4be.answers"
+            generated_text = generated.read_text()
+            self.assertIn("Checking whether the realpath function allows a NULL argument: NO", generated_text)
+            self.assertNotIn("CARRIED-FORWARD", generated_text)
+            self.assertTrue(cross_exec_capture.exists())
+
+    def test_refresh_mode_is_generation_alias_with_cross_execute(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            capture = root / "configure-args.txt"
+            output_dir = root / "generated"
+            cross_exec = root / "cross-exec.sh"
+            self.make_fake_cross_execute(cross_exec)
             env = self.env_for_lane(root, "netbsd7", capture)
-            env["SAMBA4X_REFRESH_CROSS_ANSWERS"] = "1"
+            env.update(
+                {
+                    "SAMBA4X_REFRESH_CROSS_ANSWERS": "1",
+                    "SAMBA4X_CROSS_EXECUTE": str(cross_exec),
+                    "SAMBA4X_GENERATED_CROSS_ANSWERS_DIR": str(output_dir),
+                    "TEST_CONFIGURE_WRITES_ANSWERS": "1",
+                    "TEST_REALPATH_ANSWER": "OK",
+                    "TEST_CROSS_EXEC_RC": "0",
+                }
+            )
 
             result = self.run_wrapper("samba4x.sh", env)
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             args = self.configure_args(capture)
             self.cross_answer_arg(args)
-            self.assertTrue(any(arg.startswith("--cross-execute=") for arg in args))
+            self.assertEqual(len(self.cross_execute_args(args)), 1)
+            self.assertTrue((output_dir / "samba4x-4.24.1-netbsd7.answers").exists())
 
     def test_lane_wrappers_select_their_default_cross_answer_files(self) -> None:
         cases = (
@@ -292,6 +394,104 @@ class Samba4XBuildScriptTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("contains UNKNOWN entries", Path(env["SAMBA4X_NETBSD7_LOG"]).read_text())
             self.assertFalse(capture.exists())
+
+    def test_conflicting_duplicate_cross_answers_fail_before_configure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            capture = root / "configure-args.txt"
+            answers = root / "conflicting.answers"
+            answers.write_text(
+                "Checking duplicate behavior: OK\n"
+                "Checking duplicate behavior: NO\n"
+            )
+            env = self.env_for_lane(root, "netbsd7", capture)
+            env["SAMBA4X_CROSS_ANSWERS"] = str(answers)
+
+            result = self.run_wrapper("samba4x.sh", env)
+
+            self.assertNotEqual(result.returncode, 0)
+            log = Path(env["SAMBA4X_NETBSD7_LOG"]).read_text()
+            self.assertIn("contains conflicting duplicate answers", log)
+            self.assertFalse(capture.exists())
+
+    def test_netbsd4_realpath_ok_cross_answers_fail_before_configure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            capture = root / "configure-args.txt"
+            answers = root / "netbsd4-bad-realpath.answers"
+            answers.write_text(
+                'Checking uname sysname type: "NetBSD"\n'
+                "Checking whether the realpath function allows a NULL argument: OK\n"
+            )
+            env = self.env_for_lane(root, "netbsd4be", capture)
+            env["SAMBA4X_CROSS_ANSWERS"] = str(answers)
+
+            result = self.run_wrapper("samba4xoldbe.sh", env)
+
+            self.assertNotEqual(result.returncode, 0)
+            log = Path(env["SAMBA4X_NETBSD4BE_LOG"]).read_text()
+            self.assertIn("incorrectly allows realpath(path, NULL)", log)
+            self.assertFalse(capture.exists())
+
+    def test_generation_normalizes_duplicate_answers_before_install(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            capture = root / "configure-args.txt"
+            output_dir = root / "generated"
+            cross_exec = root / "cross-exec.sh"
+            self.make_fake_cross_execute(cross_exec)
+            env = self.env_for_lane(root, "netbsd4be", capture)
+            env.update(
+                {
+                    "SAMBA4X_CROSS_EXECUTE": str(cross_exec),
+                    "SAMBA4X_GENERATED_CROSS_ANSWERS_DIR": str(output_dir),
+                    "TEST_CONFIGURE_WRITES_ANSWERS": "1",
+                    "TEST_REALPATH_ANSWER": "OK",
+                    "TEST_DUPLICATE_REALPATH_ANSWER": "NO",
+                    "TEST_CROSS_EXEC_RC": "1",
+                }
+            )
+
+            result = self.run_wrapper("generate-samba4x-cross-answers-oldbe.sh", env)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            generated = output_dir / "samba4x-4.24.1-netbsd4be.answers"
+            realpath_lines = [
+                line
+                for line in generated.read_text().splitlines()
+                if line.startswith("Checking whether the realpath function allows a NULL argument:")
+            ]
+            self.assertEqual(
+                realpath_lines,
+                ["Checking whether the realpath function allows a NULL argument: NO"],
+            )
+
+    def test_generation_fails_when_independent_probe_disagrees(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            capture = root / "configure-args.txt"
+            output_dir = root / "generated"
+            cross_exec = root / "cross-exec.sh"
+            self.make_fake_cross_execute(cross_exec)
+            env = self.env_for_lane(root, "netbsd4be", capture)
+            env.update(
+                {
+                    "SAMBA4X_CROSS_EXECUTE": str(cross_exec),
+                    "SAMBA4X_GENERATED_CROSS_ANSWERS_DIR": str(output_dir),
+                    "TEST_CONFIGURE_WRITES_ANSWERS": "1",
+                    "TEST_REALPATH_ANSWER": "OK",
+                    "TEST_CROSS_EXEC_RC": "1",
+                }
+            )
+
+            result = self.run_wrapper("generate-samba4x-cross-answers-oldbe.sh", env)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "disagrees with independent realpath(path, NULL) probe",
+                Path(env["SAMBA4X_NETBSD4BE_LOG"]).read_text(),
+            )
+            self.assertFalse((output_dir / "samba4x-4.24.1-netbsd4be.answers").exists())
 
 
 if __name__ == "__main__":

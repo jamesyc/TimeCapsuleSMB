@@ -356,6 +356,39 @@ samba4x_abs_path() {
     esac
 }
 
+samba4x_default_cross_answers_file() {
+    lane="$(samba4x_cross_answer_lane)"
+    printf '%s/cross-answers/samba4x-%s-%s.answers\n' "$SAMBA4X_SCRIPT_DIR" "$SAMBA4X_VERSION" "$lane"
+}
+
+samba4x_generated_cross_answers_file() {
+    lane="$(samba4x_cross_answer_lane)"
+    output_dir="${SAMBA4X_GENERATED_CROSS_ANSWERS_DIR:-$SAMBA4X_SCRIPT_DIR/cross-answers}"
+    printf '%s/samba4x-%s-%s.answers\n' "$output_dir" "$SAMBA4X_VERSION" "$lane"
+}
+
+samba4x_answer_value() {
+    answers_file="$1"
+    answer_key="$2"
+    "$PYTHON3_BIN" - "$answers_file" "$answer_key" <<'PY'
+import sys
+
+path, wanted = sys.argv[1], sys.argv[2]
+value = None
+with open(path, encoding="utf-8") as fh:
+    for raw in fh:
+        line = raw.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        key, val = line.rsplit(":", 1)
+        if key.rstrip() == wanted:
+            value = val.strip()
+if value is None:
+    sys.exit(1)
+print(value)
+PY
+}
+
 preflight_samba4x_cross_answers() {
     answers_file="$1"
 
@@ -373,11 +406,205 @@ preflight_samba4x_cross_answers() {
         echo "Refresh or resolve those answers before running an offline build."
         exit 1
     fi
+    duplicate_conflicts="$("$PYTHON3_BIN" - "$answers_file" <<'PY'
+import sys
+
+seen = {}
+conflicts = []
+with open(sys.argv[1], encoding="utf-8") as fh:
+    for raw in fh:
+        line = raw.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        key, value = line.rsplit(":", 1)
+        key = key.rstrip()
+        value = value.strip()
+        old = seen.get(key)
+        if old is not None and old != value:
+            conflicts.append(f"{key}: {old} != {value}")
+        seen[key] = value
+print("\n".join(conflicts))
+PY
+)"
+    if [ -n "$duplicate_conflicts" ]; then
+        echo "Samba 4.x cross-answers file contains conflicting duplicate answers: $answers_file"
+        printf '%s\n' "$duplicate_conflicts"
+        exit 1
+    fi
+    if [ "$SDK_FAMILY" = "netbsd4" ]; then
+        realpath_answer="$(samba4x_answer_value "$answers_file" "Checking whether the realpath function allows a NULL argument" || true)"
+        if [ "$realpath_answer" = "OK" ]; then
+            echo "Samba 4.x NetBSD 4 cross-answers file incorrectly allows realpath(path, NULL): $answers_file"
+            echo "Regenerate this file with a matching live NetBSD 4 target before running an offline build."
+            exit 1
+        fi
+    fi
+}
+
+write_samba4x_cross_answer_seed() {
+    answers_file="$1"
+    lane="$2"
+
+    case "$lane" in
+        netbsd7)
+            uname_release="6.0"
+            uname_version="NetBSD 6.0"
+            lane_description="NetBSD 6/7 Time Capsule"
+            ;;
+        netbsd4le)
+            uname_release="4.0"
+            uname_version="NetBSD 4.0"
+            lane_description="NetBSD 4 little-endian Time Capsule"
+            ;;
+        netbsd4be)
+            uname_release="4.0"
+            uname_version="NetBSD 4.0"
+            lane_description="NetBSD 4 big-endian Time Capsule"
+            ;;
+        *)
+            echo "Unsupported Samba 4.x cross-answer seed lane: $lane" >&2
+            exit 1
+            ;;
+    esac
+
+    cat >"$answers_file" <<EOF
+# Samba $SAMBA4X_VERSION $lane_description cross-configure answers.
+# Generated from a minimal seed. Runtime-behavior answers must be produced by
+# SAMBA4X_GENERATE_CROSS_ANSWERS=1 against a matching live target.
+Checking uname sysname type: "NetBSD"
+Checking uname machine type: "evbarm"
+Checking uname release type: "$uname_release"
+Checking uname version type: "$uname_version"
+EOF
+}
+
+samba4x_run_realpath_null_probe() {
+    probe_c="$SAMBA4X_BUILD/realpath-null-probe.c"
+    probe_bin="$SAMBA4X_BUILD/realpath-null-probe"
+
+    cat >"$probe_c" <<'EOF'
+#include <signal.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+static void exit_on_signal(int ignored)
+{
+	(void)ignored;
+	_exit(2);
+}
+
+int main(void)
+{
+	char *resolved;
+	signal(SIGSEGV, exit_on_signal);
+	signal(SIGBUS, exit_on_signal);
+	resolved = realpath("/tmp", NULL);
+	if (resolved == NULL) {
+		return 1;
+	}
+	free(resolved);
+	return 0;
+}
+EOF
+
+    # Use the lane compiler command instead of raw $TRIPLE-gcc: NetBSD6/7
+    # carries --sysroot in CC, and the validation probe must link exactly like
+    # the target configure tests it is checking.
+    # shellcheck disable=SC2086
+    $CC $CPPFLAGS $CFLAGS $LDFLAGS "$probe_c" -o "$probe_bin"
+    if "$CROSS_EXECUTE" "$probe_bin" >/dev/null 2>&1; then
+        printf '%s\n' "OK"
+    else
+        printf '%s\n' "NO"
+    fi
+}
+
+validate_generated_samba4x_cross_answers() {
+    answers_file="$1"
+    lane="$(samba4x_cross_answer_lane)"
+    realpath_key="Checking whether the realpath function allows a NULL argument"
+    realpath_answer="$(samba4x_answer_value "$answers_file" "$realpath_key" || true)"
+    if [ -z "$realpath_answer" ]; then
+        echo "Generated Samba 4.x cross-answers file is missing: $realpath_key"
+        exit 1
+    fi
+
+    realpath_probe="$(samba4x_run_realpath_null_probe)"
+    if [ "$realpath_answer" != "$realpath_probe" ]; then
+        echo "Generated Samba 4.x cross-answer disagrees with independent realpath(path, NULL) probe."
+        echo "Waf answer: $realpath_answer"
+        echo "Independent probe: $realpath_probe"
+        exit 1
+    fi
+    case "$lane:$realpath_answer" in
+        netbsd4le:NO|netbsd4be:NO|netbsd7:OK|netbsd7:NO)
+            ;;
+        netbsd4*:OK)
+            echo "Generated Samba 4.x NetBSD 4 answer incorrectly allows realpath(path, NULL)."
+            exit 1
+            ;;
+        *)
+            echo "Unexpected realpath(path, NULL) answer for $lane: $realpath_answer"
+            exit 1
+            ;;
+    esac
+}
+
+install_generated_samba4x_cross_answers() {
+    source_file="$1"
+    output_file="$(samba4x_generated_cross_answers_file)"
+    lane="$(samba4x_cross_answer_lane)"
+    mkdir -p "$(dirname "$output_file")"
+
+    "$PYTHON3_BIN" - "$source_file" "$output_file" "$SAMBA4X_VERSION" "$lane" <<'PY'
+import sys
+
+source, output, version, lane = sys.argv[1:5]
+descriptions = {
+    "netbsd7": "NetBSD 6/7 Time Capsule",
+    "netbsd4le": "NetBSD 4 little-endian Time Capsule",
+    "netbsd4be": "NetBSD 4 big-endian Time Capsule",
+}
+description = descriptions[lane]
+order = []
+values = {}
+with open(source, encoding="utf-8") as fh:
+    for raw in fh:
+        line = raw.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        key, value = line.rsplit(":", 1)
+        key = key.rstrip()
+        value = value.strip()
+        if key in values:
+            order.remove(key)
+        order.append(key)
+        values[key] = value
+
+with open(output, "w", encoding="utf-8") as out:
+    out.write(f"# Samba {version} {description} cross-configure answers.\n")
+    out.write("# Generated with build/generate-samba4x-cross-answers*.sh from a matching live target.\n")
+    out.write("# Normal Samba4X builds consume this file offline and must not require device SSH.\n")
+    for key in order:
+        out.write(f"{key}: {values[key]}\n")
+PY
+    preflight_samba4x_cross_answers "$output_file"
+    echo "Generated Samba 4.x cross-answers: $output_file"
 }
 
 prepare_samba4x_cross_answers() {
     lane="$(samba4x_cross_answer_lane)"
-    default_answers="$SAMBA4X_SCRIPT_DIR/cross-answers/samba4x-$SAMBA4X_VERSION-$lane.answers"
+    default_answers="$(samba4x_default_cross_answers_file)"
+    if [ "$SAMBA4X_GENERATE_CROSS_ANSWERS" = "1" ]; then
+        active_answers="$SAMBA4X_BUILD/generated-samba4x-$SAMBA4X_VERSION-$lane.answers"
+        mkdir -p "$SAMBA4X_BUILD"
+        write_samba4x_cross_answer_seed "$active_answers" "$lane"
+        SAMBA4X_CROSS_ANSWERS_SOURCE="fresh generated seed"
+        SAMBA4X_ACTIVE_CROSS_ANSWERS="$active_answers"
+        export SAMBA4X_CROSS_ANSWERS_SOURCE SAMBA4X_ACTIVE_CROSS_ANSWERS
+        return 0
+    fi
+
     source_answers="$(samba4x_abs_path "${SAMBA4X_CROSS_ANSWERS:-$default_answers}")"
     active_answers="$SAMBA4X_BUILD/$(basename "$source_answers")"
 
@@ -428,7 +655,7 @@ configure_samba4x() {
     if [ "$SDK_FAMILY" = "netbsd4" ]; then
         set -- "$@" --disable-fault-handling --without-libarchive
     fi
-    if [ "$SAMBA4X_REFRESH_CROSS_ANSWERS" = "1" ]; then
+    if [ "$SAMBA4X_GENERATE_CROSS_ANSWERS" = "1" ]; then
         set -- "$@" "--cross-execute=$CROSS_EXECUTE"
     fi
 
@@ -767,8 +994,12 @@ export PKG_CONFIG_PATH="$SAMBA4X_DEPS/lib/pkgconfig"
 export PKG_CONFIG_LIBDIR="$SAMBA4X_DEPS/lib/pkgconfig"
 export PKG_CONFIG_SYSROOT_DIR=
 
-CROSS_EXECUTE="$SAMBA4X_SCRIPT_DIR/samba4-cross-exec.sh"
+CROSS_EXECUTE="${SAMBA4X_CROSS_EXECUTE:-$SAMBA4X_SCRIPT_DIR/samba4-cross-exec.sh}"
 SAMBA4X_REFRESH_CROSS_ANSWERS="${SAMBA4X_REFRESH_CROSS_ANSWERS:-0}"
+SAMBA4X_GENERATE_CROSS_ANSWERS="${SAMBA4X_GENERATE_CROSS_ANSWERS:-0}"
+if [ "$SAMBA4X_REFRESH_CROSS_ANSWERS" = "1" ]; then
+    SAMBA4X_GENERATE_CROSS_ANSWERS=1
+fi
 SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_acl_xattr'
 
 mkdir -p "$(dirname "$SAMBA4X_LOG")"
@@ -805,6 +1036,7 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
     echo "CROSS_EXECUTE=$CROSS_EXECUTE"
     echo "CROSS_EXEC_REMOTE_DIR=$CROSS_EXEC_REMOTE_DIR"
     echo "SAMBA4X_REFRESH_CROSS_ANSWERS=$SAMBA4X_REFRESH_CROSS_ANSWERS"
+    echo "SAMBA4X_GENERATE_CROSS_ANSWERS=$SAMBA4X_GENERATE_CROSS_ANSWERS"
 
     if [ ! -f "$SAMBA4X_SRC_DIR/configure" ]; then
         echo "Missing Samba 4.x source tree at $SAMBA4X_SRC_DIR"
@@ -828,6 +1060,11 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
     PYTHONHASHSEED=1 "$PYTHON3_BIN" ./buildtools/bin/waf distclean >/dev/null 2>&1 || true
 
     configure_samba4x
+    if [ "$SAMBA4X_GENERATE_CROSS_ANSWERS" = "1" ]; then
+        validate_generated_samba4x_cross_answers "$SAMBA4X_ACTIVE_CROSS_ANSWERS"
+        install_generated_samba4x_cross_answers "$SAMBA4X_ACTIVE_CROSS_ANSWERS"
+        exit 0
+    fi
 
     for cache_file in "$SAMBA4X_SRC_DIR"/bin/c4che/*.py; do
         [ -f "$cache_file" ] || continue

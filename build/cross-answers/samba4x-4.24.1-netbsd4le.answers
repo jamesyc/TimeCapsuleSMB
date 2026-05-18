@@ -1,20 +1,17 @@
 # Samba 4.24.1 NetBSD 4 little-endian Time Capsule cross-configure answers.
-# Waf reads this file during offline VM builds. Do not leave UNKNOWN entries
-# here; use SAMBA4X_REFRESH_CROSS_ANSWERS=1 only when intentionally refreshing
-# this file from a matching live target.
+# Generated with build/generate-samba4x-cross-answers*.sh from a matching live target.
+# Normal Samba4X builds consume this file offline and must not require device SSH.
 Checking uname sysname type: "NetBSD"
 Checking uname machine type: "evbarm"
 Checking uname release type: "4.0"
 Checking uname version type: "NetBSD 4.0"
-rpath library support: NO
--Wl,--version-script support: NO
-Checking getconf LFS_CFLAGS: NO
+rpath library support: (2, "")
+-Wl,--version-script support: (2, "")
+Checking getconf LFS_CFLAGS: (127, "")
 Checking for large file support without additional flags: OK
-Checking for -D_FILE_OFFSET_BITS=64: OK
-Checking for -D_LARGE_FILES: OK
-Checking correct behavior of strtoll: OK
-Checking for working strptime: OK
-Checking for C99 vsnprintf: OK
+Checking correct behavior of strtoll: NO
+Checking for working strptime: NO
+Checking for C99 vsnprintf: "1"
 Checking for HAVE_SHARED_MMAP: OK
 Checking for HAVE_INCOHERENT_MMAP: NO
 Checking for HAVE_SECURE_MKSTEMP: OK
@@ -22,18 +19,15 @@ Checking for gnutls fips mode support: NO
 Checking value of NSIG: "64"
 Checking value of _NSIG: "64"
 Checking for a 64-bit host to support lmdb: NO
-Checking errno of iconv for illegal multibyte sequence: OK
-Checking if can we convert from CP850 to UCS-2LE: OK
-Checking if can we convert from IBM850 to UCS-2LE: OK
-Checking if can we convert from UTF-8 to UCS-2LE: OK
-Checking if can we convert from UTF8 to UCS-2LE: OK
-Checking whether setreuid is available: OK
-Checking whether setresuid is available: NO
-Checking whether seteuid is available: OK
+Checking errno of iconv for illegal multibyte sequence: (255, "")
+Checking if can we convert from CP850 to UCS-2LE: (255, "")
+Checking if can we convert from IBM850 to UCS-2LE: (255, "")
+Checking if can we convert from UTF-8 to UCS-2LE: (255, "")
+Checking if can we convert from UTF8 to UCS-2LE: (255, "")
+Checking whether setreuid is available: "OK"
 Checking whether fcntl locking is available: OK
-Checking for the maximum value of the 'time_t' type: OK
-Checking whether the realpath function allows a NULL argument: OK
+Checking for the maximum value of the 'time_t' type: NO
+Checking whether the realpath function allows a NULL argument: NO
 Checking for ftruncate extend: OK
 Checking for readlink breakage: NO
 getcwd takes a NULL argument: OK
-checking for clnt_create(): NO
