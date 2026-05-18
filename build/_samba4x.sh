@@ -324,10 +324,80 @@ verify_samba4x_runtime_config() {
     require_config_symbol_defined "$config_header" "HAVE_IFACE_IFCONF"
 }
 
+samba4x_cross_answer_lane() {
+    case "$SDK_FAMILY:$NETBSD4_ABI" in
+        netbsd7:*)
+            printf '%s\n' "netbsd7"
+            ;;
+        netbsd4:le)
+            printf '%s\n' "netbsd4le"
+            ;;
+        netbsd4:be)
+            printf '%s\n' "netbsd4be"
+            ;;
+        *)
+            echo "Unsupported Samba 4.x cross-answer lane: $SDK_FAMILY / $NETBSD4_ABI" >&2
+            return 1
+            ;;
+    esac
+}
+
+samba4x_abs_path() {
+    path="$1"
+    case "$path" in
+        /*)
+            printf '%s\n' "$path"
+            ;;
+        *)
+            printf '%s/%s\n' "$(pwd)" "$path"
+            ;;
+    esac
+}
+
+preflight_samba4x_cross_answers() {
+    answers_file="$1"
+
+    if [ ! -f "$answers_file" ]; then
+        echo "Missing Samba 4.x cross-answers file: $answers_file"
+        echo "Set SAMBA4X_CROSS_ANSWERS to a complete answers file or add the default lane file under build/cross-answers."
+        exit 1
+    fi
+    if [ ! -s "$answers_file" ]; then
+        echo "Samba 4.x cross-answers file is empty: $answers_file"
+        exit 1
+    fi
+    if grep -E ':[[:space:]]*UNKNOWN([[:space:]]*$|[[:space:]]+#)' "$answers_file" >/dev/null 2>&1; then
+        echo "Samba 4.x cross-answers file contains UNKNOWN entries: $answers_file"
+        echo "Refresh or resolve those answers before running an offline build."
+        exit 1
+    fi
+}
+
+prepare_samba4x_cross_answers() {
+    lane="$(samba4x_cross_answer_lane)"
+    default_answers="$SCRIPT_DIR/cross-answers/samba4x-$SAMBA4X_VERSION-$lane.answers"
+    source_answers="$(samba4x_abs_path "${SAMBA4X_CROSS_ANSWERS:-$default_answers}")"
+    active_answers="$SAMBA4X_BUILD/$(basename "$source_answers")"
+
+    preflight_samba4x_cross_answers "$source_answers"
+    mkdir -p "$SAMBA4X_BUILD"
+    if [ "$source_answers" != "$active_answers" ]; then
+        cp "$source_answers" "$active_answers"
+    fi
+    preflight_samba4x_cross_answers "$active_answers"
+
+    SAMBA4X_CROSS_ANSWERS_SOURCE="$source_answers"
+    SAMBA4X_ACTIVE_CROSS_ANSWERS="$active_answers"
+    export SAMBA4X_CROSS_ANSWERS_SOURCE SAMBA4X_ACTIVE_CROSS_ANSWERS
+}
+
 configure_samba4x() {
+    # Time Capsule smbd does not use filesystem quota integration, and Samba's
+    # optional quotactl runtime probe has a colon in its Waf message, which
+    # cannot be represented reliably in a colon-delimited cross-answers file.
     set -- \
         --cross-compile \
-        "--cross-execute=$CROSS_EXECUTE" \
+        "--cross-answers=$SAMBA4X_ACTIVE_CROSS_ANSWERS" \
         "--hostcc=$HOST_CC" \
         "--prefix=$SAMBA4X_STAGE" \
         --without-pie \
@@ -347,6 +417,7 @@ configure_samba4x() {
         --without-winbind \
         --without-utmp \
         --without-syslog \
+        --without-quotas \
         --nonshared-binary=smbd/smbd
 
     if [ -n "$SAMBA4X_STATIC_MODULES" ]; then
@@ -354,6 +425,9 @@ configure_samba4x() {
     fi
     if [ "$SDK_FAMILY" = "netbsd4" ]; then
         set -- "$@" --disable-fault-handling --without-libarchive
+    fi
+    if [ "$SAMBA4X_REFRESH_CROSS_ANSWERS" = "1" ]; then
+        set -- "$@" "--cross-execute=$CROSS_EXECUTE"
     fi
 
     PYTHON="$PYTHON3_BIN" ./configure "$@"
@@ -692,7 +766,10 @@ export PKG_CONFIG_LIBDIR="$SAMBA4X_DEPS/lib/pkgconfig"
 export PKG_CONFIG_SYSROOT_DIR=
 
 CROSS_EXECUTE="$(cd "$(dirname "$0")" && pwd)/samba4-cross-exec.sh"
+SAMBA4X_REFRESH_CROSS_ANSWERS="${SAMBA4X_REFRESH_CROSS_ANSWERS:-0}"
 SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_acl_xattr'
+
+mkdir -p "$(dirname "$SAMBA4X_LOG")"
 
 {
     echo "SDK_FAMILY=$SDK_FAMILY"
@@ -725,6 +802,7 @@ SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_
     echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR"
     echo "CROSS_EXECUTE=$CROSS_EXECUTE"
     echo "CROSS_EXEC_REMOTE_DIR=$CROSS_EXEC_REMOTE_DIR"
+    echo "SAMBA4X_REFRESH_CROSS_ANSWERS=$SAMBA4X_REFRESH_CROSS_ANSWERS"
 
     if [ ! -f "$SAMBA4X_SRC_DIR/configure" ]; then
         echo "Missing Samba 4.x source tree at $SAMBA4X_SRC_DIR"
@@ -739,6 +817,9 @@ SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_
     echo "PYTHON3_BIN=$PYTHON3_BIN"
 
     prepare_samba4x_deps
+    prepare_samba4x_cross_answers
+    echo "SAMBA4X_CROSS_ANSWERS_SOURCE=$SAMBA4X_CROSS_ANSWERS_SOURCE"
+    echo "SAMBA4X_ACTIVE_CROSS_ANSWERS=$SAMBA4X_ACTIVE_CROSS_ANSWERS"
 
     mkdir -p "$SAMBA4X_BUILD"
     cd "$SAMBA4X_SRC_DIR"
