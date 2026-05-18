@@ -2180,7 +2180,10 @@ static FILE *fake_popen(const char *cmd, const char *mode) {{
             selector = selectors.DefaultSelector()
             assert run.stderr is not None
             selector.register(run.stderr, selectors.EVENT_READ)
-            deadline = time.monotonic() + 8
+            # The runtime intentionally waits AUTO_IP_STABILIZE_SECONDS before
+            # attempting the exclusive bind. Give slow CI hosts enough margin
+            # after that stabilization window to finish multicast setup.
+            deadline = time.monotonic() + 20
             ready = False
             try:
                 while run.poll() is None and time.monotonic() < deadline:
