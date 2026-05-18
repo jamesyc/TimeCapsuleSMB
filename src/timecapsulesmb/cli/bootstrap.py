@@ -8,6 +8,7 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import confirm, load_optional_env_config
+from timecapsulesmb.core.paths import AppPaths, is_source_distribution_root, resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.local import find_command
@@ -75,6 +76,53 @@ def install_python_requirements(venv_python: Path) -> None:
     run([str(venv_python), "-m", "pip", "install", "-U", "pip"])
     run([str(venv_python), "-m", "pip", "install", "-r", str(REQUIREMENTS)])
     run([str(venv_python), "-m", "pip", "install", "-e", str(REPO_ROOT)])
+
+
+def resolve_bootstrap_app_paths() -> AppPaths | None:
+    try:
+        return resolve_app_paths()
+    except Exception:
+        return None
+
+
+def is_packaged_install(app_paths: AppPaths | None) -> bool:
+    return app_paths is not None and not is_source_distribution_root(app_paths.distribution_root)
+
+
+def print_next_steps(command_prefix: str) -> None:
+    print("Next steps:", flush=True)
+    print(f"  1. {command_prefix} configure", flush=True)
+    print(f"  2. {command_prefix} deploy", flush=True)
+    print(f"  3. {command_prefix} doctor", flush=True)
+    print(f"  4. NetBSD 4 only, after reboot if Samba did not auto-start: {command_prefix} activate", flush=True)
+
+
+def run_packaged_bootstrap(command_context: CommandContext, app_paths: AppPaths) -> int:
+    platform_label = current_platform_label()
+    command_context.set_stage("packaged_install")
+    command_context.update_fields(
+        host_platform_label=platform_label,
+        packaged_install=True,
+        distribution_root=str(app_paths.distribution_root),
+        config_path=str(app_paths.config_path),
+        state_dir=str(app_paths.state_dir),
+        smbclient_available_after=find_command("smbclient") is not None,
+        sshpass_available_after=find_command("sshpass") is not None,
+    )
+    print(f"Detected host platform: {platform_label}", flush=True)
+    print("Detected packaged TimeCapsuleSMB install.", flush=True)
+    print("No repo-local virtualenv is needed; Python dependencies were installed by the package manager.", flush=True)
+    print(f"Distribution root: {app_paths.distribution_root}", flush=True)
+    print(f"Config path: {app_paths.config_path}", flush=True)
+    print(f"State dir: {app_paths.state_dir}", flush=True)
+    for tool in ("smbclient", "ssh", "sshpass"):
+        status = "found" if find_command(tool) else "missing"
+        print(f"{status} local tool {tool}", flush=True)
+    print("\nHost setup complete.", flush=True)
+    print_next_steps("tcapsule")
+    command_context.set_stage("complete")
+    command_context.succeed()
+    return 0
 
 
 def maybe_install_smbclient() -> None:
@@ -166,6 +214,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ensure_install_id()
     config = load_optional_env_config()
     telemetry = TelemetryClient.from_config(config)
+    app_paths = resolve_bootstrap_app_paths()
     with CommandContext(
         telemetry,
         "bootstrap",
@@ -182,6 +231,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             venv_exists_before=VENVDIR.exists(),
             python_executable=args.python,
         )
+        if app_paths is not None:
+            command_context.update_fields(
+                distribution_root=str(app_paths.distribution_root),
+                config_path=str(app_paths.config_path),
+                state_dir=str(app_paths.state_dir),
+                packaged_install=is_packaged_install(app_paths),
+            )
+        if is_packaged_install(app_paths):
+            return run_packaged_bootstrap(command_context, app_paths)
+
         command_context.set_stage("validate_requirements")
         if not REQUIREMENTS.exists():
             message = f"Missing {REQUIREMENTS}"
@@ -220,11 +279,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             venv_exists_after=VENVDIR.exists(),
         )
         print("\nHost setup complete.", flush=True)
-        print("Next steps:", flush=True)
-        print(f"  1. {VENVDIR / 'bin' / 'tcapsule'} configure", flush=True)
-        print(f"  2. {VENVDIR / 'bin' / 'tcapsule'} deploy", flush=True)
-        print(f"  3. {VENVDIR / 'bin' / 'tcapsule'} doctor", flush=True)
-        print(f"  4. NetBSD 4 only, after reboot if Samba did not auto-start: {VENVDIR / 'bin' / 'tcapsule'} activate", flush=True)
+        print_next_steps(str(VENVDIR / "bin" / "tcapsule"))
         command_context.succeed()
         return 0
     return 1

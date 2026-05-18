@@ -97,6 +97,10 @@ def _has_source_checkout_markers(path: Path) -> bool:
     )
 
 
+def is_source_distribution_root(root: Path | str) -> bool:
+    return _has_source_checkout_markers(_resolve_user_path(root))
+
+
 def validate_distribution_root(root: Path | str) -> DistributionRootValidation:
     resolved = _resolve_user_path(root)
     if not resolved.exists():
@@ -164,14 +168,18 @@ def _resolve_config_path(distribution_root: Path, config_path: Path | str | None
     env_config = os.getenv(TCAPSULE_CONFIG_ENV, "").strip()
     if env_config:
         return _resolve_user_path(env_config)
-    return distribution_root / ".env"
+    if is_source_distribution_root(distribution_root):
+        return distribution_root / ".env"
+    return default_user_data_dir() / ".env"
 
 
 def _resolve_state_dir(distribution_root: Path) -> Path:
     env_state_dir = os.getenv(TCAPSULE_STATE_DIR_ENV, "").strip()
     if env_state_dir:
         return _resolve_user_path(env_state_dir)
-    return distribution_root
+    if is_source_distribution_root(distribution_root):
+        return distribution_root
+    return default_user_data_dir()
 
 
 def default_user_data_dir() -> Path:

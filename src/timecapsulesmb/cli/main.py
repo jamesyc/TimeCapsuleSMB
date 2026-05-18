@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from typing import Optional
 
 from . import activate, bootstrap, configure, deploy, discover, doctor, flash, fsck, paths, set_ssh, repair_xattrs, uninstall, validate_install
 from timecapsulesmb.core.paths import DistributionRootError
 from .version_check import check_client_version, render_version_block_message
+
+
+TCAPSULE_SKIP_VERSION_CHECK_ENV = "TCAPSULE_SKIP_VERSION_CHECK"
 
 
 COMMANDS = {
@@ -26,6 +30,10 @@ COMMANDS = {
 }
 
 
+def should_skip_version_check() -> bool:
+    return os.getenv(TCAPSULE_SKIP_VERSION_CHECK_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tcapsule", description="TimeCapsuleSMB command line interface.")
     parser.add_argument("command", choices=sorted(COMMANDS))
@@ -36,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[list[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if "-h" not in args.args and "--help" not in args.args:
+    if "-h" not in args.args and "--help" not in args.args and not should_skip_version_check():
         try:
             version_check = check_client_version()
             if version_check.should_block:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import io
 import json
+import os
 import plistlib
 import socket
 import struct
@@ -98,7 +99,7 @@ from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourSe
 from timecapsulesmb.cli.version_check import DEFAULT_DOWNLOAD_URL, VERSION_CHECK_URL, VersionCheckResult
 from timecapsulesmb.cli.util import ANSI_RED, ANSI_RESET, CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
-from timecapsulesmb.install_validation import InstallCheckResult
+from timecapsulesmb.install_validation import InstallCheckResult, REQUIRED_PYTHON_MODULES
 
 
 def make_test_gzip_member(data: bytes) -> bytes:
@@ -1021,6 +1022,17 @@ class CliTests(unittest.TestCase):
         self.assertIs(cli_main_module.COMMANDS["paths"], paths.main)
         self.assertIs(cli_main_module.COMMANDS["validate-install"], validate_install.main)
 
+    def test_skip_version_check_env_bypasses_remote_version_check(self) -> None:
+        command = mock.Mock(return_value=0)
+        with mock.patch.dict(os.environ, {"TCAPSULE_SKIP_VERSION_CHECK": "1"}):
+            with mock.patch("timecapsulesmb.cli.main.COMMANDS", {"paths": command}):
+                with mock.patch("timecapsulesmb.cli.main.check_client_version") as version_check:
+                    rc = main(["paths"])
+
+        self.assertEqual(rc, 0)
+        command.assert_called_once_with([])
+        version_check.assert_not_called()
+
     def test_paths_json_command_prints_resolved_install_paths(self) -> None:
         app_paths = AppPaths(
             distribution_root=REPO_ROOT,
@@ -1152,6 +1164,10 @@ class CliTests(unittest.TestCase):
         self.assertIn("PASS managed boot scripts have no unresolved tokens", output.getvalue())
         self.assertIn("Summary: install validation passed.", output.getvalue())
 
+    def test_validate_install_checks_all_runtime_python_modules(self) -> None:
+        self.assertIn("Crypto.Cipher.AES", REQUIRED_PYTHON_MODULES)
+        self.assertIn("zopfli", REQUIRED_PYTHON_MODULES)
+
     def test_config_arg_is_passed_to_shared_config_loaders(self) -> None:
         commands = [
             ("activate", activate, "load_env_config", None),
@@ -1282,6 +1298,35 @@ class CliTests(unittest.TestCase):
         self.assertIn("activate", text)
         self.assertNotIn("set-ssh", text)
         self.assertNotIn("AirPyrt", text)
+
+    def test_bootstrap_packaged_install_skips_repo_virtualenv_setup(self) -> None:
+        output = io.StringIO()
+        app_paths = AppPaths(
+            distribution_root=Path("/opt/homebrew/share/timecapsulesmb"),
+            config_path=Path("/Users/test/Library/Application Support/TimeCapsuleSMB/.env"),
+            state_dir=Path("/Users/test/Library/Application Support/TimeCapsuleSMB"),
+            package_root=SRC_ROOT / "timecapsulesmb",
+        )
+        with mock.patch("timecapsulesmb.cli.bootstrap.resolve_bootstrap_app_paths", return_value=app_paths):
+            with mock.patch("timecapsulesmb.cli.bootstrap.is_packaged_install", return_value=True):
+                with mock.patch("timecapsulesmb.cli.bootstrap.load_optional_env_config", return_value=self.make_app_config({}, exists=False)):
+                    with mock.patch("timecapsulesmb.cli.bootstrap.ensure_install_id"):
+                        with mock.patch("timecapsulesmb.cli.bootstrap.ensure_venv") as ensure_venv_mock:
+                            with mock.patch("timecapsulesmb.cli.bootstrap.install_python_requirements") as install_python_mock:
+                                with mock.patch("timecapsulesmb.cli.bootstrap.find_command", return_value="/usr/bin/tool"):
+                                    with redirect_stdout(output):
+                                        rc = bootstrap.main([])
+
+        self.assertEqual(rc, 0)
+        text = output.getvalue()
+        self.assertIn("Detected packaged TimeCapsuleSMB install.", text)
+        self.assertIn("No repo-local virtualenv is needed", text)
+        self.assertIn("tcapsule configure", text)
+        ensure_venv_mock.assert_not_called()
+        install_python_mock.assert_not_called()
+        finished = self.telemetry_payload("bootstrap_finished")
+        self.assertEqual(finished["result"], "success")
+        self.assertTrue(finished["packaged_install"])
 
     def test_bootstrap_rejects_removed_skip_airpyrt_flag(self) -> None:
         stderr = io.StringIO()

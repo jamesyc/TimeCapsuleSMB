@@ -17,7 +17,7 @@ from timecapsulesmb.deploy.boot_assets import (
 )
 
 
-REQUIRED_PYTHON_MODULES = ("zeroconf", "pexpect", "ifaddr")
+REQUIRED_PYTHON_MODULES = ("zeroconf", "pexpect", "ifaddr", "Crypto.Cipher.AES", "zopfli")
 BOOT_ASSET_NAMES = (
     "rc.local",
     "common.sh",

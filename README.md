@@ -38,9 +38,24 @@ During first-time setup, if necessary `configure` can enable SSH on the Time Cap
 
 ## Quick Start
 
-Download (or run `git clone`) this repository to a folder on your Mac or Linux machine.
+On macOS, the recommended install path is Homebrew:
 
-From the root of this repository, the normal quick start commands to run are:
+```bash
+brew install jamesyc/timecapsulesmb/tcapsule
+tcapsule configure
+tcapsule deploy
+tcapsule doctor
+```
+
+For older NetBSD 4 devices, also run this after reboot if Samba did not auto-start:
+
+```bash
+tcapsule activate
+```
+
+If you prefer a source checkout, download (or run `git clone`) this repository to a folder on your Mac or Linux machine.
+
+From the root of this repository, the source-checkout quick start commands are:
 
 1. `./tcapsule bootstrap`
 2. `.venv/bin/tcapsule configure` save a config/settings file
@@ -49,18 +64,26 @@ From the root of this repository, the normal quick start commands to run are:
 5. `.venv/bin/tcapsule activate` after reboot on NetBSD 4 devices if Samba did not auto-start
 
 If you run into any issues:
-- `.venv/bin/tcapsule fsck` if the internal disk needs repair before deploy
-- `.venv/bin/tcapsule discover` to list all mDNS/Bonjour devices
-- `.venv/bin/tcapsule repair-xattrs` to repair any broken files on the disk from bad xattrs
-- `.venv/bin/tcapsule uninstall` if you want to remove TimeCapsuleSMB later
+- `tcapsule fsck` or `.venv/bin/tcapsule fsck` if the internal disk needs repair before deploy
+- `tcapsule discover` or `.venv/bin/tcapsule discover` to list all mDNS/Bonjour devices
+- `tcapsule repair-xattrs` or `.venv/bin/tcapsule repair-xattrs` to repair any broken files on the disk from bad xattrs
+- `tcapsule uninstall` or `.venv/bin/tcapsule uninstall` if you want to remove TimeCapsuleSMB later
 
-Just delete this `TimeCapsuleSMB` folder if you want to remove it from your Mac after you're done setting up the Time Capsule. All the scripts/binaries/etc are stored in the `TimeCapsuleSMB` folder (so if you want to clean up your Mac, then just deleting the folder is fine).
+If you installed from a source checkout, just delete this `TimeCapsuleSMB` folder if you want to remove it from your Mac after you're done setting up the Time Capsule. If you installed with Homebrew, use `brew uninstall tcapsule`.
 
 If you find any bugs, I would appreciate it if you [file an issue here](https://github.com/jamesyc/TimeCapsuleSMB/issues) for help.
 
 ## Step 1: Prepare Your Host
 
-Run:
+If you installed with Homebrew, this step is already handled by the formula. You can optionally run:
+
+```bash
+tcapsule bootstrap
+```
+
+For a packaged install, `bootstrap` validates the local setup and prints the same next steps; it does not create a repo-local virtualenv.
+
+For a source checkout, run:
 
 ```bash
 ./tcapsule bootstrap
@@ -72,22 +95,30 @@ On macOS, `bootstrap` can also offer to install `smbclient` via Homebrew. On Lin
 
 If this is your first time using the repo, this is the only command you should run with the repo-local launcher. After this step, use `.venv/bin/tcapsule ...` to run a command.
 
-You can inspect the local repo-only install before continuing:
+You can inspect the local install before continuing:
 
 ```bash
-.venv/bin/tcapsule paths
-.venv/bin/tcapsule validate-install
+tcapsule paths
+tcapsule validate-install
 ```
+
+For a source checkout, use `.venv/bin/tcapsule paths` and `.venv/bin/tcapsule validate-install`.
 
 ## Step 2: Create The Local Config
 
 Run:
 
 ```bash
+tcapsule configure
+```
+
+For a source checkout, run:
+
+```bash
 .venv/bin/tcapsule configure
 ```
 
-This writes a hidden `.env` file in the repo folder, and the other `tcapsule` commands use that file as their local device configuration.
+This writes a hidden `.env` file. Homebrew installs store it under your user application-support directory by default; source checkouts store it in the repo folder. The other `tcapsule` commands use that file as their local device configuration.
 
 At the start of `configure`, the tool first tries to discover your Time Capsule on the local network via mDNS/Bonjour. If it finds one, it prefills the SSH target for you. If it does not find one, it falls back to the normal manual prompt flow.
 
@@ -105,8 +136,10 @@ Samba does not magically use Apple’s internal password backend; unfortunately,
 Run:
 
 ```bash
-.venv/bin/tcapsule deploy
+tcapsule deploy
 ```
+
+For a source checkout, run `.venv/bin/tcapsule deploy`.
 
 This step installs (or updates) Samba onto the device. It validates the checked-in binaries, copies the payload and boot files to the Time Capsule, and sets up the Samba password files. You can run `deploy` for a new version to update.
 
@@ -116,7 +149,7 @@ On older Gen 1-4 NetBSD 4 devices, `deploy` instead activates the new runtime im
 By default, `tcapsule deploy` reboots NetBSD 6 devices after deployment and then waits for them to come back. If you want to skip the reboot confirmation prompt, you can run:
 
 ```bash
-.venv/bin/tcapsule deploy --yes
+tcapsule deploy --yes
 ```
 
 There are also other flags such as `--no-nbns`, `--no-reboot` and `--dry-run`, but leave those alone unless you have a specific reason to use them.
@@ -124,7 +157,7 @@ There are also other flags such as `--no-nbns`, `--no-reboot` and `--dry-run`, b
 If you want a machine-readable deployment plan without changing the device, use:
 
 ```bash
-.venv/bin/tcapsule deploy --dry-run --json
+tcapsule deploy --dry-run --json
 ```
 
 ## Step 4: Activate It Again If Needed
@@ -132,7 +165,7 @@ If you want a machine-readable deployment plan without changing the device, use:
 Run:
 
 ```bash
-.venv/bin/tcapsule activate
+tcapsule activate
 ```
 
 This command is for older Gen 1-4 devices after a reboot. It starts Samba without copying the files again.  
@@ -143,7 +176,7 @@ Unfortunately, you need to run `activate` after *every* reboot for older devices
 Advanced NetBSD 4 users can back up the firmware with:
 
 ```bash
-.venv/bin/tcapsule flash
+tcapsule flash
 ```
 
 The command is read-only by default. On supported devices, `tcapsule flash --patch` can install the persistent boot hook and `tcapsule flash --restore` can restore the selected active bank from Apple stock firmware downloaded from Apple's catalog. Both write modes modify only one bank and leave the other flash bank untouched, then run validation by reading the written bank back after ACP accepts the write. If both banks pass the active-bank checks, use `--active-bank primary` or `--active-bank secondary` to choose explicitly.
@@ -156,7 +189,7 @@ unplug the device to reboot, and then wait a few minutes for the device to boot 
 Run:
 
 ```bash
-.venv/bin/tcapsule doctor
+tcapsule doctor
 ```
 
 This is a non-destructive diagnostic command. `tcapsule doctor` checks:
@@ -184,7 +217,7 @@ This is a non-destructive diagnostic command. `tcapsule doctor` checks:
 If you want the results in JSON instead of human-readable text, use:
 
 ```bash
-.venv/bin/tcapsule doctor --json
+tcapsule doctor --json
 ```
 
 ## Step 6: Remove It Later If Needed
@@ -192,7 +225,7 @@ If you want the results in JSON instead of human-readable text, use:
 Run:
 
 ```bash
-.venv/bin/tcapsule uninstall
+tcapsule uninstall
 ```
 
 This removes the managed TimeCapsuleSMB payload from the internal disk and removes the loader files from `/mnt/Flash`. Apple wipes the filesystem on the device after every reboot, except for `/mnt/Flash`, so that's where we install the loader script. If you delete the 6 non-Apple files we put in `/mnt/Flash`, and delete the `.samba4` folder on the hard drive, and then reboot, you can restore your machine to factory clean condition.
@@ -200,14 +233,14 @@ This removes the managed TimeCapsuleSMB payload from the internal disk and remov
 By default `uninstall` asks before rebooting the Time Capsule. If you want to skip the reboot confirmation prompt, use:
 
 ```bash
-.venv/bin/tcapsule uninstall --yes
+tcapsule uninstall --yes
 ```
 
 If you want to preview the uninstall plan without changing the device, use:
 
 ```bash
-.venv/bin/tcapsule uninstall --dry-run
-.venv/bin/tcapsule uninstall --dry-run --json
+tcapsule uninstall --dry-run
+tcapsule uninstall --dry-run --json
 ```
 
 Uninstall success means the managed payload and boot files are gone after reboot. It does **not** check whether Apple SMB or AFP is enabled afterward. Those services may be on or off depending on the device's own settings. 
@@ -215,7 +248,7 @@ Uninstall success means the managed payload and boot files are gone after reboot
 If you want to remove the files without rebooting immediately, use:
 
 ```bash
-.venv/bin/tcapsule uninstall --no-reboot
+tcapsule uninstall --no-reboot
 ```
 
 ## Connecting From Finder

@@ -84,6 +84,7 @@ class PathResolutionTests(unittest.TestCase):
     def test_config_path_precedence_prefers_explicit_then_env_then_repo_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
+            self._write_source_checkout_markers(root)
             self._write_manifest_payloads(root)
             env_config = root / "env-config"
             cli_config = root / "cli-config"
@@ -107,6 +108,26 @@ class PathResolutionTests(unittest.TestCase):
                 },
             ):
                 self.assertEqual(resolve_app_paths().config_path, root / ".env")
+
+    def test_explicit_packaged_distribution_root_defaults_config_and_state_to_user_data_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp, "pkgshare").resolve()
+            self._write_manifest_payloads(root)
+            with mock.patch("timecapsulesmb.core.paths.platform.system", return_value="Darwin"):
+                expected_data_dir = default_user_data_dir()
+                with mock.patch.dict(
+                    os.environ,
+                    {
+                        TCAPSULE_DISTRIBUTION_ROOT_ENV: str(root),
+                        TCAPSULE_CONFIG_ENV: "",
+                        TCAPSULE_STATE_DIR_ENV: "",
+                    },
+                ):
+                    app_paths = resolve_app_paths()
+
+        self.assertEqual(app_paths.distribution_root, root)
+        self.assertEqual(app_paths.config_path, expected_data_dir / ".env")
+        self.assertEqual(app_paths.state_dir, expected_data_dir)
 
     def test_state_dir_override_moves_bootstrap_and_version_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
