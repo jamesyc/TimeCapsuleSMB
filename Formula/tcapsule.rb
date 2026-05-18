@@ -4,12 +4,11 @@ class Tcapsule < Formula
   desc "Deploy modern Samba to Apple AirPort Time Capsules"
   homepage "https://github.com/jamesyc/TimeCapsuleSMB"
   url "https://github.com/jamesyc/TimeCapsuleSMB/archive/refs/tags/v2.1.1.tar.gz"
-  # Replace with the real GitHub archive checksum after publishing v2.1.1:
-  # curl -L https://github.com/jamesyc/TimeCapsuleSMB/archive/refs/tags/v2.1.1.tar.gz | shasum -a 256
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "bb475066b58cfbd1ac71e5d035352a808f4acb49b9967a47272191922810cd3e"
   license "GPL-3.0-only"
   head "https://github.com/jamesyc/TimeCapsuleSMB.git", branch: "main"
 
+  depends_on "python-setuptools" => :build
   depends_on "python@3.14"
   depends_on "samba"
   depends_on "sshpass"
@@ -17,6 +16,11 @@ class Tcapsule < Formula
   resource "cython" do
     url "https://files.pythonhosted.org/packages/39/e1/c0d92b1258722e1bc62a12e630c33f1f842fdab53fd8cd5de2f75c6449a9/cython-3.2.3.tar.gz"
     sha256 "f13832412d633376ffc08d751cc18ed0d7d00a398a4065e2871db505258748a6"
+  end
+
+  resource "flit-core" do
+    url "https://files.pythonhosted.org/packages/69/59/b6fc2188dfc7ea4f936cd12b49d707f66a1cb7a1d2c16172963534db741b/flit_core-3.12.0.tar.gz"
+    sha256 "18f63100d6f94385c6ed57a72073443e1a71a4acb4339491615d0f16d6ff01b2"
   end
 
   resource "ifaddr" do
@@ -58,9 +62,9 @@ class Tcapsule < Formula
     pkgshare.install "bin"
 
     venv = virtualenv_create(libexec, "python3.14")
-    venv.pip_install resources
-    venv.pip_install buildpath
-    bin.write_env_script libexec/"bin/tcapsule", TCAPSULE_DISTRIBUTION_ROOT: pkgshare
+    venv.pip_install resources, build_isolation: false
+    venv.pip_install buildpath, build_isolation: false
+    (bin/"tcapsule").write_env_script libexec/"bin/tcapsule", TCAPSULE_DISTRIBUTION_ROOT: pkgshare
   end
 
   test do

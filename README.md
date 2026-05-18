@@ -41,7 +41,7 @@ During first-time setup, if necessary `configure` can enable SSH on the Time Cap
 On macOS, the recommended install path is Homebrew:
 
 ```bash
-brew install jamesyc/timecapsulesmb/tcapsule
+brew install jamesyc/tap/tcapsule
 tcapsule configure
 tcapsule deploy
 tcapsule doctor
