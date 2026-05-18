@@ -357,14 +357,12 @@ samba4x_abs_path() {
 }
 
 samba4x_default_cross_answers_file() {
-    lane="$(samba4x_cross_answer_lane)"
-    printf '%s/cross-answers/samba4x-%s-%s.answers\n' "$SAMBA4X_SCRIPT_DIR" "$SAMBA4X_VERSION" "$lane"
+    printf '%s/cross-answers/samba4x-%s-%s.answers\n' "$SAMBA4X_SCRIPT_DIR" "$SAMBA4X_VERSION" "$SAMBA4X_CROSS_ANSWER_LANE"
 }
 
 samba4x_generated_cross_answers_file() {
-    lane="$(samba4x_cross_answer_lane)"
     output_dir="${SAMBA4X_GENERATED_CROSS_ANSWERS_DIR:-$SAMBA4X_SCRIPT_DIR/cross-answers}"
-    printf '%s/samba4x-%s-%s.answers\n' "$output_dir" "$SAMBA4X_VERSION" "$lane"
+    printf '%s/samba4x-%s-%s.answers\n' "$output_dir" "$SAMBA4X_VERSION" "$SAMBA4X_CROSS_ANSWER_LANE"
 }
 
 samba4x_answer_value() {
@@ -521,7 +519,7 @@ EOF
 
 validate_generated_samba4x_cross_answers() {
     answers_file="$1"
-    lane="$(samba4x_cross_answer_lane)"
+    lane="$SAMBA4X_CROSS_ANSWER_LANE"
     realpath_key="Checking whether the realpath function allows a NULL argument"
     realpath_answer="$(samba4x_answer_value "$answers_file" "$realpath_key" || true)"
     if [ -z "$realpath_answer" ]; then
@@ -553,7 +551,7 @@ validate_generated_samba4x_cross_answers() {
 install_generated_samba4x_cross_answers() {
     source_file="$1"
     output_file="$(samba4x_generated_cross_answers_file)"
-    lane="$(samba4x_cross_answer_lane)"
+    lane="$SAMBA4X_CROSS_ANSWER_LANE"
     mkdir -p "$(dirname "$output_file")"
 
     "$PYTHON3_BIN" - "$source_file" "$output_file" "$SAMBA4X_VERSION" "$lane" <<'PY'
@@ -593,7 +591,7 @@ PY
 }
 
 prepare_samba4x_cross_answers() {
-    lane="$(samba4x_cross_answer_lane)"
+    lane="$SAMBA4X_CROSS_ANSWER_LANE"
     default_answers="$(samba4x_default_cross_answers_file)"
     if [ "$SAMBA4X_GENERATE_CROSS_ANSWERS" = "1" ]; then
         active_answers="$SAMBA4X_BUILD/generated-samba4x-$SAMBA4X_VERSION-$lane.answers"
@@ -1000,6 +998,8 @@ SAMBA4X_GENERATE_CROSS_ANSWERS="${SAMBA4X_GENERATE_CROSS_ANSWERS:-0}"
 if [ "$SAMBA4X_REFRESH_CROSS_ANSWERS" = "1" ]; then
     SAMBA4X_GENERATE_CROSS_ANSWERS=1
 fi
+SAMBA4X_CROSS_ANSWER_LANE="$(samba4x_cross_answer_lane)" || exit 1
+export SAMBA4X_CROSS_ANSWER_LANE
 SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_acl_xattr'
 
 mkdir -p "$(dirname "$SAMBA4X_LOG")"
@@ -1037,6 +1037,7 @@ mkdir -p "$(dirname "$SAMBA4X_LOG")"
     echo "CROSS_EXEC_REMOTE_DIR=$CROSS_EXEC_REMOTE_DIR"
     echo "SAMBA4X_REFRESH_CROSS_ANSWERS=$SAMBA4X_REFRESH_CROSS_ANSWERS"
     echo "SAMBA4X_GENERATE_CROSS_ANSWERS=$SAMBA4X_GENERATE_CROSS_ANSWERS"
+    echo "SAMBA4X_CROSS_ANSWER_LANE=$SAMBA4X_CROSS_ANSWER_LANE"
 
     if [ ! -f "$SAMBA4X_SRC_DIR/configure" ]; then
         echo "Missing Samba 4.x source tree at $SAMBA4X_SRC_DIR"
