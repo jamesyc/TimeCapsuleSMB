@@ -1,10 +1,12 @@
 #!/bin/sh
 set -eu
 
-. "$(dirname "$0")/env.sh"
-. "$(dirname "$0")/_patch_helpers.sh"
+SAMBA4X_SCRIPT_DIR="$(CDPATH= cd "$(dirname "$0")" && pwd)"
 
-GNUTLS_PATCH_DIR="$(CDPATH= cd "$(dirname "$0")/patches/gnutls" && pwd)"
+. "$SAMBA4X_SCRIPT_DIR/env.sh"
+. "$SAMBA4X_SCRIPT_DIR/_patch_helpers.sh"
+
+GNUTLS_PATCH_DIR="$SAMBA4X_SCRIPT_DIR/patches/gnutls"
 TOOLDIR="$TOOLS"
 DESTDIR="$OBJ/destdir.evbarm"
 TRIPLE="$(select_tool_triple)"
@@ -375,7 +377,7 @@ preflight_samba4x_cross_answers() {
 
 prepare_samba4x_cross_answers() {
     lane="$(samba4x_cross_answer_lane)"
-    default_answers="$SCRIPT_DIR/cross-answers/samba4x-$SAMBA4X_VERSION-$lane.answers"
+    default_answers="$SAMBA4X_SCRIPT_DIR/cross-answers/samba4x-$SAMBA4X_VERSION-$lane.answers"
     source_answers="$(samba4x_abs_path "${SAMBA4X_CROSS_ANSWERS:-$default_answers}")"
     active_answers="$SAMBA4X_BUILD/$(basename "$source_answers")"
 
@@ -765,7 +767,7 @@ export PKG_CONFIG_PATH="$SAMBA4X_DEPS/lib/pkgconfig"
 export PKG_CONFIG_LIBDIR="$SAMBA4X_DEPS/lib/pkgconfig"
 export PKG_CONFIG_SYSROOT_DIR=
 
-CROSS_EXECUTE="$(cd "$(dirname "$0")" && pwd)/samba4-cross-exec.sh"
+CROSS_EXECUTE="$SAMBA4X_SCRIPT_DIR/samba4-cross-exec.sh"
 SAMBA4X_REFRESH_CROSS_ANSWERS="${SAMBA4X_REFRESH_CROSS_ANSWERS:-0}"
 SAMBA4X_STATIC_MODULES='vfs_catia,vfs_fruit,vfs_streams_xattr,vfs_xattr_tdb,vfs_acl_xattr'
 
