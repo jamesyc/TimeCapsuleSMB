@@ -1,6 +1,6 @@
 # TimeCapsuleSMB
 
-Apple AirPort Time Capsules only support AFP and SMB1. Apple is removing AFP support in macOS 27, and had removed SMB1 support from macOS a long time ago. This repo sets up modern Samba that runs directly on the Time Capsule itself; modern macOS can connect to the Time Capsule as a network share, and use it for Time Machine backups. 
+Apple AirPort Time Capsules only support AFP and SMB1. Apple is removing AFP support in macOS 27, and removed SMB1 support from macOS a long time ago. This repo sets up modern Samba that runs directly on the Time Capsule itself; modern macOS can connect to the Time Capsule as a network share, and use it for Time Machine backups. 
 
 **NOTE THAT TIME MACHINE ON MACOS 26.4.x (AND 15.7.5-15.7.7) IS CURRENTLY BROKEN**, see https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups  
 Macs running macOS 26.4.x can still use the device as a standard Samba network share in Finder.
@@ -18,7 +18,7 @@ NetBSD 6 devices automatically startup on boot. **Older NetBSD 4 devices need a 
 
 The current authentication model accepts any user as the username, and the Samba password is the same password you enter during setup when the tool asks for the Time Capsule password. Guest access is disabled. 
 
-AirPort Extreme devices are not officially supported (mostly because I do not own one to test on). Unoffically, they work fine.   
+AirPort Extreme devices are not officially supported (mostly because I do not own one to test on). Unofficially, they work fine.   
 
 ## Requirements
 
@@ -40,7 +40,7 @@ During first-time setup, if necessary `configure` can enable SSH on the Time Cap
 
 Download (or run `git clone`) this repository to a folder on your Mac or Linux machine.
 
-From the root of this repository, the normal quick start commands to run is:
+From the root of this repository, the normal quick start commands to run are:
 
 1. `./tcapsule bootstrap`
 2. `.venv/bin/tcapsule configure` save a config/settings file
@@ -66,7 +66,7 @@ Run:
 ./tcapsule bootstrap
 ```
 
-This command prepares the local Python environment in this folder. It creates the `.venv` folder, installs in there the Python dependencies needed for discovery, deployment, and verification, and installs the local `tcapsule` command into that virtualenv.
+This command prepares the local Python environment in this folder. It creates the `.venv` folder, installs the Python dependencies needed for discovery, deployment, and verification, and sets up the local `tcapsule` command into that virtualenv.
 
 On macOS, `bootstrap` can also offer to install `smbclient` via Homebrew. On Linux, `bootstrap` will guide you to install `smbclient` with your distro package manager. NetBSD 4 devices also need `sshpass` installed because their firmware does not provide a usable remote `scp`.
 
@@ -210,7 +210,7 @@ If you want to preview the uninstall plan without changing the device, use:
 .venv/bin/tcapsule uninstall --dry-run --json
 ```
 
-Uninstall success means the managed payload and boot files are gone after reboot. It does **not** check if Apple SMB or AFP to be enabled afterward. Those services may be on or off depending on the device's own settings. 
+Uninstall success means the managed payload and boot files are gone after reboot. It does **not** check whether Apple SMB or AFP is enabled afterward. Those services may be on or off depending on the device's own settings. 
 
 If you want to remove the files without rebooting immediately, use:
 
@@ -328,7 +328,7 @@ This explains the engineering constraints, historical dead ends, and current imp
 
 ## Security Notes
 
-This should be treated as a LAN-only setup. Do not expose this SMB service directly to the public internet! Do not forward ports to it. I have tested this with a M1 Macbook Pro and an A1470 Time Capsule. Your mileage may vary. 
+This should be treated as a LAN-only setup. Do not expose this SMB service directly to the public internet! Do not forward ports to it. I have tested this with an M1 Macbook Pro and an A1470 Time Capsule. Your mileage may vary. 
 
 Also note that the current auth model maps SMB access to `root` internally on the Time Capsule. That is a deliberate compatibility choice for this old firmware, as the version of NetBSD 6 running on the Time Capsule errors when Samba tries to switch users.
 
