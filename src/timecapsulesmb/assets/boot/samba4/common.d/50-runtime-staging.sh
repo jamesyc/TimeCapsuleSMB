@@ -197,6 +197,24 @@ tc_stage_runtime() {
     fi
 }
 
+tc_smbd_fruit_model() {
+    if [ -n "${MDNS_DEVICE_MODEL:-}" ]; then
+        printf '%s\n' "$MDNS_DEVICE_MODEL"
+        return 0
+    fi
+    airport_syap=${AIRPORT_SYAP:-}
+    if [ -z "$airport_syap" ]; then
+        airport_syap=$(get_airport_syap 2>/dev/null || true)
+    fi
+    if detected_model=$(get_airport_mdns_model "$airport_syap" 2>/dev/null); then
+        if [ -n "$detected_model" ]; then
+            printf '%s\n' "$detected_model"
+            return 0
+        fi
+    fi
+    echo MacSamba
+}
+
 tc_generate_smb_conf() {
     payload_dir=$1
     tc_ensure_runtime_identity
@@ -209,6 +227,7 @@ tc_generate_smb_conf() {
     smbd_max_log_size=$(tc_smbd_max_log_size)
     smbd_log_level_line=
     smbd_protocol_lines=
+    smbd_fruit_model=$(tc_smbd_fruit_model)
 
     mkdir -p "$payload_dir/logs"
     chmod 755 "$payload_dir/logs" >/dev/null 2>&1 || true
@@ -222,7 +241,8 @@ tc_generate_smb_conf() {
     fi
     if [ "$ANY_PROTOCOL" != "1" ]; then
         smbd_protocol_lines="    min protocol = SMB2
-    max protocol = SMB3"
+    max protocol = SMB3
+"
     fi
 
     {
@@ -244,8 +264,7 @@ tc_generate_smb_conf() {
     passdb backend = smbpasswd:$RAM_PRIVATE/smbpasswd
     username map = $RAM_PRIVATE/username.map
     dos charset = ASCII
-$smbd_protocol_lines
-    server multi channel support = no
+${smbd_protocol_lines}    server multi channel support = no
     load printers = no
     disable spoolss = yes
     dfree command = /mnt/Flash/dfree.sh
@@ -264,7 +283,7 @@ $smbd_log_level_line
     max smbd processes = 16
     reset on zero vc = yes
     fruit:aapl = yes
-    fruit:model = MacSamba
+    fruit:model = $smbd_fruit_model
     fruit:advertise_fullsync = true
     fruit:nfs_aces = no
     fruit:veto_appledouble = yes
