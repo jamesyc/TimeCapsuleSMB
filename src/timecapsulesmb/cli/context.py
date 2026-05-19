@@ -490,7 +490,10 @@ class CommandContext:
         emit_fields = dict(self.finish_fields)
         emit_fields.update(fields)
         duration_sec = round(time.monotonic() - self.start_time, 3)
-        error = None if result == "success" else self.build_error()
+        try:
+            error = None if result == "success" else self.build_error()
+        except Exception as exc:
+            error = f"{self.command_name} failed, and debug context rendering also failed: {type(exc).__name__}: {exc}"
         if result != "success" and error is None:
             error = f"{self.command_name} failed without additional details."
         self._emit_telemetry(

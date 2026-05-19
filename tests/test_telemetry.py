@@ -111,6 +111,34 @@ class TelemetryTests(unittest.TestCase):
                     client._send_payload({"event": "doctor_started"})
         self.assertEqual(urlopen_mock.call_count, MAX_SEND_ATTEMPTS)
 
+    def test_emit_does_not_raise_when_transport_has_unexpected_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
+                with mock.patch("urllib.request.urlopen", side_effect=RuntimeError("unexpected transport failure")) as urlopen_mock:
+                    client.emit("deploy_finished", synchronous=True, result="failure", error="deploy failed")
+        self.assertEqual(urlopen_mock.call_count, 1)
+
+    def test_emit_stringifies_non_json_native_fields(self) -> None:
+        class NonJsonValue:
+            def __str__(self) -> str:
+                return "non-json-value"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
+                success_response = mock.MagicMock()
+                success_response.__enter__.return_value = success_response
+                success_response.__exit__.return_value = None
+                with mock.patch("urllib.request.urlopen", return_value=success_response) as urlopen_mock:
+                    client.emit("deploy_finished", synchronous=True, result="failure", error=NonJsonValue())
+        request = urlopen_mock.call_args.args[0]
+        self.assertIn(b"non-json-value", request.data)
+
     def test_command_context_reuses_command_id_for_started_and_finished_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bootstrap_path = Path(tmp) / ".bootstrap"
@@ -454,6 +482,24 @@ class TelemetryTests(unittest.TestCase):
         self.assertIn("RuntimeError: upload failed", finished_payload["error"])
         self.assertIn("Debug context:", finished_payload["error"])
         self.assertIn("command=deploy", finished_payload["error"])
+
+    def test_command_context_still_finishes_when_debug_context_rendering_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=test-install\n")
+            with mock.patch.dict(os.environ, {"TCAPSULE_TELEMETRY_TOKEN": "secret-token"}, clear=False):
+                client = telemetry_client_from_values({}, bootstrap_path=bootstrap_path)
+                with mock.patch.object(client, "_dispatch_payload_async"):
+                    with mock.patch.object(client, "_send_payload") as send_mock:
+                        with mock.patch("timecapsulesmb.cli.context.render_command_debug_lines", side_effect=RuntimeError("debug boom")):
+                            with self.assertRaises(RuntimeError) as raised:
+                                with CommandContext(client, "deploy", "deploy_started", "deploy_finished"):
+                                    raise RuntimeError("upload failed")
+        self.assertEqual(str(raised.exception), "upload failed")
+        finished_payload = send_mock.call_args.args[0]
+        self.assertEqual(finished_payload["event"], "deploy_finished")
+        self.assertEqual(finished_payload["result"], "failure")
+        self.assertIn("debug context rendering also failed: RuntimeError: debug boom", finished_payload["error"])
 
     def test_command_context_debug_context_omits_password_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
