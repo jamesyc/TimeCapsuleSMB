@@ -564,8 +564,8 @@ class CheckTests(unittest.TestCase):
         nbns_result = next(result for result in run.results if "optional NBNS check failed" in result.message)
         self.assertEqual(nbns_result.status, "INFO")
         self.assertIn("timed out against 10.0.0.2:137", nbns_result.message)
-        self.assertNotIn("remote_service_sockets", debug_fields)
-        socket_debug_mock.assert_not_called()
+        self.assertEqual(debug_fields["remote_service_sockets"], socket_debug_mock.return_value)
+        socket_debug_mock.assert_called_once()
 
     def test_doctor_smb_servers_uses_probed_host_label(self) -> None:
         base_values = {"TC_HOST": "root@10.0.1.99"}

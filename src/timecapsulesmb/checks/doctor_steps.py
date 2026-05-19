@@ -812,7 +812,7 @@ def _doctor_check_nbns(
         runtime_naming_identity=naming.identity,
         add_result=sink.add,
     )
-    if any(result.status == "FAIL" for result in sink.new_results_since(result_start)):
+    if any("failed" in result.message for result in sink.new_results_since(result_start)):
         _add_remote_service_socket_debug(target, remote, sink)
 
 
