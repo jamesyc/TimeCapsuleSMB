@@ -363,7 +363,7 @@ tc_read_mast_volumes_to() {
         tc_flush_mast_disk "$pending_file" "$out_file" "$disk_device" "$disk_builtin"
     fi
     rm -f "$pending_file"
-    [ -s "$out_file" ]
+    return 0
 }
 
 tc_wait_for_mast_volumes_to() {
@@ -382,12 +382,12 @@ tc_wait_for_mast_volumes_to() {
         fi
 
         if [ "$elapsed" -ge "$timeout_seconds" ]; then
-            tc_log "MaSt discovery timed out after ${elapsed}s with no valid HFS volumes"
+            tc_log "MaSt discovery timed out after ${elapsed}s waiting for a successful MaSt read"
             return 1
         fi
 
         if [ "$elapsed" -eq 0 ]; then
-            tc_log "MaSt discovery not ready; waiting up to ${timeout_seconds}s for valid HFS volumes"
+            tc_log "MaSt discovery not ready; waiting up to ${timeout_seconds}s for a successful MaSt read"
         elif [ $((elapsed % 15)) -eq 0 ]; then
             tc_log "MaSt discovery still waiting after ${elapsed}s"
         fi
@@ -556,9 +556,11 @@ tc_append_share_state_row() {
     part_device=$3
     builtin=$4
     part_uuid=$5
+    shares_tsv=${TC_BUILD_SHARES_TSV:-$TC_SHARES_TSV}
+    adisk_tsv=${TC_BUILD_ADISK_TSV:-$TC_ADISK_TSV}
 
-    printf '%s\t%s\t%s\t%s\t%s\n' "$share_name" "$share_path" "$part_device" "$builtin" "$part_uuid" >>"$TC_SHARES_TSV"
-    printf '%s\t%s\t%s\t%s\n' "$share_name" "$part_device" "$part_uuid" "$TC_ADISK_DISK_ADVF" >>"$TC_ADISK_TSV"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$share_name" "$share_path" "$part_device" "$builtin" "$part_uuid" >>"$shares_tsv"
+    printf '%s\t%s\t%s\t%s\n' "$share_name" "$part_device" "$part_uuid" "$TC_ADISK_DISK_ADVF" >>"$adisk_tsv"
 }
 
 tc_active_share_device_is_managed() {
@@ -577,6 +579,8 @@ tc_active_share_device_is_managed() {
 
 tc_build_share_state() {
     volumes_file=${1:-}
+    shares_tsv=${2:-$TC_SHARES_TSV}
+    adisk_tsv=${3:-$TC_ADISK_TSV}
     used_share_names_file="$TC_STATE_DIR/share-names.$$"
     candidate_count=0
     share_count=0
@@ -586,8 +590,10 @@ tc_build_share_state() {
         return 1
     fi
 
-    : >"$TC_SHARES_TSV"
-    : >"$TC_ADISK_TSV"
+    : >"$shares_tsv"
+    : >"$adisk_tsv"
+    TC_BUILD_SHARES_TSV=$shares_tsv
+    TC_BUILD_ADISK_TSV=$adisk_tsv
     TC_USED_SHARE_NAMES_FILE=$used_share_names_file
     : >"$TC_USED_SHARE_NAMES_FILE"
 
@@ -623,8 +629,10 @@ tc_build_share_state() {
     done <"$volumes_file"
 
     rm -f "$TC_USED_SHARE_NAMES_FILE"
+    TC_BUILD_SHARES_TSV=
+    TC_BUILD_ADISK_TSV=
     tc_log "share state build complete: candidates=$candidate_count shares=$share_count"
-    [ -s "$TC_SHARES_TSV" ]
+    [ -s "$shares_tsv" ]
 }
 
 tc_verify_payload_dir() {
@@ -756,7 +764,8 @@ tc_write_payload_state() {
     payload_dir=$1
     volume_root=$2
     device_path=$3
-    printf '%s\t%s\t%s\n' "$payload_dir" "$volume_root" "$device_path" >"$TC_PAYLOAD_TSV"
+    payload_tsv=${4:-$TC_PAYLOAD_TSV}
+    printf '%s\t%s\t%s\n' "$payload_dir" "$volume_root" "$device_path" >"$payload_tsv"
 }
 
 tc_load_payload_state() {

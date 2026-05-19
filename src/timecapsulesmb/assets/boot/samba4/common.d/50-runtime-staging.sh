@@ -1,40 +1,81 @@
 tc_refresh_disk_state() {
     volumes_file="$TC_STATE_DIR/mast-volumes.$$"
     raw_file="$TC_STATE_DIR/mast.raw.$$"
+    shares_file="$TC_STATE_DIR/shares.tsv.$$"
+    adisk_file="$TC_STATE_DIR/adisk.tsv.$$"
+    payload_file="$TC_STATE_DIR/payload.tsv.$$"
+    TC_DISK_REFRESH_RESULT=failed
 
     tc_log "disk-state refresh: discovering MaSt HFS volumes"
-    rm -f "$volumes_file" "$raw_file"
-    if ! tc_wait_for_mast_volumes_to "$volumes_file" "$raw_file" "$MAST_DISCOVERY_WAIT_SECONDS"; then
-        tc_log "MaSt discovery failed or returned no valid HFS volumes"
-        rm -f "$volumes_file" "$raw_file"
+    rm -f "$volumes_file" "$raw_file" "$shares_file" "$adisk_file" "$payload_file"
+    if ! tc_read_mast_volumes_to "$volumes_file" "$raw_file"; then
+        tc_log "MaSt discovery failed"
+        TC_DISK_REFRESH_RESULT=mast_failed
+        rm -f "$volumes_file" "$raw_file" "$shares_file" "$adisk_file" "$payload_file"
         return 1
     fi
-    tc_log "disk-state refresh: MaSt discovery complete; writing topology signature"
-    /bin/cat "$volumes_file" >"$TC_TOPOLOGY_SIGNATURE"
+    tc_log "disk-state refresh: MaSt discovery complete"
     tc_log_mast_volume_state "$volumes_file"
+
+    if [ ! -s "$volumes_file" ]; then
+        tc_log "disk-state refresh: MaSt reports zero managed HFS volumes; writing diskless runtime state"
+        : >"$shares_file"
+        : >"$adisk_file"
+        : >"$payload_file"
+        mv -f "$volumes_file" "$TC_TOPOLOGY_SIGNATURE"
+        mv -f "$shares_file" "$TC_SHARES_TSV"
+        mv -f "$adisk_file" "$TC_ADISK_TSV"
+        mv -f "$payload_file" "$TC_PAYLOAD_TSV"
+        TC_DISK_REFRESH_RESULT=no_payload
+        tc_log "disk-state refresh complete: diskless runtime state written"
+        rm -f "$raw_file" "$volumes_file" "$shares_file" "$adisk_file" "$payload_file"
+        return 0
+    fi
 
     tc_log "disk-state refresh: activating discovered MaSt volumes"
     tc_mount_mast_volumes_for_boot "$volumes_file"
 
+    tc_log "disk-state refresh: resolving payload directory"
+    if ! tc_resolve_payload "$volumes_file"; then
+        tc_log "payload discovery failed; writing no-payload runtime state"
+        : >"$shares_file"
+        : >"$adisk_file"
+        : >"$payload_file"
+        mv -f "$volumes_file" "$TC_TOPOLOGY_SIGNATURE"
+        mv -f "$shares_file" "$TC_SHARES_TSV"
+        mv -f "$adisk_file" "$TC_ADISK_TSV"
+        mv -f "$payload_file" "$TC_PAYLOAD_TSV"
+        TC_DISK_REFRESH_RESULT=no_payload
+        tc_log "disk-state refresh complete: no-payload runtime state written"
+        rm -f "$raw_file" "$volumes_file" "$shares_file" "$adisk_file" "$payload_file"
+        return 0
+    fi
+
     tc_log "disk-state refresh: building share state from mounted writable MaSt volumes"
-    if ! tc_build_share_state "$volumes_file"; then
-        tc_log "no writable MaSt share volumes are available"
-        rm -f "$volumes_file" "$raw_file"
-        return 1
+    if ! tc_build_share_state "$volumes_file" "$shares_file" "$adisk_file"; then
+        tc_log "no writable MaSt share volumes are available; writing no-payload runtime state"
+        : >"$shares_file"
+        : >"$adisk_file"
+        : >"$payload_file"
+        mv -f "$volumes_file" "$TC_TOPOLOGY_SIGNATURE"
+        mv -f "$shares_file" "$TC_SHARES_TSV"
+        mv -f "$adisk_file" "$TC_ADISK_TSV"
+        mv -f "$payload_file" "$TC_PAYLOAD_TSV"
+        TC_DISK_REFRESH_RESULT=no_payload
+        tc_log "disk-state refresh complete: no-payload runtime state written"
+        rm -f "$raw_file" "$volumes_file" "$shares_file" "$adisk_file" "$payload_file"
+        return 0
     fi
     tc_log "disk-state refresh: share state ready"
 
-    tc_log "disk-state refresh: applying ATA idle settings after share-state build"
+    tc_log "disk-state refresh: applying ATA idle settings after payload and share-state build"
     tc_configure_ata_idle_for_mast_disks "$volumes_file" || true
 
-    tc_log "disk-state refresh: resolving payload directory"
-    if ! tc_resolve_payload "$volumes_file"; then
-        tc_log "payload discovery failed"
-        rm -f "$volumes_file" "$raw_file"
-        return 1
-    fi
-
-    tc_write_payload_state "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME" "$TC_RESOLVED_PAYLOAD_DEVICE"
+    tc_write_payload_state "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME" "$TC_RESOLVED_PAYLOAD_DEVICE" "$payload_file"
+    mv -f "$volumes_file" "$TC_TOPOLOGY_SIGNATURE"
+    mv -f "$shares_file" "$TC_SHARES_TSV"
+    mv -f "$adisk_file" "$TC_ADISK_TSV"
+    mv -f "$payload_file" "$TC_PAYLOAD_TSV"
     tc_log "disk-state refresh: payload state written: dir=$TC_RESOLVED_PAYLOAD_DIR volume=$TC_RESOLVED_PAYLOAD_VOLUME device=$TC_RESOLVED_PAYLOAD_DEVICE"
     tc_set_payload_log_dir "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME"
     if tc_payload_log_dir_ready; then
@@ -44,7 +85,8 @@ tc_refresh_disk_state() {
     fi
 
     tc_log "disk-state refresh complete: runtime state written"
-    rm -f "$volumes_file" "$raw_file"
+    TC_DISK_REFRESH_RESULT=ready
+    rm -f "$volumes_file" "$raw_file" "$shares_file" "$adisk_file" "$payload_file"
     return 0
 }
 
