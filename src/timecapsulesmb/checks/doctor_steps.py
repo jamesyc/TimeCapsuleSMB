@@ -135,12 +135,12 @@ def _add_config_validation_results(
     return True
 
 
-def check_xattr_tdb_persistence(connection: SshConnection) -> CheckResult:
-    proc_stdout = read_active_smb_conf_conn(connection)
-    if not proc_stdout.strip():
+def check_xattr_tdb_persistence(connection: SshConnection, config_text: str | None = None) -> CheckResult:
+    active_smb_conf = config_text if config_text is not None else read_active_smb_conf_conn(connection)
+    if not active_smb_conf.strip():
         return CheckResult("WARN", f"could not inspect active smb.conf at {RUNTIME_SMB_CONF}")
 
-    paths = parse_xattr_tdb_paths(proc_stdout)
+    paths = parse_xattr_tdb_paths(active_smb_conf)
     if not paths:
         return CheckResult("WARN", "active smb.conf does not contain xattr_tdb:file")
 
@@ -747,7 +747,7 @@ def _doctor_check_active_smb_conf(target: DoctorTarget, remote: RemoteAccess, si
             reason = "active smb.conf unavailable"
         else:
             reason = ""
-        sink.add(check_xattr_tdb_persistence(target.connection))
+        sink.add(check_xattr_tdb_persistence(target.connection, active_smb_conf))
         return SmbConfigState(text=active_smb_conf, reason=reason)
     except Exception as e:
         sink.add(CheckResult("WARN", f"xattr_tdb:file check skipped: {e}"))

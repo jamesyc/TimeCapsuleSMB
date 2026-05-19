@@ -1771,6 +1771,28 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(result.status, "WARN")
         self.assertIn("does not contain xattr_tdb:file", result.message)
 
+    def test_check_xattr_tdb_persistence_uses_supplied_config_text(self) -> None:
+        smb_conf = "    xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n"
+        read_active_smb_conf = mock.Mock(side_effect=AssertionError("active smb.conf should not be read again"))
+        with mock.patch("timecapsulesmb.checks.doctor_steps.read_active_smb_conf_conn", read_active_smb_conf):
+            result = check_xattr_tdb_persistence(SshConnection("root@tc", "pw", "-o foo"), config_text=smb_conf)
+        self.assertEqual(result.status, "PASS")
+        read_active_smb_conf.assert_not_called()
+
+    def test_run_doctor_checks_reuses_active_smb_conf_for_xattr_check(self) -> None:
+        active_smb_conf = "[global]\n    xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n"
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            read_active_smb_conf=active_smb_conf,
+            xattr_result=CheckResult("PASS", "xattr ok"),
+            skip_bonjour=True,
+            skip_smb=True,
+        )
+        self.assertFalse(run.fatal)
+        run.mocks.check_xattr_tdb_persistence.assert_called_once()
+        self.assertIsInstance(run.mocks.check_xattr_tdb_persistence.call_args.args[0], SshConnection)
+        self.assertEqual(run.mocks.check_xattr_tdb_persistence.call_args.args[1], active_smb_conf)
+
     def test_run_doctor_checks_reports_results_as_they_complete(self) -> None:
         values = {
             "TC_HOST": "root@10.0.0.2",
@@ -2454,10 +2476,7 @@ class CheckTests(unittest.TestCase):
                                                 "timecapsulesmb.device.probe.run_ssh",
                                                 side_effect=[
                                                     mock.Mock(stdout="[global]\n    netbios name = TimeCapsule\nxattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n"),
-                                                    mock.Mock(stdout="xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n"),
                                                     mock.Mock(stdout="enabled\n"),
-                                                    mock.Mock(stdout="192.168.1.217\n"),
-                                                    mock.Mock(stdout=""),
                                                 ],
                                             ) as run_ssh_mock:
                                                 with mock.patch("timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution", return_value=mock.Mock(status="PASS", message="nbns ok")) as nbns_mock:
@@ -2468,7 +2487,7 @@ class CheckTests(unittest.TestCase):
         nbns_index = results.index(nbns_result)
         listing_index = next(i for i, result in enumerate(results) if result.message == "listing ok")
         self.assertLess(nbns_index, listing_index)
-        self.assertEqual(run_ssh_mock.call_count, 3)
+        self.assertEqual(run_ssh_mock.call_count, 2)
         nbns_mock.assert_called_once_with("TimeCapsule", "10.0.0.2", "10.0.0.2")
 
     def test_run_doctor_checks_resolves_nbns_expected_ip_from_hostname(self) -> None:
@@ -2498,9 +2517,7 @@ class CheckTests(unittest.TestCase):
                                                 "timecapsulesmb.device.probe.run_ssh",
                                                 side_effect=[
                                                     mock.Mock(stdout="[global]\n    netbios name = TimeCapsule\nxattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n"),
-                                                    mock.Mock(stdout="xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n"),
                                                     mock.Mock(stdout="enabled\n"),
-                                                    mock.Mock(stdout="192.168.1.217\n"),
                                                 ],
                                             ):
                                                 with mock.patch("timecapsulesmb.checks.doctor_steps.resolve_host_ipv4s", return_value=("192.168.1.217",)):
@@ -2537,9 +2554,7 @@ class CheckTests(unittest.TestCase):
                                                 "timecapsulesmb.device.probe.run_ssh",
                                                 side_effect=[
                                                     mock.Mock(stdout="[global]\n    netbios name = TimeCapsule\nxattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n[Data]\n"),
-                                                    mock.Mock(stdout="xattr_tdb:file = /Volumes/dk2/samba4/private/xattr.tdb\n"),
                                                     mock.Mock(stdout="enabled\n"),
-                                                    mock.Mock(stdout="192.168.1.217\n"),
                                                 ],
                                             ):
                                                 with mock.patch("timecapsulesmb.checks.doctor_steps.resolve_host_ipv4s", return_value=("192.168.1.217",)):
