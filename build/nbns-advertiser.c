@@ -21,12 +21,20 @@
 #define MAX_NAME 16
 #define MAX_PACKET_NAME 34
 #define DNS_CLASS_IN 1
+#define NB_TYPE_NULL 0x000A
 #define NB_TYPE_NB 0x0020
+#define NB_TYPE_NBSTAT 0x0021
 #define NBNS_FLAG_RESPONSE 0x8000
 #define NBNS_FLAG_AUTHORITATIVE 0x0400
+#define NBNS_FLAG_RECURSION_AVAILABLE 0x0080
+#define NBNS_FLAG_BROADCAST 0x0010
 #define NBNS_RCODE_POSITIVE 0x0000
+#define NBNS_RCODE_NAME_ERROR 0x0003
 #define NBNS_SUFFIX_WORKSTATION 0x00
 #define NBNS_SUFFIX_SERVER 0x20
+#define NBNS_NAME_FLAGS_ACTIVE 0x0400
+#define NBNS_NODE_STATUS_NAME_COUNT 2
+#define NBNS_NODE_STATUS_STATS_LEN 46
 #define MAX_IFACE_CONTEXTS 16
 #define AUTO_IP_STABILIZE_SECONDS 3
 #define AUTO_IP_STARTUP_POLL_SECONDS 2
@@ -500,6 +508,26 @@ static int validate_netbios_name(const char *name) {
     return 0;
 }
 
+static int parse_ttl_arg(const char *value, uint32_t *out) {
+    char *end = NULL;
+    long ttl;
+
+    if (value == NULL || value[0] == '\0') {
+        fprintf(stderr, "ttl must be between 1 and 86400\n");
+        return -1;
+    }
+
+    errno = 0;
+    ttl = strtol(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0' || ttl <= 0 || ttl > 86400) {
+        fprintf(stderr, "ttl must be between 1 and 86400\n");
+        return -1;
+    }
+
+    *out = (uint32_t)ttl;
+    return 0;
+}
+
 static int decode_netbios_question_name(const uint8_t *encoded, size_t encoded_len, char out[16], uint8_t *suffix) {
     size_t i;
 
@@ -543,34 +571,87 @@ static int names_match(const char configured[16], const char queried[16]) {
     return 1;
 }
 
-static int build_positive_response(uint8_t *out,
+static int name_is_wildcard(const char queried[16]) {
+    size_t i;
+
+    if (queried[0] != '*') {
+        return 0;
+    }
+    for (i = 1; i < 15; i++) {
+        if (queried[i] != ' ') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int parse_question_name(const uint8_t *buf,
+                               size_t len,
+                               size_t question_name_off,
+                               char out[16],
+                               uint8_t *suffix,
+                               size_t *question_name_end_off) {
+    size_t off = question_name_off;
+
+    if (off >= len || buf[off] != 32) {
+        return -1;
+    }
+    off++;
+
+    if (off + 32 > len) {
+        return -1;
+    }
+    if (decode_netbios_question_name(buf + off, 32, out, suffix) != 0) {
+        return -1;
+    }
+    off += 32;
+
+    while (off < len) {
+        uint8_t label_len = buf[off++];
+        if (label_len == 0) {
+            *question_name_end_off = off;
+            return 0;
+        }
+        if ((label_len & 0xC0) != 0 || label_len > 63 || off + label_len > len) {
+            return -1;
+        }
+        off += label_len;
+    }
+
+    return -1;
+}
+
+static int build_resource_response(uint8_t *out,
                                    size_t out_len,
                                    const uint8_t *request,
                                    size_t request_len,
                                    size_t question_name_off,
-                                   size_t question_end_off,
+                                   size_t question_name_end_off,
                                    uint16_t response_flags,
+                                   uint16_t answer_count,
+                                   uint16_t rr_type_value,
                                    uint32_t ttl,
-                                   uint32_t ipv4_addr) {
+                                   const uint8_t *rdata,
+                                   uint16_t rdata_len) {
     struct nbns_header header;
     size_t off = 0;
-    uint16_t flags = 0;
     uint16_t rr_class = htons(DNS_CLASS_IN);
-    uint16_t rr_type = htons(NB_TYPE_NB);
-    uint16_t rdlength = htons(6);
-    uint16_t nb_flags = htons(0x0000);
+    uint16_t rr_type = htons(rr_type_value);
     uint32_t ttl_net = htonl(ttl);
-    uint16_t name_ptr = htons((uint16_t)(0xC000 | question_name_off));
+    uint16_t rdlength = htons(rdata_len);
+    size_t rr_name_len;
 
-    if (request_len < sizeof(header) || question_end_off > request_len || question_name_off >= question_end_off) {
+    if (request_len < sizeof(header) ||
+        question_name_end_off > request_len ||
+        question_name_off >= question_name_end_off) {
         return -1;
     }
 
+    rr_name_len = question_name_end_off - question_name_off;
     memcpy(&header, request, sizeof(header));
-    flags = (uint16_t)((ntohs(header.flags) & 0x0110) | response_flags | NBNS_RCODE_POSITIVE);
-    header.flags = htons(flags);
-    header.qdcount = htons(1);
-    header.ancount = htons(1);
+    header.flags = htons(response_flags);
+    header.qdcount = 0;
+    header.ancount = htons(answer_count);
     header.nscount = 0;
     header.arcount = 0;
 
@@ -580,18 +661,16 @@ static int build_positive_response(uint8_t *out,
     memcpy(out + off, &header, sizeof(header));
     off += sizeof(header);
 
-    if (off + (question_end_off - question_name_off) > out_len) {
+    if (off + rr_name_len > out_len) {
         return -1;
     }
-    memcpy(out + off, request + question_name_off, question_end_off - question_name_off);
-    off += question_end_off - question_name_off;
+    memcpy(out + off, request + question_name_off, rr_name_len);
+    off += rr_name_len;
 
-    if (off + sizeof(name_ptr) + sizeof(rr_type) + sizeof(rr_class) + sizeof(ttl_net) + sizeof(rdlength) + sizeof(nb_flags) + sizeof(ipv4_addr) > out_len) {
+    if (off + sizeof(rr_type) + sizeof(rr_class) + sizeof(ttl_net) + sizeof(rdlength) + rdata_len > out_len) {
         return -1;
     }
 
-    memcpy(out + off, &name_ptr, sizeof(name_ptr));
-    off += sizeof(name_ptr);
     memcpy(out + off, &rr_type, sizeof(rr_type));
     off += sizeof(rr_type);
     memcpy(out + off, &rr_class, sizeof(rr_class));
@@ -600,12 +679,101 @@ static int build_positive_response(uint8_t *out,
     off += sizeof(ttl_net);
     memcpy(out + off, &rdlength, sizeof(rdlength));
     off += sizeof(rdlength);
-    memcpy(out + off, &nb_flags, sizeof(nb_flags));
-    off += sizeof(nb_flags);
-    memcpy(out + off, &ipv4_addr, sizeof(ipv4_addr));
-    off += sizeof(ipv4_addr);
+    if (rdata_len > 0) {
+        memcpy(out + off, rdata, rdata_len);
+        off += rdata_len;
+    }
 
     return (int)off;
+}
+
+static int build_positive_response(uint8_t *out,
+                                   size_t out_len,
+                                   const uint8_t *request,
+                                   size_t request_len,
+                                   size_t question_name_off,
+                                   size_t question_name_end_off,
+                                   uint32_t ttl,
+                                   uint32_t ipv4_addr) {
+    uint8_t rdata[6];
+    uint16_t nb_flags = htons(0x0000);
+
+    memcpy(rdata, &nb_flags, sizeof(nb_flags));
+    memcpy(rdata + sizeof(nb_flags), &ipv4_addr, sizeof(ipv4_addr));
+
+    return build_resource_response(
+        out,
+        out_len,
+        request,
+        request_len,
+        question_name_off,
+        question_name_end_off,
+        (uint16_t)(NBNS_FLAG_RESPONSE | NBNS_FLAG_AUTHORITATIVE | NBNS_FLAG_RECURSION_AVAILABLE | NBNS_RCODE_POSITIVE),
+        1,
+        NB_TYPE_NB,
+        ttl,
+        rdata,
+        sizeof(rdata));
+}
+
+static int build_negative_query_response(uint8_t *out,
+                                         size_t out_len,
+                                         const uint8_t *request,
+                                         size_t request_len,
+                                         size_t question_name_off,
+                                         size_t question_name_end_off) {
+    return build_resource_response(
+        out,
+        out_len,
+        request,
+        request_len,
+        question_name_off,
+        question_name_end_off,
+        (uint16_t)(NBNS_FLAG_RESPONSE | NBNS_FLAG_AUTHORITATIVE | NBNS_FLAG_RECURSION_AVAILABLE | NBNS_RCODE_NAME_ERROR),
+        0,
+        NB_TYPE_NULL,
+        0,
+        NULL,
+        0);
+}
+
+static void append_node_status_name(uint8_t *out, const char normalized_name[16], uint8_t suffix) {
+    uint16_t name_flags = htons(NBNS_NAME_FLAGS_ACTIVE);
+
+    memcpy(out, normalized_name, 15);
+    out[15] = suffix;
+    memcpy(out + 16, &name_flags, sizeof(name_flags));
+}
+
+static int build_node_status_response(uint8_t *out,
+                                      size_t out_len,
+                                      const uint8_t *request,
+                                      size_t request_len,
+                                      size_t question_name_off,
+                                      size_t question_name_end_off,
+                                      const char *netbios_name) {
+    uint8_t rdata[1 + (NBNS_NODE_STATUS_NAME_COUNT * 18) + NBNS_NODE_STATUS_STATS_LEN];
+    char normalized_name[16];
+
+    memset(rdata, 0, sizeof(rdata));
+    normalize_netbios_name(normalized_name, netbios_name);
+    rdata[0] = NBNS_NODE_STATUS_NAME_COUNT;
+    append_node_status_name(rdata + 1, normalized_name, NBNS_SUFFIX_WORKSTATION);
+    append_node_status_name(rdata + 1 + 18, normalized_name, NBNS_SUFFIX_SERVER);
+
+    return build_resource_response(
+        out,
+        out_len,
+        request,
+        request_len,
+        question_name_off,
+        question_name_end_off,
+        (uint16_t)(NBNS_FLAG_RESPONSE | NBNS_FLAG_AUTHORITATIVE | NBNS_RCODE_POSITIVE),
+        1,
+        NB_TYPE_NBSTAT,
+        0,
+        rdata,
+        sizeof(rdata));
 }
 
 static int maybe_respond_to_query(int sock,
@@ -624,6 +792,7 @@ static int maybe_respond_to_query(int sock,
     uint8_t suffix = 0;
     size_t off;
     size_t question_name_off;
+    size_t question_name_end_off;
     int response_len;
 
     if (len < sizeof(header)) {
@@ -651,40 +820,70 @@ static int maybe_respond_to_query(int sock,
     }
 
     question_name_off = off;
-    if (buf[off] != 32) {
+    if (parse_question_name(buf, len, question_name_off, queried_name, &suffix, &question_name_end_off) != 0) {
         return 0;
     }
-    off++;
+    off = question_name_end_off;
 
-    if (off + 32 + 1 + 2 + 2 > len) {
+    if (off + 2 + 2 > len) {
         return 0;
     }
-
-    if (decode_netbios_question_name(buf + off, 32, queried_name, &suffix) != 0) {
-        return 0;
-    }
-    off += 32;
-
-    if (buf[off] != 0) {
-        return 0;
-    }
-    off++;
-
     memcpy(&qtype, buf + off, sizeof(qtype));
     off += sizeof(qtype);
     memcpy(&qclass, buf + off, sizeof(qclass));
-    off += sizeof(qclass);
 
-    if (ntohs(qtype) != NB_TYPE_NB || ntohs(qclass) != DNS_CLASS_IN) {
-        return 0;
-    }
-
-    if (suffix != NBNS_SUFFIX_WORKSTATION && suffix != NBNS_SUFFIX_SERVER) {
+    if (ntohs(qclass) != DNS_CLASS_IN) {
         return 0;
     }
 
     normalize_netbios_name(normalized_name, cfg->netbios_name);
+
+    if (ntohs(qtype) == NB_TYPE_NBSTAT) {
+        if (!names_match(normalized_name, queried_name) && !name_is_wildcard(queried_name)) {
+            return 0;
+        }
+        response_len = build_node_status_response(
+            response,
+            sizeof(response),
+            buf,
+            len,
+            question_name_off,
+            question_name_end_off,
+            cfg->netbios_name);
+        if (response_len < 0) {
+            return 0;
+        }
+        if (sendto_retry(sock, response, (size_t)response_len, 0, (const struct sockaddr *)peer, peer_len) < 0) {
+            perror("sendto");
+        }
+        return 1;
+    }
+
+    if (ntohs(qtype) != NB_TYPE_NB) {
+        return 0;
+    }
+
+    if (suffix != NBNS_SUFFIX_WORKSTATION && suffix != NBNS_SUFFIX_SERVER) {
+        if ((flags & NBNS_FLAG_BROADCAST) == 0) {
+            response_len = build_negative_query_response(response, sizeof(response), buf, len, question_name_off, question_name_end_off);
+            if (response_len >= 0 &&
+                sendto_retry(sock, response, (size_t)response_len, 0, (const struct sockaddr *)peer, peer_len) < 0) {
+                perror("sendto");
+            }
+            return response_len >= 0 ? 1 : 0;
+        }
+        return 0;
+    }
+
     if (!names_match(normalized_name, queried_name)) {
+        if ((flags & NBNS_FLAG_BROADCAST) == 0) {
+            response_len = build_negative_query_response(response, sizeof(response), buf, len, question_name_off, question_name_end_off);
+            if (response_len >= 0 &&
+                sendto_retry(sock, response, (size_t)response_len, 0, (const struct sockaddr *)peer, peer_len) < 0) {
+                perror("sendto");
+            }
+            return response_len >= 0 ? 1 : 0;
+        }
         return 0;
     }
 
@@ -694,8 +893,7 @@ static int maybe_respond_to_query(int sock,
         buf,
         len,
         question_name_off,
-        off,
-        (uint16_t)(NBNS_FLAG_RESPONSE | NBNS_FLAG_AUTHORITATIVE),
+        question_name_end_off,
         cfg->ttl,
         cfg->ipv4_addr);
     if (response_len < 0) {
@@ -752,12 +950,9 @@ int main(int argc, char **argv) {
             printf("%d\n", ADVERTISER_VERSION_CODE);
             return 0;
         } else if (strcmp(argv[i], "--ttl") == 0 && i + 1 < argc) {
-            long ttl = strtol(argv[++i], NULL, 10);
-            if (ttl <= 0 || ttl > 86400) {
-                fprintf(stderr, "ttl must be between 1 and 86400\n");
+            if (parse_ttl_arg(argv[++i], &cfg.ttl) != 0) {
                 return 2;
             }
-            cfg.ttl = (uint32_t)ttl;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             usage(argv[0]);
             return 0;
