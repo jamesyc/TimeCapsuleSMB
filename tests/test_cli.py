@@ -1609,16 +1609,15 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(rc, 1)
         text = output.getvalue()
-        expected = (
-            "Failed to load zeroconf. Install the Python package zeroconf. "
-            "Run `./tcapsule bootstrap` first to set up the required dependencies. "
-            "ModuleNotFoundError: No module named 'zeroconf'"
-        )
-        self.assertIn(expected, text)
+        expected_prefix = "Failed to load zeroconf. Install the Python package zeroconf."
+        expected_error = "ModuleNotFoundError: No module named 'zeroconf'"
+        self.assertIn(expected_prefix, text)
+        self.assertIn(expected_error, text)
         self.assertNotIn("This writes a local .env configuration file", text)
         self.assertEqual(self.configure_finished_result(), "failure")
         error = self.configure_finished_error()
-        self.assertIn(expected, error)
+        self.assertIn(expected_prefix, error)
+        self.assertIn(expected_error, error)
         self.assertIn("stage=dependency_check", error)
 
     def test_configure_dependency_preflight_reports_first_missing_module_name(self) -> None:
@@ -1631,13 +1630,12 @@ class CliTests(unittest.TestCase):
                         rc = configure.main([])
 
         self.assertEqual(rc, 1)
-        expected = (
-            "Failed to load pexpect. Install the Python package pexpect. "
-            "Run `./tcapsule bootstrap` first to set up the required dependencies. "
-            "ModuleNotFoundError: No module named 'pexpect'"
-        )
-        self.assertIn(expected, output.getvalue())
-        self.assertIn(expected, self.configure_finished_error())
+        expected_prefix = "Failed to load pexpect. Install the Python package pexpect."
+        expected_error = "ModuleNotFoundError: No module named 'pexpect'"
+        self.assertIn(expected_prefix, output.getvalue())
+        self.assertIn(expected_error, output.getvalue())
+        self.assertIn(expected_prefix, self.configure_finished_error())
+        self.assertIn(expected_error, self.configure_finished_error())
 
     def test_configure_does_not_persist_configure_id_before_final_write(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

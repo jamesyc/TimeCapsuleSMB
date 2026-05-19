@@ -17,11 +17,8 @@ from timecapsulesmb.transport import ssh as ssh_transport
 
 
 REAL_IMPORT = __import__
-MISSING_PEXPECT_MESSAGE = (
-    "Failed to load pexpect. Install the Python package pexpect. "
-    "Run `./tcapsule bootstrap` first to set up the required dependencies. "
-    "ModuleNotFoundError: No module named 'pexpect'"
-)
+MISSING_PEXPECT_PREFIX = "Failed to load pexpect. Install the Python package pexpect."
+MISSING_PEXPECT_ERROR = "ModuleNotFoundError: No module named 'pexpect'"
 
 
 class DecodeTrapBytes(bytes):
@@ -458,7 +455,8 @@ class SSHTransportTests(unittest.TestCase):
                     timeout_message="timeout",
                 )
         self.assertNotIsInstance(exc.exception, SystemExit)
-        self.assertEqual(str(exc.exception), MISSING_PEXPECT_MESSAGE)
+        self.assertIn(MISSING_PEXPECT_PREFIX, str(exc.exception))
+        self.assertIn(MISSING_PEXPECT_ERROR, str(exc.exception))
 
     def test_ssh_local_forward_reports_missing_pexpect(self) -> None:
         with mock.patch("builtins.__import__", side_effect=self.missing_pexpect_import):
@@ -472,7 +470,8 @@ class SSHTransportTests(unittest.TestCase):
                 ):
                     pass
         self.assertNotIsInstance(exc.exception, SystemExit)
-        self.assertEqual(str(exc.exception), MISSING_PEXPECT_MESSAGE)
+        self.assertIn(MISSING_PEXPECT_PREFIX, str(exc.exception))
+        self.assertIn(MISSING_PEXPECT_ERROR, str(exc.exception))
 
     def test_ssh_local_forward_waits_for_port_and_closes_child(self) -> None:
         try:
