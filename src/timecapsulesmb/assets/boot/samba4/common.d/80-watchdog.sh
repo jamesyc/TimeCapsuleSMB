@@ -147,6 +147,16 @@ tc_watchdog_disk_iteration() {
     if [ "$watchdog_snapshot_status" -eq 0 ]; then
         if ! tc_watchdog_check_active_mast_users "$watchdog_mast_raw_file"; then
             tc_watchdog_recover_disk_runtime "managed diskd users dropped to zero"
+            rm -f "$watchdog_mast_volumes_file" "$watchdog_mast_raw_file"
+            return 0
+        fi
+        if [ -s "$watchdog_mast_volumes_file" ] && ! tc_load_payload_state; then
+            tc_log "watchdog disk check: managed MaSt disks present without payload state; probing payload availability"
+            if tc_refresh_disk_state && tc_load_payload_state; then
+                tc_exec_start_samba "managed MaSt disks now have payload state"
+            fi
+            rm -f "$watchdog_mast_volumes_file" "$watchdog_mast_raw_file"
+            return 0
         fi
     else
         tc_log "watchdog disk check: skipping MaSt users check because snapshot is unavailable"
@@ -247,16 +257,39 @@ tc_nbns_enabled() {
     [ "$NBNS_ENABLED" = "1" ]
 }
 
+tc_samba_runtime_expected() {
+    tc_load_payload_state
+}
+
+tc_watchdog_stop_samba_lane_without_payload() {
+    if runtime_process_present_by_ucomm smbd; then
+        tc_log "watchdog pass: stopping smbd because payload state is unavailable"
+        stop_runtime_process_by_ucomm "smbd" smbd || return 1
+    fi
+    if tc_nbns_enabled && runtime_process_present_by_ucomm "$NBNS_PROC_NAME"; then
+        tc_log "watchdog pass: stopping nbns responder because payload state is unavailable"
+        stop_runtime_process_by_ucomm "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" || return 1
+    fi
+    return 0
+}
+
 tc_all_managed_services_healthy() {
-    if [ "${TC_WATCHDOG_SMB_DEFERRED_NO_IP:-0}" = "1" ]; then
-        return 1
+    samba_expected=0
+    if tc_samba_runtime_expected; then
+        samba_expected=1
     fi
 
-    if ! runtime_process_present_by_ucomm smbd; then
-        return 1
-    fi
-    if ! tc_smbd_bound_ipv4_445; then
-        return 1
+    if [ "$samba_expected" = "1" ]; then
+        if [ "${TC_WATCHDOG_SMB_DEFERRED_NO_IP:-0}" = "1" ]; then
+            return 1
+        fi
+
+        if ! runtime_process_present_by_ucomm smbd; then
+            return 1
+        fi
+        if ! tc_smbd_bound_ipv4_445; then
+            return 1
+        fi
     fi
 
     if [ "${TC_WATCHDOG_MDNS_UNAVAILABLE:-0}" = "1" ]; then
@@ -269,7 +302,7 @@ tc_all_managed_services_healthy() {
         fi
     fi
 
-    if tc_nbns_enabled; then
+    if [ "$samba_expected" = "1" ] && tc_nbns_enabled; then
         if ! runtime_process_present_by_ucomm "$NBNS_PROC_NAME"; then
             return 1
         fi
@@ -455,7 +488,7 @@ tc_watchdog_report_service_health() {
         return 0
     fi
 
-    if [ "${TC_WATCHDOG_SMB_DEFERRED_NO_IP:-0}" = "1" ]; then
+    if tc_samba_runtime_expected && [ "${TC_WATCHDOG_SMB_DEFERRED_NO_IP:-0}" = "1" ]; then
         tc_log "watchdog pass: Samba IPv4 bind interface is unavailable"
         return 1
     fi
@@ -467,9 +500,15 @@ tc_watchdog_service_iteration() {
     tc_log "watchdog service pass: checking managed services"
     tc_watchdog_reset_pass_state
     tc_watchdog_reconcile_identity || return 1
-    tc_watchdog_reconcile_smb_bind_interfaces || return 1
-    tc_watchdog_reconcile_smbd || return 1
+    if tc_samba_runtime_expected; then
+        tc_watchdog_reconcile_smb_bind_interfaces || return 1
+        tc_watchdog_reconcile_smbd || return 1
+    else
+        tc_watchdog_stop_samba_lane_without_payload || return 1
+    fi
     tc_watchdog_reconcile_mdns
-    tc_watchdog_reconcile_nbns
+    if tc_samba_runtime_expected; then
+        tc_watchdog_reconcile_nbns
+    fi
     tc_watchdog_report_service_health
 }

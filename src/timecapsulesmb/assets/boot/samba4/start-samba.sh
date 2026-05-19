@@ -51,11 +51,25 @@ if ! tc_prepare_smb_bind_context; then
     exit 1
 fi
 
-if ! tc_refresh_disk_state; then
+while :; do
+    if tc_refresh_disk_state; then
+        break
+    fi
+    if [ "$TC_START_MODE" = "--reload-disk-runtime" ] && [ "${TC_DISK_REFRESH_RESULT:-failed}" = "mast_failed" ]; then
+        tc_log "MaSt discovery failed during disk runtime reload; retrying in 5s"
+        sleep 5
+        continue
+    fi
     exit 1
-fi
+done
 
 tc_init_runtime_identity
+
+if [ "${TC_DISK_REFRESH_RESULT:-ready}" = "no_payload" ]; then
+    tc_log "managed Samba payload is unavailable; starting watchdog without smbd"
+    tc_start_watchdog
+    exit 0
+fi
 
 if ! tc_stage_disk_runtime; then
     exit 1

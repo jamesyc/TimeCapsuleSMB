@@ -369,6 +369,7 @@ tc_launch_mdns_advertiser() {
     context=$1
     kill_prior=$2
     wait_attempts=$3
+    diskless=${4:-0}
     tc_ensure_runtime_identity
 
     if ! tc_prepare_mdns_identity "" "$context"; then
@@ -381,12 +382,19 @@ tc_launch_mdns_advertiser() {
         stop_runtime_process_by_ucomm "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" || true
     fi
 
-    tc_log "$context: starting mdns advertiser in auto-ip mode"
+    if [ "$diskless" = "1" ]; then
+        tc_log "$context: starting mdns advertiser in diskless auto-ip mode"
+    else
+        tc_log "$context: starting mdns advertiser in auto-ip mode"
+    fi
     set -- "$TC_MDNS_BIN" \
         --load-snapshot "$APPLE_MDNS_SNAPSHOT" \
         --instance "$MDNS_INSTANCE_NAME" \
         --host "$MDNS_HOST_LABEL" \
         --device-model "${MDNS_DEVICE_MODEL:-TimeCapsule}"
+    if [ "$diskless" = "1" ]; then
+        set -- "$@" --diskless
+    fi
     if [ -n "${AIRPORT_WAMA:-}" ] || [ -n "${AIRPORT_RAMA:-}" ] || [ -n "${AIRPORT_RAM2:-}" ] || [ -n "${AIRPORT_RAST:-}" ] || [ -n "${AIRPORT_RANA:-}" ] || [ -n "${AIRPORT_SYFL:-}" ] || [ -n "${AIRPORT_SYAP:-}" ] || [ -n "${AIRPORT_SYVS:-}" ] || [ -n "${AIRPORT_SRCV:-}" ] || [ -n "${AIRPORT_BJSD:-}" ]; then
         set -- "$@" \
             --airport-wama "$AIRPORT_WAMA" \
@@ -400,7 +408,7 @@ tc_launch_mdns_advertiser() {
             --airport-srcv "$AIRPORT_SRCV" \
             --airport-bjsd "$AIRPORT_BJSD"
     fi
-    if [ -s "$TC_ADISK_TSV" ]; then
+    if [ "$diskless" != "1" ] && [ -s "$TC_ADISK_TSV" ]; then
         set -- "$@" \
             --adisk-shares-file "$TC_ADISK_TSV" \
             --adisk-sys-wama "$iface_mac"
@@ -432,11 +440,19 @@ tc_launch_mdns_advertiser() {
 
 tc_start_mdns_advertiser() {
     tc_finalize_mdns_snapshot_after_capture
-    tc_launch_mdns_advertiser "mdns startup" 1 100
+    if tc_load_payload_state; then
+        tc_launch_mdns_advertiser "mdns startup" 1 100 0
+    else
+        tc_launch_mdns_advertiser "mdns startup" 1 100 1
+    fi
 }
 
 tc_restart_mdns() {
-    tc_launch_mdns_advertiser "watchdog recovery" 0 0
+    if tc_load_payload_state; then
+        tc_launch_mdns_advertiser "watchdog recovery" 1 0 0
+    else
+        tc_launch_mdns_advertiser "watchdog recovery" 1 0 1
+    fi
 }
 
 tc_launch_nbns() {

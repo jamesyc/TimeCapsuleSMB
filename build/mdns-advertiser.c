@@ -281,6 +281,7 @@ struct config {
     uint16_t adisk_port;
     uint16_t airport_port;
     uint32_t ttl;
+    int diskless;
     char load_snapshot_path[MAX_NAME];
     char save_snapshot_path[MAX_NAME];
     char skip_capture_if_snapshot_newer_than_boot_path[MAX_NAME];
@@ -335,6 +336,8 @@ static int collect_usable_iface_contexts(struct iface_context_set *out);
 static int iface_context_sets_equal(const struct iface_context_set *a, const struct iface_context_set *b);
 static int print_iface_context_cidrs(FILE *stream, const struct iface_context_set *set);
 static int is_airport_enabled(const struct config *cfg);
+static int smb_enabled(const struct config *cfg);
+static int adisk_enabled(const struct config *cfg);
 static int cfg_has_airport_identity_macs(const struct config *cfg);
 static int add_rr_ptr(uint8_t *buf, size_t *off, size_t cap, const char *owner, const char *target, uint32_t ttl);
 static int add_rr_txt_empty(uint8_t *buf, size_t *off, size_t cap, const char *owner, uint32_t ttl);
@@ -741,15 +744,16 @@ static void log_startup_config(const struct config *cfg, int shared_bind, int au
     char ipv4_buf[INET_ADDRSTRLEN];
 
     fprintf(stderr,
-            "mdns startup: mode=%s instance=%s host=%s ipv4=%s service=%s adisk=%s device_model=%s airport=%s\n",
+            "mdns startup: mode=%s instance=%s host=%s ipv4=%s service=%s adisk=%s device_model=%s airport=%s advertise=%s\n",
             shared_bind ? "shared" : "exclusive",
             cfg->instance_name[0] != '\0' ? cfg->instance_name : "(empty)",
             cfg->host_label[0] != '\0' ? cfg->host_label : "(empty)",
             auto_ip ? "auto" : ipv4_to_string(cfg->ipv4_addr, ipv4_buf, sizeof(ipv4_buf)),
             cfg->service_type[0] != '\0' ? cfg->service_type : "(empty)",
-            cfg->adisk_disks.count > 0 ? "enabled" : "disabled",
+            adisk_enabled(cfg) ? "enabled" : "disabled",
             cfg->device_model[0] != '\0' ? cfg->device_model : "(empty)",
-            is_airport_enabled(cfg) ? "enabled" : "disabled");
+            is_airport_enabled(cfg) ? "enabled" : "disabled",
+            cfg->diskless ? "diskless" : "diskful");
 }
 
 static void log_send_failure(const char *stage, const struct sockaddr_in *dest, int use_snapshot_records,
@@ -770,13 +774,15 @@ static void log_send_failure(const char *stage, const struct sockaddr_in *dest, 
 static void log_served_records(const struct config *cfg, const struct service_record_set *snapshot_records,
                                int use_snapshot_records) {
     fprintf(stderr, "serving summary: source=%s\n", use_snapshot_records ? "snapshot" : "generated");
-    fprintf(stderr, "serving service: type=%s instance=%s port=%u host=%s\n",
-            cfg->service_type, cfg->instance_name, (unsigned int)cfg->port, cfg->host_fqdn);
+    if (smb_enabled(cfg)) {
+        fprintf(stderr, "serving service: type=%s instance=%s port=%u host=%s\n",
+                cfg->service_type, cfg->instance_name, (unsigned int)cfg->port, cfg->host_fqdn);
+    }
     if (cfg->device_model[0] != '\0') {
         fprintf(stderr, "serving service: type=%s instance=%s model=%s\n",
                 cfg->device_info_service_type, cfg->instance_name, cfg->device_model);
     }
-    if (cfg->adisk_disks.count > 0) {
+    if (adisk_enabled(cfg)) {
         size_t i;
         for (i = 0; i < cfg->adisk_disks.count; i++) {
             fprintf(stderr, "serving service: type=%s instance=%s share=%s disk_key=%s uuid=%s\n",
@@ -977,6 +983,7 @@ static void usage(const char *prog) {
             "  --save-airport-snapshot <path> Generate an AirPort-only Apple snapshot file and exit unless loading\n"
             "  --load-snapshot <path> Kill Apple mDNSResponder and replay snapshot records\n"
             "  --shared-bind     Allow shared UDP 5353 binding instead of exclusive takeover\n"
+            "  --diskless        Suppress generated _smb and _adisk records while replaying other snapshot records\n"
             "  --service <type>   Service type (default: _smb._tcp.local.)\n"
             "  --adisk-share <n>  Also advertise _adisk._tcp for Time Machine\n"
             "  --adisk-shares-file <p> Tab-separated share,disk-key,uuid,adVF rows\n"
@@ -1329,8 +1336,16 @@ static int parse_adisk_shares_file(struct config *cfg, const char *path) {
     return 0;
 }
 
+static int adisk_configured(const struct config *cfg) {
+    return cfg->adisk_disks.count > 0;
+}
+
 static int adisk_enabled(const struct config *cfg) {
-    return cfg->adisk_disks.count > 0 && cfg->adisk_sys_wama[0] != '\0';
+    return !cfg->diskless && adisk_configured(cfg);
+}
+
+static int smb_enabled(const struct config *cfg) {
+    return !cfg->diskless;
 }
 
 static int is_airport_enabled(const struct config *cfg) {
@@ -3109,16 +3124,21 @@ static int append_generated_base_records(uint8_t *buf, size_t *off, size_t cap, 
                                          uint32_t response_ipv4_addr, uint32_t ttl, int *answers) {
     char instance_fqdn[MAX_NAME];
 
-    if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->service_type) != 0) {
+    if (smb_enabled(cfg)) {
+        if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->service_type) != 0) {
+            return -1;
+        }
+        if (add_rr_ptr(buf, off, cap, cfg->service_type, instance_fqdn, ttl) != 0 ||
+            add_rr_srv(buf, off, cap, instance_fqdn, cfg->host_fqdn, cfg->port, ttl) != 0 ||
+            add_rr_txt_empty(buf, off, cap, instance_fqdn, ttl) != 0) {
+            return -1;
+        }
+        *answers += 3;
+    }
+    if (add_rr_a(buf, off, cap, cfg->host_fqdn, response_ipv4_addr, ttl) != 0) {
         return -1;
     }
-    if (add_rr_ptr(buf, off, cap, cfg->service_type, instance_fqdn, ttl) != 0 ||
-        add_rr_srv(buf, off, cap, instance_fqdn, cfg->host_fqdn, cfg->port, ttl) != 0 ||
-        add_rr_txt_empty(buf, off, cap, instance_fqdn, ttl) != 0 ||
-        add_rr_a(buf, off, cap, cfg->host_fqdn, response_ipv4_addr, ttl) != 0) {
-        return -1;
-    }
-    *answers += 4;
+    *answers += 1;
     if (add_adisk_records(buf, off, cap, cfg, ttl, answers) != 0) {
         return -1;
     }
@@ -3512,6 +3532,10 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len,
     int status = 0;
 
     memset(&routes, 0, sizeof(routes));
+    instance_fqdn[0] = '\0';
+    adisk_instance_fqdn[0] = '\0';
+    device_info_instance_fqdn[0] = '\0';
+    airport_instance_fqdn[0] = '\0';
 
     if (packet_len < sizeof(struct dns_header)) {
         return 0;
@@ -3523,11 +3547,12 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len,
 
     qdcount = ntohs(hdr.qdcount);
     query_id = hdr.id;
-    if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->service_type) != 0) {
+    if (smb_enabled(cfg) &&
+        build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->service_type) != 0) {
         log_packet_build_failure("query_response", "build_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
         return 0;
     }
-    if (cfg->adisk_disks.count > 0 &&
+    if (adisk_enabled(cfg) &&
         build_instance_fqdn(adisk_instance_fqdn, sizeof(adisk_instance_fqdn), cfg->instance_name, cfg->adisk_service_type) != 0) {
         log_packet_build_failure("query_response", "build_adisk_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
         return 0;
@@ -3566,12 +3591,14 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len,
         }
         reply_route = (qclass_raw & DNS_CLASS_CACHE_FLUSH) ? MDNS_REPLY_UNICAST : MDNS_REPLY_MULTICAST;
 
-        if (name_equals(qname, cfg->service_type) && (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
+        if (smb_enabled(cfg) &&
+            name_equals(qname, cfg->service_type) &&
+            (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
             routes.smb_ptr |= reply_route;
             routes.smb_srv |= reply_route;
             routes.smb_txt |= reply_route;
             routes.host_a |= reply_route;
-        } else if (cfg->adisk_disks.count > 0 &&
+        } else if (adisk_enabled(cfg) &&
                    name_equals(qname, cfg->adisk_service_type) &&
                    (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
             routes.adisk_ptr |= reply_route;
@@ -3592,7 +3619,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len,
             routes.airport_srv |= reply_route;
             routes.airport_txt |= reply_route;
             routes.host_a |= reply_route;
-        } else if (name_equals(qname, instance_fqdn)) {
+        } else if (smb_enabled(cfg) && name_equals(qname, instance_fqdn)) {
             if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
                 routes.smb_srv |= reply_route;
                 routes.host_a |= reply_route;
@@ -3600,7 +3627,7 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len,
             if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
                 routes.smb_txt |= reply_route;
             }
-        } else if (cfg->adisk_disks.count > 0 &&
+        } else if (adisk_enabled(cfg) &&
                    name_equals(qname, adisk_instance_fqdn)) {
             if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
                 routes.adisk_srv |= reply_route;
@@ -3828,6 +3855,8 @@ int main(int argc, char **argv) {
             strncpy(cfg.load_snapshot_path, argv[++i], sizeof(cfg.load_snapshot_path) - 1);
         } else if (strcmp(argv[i], "--shared-bind") == 0) {
             shared_bind = 1;
+        } else if (strcmp(argv[i], "--diskless") == 0) {
+            cfg.diskless = 1;
         } else if (strcmp(argv[i], "--auto-ip") == 0) {
             auto_ip = 1;
         } else if (strcmp(argv[i], "--print-auto-ip-cidrs") == 0) {
@@ -3934,7 +3963,7 @@ int main(int argc, char **argv) {
         add_adisk_disk_config(&cfg, cfg.adisk_share_name, cfg.adisk_disk_key, cfg.adisk_uuid, cfg.adisk_disk_advf) != 0) {
         return EXIT_INVALID_ADISK_DISK;
     }
-    if (cfg.adisk_disks.count > 0) {
+    if (adisk_enabled(&cfg)) {
         char adisk_sys_txt[128];
         if (build_adisk_system_txt(adisk_sys_txt, sizeof(adisk_sys_txt), cfg.adisk_sys_wama) != 0) {
             return EXIT_INVALID_ADISK_SYSTEM;

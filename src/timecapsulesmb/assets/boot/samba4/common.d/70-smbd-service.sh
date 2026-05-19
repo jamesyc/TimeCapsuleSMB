@@ -222,15 +222,16 @@ tc_current_topology_signature() {
 
 tc_topology_changed_from_file() {
     fresh_file=$1
-    current=$(tc_current_topology_signature || true)
-    fresh=
-    if [ -s "$fresh_file" ]; then
-        fresh=$(/bin/cat "$fresh_file" 2>/dev/null || true)
-    fi
-    if [ -z "$fresh" ]; then
-        tc_log "watchdog recovery: MaSt topology check failed"
+    if [ ! -f "$fresh_file" ]; then
+        tc_log "watchdog recovery: MaSt topology check failed; fresh topology snapshot is missing"
         return 1
     fi
+    fresh=$(/bin/cat "$fresh_file" 2>/dev/null || true)
+    if [ ! -f "$TC_TOPOLOGY_SIGNATURE" ]; then
+        tc_log "watchdog recovery: MaSt topology check changed; current topology signature is missing"
+        return 0
+    fi
+    current=$(tc_current_topology_signature || true)
     [ "$current" != "$fresh" ]
 }
 
@@ -250,7 +251,7 @@ tc_watchdog_capture_mast_state() {
         return 0
     fi
 
-    tc_log "watchdog disk check: MaSt snapshot read failed or produced no valid HFS volumes"
+    tc_log "watchdog disk check: MaSt snapshot read failed"
     return 1
 }
 
@@ -295,13 +296,19 @@ tc_topology_changed_debounced_from_snapshot() {
     debounce_raw_file="$snapshot_raw_file.debounce"
     debounce_status=0
     tc_watchdog_capture_mast_state "$debounce_volumes_file" "$debounce_raw_file" || debounce_status=$?
-    if [ "$debounce_status" -eq 0 ] && tc_topology_changed_from_file "$debounce_volumes_file"; then
+    if [ "$debounce_status" -eq 0 ]; then
+        if tc_topology_changed_from_file "$debounce_volumes_file"; then
+            tc_replace_watchdog_mast_snapshot "$snapshot_volumes_file" "$snapshot_raw_file" "$debounce_volumes_file" "$debounce_raw_file"
+            return 0
+        fi
+
         tc_replace_watchdog_mast_snapshot "$snapshot_volumes_file" "$snapshot_raw_file" "$debounce_volumes_file" "$debounce_raw_file"
-        return 0
+        tc_log "watchdog recovery: MaSt topology change cleared after debounce"
+        return 1
     fi
 
-    tc_replace_watchdog_mast_snapshot "$snapshot_volumes_file" "$snapshot_raw_file" "$debounce_volumes_file" "$debounce_raw_file"
-    tc_log "watchdog recovery: MaSt topology change cleared after debounce"
+    rm -f "$debounce_volumes_file" "$debounce_raw_file"
+    tc_log "watchdog recovery: MaSt topology change could not be confirmed after debounce"
     return 1
 }
 
