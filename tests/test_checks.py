@@ -30,10 +30,6 @@ from timecapsulesmb.checks.bonjour import (
     select_smb_instance,
 )
 from timecapsulesmb.checks.doctor import (
-    DOCTOR_CHECKS,
-    DoctorCheck,
-    DoctorRunContext,
-    _run_doctor_registry,
     check_xattr_tdb_persistence,
     run_doctor_checks,
 )
@@ -80,20 +76,6 @@ class CheckTests(unittest.TestCase):
             path=REPO_ROOT / ".env",
             exists=exists,
             file_values=values if exists else {},
-        )
-
-    def doctor_context(self) -> DoctorRunContext:
-        return DoctorRunContext(
-            config=self.doctor_config({}),
-            repo_root=REPO_ROOT,
-            connection=None,
-            precomputed_interface_probe=None,
-            precomputed_probe_state=None,
-            skip_ssh=False,
-            skip_bonjour=False,
-            skip_smb=False,
-            on_result=None,
-            debug_fields=None,
         )
 
     def valid_doctor_values(self, **overrides: str) -> dict[str, str]:
@@ -402,35 +384,31 @@ class CheckTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._exit_stack.close()
 
-    def test_doctor_registry_declares_satisfied_dependencies(self) -> None:
-        expected_ids = [
-            "config_validation",
-            "connection_context",
-            "ssh_login",
-            "deployed_version",
-            "runtime_ram_root",
-            "runtime_naming_identity",
-            "device_compatibility",
-            "managed_smbd",
-            "managed_mdns",
-            "active_smb_conf",
-            "direct_smb_port",
-            "bonjour",
-            "bonjour_debug_fields",
-            "bonjour_naming_info",
-            "active_smb_conf_info",
-            "nbns",
-            "authenticated_smb",
-            "mast_probe_on_disk_failure",
-            "fatal_runtime_log_tails",
-        ]
-        self.assertEqual([check.id for check in DOCTOR_CHECKS], expected_ids)
+    def test_run_doctor_checks_stops_invalid_config_before_remote_checks(self) -> None:
+        ssh_login = mock.Mock()
+        managed_smbd = mock.Mock()
+        smb_port = mock.Mock()
+        bonjour = mock.Mock()
+        smb_listing = mock.Mock()
 
-        provided = {"config", "repo_root"}
-        for check in DOCTOR_CHECKS:
-            missing = [dependency for dependency in check.requires if dependency not in provided]
-            self.assertEqual(missing, [], f"{check.id} has unsatisfied dependencies")
-            provided.update(check.provides)
+        with mock.patch("timecapsulesmb.checks.doctor.check_ssh_login", ssh_login):
+            with mock.patch("timecapsulesmb.checks.doctor.probe_managed_smbd_conn", managed_smbd):
+                with mock.patch("timecapsulesmb.checks.doctor.check_smb_port", smb_port):
+                    with mock.patch("timecapsulesmb.checks.doctor.discover_smb_services_detailed", bonjour):
+                        with mock.patch("timecapsulesmb.checks.doctor.check_authenticated_smb_listing", smb_listing):
+                            results, fatal = run_doctor_checks(
+                                self.doctor_config(self.valid_doctor_values(), exists=False),
+                                repo_root=REPO_ROOT,
+                            )
+
+        self.assertTrue(fatal)
+        self.assertEqual(results[0].status, "FAIL")
+        self.assertIn("missing required configuration file", results[0].message)
+        ssh_login.assert_not_called()
+        managed_smbd.assert_not_called()
+        smb_port.assert_not_called()
+        bonjour.assert_not_called()
+        smb_listing.assert_not_called()
 
     def test_run_doctor_checks_passes_when_deployed_version_matches_current_cli(self) -> None:
         run = self.run_doctor_with_mocks(
@@ -520,38 +498,19 @@ class CheckTests(unittest.TestCase):
         )
         managed_smbd.assert_not_called()
 
-    def test_doctor_registry_runner_rejects_missing_dependency(self) -> None:
-        check = DoctorCheck(
-            id="bad_check",
-            requires=("missing_dependency",),
-            provides=(),
-            run=lambda _context: None,
+    def test_run_doctor_checks_streams_results_until_deployed_version_stop(self) -> None:
+        emitted: list[str] = []
+        managed_smbd = mock.Mock()
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            deployed_version=DeployedVersionProbeResult(None, None, "missing version metadata"),
+            on_result=lambda result: emitted.append(result.message),
+            extra_patches={"timecapsulesmb.checks.doctor.probe_managed_smbd_conn": managed_smbd},
         )
 
-        with self.assertRaisesRegex(AssertionError, "bad_check.*missing_dependency"):
-            _run_doctor_registry(self.doctor_context(), (check,))
-
-    def test_doctor_registry_runner_stops_when_context_requests_stop(self) -> None:
-        calls: list[str] = []
-
-        def stop_check(context: DoctorRunContext) -> None:
-            calls.append("stop")
-            context.add_result(CheckResult("FAIL", "stopped"))
-            context.stop = True
-
-        def later_check(_context: DoctorRunContext) -> None:
-            calls.append("later")
-
-        checks = (
-            DoctorCheck("stop_check", ("config",), ("stopped",), stop_check),
-            DoctorCheck("later_check", ("stopped",), ("later",), later_check),
-        )
-
-        context = self.doctor_context()
-        _run_doctor_registry(context, checks)
-
-        self.assertEqual(calls, ["stop"])
-        self.assertEqual([result.message for result in context.results], ["stopped"])
+        self.assertTrue(run.fatal)
+        self.assertEqual([result.message for result in run.results], emitted)
+        managed_smbd.assert_not_called()
 
     def test_check_smb_port_reports_local_socket_error(self) -> None:
         with mock.patch("timecapsulesmb.checks.network.tcp_connect_error", return_value="[Errno 113] No route to host"):
