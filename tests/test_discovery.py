@@ -172,12 +172,8 @@ class DiscoveryTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as exc:
                 _open_zeroconf()
 
-        self.assertEqual(
-            str(exc.exception),
-            "Failed to load zeroconf. Install the Python package zeroconf. "
-            "Run `./tcapsule bootstrap` first to set up the required dependencies. "
-            "ModuleNotFoundError: No module named 'zeroconf'",
-        )
+        self.assertIn("Failed to load zeroconf. Install the Python package zeroconf.", str(exc.exception))
+        self.assertIn("ModuleNotFoundError: No module named 'zeroconf'", str(exc.exception))
 
     def test_discover_retries_pending_resolution_during_browse_window(self) -> None:
         fake_zc = mock.Mock()

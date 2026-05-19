@@ -1,11 +1,55 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parent
+VENVDIR = REPO_ROOT / ".venv"
+VENV_LAUNCHER = VENVDIR / "bin" / "tcapsule"
+
+
+def _is_bootstrap_command() -> bool:
+    return len(sys.argv) > 1 and sys.argv[1] == "bootstrap"
+
+
+def _is_top_level_help_request() -> bool:
+    return len(sys.argv) == 1 or sys.argv[1] in {"-h", "--help"}
+
+
+def _running_in_target_venv() -> bool:
+    try:
+        return Path(sys.prefix).resolve() == VENVDIR.resolve()
+    except (OSError, RuntimeError):
+        return False
+
+
+def _handoff_to_bootstrapped_launcher() -> None:
+    if _is_bootstrap_command() or _is_top_level_help_request():
+        return
+    if _running_in_target_venv():
+        return
+    if VENV_LAUNCHER.is_file() and os.access(VENV_LAUNCHER, os.X_OK):
+        os.execv(str(VENV_LAUNCHER), [str(VENV_LAUNCHER), *sys.argv[1:]])
+    if (VENVDIR / "pyvenv.cfg").is_file() or VENV_LAUNCHER.is_file():
+        print(
+            "TimeCapsuleSMB bootstrap is incomplete: .venv exists but .venv/bin/tcapsule is missing or not executable.\n"
+            "Run `./tcapsule bootstrap` again to repair the virtualenv.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    print(
+        "TimeCapsuleSMB source checkouts must be bootstrapped before running this command.\n"
+        "Run `./tcapsule bootstrap` first, then rerun this command.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
+_handoff_to_bootstrapped_launcher()
+
 SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
