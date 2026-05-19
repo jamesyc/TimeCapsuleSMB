@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE
+from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE
 from timecapsulesmb.deploy.commands import remote_actions_to_jsonable, render_remote_actions
 from timecapsulesmb.deploy.planner import ActivationPlan, DeploymentPlan, UninstallPlan
 

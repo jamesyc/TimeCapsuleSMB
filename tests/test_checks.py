@@ -48,8 +48,8 @@ from timecapsulesmb.checks.smb import (
 )
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers
 from timecapsulesmb.core.config import AppConfig
+from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.compat import DeviceCompatibility
-from timecapsulesmb.cli.util import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.device.probe import (
     DeployedVersionProbeResult,
     RemoteInterfaceProbeResult,

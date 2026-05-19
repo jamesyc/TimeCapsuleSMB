@@ -17,7 +17,8 @@ from timecapsulesmb.deploy.executor import run_remote_actions
 from timecapsulesmb.deploy.planner import build_netbsd4_activation_plan
 from timecapsulesmb.device.probe import probe_managed_runtime_conn
 from timecapsulesmb.telemetry import TelemetryClient
-from timecapsulesmb.cli.util import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE, color_red
+from timecapsulesmb.cli.util import color_red
+from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE
 
 
 def _target_device_display_name(target) -> str:

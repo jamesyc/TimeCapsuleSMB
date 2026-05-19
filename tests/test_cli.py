@@ -99,7 +99,8 @@ from timecapsulesmb.flash import PATCHED_LOGIN_SCRIPT, STOCK_LOGIN_NETBSD4_DUMMY
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourServiceInstance, Discovered
 from timecapsulesmb.cli.version_check import DEFAULT_DOWNLOAD_URL, VERSION_CHECK_URL, VersionCheckResult
-from timecapsulesmb.cli.util import ANSI_RED, ANSI_RESET, CLI_VERSION_CODE, RELEASE_TAG
+from timecapsulesmb.cli.util import ANSI_RED, ANSI_RESET
+from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPConnectionError
 from timecapsulesmb.install_validation import InstallCheckResult
 

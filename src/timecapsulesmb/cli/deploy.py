@@ -22,7 +22,9 @@ from timecapsulesmb.core.config import (
     parse_bool,
     shell_quote,
 )
+from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE
 from timecapsulesmb.core.paths import resolve_app_paths
+from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
@@ -60,14 +62,7 @@ from timecapsulesmb.device.storage import (
 )
 from timecapsulesmb.device.probe import read_interface_ipv4_addrs_conn
 from timecapsulesmb.telemetry import TelemetryClient
-from timecapsulesmb.cli.util import (
-    CLI_VERSION_CODE,
-    NETBSD4_REBOOT_FOLLOWUP,
-    NETBSD4_REBOOT_GUIDANCE,
-    RELEASE_TAG,
-    color_green,
-    color_red,
-)
+from timecapsulesmb.cli.util import color_green, color_red
 
 
 REBOOT_NO_DOWN_MESSAGE = (

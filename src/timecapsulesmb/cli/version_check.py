@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from timecapsulesmb.cli.util import CLI_VERSION, CLI_VERSION_CODE
 from timecapsulesmb.core.paths import package_project_root, resolve_app_paths
+from timecapsulesmb.core.release import CLI_VERSION, CLI_VERSION_CODE
 
 
 VERSION_CHECK_URL = "https://raw.githubusercontent.com/jamesyc/TimeCapsuleSMB/main/version.json"
