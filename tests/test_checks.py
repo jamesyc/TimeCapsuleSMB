@@ -2479,8 +2479,9 @@ class CheckTests(unittest.TestCase):
                                                     mock.Mock(stdout="enabled\n"),
                                                 ],
                                             ) as run_ssh_mock:
-                                                with mock.patch("timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution", return_value=mock.Mock(status="PASS", message="nbns ok")) as nbns_mock:
-                                                    results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
+                                                with mock.patch("timecapsulesmb.checks.doctor_steps.read_interface_ipv4_conn", return_value="10.0.0.2") as iface_ip_mock:
+                                                    with mock.patch("timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution", return_value=mock.Mock(status="PASS", message="nbns ok")) as nbns_mock:
+                                                        results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
         self.assertFalse(fatal)
         nbns_result = next(result for result in results if result.message == "nbns ok")
         self.assertEqual(nbns_result.status, "PASS")
@@ -2488,6 +2489,7 @@ class CheckTests(unittest.TestCase):
         listing_index = next(i for i, result in enumerate(results) if result.message == "listing ok")
         self.assertLess(nbns_index, listing_index)
         self.assertEqual(run_ssh_mock.call_count, 2)
+        self.assertEqual(iface_ip_mock.call_args.args[1], "bridge0")
         nbns_mock.assert_called_once_with("TimeCapsule", "10.0.0.2", "10.0.0.2")
 
     def test_run_doctor_checks_resolves_nbns_expected_ip_from_hostname(self) -> None:
@@ -2520,11 +2522,13 @@ class CheckTests(unittest.TestCase):
                                                     mock.Mock(stdout="enabled\n"),
                                                 ],
                                             ):
-                                                with mock.patch("timecapsulesmb.checks.doctor_steps.resolve_host_ipv4s", return_value=("192.168.1.217",)):
-                                                    with mock.patch("timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution", return_value=mock.Mock(status="PASS", message="nbns ok")) as nbns_mock:
-                                                        results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
+                                                with mock.patch("timecapsulesmb.checks.doctor_steps.read_interface_ipv4_conn", side_effect=RuntimeError("stale interface")) as iface_ip_mock:
+                                                    with mock.patch("timecapsulesmb.checks.doctor_steps.resolve_host_ipv4s", return_value=("192.168.1.217",)):
+                                                        with mock.patch("timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution", return_value=mock.Mock(status="PASS", message="nbns ok")) as nbns_mock:
+                                                            results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
         self.assertFalse(fatal)
         self.assertEqual(next(result for result in results if result.message == "nbns ok").status, "PASS")
+        self.assertEqual(iface_ip_mock.call_args.args[1], "bridge0")
         nbns_mock.assert_called_once_with("TimeCapsule", "timecapsule.local", "192.168.1.217")
 
     def test_run_doctor_checks_uses_interface_ip_for_nbns_expected_ip(self) -> None:
@@ -2557,12 +2561,14 @@ class CheckTests(unittest.TestCase):
                                                     mock.Mock(stdout="enabled\n"),
                                                 ],
                                             ):
-                                                with mock.patch("timecapsulesmb.checks.doctor_steps.resolve_host_ipv4s", return_value=("192.168.1.217",)):
-                                                    with mock.patch("timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution", return_value=mock.Mock(status="PASS", message="nbns ok")) as nbns_mock:
-                                                        results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
+                                                with mock.patch("timecapsulesmb.checks.doctor_steps.read_interface_ipv4_conn", return_value="10.0.0.9") as iface_ip_mock:
+                                                    with mock.patch("timecapsulesmb.checks.doctor_steps.resolve_host_ipv4s", side_effect=AssertionError("local DNS should not be used")):
+                                                        with mock.patch("timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution", return_value=mock.Mock(status="PASS", message="nbns ok")) as nbns_mock:
+                                                            results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
         self.assertFalse(fatal)
         self.assertEqual(next(result for result in results if result.message == "nbns ok").status, "PASS")
-        nbns_mock.assert_called_once_with("TimeCapsule", "wan.example.com", "192.168.1.217")
+        self.assertEqual(iface_ip_mock.call_args.args[1], "bridge0")
+        nbns_mock.assert_called_once_with("TimeCapsule", "wan.example.com", "10.0.0.9")
 
     def test_run_doctor_checks_warns_when_nbns_flash_config_probe_fails(self) -> None:
         values = {

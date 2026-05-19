@@ -419,7 +419,14 @@ def _doctor_share_name(connection: SshConnection, active_smb_conf: str | None) -
     raise RuntimeError("could not determine active Samba share name")
 
 
-def _expected_nbns_ipv4(host: str) -> str | None:
+def _expected_nbns_ipv4(connection: SshConnection, config: AppConfig, host: str) -> str | None:
+    iface = config.get("TC_NET_IFACE").strip()
+    if iface:
+        try:
+            return read_interface_ipv4_conn(connection, iface)
+        except Exception:
+            pass
+
     literal = ipv4_literal(host)
     if literal is not None:
         return literal
@@ -450,7 +457,7 @@ def _add_nbns_results(
                 if expected_name is None:
                     add_result(CheckResult("SKIP", "NBNS check skipped; active/probed NetBIOS name unavailable"))
                     return
-                expected_ip = _expected_nbns_ipv4(host)
+                expected_ip = _expected_nbns_ipv4(connection, config, host)
                 if expected_ip is None:
                     add_result(CheckResult("SKIP", "NBNS check skipped; configured SSH host did not resolve to a non-link-local IPv4 address"))
                     return
