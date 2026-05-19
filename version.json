@@ -4,5 +4,5 @@
   "min_supported_version": 20121,
   "latest_tag": "v2.1.1",
   "download_url": "https://github.com/jamesyc/TimeCapsuleSMB/releases/latest",
-  "message": "This version is no longer supported. Please update before continuing."
+  "message": "This version is no longer supported. Please update before continuing. Version v2.0.7 and earlier have known security issues."
 }
