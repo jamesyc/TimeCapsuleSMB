@@ -895,6 +895,107 @@ int main(void) {{
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("has extra fields", run.stderr)
 
+    def test_mdns_advertiser_adisk_argument_validation_respects_diskless_mode(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = r'''
+#define main mdns_advertiser_main
+#include "@MDNS_SOURCE@"
+#undef main
+
+int main(int argc, char **argv) {
+    return mdns_advertiser_main(argc, argv);
+}
+'''.replace("@MDNS_SOURCE@", mdns_source)
+        adisk_uuid = "12345678-1234-1234-1234-123456789012"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            shares_file = tmp / "adisk.tsv"
+            shares_file.write_text(f"Data\tdk2\t{adisk_uuid}\t0x82\n")
+
+            def base_args(snapshot_name: str) -> list[str]:
+                return [
+                    "--save-airport-snapshot",
+                    str(tmp / snapshot_name),
+                    "--instance",
+                    "Capsule",
+                    "--host",
+                    "capsule",
+                    "--airport-wama",
+                    "80:EA:96:E6:58:68",
+                ]
+
+            cases = [
+                (
+                    "no_adisk_config_does_not_require_adisk_sys_wama",
+                    [],
+                    0,
+                    "",
+                ),
+                (
+                    "diskful_adisk_share_requires_adisk_sys_wama",
+                    ["--adisk-share", "Data", "--adisk-uuid", adisk_uuid],
+                    7,
+                    "",
+                ),
+                (
+                    "diskful_adisk_shares_file_requires_adisk_sys_wama",
+                    ["--adisk-shares-file", str(shares_file)],
+                    7,
+                    "",
+                ),
+                (
+                    "diskful_adisk_share_rejects_invalid_adisk_sys_wama",
+                    ["--adisk-share", "Data", "--adisk-uuid", adisk_uuid, "--adisk-sys-wama", "not-a-mac"],
+                    7,
+                    "adisk sys waMA must be a MAC address",
+                ),
+                (
+                    "diskful_adisk_share_accepts_valid_adisk_sys_wama",
+                    ["--adisk-share", "Data", "--adisk-uuid", adisk_uuid, "--adisk-sys-wama", "80:EA:96:E6:58:68"],
+                    0,
+                    "",
+                ),
+                (
+                    "diskless_adisk_share_suppresses_missing_adisk_sys_wama",
+                    ["--diskless", "--adisk-share", "Data", "--adisk-uuid", adisk_uuid],
+                    0,
+                    "",
+                ),
+                (
+                    "diskless_adisk_shares_file_suppresses_missing_adisk_sys_wama",
+                    ["--diskless", "--adisk-shares-file", str(shares_file)],
+                    0,
+                    "",
+                ),
+                (
+                    "diskless_adisk_share_suppresses_invalid_adisk_sys_wama",
+                    ["--diskless", "--adisk-share", "Data", "--adisk-uuid", adisk_uuid, "--adisk-sys-wama", "not-a-mac"],
+                    0,
+                    "",
+                ),
+                (
+                    "diskless_still_validates_configured_adisk_disk_fields",
+                    ["--diskless", "--adisk-share", "Data", "--adisk-uuid", "bad"],
+                    8,
+                    "adisk uuid must be 36 characters",
+                ),
+            ]
+
+            for label, extra_args, expected_rc, expected_stderr in cases:
+                with self.subTest(label=label):
+                    snapshot_name = f"{label}.txt"
+                    run = self._compile_and_run_c_helper(
+                        source,
+                        f"mdns_adisk_args_{label}",
+                        [*base_args(snapshot_name), *extra_args],
+                    )
+                    self.assertEqual(run.returncode, expected_rc, run.stderr)
+                    if expected_stderr:
+                        self.assertIn(expected_stderr, run.stderr)
+                    if expected_rc == 0:
+                        self.assertTrue((tmp / snapshot_name).exists())
+
     def test_mdns_advertiser_normalizes_airport_mac_fields_to_apple_style(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
         source = '''

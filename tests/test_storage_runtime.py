@@ -4434,7 +4434,7 @@ MaSt = (
             "empty-empty=same\nnonempty-empty=changed\nempty-nonempty=changed\nmissing=failed\n",
         )
 
-    def test_common_watchdog_disk_iteration_reexecs_when_mast_disks_have_no_payload_state(self) -> None:
+    def test_common_watchdog_disk_iteration_probes_same_topology_no_payload_without_reexec(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
@@ -4458,7 +4458,95 @@ MaSt = (
                         : >"$2"
                         return 0
                     }}
-                    tc_live_reload_disk_runtime() {{ echo "live $1"; return 1; }}
+                    tc_refresh_disk_state() {{ echo refresh-no-payload; : >"$TC_PAYLOAD_TSV"; return 0; }}
+                    tc_exec_start_samba() {{ echo "unexpected exec $1"; exit 42; }}
+                    tc_watchdog_disk_iteration
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "refresh-no-payload\n")
+
+    def test_common_watchdog_disk_iteration_keeps_probing_same_topology_until_payload_appears(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            refresh_count = tmp_path / "refresh-count"
+            script = tmp_path / "watchdog-no-payload-keeps-probing.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    cat >"$TC_TOPOLOGY_SIGNATURE" <<'EOF'
+                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                    tc_watchdog_capture_mast_state() {{
+                        cat >"$1" <<'EOF'
+                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                        : >"$2"
+                        return 0
+                    }}
+                    tc_refresh_disk_state() {{
+                        count=$(/bin/cat {shlex.quote(str(refresh_count))} 2>/dev/null || echo 0)
+                        count=$((count + 1))
+                        echo "$count" >{shlex.quote(str(refresh_count))}
+                        echo "refresh-$count"
+                        : >"$TC_PAYLOAD_TSV"
+                        return 0
+                    }}
+                    tc_exec_start_samba() {{ echo "unexpected exec $1"; exit 42; }}
+                    tc_watchdog_disk_iteration
+                    tc_watchdog_disk_iteration
+                    printf 'refresh-count=%s\\n' "$(/bin/cat {shlex.quote(str(refresh_count))})"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "refresh-1\nrefresh-2\nrefresh-count=2\n")
+
+    def test_common_watchdog_disk_iteration_reexecs_when_same_topology_payload_appears(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "watchdog-same-topology-payload-appears.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    cat >"$TC_TOPOLOGY_SIGNATURE" <<'EOF'
+                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                    tc_watchdog_capture_mast_state() {{
+                        cat >"$1" <<'EOF'
+                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                        : >"$2"
+                        return 0
+                    }}
+                    tc_refresh_disk_state() {{
+                        echo refresh-payload
+                        tc_write_payload_state {volumes}/dk2/.samba4 {volumes}/dk2 /dev/dk2
+                        return 0
+                    }}
                     tc_exec_start_samba() {{ echo "exec $1"; exit 42; }}
                     tc_watchdog_disk_iteration
                     """
@@ -4469,10 +4557,91 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 42, proc.stderr)
+        self.assertEqual(proc.stdout, "refresh-payload\nexec managed MaSt disks now have payload state\n")
+
+    def test_common_watchdog_disk_iteration_mast_failure_during_payload_probe_keeps_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "watchdog-payload-probe-mast-failure.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    echo old-topology >"$TC_TOPOLOGY_SIGNATURE"
+                    echo old-shares >"$TC_SHARES_TSV"
+                    echo old-adisk >"$TC_ADISK_TSV"
+                    : >"$TC_PAYLOAD_TSV"
+                    tc_watchdog_capture_mast_state() {{
+                        cat >"$1" <<'EOF'
+                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                        : >"$2"
+                        return 0
+                    }}
+                    tc_topology_changed_debounced_from_snapshot() {{ return 1; }}
+                    tc_watchdog_check_active_mast_users() {{ return 0; }}
+                    tc_refresh_disk_state() {{ echo refresh-failed; return 1; }}
+                    tc_exec_start_samba() {{ echo "unexpected exec $1"; exit 42; }}
+                    tc_watchdog_disk_iteration
+                    printf 'topology='
+                    /bin/cat "$TC_TOPOLOGY_SIGNATURE"
+                    printf 'shares='
+                    /bin/cat "$TC_SHARES_TSV"
+                    printf 'adisk='
+                    /bin/cat "$TC_ADISK_TSV"
+                    printf 'payload-size=%s\\n' "$([ -s "$TC_PAYLOAD_TSV" ] && echo nonempty || echo empty)"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(
             proc.stdout,
-            "live managed MaSt disks present without payload state\nexec managed MaSt disks present without payload state\n",
+            "refresh-failed\ntopology=old-topology\nshares=old-shares\nadisk=old-adisk\npayload-size=empty\n",
         )
+
+    def test_common_watchdog_disk_iteration_empty_topology_no_payload_does_not_probe_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "watchdog-empty-topology-no-payload.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    : >"$TC_TOPOLOGY_SIGNATURE"
+                    tc_watchdog_capture_mast_state() {{
+                        : >"$1"
+                        : >"$2"
+                        return 0
+                    }}
+                    tc_refresh_disk_state() {{ echo unexpected-refresh; return 1; }}
+                    tc_exec_start_samba() {{ echo "unexpected exec $1"; exit 42; }}
+                    tc_watchdog_disk_iteration
+                    echo done
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "done\n")
 
     def test_common_watchdog_disk_iteration_skips_users_check_when_mast_snapshot_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

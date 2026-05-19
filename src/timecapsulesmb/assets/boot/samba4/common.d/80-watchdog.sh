@@ -151,7 +151,10 @@ tc_watchdog_disk_iteration() {
             return 0
         fi
         if [ -s "$watchdog_mast_volumes_file" ] && ! tc_load_payload_state; then
-            tc_watchdog_recover_disk_runtime "managed MaSt disks present without payload state"
+            tc_log "watchdog disk check: managed MaSt disks present without payload state; probing payload availability"
+            if tc_refresh_disk_state && tc_load_payload_state; then
+                tc_exec_start_samba "managed MaSt disks now have payload state"
+            fi
             rm -f "$watchdog_mast_volumes_file" "$watchdog_mast_raw_file"
             return 0
         fi

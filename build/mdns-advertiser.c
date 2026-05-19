@@ -1336,8 +1336,12 @@ static int parse_adisk_shares_file(struct config *cfg, const char *path) {
     return 0;
 }
 
+static int adisk_configured(const struct config *cfg) {
+    return cfg->adisk_disks.count > 0;
+}
+
 static int adisk_enabled(const struct config *cfg) {
-    return !cfg->diskless && cfg->adisk_disks.count > 0 && cfg->adisk_sys_wama[0] != '\0';
+    return !cfg->diskless && adisk_configured(cfg);
 }
 
 static int smb_enabled(const struct config *cfg) {
