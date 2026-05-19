@@ -75,30 +75,30 @@ class DoctorBonjourResult:
     zeroconf_debug: object | None
 
 
-@dataclass
-class DoctorRunContext:
+@dataclass(frozen=True)
+class DoctorOptions:
+    skip_ssh: bool
+    skip_bonjour: bool
+    skip_smb: bool
+
+
+@dataclass(frozen=True)
+class DoctorInputs:
     config: AppConfig
     repo_root: Path
     connection: SshConnection | None
     precomputed_interface_probe: RemoteInterfaceProbeResult | None
     precomputed_probe_state: ProbedDeviceState | None
-    skip_ssh: bool
-    skip_bonjour: bool
-    skip_smb: bool
+    options: DoctorOptions
+
+
+@dataclass
+class DoctorSink:
     on_result: Callable[[CheckResult], None] | None
     debug_fields: dict[str, object] | None
     results: list[CheckResult] = field(default_factory=list)
-    host: str | None = None
-    smb_password: str | None = None
-    proxied_ssh: bool = False
-    ssh_ok: bool = False
-    active_smb_conf: str | None = None
-    active_smb_conf_reason: str = "SSH check not run"
-    runtime_naming_identity: RuntimeNamingIdentityProbeResult | None = None
-    bonjour_result: DoctorBonjourResult | None = None
-    stop: bool = False
 
-    def add_result(self, result: CheckResult) -> None:
+    def add(self, result: CheckResult) -> None:
         self.results.append(result)
         if self.on_result is not None:
             self.on_result(result)
@@ -106,13 +106,43 @@ class DoctorRunContext:
     def fatal(self) -> bool:
         return any(is_fatal(result) for result in self.results)
 
+    def result_count(self) -> int:
+        return len(self.results)
+
+    def new_results_since(self, index: int) -> list[CheckResult]:
+        return self.results[index:]
+
 
 @dataclass(frozen=True)
-class DoctorCheck:
-    id: str
-    requires: tuple[str, ...]
-    provides: tuple[str, ...]
-    run: Callable[[DoctorRunContext], None]
+class DoctorTarget:
+    connection: SshConnection
+    host: str
+    smb_password: str
+    proxied_ssh: bool
+
+
+@dataclass(frozen=True)
+class RemoteAccess:
+    ssh_checked: bool
+    ssh_ok: bool
+    remote_checks_enabled: bool
+    active_smb_conf_reason: str
+
+
+@dataclass(frozen=True)
+class SmbConfigState:
+    text: str | None
+    reason: str
+
+
+@dataclass(frozen=True)
+class RuntimeNamingState:
+    identity: RuntimeNamingIdentityProbeResult | None
+
+
+@dataclass(frozen=True)
+class StepDecision:
+    stop: bool = False
 
 
 def _add_probe_line_results(
@@ -639,168 +669,170 @@ def _add_authenticated_smb_results(
         add_result(result)
 
 
-def _doctor_check_config_validation(context: DoctorRunContext) -> None:
+def _doctor_validate_config(inputs: DoctorInputs, sink: DoctorSink) -> StepDecision:
     config_valid = _add_config_validation_results(
-        context.config,
-        repo_root=context.repo_root,
-        add_result=context.add_result,
+        inputs.config,
+        repo_root=inputs.repo_root,
+        add_result=sink.add,
     )
-    if not config_valid:
-        context.stop = True
+    return StepDecision(stop=not config_valid)
 
 
-def _doctor_check_connection_context(context: DoctorRunContext) -> None:
-    if context.connection is None:
-        context.connection = SshConnection(
-            host=context.config.require("TC_HOST"),
-            password=context.config.get("TC_PASSWORD"),
-            ssh_opts=context.config.get("TC_SSH_OPTS"),
+def _build_doctor_target(inputs: DoctorInputs) -> DoctorTarget:
+    connection = inputs.connection
+    if connection is None:
+        connection = SshConnection(
+            host=inputs.config.require("TC_HOST"),
+            password=inputs.config.get("TC_PASSWORD"),
+            ssh_opts=inputs.config.get("TC_SSH_OPTS"),
         )
-    context.host = extract_host(context.connection.host)
-    context.smb_password = context.config.require("TC_PASSWORD")
-    context.proxied_ssh = ssh_opts_use_proxy(context.connection.ssh_opts)
+    return DoctorTarget(
+        connection=connection,
+        host=extract_host(connection.host),
+        smb_password=inputs.config.require("TC_PASSWORD"),
+        proxied_ssh=ssh_opts_use_proxy(connection.ssh_opts),
+    )
 
 
-def _doctor_check_ssh_login(context: DoctorRunContext) -> None:
-    assert context.connection is not None
-    if context.skip_ssh:
-        context.ssh_ok = True
-        context.active_smb_conf_reason = "SSH check skipped"
-        return
+def _doctor_check_ssh_login(target: DoctorTarget, options: DoctorOptions, sink: DoctorSink) -> RemoteAccess:
+    if options.skip_ssh:
+        return RemoteAccess(
+            ssh_checked=False,
+            ssh_ok=True,
+            remote_checks_enabled=False,
+            active_smb_conf_reason="SSH check skipped",
+        )
 
-    ssh_result = check_ssh_login(context.connection)
-    context.add_result(ssh_result)
-    context.ssh_ok = ssh_result.status == "PASS"
-    if not context.ssh_ok:
-        context.active_smb_conf_reason = "SSH login failed"
+    ssh_result = check_ssh_login(target.connection)
+    sink.add(ssh_result)
+    ssh_ok = ssh_result.status == "PASS"
+    return RemoteAccess(
+        ssh_checked=True,
+        ssh_ok=ssh_ok,
+        remote_checks_enabled=ssh_ok,
+        active_smb_conf_reason="SSH check not run" if ssh_ok else "SSH login failed",
+    )
 
 
-def _doctor_check_deployed_version(context: DoctorRunContext) -> None:
-    if context.skip_ssh or not context.ssh_ok:
-        return
+def _doctor_check_deployed_version(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> StepDecision:
+    if not remote.remote_checks_enabled:
+        return StepDecision()
 
-    assert context.connection is not None
     try:
-        deployed_version = read_deployed_version_conn(context.connection)
+        deployed_version = read_deployed_version_conn(target.connection)
     except Exception as e:
-        context.add_result(CheckResult("FAIL", f"deployed payload version probe failed: {e}"))
-        context.stop = True
-        return
+        sink.add(CheckResult("FAIL", f"deployed payload version probe failed: {e}"))
+        return StepDecision(stop=True)
 
-    if context.debug_fields is not None:
-        context.debug_fields["deployed_release_tag"] = deployed_version.release_tag
-        context.debug_fields["deployed_cli_version_code"] = deployed_version.cli_version_code
+    if sink.debug_fields is not None:
+        sink.debug_fields["deployed_release_tag"] = deployed_version.release_tag
+        sink.debug_fields["deployed_cli_version_code"] = deployed_version.cli_version_code
 
     deployed_release_tag = deployed_version.release_tag
     deployed_cli_version_code = deployed_version.cli_version_code
     if deployed_release_tag is None or deployed_cli_version_code is None:
-        context.add_result(
+        sink.add(
             CheckResult(
                 "FAIL",
                 f"deployed payload has no version metadata; current version is {RELEASE_TAG}; please run deploy to update your device",
             )
         )
-        context.stop = True
-        return
+        return StepDecision(stop=True)
 
     if deployed_cli_version_code < CLI_VERSION_CODE:
-        context.add_result(
+        sink.add(
             CheckResult(
                 "FAIL",
                 f"deployed version {deployed_release_tag} is older than current {RELEASE_TAG}; please run deploy to update your device",
             )
         )
-        context.stop = True
-        return
+        return StepDecision(stop=True)
 
     if deployed_cli_version_code > CLI_VERSION_CODE:
-        context.add_result(
+        sink.add(
             CheckResult(
                 "FAIL",
                 f"deployed version {deployed_release_tag} is newer than this doctor {RELEASE_TAG}; please update before running doctor",
             )
         )
-        context.stop = True
-        return
+        return StepDecision(stop=True)
 
-    context.add_result(CheckResult("PASS", f"deployed version matches current release {RELEASE_TAG}"))
+    sink.add(CheckResult("PASS", f"deployed version matches current release {RELEASE_TAG}"))
+    return StepDecision()
 
 
-def _doctor_check_runtime_ram_root(context: DoctorRunContext) -> None:
-    if context.skip_ssh or not context.ssh_ok:
-        return
+def _doctor_check_runtime_ram_root(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> StepDecision:
+    if not remote.remote_checks_enabled:
+        return StepDecision()
 
-    assert context.connection is not None
     try:
-        runtime_ram_root_present = runtime_ram_root_present_conn(context.connection)
+        runtime_ram_root_present = runtime_ram_root_present_conn(target.connection)
     except Exception as e:
-        context.add_result(CheckResult("FAIL", f"managed runtime directory check failed: {e}"))
-        context.stop = True
-        return
+        sink.add(CheckResult("FAIL", f"managed runtime directory check failed: {e}"))
+        return StepDecision(stop=True)
 
     if not runtime_ram_root_present:
-        context.add_result(
+        sink.add(
             CheckResult(
                 "FAIL",
                 f"managed runtime directory {RUNTIME_RAM_ROOT} is missing; run deploy or activate to start the managed runtime",
             )
         )
-        context.stop = True
-        return
+        return StepDecision(stop=True)
 
-    context.add_result(CheckResult("PASS", f"managed runtime directory {RUNTIME_RAM_ROOT} exists"))
+    sink.add(CheckResult("PASS", f"managed runtime directory {RUNTIME_RAM_ROOT} exists"))
+    return StepDecision()
 
 
-def _doctor_check_runtime_naming_identity(context: DoctorRunContext) -> None:
-    if context.skip_ssh or not context.ssh_ok:
-        return
+def _doctor_check_runtime_naming_identity(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> RuntimeNamingState:
+    if not remote.remote_checks_enabled:
+        return RuntimeNamingState(identity=None)
 
-    assert context.connection is not None
     try:
-        context.runtime_naming_identity = probe_remote_runtime_naming_identity_conn(context.connection)
-        if context.debug_fields is not None:
-            context.debug_fields["runtime_naming_identity"] = {
-                "system_name": context.runtime_naming_identity.system_name,
-                "hostname": context.runtime_naming_identity.hostname,
-                "mdns_instance_name": context.runtime_naming_identity.mdns_instance_name,
-                "mdns_host_label": context.runtime_naming_identity.mdns_host_label,
-                "netbios_name": context.runtime_naming_identity.netbios_name,
+        identity = probe_remote_runtime_naming_identity_conn(target.connection)
+        if sink.debug_fields is not None:
+            sink.debug_fields["runtime_naming_identity"] = {
+                "system_name": identity.system_name,
+                "hostname": identity.hostname,
+                "mdns_instance_name": identity.mdns_instance_name,
+                "mdns_host_label": identity.mdns_host_label,
+                "netbios_name": identity.netbios_name,
             }
+        return RuntimeNamingState(identity=identity)
     except Exception as e:
-        context.add_result(CheckResult("WARN", f"runtime naming identity probe skipped: {e}"))
+        sink.add(CheckResult("WARN", f"runtime naming identity probe skipped: {e}"))
+        return RuntimeNamingState(identity=None)
 
 
-def _doctor_check_device_compatibility(context: DoctorRunContext) -> None:
-    if context.skip_ssh or not context.ssh_ok:
+def _doctor_check_device_compatibility(inputs: DoctorInputs, target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
+    if not remote.remote_checks_enabled:
         return
 
-    assert context.connection is not None
     try:
-        probed_state = context.precomputed_probe_state or probe_connection_state(context.connection)
+        probed_state = inputs.precomputed_probe_state or probe_connection_state(target.connection)
         probe_result = probed_state.probe_result
         compatibility = probed_state.compatibility
         if compatibility is None:
-            context.add_result(CheckResult("FAIL", probe_result.error or "could not determine device compatibility"))
+            sink.add(CheckResult("FAIL", probe_result.error or "could not determine device compatibility"))
         elif compatibility.supported:
-            context.add_result(CheckResult("PASS", render_compatibility_message(compatibility)))
-            _add_sshpass_result_for_payload(context.add_result, compatibility.payload_family)
+            sink.add(CheckResult("PASS", render_compatibility_message(compatibility)))
+            _add_sshpass_result_for_payload(sink.add, compatibility.payload_family)
         else:
-            context.add_result(CheckResult("FAIL", render_compatibility_message(compatibility)))
+            sink.add(CheckResult("FAIL", render_compatibility_message(compatibility)))
     except Exception as e:
-        context.add_result(CheckResult("FAIL", f"device compatibility check failed: {e}"))
+        sink.add(CheckResult("FAIL", f"device compatibility check failed: {e}"))
 
 
-def _doctor_check_managed_smbd(context: DoctorRunContext) -> None:
-    if context.skip_ssh or not context.ssh_ok:
+def _doctor_check_managed_smbd(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
+    if not remote.remote_checks_enabled:
         return
 
-    assert context.connection is not None
-    smbd_probe = probe_managed_smbd_conn(context.connection)
+    smbd_probe = probe_managed_smbd_conn(target.connection)
     smbd_probe_lines = getattr(smbd_probe, "lines", ())
     if not isinstance(smbd_probe_lines, (list, tuple)):
         smbd_probe_lines = ()
     _add_probe_line_results(
-        context.add_result,
+        sink.add,
         smbd_probe_lines,
         fallback_ready=smbd_probe.ready,
         fallback_pass_message="managed smbd is ready",
@@ -808,17 +840,16 @@ def _doctor_check_managed_smbd(context: DoctorRunContext) -> None:
     )
 
 
-def _doctor_check_managed_mdns(context: DoctorRunContext) -> None:
-    if context.skip_ssh or not context.ssh_ok:
+def _doctor_check_managed_mdns(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
+    if not remote.remote_checks_enabled:
         return
 
-    assert context.connection is not None
-    mdns_probe = probe_managed_mdns_takeover_conn(context.connection)
+    mdns_probe = probe_managed_mdns_takeover_conn(target.connection)
     mdns_probe_lines = getattr(mdns_probe, "lines", ())
     if not isinstance(mdns_probe_lines, (list, tuple)):
         mdns_probe_lines = ()
     _add_probe_line_results(
-        context.add_result,
+        sink.add,
         mdns_probe_lines,
         fallback_ready=mdns_probe.ready,
         fallback_pass_message="managed mDNS takeover is active",
@@ -826,273 +857,145 @@ def _doctor_check_managed_mdns(context: DoctorRunContext) -> None:
     )
 
 
-def _add_remote_service_socket_debug(context: DoctorRunContext) -> None:
-    if context.debug_fields is None or context.skip_ssh or not context.ssh_ok:
+def _add_remote_service_socket_debug(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
+    if sink.debug_fields is None or not remote.remote_checks_enabled:
         return
-    if context.connection is None or "remote_service_sockets" in context.debug_fields:
+    if "remote_service_sockets" in sink.debug_fields:
         return
     try:
-        context.debug_fields["remote_service_sockets"] = read_remote_service_socket_diagnostics_conn(context.connection)
+        sink.debug_fields["remote_service_sockets"] = read_remote_service_socket_diagnostics_conn(target.connection)
     except Exception as e:
-        context.debug_fields["remote_service_sockets_error"] = f"{type(e).__name__}: {e}"
+        sink.debug_fields["remote_service_sockets_error"] = f"{type(e).__name__}: {e}"
 
 
-def _doctor_check_active_smb_conf(context: DoctorRunContext) -> None:
-    if context.skip_ssh or not context.ssh_ok:
-        return
+def _doctor_check_active_smb_conf(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> SmbConfigState:
+    if not remote.remote_checks_enabled:
+        return SmbConfigState(text=None, reason=remote.active_smb_conf_reason)
 
-    assert context.connection is not None
     try:
-        context.active_smb_conf = read_active_smb_conf_conn(context.connection)
-        if not context.active_smb_conf.strip():
-            context.active_smb_conf_reason = "active smb.conf unavailable"
+        active_smb_conf = read_active_smb_conf_conn(target.connection)
+        if not active_smb_conf.strip():
+            reason = "active smb.conf unavailable"
         else:
-            context.active_smb_conf_reason = ""
-        context.add_result(check_xattr_tdb_persistence(context.connection))
+            reason = ""
+        sink.add(check_xattr_tdb_persistence(target.connection))
+        return SmbConfigState(text=active_smb_conf, reason=reason)
     except Exception as e:
-        context.active_smb_conf_reason = str(e)
-        context.add_result(CheckResult("WARN", f"xattr_tdb:file check skipped: {e}"))
+        sink.add(CheckResult("WARN", f"xattr_tdb:file check skipped: {e}"))
+        return SmbConfigState(text=None, reason=str(e))
 
 
-def _doctor_check_direct_smb_port(context: DoctorRunContext) -> None:
-    assert context.host is not None
-    if context.proxied_ssh:
-        context.add_result(CheckResult("SKIP", f"direct SMB port check skipped for SSH-proxied target {context.host}"))
+def _doctor_check_direct_smb_port(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
+    if target.proxied_ssh:
+        sink.add(CheckResult("SKIP", f"direct SMB port check skipped for SSH-proxied target {target.host}"))
     else:
-        result = check_smb_port(context.host)
-        context.add_result(result)
+        result = check_smb_port(target.host)
+        sink.add(result)
         if result.status != "PASS":
-            _add_remote_service_socket_debug(context)
+            _add_remote_service_socket_debug(target, remote, sink)
 
 
-def _doctor_check_bonjour(context: DoctorRunContext) -> None:
-    context.bonjour_result = _add_bonjour_results(
-        context.config,
-        context.runtime_naming_identity,
-        proxied_ssh=context.proxied_ssh,
-        skip_bonjour=context.skip_bonjour,
-        add_result=context.add_result,
+def _doctor_check_bonjour(inputs: DoctorInputs, target: DoctorTarget, naming: RuntimeNamingState, sink: DoctorSink) -> DoctorBonjourResult:
+    return _add_bonjour_results(
+        inputs.config,
+        naming.identity,
+        proxied_ssh=target.proxied_ssh,
+        skip_bonjour=inputs.options.skip_bonjour,
+        add_result=sink.add,
     )
 
 
-def _doctor_check_bonjour_debug_fields(context: DoctorRunContext) -> None:
-    assert context.bonjour_result is not None
+def _doctor_add_bonjour_debug_fields(bonjour_result: DoctorBonjourResult, sink: DoctorSink) -> None:
     _add_bonjour_debug_fields(
-        context.debug_fields,
-        bonjour_debug_needed=context.bonjour_result.debug_needed,
-        bonjour_expected_debug=context.bonjour_result.expected_debug,
-        bonjour_zeroconf_debug=context.bonjour_result.zeroconf_debug,
+        sink.debug_fields,
+        bonjour_debug_needed=bonjour_result.debug_needed,
+        bonjour_expected_debug=bonjour_result.expected_debug,
+        bonjour_zeroconf_debug=bonjour_result.zeroconf_debug,
     )
 
 
-def _doctor_check_bonjour_naming_info(context: DoctorRunContext) -> None:
-    assert context.bonjour_result is not None
-    if context.bonjour_result.instance is not None:
-        context.add_result(CheckResult("INFO", f"advertised Bonjour instance: {context.bonjour_result.instance}"))
+def _doctor_add_bonjour_naming_info(bonjour_result: DoctorBonjourResult, sink: DoctorSink) -> None:
+    if bonjour_result.instance is not None:
+        sink.add(CheckResult("INFO", f"advertised Bonjour instance: {bonjour_result.instance}"))
     else:
-        context.add_result(CheckResult("INFO", f"advertised Bonjour instance: unavailable ({context.bonjour_result.reason})"))
+        sink.add(CheckResult("INFO", f"advertised Bonjour instance: unavailable ({bonjour_result.reason})"))
 
-    bonjour_host_label = context.bonjour_result.target.host_label() if context.bonjour_result.target is not None else None
+    bonjour_host_label = bonjour_result.target.host_label() if bonjour_result.target is not None else None
     if bonjour_host_label is not None:
-        context.add_result(CheckResult("INFO", f"advertised Bonjour host label: {bonjour_host_label}"))
+        sink.add(CheckResult("INFO", f"advertised Bonjour host label: {bonjour_host_label}"))
     else:
-        context.add_result(CheckResult("INFO", f"advertised Bonjour host label: unavailable ({context.bonjour_result.reason})"))
+        sink.add(CheckResult("INFO", f"advertised Bonjour host label: unavailable ({bonjour_result.reason})"))
 
 
-def _doctor_check_active_smb_conf_info(context: DoctorRunContext) -> None:
-    _add_active_smb_conf_results(context.active_smb_conf, context.active_smb_conf_reason, context.add_result)
+def _doctor_add_active_smb_conf_info(smb_config: SmbConfigState, sink: DoctorSink) -> None:
+    _add_active_smb_conf_results(smb_config.text, smb_config.reason, sink.add)
 
 
-def _doctor_check_nbns(context: DoctorRunContext) -> None:
-    if context.skip_ssh or not context.ssh_ok:
+def _doctor_check_nbns(
+    inputs: DoctorInputs,
+    target: DoctorTarget,
+    remote: RemoteAccess,
+    smb_config: SmbConfigState,
+    naming: RuntimeNamingState,
+    sink: DoctorSink,
+) -> None:
+    if not remote.remote_checks_enabled:
         return
 
-    assert context.connection is not None
-    assert context.host is not None
-    result_start = len(context.results)
+    result_start = sink.result_count()
     _add_nbns_results(
-        context.connection,
-        context.config,
-        host=context.host,
-        proxied_ssh=context.proxied_ssh,
-        active_smb_conf=context.active_smb_conf,
-        runtime_naming_identity=context.runtime_naming_identity,
-        add_result=context.add_result,
+        target.connection,
+        inputs.config,
+        host=target.host,
+        proxied_ssh=target.proxied_ssh,
+        active_smb_conf=smb_config.text,
+        runtime_naming_identity=naming.identity,
+        add_result=sink.add,
     )
-    if any(result.status == "FAIL" for result in context.results[result_start:]):
-        _add_remote_service_socket_debug(context)
+    if any(result.status == "FAIL" for result in sink.new_results_since(result_start)):
+        _add_remote_service_socket_debug(target, remote, sink)
 
 
-def _doctor_check_authenticated_smb(context: DoctorRunContext) -> None:
-    if context.skip_smb:
+def _doctor_check_authenticated_smb(
+    inputs: DoctorInputs,
+    target: DoctorTarget,
+    smb_config: SmbConfigState,
+    naming: RuntimeNamingState,
+    bonjour_result: DoctorBonjourResult,
+    sink: DoctorSink,
+) -> None:
+    if inputs.options.skip_smb:
         return
 
-    assert context.connection is not None
-    assert context.host is not None
-    assert context.smb_password is not None
-    assert context.bonjour_result is not None
     _add_authenticated_smb_results(
-        context.connection,
-        context.config,
-        context.bonjour_result.target,
-        context.runtime_naming_identity,
-        host=context.host,
-        smb_password=context.smb_password,
-        proxied_ssh=context.proxied_ssh,
-        active_smb_conf=context.active_smb_conf,
-        debug_fields=context.debug_fields,
-        add_result=context.add_result,
+        target.connection,
+        inputs.config,
+        bonjour_result.target,
+        naming.identity,
+        host=target.host,
+        smb_password=target.smb_password,
+        proxied_ssh=target.proxied_ssh,
+        active_smb_conf=smb_config.text,
+        debug_fields=sink.debug_fields,
+        add_result=sink.add,
     )
 
 
-def _doctor_check_mast_probe_on_disk_failure(context: DoctorRunContext) -> None:
-    if context.skip_ssh or not context.ssh_ok or context.debug_fields is None:
+def _doctor_add_mast_probe_on_disk_failure(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
+    if not remote.remote_checks_enabled or sink.debug_fields is None:
         return
-    if not _doctor_results_need_mast_probe(context.results):
+    if not _doctor_results_need_mast_probe(sink.results):
         return
 
-    assert context.connection is not None
     try:
-        context.debug_fields.update(mast_probe_debug_summary(probe_mast_diagnostics_conn(context.connection)))
+        sink.debug_fields.update(mast_probe_debug_summary(probe_mast_diagnostics_conn(target.connection)))
     except Exception as e:
-        context.debug_fields["mast_probe_error"] = f"{type(e).__name__}: {e}"
+        sink.debug_fields["mast_probe_error"] = f"{type(e).__name__}: {e}"
 
 
-def _doctor_check_fatal_runtime_log_tails(context: DoctorRunContext) -> None:
-    if context.fatal() and context.debug_fields is not None and not context.skip_ssh and context.ssh_ok:
-        assert context.connection is not None
-        context.debug_fields.update(read_runtime_log_tails_conn(context.connection))
-
-
-DOCTOR_CHECKS: tuple[DoctorCheck, ...] = (
-    DoctorCheck(
-        id="config_validation",
-        requires=("config", "repo_root"),
-        provides=("validated_config",),
-        run=_doctor_check_config_validation,
-    ),
-    DoctorCheck(
-        id="connection_context",
-        requires=("validated_config",),
-        provides=("connection", "host", "smb_password", "proxied_ssh"),
-        run=_doctor_check_connection_context,
-    ),
-    DoctorCheck(
-        id="ssh_login",
-        requires=("connection",),
-        provides=("ssh_status",),
-        run=_doctor_check_ssh_login,
-    ),
-    DoctorCheck(
-        id="deployed_version",
-        requires=("connection", "ssh_status"),
-        provides=("deployed_version",),
-        run=_doctor_check_deployed_version,
-    ),
-    DoctorCheck(
-        id="runtime_ram_root",
-        requires=("connection", "ssh_status", "deployed_version"),
-        provides=("runtime_ram_root",),
-        run=_doctor_check_runtime_ram_root,
-    ),
-    DoctorCheck(
-        id="runtime_naming_identity",
-        requires=("connection", "ssh_status", "deployed_version", "runtime_ram_root"),
-        provides=("runtime_naming_identity",),
-        run=_doctor_check_runtime_naming_identity,
-    ),
-    DoctorCheck(
-        id="device_compatibility",
-        requires=("connection", "ssh_status"),
-        provides=("device_compatibility",),
-        run=_doctor_check_device_compatibility,
-    ),
-    DoctorCheck(
-        id="managed_smbd",
-        requires=("connection", "ssh_status"),
-        provides=("managed_smbd",),
-        run=_doctor_check_managed_smbd,
-    ),
-    DoctorCheck(
-        id="managed_mdns",
-        requires=("connection", "ssh_status"),
-        provides=("managed_mdns",),
-        run=_doctor_check_managed_mdns,
-    ),
-    DoctorCheck(
-        id="active_smb_conf",
-        requires=("connection", "ssh_status"),
-        provides=("active_smb_conf_state",),
-        run=_doctor_check_active_smb_conf,
-    ),
-    DoctorCheck(
-        id="direct_smb_port",
-        requires=("host", "proxied_ssh"),
-        provides=("direct_smb_port",),
-        run=_doctor_check_direct_smb_port,
-    ),
-    DoctorCheck(
-        id="bonjour",
-        requires=("config", "proxied_ssh", "runtime_naming_identity"),
-        provides=("bonjour_result",),
-        run=_doctor_check_bonjour,
-    ),
-    DoctorCheck(
-        id="bonjour_debug_fields",
-        requires=("bonjour_result",),
-        provides=("bonjour_debug_fields",),
-        run=_doctor_check_bonjour_debug_fields,
-    ),
-    DoctorCheck(
-        id="bonjour_naming_info",
-        requires=("bonjour_result",),
-        provides=("bonjour_naming_info",),
-        run=_doctor_check_bonjour_naming_info,
-    ),
-    DoctorCheck(
-        id="active_smb_conf_info",
-        requires=("active_smb_conf_state",),
-        provides=("active_smb_conf_info",),
-        run=_doctor_check_active_smb_conf_info,
-    ),
-    DoctorCheck(
-        id="nbns",
-        requires=("config", "connection", "host", "proxied_ssh", "ssh_status", "active_smb_conf_state", "runtime_naming_identity"),
-        provides=("nbns",),
-        run=_doctor_check_nbns,
-    ),
-    DoctorCheck(
-        id="authenticated_smb",
-        requires=("config", "connection", "host", "smb_password", "proxied_ssh", "bonjour_result", "runtime_naming_identity"),
-        provides=("authenticated_smb",),
-        run=_doctor_check_authenticated_smb,
-    ),
-    DoctorCheck(
-        id="mast_probe_on_disk_failure",
-        requires=("connection", "ssh_status", "managed_smbd", "authenticated_smb"),
-        provides=("mast_probe_debug",),
-        run=_doctor_check_mast_probe_on_disk_failure,
-    ),
-    DoctorCheck(
-        id="fatal_runtime_log_tails",
-        requires=("connection", "ssh_status"),
-        provides=("fatal_runtime_log_tails",),
-        run=_doctor_check_fatal_runtime_log_tails,
-    ),
-)
-
-
-def _run_doctor_registry(context: DoctorRunContext, checks: Iterable[DoctorCheck]) -> None:
-    provided = {"config", "repo_root"}
-    for check in checks:
-        missing = [dependency for dependency in check.requires if dependency not in provided]
-        if missing:
-            missing_text = ", ".join(missing)
-            raise AssertionError(f"doctor check {check.id!r} missing dependencies: {missing_text}")
-        check.run(context)
-        provided.update(check.provides)
-        if context.stop:
-            return
+def _doctor_add_fatal_runtime_log_tails(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
+    if sink.fatal() and sink.debug_fields is not None and remote.remote_checks_enabled:
+        sink.debug_fields.update(read_runtime_log_tails_conn(target.connection))
 
 
 def run_doctor_checks(
@@ -1108,17 +1011,47 @@ def run_doctor_checks(
     on_result: Optional[Callable[[CheckResult], None]] = None,
     debug_fields: dict[str, object] | None = None,
 ) -> tuple[list[CheckResult], bool]:
-    context = DoctorRunContext(
+    options = DoctorOptions(
+        skip_ssh=skip_ssh,
+        skip_bonjour=skip_bonjour,
+        skip_smb=skip_smb,
+    )
+    inputs = DoctorInputs(
         config=config,
         repo_root=repo_root,
         connection=connection,
         precomputed_interface_probe=precomputed_interface_probe,
         precomputed_probe_state=precomputed_probe_state,
-        skip_ssh=skip_ssh,
-        skip_bonjour=skip_bonjour,
-        skip_smb=skip_smb,
+        options=options,
+    )
+    sink = DoctorSink(
         on_result=on_result,
         debug_fields=debug_fields,
     )
-    _run_doctor_registry(context, DOCTOR_CHECKS)
-    return context.results, context.fatal()
+
+    if _doctor_validate_config(inputs, sink).stop:
+        return sink.results, sink.fatal()
+
+    target = _build_doctor_target(inputs)
+    remote = _doctor_check_ssh_login(target, options, sink)
+
+    if _doctor_check_deployed_version(target, remote, sink).stop:
+        return sink.results, sink.fatal()
+    if _doctor_check_runtime_ram_root(target, remote, sink).stop:
+        return sink.results, sink.fatal()
+
+    naming = _doctor_check_runtime_naming_identity(target, remote, sink)
+    _doctor_check_device_compatibility(inputs, target, remote, sink)
+    _doctor_check_managed_smbd(target, remote, sink)
+    _doctor_check_managed_mdns(target, remote, sink)
+    smb_config = _doctor_check_active_smb_conf(target, remote, sink)
+    _doctor_check_direct_smb_port(target, remote, sink)
+    bonjour_result = _doctor_check_bonjour(inputs, target, naming, sink)
+    _doctor_add_bonjour_debug_fields(bonjour_result, sink)
+    _doctor_add_bonjour_naming_info(bonjour_result, sink)
+    _doctor_add_active_smb_conf_info(smb_config, sink)
+    _doctor_check_nbns(inputs, target, remote, smb_config, naming, sink)
+    _doctor_check_authenticated_smb(inputs, target, smb_config, naming, bonjour_result, sink)
+    _doctor_add_mast_probe_on_disk_failure(target, remote, sink)
+    _doctor_add_fatal_runtime_log_tails(target, remote, sink)
+    return sink.results, sink.fatal()
