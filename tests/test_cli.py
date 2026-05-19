@@ -72,12 +72,15 @@ from timecapsulesmb.device.probe import (
     RemoteInterfaceProbeResult,
 )
 from timecapsulesmb.device.storage import (
+    MAST_PROBE_COMMAND,
     MaStDiscoveryResult,
+    MaStProbeDiagnostics,
     MaStVolume,
     PayloadCandidateCheck,
     PayloadHome,
     PayloadHomeSelection,
     PayloadVerificationResult,
+    mast_probe_debug_summary,
 )
 from timecapsulesmb.deploy.commands import (
     RunScriptAction,
@@ -3819,6 +3822,37 @@ class CliTests(unittest.TestCase):
         self.assertIn("bonjour_zeroconf={instance_count:0,ip_version:V4Only}", telemetry_error)
         self.assertIn("remote_rc_local_log_tail=rc line 1\nrc line 2", telemetry_error)
         self.assertIn("remote_mdns_log_tail=mdns line", telemetry_error)
+
+    def test_doctor_failure_telemetry_includes_bounded_mast_probe_debug_fields(self) -> None:
+        output = io.StringIO()
+        raw_stdout = "a" * 10000
+        results = [doctor.CheckResult("FAIL", "one or more managed share volumes are not mounted")]
+
+        def fake_run_doctor_checks(*_args, **kwargs):
+            kwargs["debug_fields"].update(
+                mast_probe_debug_summary(
+                    MaStProbeDiagnostics(
+                        command=MAST_PROBE_COMMAND,
+                        returncode=0,
+                        volumes=(),
+                        stdout=raw_stdout,
+                        stderr="",
+                    )
+                )
+            )
+            return results, True
+
+        with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})):
+            with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
+                with redirect_stdout(output):
+                    rc = doctor.main([])
+        self.assertEqual(rc, 1)
+        telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
+        self.assertIn(f"mast_probe_command={MAST_PROBE_COMMAND}", telemetry_error)
+        self.assertIn("mast_probe_volume_count=0", telemetry_error)
+        self.assertIn("mast_probe_stdout_chars=10000", telemetry_error)
+        self.assertIn("<truncated", telemetry_error)
+        self.assertNotIn(raw_stdout, telemetry_error)
 
     def test_doctor_failure_telemetry_identifies_zeroconf_native_dns_sd_false_negative(self) -> None:
         output = io.StringIO()

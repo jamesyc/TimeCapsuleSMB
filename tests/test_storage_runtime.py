@@ -23,15 +23,20 @@ from timecapsulesmb.device.probe import (
     normalize_runtime_netbios_name,
 )
 from timecapsulesmb.device.storage import (
+    MAST_PROBE_COMMAND,
     PayloadVerificationResult,
     NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE,
+    MaStProbeDiagnostics,
     MaStReadResult,
     MaStVolume,
     PayloadHome,
     ensure_volume_root_mounted_conn,
+    mast_probe_debug_summary,
+    mast_volumes_debug_summary,
     ordered_payload_candidate_volumes,
     payload_candidate_checks_debug_summary,
     parse_mast_plist,
+    probe_mast_diagnostics_conn,
     render_ensure_volume_root_mounted_script,
     select_payload_home_conn,
     select_payload_home_with_diagnostics_conn,
@@ -488,6 +493,75 @@ MaSt = (
         self.assertEqual(result.raw_output, "MaSt=[]")
         self.assertEqual(read_mock.call_count, 3)
         self.assertEqual(sleep_mock.call_args_list, [mock.call(3), mock.call(3)])
+
+    def test_probe_mast_diagnostics_records_empty_success(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        raw_output = "MaSt = (\n);\n"
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=raw_output, stderr="")
+
+        with mock.patch("timecapsulesmb.device.storage.run_ssh", return_value=proc) as run_mock:
+            diagnostics = probe_mast_diagnostics_conn(connection)
+
+        self.assertEqual(diagnostics.command, MAST_PROBE_COMMAND)
+        self.assertEqual(diagnostics.returncode, 0)
+        self.assertEqual(diagnostics.volumes, ())
+        self.assertEqual(diagnostics.stdout, raw_output)
+        self.assertEqual(diagnostics.stderr, "")
+        run_mock.assert_called_once()
+        self.assertEqual(run_mock.call_args.args[:2], (connection, MAST_PROBE_COMMAND))
+        self.assertFalse(run_mock.call_args.kwargs["check"])
+        summary = mast_probe_debug_summary(diagnostics)
+        self.assertEqual(summary["mast_probe_volume_count"], 0)
+        self.assertEqual(summary["mast_probe_stdout_chars"], len(raw_output))
+        self.assertEqual(summary["mast_probe_stdout"], raw_output)
+        self.assertEqual(summary["mast_probe_stderr"], "<empty>")
+
+    def test_probe_mast_diagnostics_records_parsed_volume(self) -> None:
+        fixture = SHELL_MAST_FIXTURES[0]
+        raw_output = fixture.raw.decode("utf-8", errors="replace") if isinstance(fixture.raw, bytes) else fixture.raw
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout=raw_output, stderr="")
+
+        with mock.patch("timecapsulesmb.device.storage.run_ssh", return_value=proc):
+            diagnostics = probe_mast_diagnostics_conn(connection)
+
+        self.assertEqual(diagnostics.returncode, 0)
+        self.assertEqual(diagnostics.volumes, fixture.expected)
+        summary = mast_probe_debug_summary(diagnostics)
+        self.assertEqual(summary["mast_probe_volume_count"], len(fixture.expected))
+        self.assertEqual(summary["mast_probe_candidates"], mast_volumes_debug_summary(fixture.expected))
+
+    def test_probe_mast_diagnostics_captures_failure_stderr(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "")
+        proc = subprocess.CompletedProcess(args=["ssh"], returncode=7, stdout="", stderr="acp failed\n")
+
+        with mock.patch("timecapsulesmb.device.storage.run_ssh", return_value=proc):
+            diagnostics = probe_mast_diagnostics_conn(connection)
+
+        self.assertEqual(diagnostics.returncode, 7)
+        self.assertEqual(diagnostics.volumes, ())
+        self.assertEqual(diagnostics.stderr, "acp failed\n")
+        summary = mast_probe_debug_summary(diagnostics)
+        self.assertEqual(summary["mast_probe_stderr_chars"], len("acp failed\n"))
+        self.assertEqual(summary["mast_probe_stderr"], "acp failed\n")
+
+    def test_mast_probe_debug_summary_bounds_long_output(self) -> None:
+        diagnostics = MaStProbeDiagnostics(
+            command=MAST_PROBE_COMMAND,
+            returncode=0,
+            volumes=(),
+            stdout="a" * 10000,
+            stderr="b" * 10001,
+        )
+
+        summary = mast_probe_debug_summary(diagnostics)
+
+        self.assertEqual(summary["mast_probe_stdout_chars"], 10000)
+        self.assertEqual(summary["mast_probe_stderr_chars"], 10001)
+        self.assertIn("<truncated", str(summary["mast_probe_stdout"]))
+        self.assertIn("<truncated", str(summary["mast_probe_stderr"]))
+        self.assertLess(len(str(summary["mast_probe_stdout"])), 10000)
+        self.assertLess(len(str(summary["mast_probe_stderr"])), 10001)
 
     def test_common_waits_for_mast_volumes_to_become_available(self) -> None:
         fixture = SHELL_MAST_FIXTURES[0]
@@ -2003,8 +2077,16 @@ MaSt = (
         self.assertIn(f"path = {volumes}/dk3", proc.stdout)
         self.assertIn(f"log file = {payload}/logs/log.smbd", proc.stdout)
         self.assertIn("max log size = 128", proc.stdout)
+        self.assertIn("fruit:model = TimeCapsule6,106", proc.stdout)
         self.assertIn("min protocol = SMB2", proc.stdout)
         self.assertIn("max protocol = SMB3", proc.stdout)
+        self.assertIn(
+            "dos charset = ASCII\n"
+            "    min protocol = SMB2\n"
+            "    max protocol = SMB3\n"
+            "    server multi channel support = no",
+            proc.stdout,
+        )
         self.assertIn("max open files = 512", proc.stdout)
         self.assertIn("max smbd processes = 16", proc.stdout)
         self.assertNotIn("log level = 5", proc.stdout)
@@ -2046,6 +2128,93 @@ MaSt = (
         self.assertIn("[Data]\n", proc.stdout)
         self.assertNotIn("min protocol =", proc.stdout)
         self.assertNotIn("max protocol =", proc.stdout)
+        self.assertIn("dos charset = ASCII\n    server multi channel support = no", proc.stdout)
+        self.assertNotIn("dos charset = ASCII\n\n    server multi channel support = no", proc.stdout)
+
+    def test_common_generate_smb_conf_derives_fruit_model_from_acp_syap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            (payload / "private").mkdir(parents=True)
+            script = tmp_path / "smb-conf-fruit-model-acp.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    MDNS_DEVICE_MODEL=
+                    AIRPORT_SYAP=
+                    MDNS_INSTANCE_NAME=AirPort
+                    MDNS_HOST_LABEL=airport
+                    SMB_NETBIOS_NAME=AirPort
+                    SMB_SERVER_STRING=AirPort
+                    TC_RUNTIME_IDENTITY_READY=1
+                    get_airport_acp_value() {{
+                        case "$1" in
+                            syAP) echo 119 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_ETC" "$RAM_VAR"
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
+                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                    tc_generate_smb_conf {payload}
+                    sed -n 's/^[[:space:]]*fruit:model = //p' "$TC_SMBD_CONF"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "TimeCapsule8,119\n")
+
+    def test_common_generate_smb_conf_falls_back_to_macsamba_fruit_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            (payload / "private").mkdir(parents=True)
+            script = tmp_path / "smb-conf-fruit-model-fallback.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    MDNS_DEVICE_MODEL=
+                    AIRPORT_SYAP=
+                    MDNS_INSTANCE_NAME=AirPort
+                    MDNS_HOST_LABEL=airport
+                    SMB_NETBIOS_NAME=AirPort
+                    SMB_SERVER_STRING=AirPort
+                    TC_RUNTIME_IDENTITY_READY=1
+                    get_airport_acp_value() {{ return 1; }}
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_ETC" "$RAM_VAR"
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
+                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                    tc_generate_smb_conf {payload}
+                    sed -n 's/^[[:space:]]*fruit:model = //p' "$TC_SMBD_CONF"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "MacSamba\n")
 
     def test_common_generate_smb_conf_makes_smbd_debug_log_unbounded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

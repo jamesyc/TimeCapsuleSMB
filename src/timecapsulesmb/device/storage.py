@@ -16,6 +16,9 @@ NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE = "no writable persistent volume found"
 MAST_DISCOVERY_ATTEMPTS = 10
 MAST_DISCOVERY_DELAY_SECONDS = 3
 MAST_ACP_COMMAND = "/usr/bin/acp MaSt"
+MAST_PROBE_COMMAND = "/usr/bin/acp -A MaSt"
+MAST_PROBE_TIMEOUT_SECONDS = 30
+MAST_PROBE_OUTPUT_DEBUG_LIMIT = 8192
 DRY_RUN_VOLUME_ROOT_PLACEHOLDER = "resolved from MaSt at deploy time"
 DRY_RUN_DEVICE_PATH_PLACEHOLDER = "resolved from MaSt at deploy time"
 UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER = "resolved from MaSt at uninstall time"
@@ -66,6 +69,16 @@ class MaStDiscoveryResult:
 class MaStReadResult:
     volumes: tuple[MaStVolume, ...]
     raw_output: str
+
+
+@dataclass(frozen=True)
+class MaStProbeDiagnostics:
+    command: str
+    returncode: int | None
+    volumes: tuple[MaStVolume, ...]
+    stdout: str
+    stderr: str
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -324,6 +337,56 @@ def read_mast_volumes_with_output_conn(connection: SshConnection) -> MaStReadRes
 
 def read_mast_volumes_conn(connection: SshConnection) -> tuple[MaStVolume, ...]:
     return read_mast_volumes_with_output_conn(connection).volumes
+
+
+def _mast_probe_output_debug_text(raw_output: str) -> str:
+    if not raw_output:
+        return "<empty>"
+    if len(raw_output) <= MAST_PROBE_OUTPUT_DEBUG_LIMIT:
+        return raw_output
+    omitted = len(raw_output) - MAST_PROBE_OUTPUT_DEBUG_LIMIT
+    return f"{raw_output[:MAST_PROBE_OUTPUT_DEBUG_LIMIT]}...<truncated {omitted} chars>"
+
+
+def probe_mast_diagnostics_conn(connection: SshConnection) -> MaStProbeDiagnostics:
+    proc = run_ssh(
+        connection,
+        MAST_PROBE_COMMAND,
+        check=False,
+        timeout=MAST_PROBE_TIMEOUT_SECONDS,
+    )
+    stdout = proc.stdout or ""
+    stderr = getattr(proc, "stderr", "") or ""
+    volumes: tuple[MaStVolume, ...] = ()
+    error = None
+    try:
+        volumes = parse_mast_plist(stdout)
+    except Exception as e:
+        error = f"{type(e).__name__}: {e}"
+    return MaStProbeDiagnostics(
+        command=MAST_PROBE_COMMAND,
+        returncode=getattr(proc, "returncode", None),
+        volumes=volumes,
+        stdout=stdout,
+        stderr=stderr,
+        error=error,
+    )
+
+
+def mast_probe_debug_summary(diagnostics: MaStProbeDiagnostics) -> dict[str, object]:
+    summary: dict[str, object] = {
+        "mast_probe_command": diagnostics.command,
+        "mast_probe_returncode": diagnostics.returncode,
+        "mast_probe_volume_count": len(diagnostics.volumes),
+        "mast_probe_candidates": mast_volumes_debug_summary(diagnostics.volumes),
+        "mast_probe_stdout_chars": len(diagnostics.stdout),
+        "mast_probe_stdout": _mast_probe_output_debug_text(diagnostics.stdout),
+        "mast_probe_stderr_chars": len(diagnostics.stderr),
+        "mast_probe_stderr": _mast_probe_output_debug_text(diagnostics.stderr),
+    }
+    if diagnostics.error:
+        summary["mast_probe_error"] = diagnostics.error
+    return summary
 
 
 def wait_for_mast_volumes_conn(

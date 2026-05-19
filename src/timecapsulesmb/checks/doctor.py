@@ -57,6 +57,7 @@ from timecapsulesmb.device.probe import (
     read_runtime_log_tails_conn,
     runtime_ram_root_present_conn,
 )
+from timecapsulesmb.device.storage import mast_probe_debug_summary, probe_mast_diagnostics_conn
 from timecapsulesmb.discovery.native_dns_sd import browse_native_dns_sd
 from timecapsulesmb.transport.local import find_free_local_port
 from timecapsulesmb.transport.local import command_exists
@@ -241,6 +242,18 @@ def _add_bonjour_debug_fields(
 
 _BONJOUR_TARGET_SERVICE_ORDER = ("_airport", "_smb", "_adisk", "_device-info")
 
+_MAST_PROBE_DISK_FAILURE_MESSAGES = frozenset(
+    (
+        "managed runtime smb.conf missing",
+        "active smb.conf xattr_tdb:file parent is missing",
+        "one or more managed share volumes are not mounted",
+        "could not determine active Samba share name",
+    )
+)
+_MAST_PROBE_DISK_FAILURE_PREFIXES = (
+    "SMB directory create failed: tree connect failed: NT_STATUS_BAD_NETWORK_NAME",
+)
+
 
 def _bonjour_service_label(service_type: str) -> str:
     normalized = service_type.strip().rstrip(".")
@@ -248,6 +261,17 @@ def _bonjour_service_label(service_type: str) -> str:
         if normalized.endswith(suffix):
             return normalized[: -len(suffix)]
     return normalized
+
+
+def _doctor_results_need_mast_probe(results: Iterable[CheckResult]) -> bool:
+    for result in results:
+        if result.status != "FAIL":
+            continue
+        if result.message in _MAST_PROBE_DISK_FAILURE_MESSAGES:
+            return True
+        if any(result.message.startswith(prefix) for prefix in _MAST_PROBE_DISK_FAILURE_PREFIXES):
+            return True
+    return False
 
 
 def _bonjour_service_targets_for_instance(records: Iterable[object], instance_name: str | None) -> dict[str, tuple[str, ...]]:
@@ -921,6 +945,19 @@ def _doctor_check_authenticated_smb(context: DoctorRunContext) -> None:
     )
 
 
+def _doctor_check_mast_probe_on_disk_failure(context: DoctorRunContext) -> None:
+    if context.skip_ssh or not context.ssh_ok or context.debug_fields is None:
+        return
+    if not _doctor_results_need_mast_probe(context.results):
+        return
+
+    assert context.connection is not None
+    try:
+        context.debug_fields.update(mast_probe_debug_summary(probe_mast_diagnostics_conn(context.connection)))
+    except Exception as e:
+        context.debug_fields["mast_probe_error"] = f"{type(e).__name__}: {e}"
+
+
 def _doctor_check_fatal_runtime_log_tails(context: DoctorRunContext) -> None:
     if context.fatal() and context.debug_fields is not None and not context.skip_ssh and context.ssh_ok:
         assert context.connection is not None
@@ -1029,6 +1066,12 @@ DOCTOR_CHECKS: tuple[DoctorCheck, ...] = (
         requires=("config", "connection", "host", "smb_password", "proxied_ssh", "bonjour_result", "runtime_naming_identity"),
         provides=("authenticated_smb",),
         run=_doctor_check_authenticated_smb,
+    ),
+    DoctorCheck(
+        id="mast_probe_on_disk_failure",
+        requires=("connection", "ssh_status", "managed_smbd", "authenticated_smb"),
+        provides=("mast_probe_debug",),
+        run=_doctor_check_mast_probe_on_disk_failure,
     ),
     DoctorCheck(
         id="fatal_runtime_log_tails",

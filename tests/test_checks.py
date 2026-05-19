@@ -56,6 +56,7 @@ from timecapsulesmb.device.probe import (
     RUNTIME_RAM_ROOT,
     RuntimeNamingIdentityProbeResult,
 )
+from timecapsulesmb.device.storage import MAST_PROBE_COMMAND, MaStProbeDiagnostics, MaStVolume
 from timecapsulesmb.discovery.bonjour import (
     BonjourDiscoveryDiagnostics,
     BonjourDiscoverySnapshot,
@@ -121,6 +122,25 @@ class CheckTests(unittest.TestCase):
             mdns_host_label=resolved.get("TC_MDNS_HOST_LABEL") or "timecapsulesamba4",
             netbios_name=resolved.get("TC_NETBIOS_NAME") or "TimeCapsule",
             detail="ok",
+        )
+
+    def mast_probe_diagnostics(self) -> MaStProbeDiagnostics:
+        return MaStProbeDiagnostics(
+            command=MAST_PROBE_COMMAND,
+            returncode=0,
+            volumes=(
+                MaStVolume(
+                    "sd0",
+                    "dk2",
+                    "/Volumes/dk2",
+                    "Data",
+                    "f42bdb83-c265-5522-a087-25606a4d0abf",
+                    False,
+                    "hfs",
+                ),
+            ),
+            stdout="MaSt = (...)\n",
+            stderr="",
         )
 
     def run_doctor_with_mocks(
@@ -401,6 +421,7 @@ class CheckTests(unittest.TestCase):
             "active_smb_conf_info",
             "nbns",
             "authenticated_smb",
+            "mast_probe_on_disk_failure",
             "fatal_runtime_log_tails",
         ]
         self.assertEqual([check.id for check in DOCTOR_CHECKS], expected_ids)
@@ -1333,6 +1354,163 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(debug_fields["remote_rc_local_log_tail"], "rc log")
         self.assertEqual(debug_fields["remote_mdns_log_tail"], "mdns log")
         log_tail_mock.assert_called_once()
+
+    def test_run_doctor_checks_adds_mast_probe_for_xattr_parent_missing(self) -> None:
+        debug_fields: dict[str, object] = {}
+        mast_probe_mock = mock.Mock(return_value=self.mast_probe_diagnostics())
+        smbd_probe = mock.Mock(
+            ready=False,
+            detail="xattr parent missing",
+            lines=("FAIL:active smb.conf xattr_tdb:file parent is missing",),
+        )
+
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            smb_instance=[],
+            smb_listing=self.smb_listing_result(),
+            smb_file_ops=[],
+            smbd_probe=smbd_probe,
+            mdns_probe=mock.Mock(ready=True, detail="managed mDNS takeover active"),
+            run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/.samba4/private/xattr.tdb\n[Data]\n",
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor.probe_mast_diagnostics_conn": mast_probe_mock,
+                "timecapsulesmb.checks.doctor.read_runtime_log_tails_conn": mock.Mock(return_value={}),
+            },
+        )
+
+        self.assertTrue(run.fatal)
+        mast_probe_mock.assert_called_once()
+        self.assertEqual(debug_fields["mast_probe_command"], MAST_PROBE_COMMAND)
+        self.assertEqual(debug_fields["mast_probe_returncode"], 0)
+        self.assertEqual(debug_fields["mast_probe_volume_count"], 1)
+        self.assertEqual(debug_fields["mast_probe_candidates"][0]["part"], "dk2")
+
+    def test_run_doctor_checks_adds_mast_probe_for_unmounted_share_volume(self) -> None:
+        debug_fields: dict[str, object] = {}
+        mast_probe_mock = mock.Mock(return_value=self.mast_probe_diagnostics())
+        smbd_probe = mock.Mock(
+            ready=False,
+            detail="share volume missing",
+            lines=("FAIL:one or more managed share volumes are not mounted",),
+        )
+
+        self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            smb_instance=[],
+            smb_listing=self.smb_listing_result(),
+            smb_file_ops=[],
+            smbd_probe=smbd_probe,
+            mdns_probe=mock.Mock(ready=True, detail="managed mDNS takeover active"),
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor.probe_mast_diagnostics_conn": mast_probe_mock,
+                "timecapsulesmb.checks.doctor.read_runtime_log_tails_conn": mock.Mock(return_value={}),
+            },
+        )
+
+        mast_probe_mock.assert_called_once()
+        self.assertEqual(debug_fields["mast_probe_volume_count"], 1)
+
+    def test_run_doctor_checks_adds_mast_probe_for_bad_network_name_file_ops(self) -> None:
+        debug_fields: dict[str, object] = {}
+        mast_probe_mock = mock.Mock(return_value=self.mast_probe_diagnostics())
+
+        self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            smb_instance=[],
+            smb_listing=self.smb_listing_result(),
+            smb_file_ops=[CheckResult("FAIL", "SMB directory create failed: tree connect failed: NT_STATUS_BAD_NETWORK_NAME")],
+            mdns_probe=mock.Mock(ready=True, detail="managed mDNS takeover active"),
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor.probe_mast_diagnostics_conn": mast_probe_mock,
+                "timecapsulesmb.checks.doctor.read_runtime_log_tails_conn": mock.Mock(return_value={}),
+            },
+        )
+
+        mast_probe_mock.assert_called_once()
+        self.assertEqual(debug_fields["mast_probe_volume_count"], 1)
+
+    def test_run_doctor_checks_skips_mast_probe_for_unrelated_fatal(self) -> None:
+        debug_fields: dict[str, object] = {}
+        mast_probe_mock = mock.Mock(return_value=self.mast_probe_diagnostics())
+
+        self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            smb_instance=[],
+            smb_listing=self.smb_listing_result(),
+            smb_file_ops=[],
+            mdns_probe=mock.Mock(ready=False, detail="managed mDNS takeover not active"),
+            run_ssh_stdout="[global]\n xattr_tdb:file = /Volumes/dk2/.samba4/private/xattr.tdb\n[Data]\n",
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor.probe_mast_diagnostics_conn": mast_probe_mock,
+                "timecapsulesmb.checks.doctor.read_runtime_log_tails_conn": mock.Mock(return_value={}),
+            },
+        )
+
+        mast_probe_mock.assert_not_called()
+        self.assertNotIn("mast_probe_command", debug_fields)
+
+    def test_run_doctor_checks_records_mast_probe_exception_without_replacing_failure(self) -> None:
+        debug_fields: dict[str, object] = {}
+        mast_probe_mock = mock.Mock(side_effect=RuntimeError("boom"))
+        smbd_probe = mock.Mock(
+            ready=False,
+            detail="share volume missing",
+            lines=("FAIL:one or more managed share volumes are not mounted",),
+        )
+
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            smb_port=mock.Mock(status="PASS", message="445 ok"),
+            smb_instance=[],
+            smb_listing=self.smb_listing_result(),
+            smb_file_ops=[],
+            smbd_probe=smbd_probe,
+            mdns_probe=mock.Mock(ready=True, detail="managed mDNS takeover active"),
+            debug_fields=debug_fields,
+            extra_patches={
+                "timecapsulesmb.checks.doctor.probe_mast_diagnostics_conn": mast_probe_mock,
+                "timecapsulesmb.checks.doctor.read_runtime_log_tails_conn": mock.Mock(return_value={}),
+            },
+        )
+
+        self.assertTrue(any(result.message == "one or more managed share volumes are not mounted" for result in run.results))
+        self.assertEqual(debug_fields["mast_probe_error"], "RuntimeError: boom")
+
+    def test_run_doctor_checks_skips_mast_probe_when_ssh_login_fails(self) -> None:
+        debug_fields: dict[str, object] = {}
+        mast_probe_mock = mock.Mock(return_value=self.mast_probe_diagnostics())
+
+        self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="FAIL", message="ssh failed"),
+            debug_fields=debug_fields,
+            extra_patches={"timecapsulesmb.checks.doctor.probe_mast_diagnostics_conn": mast_probe_mock},
+        )
+
+        mast_probe_mock.assert_not_called()
+        self.assertNotIn("mast_probe_command", debug_fields)
+
+    def test_run_doctor_checks_skips_mast_probe_when_ssh_is_skipped(self) -> None:
+        debug_fields: dict[str, object] = {}
+        mast_probe_mock = mock.Mock(return_value=self.mast_probe_diagnostics())
+
+        self.run_doctor_with_mocks(
+            skip_ssh=True,
+            skip_bonjour=True,
+            skip_smb=True,
+            debug_fields=debug_fields,
+            extra_patches={"timecapsulesmb.checks.doctor.probe_mast_diagnostics_conn": mast_probe_mock},
+        )
+
+        mast_probe_mock.assert_not_called()
+        self.assertNotIn("mast_probe_command", debug_fields)
 
     def test_run_doctor_checks_reports_managed_smbd_subchecks(self) -> None:
         smbd_probe = mock.Mock(
