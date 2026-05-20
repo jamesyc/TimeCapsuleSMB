@@ -8,7 +8,7 @@ from typing import Optional
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import observe_reboot_cycle
 from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
-from timecapsulesmb.deploy.executor import DETACHED_REBOOT_COMMAND
+from timecapsulesmb.deploy.executor import DETACHED_SHUTDOWN_REBOOT_COMMAND
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.device.processes import render_direct_pkill9_by_ucomm, render_direct_pkill9_watchdog
 from timecapsulesmb.identity import ensure_install_id
@@ -90,7 +90,7 @@ def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> s
         lines.extend(
             [
                 "echo '--- reboot ---'",
-                DETACHED_REBOOT_COMMAND,
+                DETACHED_SHUTDOWN_REBOOT_COMMAND,
             ]
         )
     return "\n".join(lines)
