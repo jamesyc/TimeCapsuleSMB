@@ -19,6 +19,7 @@ from timecapsulesmb.cli.flows import observe_reboot_cycle, request_ssh_reboot
 from timecapsulesmb.cli.runtime import (
     LogCallback,
     add_config_argument,
+    add_no_wait_argument,
     emit_progress,
     load_env_config,
     prefixed_logger,
@@ -549,6 +550,7 @@ def _build_parser() -> argparse.ArgumentParser:
     mode_group.add_argument("--download-only", action="store_true", help="Download and validate Apple firmware without writing")
     parser.add_argument("--yes", action="store_true", help="Do not prompt before --patch or --restore writes")
     parser.add_argument("--reboot", action="store_true", help="Reboot after a validated --restore write")
+    add_no_wait_argument(parser)
     parser.add_argument("--poweroff", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--json", action="store_true", help="Output the flash analysis and plan as JSON")
     parser.add_argument("--backup-dir", type=Path, default=None, help="Directory where this run's firmware backup should be saved")
@@ -580,6 +582,8 @@ def _parse_args(argv: Optional[list[str]]) -> tuple[argparse.Namespace, str]:
         parser.error("flash --patch cannot use --reboot; power cycle manually after the validated write")
     if args.reboot and operation != "restore":
         parser.error("--reboot is only valid with --restore")
+    if args.no_wait and not (operation == "restore" and args.reboot):
+        parser.error("--no-wait is only valid with --restore --reboot")
     if args.poweroff:
         parser.error("--poweroff is not supported; power cycle manually after a validated patch write")
     if args.json and operation in WRITE_OPERATIONS:
@@ -972,7 +976,11 @@ def _finish_write(
         command_context.succeed()
         return 0
 
-    request_ssh_reboot(target.connection, command_context, log=log)
+    request_ssh_reboot(target.connection, command_context, log=log, require_request_success=args.no_wait)
+    if args.no_wait:
+        print("Reboot requested; not waiting for the device to go down or come back.", flush=True)
+        command_context.succeed()
+        return 0
     if not observe_reboot_cycle(
         target.connection,
         command_context,

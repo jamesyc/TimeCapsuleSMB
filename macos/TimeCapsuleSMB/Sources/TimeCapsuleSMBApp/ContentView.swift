@@ -12,6 +12,9 @@ public struct ContentView: View {
     @State private var dryRun = true
     @State private var configureDebugLogging = false
     @State private var deployDebugLogging = false
+    @State private var mountWait = "30"
+    @State private var bonjourTimeout = "6"
+    @State private var noWait = false
     @State private var pendingConfirmation: PendingConfirmation?
 
     public init() {}
@@ -90,9 +93,12 @@ public struct ContentView: View {
             CommandPanel(title: "Discover And Connect") {
                 TextField("Host", text: $host)
                 SecureField("Password", text: $password)
+                TextField("Bonjour timeout seconds", text: $bonjourTimeout)
                 Toggle("Enable Debug Logging", isOn: $configureDebugLogging)
                 HStack {
-                    runButton("Discover", icon: "network", operation: "discover")
+                    runButton("Discover", icon: "network", operation: "discover", params: [
+                        "timeout": numberValue(bonjourTimeout, default: 6)
+                    ])
                     Button {
                         var params: [String: JSONValue] = [
                             "host": .string(host),
@@ -112,21 +118,27 @@ public struct ContentView: View {
             CommandPanel(title: "Deploy") {
                 Toggle("Enable NBNS", isOn: $nbnsEnabled)
                 Toggle("No Reboot", isOn: $noReboot)
+                Toggle("No Wait", isOn: $noWait)
                 Toggle("Dry Run", isOn: $dryRun)
                 Toggle("Force Debug Logging", isOn: $deployDebugLogging)
+                TextField("Mount wait seconds", text: $mountWait)
                 Button {
                     if dryRun {
                         backend.run(operation: "deploy", params: [
                             "dry_run": .bool(true),
                             "no_reboot": .bool(noReboot),
+                            "no_wait": .bool(noWait),
                             "nbns_enabled": .bool(nbnsEnabled),
-                            "debug_logging": .bool(deployDebugLogging)
+                            "debug_logging": .bool(deployDebugLogging),
+                            "mount_wait": numberValue(mountWait, default: 30)
                         ])
                     } else {
                         pendingConfirmation = .deploy(
                             noReboot: noReboot,
                             nbnsEnabled: nbnsEnabled,
-                            debugLogging: deployDebugLogging
+                            debugLogging: deployDebugLogging,
+                            mountWait: numberDouble(mountWait, default: 30),
+                            noWait: noWait
                         )
                     }
                 } label: {
@@ -136,13 +148,18 @@ public struct ContentView: View {
             }
         case .doctor:
             CommandPanel(title: "Doctor") {
-                runButton("Run Doctor", icon: "stethoscope", operation: "doctor")
+                TextField("Bonjour timeout seconds", text: $bonjourTimeout)
+                runButton("Run Doctor", icon: "stethoscope", operation: "doctor", params: [
+                    "bonjour_timeout": numberValue(bonjourTimeout, default: 6)
+                ])
             }
         case .maintenance:
             CommandPanel(title: "Maintenance") {
                 TextField("Repair xattrs path", text: $repairPath)
                 TextField("fsck volume, optional", text: $volume)
+                TextField("Mount wait seconds", text: $mountWait)
                 Toggle("No Reboot", isOn: $noReboot)
+                Toggle("No Wait", isOn: $noWait)
                 HStack {
                     Button {
                         pendingConfirmation = .activate()
@@ -150,21 +167,48 @@ public struct ContentView: View {
                         Label("Activate", systemImage: "power")
                     }
                     .disabled(backend.isRunning)
-                    runButton("Uninstall Plan", icon: "xmark.bin", operation: "uninstall", params: ["dry_run": .bool(true)])
+                    runButton("Uninstall Plan", icon: "xmark.bin", operation: "uninstall", params: [
+                        "dry_run": .bool(true),
+                        "no_reboot": .bool(noReboot),
+                        "no_wait": .bool(noWait),
+                        "mount_wait": numberValue(mountWait, default: 30)
+                    ])
                     Button {
-                        pendingConfirmation = .uninstall(noReboot: noReboot)
+                        pendingConfirmation = .uninstall(
+                            noReboot: noReboot,
+                            mountWait: numberDouble(mountWait, default: 30),
+                            noWait: noWait
+                        )
                     } label: {
                         Label("Uninstall", systemImage: "xmark.bin.fill")
                     }
                     .disabled(backend.isRunning)
                 }
                 HStack {
+                    runButton("List fsck Volumes", icon: "list.bullet.rectangle", operation: "fsck", params: [
+                        "list_volumes": .bool(true),
+                        "mount_wait": numberValue(mountWait, default: 30)
+                    ])
+                    runButton("Plan fsck", icon: "doc.text.magnifyingglass", operation: "fsck", params: [
+                        "dry_run": .bool(true),
+                        "no_reboot": .bool(noReboot),
+                        "no_wait": .bool(noWait),
+                        "mount_wait": numberValue(mountWait, default: 30),
+                        "volume": .string(volume)
+                    ])
                     Button {
-                        pendingConfirmation = .fsck(volume: volume, noReboot: noReboot)
+                        pendingConfirmation = .fsck(
+                            volume: volume,
+                            noReboot: noReboot,
+                            mountWait: numberDouble(mountWait, default: 30),
+                            noWait: noWait
+                        )
                     } label: {
                         Label("Run fsck", systemImage: "externaldrive.badge.checkmark")
                     }
                     .disabled(backend.isRunning)
+                }
+                HStack {
                     Button {
                         backend.run(operation: "repair-xattrs", params: [
                             "path": .string(repairPath),
@@ -204,6 +248,15 @@ public struct ContentView: View {
             Label(title, systemImage: icon)
         }
         .disabled(backend.isRunning)
+    }
+
+    private func numberDouble(_ text: String, default defaultValue: Double) -> Double {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Double(trimmed) ?? defaultValue
+    }
+
+    private func numberValue(_ text: String, default defaultValue: Double) -> JSONValue {
+        .number(numberDouble(text, default: defaultValue))
     }
 }
 

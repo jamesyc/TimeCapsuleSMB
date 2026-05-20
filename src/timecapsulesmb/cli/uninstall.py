@@ -4,12 +4,12 @@ import argparse
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.flows import request_reboot_and_wait
-from timecapsulesmb.cli.runtime import add_config_argument, load_env_config, print_json
+from timecapsulesmb.cli.flows import request_reboot, request_reboot_and_wait
+from timecapsulesmb.cli.runtime import add_config_argument, add_mount_wait_argument, add_no_wait_argument, load_env_config, print_json
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.deploy.dry_run import format_uninstall_plan, uninstall_plan_to_jsonable
 from timecapsulesmb.deploy.executor import remote_uninstall_payload
-from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS, build_uninstall_plan
+from timecapsulesmb.deploy.planner import build_uninstall_plan
 from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER
 from timecapsulesmb.identity import ensure_install_id
@@ -20,6 +20,8 @@ from timecapsulesmb.telemetry import TelemetryClient
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Remove the managed TimeCapsuleSMB payload from the configured device.")
     add_config_argument(parser)
+    add_mount_wait_argument(parser)
+    add_no_wait_argument(parser)
     parser.add_argument("--yes", action="store_true", help="Do not prompt before reboot")
     parser.add_argument("--no-reboot", action="store_true", help="Remove files but do not reboot the device")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without making changes")
@@ -54,7 +56,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             mounted_volumes = command_context.mount_mast_volumes(
                 connection,
-                wait_seconds=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+                wait_seconds=args.mount_wait,
             )
             volume_roots = [volume.volume_root for volume in mounted_volumes]
             payload_dirs = [f"{volume_root}/{MANAGED_PAYLOAD_DIR_NAME}" for volume_root in volume_roots]
@@ -99,6 +101,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                 print(f"Skipped reboot. The {device_name} may need a manual reboot to fully clear running processes.")
                 command_context.succeed()
                 return 0
+
+        if args.no_wait:
+            request_reboot(connection, command_context, require_request_success=True)
+            print("Reboot requested; not waiting for the device to go down or come back.")
+            print("Post-uninstall verification skipped.")
+            command_context.succeed()
+            return 0
 
         if not request_reboot_and_wait(
             connection,

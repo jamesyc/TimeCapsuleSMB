@@ -7,8 +7,10 @@ from pathlib import Path
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.flows import request_deploy_reboot_and_wait, verify_managed_runtime_flow
+from timecapsulesmb.cli.flows import request_deploy_reboot, request_deploy_reboot_and_wait, verify_managed_runtime_flow
 from timecapsulesmb.cli.runtime import (
+    add_mount_wait_argument,
+    add_no_wait_argument,
     add_config_argument,
     load_env_config,
     print_json,
@@ -30,7 +32,6 @@ from timecapsulesmb.deploy.planner import (
     BINARY_MDNS_SOURCE,
     BINARY_NBNS_SOURCE,
     BINARY_SMBD_SOURCE,
-    DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_SMBPASSWD_SOURCE,
     GENERATED_USERNAME_MAP_SOURCE,
@@ -71,32 +72,17 @@ def _target_family_display_name(target) -> str:
     )
 
 
-def _non_negative_int(value: str) -> int:
-    try:
-        parsed = int(value)
-    except ValueError as e:
-        raise argparse.ArgumentTypeError("must be an integer") from e
-    if parsed < 0:
-        raise argparse.ArgumentTypeError("must be 0 or greater")
-    return parsed
-
-
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Deploy the checked-in Samba 4 payload to an AirPort storage device.")
     add_config_argument(parser)
+    add_mount_wait_argument(parser)
+    add_no_wait_argument(parser)
     parser.add_argument("--no-reboot", action="store_true", help="Do not reboot after deployment")
     parser.add_argument("--yes", action="store_true", help="Do not prompt before reboot")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without making changes")
     parser.add_argument("--json", action="store_true", help="Output the dry-run deployment plan as JSON")
     parser.add_argument("--allow-unsupported", action="store_true", help="Proceed even if the detected device is not currently supported")
     parser.add_argument("--no-nbns", action="store_true", help="Disable the bundled NBNS responder on the next boot")
-    parser.add_argument(
-        "--mount-wait",
-        type=_non_negative_int,
-        default=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
-        metavar="SECONDS",
-        help=f"Seconds for deployment-time diskd.useVolume mount guards to wait before their manual fallback (default: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS})",
-    )
     parser.add_argument("--debug-logging", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
@@ -322,6 +308,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                 print("Deployment complete without reboot.")
                 command_context.cancel_with_error("Cancelled by user at reboot confirmation prompt.")
                 return 0
+
+        if args.no_wait:
+            request_deploy_reboot(connection, command_context, require_request_success=True)
+            print("Reboot requested; not waiting for the device to go down or come back.")
+            print(color_green("Deploy Finished."))
+            command_context.succeed()
+            return 0
 
         if not request_deploy_reboot_and_wait(
             connection,

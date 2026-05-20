@@ -8,11 +8,12 @@ from timecapsulesmb.cli.flows import verify_managed_runtime_flow
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
     load_env_config,
+    print_json,
     require_netbsd4_device_compatibility,
 )
 from timecapsulesmb.core.config import airport_exact_display_name_from_identity
 from timecapsulesmb.identity import ensure_install_id
-from timecapsulesmb.deploy.dry_run import format_activation_plan
+from timecapsulesmb.deploy.dry_run import activation_plan_to_jsonable, format_activation_plan
 from timecapsulesmb.deploy.executor import run_remote_actions
 from timecapsulesmb.deploy.planner import build_netbsd4_activation_plan
 from timecapsulesmb.device.probe import probe_managed_runtime_conn
@@ -37,7 +38,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     add_config_argument(parser)
     parser.add_argument("--yes", action="store_true", help="Do not prompt before restarting the deployed Samba services")
     parser.add_argument("--dry-run", action="store_true", help="Print activation actions without making changes")
+    parser.add_argument("--json", action="store_true", help="Output the dry-run activation plan as JSON")
     args = parser.parse_args(argv)
+
+    if args.json and not args.dry_run:
+        parser.error("--json currently requires --dry-run")
 
     ensure_install_id()
     config = load_env_config(env_path=args.config)
@@ -51,6 +56,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         require_netbsd4_device_compatibility(
             command_context,
             command_name="activate",
+            json_output=args.json,
             unsupported_message="activate is only supported for NetBSD4 AirPort storage devices; use deploy for persistent NetBSD6 installs.",
         )
 
@@ -60,7 +66,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         command_context.update_fields(activation_action_count=len(plan.actions))
 
         if args.dry_run:
-            print(format_activation_plan(plan, device_name=device_name))
+            if args.json:
+                print_json(activation_plan_to_jsonable(plan))
+            else:
+                print(format_activation_plan(plan, device_name=device_name))
             command_context.succeed()
             return 0
 

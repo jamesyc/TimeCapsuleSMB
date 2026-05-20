@@ -88,6 +88,12 @@ def deployment_plan_to_jsonable(plan: DeploymentPlan) -> dict[str, object]:
     return data
 
 
+def activation_plan_to_jsonable(plan: ActivationPlan) -> dict[str, object]:
+    data = asdict(plan)
+    data["actions"] = remote_actions_to_jsonable(plan.actions)
+    return data
+
+
 def format_activation_plan(plan: ActivationPlan, *, device_name: str = "AirPort storage device") -> str:
     lines: list[str] = []
     lines.append("Dry run: NetBSD4 activation plan")

@@ -5,7 +5,7 @@ from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import wait_for_device_up, wait_for_tcp_port_state
-from timecapsulesmb.cli.runtime import LogCallback, add_config_argument, confirm, emit_progress, load_env_config
+from timecapsulesmb.cli.runtime import LogCallback, add_config_argument, add_no_wait_argument, confirm, emit_progress, load_env_config
 from timecapsulesmb.cli.util import color_red
 from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.core.net import extract_host
@@ -67,7 +67,16 @@ def disable_ssh_over_ssh(
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Use the configured device target from .env to enable SSH via ACP or disable SSH over SSH.")
     add_config_argument(parser)
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("--enable", action="store_true", help="Enable SSH via ACP if it is not already reachable")
+    mode_group.add_argument("--disable", action="store_true", help="Disable SSH over SSH if it is currently reachable")
+    mode_group.add_argument("--status", action="store_true", help="Report whether SSH is reachable without changing device state")
+    parser.add_argument("--yes", action="store_true", help="Skip the legacy prompt when SSH is already enabled")
+    add_no_wait_argument(parser)
     args = parser.parse_args(argv)
+
+    if args.status and args.no_wait:
+        parser.error("--no-wait is not valid with --status")
 
     ensure_install_id()
     config = load_env_config(env_path=args.config, defaults={})
@@ -75,23 +84,41 @@ def main(argv: Optional[list[str]] = None) -> int:
     with CommandContext(telemetry, "set-ssh", "set_ssh_started", "set_ssh_finished", config=config, args=args) as command_context:
         command_context.set_stage("load_config")
         try:
-            command_context.require_valid_config(profile="set_ssh")
+            command_context.require_valid_config(profile="set_ssh_status" if args.status else "set_ssh")
         except ConfigError as exc:
             message = str(exc) or f"Missing {config.path} settings. Run '.venv/bin/tcapsule configure' first."
             command_context.update_fields(set_ssh_action="missing_config")
             print(message)
             command_context.fail_with_error(message)
             return 1
-        connection = command_context.resolve_env_connection()
-        acp_host = extract_host(connection.host)
-        password = connection.password
+        connection = None if args.status else command_context.resolve_env_connection()
+        target_host = config.require("TC_HOST") if args.status else connection.host
+        acp_host = extract_host(target_host)
+        password = "" if connection is None else connection.password
 
-        print(f"Using configured target from {config.path}: {connection.host}")
+        print(f"Using configured target from {config.path}: {target_host}")
         print(f"Probing SSH on {acp_host}:22 ...")
         command_context.set_stage("probe_ssh")
         ssh_open = tcp_open(acp_host, 22)
         command_context.update_fields(ssh_initially_reachable=ssh_open)
-        if not ssh_open:
+
+        if args.status:
+            command_context.update_fields(set_ssh_action="status", ssh_final_reachable=ssh_open)
+            print("SSH enabled." if ssh_open else "SSH disabled.")
+            command_context.succeed()
+            return 0
+
+        assert connection is not None
+        should_enable = args.enable or (not args.disable and not ssh_open)
+        should_disable = args.disable or (not args.enable and ssh_open)
+
+        if should_enable:
+            if ssh_open:
+                command_context.update_fields(set_ssh_action="enable_noop", ssh_final_reachable=True)
+                print("SSH already enabled.")
+                command_context.succeed()
+                return 0
+
             command_context.update_fields(set_ssh_action="enable_ssh")
             print("SSH not reachable. Attempting to enable via ACP...")
             try:
@@ -105,23 +132,43 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.fail_with_error(message)
                 return 1
 
+            if args.no_wait:
+                command_context.update_fields(ssh_verification_skipped=True)
+                print("SSH enable requested; not waiting for SSH to open.")
+                command_context.succeed()
+                return 0
+
             command_context.set_stage("wait_for_ssh_enabled")
             if not wait_for_tcp_port_state(acp_host, 22, expected_state=True, service_name="SSH port"):
                 command_context.update_fields(ssh_final_reachable=False)
                 command_context.fail_with_error("SSH did not open after enabling via ACP.")
                 return 1
             command_context.update_fields(ssh_final_reachable=True)
-        else:
+
+            print("SSH is configured. You can connect as 'root' using the AirPort admin password.")
+            command_context.succeed()
+            return 0
+
+        if should_disable:
+            if not ssh_open:
+                command_context.update_fields(set_ssh_action="disable_noop", ssh_final_reachable=False)
+                print("SSH already disabled.")
+                command_context.succeed()
+                return 0
+
             command_context.set_stage("prompt_disable_ssh")
-            should_disable = confirm(
-                "SSH already enabled. Disable?",
-                default=False,
-                eof_default=False,
-                interrupt_default=False,
-            )
+            if not args.disable and not args.yes:
+                should_disable = confirm(
+                    "SSH already enabled. Disable?",
+                    default=False,
+                    eof_default=False,
+                    interrupt_default=False,
+                )
             if not should_disable:
                 command_context.update_fields(set_ssh_action="leave_enabled", ssh_final_reachable=True)
                 print("Leaving SSH enabled.")
+                command_context.succeed()
+                return 0
 
             if should_disable:
                 command_context.update_fields(set_ssh_action="disable_ssh")
@@ -135,6 +182,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                     print(error_text)
                     command_context.fail_with_error(message)
                     return 1
+
+                if args.no_wait:
+                    command_context.update_fields(ssh_verification_skipped=True)
+                    print("SSH disable requested; not waiting for reboot or verifying SSH stays closed.")
+                    command_context.succeed()
+                    return 0
 
                 print("Device is starting reboot now, waiting for it to shut down...")
                 command_context.set_stage("wait_for_ssh_down")
@@ -175,7 +228,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                     command_context.succeed()
                     return 0
 
-        print("SSH is configured. You can connect as 'root' using the AirPort admin password.")
-        command_context.succeed()
-        return 0
+        command_context.fail_with_error("No set-ssh action selected.")
+        return 1
     return 1

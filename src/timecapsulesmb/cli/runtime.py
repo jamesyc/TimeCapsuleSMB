@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -28,6 +29,8 @@ from timecapsulesmb.device.probe import (
     probe_remote_interface_conn,
     read_interface_ipv4_addrs_conn,
 )
+from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
+from timecapsulesmb.discovery.bonjour import DEFAULT_BROWSE_TIMEOUT_SEC
 from timecapsulesmb.transport.ssh import SshConnection, ssh_opts_use_proxy
 
 
@@ -51,6 +54,50 @@ def add_config_argument(parser: argparse.ArgumentParser) -> None:
         type=Path,
         default=None,
         help="Path to the TimeCapsuleSMB config file. Overrides TCAPSULE_CONFIG and the repo-local .env.",
+    )
+
+
+def non_negative_int_arg(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be 0 or greater")
+    return parsed
+
+
+def non_negative_float_arg(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a number") from exc
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError("must be 0 or greater")
+    return parsed
+
+
+def add_mount_wait_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--mount-wait",
+        type=non_negative_int_arg,
+        default=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+        metavar="SECONDS",
+        help=f"Seconds for diskd.useVolume mount guards to wait before their manual fallback (default: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS})",
+    )
+
+
+def add_no_wait_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--no-wait", action="store_true", help="Do not wait for the device to go down and come back after reboot")
+
+
+def add_bonjour_timeout_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--bonjour-timeout",
+        type=non_negative_float_arg,
+        default=DEFAULT_BROWSE_TIMEOUT_SEC,
+        metavar="SECONDS",
+        help=f"Bonjour browse time in seconds (default: {DEFAULT_BROWSE_TIMEOUT_SEC:g})",
     )
 
 

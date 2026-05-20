@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import argparse
 import io
 import json
 import plistlib
@@ -1241,6 +1242,37 @@ class CliTests(unittest.TestCase):
         self.assertEqual(finished["host_platform"], "linux")
         self.assertIn("stage=platform_check", finished["error"])
 
+    def test_repair_xattrs_json_emits_ndjson_result(self) -> None:
+        output = io.StringIO()
+        result = repair_xattrs.RepairRunResult(
+            returncode=0,
+            root=Path("/Volumes/Data"),
+            findings=[mock.Mock()],
+            candidates=[mock.Mock()],
+            summary=repair_xattrs.RepairSummary(scanned=1, repairable=1),
+            report="detected issues",
+        )
+        with mock.patch("timecapsulesmb.cli.repair_xattrs.sys.platform", "darwin"):
+            with mock.patch("timecapsulesmb.cli.repair_xattrs.load_optional_env_config", return_value=AppConfig.missing()):
+                with mock.patch("timecapsulesmb.cli.repair_xattrs.run_repair_structured", return_value=result):
+                    with redirect_stdout(output):
+                        rc = repair_xattrs.main(["--path", "/Volumes/Data", "--dry-run", "--json"])
+
+        self.assertEqual(rc, 0)
+        events = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(events[0]["type"], "stage")
+        self.assertEqual(events[-1]["type"], "result")
+        self.assertEqual(events[-1]["payload"]["finding_count"], 1)
+        self.assertEqual(events[-1]["payload"]["repairable_count"], 1)
+
+    def test_repair_xattrs_json_repair_requires_yes(self) -> None:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as raised:
+                repair_xattrs.main(["--path", "/Volumes/Data", "--json"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--json repair requires --yes", stderr.getvalue())
+
     def test_bootstrap_prints_full_next_steps(self) -> None:
         output = io.StringIO()
         with mock.patch("pathlib.Path.exists", return_value=True):
@@ -1556,6 +1588,18 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_DEBUG_LOGGING"], "true")
+
+    def test_configure_bonjour_timeout_reaches_discovery(self) -> None:
+        result = self.run_configure_cli(
+            ["--bonjour-timeout", "1.25"],
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            confirm=True,
+            command_context=FakeCommandContext(),
+        )
+        self.assertEqual(result.rc, 0)
+        result.mocks.discover_resolved_records.assert_called_once()
+        self.assertEqual(result.mocks.discover_resolved_records.call_args.kwargs["timeout"], 1.25)
 
     def test_configure_preserves_existing_debug_logging_when_arg_is_omitted(self) -> None:
         result = self.run_configure_cli(
@@ -4125,6 +4169,64 @@ class CliTests(unittest.TestCase):
         self.assertEqual(finished["ssh_initially_reachable"], False)
         self.assertEqual(finished["ssh_final_reachable"], True)
 
+    def test_set_ssh_status_requires_only_host(self) -> None:
+        output = io.StringIO()
+        values = {"TC_HOST": "root@10.0.0.2"}
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
+                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh") as enable_mock:
+                    with mock.patch("timecapsulesmb.cli.set_ssh.disable_ssh_over_ssh") as disable_mock:
+                        with redirect_stdout(output):
+                            rc = set_ssh.main(["--status"])
+
+        self.assertEqual(rc, 0)
+        self.assertIn("SSH enabled.", output.getvalue())
+        enable_mock.assert_not_called()
+        disable_mock.assert_not_called()
+        finished = self.telemetry_payload("set_ssh_finished")
+        self.assertEqual(finished["set_ssh_action"], "status")
+
+    def test_set_ssh_explicit_enable_is_noop_when_already_enabled(self) -> None:
+        output = io.StringIO()
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
+                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh") as enable_mock:
+                    with redirect_stdout(output):
+                        rc = set_ssh.main(["--enable"])
+
+        self.assertEqual(rc, 0)
+        self.assertIn("SSH already enabled.", output.getvalue())
+        enable_mock.assert_not_called()
+
+    def test_set_ssh_explicit_disable_is_noop_when_already_disabled(self) -> None:
+        output = io.StringIO()
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
+                with mock.patch("timecapsulesmb.cli.set_ssh.disable_ssh_over_ssh") as disable_mock:
+                    with redirect_stdout(output):
+                        rc = set_ssh.main(["--disable"])
+
+        self.assertEqual(rc, 0)
+        self.assertIn("SSH already disabled.", output.getvalue())
+        disable_mock.assert_not_called()
+
+    def test_set_ssh_no_wait_skips_enable_verification(self) -> None:
+        output = io.StringIO()
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=False):
+                with mock.patch("timecapsulesmb.cli.set_ssh.enable_ssh") as enable_mock:
+                    with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_tcp_port_state") as wait_mock:
+                        with redirect_stdout(output):
+                            rc = set_ssh.main(["--enable", "--no-wait"])
+
+        self.assertEqual(rc, 0)
+        enable_mock.assert_called_once()
+        wait_mock.assert_not_called()
+        self.assertIn("not waiting for SSH to open", output.getvalue())
+
     def test_set_ssh_enable_exception_emits_failure_stage(self) -> None:
         output = io.StringIO()
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
@@ -4279,6 +4381,21 @@ class CliTests(unittest.TestCase):
         self.assertEqual(finished["ssh_final_reachable"], False)
         self.assertEqual(finished["ssh_disable_persisted"], True)
 
+    def test_set_ssh_yes_disables_legacy_enabled_state_without_prompt(self) -> None:
+        output = io.StringIO()
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
+                with mock.patch("builtins.input", side_effect=AssertionError("--yes should skip prompt")) as input_mock:
+                    with mock.patch("timecapsulesmb.cli.set_ssh.disable_ssh_over_ssh") as disable_mock:
+                        with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_tcp_port_state", side_effect=[True, True]):
+                            with mock.patch("timecapsulesmb.cli.set_ssh.wait_for_device_up", return_value=True):
+                                with redirect_stdout(output):
+                                    rc = set_ssh.main(["--yes"])
+        self.assertEqual(rc, 0)
+        input_mock.assert_not_called()
+        disable_mock.assert_called_once()
+
     def test_doctor_json_outputs_structured_results(self) -> None:
         output = io.StringIO()
         fake_result = doctor.CheckResult("PASS", "ok")
@@ -4290,6 +4407,16 @@ class CliTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["fatal"], False)
         self.assertEqual(payload["results"][0]["status"], "PASS")
+
+    def test_doctor_bonjour_timeout_reaches_checks(self) -> None:
+        output = io.StringIO()
+        fake_result = doctor.CheckResult("PASS", "ok")
+        with mock.patch("timecapsulesmb.cli.doctor.load_env_config", return_value=self.make_app_config({})):
+            with mock.patch("timecapsulesmb.cli.doctor.run_doctor_checks", return_value=([fake_result], False)) as checks_mock:
+                with redirect_stdout(output):
+                    rc = doctor.main(["--bonjour-timeout", "2.5"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(checks_mock.call_args.kwargs["bonjour_timeout"], 2.5)
 
     def test_doctor_ensures_install_id_before_telemetry(self) -> None:
         output = io.StringIO()
@@ -4520,6 +4647,39 @@ class CliTests(unittest.TestCase):
         self.assertIn("SMBD_DEBUG_LOGGING=0\n", captured["flash_config"])
         self.assertIn("MDNS_DEBUG_LOGGING=0\n", captured["flash_config"])
 
+    def test_deploy_no_wait_requests_reboot_without_observation_or_runtime_verify(self) -> None:
+        result = self.run_deploy_cli(
+            ["--yes", "--no-wait"],
+            patch_actions=True,
+            patch_upload=True,
+            wait_side_effect=AssertionError("deploy --no-wait should not observe SSH state"),
+            verify_runtime=self.managed_runtime_probe(False),
+        )
+
+        self.assertEqual(result.rc, 0)
+        result.mocks.remote_request_shutdown_reboot.assert_called_once()
+        result.mocks.wait_for_ssh_state_conn.assert_not_called()
+        result.mocks.verify_managed_runtime.assert_not_called()
+        self.assertIn("not waiting for the device", result.text)
+
+    def test_deploy_no_wait_fails_when_reboot_request_fails(self) -> None:
+        result = self.run_deploy_cli(
+            ["--yes", "--no-wait"],
+            patch_actions=True,
+            patch_upload=True,
+            reboot_side_effect=SshError("ssh command failed with rc=255"),
+            wait_side_effect=AssertionError("deploy --no-wait should not observe SSH state after request failure"),
+            verify_runtime=self.managed_runtime_probe(False),
+            raises=SystemExit,
+        )
+
+        self.assertIn("ssh command failed with rc=255", str(result.exception))
+        result.mocks.remote_request_shutdown_reboot.assert_called_once()
+        result.mocks.wait_for_ssh_state_conn.assert_not_called()
+        result.mocks.verify_managed_runtime.assert_not_called()
+        finished = self.telemetry_payload("deploy_finished")
+        self.assertEqual(finished["result"], "failure")
+
     def test_deploy_rejects_removed_install_nbns_flag(self) -> None:
         stderr = io.StringIO()
         with redirect_stderr(stderr):
@@ -4527,6 +4687,20 @@ class CliTests(unittest.TestCase):
                 deploy.main(["--install-nbns", "--dry-run"])
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("unrecognized arguments: --install-nbns", stderr.getvalue())
+
+    def test_negative_shared_timeouts_are_rejected_by_parsers(self) -> None:
+        cases = (
+            (deploy.main, ["--mount-wait", "-1", "--dry-run"], "must be 0 or greater"),
+            (doctor.main, ["--bonjour-timeout", "-0.1"], "must be 0 or greater"),
+        )
+        for entrypoint, argv, message in cases:
+            with self.subTest(argv=argv):
+                stderr = io.StringIO()
+                with redirect_stderr(stderr):
+                    with self.assertRaises(SystemExit) as raised:
+                        entrypoint(argv)
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn(message, stderr.getvalue())
 
     def test_deploy_exits_when_mast_volumes_are_not_writable(self) -> None:
         volumes = (self._mast_volume("dk2"),)
@@ -6382,8 +6556,50 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("verify Samba startup", text)
         finished = command_context.finish.call_args.kwargs
         self.assertEqual(finished["result"], "success")
-        self.assertEqual(finished["reboot_was_attempted"], True)
-        self.assertEqual(finished["device_came_back_after_reboot"], True)
+
+    def test_flash_restore_reboot_no_wait_skips_reboot_observation(self) -> None:
+        output = io.StringIO()
+        command_context = FakeCommandContext()
+        target = SimpleNamespace(connection=SshConnection("root@10.0.0.2", "pw", "-o foo"))
+        args = argparse.Namespace(reboot=True, no_wait=True)
+
+        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot") as reboot_mock:
+            with mock.patch("timecapsulesmb.cli.flash.observe_reboot_cycle") as observe_mock:
+                with redirect_stdout(output):
+                    rc = cli_flash._finish_write(
+                        command_context,
+                        args=args,
+                        operation="restore",
+                        target=target,
+                        log=None,
+                    )
+
+        self.assertEqual(rc, 0)
+        reboot_mock.assert_called_once()
+        observe_mock.assert_not_called()
+        self.assertIn("not waiting for the device", output.getvalue())
+
+    def test_flash_restore_reboot_no_wait_fails_when_reboot_request_fails(self) -> None:
+        output = io.StringIO()
+        command_context = FakeCommandContext()
+        target = SimpleNamespace(connection=SshConnection("root@10.0.0.2", "pw", "-o foo"))
+        args = argparse.Namespace(reboot=True, no_wait=True)
+
+        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=SshError("ssh command failed with rc=255")) as reboot_mock:
+            with mock.patch("timecapsulesmb.cli.flash.observe_reboot_cycle") as observe_mock:
+                with self.assertRaises(SshError):
+                    with redirect_stdout(output):
+                        cli_flash._finish_write(
+                            command_context,
+                            args=args,
+                            operation="restore",
+                            target=target,
+                            log=None,
+                        )
+
+        reboot_mock.assert_called_once()
+        observe_mock.assert_not_called()
+        self.assertNotIn("not waiting for the device", output.getvalue())
 
     def test_flash_restore_noops_when_active_bank_already_matches_apple(self) -> None:
         output = io.StringIO()
@@ -7046,6 +7262,26 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("NetBSD4 activation failed.", output.getvalue())
 
+    def test_activate_dry_run_json_outputs_activation_plan(self) -> None:
+        output = io.StringIO()
+        values = self.make_valid_env()
+        with mock.patch("timecapsulesmb.cli.activate.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.context.CommandContext.require_compatibility", return_value=self.make_supported_netbsd4_compatibility()):
+                with redirect_stdout(output):
+                    rc = activate.main(["--dry-run", "--json"])
+        self.assertEqual(rc, 0)
+        payload = json.loads(output.getvalue())
+        self.assertIn("actions", payload)
+        self.assertTrue(all("kind" in action for action in payload["actions"]))
+
+    def test_activate_json_requires_dry_run(self) -> None:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as raised:
+                activate.main(["--json"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--json currently requires --dry-run", stderr.getvalue())
+
     def test_uninstall_dry_run_prints_target_host(self) -> None:
         output = io.StringIO()
         values = {
@@ -7193,6 +7429,49 @@ class CliTests(unittest.TestCase):
         self.assertEqual(finished["reboot_was_attempted"], True)
         self.assertEqual(finished["device_came_back_after_reboot"], True)
         self.assertEqual(finished["post_uninstall_verified"], True)
+
+    def test_uninstall_mount_wait_and_no_wait_skip_reboot_observation_and_verify(self) -> None:
+        output = io.StringIO()
+        values = self.make_valid_env()
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+            mast_mocks = self._patch_mast_volume_flow(stack, "uninstall")
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
+            reboot_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"))
+            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn"))
+            verify_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall"))
+            with redirect_stdout(output):
+                rc = uninstall.main(["--yes", "--mount-wait", "17", "--no-wait"])
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(mast_mocks.mounted_mast_volumes_conn.call_args.kwargs["wait_seconds"], 17)
+        reboot_mock.assert_called_once()
+        wait_mock.assert_not_called()
+        verify_mock.assert_not_called()
+        self.assertIn("Post-uninstall verification skipped.", output.getvalue())
+
+    def test_uninstall_no_wait_fails_when_reboot_request_fails(self) -> None:
+        output = io.StringIO()
+        values = self.make_valid_env()
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "uninstall")
+            stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.remote_uninstall_payload"))
+            reboot_mock = stack.enter_context(
+                mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=SshError("ssh command failed with rc=255"))
+            )
+            wait_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn"))
+            verify_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.uninstall.verify_post_uninstall"))
+            with self.assertRaises(SystemExit) as raised:
+                with redirect_stdout(output):
+                    uninstall.main(["--yes", "--no-wait"])
+
+        self.assertIn("ssh command failed with rc=255", str(raised.exception))
+        reboot_mock.assert_called_once()
+        wait_mock.assert_not_called()
+        verify_mock.assert_not_called()
+        finished = self.telemetry_payload("uninstall_finished")
+        self.assertEqual(finished["result"], "failure")
 
     def test_uninstall_reboot_request_timeout_continues_when_device_reboots(self) -> None:
         output = io.StringIO()
@@ -7435,6 +7714,43 @@ class CliTests(unittest.TestCase):
                 rc = fsck.main(["--yes", "--no-wait"])
         self.assertEqual(rc, 0)
         observe_mock.assert_not_called()
+
+    def test_fsck_list_volumes_mounts_with_custom_wait_without_remote_fsck(self) -> None:
+        output = io.StringIO()
+        values = self.make_valid_env()
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            mast_mocks = self._patch_mast_volume_flow(
+                stack,
+                "fsck",
+                mounted_volumes=(self._mast_volume("dk2"), self._mast_volume("dk5", builtin=False)),
+            )
+            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.run_ssh"))
+            with redirect_stdout(output):
+                rc = fsck.main(["--list-volumes", "--mount-wait", "11"])
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(mast_mocks.mounted_mast_volumes_conn.call_args.kwargs["wait_seconds"], 11)
+        run_ssh_mock.assert_not_called()
+        self.assertIn("Mounted HFS volumes:", output.getvalue())
+        self.assertIn("/dev/dk5", output.getvalue())
+
+    def test_fsck_dry_run_selects_target_without_remote_fsck_or_prompt(self) -> None:
+        output = io.StringIO()
+        values = self.make_valid_env()
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.load_env_config", return_value=self.make_app_config(values)))
+            self._patch_mast_volume_flow(stack, "fsck", mounted_volumes=(self._mast_volume("dk2"),))
+            input_mock = stack.enter_context(mock.patch("builtins.input", side_effect=AssertionError("dry run should not prompt")))
+            run_ssh_mock = stack.enter_context(mock.patch("timecapsulesmb.cli.fsck.run_ssh"))
+            with redirect_stdout(output):
+                rc = fsck.main(["--dry-run"])
+
+        self.assertEqual(rc, 0)
+        input_mock.assert_not_called()
+        run_ssh_mock.assert_not_called()
+        self.assertIn("Dry run: fsck plan", output.getvalue())
+        self.assertIn("/sbin/fsck_hfs -fy /dev/dk2", output.getvalue())
 
     def test_fsck_no_reboot_omits_reboot_and_waits(self) -> None:
         output = io.StringIO()

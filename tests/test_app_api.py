@@ -24,9 +24,10 @@ from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import AppConfig, ConfigError, parse_env_file
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState
+from timecapsulesmb.device.storage import MaStVolume
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
 from timecapsulesmb.integrations.acp import ACPAuthError
-from timecapsulesmb.transport.errors import TransportError
+from timecapsulesmb.transport.errors import SshError, TransportError
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -496,6 +497,22 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(checks[0]["status"], "PASS")
         self.assertEqual(checks[0]["details"], {"port": 445})
 
+    def test_doctor_passes_bonjour_timeout_to_checks(self) -> None:
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+
+        with mock.patch("timecapsulesmb.app.operations.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.operations.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
+                with mock.patch("timecapsulesmb.app.operations.resolve_env_connection", return_value=SshConnection("root@10.0.0.2", "pw", "-o foo")):
+                    with mock.patch("timecapsulesmb.app.operations.run_doctor_checks", return_value=([], False)) as checks:
+                        rc = service.run_api_request(
+                            {"operation": "doctor", "params": {"bonjour_timeout": "2.75"}},
+                            collector.sink,
+                        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(checks.call_args.kwargs["bonjour_timeout"], 2.75)
+
     def test_doctor_fatal_returns_nonzero_result_without_error_event(self) -> None:
         collector = CollectingSink()
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
@@ -652,6 +669,100 @@ class AppApiTests(unittest.TestCase):
         wait.assert_not_called()
         self.assertEqual(collector.events_of_type("result")[0]["payload"]["rebooted"], False)
 
+    def test_deploy_no_wait_requests_reboot_without_wait_or_runtime_verify(self) -> None:
+        collector = CollectingSink()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        artifacts = {
+            "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
+            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
+            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+        }
+        payload_home = operations.build_dry_run_payload_home(operations.MANAGED_PAYLOAD_DIR_NAME)
+
+        with mock.patch("timecapsulesmb.app.operations.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.operations.resolve_validated_managed_target", return_value=target):
+                with mock.patch("timecapsulesmb.app.operations.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
+                    with mock.patch("timecapsulesmb.app.operations.validate_artifacts", return_value=[("smbd", True, "ok")]):
+                        with mock.patch("timecapsulesmb.app.operations.resolve_payload_artifacts", return_value=artifacts):
+                            with mock.patch("timecapsulesmb.app.operations.wait_for_mast_volumes_conn", return_value=SimpleNamespace(volumes=("dk2",), attempts=1, raw_output="")):
+                                with mock.patch("timecapsulesmb.app.operations.select_payload_home_with_diagnostics_conn", return_value=SimpleNamespace(payload_home=payload_home)):
+                                    with mock.patch("timecapsulesmb.app.operations.verify_payload_home_conn", return_value=SimpleNamespace(ok=True, detail="ok")):
+                                        with mock.patch("timecapsulesmb.app.operations.upload_deployment_payload"):
+                                            with mock.patch("timecapsulesmb.app.operations.run_remote_actions"):
+                                                with mock.patch("timecapsulesmb.app.operations.flush_remote_filesystem_writes"):
+                                                    with mock.patch("timecapsulesmb.app.ops.deploy.remote_request_shutdown_reboot") as reboot:
+                                                        with mock.patch("timecapsulesmb.app.operations.wait_for_ssh_state_conn") as wait:
+                                                            with mock.patch("timecapsulesmb.app.ops.deploy.verify_managed_runtime") as verify_runtime:
+                                                                rc = service.run_api_request(
+                                                                    {
+                                                                        "operation": "deploy",
+                                                                        "params": {
+                                                                            "dry_run": False,
+                                                                            "confirm_deploy": True,
+                                                                            "confirm_reboot": True,
+                                                                            "no_wait": True,
+                                                                        },
+                                                                    },
+                                                                    collector.sink,
+                                                                )
+
+        self.assertEqual(rc, 0)
+        reboot.assert_called_once()
+        wait.assert_not_called()
+        verify_runtime.assert_not_called()
+        payload = collector.events_of_type("result")[0]["payload"]
+        self.assertEqual(payload["reboot_requested"], True)
+        self.assertEqual(payload["waited"], False)
+        self.assertEqual(payload["verified"], False)
+
+    def test_deploy_no_wait_reports_reboot_request_failure(self) -> None:
+        collector = CollectingSink()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        target = SimpleNamespace(connection=connection, probe_state=probed_state())
+        artifacts = {
+            "smbd": SimpleNamespace(absolute_path=REPO_ROOT / "bin/samba4/smbd"),
+            "mdns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/mdns/mdns-advertiser"),
+            "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
+        }
+        payload_home = operations.build_dry_run_payload_home(operations.MANAGED_PAYLOAD_DIR_NAME)
+
+        with mock.patch("timecapsulesmb.app.operations.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.operations.resolve_validated_managed_target", return_value=target):
+                with mock.patch("timecapsulesmb.app.operations.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
+                    with mock.patch("timecapsulesmb.app.operations.validate_artifacts", return_value=[("smbd", True, "ok")]):
+                        with mock.patch("timecapsulesmb.app.operations.resolve_payload_artifacts", return_value=artifacts):
+                            with mock.patch("timecapsulesmb.app.operations.wait_for_mast_volumes_conn", return_value=SimpleNamespace(volumes=("dk2",), attempts=1, raw_output="")):
+                                with mock.patch("timecapsulesmb.app.operations.select_payload_home_with_diagnostics_conn", return_value=SimpleNamespace(payload_home=payload_home)):
+                                    with mock.patch("timecapsulesmb.app.operations.verify_payload_home_conn", return_value=SimpleNamespace(ok=True, detail="ok")):
+                                        with mock.patch("timecapsulesmb.app.operations.upload_deployment_payload"):
+                                            with mock.patch("timecapsulesmb.app.operations.run_remote_actions"):
+                                                with mock.patch("timecapsulesmb.app.operations.flush_remote_filesystem_writes"):
+                                                    with mock.patch("timecapsulesmb.app.ops.deploy.remote_request_shutdown_reboot", side_effect=SshError("ssh command failed with rc=255")) as reboot:
+                                                        with mock.patch("timecapsulesmb.app.operations.wait_for_ssh_state_conn") as wait:
+                                                            with mock.patch("timecapsulesmb.app.ops.deploy.verify_managed_runtime") as verify_runtime:
+                                                                rc = service.run_api_request(
+                                                                    {
+                                                                        "operation": "deploy",
+                                                                        "params": {
+                                                                            "dry_run": False,
+                                                                            "confirm_deploy": True,
+                                                                            "confirm_reboot": True,
+                                                                            "no_wait": True,
+                                                                        },
+                                                                    },
+                                                                    collector.sink,
+                                                                )
+
+        self.assertEqual(rc, 1)
+        reboot.assert_called_once()
+        wait.assert_not_called()
+        verify_runtime.assert_not_called()
+        errors = collector.events_of_type("error")
+        self.assertEqual(errors[0]["code"], "remote_error")
+        self.assertIn("ssh command failed with rc=255", errors[0]["message"])
+        self.assertEqual(collector.events_of_type("result"), [])
+
     def test_deploy_reports_no_mast_volumes_as_remote_error(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
@@ -773,6 +884,43 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(result["payload"]["schema_version"], 1)
         uninstall.assert_not_called()
 
+    def test_uninstall_no_wait_uses_mount_wait_and_skips_post_reboot_verification(self) -> None:
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        mounted = [SimpleNamespace(volume_root="/Volumes/dk2")]
+
+        with mock.patch("timecapsulesmb.app.operations.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.operations.resolve_env_connection", return_value=connection):
+                with mock.patch("timecapsulesmb.app.operations.read_mast_volumes_conn", return_value=[]):
+                    with mock.patch("timecapsulesmb.app.operations.mounted_mast_volumes_conn", return_value=mounted) as mounted_mock:
+                        with mock.patch("timecapsulesmb.app.operations.remote_uninstall_payload"):
+                            with mock.patch("timecapsulesmb.app.ops.deploy.remote_request_reboot") as reboot:
+                                with mock.patch("timecapsulesmb.app.operations.wait_for_ssh_state_conn") as wait:
+                                    with mock.patch("timecapsulesmb.app.ops.maintenance.verify_post_uninstall") as verify:
+                                        rc = service.run_api_request(
+                                            {
+                                                "operation": "uninstall",
+                                                "params": {
+                                                    "confirm_uninstall": True,
+                                                    "confirm_reboot": True,
+                                                    "mount_wait": 13,
+                                                    "no_wait": True,
+                                                },
+                                            },
+                                            collector.sink,
+                                        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(mounted_mock.call_args.kwargs["wait_seconds"], 13)
+        reboot.assert_called_once()
+        wait.assert_not_called()
+        verify.assert_not_called()
+        payload = collector.events_of_type("result")[0]["payload"]
+        self.assertEqual(payload["reboot_requested"], True)
+        self.assertEqual(payload["waited"], False)
+        self.assertEqual(payload["verified"], False)
+
     def test_fsck_requires_confirmation_before_remote_connection(self) -> None:
         collector = CollectingSink()
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
@@ -784,6 +932,76 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertEqual(collector.events_of_type("error")[0]["code"], "confirmation_required")
         resolve_connection.assert_not_called()
+
+    def test_fsck_rejects_non_integer_mount_wait_before_remote_connection(self) -> None:
+        for value in (12.5, True):
+            with self.subTest(value=value):
+                collector = CollectingSink()
+                with mock.patch("timecapsulesmb.app.operations.load_env_config") as load_config:
+                    rc = service.run_api_request(
+                        {
+                            "operation": "fsck",
+                            "params": {"list_volumes": True, "mount_wait": value},
+                        },
+                        collector.sink,
+                    )
+
+                self.assertEqual(rc, 1)
+                load_config.assert_not_called()
+                error = collector.events_of_type("error")[0]
+                self.assertEqual(error["code"], "validation_failed")
+                self.assertIn("mount_wait must be an integer", error["message"])
+
+    def test_fsck_list_volumes_returns_targets_without_confirmation_or_remote_fsck(self) -> None:
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        mounted = [MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "uuid", True, "hfs")]
+
+        with mock.patch("timecapsulesmb.app.operations.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.operations.resolve_env_connection", return_value=connection):
+                with mock.patch("timecapsulesmb.app.operations.read_mast_volumes_conn", return_value=[]):
+                    with mock.patch("timecapsulesmb.app.operations.mounted_mast_volumes_conn", return_value=mounted) as mounted_mock:
+                        with mock.patch("timecapsulesmb.app.operations.run_ssh") as run_ssh:
+                            rc = service.run_api_request(
+                                {
+                                    "operation": "fsck",
+                                    "params": {"list_volumes": True, "mount_wait": 14},
+                                },
+                                collector.sink,
+                            )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(mounted_mock.call_args.kwargs["wait_seconds"], 14)
+        run_ssh.assert_not_called()
+        payload = collector.events_of_type("result")[0]["payload"]
+        self.assertEqual(payload["counts"], {"targets": 1})
+        self.assertEqual(payload["targets"][0]["device"], "/dev/dk2")
+
+    def test_fsck_dry_run_returns_plan_without_remote_fsck(self) -> None:
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        mounted = [MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "uuid", True, "hfs")]
+
+        with mock.patch("timecapsulesmb.app.operations.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.operations.resolve_env_connection", return_value=connection):
+                with mock.patch("timecapsulesmb.app.operations.read_mast_volumes_conn", return_value=[]):
+                    with mock.patch("timecapsulesmb.app.operations.mounted_mast_volumes_conn", return_value=mounted):
+                        with mock.patch("timecapsulesmb.app.operations.run_ssh") as run_ssh:
+                            rc = service.run_api_request(
+                                {
+                                    "operation": "fsck",
+                                    "params": {"dry_run": True, "no_wait": True},
+                                },
+                                collector.sink,
+                            )
+
+        self.assertEqual(rc, 0)
+        run_ssh.assert_not_called()
+        payload = collector.events_of_type("result")[0]["payload"]
+        self.assertEqual(payload["device"], "/dev/dk2")
+        self.assertEqual(payload["wait_after_reboot"], False)
 
     def test_repair_xattrs_uses_structured_runner(self) -> None:
         collector = CollectingSink()

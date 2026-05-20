@@ -121,6 +121,7 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
     nbns_enabled = bool_param(params, "nbns_enabled", True)
     dry_run = bool_param(params, "dry_run")
     no_reboot = bool_param(params, "no_reboot")
+    no_wait = bool_param(params, "no_wait")
     confirm_deploy = confirm_param(params, "confirm_deploy")
     confirm_reboot = confirm_param(params, "confirm_reboot")
     confirm_netbsd4_activation = confirm_param(params, "confirm_netbsd4_activation")
@@ -260,6 +261,9 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
         return OperationResult(True, deploy_result_payload(
             payload_dir=plan.payload_dir,
             netbsd4=True,
+            reboot_requested=False,
+            waited=False,
+            verified=True,
             message=f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}",
             payload_family=payload_family,
         ))
@@ -268,6 +272,25 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
         return OperationResult(True, deploy_result_payload(
             payload_dir=plan.payload_dir,
             rebooted=False,
+            reboot_requested=False,
+            waited=False,
+            verified=False,
+            payload_family=payload_family,
+        ))
+
+    if no_wait:
+        request_reboot(
+            operation,
+            sink,
+            connection,
+            strategy="ssh_shutdown_then_reboot",
+            require_request_success=True,
+        )
+        return OperationResult(True, deploy_result_payload(
+            payload_dir=plan.payload_dir,
+            reboot_requested=True,
+            waited=False,
+            verified=False,
             payload_family=payload_family,
         ))
 
@@ -282,6 +305,9 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
     return OperationResult(True, deploy_result_payload(
         payload_dir=plan.payload_dir,
         rebooted=True,
+        reboot_requested=True,
+        waited=True,
+        verified=True,
         payload_family=payload_family,
     ))
 
@@ -334,16 +360,7 @@ def request_reboot_and_wait(
     down_timeout_seconds: int = 60,
     up_timeout_seconds: int = 240,
 ) -> None:
-    sink.stage(operation, "reboot")
-    if strategy == "acp_then_ssh":
-        try:
-            acp_reboot(extract_host(connection.host), connection.password, timeout=ACP_REBOOT_REQUEST_TIMEOUT_SECONDS)
-            sink.log(operation, "ACP reboot requested.")
-        except ACPError as exc:
-            sink.log(operation, f"ACP reboot request failed; trying SSH reboot request: {exc}", level="warning")
-            request_ssh_reboot(operation, sink, connection, shutdown=False)
-    else:
-        request_ssh_reboot(operation, sink, connection, shutdown=True)
+    request_reboot(operation, sink, connection, strategy=strategy)
 
     sink.stage(operation, "wait_for_reboot_down")
     sink.log(operation, "Waiting for the device to go down...")
@@ -356,7 +373,46 @@ def request_reboot_and_wait(
     sink.log(operation, "Device is back online.")
 
 
-def request_ssh_reboot(operation: str, sink: EventSink, connection: SshConnection, *, shutdown: bool) -> None:
+def request_reboot(
+    operation: str,
+    sink: EventSink,
+    connection: SshConnection,
+    *,
+    strategy: str,
+    require_request_success: bool = False,
+) -> None:
+    sink.stage(operation, "reboot")
+    if strategy == "acp_then_ssh":
+        try:
+            acp_reboot(extract_host(connection.host), connection.password, timeout=ACP_REBOOT_REQUEST_TIMEOUT_SECONDS)
+            sink.log(operation, "ACP reboot requested.")
+        except ACPError as exc:
+            sink.log(operation, f"ACP reboot request failed; trying SSH reboot request: {exc}", level="warning")
+            request_ssh_reboot(
+                operation,
+                sink,
+                connection,
+                shutdown=False,
+                require_request_success=require_request_success,
+            )
+    else:
+        request_ssh_reboot(
+            operation,
+            sink,
+            connection,
+            shutdown=True,
+            require_request_success=require_request_success,
+        )
+
+
+def request_ssh_reboot(
+    operation: str,
+    sink: EventSink,
+    connection: SshConnection,
+    *,
+    shutdown: bool,
+    require_request_success: bool = False,
+) -> None:
     try:
         if shutdown:
             remote_request_shutdown_reboot(connection)
@@ -366,6 +422,8 @@ def request_ssh_reboot(operation: str, sink: EventSink, connection: SshConnectio
         sink.log(operation, f"SSH reboot request timed out; checking whether the device is rebooting: {exc}", level="warning")
         return
     except SshError as exc:
+        if require_request_success:
+            raise AppOperationError(f"SSH reboot request failed: {exc}", code="remote_error") from exc
         sink.log(operation, f"SSH reboot request failed; checking whether the device is rebooting anyway: {exc}", level="warning")
         return
     sink.log(operation, "SSH reboot requested.")

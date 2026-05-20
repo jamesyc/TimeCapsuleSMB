@@ -27,6 +27,7 @@ class DoctorOptions:
     skip_ssh: bool
     skip_bonjour: bool
     skip_smb: bool
+    bonjour_timeout: float
 
 
 @dataclass(frozen=True)

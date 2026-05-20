@@ -26,6 +26,7 @@ from timecapsulesmb.core.config import (
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import wait_for_tcp_port_state
 from timecapsulesmb.cli.runtime import (
+    add_bonjour_timeout_argument,
     add_config_argument,
     confirm as confirm_prompt,
     ssh_target_link_local_resolution_error,
@@ -44,10 +45,8 @@ from timecapsulesmb.device.probe import (
 from timecapsulesmb.discovery.bonjour import (
     BonjourResolvedService,
     AIRPORT_SERVICE,
-    DEFAULT_BROWSE_TIMEOUT_SEC,
     discover_resolved_records,
     discovered_record_root_host,
-    record_has_service,
 )
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import SshConnection
@@ -108,9 +107,9 @@ def choose_device(records):
         return records[idx - 1]
 
 
-def discover_default_record(existing: dict[str, str]) -> Optional[BonjourResolvedService]:
+def discover_default_record(existing: dict[str, str], *, timeout: float) -> Optional[BonjourResolvedService]:
     print("Attempting to discover Time Capsule/Airport Extreme devices on the local network via mDNS...", flush=True)
-    records = discover_resolved_records(AIRPORT_SERVICE, timeout=DEFAULT_BROWSE_TIMEOUT_SEC)
+    records = discover_resolved_records(AIRPORT_SERVICE, timeout=timeout)
     if not records:
         print("No Time Capsule/Airport Extreme devices discovered. Falling back to manual SSH target entry.\n", flush=True)
         return None
@@ -298,6 +297,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--internal-share-use-disk-root", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--any-protocol", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--debug-logging", action="store_true", help=argparse.SUPPRESS)
+    add_bonjour_timeout_argument(parser)
     args = parser.parse_args(argv)
 
     ensure_install_id()
@@ -327,7 +327,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         args=args,
         configure_id=configure_id,
     ) as command_context:
-        command_context.update_fields(configure_id=configure_id)
+        command_context.update_fields(configure_id=configure_id, bonjour_timeout=args.bonjour_timeout)
         command_context.set_stage("dependency_check")
         missing_module = missing_required_python_module(REQUIRED_PYTHON_MODULES)
         if missing_module is not None:
@@ -366,7 +366,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         command_context.set_stage("bonjour_discovery")
         try:
-            discovered_record = discover_default_record(existing)
+            discovered_record = discover_default_record(existing, timeout=args.bonjour_timeout)
         except Exception as exc:
             error_text = exception_summary(exc)
             print(f"Warning: mDNS discovery failed: {error_text}")

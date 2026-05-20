@@ -9,7 +9,9 @@ from pathlib import Path
 from timecapsulesmb.app.contracts import (
     activation_plan_payload,
     activation_result_payload,
+    fsck_plan_payload,
     fsck_result_payload,
+    fsck_volume_list_payload,
     repair_xattrs_payload,
     uninstall_plan_payload,
     uninstall_result_payload,
@@ -17,6 +19,7 @@ from timecapsulesmb.app.contracts import (
 from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.app.ops.deploy import (
     load_config_and_target,
+    request_reboot,
     request_reboot_and_wait,
     require_supported_payload,
     verify_runtime,
@@ -25,14 +28,12 @@ from timecapsulesmb.cli import repair_xattrs as repair_xattrs_cli
 from timecapsulesmb.cli.fsck import (
     FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS,
     build_remote_fsck_script,
-    select_fsck_target,
-    _target_from_volume,
 )
 from timecapsulesmb.cli.runtime import load_env_config, load_optional_env_config, resolve_env_connection
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP
-from timecapsulesmb.deploy.dry_run import uninstall_plan_to_jsonable
+from timecapsulesmb.deploy.dry_run import activation_plan_to_jsonable, uninstall_plan_to_jsonable
 from timecapsulesmb.deploy.executor import remote_uninstall_payload, run_remote_actions
 from timecapsulesmb.deploy.planner import (
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
@@ -53,12 +54,24 @@ from timecapsulesmb.services.app import (
     bool_param,
     config_path,
     confirm_param,
+    int_param,
     jsonable,
     optional_int_param,
     string_param,
 )
 from timecapsulesmb.services.deploy import DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE
-from timecapsulesmb.services.maintenance import FSCK_REBOOT_NO_DOWN_MESSAGE, UNINSTALL_REBOOT_NO_DOWN_MESSAGE
+from timecapsulesmb.services.maintenance import (
+    FSCK_REBOOT_NO_DOWN_MESSAGE,
+    UNINSTALL_REBOOT_NO_DOWN_MESSAGE,
+    LineLogCapture,
+    RepairExecutionContext,
+    format_fsck_plan,
+    format_fsck_targets,
+    fsck_plan_to_jsonable,
+    fsck_target_from_volume,
+    fsck_target_to_jsonable,
+    select_fsck_target,
+)
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 
 
@@ -76,7 +89,7 @@ def activate_operation(params: dict[str, object], sink: EventSink) -> OperationR
     sink.stage(operation, "build_activation_plan")
     plan = build_netbsd4_activation_plan()
     if dry_run:
-        return OperationResult(True, activation_plan_payload(jsonable(plan)))
+        return OperationResult(True, activation_plan_payload(activation_plan_to_jsonable(plan)))
     if not confirm_activation:
         raise AppOperationError("NetBSD4 activation requires explicit confirmation.", code="confirmation_required")
     connection = target.connection
@@ -96,6 +109,8 @@ def uninstall_operation(params: dict[str, object], sink: EventSink) -> Operation
     operation = "uninstall"
     dry_run = bool_param(params, "dry_run")
     no_reboot = bool_param(params, "no_reboot")
+    no_wait = bool_param(params, "no_wait")
+    mount_wait = int_param(params, "mount_wait", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
     confirm_uninstall = confirm_param(params, "confirm_uninstall")
     confirm_reboot = confirm_param(params, "confirm_reboot")
     if not dry_run and not confirm_uninstall:
@@ -116,7 +131,7 @@ def uninstall_operation(params: dict[str, object], sink: EventSink) -> Operation
         mounted_volumes = mounted_mast_volumes_conn(
             connection,
             mast_volumes,
-            wait_seconds=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+            wait_seconds=mount_wait,
         )
         volume_roots = [volume.volume_root for volume in mounted_volumes]
         payload_dirs = [f"{volume_root}/{MANAGED_PAYLOAD_DIR_NAME}" for volume_root in volume_roots]
@@ -127,7 +142,26 @@ def uninstall_operation(params: dict[str, object], sink: EventSink) -> Operation
     sink.stage(operation, "uninstall_payload")
     remote_uninstall_payload(connection, plan)
     if no_reboot:
-        return OperationResult(True, uninstall_result_payload(rebooted=False, verified=False))
+        return OperationResult(True, uninstall_result_payload(
+            rebooted=False,
+            verified=False,
+            reboot_requested=False,
+            waited=False,
+        ))
+    if no_wait:
+        request_reboot(
+            operation,
+            sink,
+            connection,
+            strategy="acp_then_ssh",
+            require_request_success=True,
+        )
+        return OperationResult(True, uninstall_result_payload(
+            rebooted=False,
+            verified=False,
+            reboot_requested=True,
+            waited=False,
+        ))
     request_reboot_and_wait(
         operation,
         sink,
@@ -141,15 +175,25 @@ def uninstall_operation(params: dict[str, object], sink: EventSink) -> Operation
         sink.log(operation, line)
     if not verification:
         raise AppOperationError("Managed TimeCapsuleSMB files are still present after reboot.", code="remote_error")
-    return OperationResult(True, uninstall_result_payload(rebooted=True, verified=True))
+    return OperationResult(True, uninstall_result_payload(
+        rebooted=True,
+        verified=True,
+        reboot_requested=True,
+        waited=True,
+    ))
 
 
 def fsck_operation(params: dict[str, object], sink: EventSink) -> OperationResult:
     operation = "fsck"
+    dry_run = bool_param(params, "dry_run")
+    list_volumes = bool_param(params, "list_volumes")
     confirm_fsck = confirm_param(params, "confirm_fsck")
     no_reboot = bool_param(params, "no_reboot")
     no_wait = bool_param(params, "no_wait")
-    if not confirm_fsck:
+    mount_wait = int_param(params, "mount_wait", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
+    if dry_run and list_volumes:
+        raise AppOperationError("dry_run and list_volumes are mutually exclusive.", code="validation_failed")
+    if not dry_run and not list_volumes and not confirm_fsck:
         raise AppOperationError("fsck requires explicit confirmation.", code="confirmation_required")
     sink.stage(operation, "load_config")
     config = load_env_config(env_path=config_path(params))
@@ -161,17 +205,33 @@ def fsck_operation(params: dict[str, object], sink: EventSink) -> OperationResul
     mounted_volumes = mounted_mast_volumes_conn(
         connection,
         mast_volumes,
-        wait_seconds=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+        wait_seconds=mount_wait,
     )
+    targets = tuple(fsck_target_from_volume(volume) for volume in mounted_volumes)
+    if list_volumes:
+        sink.stage(operation, "list_fsck_volumes")
+        sink.log(operation, format_fsck_targets(targets))
+        return OperationResult(True, fsck_volume_list_payload({
+            "targets": [fsck_target_to_jsonable(target) for target in targets],
+        }))
+
     sink.stage(operation, "select_fsck_volume")
     try:
         target = select_fsck_target(
-            tuple(_target_from_volume(volume) for volume in mounted_volumes),
+            targets,
             string_param(params, "volume") or None,
             prompt=False,
         )
     except RuntimeError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc
+    if dry_run:
+        sink.log(operation, format_fsck_plan(target, reboot=not no_reboot, wait=not no_wait))
+        return OperationResult(True, fsck_plan_payload(fsck_plan_to_jsonable(
+            target,
+            reboot=not no_reboot,
+            wait=not no_wait,
+        )))
+
     sink.stage(operation, "run_fsck")
     script = build_remote_fsck_script(target.device, target.mountpoint, reboot=not no_reboot)
     proc = run_ssh(
@@ -188,12 +248,17 @@ def fsck_operation(params: dict[str, object], sink: EventSink) -> OperationResul
             device=target.device,
             mountpoint=target.mountpoint,
             returncode=proc.returncode,
+            reboot_requested=False,
+            waited=False,
+            verified=False,
         ))
     if no_wait:
         return OperationResult(True, fsck_result_payload(
             device=target.device,
             mountpoint=target.mountpoint,
+            reboot_requested=True,
             waited=False,
+            verified=False,
         ))
     observe_reboot_cycle(
         operation,
@@ -206,7 +271,9 @@ def fsck_operation(params: dict[str, object], sink: EventSink) -> OperationResul
     return OperationResult(True, fsck_result_payload(
         device=target.device,
         mountpoint=target.mountpoint,
+        reboot_requested=True,
         waited=True,
+        verified=True,
     ))
 
 
@@ -225,52 +292,6 @@ def observe_reboot_cycle(
     sink.stage(operation, "wait_for_reboot_up")
     if not wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=up_timeout_seconds):
         raise AppOperationError(DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE, code="remote_error")
-
-
-class RepairContext:
-    def __init__(self, operation: str, sink: EventSink) -> None:
-        self.operation = operation
-        self.sink = sink
-        self.result = "failure"
-        self.error: str | None = None
-
-    def set_stage(self, stage: str) -> None:
-        self.sink.stage(self.operation, stage)
-
-    def update_fields(self, **_fields: object) -> None:
-        pass
-
-    def succeed(self) -> None:
-        self.result = "success"
-
-    def fail_with_error(self, message: str) -> None:
-        self.result = "failure"
-        self.error = message
-
-
-class StreamLogCapture:
-    def __init__(self, operation: str, sink: EventSink, *, level: str) -> None:
-        self.operation = operation
-        self.sink = sink
-        self.level = level
-        self._buffer = ""
-
-    def write(self, text: str) -> int:
-        self._buffer += text
-        while "\n" in self._buffer:
-            line, self._buffer = self._buffer.split("\n", 1)
-            self._emit(line)
-        return len(text)
-
-    def flush(self) -> None:
-        if self._buffer:
-            self._emit(self._buffer)
-            self._buffer = ""
-
-    def _emit(self, line: str) -> None:
-        message = line.rstrip("\r")
-        if message:
-            self.sink.log(self.operation, message, level=self.level)
 
 
 def repair_xattrs_operation(params: dict[str, object], sink: EventSink) -> OperationResult:
@@ -301,9 +322,9 @@ def repair_xattrs_operation(params: dict[str, object], sink: EventSink) -> Opera
         fix_permissions=bool_param(params, "fix_permissions"),
         verbose=bool_param(params, "verbose"),
     )
-    context = RepairContext(operation, sink)
-    stdout_capture = StreamLogCapture(operation, sink, level="info")
-    stderr_capture = StreamLogCapture(operation, sink, level="warning")
+    context = RepairExecutionContext(lambda stage: sink.stage(operation, stage))
+    stdout_capture = LineLogCapture(lambda message: sink.log(operation, message, level="info"))
+    stderr_capture = LineLogCapture(lambda message: sink.log(operation, message, level="warning"))
     try:
         with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
             result = repair_xattrs_cli.run_repair_structured(

@@ -62,10 +62,34 @@ def confirm_param(params: dict[str, object], name: str) -> bool:
 
 def int_param(params: dict[str, object], name: str, default: int) -> int:
     value = params.get(name, default)
-    try:
+    if isinstance(value, bool):
+        raise AppOperationError(f"{name} must be an integer", code="validation_failed")
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            raise AppOperationError(f"{name} must be an integer", code="validation_failed")
         parsed = int(value)
-    except (TypeError, ValueError) as exc:
-        raise AppOperationError(f"{name} must be an integer", code="validation_failed") from exc
+    else:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise AppOperationError(f"{name} must be an integer", code="validation_failed") from exc
+    if parsed < 0:
+        raise AppOperationError(f"{name} must be 0 or greater", code="validation_failed")
+    return parsed
+
+
+def _parse_optional_int_value(value: object, name: str) -> int:
+    if isinstance(value, bool):
+        raise AppOperationError(f"{name} must be an integer", code="validation_failed")
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            raise AppOperationError(f"{name} must be an integer", code="validation_failed")
+        parsed = int(value)
+    else:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise AppOperationError(f"{name} must be an integer", code="validation_failed") from exc
     if parsed < 0:
         raise AppOperationError(f"{name} must be 0 or greater", code="validation_failed")
     return parsed
@@ -75,15 +99,7 @@ def optional_int_param(params: dict[str, object], name: str) -> int | None:
     value = params.get(name)
     if value in (None, ""):
         return None
-    if isinstance(value, bool):
-        raise AppOperationError(f"{name} must be an integer", code="validation_failed")
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError) as exc:
-        raise AppOperationError(f"{name} must be an integer", code="validation_failed") from exc
-    if parsed < 0:
-        raise AppOperationError(f"{name} must be 0 or greater", code="validation_failed")
-    return parsed
+    return _parse_optional_int_value(value, name)
 
 
 def float_param(params: dict[str, object], name: str, default: float) -> float:

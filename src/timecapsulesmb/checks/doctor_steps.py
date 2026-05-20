@@ -267,6 +267,7 @@ def _add_bonjour_results(
     *,
     proxied_ssh: bool,
     skip_bonjour: bool,
+    bonjour_timeout: float,
     add_result: Callable[[CheckResult], None],
 ) -> DoctorBonjourResult:
     bonjour_instance: str | None = None
@@ -301,6 +302,7 @@ def _add_bonjour_results(
                     zeroconf_debug=None,
                 )
             smb_snapshot, discovery_error, bonjour_zeroconf_debug = discover_smb_services_detailed(
+                timeout=bonjour_timeout,
                 include_related=True,
                 target_ip=bonjour_expected.target_ip,
             )
@@ -777,6 +779,7 @@ def _doctor_check_bonjour(inputs: DoctorInputs, target: DoctorTarget, naming: Ru
         naming.identity,
         proxied_ssh=target.proxied_ssh,
         skip_bonjour=inputs.options.skip_bonjour,
+        bonjour_timeout=inputs.options.bonjour_timeout,
         add_result=sink.add,
     )
 

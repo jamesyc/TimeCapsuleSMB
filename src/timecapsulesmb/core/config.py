@@ -575,6 +575,10 @@ CONFIG_PROFILES: dict[str, ConfigProfile] = {
         required_file_values=("TC_HOST", "TC_PASSWORD"),
         validated_keys=("TC_HOST",),
     ),
+    "set_ssh_status": ConfigProfile(
+        required_file_values=("TC_HOST",),
+        validated_keys=("TC_HOST",),
+    ),
     "flash": ConfigProfile(
         required_file_values=FLASH_REQUIRED_FILE_KEYS,
         validated_keys=FLASH_VALIDATED_KEYS,

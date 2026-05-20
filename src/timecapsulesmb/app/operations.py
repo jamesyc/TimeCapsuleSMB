@@ -48,6 +48,9 @@ wait_for_ssh_state_conn = _deploy.wait_for_ssh_state_conn
 
 resolve_env_connection = _maintenance.resolve_env_connection
 remote_uninstall_payload = _maintenance.remote_uninstall_payload
+read_mast_volumes_conn = _maintenance.read_mast_volumes_conn
+mounted_mast_volumes_conn = _maintenance.mounted_mast_volumes_conn
+run_ssh = _maintenance.run_ssh
 probe_managed_runtime_conn = _maintenance.probe_managed_runtime_conn
 load_optional_env_config = _maintenance.load_optional_env_config
 repair_xattrs_cli = _maintenance.repair_xattrs_cli
@@ -80,6 +83,10 @@ def _sync_compat_bindings() -> None:
     _maintenance.load_env_config = load_env_config
     _maintenance.resolve_env_connection = resolve_env_connection
     _maintenance.remote_uninstall_payload = remote_uninstall_payload
+    _maintenance.read_mast_volumes_conn = read_mast_volumes_conn
+    _maintenance.mounted_mast_volumes_conn = mounted_mast_volumes_conn
+    _maintenance.run_ssh = run_ssh
+    _maintenance.wait_for_ssh_state_conn = wait_for_ssh_state_conn
     _maintenance.run_remote_actions = run_remote_actions
     _maintenance.probe_managed_runtime_conn = probe_managed_runtime_conn
     _maintenance.load_optional_env_config = load_optional_env_config
@@ -153,8 +160,8 @@ _verify_runtime = _deploy.verify_runtime
 _request_reboot_and_wait = _deploy.request_reboot_and_wait
 _request_ssh_reboot = _deploy.request_ssh_reboot
 _observe_reboot_cycle = _maintenance.observe_reboot_cycle
-_RepairContext = _maintenance.RepairContext
-_StreamLogCapture = _maintenance.StreamLogCapture
+_RepairContext = _maintenance.RepairExecutionContext
+_StreamLogCapture = _maintenance.LineLogCapture
 
 
 OPERATIONS: dict[str, Callable[[dict[str, object], EventSink], OperationResult]] = {

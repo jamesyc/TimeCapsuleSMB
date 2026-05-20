@@ -32,6 +32,7 @@ from timecapsulesmb.checks.doctor_steps import (
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.device.probe import ProbedDeviceState, RemoteInterfaceProbeResult
+from timecapsulesmb.discovery.bonjour import DEFAULT_BROWSE_TIMEOUT_SEC
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -45,6 +46,7 @@ def run_doctor_checks(
     skip_ssh: bool = False,
     skip_bonjour: bool = False,
     skip_smb: bool = False,
+    bonjour_timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC,
     on_result: Optional[Callable[[CheckResult], None]] = None,
     debug_fields: dict[str, object] | None = None,
 ) -> tuple[list[CheckResult], bool]:
@@ -52,6 +54,7 @@ def run_doctor_checks(
         skip_ssh=skip_ssh,
         skip_bonjour=skip_bonjour,
         skip_smb=skip_smb,
+        bonjour_timeout=bonjour_timeout,
     )
     inputs = DoctorInputs(
         config=config,

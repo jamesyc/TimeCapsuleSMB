@@ -103,6 +103,9 @@ def deploy_result_payload(
     *,
     payload_dir: str,
     rebooted: bool | None = None,
+    reboot_requested: bool | None = None,
+    waited: bool | None = None,
+    verified: bool | None = None,
     netbsd4: bool = False,
     message: str | None = None,
     payload_family: str | None = None,
@@ -111,11 +114,17 @@ def deploy_result_payload(
         "payload_dir": payload_dir,
         "netbsd4": netbsd4,
         "payload_family": payload_family,
-        "requires_reboot": False if netbsd4 else bool(rebooted),
+        "requires_reboot": False if netbsd4 else bool(rebooted or reboot_requested),
         "summary": "deployment completed.",
     }
     if rebooted is not None:
         payload["rebooted"] = rebooted
+    if reboot_requested is not None:
+        payload["reboot_requested"] = reboot_requested
+    if waited is not None:
+        payload["waited"] = waited
+    if verified is not None:
+        payload["verified"] = verified
     if message is not None:
         payload["message"] = message
         payload["summary"] = message
@@ -158,12 +167,40 @@ def uninstall_plan_payload(raw: Mapping[str, object]) -> dict[str, object]:
     })
 
 
-def uninstall_result_payload(*, rebooted: bool, verified: bool) -> dict[str, object]:
-    return _with_schema({
+def uninstall_result_payload(
+    *,
+    rebooted: bool,
+    verified: bool,
+    reboot_requested: bool | None = None,
+    waited: bool | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
         "rebooted": rebooted,
         "verified": verified,
-        "requires_reboot": rebooted,
+        "requires_reboot": bool(rebooted or reboot_requested),
         "summary": "uninstall completed." if verified else "uninstall completed without post-reboot verification.",
+    }
+    if reboot_requested is not None:
+        payload["reboot_requested"] = reboot_requested
+    if waited is not None:
+        payload["waited"] = waited
+    return _with_schema(payload)
+
+
+def fsck_volume_list_payload(raw: Mapping[str, object]) -> dict[str, object]:
+    targets = raw.get("targets")
+    target_count = len(targets) if isinstance(targets, list) else 0
+    return _with_schema({
+        **raw,
+        "counts": {"targets": target_count},
+        "summary": f"found {target_count} mounted HFS volume(s).",
+    })
+
+
+def fsck_plan_payload(raw: Mapping[str, object]) -> dict[str, object]:
+    return _with_schema({
+        **raw,
+        "summary": "fsck dry-run plan generated.",
     })
 
 
@@ -172,7 +209,9 @@ def fsck_result_payload(
     device: str,
     mountpoint: str,
     returncode: int | None = None,
+    reboot_requested: bool | None = None,
     waited: bool | None = None,
+    verified: bool | None = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "device": device,
@@ -181,8 +220,12 @@ def fsck_result_payload(
     }
     if returncode is not None:
         payload["returncode"] = returncode
+    if reboot_requested is not None:
+        payload["reboot_requested"] = reboot_requested
     if waited is not None:
         payload["waited"] = waited
+    if verified is not None:
+        payload["verified"] = verified
     return _with_schema(payload)
 
 
