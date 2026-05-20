@@ -1,22 +1,28 @@
 import SwiftUI
 
 public struct ContentView: View {
-    @StateObject private var backend = BackendClient()
+    @StateObject private var backend: BackendClient
+    @StateObject private var readinessStore: ReadinessStore
+    @StateObject private var connectionStore: ConnectionWorkflowStore
+    @StateObject private var deployStore: DeployWorkflowStore
+    @StateObject private var doctorStore: DoctorStore
     @State private var selection: Screen = .readiness
-    @State private var host = "root@192.168.x.x"
     @State private var password = ""
     @State private var repairPath = ""
     @State private var volume = ""
-    @State private var nbnsEnabled = true
     @State private var noReboot = false
-    @State private var dryRun = true
-    @State private var configureDebugLogging = false
-    @State private var deployDebugLogging = false
     @State private var mountWait = "30"
-    @State private var bonjourTimeout = "6"
     @State private var noWait = false
 
-    public init() {}
+    @MainActor
+    public init() {
+        let backend = BackendClient()
+        _backend = StateObject(wrappedValue: backend)
+        _readinessStore = StateObject(wrappedValue: ReadinessStore(backend: backend))
+        _connectionStore = StateObject(wrappedValue: ConnectionWorkflowStore(backend: backend))
+        _deployStore = StateObject(wrappedValue: DeployWorkflowStore(backend: backend))
+        _doctorStore = StateObject(wrappedValue: DoctorStore(backend: backend))
+    }
 
     public var body: some View {
         NavigationSplitView {
@@ -34,7 +40,7 @@ public struct ContentView: View {
             .toolbar {
                 ToolbarItemGroup {
                     Button {
-                        backend.clear()
+                        clearActive()
                     } label: {
                         Label(L10n.string("toolbar.clear"), systemImage: "trash")
                     }
@@ -80,96 +86,13 @@ public struct ContentView: View {
     private var form: some View {
         switch selection {
         case .readiness:
-            CommandPanel(title: L10n.string("screen.readiness")) {
-                TextField(L10n.string("field.helper"), text: $backend.helperPath)
-                HStack {
-                    runButton(L10n.string("button.capabilities"), icon: "info.circle", operation: "capabilities")
-                    runButton(L10n.string("button.paths"), icon: "folder", operation: "paths")
-                    runButton(L10n.string("button.validate"), icon: "checkmark.seal", operation: "validate-install")
-                }
-            }
+            ReadinessView(store: readinessStore, helperPath: $backend.helperPath)
         case .connect:
-            CommandPanel(title: L10n.string("panel.connect")) {
-                TextField(L10n.string("field.host"), text: $host)
-                SecureField(L10n.string("field.password"), text: $password)
-                TextField(L10n.string("field.bonjour_timeout"), text: $bonjourTimeout)
-                Toggle(L10n.string("toggle.enable_debug_logging"), isOn: $configureDebugLogging)
-                HStack {
-                    runButton(
-                        L10n.string("button.discover"),
-                        icon: "network",
-                        operation: "discover",
-                        params: OperationParams.discover(timeout: bonjourTimeoutValue ?? 6),
-                        disabled: bonjourTimeoutValue == nil
-                    )
-                    Button {
-                        backend.run(
-                            operation: "configure",
-                            params: OperationParams.configure(
-                                host: host,
-                                password: password,
-                                debugLogging: configureDebugLogging
-                            )
-                        )
-                    } label: {
-                        Label(L10n.string("button.configure"), systemImage: "lock.open")
-                    }
-                    .disabled(backend.isRunning || password.isEmpty)
-                }
-            }
+            ConnectView(store: connectionStore, password: $password)
         case .deploy:
-            CommandPanel(title: L10n.string("screen.deploy")) {
-                Toggle(L10n.string("toggle.enable_nbns"), isOn: $nbnsEnabled)
-                Toggle(L10n.string("toggle.no_reboot"), isOn: $noReboot)
-                Toggle(L10n.string("toggle.no_wait"), isOn: $noWait)
-                Toggle(L10n.string("toggle.dry_run"), isOn: $dryRun)
-                Toggle(L10n.string("toggle.force_debug_logging"), isOn: $deployDebugLogging)
-                TextField(L10n.string("field.mount_wait"), text: $mountWait)
-                Button {
-                    if dryRun {
-                        backend.run(
-                            operation: "deploy",
-                            params: OperationParams.deployPlan(
-                                noReboot: noReboot,
-                                noWait: noWait,
-                                nbnsEnabled: nbnsEnabled,
-                                debugLogging: deployDebugLogging,
-                                mountWait: mountWaitValue ?? 30,
-                                password: password
-                            )
-                        )
-                    } else {
-                        backend.run(
-                            operation: "deploy",
-                            params: OperationParams.deployRun(
-                                noReboot: noReboot,
-                                noWait: noWait,
-                                nbnsEnabled: nbnsEnabled,
-                                debugLogging: deployDebugLogging,
-                                mountWait: mountWaitValue ?? 30,
-                                password: password
-                            )
-                        )
-                    }
-                } label: {
-                    Label(
-                        dryRun ? L10n.string("button.plan_deploy") : L10n.string("button.deploy"),
-                        systemImage: dryRun ? "doc.text.magnifyingglass" : "square.and.arrow.up"
-                    )
-                }
-                .disabled(backend.isRunning || mountWaitValue == nil)
-            }
+            DeployView(store: deployStore, password: $password)
         case .doctor:
-            CommandPanel(title: L10n.string("screen.doctor")) {
-                TextField(L10n.string("field.bonjour_timeout"), text: $bonjourTimeout)
-                runButton(
-                    L10n.string("button.run_doctor"),
-                    icon: "stethoscope",
-                    operation: "doctor",
-                    params: OperationParams.doctor(bonjourTimeout: bonjourTimeoutValue ?? 6, password: password),
-                    disabled: bonjourTimeoutValue == nil
-                )
-            }
+            DoctorView(store: doctorStore, password: $password)
         case .maintenance:
             CommandPanel(title: L10n.string("screen.maintenance")) {
                 TextField(L10n.string("field.repair_xattrs_path"), text: $repairPath)
@@ -294,24 +217,28 @@ public struct ContentView: View {
         .disabled(backend.isRunning || disabled)
     }
 
+    private func clearActive() {
+        switch selection {
+        case .readiness:
+            readinessStore.clear()
+        case .connect:
+            connectionStore.clear()
+        case .deploy:
+            deployStore.clear()
+        case .doctor:
+            doctorStore.clear()
+        default:
+            backend.clear()
+        }
+    }
+
     private var mountWaitValue: Double? {
         nonNegativeIntegerDouble(mountWait)
     }
 
-    private var bonjourTimeoutValue: Double? {
-        nonNegativeDouble(bonjourTimeout)
-    }
-
-    private func nonNegativeDouble(_ text: String) -> Double? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let value = Double(trimmed), value.isFinite, value >= 0 else {
-            return nil
-        }
-        return value
-    }
-
     private func nonNegativeIntegerDouble(_ text: String) -> Double? {
-        guard let value = nonNegativeDouble(text), value.rounded(.towardZero) == value else {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = Double(trimmed), value.isFinite, value >= 0, value.rounded(.towardZero) == value else {
             return nil
         }
         return value

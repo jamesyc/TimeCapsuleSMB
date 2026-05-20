@@ -42,6 +42,27 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertNil(params["credentials"])
     }
 
+    func testConfigureParamsUseSelectedRecordInsteadOfManualHostWhenProvided() {
+        let selectedRecord = JSONValue.object([
+            "name": .string("TC"),
+            "hostname": .string("tc.local."),
+            "ipv4": .array([.string("10.0.0.2")]),
+            "properties": .object(["syAP": .string("119")])
+        ])
+
+        let params = OperationParams.configure(
+            host: "root@manual",
+            selectedRecord: selectedRecord,
+            password: "pw",
+            debugLogging: true
+        )
+
+        XCTAssertNil(params["host"])
+        XCTAssertEqual(params["selected_record"], selectedRecord)
+        XCTAssertEqual(params["password"], .string("pw"))
+        XCTAssertEqual(params["debug_logging"], .bool(true))
+    }
+
     func testPendingConfirmationBuildsFromBackendEvent() throws {
         let event = BackendEvent(
             type: "error",

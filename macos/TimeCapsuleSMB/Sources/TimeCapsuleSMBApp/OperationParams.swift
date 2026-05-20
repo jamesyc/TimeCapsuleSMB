@@ -15,19 +15,39 @@ enum OperationParams {
         ["timeout": .number(timeout)]
     }
 
-    static func configure(host: String, password: String, debugLogging: Bool) -> [String: JSONValue] {
+    static func configure(
+        host: String = "",
+        selectedRecord: JSONValue? = nil,
+        password: String,
+        debugLogging: Bool
+    ) -> [String: JSONValue] {
         var params: [String: JSONValue] = [
-            "host": .string(host),
             "password": .string(password)
         ]
+        if let selectedRecord {
+            params["selected_record"] = selectedRecord
+        } else {
+            params["host"] = .string(host)
+        }
         if debugLogging {
             params["debug_logging"] = .bool(true)
         }
         return params
     }
 
-    static func doctor(bonjourTimeout: Double, password: String) -> [String: JSONValue] {
-        withCredentials(["bonjour_timeout": .number(bonjourTimeout)], password: password)
+    static func doctor(
+        bonjourTimeout: Double,
+        password: String,
+        skipSSH: Bool = false,
+        skipBonjour: Bool = false,
+        skipSMB: Bool = false
+    ) -> [String: JSONValue] {
+        withCredentials([
+            "bonjour_timeout": .number(bonjourTimeout),
+            "skip_ssh": .bool(skipSSH),
+            "skip_bonjour": .bool(skipBonjour),
+            "skip_smb": .bool(skipSMB)
+        ], password: password)
     }
 
     static func deployPlan(
