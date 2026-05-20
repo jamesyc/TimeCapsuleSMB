@@ -7,7 +7,7 @@ from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import LogCallback, emit_progress
 from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.core.errors import system_exit_message
-from timecapsulesmb.deploy.executor import remote_request_reboot, remote_request_shutdown_reboot
+from timecapsulesmb.deploy.executor import remote_request_reboot
 from timecapsulesmb.deploy.verify import (
     managed_runtime_ready,
     render_managed_runtime_verification,
@@ -168,7 +168,7 @@ def _request_reboot_via_ssh_shutdown(
         connection,
         command_context,
         log=log,
-        request_reboot=remote_request_shutdown_reboot,
+        request_reboot=remote_request_reboot,
         progress_message=SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE,
     )
 

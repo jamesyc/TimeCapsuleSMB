@@ -46,7 +46,6 @@ from timecapsulesmb.deploy.executor import (
     REBOOT_REQUEST_TIMEOUT_SECONDS,
     flush_remote_filesystem_writes,
     remote_request_reboot,
-    remote_request_shutdown_reboot,
     remote_uninstall_payload,
     upload_deployment_payload,
     upload_flash_file,
@@ -302,18 +301,6 @@ class DeployModuleTests(unittest.TestCase):
             check=False,
             timeout=REBOOT_REQUEST_TIMEOUT_SECONDS,
         )
-        self.assertIn("exec </dev/null >/dev/null 2>&1", DETACHED_SHUTDOWN_REBOOT_COMMAND)
-        self.assertIn("/bin/sync; /bin/sleep 1;", DETACHED_SHUTDOWN_REBOOT_COMMAND)
-        self.assertIn("/sbin/shutdown -r now", DETACHED_SHUTDOWN_REBOOT_COMMAND)
-        self.assertIn("|| /sbin/reboot", DETACHED_SHUTDOWN_REBOOT_COMMAND)
-        self.assertNotIn("[ -x /sbin/shutdown ]", DETACHED_SHUTDOWN_REBOOT_COMMAND)
-        self.assertIn(") & exit 0", DETACHED_SHUTDOWN_REBOOT_COMMAND)
-
-    def test_remote_request_shutdown_reboot_uses_shutdown_with_reboot_fallback(self) -> None:
-        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.remote_request_reboot") as reboot_mock:
-            remote_request_shutdown_reboot(connection)
-        reboot_mock.assert_called_once_with(connection)
         self.assertIn("exec </dev/null >/dev/null 2>&1", DETACHED_SHUTDOWN_REBOOT_COMMAND)
         self.assertIn("/bin/sync; /bin/sleep 1;", DETACHED_SHUTDOWN_REBOOT_COMMAND)
         self.assertIn("/sbin/shutdown -r now", DETACHED_SHUTDOWN_REBOOT_COMMAND)

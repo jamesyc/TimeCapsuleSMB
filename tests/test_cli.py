@@ -902,14 +902,8 @@ class CliTests(unittest.TestCase):
                 mocks.verify_managed_runtime = stack.enter_context(
                     mock.patch("timecapsulesmb.cli.flows.verify_managed_runtime", return_value=verify_runtime)
                 )
-            mocks.remote_request_shutdown_reboot = stack.enter_context(
-                mock.patch("timecapsulesmb.cli.flows.remote_request_shutdown_reboot", side_effect=reboot_side_effect)
-            )
             mocks.remote_request_reboot = stack.enter_context(
-                mock.patch(
-                    "timecapsulesmb.cli.flows.remote_request_reboot",
-                    side_effect=AssertionError("deploy should not request legacy SSH reboot directly"),
-                )
+                mock.patch("timecapsulesmb.cli.flows.remote_request_reboot", side_effect=reboot_side_effect)
             )
             mocks.acp_reboot = stack.enter_context(
                 mock.patch(
@@ -4529,7 +4523,6 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(result.rc, 0)
-        result.mocks.remote_request_shutdown_reboot.assert_not_called()
         result.mocks.remote_request_reboot.assert_not_called()
         self.assertEqual(result.mocks.verify_payload_home_conn.call_count, 2)
         result.mocks.flush_remote_filesystem_writes.assert_called_once()
@@ -4546,7 +4539,6 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(str(result.exception), "managed payload verification failed at /Volumes/dk2/.samba4: missing smbd")
-        result.mocks.remote_request_shutdown_reboot.assert_not_called()
         result.mocks.remote_request_reboot.assert_not_called()
         result.mocks.verify_payload_home_conn.assert_called_once()
         result.mocks.flush_remote_filesystem_writes.assert_not_called()
@@ -4572,7 +4564,6 @@ class CliTests(unittest.TestCase):
             "managed payload verification failed at /Volumes/dk2/.samba4: missing payload directory",
         )
         result.mocks.flush_remote_filesystem_writes.assert_called_once()
-        result.mocks.remote_request_shutdown_reboot.assert_not_called()
         result.mocks.remote_request_reboot.assert_not_called()
         self.assertEqual(result.mocks.verify_payload_home_conn.call_count, 2)
         telemetry_error = self.telemetry_payload("deploy_finished")["error"]
@@ -4591,7 +4582,6 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(result.rc, 0)
         self.assertIn("Deployment complete without reboot.", result.text)
-        result.mocks.remote_request_shutdown_reboot.assert_not_called()
         result.mocks.remote_request_reboot.assert_not_called()
         self.assertEqual(result.mocks.verify_payload_home_conn.call_count, 2)
         result.mocks.flush_remote_filesystem_writes.assert_called_once()
@@ -4610,8 +4600,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.rc, 1)
         self.assertIn("SSH reboot request timed out; checking whether the device is rebooting...", result.text)
         self.assertIn(deploy.REBOOT_NO_DOWN_MESSAGE, result.text)
-        result.mocks.remote_request_shutdown_reboot.assert_called_once()
-        result.mocks.remote_request_reboot.assert_not_called()
+        result.mocks.remote_request_reboot.assert_called_once()
         result.mocks.acp_reboot.assert_not_called()
         result.mocks.verify_managed_runtime.assert_not_called()
 
@@ -4673,7 +4662,6 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.mocks.run_remote_actions.call_count, 3)
         self.assertEqual(result.mocks.verify_payload_home_conn.call_count, 2)
         result.mocks.flush_remote_filesystem_writes.assert_called_once()
-        result.mocks.remote_request_shutdown_reboot.assert_not_called()
         result.mocks.remote_request_reboot.assert_not_called()
         self.assertIn("Activating NetBSD4 payload without reboot.", result.text)
         self.assertIn("NetBSD4 activation complete.", result.text)

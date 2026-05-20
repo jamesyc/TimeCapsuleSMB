@@ -122,10 +122,6 @@ def remote_request_reboot(connection: SshConnection) -> None:
     run_ssh(connection, DETACHED_SHUTDOWN_REBOOT_COMMAND, check=False, timeout=REBOOT_REQUEST_TIMEOUT_SECONDS)
 
 
-def remote_request_shutdown_reboot(connection: SshConnection) -> None:
-    remote_request_reboot(connection)
-
-
 def flush_remote_filesystem_writes(connection: SshConnection) -> None:
     run_ssh(connection, FLUSH_REMOTE_FILESYSTEMS_COMMAND, timeout=FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS)
 
