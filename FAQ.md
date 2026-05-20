@@ -42,7 +42,7 @@ The device password you enter during setup becomes the SMB password.
 - Run `tcapsule activate` after reboots (for Gen 1-4 NetBSD 4 devices)
 - Run `tcapsule uninstall` if you want to remove it from the Time Capsule
 
-The folder contains all the scripts, binaries, and configuration files needed for ongoing maintenance.
+The folder contains all the scripts, binaries, and configuration files needed for ongoing maintenance. It is safe to delete it after setup, but keep it or re-download it in order to run maintenance commands. 
 
 #### How do I connect to the Time Capsule after setup?
 
@@ -67,9 +67,19 @@ No. You can run `deploy` over an old deployment.
 
 A reboot and clean deploy will fix 90% of issues. This is especially useful for old Gen 1-4 devices, because their firmware usually does not provide remote `scp`, so uploads use a slower SSH fallback. The deploy flow verifies uploaded file sizes, but rerunning `deploy` is still the simplest way to replace any interrupted upload.
 
-#### Time Machine backups are broken on certain macOS versions
+#### Time Machine backups are broken on macOS?
 
-Time Machine network backups have known macOS-side regressions on macOS 26.4.x and macOS 15.7.5-15.7.7. See this [Cult of Mac report](https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups) and this later [MacObserver report about a 26.5 beta fix](https://www.macobserver.com/news/macos-tahoe-26-4-breaks-time-machine-users-report-widespread-failures/) for context.
+Time Machine network backups have known macOS-side regressions on macOS 26.4.x and macOS 15.7.5-15.7.7. 
+
+| macOS Version    |                      Release date |
+| ---------------- | --------------------------------: |
+| `26.4`           |                **March 24, 2026** |
+| `26.4.1`         |                 **April 9, 2026** |
+| `15.7.5`         |                **March 24, 2026** |
+| `15.7.6`         |            **Beta versions only** |
+| `15.7.7`         |                  **May 11, 2026** |
+
+See this [Cult of Mac report](https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups) and this later [MacObserver report about a 26.5 fix](https://www.macobserver.com/news/macos-tahoe-26-4-breaks-time-machine-users-report-widespread-failures/) for context.  Either update to macOS 26.5 or newer, or try the plist fix here: https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups
 
 **Workaround:** Macs running these versions can still use the device as a standard Samba network share in Finder, but Time Machine backups will not work properly. You can also try the workaround mentioned in the article.
 
@@ -104,7 +114,7 @@ To fix this:
 
 This is normal for **NetBSD 4 devices** (older Gen 1-4 Time Capsules). The firmware doesn't persist the `/etc` boot hook needed to auto-start Samba.
 
-**Solution:** Always run `tcapsule activate` after rebooting older devices.
+**Solution:** Always run `tcapsule activate` after rebooting older stock devices.
 
 ## Security and Privacy
 
@@ -126,7 +136,7 @@ The `deploy` script installs files in:
   - These files are created by `mdns-advertiser`
     - `/mnt/Flash/allmdns.txt`
     - `/mnt/Flash/applemdns.txt`
-- `.samba4` folder on the root of the hard drive (Samba files). This is the fixed managed payload folder name.
+- `.samba4` folder on the root of the hard drive (which contains Samba files)
 
 All other files/folders are stored on ramdisks and will be deleted after a reboot.
 
@@ -159,7 +169,6 @@ Only a small set of local configuration is managed now:
 - device host
 - device/root password
 - legacy SSH options
-- the hidden internal-disk share-root behavior
 
 Share names and Bonjour names come from the Time Capsule itself. For most users, the defaults are recommended.
 
@@ -167,7 +176,9 @@ Share names and Bonjour names come from the Time Capsule itself. For most users,
 
 #### How do I update TimeCapsuleSMB?
 
-To update to a newer version:
+Download a new zip file from the releases page: https://github.com/jamesyc/TimeCapsuleSMB/releases
+
+To use git to update to a newer version:
 1. `git pull` in the TimeCapsuleSMB folder
 2. Run `tcapsule deploy` again
 3. Run `tcapsule doctor` to verify
@@ -184,3 +195,7 @@ This removes the managed payload and boot files. After a reboot, your Time Capsu
 #### What if I want to keep the project folder but remove it from my Mac?
 
 The deployed runtime can keep working without the local TimeCapsuleSMB folder, because the managed runtime files are stored on the Time Capsule. Keep the local folder if you want to update, redeploy, run `doctor`, run `fsck`, activate older Gen 1-4 devices, or uninstall cleanly.
+
+#### What about the `flash` command?
+
+The `flash` command will flash a NetBSD 4 device to automatically run `/mnt/Flash/rc.local` after reboot without running `activate`. This is the only command that's dangerous and can permanently brick your device, so use at your own caution. That being said, I added a lot of safety checks to `flash`, and I do not have any reports of it permanently bricking a device, but I intentionally didn't automatically `flash` older devices in `deploy` due to the additional risk. 
