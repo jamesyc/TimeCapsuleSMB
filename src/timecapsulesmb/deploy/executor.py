@@ -10,11 +10,10 @@ from timecapsulesmb.device.storage import ensure_volume_root_mounted_conn
 from timecapsulesmb.transport.ssh import SshConnection, run_scp, run_ssh
 
 
-DETACHED_REBOOT_COMMAND = "/bin/sh -c 'exec </dev/null >/dev/null 2>&1; (/bin/sleep 1; /sbin/reboot) & exit 0'"
 DETACHED_SHUTDOWN_REBOOT_COMMAND = (
     "/bin/sh -c 'exec </dev/null >/dev/null 2>&1; "
-    "(/bin/sleep 1; "
-    "if [ -x /sbin/shutdown ]; then /sbin/shutdown -r now || /sbin/reboot; else /sbin/reboot; fi"
+    "(/bin/sync; /bin/sleep 1; "
+    "/sbin/shutdown -r now || /sbin/reboot"
     ") & exit 0'"
 )
 REBOOT_REQUEST_TIMEOUT_SECONDS = 30
@@ -120,10 +119,6 @@ def run_remote_actions(connection: SshConnection, actions: Iterable[RemoteAction
 
 
 def remote_request_reboot(connection: SshConnection) -> None:
-    run_ssh(connection, DETACHED_REBOOT_COMMAND, check=False, timeout=REBOOT_REQUEST_TIMEOUT_SECONDS)
-
-
-def remote_request_shutdown_reboot(connection: SshConnection) -> None:
     run_ssh(connection, DETACHED_SHUTDOWN_REBOOT_COMMAND, check=False, timeout=REBOOT_REQUEST_TIMEOUT_SECONDS)
 
 
