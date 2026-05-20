@@ -97,7 +97,11 @@ See this [Cult of Mac report](https://www.cultofmac.com/news/macos-tahoe-26-4-br
 
 #### I get "Error 22" or "Invalid Argument" errors
 
-**Error 22 / Invalid Argument errors usually indicate disk corruption.**
+**Error 22 / Invalid Argument errors usually indicate disk corruption.** 
+
+This is usually not directly related to TimeCapsuleSMB, and can happen from things like "rebooting without doing a disk sync". This sometimes happens if you reboot while Samba is writing files to disk. 
+
+Usually, this is not a severe issue, and a `fsck` fixes the disk. 
 
 To fix this:
 1. Run the disk repair command:
