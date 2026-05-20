@@ -26,6 +26,7 @@ from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshEr
 
 REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
 ACP_REBOOT_REQUEST_TIMEOUT_SECONDS = 10
+SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE = "SSH: /bin/sync; /sbin/shutdown -r now (fallback /sbin/reboot)"
 
 
 def wait_for_tcp_port_state(
@@ -168,7 +169,7 @@ def _request_reboot_via_ssh_shutdown(
         command_context,
         log=log,
         request_reboot=remote_request_shutdown_reboot,
-        progress_message="SSH: /bin/sync; /sbin/shutdown -r now (fallback /sbin/reboot)",
+        progress_message=SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE,
     )
 
 
@@ -178,7 +179,7 @@ def _request_reboot_via_ssh(
     *,
     log: LogCallback = None,
     request_reboot: Callable[[SshConnection], None] | None = None,
-    progress_message: str = "SSH: /bin/sync; /sbin/shutdown -r now (fallback /sbin/reboot)",
+    progress_message: str = SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE,
 ) -> None:
     command_context.add_debug_fields(ssh_reboot_attempted=True)
     emit_progress(log, progress_message)

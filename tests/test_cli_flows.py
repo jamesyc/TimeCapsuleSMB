@@ -16,6 +16,7 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.cli.flows import (
     ACP_REBOOT_REQUEST_TIMEOUT_SECONDS,
     REBOOT_UP_TIMEOUT_MESSAGE,
+    SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE,
     observe_reboot_cycle,
     request_deploy_reboot_and_wait,
     request_reboot_and_wait,
@@ -268,7 +269,7 @@ class CliFlowTests(unittest.TestCase):
         self.assertEqual(command_context.debug_fields["reboot_request_strategy"], "ssh")
         self.assertEqual(command_context.debug_fields["ssh_reboot_attempted"], True)
         self.assertEqual(command_context.debug_fields["ssh_reboot_succeeded"], True)
-        self.assertEqual(messages, ["SSH: /bin/sync; /sbin/shutdown -r now (fallback /sbin/reboot)"])
+        self.assertEqual(messages, [SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE])
         self.assertIn("SSH reboot requested.", output.getvalue())
 
     def test_request_ssh_reboot_records_timeout_without_raising(self) -> None:
