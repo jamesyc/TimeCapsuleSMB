@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import shlex
 from typing import Callable
 
+from timecapsulesmb.device.processes import render_direct_pkill9_by_ucomm, render_direct_pkill9_watchdog
 from timecapsulesmb.device.storage import MaStVolume
 
 
+FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS = 3 * 60 * 60
 UNINSTALL_REBOOT_NO_DOWN_MESSAGE = (
     "Reboot was requested but the device did not go down.\n"
     "The uninstall removed managed TimeCapsuleSMB files before reboot; power-cycle or rerun uninstall."
@@ -114,6 +117,26 @@ def format_fsck_plan(target: FsckTarget, *, reboot: bool, wait: bool) -> str:
     ]
     if reboot:
         lines.append(f"  follow-up: {'wait for SSH down, then SSH up' if wait else 'do not wait'}")
+    return "\n".join(lines)
+
+
+def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> str:
+    lines = [
+        render_direct_pkill9_watchdog(),
+        render_direct_pkill9_by_ucomm("smbd"),
+        render_direct_pkill9_by_ucomm("afpserver"),
+        render_direct_pkill9_by_ucomm("wcifsnd"),
+        render_direct_pkill9_by_ucomm("wcifsfs"),
+        "sleep 2",
+        f"/sbin/umount -f {shlex.quote(mountpoint)} >/dev/null 2>&1 || true",
+        f"echo '--- fsck_hfs {device} ---'",
+        f"/sbin/fsck_hfs -fy {shlex.quote(device)} 2>&1 || true",
+    ]
+    if reboot:
+        lines.extend([
+            "echo '--- reboot ---'",
+            "/sbin/reboot >/dev/null 2>&1 || true",
+        ])
     return "\n".join(lines)
 
 

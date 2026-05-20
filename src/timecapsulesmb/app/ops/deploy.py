@@ -5,8 +5,8 @@ from pathlib import Path
 import tempfile
 
 from timecapsulesmb.app.contracts import deploy_plan_payload, deploy_result_payload
+from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
 from timecapsulesmb.app.events import EventSink
-from timecapsulesmb.cli.runtime import load_env_config, resolve_validated_managed_target
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME, AppConfig, airport_family_display_name_from_identity
 from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP
 from timecapsulesmb.core.net import extract_host
@@ -64,9 +64,9 @@ from timecapsulesmb.services.app import (
     OperationResult,
     bool_param,
     config_path,
-    confirm_param,
     int_param,
 )
+from timecapsulesmb.services.credentials import overlay_request_credentials
 from timecapsulesmb.services.deploy import (
     DEPLOY_REBOOT_NO_DOWN_MESSAGE,
     DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
@@ -75,6 +75,7 @@ from timecapsulesmb.services.deploy import (
     payload_verification_error,
     render_flash_runtime_config,
 )
+from timecapsulesmb.services.runtime import load_env_config, resolve_validated_managed_target
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
 
@@ -105,7 +106,7 @@ def load_config_and_target(
     include_probe: bool,
 ) -> tuple[AppConfig, object]:
     sink.stage(operation, "load_config")
-    config = load_env_config(env_path=config_path(params))
+    config = overlay_request_credentials(load_env_config(env_path=config_path(params)), params)
     sink.stage(operation, "resolve_managed_target")
     target = resolve_validated_managed_target(
         config,
@@ -122,15 +123,9 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
     dry_run = bool_param(params, "dry_run")
     no_reboot = bool_param(params, "no_reboot")
     no_wait = bool_param(params, "no_wait")
-    confirm_deploy = confirm_param(params, "confirm_deploy")
-    confirm_reboot = confirm_param(params, "confirm_reboot")
-    confirm_netbsd4_activation = confirm_param(params, "confirm_netbsd4_activation")
     mount_wait = int_param(params, "mount_wait", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
     allow_unsupported = bool_param(params, "allow_unsupported")
     debug_logging = bool_param(params, "debug_logging")
-
-    if not dry_run and not confirm_deploy:
-        raise AppOperationError("Deploy requires explicit confirmation.", code="confirmation_required")
 
     config, target = load_config_and_target(operation, params, sink, profile="deploy", include_probe=True)
     connection = target.connection
@@ -148,21 +143,63 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
     sink.log(operation, f"Using {payload_family_description(payload_family)} payload.")
     resolved_artifacts = resolve_payload_artifacts(app_paths.distribution_root, payload_family)
     if not dry_run:
-        if is_netbsd4 and not confirm_netbsd4_activation:
-            raise AppOperationError(
-                "NetBSD 4 deploy requires explicit activation confirmation.",
-                code="confirmation_required",
-            )
-        if not is_netbsd4 and not no_reboot and not confirm_reboot:
-            device_name = airport_family_display_name_from_identity(
-                model=target.probe_state.probe_result.airport_model if target.probe_state else None,
-                syap=target.probe_state.probe_result.airport_syap if target.probe_state else None,
-            )
-            raise AppOperationError(
-                f"Deploy requires confirmation to reboot the {device_name}.",
-                code="confirmation_required",
-            )
-
+        confirmation_plan = build_deployment_plan(
+            connection.host,
+            build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME),
+            resolved_artifacts["smbd"].absolute_path,
+            resolved_artifacts["mdns-advertiser"].absolute_path,
+            resolved_artifacts["nbns-advertiser"].absolute_path,
+            activate_netbsd4=is_netbsd4,
+            reboot_after_deploy=not no_reboot,
+            apple_mount_wait_seconds=mount_wait,
+        )
+        device_name = airport_family_display_name_from_identity(
+            model=target.probe_state.probe_result.airport_model if target.probe_state else None,
+            syap=target.probe_state.probe_result.airport_syap if target.probe_state else None,
+        )
+        if is_netbsd4:
+            title = "Confirm NetBSD4 deployment"
+            message = f"Deploy and activate the NetBSD4 payload on this {device_name}. Remote services will be changed."
+            action_title = "Deploy and activate"
+            risk = "destructive"
+            summary = "NetBSD4 deployment with service activation"
+        elif no_reboot:
+            title = "Confirm deployment"
+            message = f"Deploy TimeCapsuleSMB to this {device_name} without rebooting it."
+            action_title = "Deploy"
+            risk = "remote_write"
+            summary = "Deployment without reboot"
+        else:
+            title = "Confirm deployment and reboot"
+            message = f"Deploy TimeCapsuleSMB and reboot this {device_name}."
+            action_title = "Deploy and reboot"
+            risk = "reboot"
+            summary = "Deployment with reboot request"
+        require_confirmation(
+            params,
+            build_confirmation(
+                operation=operation,
+                params=params,
+                title=title,
+                message=message,
+                action_title=action_title,
+                risk=risk,
+                summary=summary,
+                context={
+                    "host": connection.host,
+                    "payload_family": payload_family,
+                    "netbsd4": is_netbsd4,
+                    "requires_reboot": bool(confirmation_plan.reboot_required),
+                    "no_reboot": no_reboot,
+                    "no_wait": no_wait,
+                },
+            ),
+            legacy_names=(
+                ("confirm_deploy", "confirm_netbsd4_activation")
+                if is_netbsd4
+                else ("confirm_deploy",) if no_reboot else ("confirm_deploy", "confirm_reboot")
+            ),
+        )
     if dry_run:
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
     else:

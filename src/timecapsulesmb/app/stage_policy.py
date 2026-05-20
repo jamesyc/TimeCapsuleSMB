@@ -35,6 +35,8 @@ class StagePolicy:
 
 
 _POLICIES: dict[tuple[str, str], StagePolicy] = {
+    ("capabilities", "resolve_paths"): StagePolicy(LOCAL_READ, True, "Resolve helper configuration and distribution paths."),
+    ("capabilities", "summarize_capabilities"): StagePolicy(LOCAL_READ, True, "Summarize helper API capabilities."),
     ("discover", "bonjour_discovery"): StagePolicy(LOCAL_READ, True, "Browse for AirPort Bonjour services."),
     ("paths", "resolve_paths"): StagePolicy(LOCAL_READ, True, "Resolve configuration, state, and distribution paths."),
     ("paths", "summarize_artifacts"): StagePolicy(LOCAL_READ, True, "Summarize bundled artifact paths."),

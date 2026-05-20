@@ -1,6 +1,16 @@
 import Foundation
 
 enum OperationParams {
+    private static func withCredentials(_ params: [String: JSONValue], password: String) -> [String: JSONValue] {
+        let trimmed = password.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return params
+        }
+        var updated = params
+        updated["credentials"] = .object(["password": .string(password)])
+        return updated
+    }
+
     static func discover(timeout: Double) -> [String: JSONValue] {
         ["timeout": .number(timeout)]
     }
@@ -16,8 +26,8 @@ enum OperationParams {
         return params
     }
 
-    static func doctor(bonjourTimeout: Double) -> [String: JSONValue] {
-        ["bonjour_timeout": .number(bonjourTimeout)]
+    static func doctor(bonjourTimeout: Double, password: String) -> [String: JSONValue] {
+        withCredentials(["bonjour_timeout": .number(bonjourTimeout)], password: password)
     }
 
     static func deployPlan(
@@ -25,87 +35,83 @@ enum OperationParams {
         noWait: Bool,
         nbnsEnabled: Bool,
         debugLogging: Bool,
-        mountWait: Double
+        mountWait: Double,
+        password: String
     ) -> [String: JSONValue] {
-        [
+        withCredentials([
             "dry_run": .bool(true),
             "no_reboot": .bool(noReboot),
             "no_wait": .bool(noWait),
             "nbns_enabled": .bool(nbnsEnabled),
             "debug_logging": .bool(debugLogging),
             "mount_wait": .number(mountWait)
-        ]
+        ], password: password)
     }
 
-    static func deployConfirmed(
+    static func deployRun(
         noReboot: Bool,
         noWait: Bool,
         nbnsEnabled: Bool,
         debugLogging: Bool,
-        mountWait: Double
+        mountWait: Double,
+        password: String
     ) -> [String: JSONValue] {
-        [
+        withCredentials([
             "dry_run": .bool(false),
-            "confirm_deploy": .bool(true),
-            "confirm_reboot": .bool(!noReboot),
-            "confirm_netbsd4_activation": .bool(true),
             "no_reboot": .bool(noReboot),
             "no_wait": .bool(noWait),
             "nbns_enabled": .bool(nbnsEnabled),
             "debug_logging": .bool(debugLogging),
             "mount_wait": .number(mountWait)
-        ]
+        ], password: password)
     }
 
-    static func uninstallPlan(noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
-        [
+    static func uninstallPlan(noReboot: Bool, noWait: Bool, mountWait: Double, password: String) -> [String: JSONValue] {
+        withCredentials([
             "dry_run": .bool(true),
             "no_reboot": .bool(noReboot),
             "no_wait": .bool(noWait),
             "mount_wait": .number(mountWait)
-        ]
+        ], password: password)
     }
 
-    static func uninstallConfirmed(noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
-        [
+    static func uninstallRun(noReboot: Bool, noWait: Bool, mountWait: Double, password: String) -> [String: JSONValue] {
+        withCredentials([
             "dry_run": .bool(false),
-            "confirm_uninstall": .bool(true),
-            "confirm_reboot": .bool(!noReboot),
             "no_reboot": .bool(noReboot),
             "no_wait": .bool(noWait),
             "mount_wait": .number(mountWait)
-        ]
+        ], password: password)
     }
 
-    static func activateConfirmed() -> [String: JSONValue] {
-        ["confirm_netbsd4_activation": .bool(true)]
+    static func activateRun(password: String) -> [String: JSONValue] {
+        withCredentials([:], password: password)
     }
 
-    static func fsckList(mountWait: Double) -> [String: JSONValue] {
-        [
+    static func fsckList(mountWait: Double, password: String) -> [String: JSONValue] {
+        withCredentials([
             "list_volumes": .bool(true),
             "mount_wait": .number(mountWait)
-        ]
+        ], password: password)
     }
 
-    static func fsckPlan(volume: String, noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
-        [
+    static func fsckPlan(volume: String, noReboot: Bool, noWait: Bool, mountWait: Double, password: String) -> [String: JSONValue] {
+        withCredentials([
             "dry_run": .bool(true),
             "no_reboot": .bool(noReboot),
             "no_wait": .bool(noWait),
             "mount_wait": .number(mountWait),
             "volume": .string(volume)
-        ]
+        ], password: password)
     }
 
-    static func fsckConfirmed(volume: String, noReboot: Bool, noWait: Bool, mountWait: Double) -> [String: JSONValue] {
-        [
-            "confirm_fsck": .bool(true),
+    static func fsckRun(volume: String, noReboot: Bool, noWait: Bool, mountWait: Double, password: String) -> [String: JSONValue] {
+        withCredentials([
             "no_reboot": .bool(noReboot),
             "no_wait": .bool(noWait),
             "mount_wait": .number(mountWait),
             "volume": .string(volume)
-        ]
+        ], password: password)
     }
 
     static func repairXattrsScan(path: String) -> [String: JSONValue] {
@@ -115,11 +121,10 @@ enum OperationParams {
         ]
     }
 
-    static func repairXattrsConfirmed(path: String) -> [String: JSONValue] {
+    static func repairXattrsRun(path: String) -> [String: JSONValue] {
         [
             "path": .string(path),
-            "dry_run": .bool(false),
-            "confirm_repair": .bool(true)
+            "dry_run": .bool(false)
         ]
     }
 }

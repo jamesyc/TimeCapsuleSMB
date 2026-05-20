@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from timecapsulesmb.app.contracts import discover_payload, install_validation_payload, paths_payload
+import hashlib
+
+from timecapsulesmb.app.contracts import capabilities_payload, discover_payload, install_validation_payload, paths_payload
 from timecapsulesmb.app.events import EventSink
-from timecapsulesmb.core.paths import resolve_app_paths
+from timecapsulesmb.core.paths import artifact_manifest_resource, resolve_app_paths
+from timecapsulesmb.core.release import CLI_VERSION, CLI_VERSION_CODE
 from timecapsulesmb.discovery.bonjour import (
     DEFAULT_BROWSE_TIMEOUT_SEC,
     BonjourDiscoverySnapshot,
@@ -65,6 +68,36 @@ def discover_operation(params: dict[str, object], sink: EventSink) -> OperationR
     sink.stage(operation, "bonjour_discovery")
     snapshot = discover_snapshot(timeout=timeout)
     return OperationResult(True, discover_payload(snapshot_payload(snapshot)))
+
+
+def capabilities_operation(params: dict[str, object], sink: EventSink) -> OperationResult:
+    operation = "capabilities"
+    sink.stage(operation, "resolve_paths")
+    app_paths = resolve_app_paths(config_path=config_path(params))
+    sink.stage(operation, "summarize_capabilities")
+    try:
+        manifest_hash = hashlib.sha256(artifact_manifest_resource().read_bytes()).hexdigest()
+    except OSError:
+        manifest_hash = None
+    return OperationResult(True, capabilities_payload(
+        helper_version=CLI_VERSION,
+        helper_version_code=CLI_VERSION_CODE,
+        operations=[
+            "activate",
+            "capabilities",
+            "configure",
+            "deploy",
+            "discover",
+            "doctor",
+            "fsck",
+            "paths",
+            "repair-xattrs",
+            "uninstall",
+            "validate-install",
+        ],
+        distribution_root=str(app_paths.distribution_root),
+        artifact_manifest_sha256=manifest_hash,
+    ))
 
 
 def paths_operation(params: dict[str, object], sink: EventSink) -> OperationResult:

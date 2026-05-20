@@ -4,46 +4,32 @@ import traceback
 from collections.abc import Callable
 
 from timecapsulesmb.app.events import EventSink, redact
-from timecapsulesmb.app.operations import OPERATIONS
+from timecapsulesmb.app.ops import OPERATIONS
+from timecapsulesmb.app.confirmations import AppConfirmationRequired
+from timecapsulesmb.app.requests import parse_api_request
 from timecapsulesmb.app.recovery import recovery_for
 from timecapsulesmb.core.config import ConfigError
 from timecapsulesmb.services.app import AppOperationError, OperationResult
 from timecapsulesmb.transport.errors import TransportError
 
 
-def _request_operation(request: dict[str, object]) -> str:
-    return str(request.get("operation") or "")
-
-
-def _request_params(request: dict[str, object]) -> object:
-    if "params" not in request or request.get("params") is None:
-        return {}
-    return request.get("params")
-
-
 def run_api_request(request: dict[str, object], sink: EventSink) -> int:
-    request_id = request.get("request_id")
-    if request_id is not None and str(request_id).strip():
-        sink = sink.with_request_id(str(request_id))
-
-    operation = _request_operation(request)
-    params = _request_params(request)
-    if not operation:
+    try:
+        api_request = parse_api_request(request)
+    except AppOperationError as exc:
         sink.error(
             "api",
-            "missing required field: operation",
-            code="invalid_request",
+            str(exc),
+            code=exc.code,
             recovery=recovery_for("api", "invalid_request"),
         )
         return 1
-    if not isinstance(params, dict):
-        sink.error(
-            operation,
-            "params must be a JSON object",
-            code="invalid_request",
-            recovery=recovery_for(operation, "invalid_request"),
-        )
-        return 1
+
+    if api_request.request_id:
+        sink = sink.with_request_id(api_request.request_id)
+
+    operation = api_request.operation
+    params = api_request.params
     handler: Callable[[dict[str, object], EventSink], OperationResult] | None = OPERATIONS.get(operation)
     if handler is None:
         sink.error(
@@ -56,6 +42,15 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
         return 1
     try:
         result = handler(params, sink)
+    except AppConfirmationRequired as exc:
+        sink.error(
+            operation,
+            str(exc),
+            code=exc.code,
+            details=exc.confirmation.to_jsonable(),
+            recovery=recovery_for(operation, exc.code, stage=sink.current_stage(operation)),
+        )
+        return 1
     except AppOperationError as exc:
         recovery = exc.recovery or recovery_for(operation, exc.code, stage=sink.current_stage(operation))
         sink.error(

@@ -15,6 +15,7 @@ from timecapsulesmb.app.contracts import (
     uninstall_plan_payload,
     uninstall_result_payload,
 )
+from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
 from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.app.ops.deploy import (
     load_config_and_target,
@@ -23,12 +24,6 @@ from timecapsulesmb.app.ops.deploy import (
     require_supported_payload,
     verify_runtime,
 )
-from timecapsulesmb.cli import repair_xattrs as repair_xattrs_cli
-from timecapsulesmb.cli.fsck import (
-    FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS,
-    build_remote_fsck_script,
-)
-from timecapsulesmb.cli.runtime import load_env_config, load_optional_env_config, resolve_env_connection
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME
 from timecapsulesmb.core.errors import system_exit_message
 from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP
@@ -52,19 +47,21 @@ from timecapsulesmb.services.app import (
     OperationResult,
     bool_param,
     config_path,
-    confirm_param,
     int_param,
     jsonable,
     optional_int_param,
     required_path_param,
     string_param,
 )
+from timecapsulesmb.services.credentials import overlay_request_credentials
 from timecapsulesmb.services.deploy import DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE
 from timecapsulesmb.services.maintenance import (
+    FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS,
     FSCK_REBOOT_NO_DOWN_MESSAGE,
     UNINSTALL_REBOOT_NO_DOWN_MESSAGE,
     LineLogCapture,
     RepairExecutionContext,
+    build_remote_fsck_script,
     format_fsck_plan,
     format_fsck_targets,
     fsck_plan_to_jsonable,
@@ -72,12 +69,13 @@ from timecapsulesmb.services.maintenance import (
     fsck_target_to_jsonable,
     select_fsck_target,
 )
+from timecapsulesmb.services import repair_xattrs as repair_xattrs_service
+from timecapsulesmb.services.runtime import load_env_config, load_optional_env_config, resolve_env_connection
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 
 
 def activate_operation(params: dict[str, object], sink: EventSink) -> OperationResult:
     operation = "activate"
-    confirm_activation = confirm_param(params, "confirm_netbsd4_activation")
     dry_run = bool_param(params, "dry_run")
     _, target = load_config_and_target(operation, params, sink, profile="activate", include_probe=True)
     compatibility = require_supported_payload(target, allow_unsupported=False)
@@ -90,12 +88,28 @@ def activate_operation(params: dict[str, object], sink: EventSink) -> OperationR
     plan = build_netbsd4_activation_plan()
     if dry_run:
         return OperationResult(True, activation_plan_payload(activation_plan_to_jsonable(plan)))
-    if not confirm_activation:
-        raise AppOperationError("NetBSD4 activation requires explicit confirmation.", code="confirmation_required")
     connection = target.connection
     sink.stage(operation, "probe_runtime")
     if probe_managed_runtime_conn(connection, timeout_seconds=20).ready:
         return OperationResult(True, activation_result_payload(already_active=True))
+    require_confirmation(
+        params,
+        build_confirmation(
+            operation=operation,
+            params=params,
+            title="Confirm NetBSD4 activation",
+            message="Activate the deployed NetBSD4 payload and restart managed services.",
+            action_title="Activate",
+            risk="destructive",
+            summary="NetBSD4 service activation",
+            context={
+                "host": connection.host,
+                "payload_family": compatibility.payload_family,
+                "netbsd4": True,
+            },
+        ),
+        legacy_names=("confirm_netbsd4_activation",),
+    )
     sink.stage(operation, "run_activation")
     run_remote_actions(connection, plan.actions)
     verify_runtime(operation, sink, connection, stage="verify_runtime_activation", timeout_seconds=180)
@@ -111,16 +125,33 @@ def uninstall_operation(params: dict[str, object], sink: EventSink) -> Operation
     no_reboot = bool_param(params, "no_reboot")
     no_wait = bool_param(params, "no_wait")
     mount_wait = int_param(params, "mount_wait", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
-    confirm_uninstall = confirm_param(params, "confirm_uninstall")
-    confirm_reboot = confirm_param(params, "confirm_reboot")
-    if not dry_run and not confirm_uninstall:
-        raise AppOperationError("Uninstall requires explicit confirmation.", code="confirmation_required")
-    if not dry_run and not no_reboot and not confirm_reboot:
-        raise AppOperationError("Uninstall requires confirmation to reboot the device.", code="confirmation_required")
     sink.stage(operation, "load_config")
-    config = load_env_config(env_path=config_path(params))
+    config = overlay_request_credentials(load_env_config(env_path=config_path(params)), params)
     sink.stage(operation, "resolve_connection")
     connection = resolve_env_connection(config, allow_empty_password=True)
+    if not dry_run:
+        require_confirmation(
+            params,
+            build_confirmation(
+                operation=operation,
+                params=params,
+                title="Confirm uninstall",
+                message=(
+                    "Remove managed TimeCapsuleSMB files from the device"
+                    + (" and reboot it." if not no_reboot else ".")
+                ),
+                action_title="Uninstall",
+                risk="destructive" if not no_reboot else "remote_write",
+                summary="Uninstall managed payload" + (" with reboot" if not no_reboot else " without reboot"),
+                context={
+                    "host": connection.host,
+                    "requires_reboot": not no_reboot,
+                    "no_reboot": no_reboot,
+                    "no_wait": no_wait,
+                },
+            ),
+            legacy_names=("confirm_uninstall",) if no_reboot else ("confirm_uninstall", "confirm_reboot"),
+        )
     if dry_run:
         volume_roots = [UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER]
         payload_dirs = [f"{UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER}/{MANAGED_PAYLOAD_DIR_NAME}"]
@@ -187,16 +218,33 @@ def fsck_operation(params: dict[str, object], sink: EventSink) -> OperationResul
     operation = "fsck"
     dry_run = bool_param(params, "dry_run")
     list_volumes = bool_param(params, "list_volumes")
-    confirm_fsck = confirm_param(params, "confirm_fsck")
     no_reboot = bool_param(params, "no_reboot")
     no_wait = bool_param(params, "no_wait")
     mount_wait = int_param(params, "mount_wait", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
     if dry_run and list_volumes:
         raise AppOperationError("dry_run and list_volumes are mutually exclusive.", code="validation_failed")
-    if not dry_run and not list_volumes and not confirm_fsck:
-        raise AppOperationError("fsck requires explicit confirmation.", code="confirmation_required")
+    if not dry_run and not list_volumes:
+        require_confirmation(
+            params,
+            build_confirmation(
+                operation=operation,
+                params=params,
+                title="Confirm fsck",
+                message="Run fsck on the selected HFS volume" + (" and reboot the device." if not no_reboot else "."),
+                action_title="Run fsck",
+                risk="destructive" if not no_reboot else "remote_write",
+                summary="Filesystem check and repair",
+                context={
+                    "volume": string_param(params, "volume"),
+                    "requires_reboot": not no_reboot,
+                    "no_reboot": no_reboot,
+                    "no_wait": no_wait,
+                },
+            ),
+            legacy_names=("confirm_fsck",),
+        )
     sink.stage(operation, "load_config")
-    config = load_env_config(env_path=config_path(params))
+    config = overlay_request_credentials(load_env_config(env_path=config_path(params)), params)
     sink.stage(operation, "resolve_connection")
     connection = resolve_env_connection(config, allow_empty_password=True)
     sink.stage(operation, "read_mast")
@@ -297,12 +345,6 @@ def observe_reboot_cycle(
 def repair_xattrs_operation(params: dict[str, object], sink: EventSink) -> OperationResult:
     operation = "repair-xattrs"
     dry_run = bool_param(params, "dry_run")
-    confirm_repair = confirm_param(params, "confirm_repair")
-    if not dry_run and not confirm_repair:
-        raise AppOperationError(
-            "repair-xattrs requires dry_run or explicit confirmation.",
-            code="confirmation_required",
-        )
     sink.stage(operation, "platform_check")
     if sys.platform != "darwin":
         raise AppOperationError(
@@ -311,11 +353,26 @@ def repair_xattrs_operation(params: dict[str, object], sink: EventSink) -> Opera
         )
     sink.stage(operation, "validate_params")
     path = required_path_param(params, "path")
+    if not dry_run:
+        require_confirmation(
+            params,
+            build_confirmation(
+                operation=operation,
+                params=params,
+                title="Confirm xattr repair",
+                message=f"Repair known-safe macOS metadata issues under {path}.",
+                action_title="Repair xattrs",
+                risk="local_write",
+                summary="Repair local mounted-share metadata",
+                context={"path": str(path)},
+            ),
+            legacy_names=("confirm_repair",),
+        )
     config = load_optional_env_config(env_path=config_path(params))
     args = argparse.Namespace(
         path=path,
         dry_run=dry_run,
-        yes=confirm_repair,
+        yes=not dry_run,
         recursive=bool_param(params, "recursive", True),
         max_depth=optional_int_param(params, "max_depth"),
         include_hidden=bool_param(params, "include_hidden"),
@@ -328,7 +385,7 @@ def repair_xattrs_operation(params: dict[str, object], sink: EventSink) -> Opera
     stderr_capture = LineLogCapture(lambda message: sink.log(operation, message, level="warning"))
     try:
         with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
-            result = repair_xattrs_cli.run_repair_structured(
+            result = repair_xattrs_service.run_repair_structured(
                 args,
                 context,
                 config,

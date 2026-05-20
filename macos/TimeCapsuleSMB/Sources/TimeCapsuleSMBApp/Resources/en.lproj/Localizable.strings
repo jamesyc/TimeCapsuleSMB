@@ -1,5 +1,6 @@
 "action.activate" = "Activate";
 "action.cancel" = "Cancel";
+"action.confirm" = "Confirm";
 "action.deploy" = "Deploy";
 "action.deploy_allow_reboot" = "Deploy And Allow Reboot";
 "action.repair_xattrs" = "Repair xattrs";
@@ -8,6 +9,7 @@
 "advanced.flash_cli_only" = "Flash backup, patch, and restore remain CLI-only in this version.";
 "advanced.flash_help" = "Use `.venv/bin/tcapsule flash --help` for firmware operations.";
 "button.activate" = "Activate";
+"button.capabilities" = "Capabilities";
 "button.configure" = "Configure";
 "button.deploy" = "Deploy";
 "button.discover" = "Discover";
@@ -24,6 +26,8 @@
 "button.validate" = "Validate";
 "confirm.activate.message" = "This will restart the deployed Samba runtime on an older NetBSD 4 device.";
 "confirm.activate.title" = "Activate NetBSD 4 Runtime?";
+"confirm.backend.message" = "Confirm this operation.";
+"confirm.backend.title" = "Confirm Operation";
 "confirm.deploy.no_reboot.message" = "This will upload and install the managed TimeCapsuleSMB payload without rebooting the device.";
 "confirm.deploy.no_reboot.title" = "Deploy Without Reboot?";
 "confirm.deploy.no_wait.message" = "This will upload and install the managed TimeCapsuleSMB payload, request a reboot, and return without waiting for the device.";

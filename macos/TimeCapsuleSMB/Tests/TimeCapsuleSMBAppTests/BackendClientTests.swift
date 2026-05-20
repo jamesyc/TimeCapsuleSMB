@@ -55,6 +55,61 @@ final class BackendClientTests: XCTestCase {
         XCTAssertEqual(client.events.last?.type, "error")
     }
 
+    func testStagePolicyControlsCancellation() async throws {
+        let runner = RecordingHelperRunner(
+            events: [
+                BackendEvent(type: "stage", operation: "deploy", stage: "upload_payload", risk: "remote_write", cancellable: false),
+                BackendEvent(type: "result", operation: "deploy", ok: true)
+            ],
+            result: HelperRunResult(exitCode: 0, sawTerminalEvent: true, stderr: ""),
+            delayNanoseconds: 50_000_000
+        )
+        let client = BackendClient(runner: runner)
+
+        client.run(operation: "deploy")
+        try await waitUntil {
+            client.currentStage == "upload_payload"
+        }
+
+        XCTAssertFalse(client.canCancel)
+        client.cancel()
+
+        try await waitUntil {
+            !client.isRunning
+        }
+        XCTAssertEqual(client.lastExitCode, 0)
+    }
+
+    func testConfirmationRequiredEventPublishesPendingConfirmation() async throws {
+        let runner = RecordingHelperRunner(
+            events: [
+                BackendEvent(
+                    type: "error",
+                    operation: "deploy",
+                    code: "confirmation_required",
+                    message: "Confirm deploy.",
+                    details: .object([
+                        "title": .string("Confirm deployment"),
+                        "message": .string("Deploy and reboot."),
+                        "action_title": .string("Deploy"),
+                        "confirmation_id": .string("confirm-1")
+                    ])
+                )
+            ],
+            result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")
+        )
+        let client = BackendClient(runner: runner)
+
+        client.run(operation: "deploy", params: ["dry_run": .bool(false)])
+
+        try await waitUntil {
+            client.pendingConfirmation != nil && !client.isRunning
+        }
+        XCTAssertEqual(client.pendingConfirmation?.operation, "deploy")
+        XCTAssertEqual(client.pendingConfirmation?.params["confirmation_id"], .string("confirm-1"))
+        XCTAssertEqual(client.pendingConfirmation?.params["dry_run"], .bool(false))
+    }
+
     private func waitUntil(
         timeoutNanoseconds: UInt64 = 2_000_000_000,
         _ condition: @escaping @MainActor () -> Bool

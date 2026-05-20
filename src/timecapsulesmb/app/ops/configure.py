@@ -9,7 +9,6 @@ from timecapsulesmb.core.config import (
     DEFAULTS,
     parse_bool,
     parse_env_file,
-    write_env_file,
 )
 from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.core.paths import resolve_app_paths
@@ -26,10 +25,10 @@ from timecapsulesmb.services.app import (
     require_string_param,
     string_param,
 )
+from timecapsulesmb.services.config_store import EnvFileConfigStore
 from timecapsulesmb.services.configure import build_configure_env_values
+from timecapsulesmb.services.runtime import ssh_target_link_local_resolution_error, wait_for_tcp_port_state
 from timecapsulesmb.transport.ssh import SshConnection
-
-from timecapsulesmb.cli.runtime import ssh_target_link_local_resolution_error
 
 
 def configure_operation(params: dict[str, object], sink: EventSink) -> OperationResult:
@@ -113,7 +112,8 @@ def configure_operation(params: dict[str, object], sink: EventSink) -> Operation
 
     sink.stage(operation, "write_env")
     env_path.parent.mkdir(parents=True, exist_ok=True)
-    write_env_file(env_path, values)
+    omit_keys = frozenset() if bool_param(params, "persist_password") else frozenset({"TC_PASSWORD"})
+    EnvFileConfigStore(omit_keys=omit_keys).save(env_path, values)
     return OperationResult(True, configure_payload(
         config_path=str(env_path),
         host=host,
@@ -126,13 +126,10 @@ def configure_operation(params: dict[str, object], sink: EventSink) -> Operation
 
 
 def wait_for_ssh_port(host: str, *, timeout_seconds: int) -> bool:
-    from timecapsulesmb.cli.flows import wait_for_tcp_port_state
-
     return wait_for_tcp_port_state(
         extract_host(host),
         22,
         expected_state=True,
         timeout_seconds=timeout_seconds,
-        verbose=False,
         service_name="SSH port",
     )

@@ -31,6 +31,7 @@ from timecapsulesmb.device.probe import (
 )
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.discovery.bonjour import DEFAULT_BROWSE_TIMEOUT_SEC
+from timecapsulesmb.services import runtime as service_runtime
 from timecapsulesmb.transport.ssh import SshConnection, ssh_opts_use_proxy
 
 
@@ -175,8 +176,7 @@ def load_config_from_args(
 
 
 def load_env_config(*, env_path: Path | None = None, defaults: dict[str, str] | None = None) -> AppConfig:
-    resolved_path = resolve_app_paths(config_path=env_path).config_path
-    return load_app_config(resolved_path, defaults=defaults)
+    return service_runtime.load_env_config(env_path=env_path, defaults=defaults, resolve_paths=resolve_app_paths)
 
 
 def load_optional_env_config(
@@ -184,16 +184,7 @@ def load_optional_env_config(
     env_path: Path | None = None,
     defaults: dict[str, str] | None = None,
 ) -> AppConfig:
-    try:
-        resolved_path = resolve_app_paths(config_path=env_path).config_path
-    except Exception:
-        return AppConfig.missing(path=env_path or Path.cwd() / ".env")
-    if not resolved_path.exists():
-        return AppConfig.missing(path=resolved_path)
-    try:
-        return load_app_config(resolved_path, defaults=defaults)
-    except OSError:
-        return AppConfig.missing(path=resolved_path)
+    return service_runtime.load_optional_env_config(env_path=env_path, defaults=defaults, resolve_paths=resolve_app_paths)
 
 
 def resolve_ssh_credentials(
@@ -201,12 +192,7 @@ def resolve_ssh_credentials(
     *,
     allow_empty_password: bool = False,
 ) -> tuple[str, str]:
-    host = config.require("TC_HOST")
-    password = config.get("TC_PASSWORD")
-    if not password and not allow_empty_password:
-        import getpass
-        password = getpass.getpass("Device root password: ")
-    return host, password
+    return service_runtime.resolve_ssh_credentials(config, allow_empty_password=allow_empty_password)
 
 
 def resolve_env_connection(
@@ -215,10 +201,11 @@ def resolve_env_connection(
     required_keys: tuple[str, ...] = (),
     allow_empty_password: bool = False,
 ) -> SshConnection:
-    for key in required_keys:
-        config.require(key)
-    host, password = resolve_ssh_credentials(config, allow_empty_password=allow_empty_password)
-    return SshConnection(host=host, password=password, ssh_opts=config.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"]))
+    return service_runtime.resolve_env_connection(
+        config,
+        required_keys=required_keys,
+        allow_empty_password=allow_empty_password,
+    )
 
 
 def inspect_managed_connection(
@@ -227,9 +214,7 @@ def inspect_managed_connection(
     *,
     include_probe: bool = False,
 ) -> ManagedTargetState:
-    interface_probe = probe_remote_interface_conn(connection, iface)
-    probe_state = probe_connection_state(connection) if include_probe else None
-    return ManagedTargetState(connection=connection, interface_probe=interface_probe, probe_state=probe_state)
+    return service_runtime.inspect_managed_connection(connection, iface, include_probe=include_probe)
 
 
 def ssh_target_link_local_resolution_error(
@@ -238,20 +223,7 @@ def ssh_target_link_local_resolution_error(
     *,
     field_name: str = "Device SSH target",
 ) -> str | None:
-    if ssh_opts_use_proxy(ssh_opts):
-        return None
-    host = extract_host(target).strip()
-    if not host or ipv4_literal(host) is not None:
-        return None
-    link_local_ips = tuple(ip for ip in resolve_host_ipv4s(host) if is_link_local_ipv4(ip))
-    if not link_local_ips:
-        return None
-    noun = "address" if len(link_local_ips) == 1 else "addresses"
-    return (
-        f"{field_name} host {host} resolves to 169.254.x.x link-local IPv4 {noun} "
-        f"{', '.join(link_local_ips)}. Use the device's LAN IP or a hostname that resolves "
-        "to its LAN IP; 169.254.x.x is only suitable for temporary SSH recovery."
-    )
+    return service_runtime.ssh_target_link_local_resolution_error(target, ssh_opts, field_name=field_name)
 
 
 def resolve_validated_managed_target(
@@ -261,27 +233,16 @@ def resolve_validated_managed_target(
     profile: str,
     include_probe: bool = False,
 ) -> ManagedTargetState:
-    require_valid_app_config(config, profile=profile, command_name=command_name)
-    resolution_error = ssh_target_link_local_resolution_error(
-        config.require("TC_HOST"),
-        config.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"]),
-        field_name="TC_HOST",
+    return service_runtime.resolve_validated_managed_target(
+        config,
+        command_name=command_name,
+        profile=profile,
+        include_probe=include_probe,
     )
-    if resolution_error is not None:
-        raise ConfigError(resolution_error)
-    connection = resolve_env_connection(config)
-    if profile == "flash":
-        return ManagedTargetState(connection=connection, interface_probe=None, probe_state=None)
-    probe_state = probe_connection_state(connection) if include_probe else None
-    return ManagedTargetState(connection=connection, interface_probe=None, probe_state=probe_state)
 
 
 def require_connection_compatibility(connection: SshConnection) -> DeviceCompatibility:
-    state = probe_connection_state(connection)
-    return require_compatibility(
-        state.compatibility,
-        fallback_error=state.probe_result.error or "Failed to determine remote device OS compatibility.",
-    )
+    return service_runtime.require_connection_compatibility(connection)
 
 
 def require_supported_device_compatibility(

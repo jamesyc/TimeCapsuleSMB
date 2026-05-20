@@ -112,10 +112,13 @@ class EventSink:
         message: str,
         *,
         code: str = "operation_failed",
+        details: object | None = None,
         debug: object | None = None,
         recovery: object | None = None,
     ) -> None:
         fields: dict[str, object] = {"code": code, "message": message}
+        if details is not None:
+            fields["details"] = details
         if debug is not None:
             fields["debug"] = debug
         if recovery is not None:

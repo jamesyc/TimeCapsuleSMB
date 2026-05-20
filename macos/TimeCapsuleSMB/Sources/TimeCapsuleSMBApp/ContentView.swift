@@ -15,7 +15,6 @@ public struct ContentView: View {
     @State private var mountWait = "30"
     @State private var bonjourTimeout = "6"
     @State private var noWait = false
-    @State private var pendingConfirmation: PendingConfirmation?
 
     public init() {}
 
@@ -45,22 +44,21 @@ public struct ContentView: View {
                     } label: {
                         Label(L10n.string("toolbar.cancel"), systemImage: "xmark.circle")
                     }
-                    .disabled(!backend.isRunning)
+                    .disabled(!backend.canCancel)
                 }
             }
         }
         .frame(minWidth: 980, minHeight: 680)
         .alert(
-            pendingConfirmation?.title ?? "",
+            backend.pendingConfirmation?.title ?? "",
             isPresented: confirmationPresented,
-            presenting: pendingConfirmation
+            presenting: backend.pendingConfirmation
         ) { confirmation in
             Button(confirmation.actionTitle, role: .destructive) {
-                backend.run(operation: confirmation.operation, params: confirmation.params)
-                pendingConfirmation = nil
+                backend.confirmPending()
             }
             Button(L10n.string("action.cancel"), role: .cancel) {
-                pendingConfirmation = nil
+                backend.pendingConfirmation = nil
             }
         } message: { confirmation in
             Text(confirmation.message)
@@ -69,10 +67,10 @@ public struct ContentView: View {
 
     private var confirmationPresented: Binding<Bool> {
         Binding(
-            get: { pendingConfirmation != nil },
+            get: { backend.pendingConfirmation != nil },
             set: { isPresented in
                 if !isPresented {
-                    pendingConfirmation = nil
+                    backend.pendingConfirmation = nil
                 }
             }
         )
@@ -85,6 +83,7 @@ public struct ContentView: View {
             CommandPanel(title: L10n.string("screen.readiness")) {
                 TextField(L10n.string("field.helper"), text: $backend.helperPath)
                 HStack {
+                    runButton(L10n.string("button.capabilities"), icon: "info.circle", operation: "capabilities")
                     runButton(L10n.string("button.paths"), icon: "folder", operation: "paths")
                     runButton(L10n.string("button.validate"), icon: "checkmark.seal", operation: "validate-install")
                 }
@@ -100,7 +99,8 @@ public struct ContentView: View {
                         L10n.string("button.discover"),
                         icon: "network",
                         operation: "discover",
-                        params: OperationParams.discover(timeout: numberDouble(bonjourTimeout, default: 6))
+                        params: OperationParams.discover(timeout: bonjourTimeoutValue ?? 6),
+                        disabled: bonjourTimeoutValue == nil
                     )
                     Button {
                         backend.run(
@@ -134,16 +134,21 @@ public struct ContentView: View {
                                 noWait: noWait,
                                 nbnsEnabled: nbnsEnabled,
                                 debugLogging: deployDebugLogging,
-                                mountWait: numberDouble(mountWait, default: 30)
+                                mountWait: mountWaitValue ?? 30,
+                                password: password
                             )
                         )
                     } else {
-                        pendingConfirmation = .deploy(
-                            noReboot: noReboot,
-                            nbnsEnabled: nbnsEnabled,
-                            debugLogging: deployDebugLogging,
-                            mountWait: numberDouble(mountWait, default: 30),
-                            noWait: noWait
+                        backend.run(
+                            operation: "deploy",
+                            params: OperationParams.deployRun(
+                                noReboot: noReboot,
+                                noWait: noWait,
+                                nbnsEnabled: nbnsEnabled,
+                                debugLogging: deployDebugLogging,
+                                mountWait: mountWaitValue ?? 30,
+                                password: password
+                            )
                         )
                     }
                 } label: {
@@ -152,7 +157,7 @@ public struct ContentView: View {
                         systemImage: dryRun ? "doc.text.magnifyingglass" : "square.and.arrow.up"
                     )
                 }
-                .disabled(backend.isRunning)
+                .disabled(backend.isRunning || mountWaitValue == nil)
             }
         case .doctor:
             CommandPanel(title: L10n.string("screen.doctor")) {
@@ -161,7 +166,8 @@ public struct ContentView: View {
                     L10n.string("button.run_doctor"),
                     icon: "stethoscope",
                     operation: "doctor",
-                    params: OperationParams.doctor(bonjourTimeout: numberDouble(bonjourTimeout, default: 6))
+                    params: OperationParams.doctor(bonjourTimeout: bonjourTimeoutValue ?? 6, password: password),
+                    disabled: bonjourTimeoutValue == nil
                 )
             }
         case .maintenance:
@@ -173,7 +179,7 @@ public struct ContentView: View {
                 Toggle(L10n.string("toggle.no_wait"), isOn: $noWait)
                 HStack {
                     Button {
-                        pendingConfirmation = .activate()
+                        backend.run(operation: "activate", params: OperationParams.activateRun(password: password))
                     } label: {
                         Label(L10n.string("button.activate"), systemImage: "power")
                     }
@@ -185,26 +191,33 @@ public struct ContentView: View {
                         params: OperationParams.uninstallPlan(
                             noReboot: noReboot,
                             noWait: noWait,
-                            mountWait: numberDouble(mountWait, default: 30)
-                        )
+                            mountWait: mountWaitValue ?? 30,
+                            password: password
+                        ),
+                        disabled: mountWaitValue == nil
                     )
                     Button {
-                        pendingConfirmation = .uninstall(
-                            noReboot: noReboot,
-                            mountWait: numberDouble(mountWait, default: 30),
-                            noWait: noWait
+                        backend.run(
+                            operation: "uninstall",
+                            params: OperationParams.uninstallRun(
+                                noReboot: noReboot,
+                                noWait: noWait,
+                                mountWait: mountWaitValue ?? 30,
+                                password: password
+                            )
                         )
                     } label: {
                         Label(L10n.string("button.uninstall"), systemImage: "xmark.bin.fill")
                     }
-                    .disabled(backend.isRunning)
+                    .disabled(backend.isRunning || mountWaitValue == nil)
                 }
                 HStack {
                     runButton(
                         L10n.string("button.list_fsck_volumes"),
                         icon: "list.bullet.rectangle",
                         operation: "fsck",
-                        params: OperationParams.fsckList(mountWait: numberDouble(mountWait, default: 30))
+                        params: OperationParams.fsckList(mountWait: mountWaitValue ?? 30, password: password),
+                        disabled: mountWaitValue == nil
                     )
                     runButton(
                         L10n.string("button.plan_fsck"),
@@ -214,20 +227,26 @@ public struct ContentView: View {
                             volume: volume,
                             noReboot: noReboot,
                             noWait: noWait,
-                            mountWait: numberDouble(mountWait, default: 30)
-                        )
+                            mountWait: mountWaitValue ?? 30,
+                            password: password
+                        ),
+                        disabled: mountWaitValue == nil
                     )
                     Button {
-                        pendingConfirmation = .fsck(
-                            volume: volume,
-                            noReboot: noReboot,
-                            mountWait: numberDouble(mountWait, default: 30),
-                            noWait: noWait
+                        backend.run(
+                            operation: "fsck",
+                            params: OperationParams.fsckRun(
+                                volume: volume,
+                                noReboot: noReboot,
+                                noWait: noWait,
+                                mountWait: mountWaitValue ?? 30,
+                                password: password
+                            )
                         )
                     } label: {
                         Label(L10n.string("button.run_fsck"), systemImage: "externaldrive.badge.checkmark")
                     }
-                    .disabled(backend.isRunning)
+                    .disabled(backend.isRunning || mountWaitValue == nil)
                 }
                 HStack {
                     Button {
@@ -240,7 +259,10 @@ public struct ContentView: View {
                     }
                     .disabled(backend.isRunning || repairPath.isEmpty)
                     Button {
-                        pendingConfirmation = .repairXattrs(path: repairPath)
+                        backend.run(
+                            operation: "repair-xattrs",
+                            params: OperationParams.repairXattrsRun(path: repairPath)
+                        )
                     } label: {
                         Label(L10n.string("button.repair_xattrs"), systemImage: "wand.and.stars.inverse")
                     }
@@ -261,19 +283,38 @@ public struct ContentView: View {
         _ title: String,
         icon: String,
         operation: String,
-        params: [String: JSONValue] = [:]
+        params: [String: JSONValue] = [:],
+        disabled: Bool = false
     ) -> some View {
         Button {
             backend.run(operation: operation, params: params)
         } label: {
             Label(title, systemImage: icon)
         }
-        .disabled(backend.isRunning)
+        .disabled(backend.isRunning || disabled)
     }
 
-    private func numberDouble(_ text: String, default defaultValue: Double) -> Double {
+    private var mountWaitValue: Double? {
+        nonNegativeIntegerDouble(mountWait)
+    }
+
+    private var bonjourTimeoutValue: Double? {
+        nonNegativeDouble(bonjourTimeout)
+    }
+
+    private func nonNegativeDouble(_ text: String) -> Double? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return Double(trimmed) ?? defaultValue
+        guard let value = Double(trimmed), value.isFinite, value >= 0 else {
+            return nil
+        }
+        return value
+    }
+
+    private func nonNegativeIntegerDouble(_ text: String) -> Double? {
+        guard let value = nonNegativeDouble(text), value.rounded(.towardZero) == value else {
+            return nil
+        }
+        return value
     }
 
 }

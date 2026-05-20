@@ -12,12 +12,18 @@ from timecapsulesmb.app.ops.maintenance import (
     repair_xattrs_operation,
     uninstall_operation,
 )
-from timecapsulesmb.app.ops.readiness import discover_operation, paths_operation, validate_install_operation
+from timecapsulesmb.app.ops.readiness import (
+    capabilities_operation,
+    discover_operation,
+    paths_operation,
+    validate_install_operation,
+)
 from timecapsulesmb.services.app import OperationResult
 
 
 OPERATIONS: dict[str, Callable[[dict[str, object], EventSink], OperationResult]] = {
     "activate": activate_operation,
+    "capabilities": capabilities_operation,
     "configure": configure_operation,
     "deploy": deploy_operation,
     "discover": discover_operation,

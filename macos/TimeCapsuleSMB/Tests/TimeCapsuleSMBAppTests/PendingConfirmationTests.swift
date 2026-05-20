@@ -5,60 +5,83 @@ final class PendingConfirmationTests: XCTestCase {
     func testLocalizedStringsLoadFromResourceBundle() {
         XCTAssertEqual(L10n.string("screen.readiness"), "Readiness")
         XCTAssertEqual(L10n.string("button.uninstall_plan"), "Uninstall Plan")
+        XCTAssertEqual(L10n.string("button.capabilities"), "Capabilities")
         XCTAssertEqual(L10n.string("helper.error.cancelled"), "Operation cancelled.")
         XCTAssertEqual(L10n.format("event.summary.result", "deploy", "finished"), "deploy: finished")
     }
 
     func testUninstallPlanParamsCarryNoRebootSelection() {
-        let params = OperationParams.uninstallPlan(noReboot: true, noWait: true, mountWait: 9)
+        let params = OperationParams.uninstallPlan(noReboot: true, noWait: true, mountWait: 9, password: "pw")
 
         XCTAssertEqual(params["dry_run"], .bool(true))
         XCTAssertEqual(params["no_reboot"], .bool(true))
         XCTAssertEqual(params["no_wait"], .bool(true))
         XCTAssertEqual(params["mount_wait"], .number(9))
+        XCTAssertEqual(params["credentials"], .object(["password": .string("pw")]))
     }
 
-    func testDeployConfirmationCarriesDeployAndRebootConsent() {
-        let confirmation = PendingConfirmation.deploy(noReboot: false, nbnsEnabled: true, debugLogging: true, mountWait: 45, noWait: true)
+    func testDeployRunParamsCarryOptionsWithoutFrontendConsentFlags() {
+        let params = OperationParams.deployRun(
+            noReboot: false,
+            noWait: true,
+            nbnsEnabled: true,
+            debugLogging: true,
+            mountWait: 45,
+            password: ""
+        )
 
-        XCTAssertEqual(confirmation.operation, "deploy")
-        XCTAssertEqual(confirmation.params["dry_run"], .bool(false))
-        XCTAssertEqual(confirmation.params["confirm_deploy"], .bool(true))
-        XCTAssertEqual(confirmation.params["confirm_reboot"], .bool(true))
-        XCTAssertEqual(confirmation.params["confirm_netbsd4_activation"], .bool(true))
-        XCTAssertEqual(confirmation.params["no_reboot"], .bool(false))
-        XCTAssertEqual(confirmation.params["nbns_enabled"], .bool(true))
-        XCTAssertEqual(confirmation.params["debug_logging"], .bool(true))
-        XCTAssertEqual(confirmation.params["mount_wait"], .number(45))
-        XCTAssertEqual(confirmation.params["no_wait"], .bool(true))
+        XCTAssertEqual(params["dry_run"], .bool(false))
+        XCTAssertNil(params["confirm_deploy"])
+        XCTAssertNil(params["confirm_reboot"])
+        XCTAssertNil(params["confirm_netbsd4_activation"])
+        XCTAssertEqual(params["no_reboot"], .bool(false))
+        XCTAssertEqual(params["nbns_enabled"], .bool(true))
+        XCTAssertEqual(params["debug_logging"], .bool(true))
+        XCTAssertEqual(params["mount_wait"], .number(45))
+        XCTAssertEqual(params["no_wait"], .bool(true))
+        XCTAssertNil(params["credentials"])
     }
 
-    func testUninstallConfirmationCarriesUninstallAndNoRebootConsent() {
-        let confirmation = PendingConfirmation.uninstall(noReboot: true, mountWait: 12, noWait: true)
+    func testPendingConfirmationBuildsFromBackendEvent() throws {
+        let event = BackendEvent(
+            type: "error",
+            operation: "uninstall",
+            code: "confirmation_required",
+            message: "Confirm uninstall.",
+            details: .object([
+                "title": .string("Confirm uninstall"),
+                "message": .string("Remove files."),
+                "action_title": .string("Uninstall"),
+                "confirmation_id": .string("abc123")
+            ])
+        )
+        let originalParams = OperationParams.uninstallRun(noReboot: true, noWait: true, mountWait: 12, password: "pw")
+
+        let confirmation = try XCTUnwrap(PendingConfirmation(confirmationEvent: event, originalParams: originalParams))
 
         XCTAssertEqual(confirmation.operation, "uninstall")
-        XCTAssertEqual(confirmation.params["dry_run"], .bool(false))
-        XCTAssertEqual(confirmation.params["confirm_uninstall"], .bool(true))
-        XCTAssertEqual(confirmation.params["confirm_reboot"], .bool(false))
+        XCTAssertEqual(confirmation.title, "Confirm uninstall")
+        XCTAssertEqual(confirmation.message, "Remove files.")
+        XCTAssertEqual(confirmation.actionTitle, "Uninstall")
+        XCTAssertEqual(confirmation.params["confirmation_id"], .string("abc123"))
         XCTAssertEqual(confirmation.params["no_reboot"], .bool(true))
         XCTAssertEqual(confirmation.params["mount_wait"], .number(12))
         XCTAssertEqual(confirmation.params["no_wait"], .bool(true))
+        XCTAssertEqual(confirmation.params["credentials"], .object(["password": .string("pw")]))
     }
 
-    func testMaintenanceConfirmationsCarryExplicitOperationConsent() {
-        let fsck = PendingConfirmation.fsck(volume: "Data", noReboot: true, mountWait: 18, noWait: true)
-        let repair = PendingConfirmation.repairXattrs(path: "/Volumes/Data")
+    func testMaintenanceRunParamsDoNotCarryFrontendConsentFlags() {
+        let fsck = OperationParams.fsckRun(volume: "Data", noReboot: true, noWait: true, mountWait: 18, password: "")
+        let repair = OperationParams.repairXattrsRun(path: "/Volumes/Data")
 
-        XCTAssertEqual(fsck.operation, "fsck")
-        XCTAssertEqual(fsck.params["confirm_fsck"], .bool(true))
-        XCTAssertEqual(fsck.params["no_reboot"], .bool(true))
-        XCTAssertEqual(fsck.params["mount_wait"], .number(18))
-        XCTAssertEqual(fsck.params["no_wait"], .bool(true))
-        XCTAssertEqual(fsck.params["volume"], .string("Data"))
+        XCTAssertNil(fsck["confirm_fsck"])
+        XCTAssertEqual(fsck["no_reboot"], .bool(true))
+        XCTAssertEqual(fsck["mount_wait"], .number(18))
+        XCTAssertEqual(fsck["no_wait"], .bool(true))
+        XCTAssertEqual(fsck["volume"], .string("Data"))
 
-        XCTAssertEqual(repair.operation, "repair-xattrs")
-        XCTAssertEqual(repair.params["path"], .string("/Volumes/Data"))
-        XCTAssertEqual(repair.params["dry_run"], .bool(false))
-        XCTAssertEqual(repair.params["confirm_repair"], .bool(true))
+        XCTAssertEqual(repair["path"], .string("/Volumes/Data"))
+        XCTAssertEqual(repair["dry_run"], .bool(false))
+        XCTAssertNil(repair["confirm_repair"])
     }
 }

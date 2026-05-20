@@ -7,10 +7,11 @@ from typing import Optional
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import observe_reboot_cycle
 from timecapsulesmb.cli.runtime import add_config_argument, add_mount_wait_argument, add_no_wait_argument, load_env_config
-from timecapsulesmb.device.processes import render_direct_pkill9_by_ucomm, render_direct_pkill9_watchdog
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.services.maintenance import (
+    FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS,
     FSCK_REBOOT_NO_DOWN_MESSAGE,
+    build_remote_fsck_script,
     format_fsck_plan,
     format_fsck_targets,
     fsck_target_from_volume,
@@ -18,31 +19,6 @@ from timecapsulesmb.services.maintenance import (
 )
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import run_ssh
-
-
-FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS = 3 * 60 * 60
-
-
-def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> str:
-    lines = [
-        render_direct_pkill9_watchdog(),
-        render_direct_pkill9_by_ucomm("smbd"),
-        render_direct_pkill9_by_ucomm("afpserver"),
-        render_direct_pkill9_by_ucomm("wcifsnd"),
-        render_direct_pkill9_by_ucomm("wcifsfs"),
-        "sleep 2",
-        f"/sbin/umount -f {shlex.quote(mountpoint)} >/dev/null 2>&1 || true",
-        f"echo '--- fsck_hfs {device} ---'",
-        f"/sbin/fsck_hfs -fy {shlex.quote(device)} 2>&1 || true",
-    ]
-    if reboot:
-        lines.extend(
-            [
-                "echo '--- reboot ---'",
-                "/sbin/reboot >/dev/null 2>&1 || true",
-            ]
-        )
-    return "\n".join(lines)
 
 
 def main(argv: Optional[list[str]] = None) -> int:

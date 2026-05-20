@@ -17,6 +17,26 @@ def _with_schema(payload: Mapping[str, object]) -> dict[str, object]:
     return data
 
 
+def capabilities_payload(
+    *,
+    helper_version: str,
+    helper_version_code: int,
+    operations: list[str],
+    distribution_root: str,
+    artifact_manifest_sha256: str | None,
+) -> dict[str, object]:
+    return _with_schema({
+        "api_schema_version": SCHEMA_VERSION,
+        "helper_version": helper_version,
+        "helper_version_code": helper_version_code,
+        "operations": operations,
+        "distribution_root": distribution_root,
+        "artifact_manifest_sha256": artifact_manifest_sha256,
+        "confirmation_schema_version": 1,
+        "summary": "helper capabilities resolved.",
+    })
+
+
 def _device_payload(*, host: str | None = None, syap: str | None = None, model: str | None = None) -> dict[str, object]:
     return {
         "host": host,

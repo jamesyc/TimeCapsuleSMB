@@ -53,8 +53,12 @@ def bool_param(params: dict[str, object], name: str, default: bool = False) -> b
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "y"}
-    return bool(value)
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y"}:
+            return True
+        if normalized in {"0", "false", "no", "n"}:
+            return False
+    raise AppOperationError(f"{name} must be a boolean", code="validation_failed")
 
 
 def confirm_param(params: dict[str, object], name: str) -> bool:

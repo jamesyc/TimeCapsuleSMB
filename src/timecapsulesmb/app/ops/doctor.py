@@ -4,18 +4,19 @@ from timecapsulesmb.app.contracts import doctor_payload
 from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.checks.doctor import run_doctor_checks
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.cli.doctor import build_doctor_error
-from timecapsulesmb.cli.runtime import load_env_config, resolve_env_connection
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.discovery.bonjour import DEFAULT_BROWSE_TIMEOUT_SEC
 from timecapsulesmb.services.app import OperationResult, bool_param, config_path, float_param
+from timecapsulesmb.services.credentials import overlay_request_credentials
+from timecapsulesmb.services.doctor import build_doctor_error
+from timecapsulesmb.services.runtime import load_env_config, resolve_env_connection
 
 
 def doctor_operation(params: dict[str, object], sink: EventSink) -> OperationResult:
     operation = "doctor"
     bonjour_timeout = float_param(params, "bonjour_timeout", DEFAULT_BROWSE_TIMEOUT_SEC)
     sink.stage(operation, "load_config")
-    config = load_env_config(env_path=config_path(params))
+    config = overlay_request_credentials(load_env_config(env_path=config_path(params)), params)
     app_paths = resolve_app_paths(config_path=config_path(params))
     connection = None
     if not bool_param(params, "skip_ssh") and config.has_value("TC_HOST"):
