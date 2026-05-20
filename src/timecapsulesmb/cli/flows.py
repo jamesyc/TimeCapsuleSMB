@@ -7,7 +7,7 @@ from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import LogCallback, emit_progress
 from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.core.errors import system_exit_message
-from timecapsulesmb.deploy.executor import remote_request_reboot, remote_request_shutdown_reboot
+from timecapsulesmb.deploy.executor import remote_request_reboot
 from timecapsulesmb.deploy.verify import (
     managed_runtime_ready,
     render_managed_runtime_verification,
@@ -26,6 +26,7 @@ from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshEr
 
 REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
 ACP_REBOOT_REQUEST_TIMEOUT_SECONDS = 10
+SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE = "SSH: /bin/sync; /sbin/shutdown -r now (fallback /sbin/reboot)"
 
 
 def wait_for_tcp_port_state(
@@ -97,11 +98,11 @@ def request_reboot(
     connection: SshConnection,
     command_context: CommandContext,
     *,
-    require_request_success: bool = False,
+    raise_on_request_error: bool = False,
 ) -> None:
     command_context.set_stage("reboot")
     command_context.update_fields(reboot_was_attempted=True)
-    _request_reboot_acp_then_ssh(connection, command_context, require_request_success=require_request_success)
+    _request_reboot_acp_then_ssh(connection, command_context, raise_on_request_error=raise_on_request_error)
 
 
 def request_deploy_reboot_and_wait(
@@ -127,14 +128,14 @@ def request_deploy_reboot(
     connection: SshConnection,
     command_context: CommandContext,
     *,
-    require_request_success: bool = False,
+    raise_on_request_error: bool = False,
 ) -> None:
     command_context.set_stage("reboot")
     command_context.update_fields(reboot_was_attempted=True)
     _request_reboot_via_ssh_shutdown(
         connection,
         command_context,
-        require_request_success=require_request_success,
+        raise_on_request_error=raise_on_request_error,
     )
 
 
@@ -143,7 +144,7 @@ def request_ssh_reboot(
     command_context: CommandContext,
     *,
     log: LogCallback = None,
-    require_request_success: bool = False,
+    raise_on_request_error: bool = False,
 ) -> None:
     command_context.set_stage("reboot")
     command_context.update_fields(reboot_was_attempted=True)
@@ -152,7 +153,7 @@ def request_ssh_reboot(
         connection,
         command_context,
         log=log,
-        require_request_success=require_request_success,
+        raise_on_request_error=raise_on_request_error,
     )
 
 
@@ -160,7 +161,7 @@ def _request_reboot_acp_then_ssh(
     connection: SshConnection,
     command_context: CommandContext,
     *,
-    require_request_success: bool = False,
+    raise_on_request_error: bool = False,
 ) -> None:
     command_context.add_debug_fields(reboot_request_strategy="acp_then_ssh")
     if _request_reboot_via_acp(connection, command_context):
@@ -168,7 +169,7 @@ def _request_reboot_acp_then_ssh(
     _request_reboot_via_ssh(
         connection,
         command_context,
-        require_request_success=require_request_success,
+        raise_on_request_error=raise_on_request_error,
     )
 
 
@@ -198,16 +199,16 @@ def _request_reboot_via_ssh_shutdown(
     command_context: CommandContext,
     *,
     log: LogCallback = None,
-    require_request_success: bool = False,
+    raise_on_request_error: bool = False,
 ) -> None:
     command_context.add_debug_fields(reboot_request_strategy="ssh_shutdown_then_reboot")
     _request_reboot_via_ssh(
         connection,
         command_context,
         log=log,
-        request_reboot=remote_request_shutdown_reboot,
-        progress_message="SSH: /sbin/shutdown -r now (fallback /sbin/reboot)",
-        require_request_success=require_request_success,
+        request_reboot=remote_request_reboot,
+        progress_message=SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE,
+        raise_on_request_error=raise_on_request_error,
     )
 
 
@@ -217,8 +218,8 @@ def _request_reboot_via_ssh(
     *,
     log: LogCallback = None,
     request_reboot: Callable[[SshConnection], None] | None = None,
-    progress_message: str = "SSH: /sbin/reboot",
-    require_request_success: bool = False,
+    progress_message: str = SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE,
+    raise_on_request_error: bool = False,
 ) -> None:
     command_context.add_debug_fields(ssh_reboot_attempted=True)
     emit_progress(log, progress_message)
@@ -232,6 +233,8 @@ def _request_reboot_via_ssh(
             ssh_reboot_timed_out=True,
             ssh_reboot_error=system_exit_message(exc),
         )
+        if raise_on_request_error:
+            raise
         print("SSH reboot request timed out; checking whether the device is rebooting...")
         return
     except SshError as exc:
@@ -239,7 +242,7 @@ def _request_reboot_via_ssh(
             ssh_reboot_succeeded=False,
             ssh_reboot_error=system_exit_message(exc),
         )
-        if require_request_success:
+        if raise_on_request_error:
             raise
         print("SSH reboot request failed; checking whether the device is rebooting anyway...")
         return

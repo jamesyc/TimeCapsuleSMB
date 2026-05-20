@@ -976,7 +976,7 @@ def _finish_write(
         command_context.succeed()
         return 0
 
-    request_ssh_reboot(target.connection, command_context, log=log, require_request_success=args.no_wait)
+    request_ssh_reboot(target.connection, command_context, log=log, raise_on_request_error=args.no_wait)
     if args.no_wait:
         print("Reboot requested; not waiting for the device to go down or come back.", flush=True)
         command_context.succeed()

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import shlex
 from typing import Callable
 
+from timecapsulesmb.deploy.executor import DETACHED_SHUTDOWN_REBOOT_COMMAND
 from timecapsulesmb.device.processes import render_direct_pkill9_by_ucomm, render_direct_pkill9_watchdog
 from timecapsulesmb.device.storage import MaStVolume
 
@@ -135,7 +136,7 @@ def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> s
     if reboot:
         lines.extend([
             "echo '--- reboot ---'",
-            "/sbin/reboot >/dev/null 2>&1 || true",
+            DETACHED_SHUTDOWN_REBOOT_COMMAND,
         ])
     return "\n".join(lines)
 

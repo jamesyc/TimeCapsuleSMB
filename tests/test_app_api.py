@@ -29,8 +29,8 @@ from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState
 from timecapsulesmb.device.storage import MaStVolume, build_dry_run_payload_home
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
 from timecapsulesmb.integrations.acp import ACPAuthError
-from timecapsulesmb.services.app import jsonable
-from timecapsulesmb.transport.errors import SshError, TransportError
+from timecapsulesmb.services.app import AppOperationError, jsonable
+from timecapsulesmb.transport.errors import SshCommandTimeout, SshError, TransportError
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -871,7 +871,7 @@ class AppApiTests(unittest.TestCase):
                                         with mock.patch("timecapsulesmb.app.ops.deploy.upload_deployment_payload"):
                                             with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions"):
                                                 with mock.patch("timecapsulesmb.app.ops.deploy.flush_remote_filesystem_writes"):
-                                                    with mock.patch("timecapsulesmb.app.ops.deploy.remote_request_shutdown_reboot") as reboot:
+                                                    with mock.patch("timecapsulesmb.app.ops.deploy.remote_request_reboot") as reboot:
                                                         with mock.patch("timecapsulesmb.app.ops.deploy.wait_for_ssh_state_conn") as wait:
                                                             with mock.patch("timecapsulesmb.app.ops.deploy.verify_managed_runtime") as verify_runtime:
                                                                 rc = service.run_api_request(
@@ -918,7 +918,7 @@ class AppApiTests(unittest.TestCase):
                                         with mock.patch("timecapsulesmb.app.ops.deploy.upload_deployment_payload"):
                                             with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions"):
                                                 with mock.patch("timecapsulesmb.app.ops.deploy.flush_remote_filesystem_writes"):
-                                                    with mock.patch("timecapsulesmb.app.ops.deploy.remote_request_shutdown_reboot", side_effect=SshError("ssh command failed with rc=255")) as reboot:
+                                                    with mock.patch("timecapsulesmb.app.ops.deploy.remote_request_reboot", side_effect=SshError("ssh command failed with rc=255")) as reboot:
                                                         with mock.patch("timecapsulesmb.app.ops.deploy.wait_for_ssh_state_conn") as wait:
                                                             with mock.patch("timecapsulesmb.app.ops.deploy.verify_managed_runtime") as verify_runtime:
                                                                 rc = service.run_api_request(
@@ -942,6 +942,21 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(errors[0]["code"], "remote_error")
         self.assertIn("ssh command failed with rc=255", errors[0]["message"])
         self.assertEqual(collector.events_of_type("result"), [])
+
+    def test_deploy_request_ssh_reboot_reports_timeout_when_request_error_is_required(self) -> None:
+        from timecapsulesmb.app.ops import deploy as deploy_ops
+
+        collector = CollectingSink()
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        with mock.patch(
+            "timecapsulesmb.app.ops.deploy.remote_request_reboot",
+            side_effect=SshCommandTimeout("Timed out waiting for ssh command to finish: reboot"),
+        ):
+            with self.assertRaises(AppOperationError) as raised:
+                deploy_ops.request_ssh_reboot("deploy", collector.sink, connection, raise_on_request_error=True)
+
+        self.assertEqual(raised.exception.code, "remote_error")
+        self.assertIn("Timed out waiting for ssh command to finish: reboot", str(raised.exception))
 
     def test_deploy_reports_no_mast_volumes_as_remote_error(self) -> None:
         collector = CollectingSink()

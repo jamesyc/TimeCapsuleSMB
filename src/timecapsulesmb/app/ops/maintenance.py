@@ -185,7 +185,7 @@ def uninstall_operation(params: dict[str, object], sink: EventSink) -> Operation
             sink,
             connection,
             strategy="acp_then_ssh",
-            require_request_success=True,
+            raise_on_request_error=True,
         )
         return OperationResult(True, uninstall_result_payload(
             rebooted=False,

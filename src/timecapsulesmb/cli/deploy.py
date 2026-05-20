@@ -310,7 +310,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 return 0
 
         if args.no_wait:
-            request_deploy_reboot(connection, command_context, require_request_success=True)
+            request_deploy_reboot(connection, command_context, raise_on_request_error=True)
             print("Reboot requested; not waiting for the device to go down or come back.")
             print(color_green("Deploy Finished."))
             command_context.succeed()

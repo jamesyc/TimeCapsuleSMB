@@ -19,7 +19,6 @@ from timecapsulesmb.deploy.dry_run import deployment_plan_to_jsonable
 from timecapsulesmb.deploy.executor import (
     flush_remote_filesystem_writes,
     remote_request_reboot,
-    remote_request_shutdown_reboot,
     run_remote_actions,
     upload_deployment_payload,
 )
@@ -321,7 +320,7 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
             sink,
             connection,
             strategy="ssh_shutdown_then_reboot",
-            require_request_success=True,
+            raise_on_request_error=True,
         )
         return OperationResult(True, deploy_result_payload(
             payload_dir=plan.payload_dir,
@@ -416,7 +415,7 @@ def request_reboot(
     connection: SshConnection,
     *,
     strategy: str,
-    require_request_success: bool = False,
+    raise_on_request_error: bool = False,
 ) -> None:
     sink.stage(operation, "reboot")
     if strategy == "acp_then_ssh":
@@ -429,16 +428,14 @@ def request_reboot(
                 operation,
                 sink,
                 connection,
-                shutdown=False,
-                require_request_success=require_request_success,
+                raise_on_request_error=raise_on_request_error,
             )
     else:
         request_ssh_reboot(
             operation,
             sink,
             connection,
-            shutdown=True,
-            require_request_success=require_request_success,
+            raise_on_request_error=raise_on_request_error,
         )
 
 
@@ -447,19 +444,17 @@ def request_ssh_reboot(
     sink: EventSink,
     connection: SshConnection,
     *,
-    shutdown: bool,
-    require_request_success: bool = False,
+    raise_on_request_error: bool = False,
 ) -> None:
     try:
-        if shutdown:
-            remote_request_shutdown_reboot(connection)
-        else:
-            remote_request_reboot(connection)
+        remote_request_reboot(connection)
     except SshCommandTimeout as exc:
+        if raise_on_request_error:
+            raise AppOperationError(f"SSH reboot request timed out: {exc}", code="remote_error") from exc
         sink.log(operation, f"SSH reboot request timed out; checking whether the device is rebooting: {exc}", level="warning")
         return
     except SshError as exc:
-        if require_request_success:
+        if raise_on_request_error:
             raise AppOperationError(f"SSH reboot request failed: {exc}", code="remote_error") from exc
         sink.log(operation, f"SSH reboot request failed; checking whether the device is rebooting anyway: {exc}", level="warning")
         return
