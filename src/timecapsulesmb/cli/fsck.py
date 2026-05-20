@@ -8,6 +8,7 @@ from typing import Optional
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.flows import observe_reboot_cycle
 from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
+from timecapsulesmb.deploy.executor import DETACHED_REBOOT_COMMAND
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.device.processes import render_direct_pkill9_by_ucomm, render_direct_pkill9_watchdog
 from timecapsulesmb.identity import ensure_install_id
@@ -18,12 +19,6 @@ from timecapsulesmb.transport.ssh import run_ssh
 
 FSCK_REBOOT_NO_DOWN_MESSAGE = "fsck requested reboot from the device, but SSH did not go down."
 FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS = 3 * 60 * 60
-DETACHED_FSCK_REBOOT_COMMAND = (
-    "/bin/sh -c 'exec </dev/null >/dev/null 2>&1; "
-    "(/bin/sync; /bin/sleep 1; "
-    "if [ -x /sbin/shutdown ]; then /sbin/shutdown -r now || /sbin/reboot; else /sbin/reboot; fi"
-    ") & exit 0'"
-)
 NO_MOUNTED_HFS_VOLUMES_MESSAGE = "no mounted HFS volumes found"
 MULTIPLE_MOUNTED_HFS_VOLUMES_MESSAGE = "multiple mounted HFS volumes found; specify --volume to select one"
 
@@ -95,7 +90,7 @@ def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> s
         lines.extend(
             [
                 "echo '--- reboot ---'",
-                DETACHED_FSCK_REBOOT_COMMAND,
+                DETACHED_REBOOT_COMMAND,
             ]
         )
     return "\n".join(lines)
