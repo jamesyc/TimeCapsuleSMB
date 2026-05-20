@@ -47,6 +47,7 @@ final class HelperRunnerTests: XCTestCase {
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertEqual(events.last?.type, "error")
         XCTAssertEqual(events.last?.code, "missing_terminal_event")
+        XCTAssertEqual(events.last?.message, L10n.string("helper.error.missing_terminal_event"))
         XCTAssertEqual(events.last?.debug, .object(["stderr": .string("stderr detail\n")]))
     }
 
@@ -141,6 +142,7 @@ final class HelperRunnerTests: XCTestCase {
         XCTAssertEqual(result.exitCode, 130)
         XCTAssertEqual(recorder.events.last?.type, "error")
         XCTAssertEqual(recorder.events.last?.code, "cancelled")
+        XCTAssertEqual(recorder.events.last?.message, L10n.string("helper.error.cancelled"))
     }
 
     private func makeHelper(in directory: URL, body: String) throws -> URL {

@@ -5,6 +5,8 @@ final class PendingConfirmationTests: XCTestCase {
     func testLocalizedStringsLoadFromResourceBundle() {
         XCTAssertEqual(L10n.string("screen.readiness"), "Readiness")
         XCTAssertEqual(L10n.string("button.uninstall_plan"), "Uninstall Plan")
+        XCTAssertEqual(L10n.string("helper.error.cancelled"), "Operation cancelled.")
+        XCTAssertEqual(L10n.format("event.summary.result", "deploy", "finished"), "deploy: finished")
     }
 
     func testUninstallPlanParamsCarryNoRebootSelection() {

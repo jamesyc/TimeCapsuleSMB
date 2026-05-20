@@ -44,6 +44,14 @@
 "confirm.uninstall.no_wait.title" = "Uninstall And Skip Waiting?";
 "confirm.uninstall.reboot.message" = "This will remove the managed TimeCapsuleSMB payload and wait for the device to reboot.";
 "confirm.uninstall.reboot.title" = "Uninstall And Reboot?";
+"event.summary.check" = "%@ %@";
+"event.summary.check.default_status" = "INFO";
+"event.summary.error" = "%@: %@";
+"event.summary.error.default_message" = "error";
+"event.summary.result" = "%@: %@";
+"event.summary.result.failed" = "failed";
+"event.summary.result.finished" = "finished";
+"event.summary.stage" = "%@: %@";
 "field.bonjour_timeout" = "Bonjour timeout seconds";
 "field.fsck_volume" = "fsck volume, optional";
 "field.helper" = "Helper";
@@ -51,6 +59,8 @@
 "field.mount_wait" = "Mount wait seconds";
 "field.password" = "Password";
 "field.repair_xattrs_path" = "Repair xattrs path";
+"helper.error.cancelled" = "Operation cancelled.";
+"helper.error.missing_terminal_event" = "Helper exited without a result or error event.";
 "panel.connect" = "Discover And Connect";
 "screen.advanced" = "Advanced";
 "screen.connect" = "Connect";

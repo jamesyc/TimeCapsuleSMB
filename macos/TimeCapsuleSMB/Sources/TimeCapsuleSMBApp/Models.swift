@@ -161,13 +161,24 @@ public struct BackendEvent: Decodable, Identifiable {
     public var summary: String {
         switch type {
         case "stage":
-            return stage.map { "\(operation): \($0)" } ?? operation
+            return stage.map { L10n.format("event.summary.stage", operation, $0) } ?? operation
         case "check":
-            return "\(status ?? "INFO") \(message ?? "")"
+            return L10n.format(
+                "event.summary.check",
+                status ?? L10n.string("event.summary.check.default_status"),
+                message ?? ""
+            )
         case "result":
-            return "\(operation): \(ok == true ? "finished" : "failed")"
+            let result = ok == true
+                ? L10n.string("event.summary.result.finished")
+                : L10n.string("event.summary.result.failed")
+            return L10n.format("event.summary.result", operation, result)
         case "error":
-            return "\(operation): \(message ?? "error")"
+            return L10n.format(
+                "event.summary.error",
+                operation,
+                message ?? L10n.string("event.summary.error.default_message")
+            )
         default:
             return message ?? stage ?? operation
         }

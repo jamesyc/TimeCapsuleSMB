@@ -93,14 +93,14 @@ public final class HelperRunner {
             eventSink(BackendEvent.error(
                 operation: operation,
                 code: "cancelled",
-                message: "Operation cancelled.",
+                message: L10n.string("helper.error.cancelled"),
                 debug: stderrText.isEmpty ? nil : .object(["stderr": .string(stderrText)])
             ))
         } else if !sawTerminalEvent {
             eventSink(BackendEvent.error(
                 operation: operation,
                 code: "missing_terminal_event",
-                message: "Helper exited without a result or error event.",
+                message: L10n.string("helper.error.missing_terminal_event"),
                 debug: stderrText.isEmpty ? nil : .object(["stderr": .string(stderrText)])
             ))
         }

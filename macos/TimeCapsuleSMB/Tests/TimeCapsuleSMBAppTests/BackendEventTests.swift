@@ -37,6 +37,20 @@ final class BackendEventTests: XCTestCase {
         XCTAssertEqual(event.description, "Upload managed Samba payload files.")
     }
 
+    func testBackendEventSummaryUsesLocalizedFallbackTemplates() {
+        let stage = BackendEvent(type: "stage", operation: "deploy", stage: "upload_payload")
+        let check = BackendEvent(type: "check", operation: "doctor", message: "smbd is running")
+        let success = BackendEvent(type: "result", operation: "deploy", ok: true)
+        let failure = BackendEvent(type: "result", operation: "deploy", ok: false)
+        let error = BackendEvent(type: "error", operation: "deploy")
+
+        XCTAssertEqual(stage.summary, "deploy: upload_payload")
+        XCTAssertEqual(check.summary, "INFO smbd is running")
+        XCTAssertEqual(success.summary, "deploy: finished")
+        XCTAssertEqual(failure.summary, "deploy: failed")
+        XCTAssertEqual(error.summary, "deploy: error")
+    }
+
     func testJSONValueRoundTripsNestedObjects() throws {
         let value = JSONValue.object([
             "operation": .string("paths"),
