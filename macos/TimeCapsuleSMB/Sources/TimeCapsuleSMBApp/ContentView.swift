@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct ContentView: View {
+public struct ContentView: View {
     @StateObject private var backend = BackendClient()
     @State private var selection: Screen = .readiness
     @State private var host = "root@192.168.x.x"
@@ -10,8 +10,11 @@ struct ContentView: View {
     @State private var nbnsEnabled = true
     @State private var noReboot = false
     @State private var dryRun = true
+    @State private var pendingConfirmation: PendingConfirmation?
 
-    var body: some View {
+    public init() {}
+
+    public var body: some View {
         NavigationSplitView {
             List(Screen.allCases, selection: $selection) { screen in
                 Label(screen.title, systemImage: screen.icon)
@@ -32,10 +35,26 @@ struct ContentView: View {
                         Label("Clear", systemImage: "trash")
                     }
                     .disabled(backend.isRunning)
+                    Button {
+                        backend.cancel()
+                    } label: {
+                        Label("Cancel", systemImage: "xmark.circle")
+                    }
+                    .disabled(!backend.isRunning)
                 }
             }
         }
         .frame(minWidth: 980, minHeight: 680)
+        .alert(item: $pendingConfirmation) { confirmation in
+            Alert(
+                title: Text(confirmation.title),
+                message: Text(confirmation.message),
+                primaryButton: .destructive(Text(confirmation.actionTitle)) {
+                    backend.run(operation: confirmation.operation, params: confirmation.params)
+                },
+                secondaryButton: .cancel()
+            )
+        }
     }
 
     @ViewBuilder
@@ -72,12 +91,15 @@ struct ContentView: View {
                 Toggle("No Reboot", isOn: $noReboot)
                 Toggle("Dry Run", isOn: $dryRun)
                 Button {
-                    backend.run(operation: "deploy", params: [
-                        "dry_run": .bool(dryRun),
-                        "yes": .bool(true),
-                        "no_reboot": .bool(noReboot),
-                        "nbns_enabled": .bool(nbnsEnabled)
-                    ])
+                    if dryRun {
+                        backend.run(operation: "deploy", params: [
+                            "dry_run": .bool(true),
+                            "no_reboot": .bool(noReboot),
+                            "nbns_enabled": .bool(nbnsEnabled)
+                        ])
+                    } else {
+                        pendingConfirmation = .deploy(noReboot: noReboot, nbnsEnabled: nbnsEnabled)
+                    }
                 } label: {
                     Label(dryRun ? "Plan Deploy" : "Deploy", systemImage: dryRun ? "doc.text.magnifyingglass" : "square.and.arrow.up")
                 }
@@ -91,16 +113,25 @@ struct ContentView: View {
             CommandPanel(title: "Maintenance") {
                 TextField("Repair xattrs path", text: $repairPath)
                 TextField("fsck volume, optional", text: $volume)
+                Toggle("No Reboot", isOn: $noReboot)
                 HStack {
-                    runButton("Activate", icon: "power", operation: "activate", params: ["yes": .bool(true)])
+                    Button {
+                        pendingConfirmation = .activate()
+                    } label: {
+                        Label("Activate", systemImage: "power")
+                    }
+                    .disabled(backend.isRunning)
                     runButton("Uninstall Plan", icon: "xmark.bin", operation: "uninstall", params: ["dry_run": .bool(true)])
+                    Button {
+                        pendingConfirmation = .uninstall(noReboot: noReboot)
+                    } label: {
+                        Label("Uninstall", systemImage: "xmark.bin.fill")
+                    }
+                    .disabled(backend.isRunning)
                 }
                 HStack {
                     Button {
-                        backend.run(operation: "fsck", params: [
-                            "yes": .bool(true),
-                            "volume": .string(volume)
-                        ])
+                        pendingConfirmation = .fsck(volume: volume, noReboot: noReboot)
                     } label: {
                         Label("Run fsck", systemImage: "externaldrive.badge.checkmark")
                     }
@@ -112,6 +143,12 @@ struct ContentView: View {
                         ])
                     } label: {
                         Label("Scan xattrs", systemImage: "wand.and.stars")
+                    }
+                    .disabled(backend.isRunning || repairPath.isEmpty)
+                    Button {
+                        pendingConfirmation = .repairXattrs(path: repairPath)
+                    } label: {
+                        Label("Repair xattrs", systemImage: "wand.and.stars.inverse")
                     }
                     .disabled(backend.isRunning || repairPath.isEmpty)
                 }
@@ -208,4 +245,3 @@ private struct EventList: View {
         }
     }
 }
-

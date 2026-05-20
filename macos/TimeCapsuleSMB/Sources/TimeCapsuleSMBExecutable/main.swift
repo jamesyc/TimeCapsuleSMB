@@ -1,11 +1,11 @@
 import SwiftUI
+import TimeCapsuleSMBApp
 
 @main
-struct TimeCapsuleSMBApp: App {
+struct TimeCapsuleSMBExecutable: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
         }
     }
 }
-

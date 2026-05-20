@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import add_config_argument, confirm as confirm_prompt, load_optional_env_config
@@ -44,15 +45,33 @@ from timecapsulesmb.repair_xattrs import (
 from timecapsulesmb.telemetry import TelemetryClient
 
 
-def print_candidates(candidates: list[RepairCandidate], *, dry_run: bool) -> None:
+@dataclass(frozen=True)
+class RepairRunResult:
+    returncode: int
+    root: Path
+    findings: list[RepairFinding]
+    candidates: list[RepairCandidate]
+    summary: RepairSummary
+    report: str | None = None
+
+
+def render_candidate_lines(candidates: list[RepairCandidate], *, dry_run: bool) -> list[str]:
     verb = "Would repair" if dry_run else "Repairable"
+    lines: list[str] = []
     for candidate in candidates:
         actions = ", ".join(candidate.actions) or "none"
         flags = f", flags: {candidate.flags}" if candidate.flags else ""
-        print(f"{verb}: {candidate.path} ({candidate.path_type}, actions: {actions}{flags})")
+        lines.append(f"{verb}: {candidate.path} ({candidate.path_type}, actions: {actions}{flags})")
+    return lines
 
 
-def print_diagnostics(findings: list[RepairFinding], *, verbose: bool) -> None:
+def print_candidates(candidates: list[RepairCandidate], *, dry_run: bool) -> None:
+    for line in render_candidate_lines(candidates, dry_run=dry_run):
+        print(line)
+
+
+def render_diagnostic_lines(findings: list[RepairFinding], *, verbose: bool) -> list[str]:
+    lines: list[str] = []
     for finding in findings:
         if finding.repairable:
             continue
@@ -62,30 +81,61 @@ def print_diagnostics(findings: list[RepairFinding], *, verbose: bool) -> None:
                 detail += f" flags={finding.flags}"
             if finding.xattr_error:
                 detail += f" xattr_error={finding.xattr_error}"
-            print(f"WARN {detail}")
+            lines.append(f"WARN {detail}")
+    return lines
+
+
+def print_diagnostics(findings: list[RepairFinding], *, verbose: bool) -> None:
+    for line in render_diagnostic_lines(findings, verbose=verbose):
+        print(line)
+
+
+def render_summary_lines(summary: RepairSummary, *, dry_run: bool) -> list[str]:
+    lines = [
+        "",
+        "Summary:",
+        f"  scanned paths: {summary.scanned}",
+        f"  scanned files: {summary.scanned_files}",
+        f"  scanned directories: {summary.scanned_dirs}",
+        f"  skipped: {summary.skipped}",
+        f"  unreadable xattrs: {summary.unreadable}",
+        f"  not repairable: {summary.not_repairable}",
+        f"  repairable: {summary.repairable}",
+        f"  permission repairs: {summary.permission_repairable}",
+    ]
+    if not dry_run:
+        lines.extend([
+            f"  repaired: {summary.repaired}",
+            f"  failed: {summary.failed}",
+        ])
+    return lines
 
 
 def print_summary(summary: RepairSummary, *, dry_run: bool) -> None:
-    print("")
-    print("Summary:")
-    print(f"  scanned paths: {summary.scanned}")
-    print(f"  scanned files: {summary.scanned_files}")
-    print(f"  scanned directories: {summary.scanned_dirs}")
-    print(f"  skipped: {summary.skipped}")
-    print(f"  unreadable xattrs: {summary.unreadable}")
-    print(f"  not repairable: {summary.not_repairable}")
-    print(f"  repairable: {summary.repairable}")
-    print(f"  permission repairs: {summary.permission_repairable}")
-    if not dry_run:
-        print(f"  repaired: {summary.repaired}")
-        print(f"  failed: {summary.failed}")
+    for line in render_summary_lines(summary, dry_run=dry_run):
+        print(line)
 
 
 def confirm(prompt_text: str) -> bool:
     return confirm_prompt(prompt_text, default=False, eof_default=False, interrupt_default=False)
 
 
-def run_repair(args: argparse.Namespace, command_context: CommandContext, config: AppConfig) -> int:
+def _emit_lines(emit: Callable[[str], None], lines: list[str]) -> None:
+    for line in lines:
+        emit(line)
+
+
+def run_repair_structured(
+    args: argparse.Namespace,
+    command_context: CommandContext,
+    config: AppConfig,
+    *,
+    emit_log: Callable[[str], None] | None = None,
+) -> RepairRunResult:
+    def emit(message: str) -> None:
+        if emit_log is not None:
+            emit_log(message)
+
     command_context.set_stage("resolve_scan_root")
     command_context.update_fields(
         dry_run=args.dry_run,
@@ -117,7 +167,7 @@ def run_repair(args: argparse.Namespace, command_context: CommandContext, config
     summary = RepairSummary()
     command_context.update_fields(repair_root=str(root))
     command_context.set_stage("scan_findings")
-    print(f"Scanning {root}")
+    emit(f"Scanning {root}")
     try:
         findings = find_findings(
             root,
@@ -146,61 +196,69 @@ def run_repair(args: argparse.Namespace, command_context: CommandContext, config
     )
 
     if not findings:
-        print("No repairable files found.")
-        print_summary(summary, dry_run=True)
+        emit("No repairable files found.")
+        _emit_lines(emit, render_summary_lines(summary, dry_run=True))
         command_context.succeed()
-        return 0
+        return RepairRunResult(0, root, findings, candidates, summary)
 
     command_context.set_stage("report_findings")
-    print_diagnostics(findings, verbose=args.verbose)
+    _emit_lines(emit, render_diagnostic_lines(findings, verbose=args.verbose))
     if candidates:
-        print_candidates(candidates, dry_run=args.dry_run)
+        _emit_lines(emit, render_candidate_lines(candidates, dry_run=args.dry_run))
 
     if args.dry_run:
-        print_summary(summary, dry_run=True)
-        print("No changes made.")
-        command_context.fail_with_error(build_repair_report(findings))
-        return 0
+        _emit_lines(emit, render_summary_lines(summary, dry_run=True))
+        emit("No changes made.")
+        report = build_repair_report(findings)
+        command_context.fail_with_error(report)
+        return RepairRunResult(0, root, findings, candidates, summary, report=report)
 
     if not candidates:
-        print("No known-safe repairs are available for the detected issues.")
-        print_summary(summary, dry_run=True)
-        command_context.fail_with_error(build_repair_report(findings))
-        return 1
+        emit("No known-safe repairs are available for the detected issues.")
+        _emit_lines(emit, render_summary_lines(summary, dry_run=True))
+        report = build_repair_report(findings)
+        command_context.fail_with_error(report)
+        return RepairRunResult(1, root, findings, candidates, summary, report=report)
 
     command_context.set_stage("confirm_repair")
     if not args.yes and not confirm(f"Repair {len(candidates)} paths with known-safe fixes?"):
-        print("No changes made.")
-        print_summary(summary, dry_run=True)
-        command_context.fail_with_error(build_repair_report(findings))
-        return 0
+        emit("No changes made.")
+        _emit_lines(emit, render_summary_lines(summary, dry_run=True))
+        report = build_repair_report(findings)
+        command_context.fail_with_error(report)
+        return RepairRunResult(0, root, findings, candidates, summary, report=report)
 
     command_context.set_stage("repair_findings")
     failed_findings: list[RepairFinding] = []
     for finding, candidate in zip(repairs, candidates):
-        print(f"Repairing: {candidate.path}")
+        emit(f"Repairing: {candidate.path}")
         if repair_candidate(candidate):
             summary.repaired += 1
             if ACTION_CLEAR_ARCH_FLAG in candidate.actions:
-                print(f"PASS xattr now readable: {candidate.path}")
+                emit(f"PASS xattr now readable: {candidate.path}")
             if ACTION_FIX_PERMISSIONS in candidate.actions:
-                print(f"PASS permissions repaired: {candidate.path}")
+                emit(f"PASS permissions repaired: {candidate.path}")
         else:
             summary.failed += 1
             failed_findings.append(finding)
             if ACTION_CLEAR_ARCH_FLAG in candidate.actions:
-                print(f"FAIL repair did not make xattr readable: {candidate.path}")
+                emit(f"FAIL repair did not make xattr readable: {candidate.path}")
             else:
-                print(f"FAIL repair did not fix detected issue: {candidate.path}")
+                emit(f"FAIL repair did not fix detected issue: {candidate.path}")
 
     unresolved = unresolved_findings_after_success(findings) + failed_findings
     command_context.update_fields(repaired_count=summary.repaired, repair_failed_count=summary.failed)
-    print_summary(summary, dry_run=False)
+    _emit_lines(emit, render_summary_lines(summary, dry_run=False))
     if unresolved:
-        command_context.fail_with_error(build_repair_report(findings, failed=unresolved))
-        return 1
+        report = build_repair_report(findings, failed=unresolved)
+        command_context.fail_with_error(report)
+        return RepairRunResult(1, root, findings, candidates, summary, report=report)
     command_context.succeed()
-    return 0
+    return RepairRunResult(0, root, findings, candidates, summary)
+
+
+def run_repair(args: argparse.Namespace, command_context: CommandContext, config: AppConfig) -> int:
+    return run_repair_structured(args, command_context, config, emit_log=print).returncode
 
 
 def main(argv: Optional[list[str]] = None) -> int:

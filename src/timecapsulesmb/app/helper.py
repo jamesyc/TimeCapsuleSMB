@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import uuid
 from typing import Optional, TextIO
 
 from timecapsulesmb.app.events import AppEvent, EventSink
@@ -25,23 +26,22 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Also write request parsing errors to stderr for local debugging.",
     )
     args = parser.parse_args(argv)
-    sink = _sink_for_stream(sys.stdout)
+    sink = _sink_for_stream(sys.stdout).with_request_id(str(uuid.uuid4()))
 
     raw = sys.stdin.read()
     try:
         request = json.loads(raw)
     except json.JSONDecodeError as exc:
         message = f"invalid JSON request: {exc.msg}"
-        sink.error("api", message, debug={"pos": exc.pos})
+        sink.error("api", message, code="invalid_request", debug={"pos": exc.pos})
         if args.pretty_error:
-            print(message, file=sys.stderr)
+            print("invalid JSON request", file=sys.stderr)
         return 1
     if not isinstance(request, dict):
-        sink.error("api", "request must be a JSON object")
+        sink.error("api", "request must be a JSON object", code="invalid_request")
         return 1
     return run_api_request(request, sink)
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

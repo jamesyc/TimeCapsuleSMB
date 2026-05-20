@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -31,9 +32,13 @@ class AppEvent:
     type: str
     operation: str
     fields: dict[str, object] = field(default_factory=dict)
+    request_id: str | None = None
+    schema_version: int = 1
 
     def to_jsonable(self) -> dict[str, object]:
-        data = {"type": self.type, "operation": self.operation}
+        data = {"schema_version": self.schema_version, "type": self.type, "operation": self.operation}
+        if self.request_id:
+            data["request_id"] = self.request_id
         data.update(redact(self.fields))
         return data
 
@@ -42,10 +47,29 @@ class AppEvent:
 
 
 class EventSink:
-    def __init__(self, emit: Callable[[AppEvent], None]) -> None:
+    def __init__(
+        self,
+        emit: Callable[[AppEvent], None],
+        *,
+        request_id: str | None = None,
+        schema_version: int = 1,
+    ) -> None:
         self._emit = emit
+        self.request_id = request_id or str(uuid.uuid4())
+        self.schema_version = schema_version
+
+    def with_request_id(self, request_id: str) -> "EventSink":
+        return EventSink(self._emit, request_id=request_id, schema_version=self.schema_version)
 
     def emit(self, event: AppEvent) -> None:
+        if event.request_id is None:
+            event = AppEvent(
+                event.type,
+                event.operation,
+                event.fields,
+                request_id=self.request_id,
+                schema_version=self.schema_version,
+            )
         self._emit(event)
 
     def stage(self, operation: str, stage: str) -> None:
@@ -71,8 +95,15 @@ class EventSink:
     def result(self, operation: str, *, ok: bool, payload: object | None = None) -> None:
         self.emit(AppEvent("result", operation, {"ok": ok, "payload": payload if payload is not None else {}}))
 
-    def error(self, operation: str, message: str, *, debug: object | None = None) -> None:
-        fields: dict[str, object] = {"message": message}
+    def error(
+        self,
+        operation: str,
+        message: str,
+        *,
+        code: str = "operation_failed",
+        debug: object | None = None,
+    ) -> None:
+        fields: dict[str, object] = {"code": code, "message": message}
         if debug is not None:
             fields["debug"] = debug
         self.emit(AppEvent("error", operation, fields))

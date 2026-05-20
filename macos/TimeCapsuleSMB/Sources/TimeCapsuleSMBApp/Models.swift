@@ -1,6 +1,6 @@
 import Foundation
 
-enum JSONValue: Codable, Hashable {
+public enum JSONValue: Codable, Hashable {
     case string(String)
     case number(Double)
     case bool(Bool)
@@ -8,7 +8,7 @@ enum JSONValue: Codable, Hashable {
     case array([JSONValue])
     case null
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if container.decodeNil() {
             self = .null
@@ -25,7 +25,7 @@ enum JSONValue: Codable, Hashable {
         }
     }
 
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         switch self {
         case .string(let value):
@@ -43,7 +43,7 @@ enum JSONValue: Codable, Hashable {
         }
     }
 
-    var displayText: String {
+    public var displayText: String {
         switch self {
         case .string(let value):
             return value
@@ -65,22 +65,73 @@ enum JSONValue: Codable, Hashable {
     }
 }
 
-struct BackendEvent: Decodable, Identifiable {
-    let id = UUID()
-    let type: String
-    let operation: String
-    let stage: String?
-    let level: String?
-    let message: String?
-    let status: String?
-    let ok: Bool?
-    let payload: JSONValue?
-    let details: JSONValue?
-    let debug: JSONValue?
+public struct BackendEvent: Decodable, Identifiable {
+    public let id = UUID()
+    public let schemaVersion: Int?
+    public let requestId: String?
+    public let type: String
+    public let operation: String
+    public let code: String?
+    public let stage: String?
+    public let level: String?
+    public let message: String?
+    public let status: String?
+    public let ok: Bool?
+    public let payload: JSONValue?
+    public let details: JSONValue?
+    public let debug: JSONValue?
+
+    public init(
+        schemaVersion: Int? = 1,
+        requestId: String? = UUID().uuidString,
+        type: String,
+        operation: String,
+        code: String? = nil,
+        stage: String? = nil,
+        level: String? = nil,
+        message: String? = nil,
+        status: String? = nil,
+        ok: Bool? = nil,
+        payload: JSONValue? = nil,
+        details: JSONValue? = nil,
+        debug: JSONValue? = nil
+    ) {
+        self.schemaVersion = schemaVersion
+        self.requestId = requestId
+        self.type = type
+        self.operation = operation
+        self.code = code
+        self.stage = stage
+        self.level = level
+        self.message = message
+        self.status = status
+        self.ok = ok
+        self.payload = payload
+        self.details = details
+        self.debug = debug
+    }
+
+    public static func error(
+        operation: String,
+        code: String,
+        message: String,
+        debug: JSONValue? = nil
+    ) -> BackendEvent {
+        BackendEvent(
+            type: "error",
+            operation: operation,
+            code: code,
+            message: message,
+            debug: debug
+        )
+    }
 
     enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case requestId = "request_id"
         case type
         case operation
+        case code
         case stage
         case level
         case message
@@ -91,7 +142,7 @@ struct BackendEvent: Decodable, Identifiable {
         case debug
     }
 
-    var summary: String {
+    public var summary: String {
         switch type {
         case "stage":
             return stage.map { "\(operation): \($0)" } ?? operation
@@ -106,4 +157,3 @@ struct BackendEvent: Decodable, Identifiable {
         }
     }
 }
-
