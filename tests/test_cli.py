@@ -3651,8 +3651,14 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(result.rc, 1)
         result.mocks.write_env_file.assert_not_called()
-        self.assertIn("SSH did not open after enabling via ACP.", result.text)
-        self.assertIn("SSH did not open after enabling via ACP.", self.configure_finished_error())
+        self.assertIn(
+            "SSH did not open after enabling via ACP. Reboot the device, wait 5 minutes, and try configure again.",
+            result.text,
+        )
+        self.assertIn(
+            "SSH did not open after enabling via ACP. Reboot the device, wait 5 minutes, and try configure again.",
+            self.configure_finished_error(),
+        )
 
     def test_configure_ignores_legacy_name_values_and_does_not_prompt_for_them(self) -> None:
         prompted_labels: list[str] = []

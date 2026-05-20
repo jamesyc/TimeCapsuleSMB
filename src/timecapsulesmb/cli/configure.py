@@ -406,7 +406,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     command_context.fail_with_error(message)
                     return 1
                 if probed_state is None:
-                    message = "SSH did not open after enabling via ACP."
+                    message = "SSH did not open after enabling via ACP. Reboot the device, wait 5 minutes, and try configure again."
                     print(message)
                     command_context.fail_with_error(message)
                     return 1
