@@ -3,7 +3,7 @@ import XCTest
 
 final class PendingConfirmationTests: XCTestCase {
     func testDeployConfirmationCarriesDeployAndRebootConsent() {
-        let confirmation = PendingConfirmation.deploy(noReboot: false, nbnsEnabled: true)
+        let confirmation = PendingConfirmation.deploy(noReboot: false, nbnsEnabled: true, debugLogging: true)
 
         XCTAssertEqual(confirmation.operation, "deploy")
         XCTAssertEqual(confirmation.params["dry_run"], .bool(false))
@@ -12,6 +12,7 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(confirmation.params["confirm_netbsd4_activation"], .bool(true))
         XCTAssertEqual(confirmation.params["no_reboot"], .bool(false))
         XCTAssertEqual(confirmation.params["nbns_enabled"], .bool(true))
+        XCTAssertEqual(confirmation.params["debug_logging"], .bool(true))
     }
 
     func testUninstallConfirmationCarriesUninstallAndNoRebootConsent() {

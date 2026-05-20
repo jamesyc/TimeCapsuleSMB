@@ -12,6 +12,7 @@ def build_configure_env_values(
     configure_id: str,
     internal_share_use_disk_root: bool | None = None,
     any_protocol: bool | None = None,
+    debug_logging: bool | None = None,
 ) -> dict[str, str]:
     values = preserved_env_file_values(existing)
     values.update({
@@ -27,6 +28,11 @@ def build_configure_env_values(
             parse_bool(existing.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"]))
             if any_protocol is None
             else any_protocol
+        ) else "false",
+        "TC_DEBUG_LOGGING": "true" if (
+            parse_bool(existing.get("TC_DEBUG_LOGGING", DEFAULTS["TC_DEBUG_LOGGING"]))
+            if debug_logging is None
+            else debug_logging
         ) else "false",
         "TC_CONFIGURE_ID": configure_id,
     })

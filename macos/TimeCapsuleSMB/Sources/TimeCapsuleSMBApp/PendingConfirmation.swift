@@ -8,7 +8,7 @@ struct PendingConfirmation: Identifiable {
     let operation: String
     let params: [String: JSONValue]
 
-    static func deploy(noReboot: Bool, nbnsEnabled: Bool) -> PendingConfirmation {
+    static func deploy(noReboot: Bool, nbnsEnabled: Bool, debugLogging: Bool) -> PendingConfirmation {
         PendingConfirmation(
             title: noReboot ? "Deploy Without Reboot?" : "Deploy And Reboot?",
             message: noReboot
@@ -22,7 +22,8 @@ struct PendingConfirmation: Identifiable {
                 "confirm_reboot": .bool(!noReboot),
                 "confirm_netbsd4_activation": .bool(true),
                 "no_reboot": .bool(noReboot),
-                "nbns_enabled": .bool(nbnsEnabled)
+                "nbns_enabled": .bool(nbnsEnabled),
+                "debug_logging": .bool(debugLogging)
             ]
         )
     }

@@ -297,6 +297,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     add_config_argument(parser)
     parser.add_argument("--internal-share-use-disk-root", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--any-protocol", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--debug-logging", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     ensure_install_id()
@@ -356,6 +357,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         values["TC_ANY_PROTOCOL"] = (
             "true" if args.any_protocol or existing_any_protocol else "false"
+        )
+        existing_debug_logging = parse_bool(
+            existing.get("TC_DEBUG_LOGGING", DEFAULTS["TC_DEBUG_LOGGING"])
+        )
+        values["TC_DEBUG_LOGGING"] = (
+            "true" if args.debug_logging or existing_debug_logging else "false"
         )
         command_context.set_stage("bonjour_discovery")
         try:

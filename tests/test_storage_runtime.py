@@ -896,6 +896,19 @@ MaSt = (
         self.assertNotIn("MDNS_HOST_LABEL", rendered)
         self.assertNotIn("TC_SHARE_NAME", rendered)
 
+    def test_flash_runtime_config_uses_saved_debug_logging(self) -> None:
+        config = AppConfig.from_values({"TC_DEBUG_LOGGING": "true"})
+
+        rendered = render_flash_runtime_config(
+            config,
+            PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+            nbns_enabled=True,
+            debug_logging=False,
+        )
+
+        self.assertIn("SMBD_DEBUG_LOGGING=1\n", rendered)
+        self.assertIn("MDNS_DEBUG_LOGGING=1\n", rendered)
+
     def test_common_runtime_identity_normalizers_match_python(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

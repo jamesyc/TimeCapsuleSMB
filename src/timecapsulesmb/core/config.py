@@ -75,6 +75,7 @@ DEFAULTS = {
     "TC_SSH_OPTS": "-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT": "false",
     "TC_ANY_PROTOCOL": "false",
+    "TC_DEBUG_LOGGING": "false",
 }
 
 ENV_FILE_KEYS = [
@@ -83,6 +84,7 @@ ENV_FILE_KEYS = [
     "TC_SSH_OPTS",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT",
     "TC_ANY_PROTOCOL",
+    "TC_DEBUG_LOGGING",
     "TC_CONFIGURE_ID",
 ]
 ENV_FILE_OMIT_KEYS = frozenset({
@@ -509,6 +511,7 @@ CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
     "TC_MDNS_DEVICE_MODEL": validate_mdns_device_model,
     "TC_INTERNAL_SHARE_USE_DISK_ROOT": validate_bool,
     "TC_ANY_PROTOCOL": validate_bool,
+    "TC_DEBUG_LOGGING": validate_bool,
 }
 
 
@@ -524,11 +527,13 @@ class ConfigProfile:
 CONFIGURE_VALIDATED_KEYS = (
     "TC_INTERNAL_SHARE_USE_DISK_ROOT",
     "TC_ANY_PROTOCOL",
+    "TC_DEBUG_LOGGING",
 )
 MANAGED_VALIDATED_KEYS = (
     "TC_HOST",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT",
     "TC_ANY_PROTOCOL",
+    "TC_DEBUG_LOGGING",
 )
 MANAGED_REQUIRED_FILE_KEYS = (
     "TC_HOST",

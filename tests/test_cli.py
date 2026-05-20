@@ -1467,6 +1467,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("TC_NET_IFACE", fake_values)
         self.assertEqual(fake_values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "false")
         self.assertEqual(fake_values["TC_ANY_PROTOCOL"], "false")
+        self.assertEqual(fake_values["TC_DEBUG_LOGGING"], "false")
         uuid.UUID(fake_values["TC_CONFIGURE_ID"])
         telemetry_values = result.mocks.telemetry_factory.call_args.args[0].values
         self.assertEqual(telemetry_values["TC_CONFIGURE_ID"], fake_values["TC_CONFIGURE_ID"])
@@ -1545,6 +1546,28 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_ANY_PROTOCOL"], "true")
 
+    def test_configure_hidden_debug_logging_arg_writes_true(self) -> None:
+        result = self.run_configure_cli(
+            ["--debug-logging"],
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            confirm=True,
+            command_context=FakeCommandContext(),
+        )
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_DEBUG_LOGGING"], "true")
+
+    def test_configure_preserves_existing_debug_logging_when_arg_is_omitted(self) -> None:
+        result = self.run_configure_cli(
+            existing_values={"TC_DEBUG_LOGGING": "true"},
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            confirm=True,
+            command_context=FakeCommandContext(),
+        )
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_DEBUG_LOGGING"], "true")
+
     def test_configure_airport_extreme_keeps_hidden_internal_share_root_default(self) -> None:
         def fake_prompt(label, default, _secret):
             if label == "Device SSH target":
@@ -1576,6 +1599,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("TC_MDNS_DEVICE_MODEL", result.values)
         self.assertEqual(result.values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "false")
         self.assertEqual(result.values["TC_ANY_PROTOCOL"], "false")
+        self.assertEqual(result.values["TC_DEBUG_LOGGING"], "false")
 
     def test_configure_ensures_install_id_before_telemetry(self) -> None:
         prompt_values = iter([
@@ -4433,6 +4457,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("NBNS_ENABLED=1\n", flash_config)
         self.assertIn("ANY_PROTOCOL=0\n", flash_config)
         self.assertIn("SMBD_DEBUG_LOGGING=1\n", flash_config)
+        self.assertIn("MDNS_DEBUG_LOGGING=1\n", flash_config)
         self.assertNotIn("SMB_SAMBA_USER", flash_config)
         self.assertNotIn("MDNS_DEVICE_MODEL", flash_config)
         self.assertNotIn("AIRPORT_SYAP", flash_config)
@@ -4458,6 +4483,42 @@ class CliTests(unittest.TestCase):
         self.assertIn("NBNS_ENABLED=0\n", captured["flash_config"])
         finished = self.telemetry_payload("deploy_finished")
         self.assertFalse(finished["nbns_enabled"])
+
+    def test_deploy_uses_configured_debug_logging_without_deploy_arg(self) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_upload(_plan, *, connection, source_resolver):
+            captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
+
+        result = self.run_deploy_cli(
+            ["--no-reboot"],
+            values=self.make_valid_env(TC_DEBUG_LOGGING="true"),
+            patch_actions=True,
+            patch_upload=True,
+            upload_side_effect=fake_upload,
+        )
+
+        self.assertEqual(result.rc, 0)
+        self.assertIn("SMBD_DEBUG_LOGGING=1\n", captured["flash_config"])
+        self.assertIn("MDNS_DEBUG_LOGGING=1\n", captured["flash_config"])
+
+    def test_deploy_leaves_debug_logging_disabled_without_config_or_arg(self) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_upload(_plan, *, connection, source_resolver):
+            captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
+
+        result = self.run_deploy_cli(
+            ["--no-reboot"],
+            values=self.make_valid_env(TC_DEBUG_LOGGING="false"),
+            patch_actions=True,
+            patch_upload=True,
+            upload_side_effect=fake_upload,
+        )
+
+        self.assertEqual(result.rc, 0)
+        self.assertIn("SMBD_DEBUG_LOGGING=0\n", captured["flash_config"])
+        self.assertIn("MDNS_DEBUG_LOGGING=0\n", captured["flash_config"])
 
     def test_deploy_rejects_removed_install_nbns_flag(self) -> None:
         stderr = io.StringIO()

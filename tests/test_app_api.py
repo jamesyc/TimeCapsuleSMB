@@ -365,6 +365,7 @@ class AppApiTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertIn("TC_HOST=root@10.0.0.2", config_path.read_text())
             self.assertIn("TC_PASSWORD=goodpw", config_path.read_text())
+            self.assertIn("TC_DEBUG_LOGGING=false", config_path.read_text())
             serialized_events = json.dumps(collector.events)
             self.assertNotIn("goodpw", serialized_events)
 
@@ -376,6 +377,7 @@ class AppApiTests(unittest.TestCase):
                 "TC_HOST=root@10.0.0.1\n"
                 "TC_PASSWORD=oldpw\n"
                 "TC_CUSTOM_SETTING='keep me'\n"
+                "TC_DEBUG_LOGGING=true\n"
                 "TC_SAMBA_USER=old-admin\n"
                 "TC_PAYLOAD_DIR_NAME=old-payload\n"
             )
@@ -398,8 +400,32 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(values["TC_HOST"], "root@10.0.0.2")
         self.assertEqual(values["TC_PASSWORD"], "newpw")
         self.assertEqual(values["TC_CUSTOM_SETTING"], "keep me")
+        self.assertEqual(values["TC_DEBUG_LOGGING"], "true")
         self.assertNotIn("TC_SAMBA_USER", values)
         self.assertNotIn("TC_PAYLOAD_DIR_NAME", values)
+
+    def test_configure_debug_logging_param_writes_true(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.app.operations.probe_connection_state", return_value=probed_state()):
+                rc = service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {
+                            "config": str(config_path),
+                            "host": "root@10.0.0.2",
+                            "password": "goodpw",
+                            "debug_logging": True,
+                        },
+                    },
+                    collector.sink,
+                )
+
+            values = parse_env_file(config_path)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(values["TC_DEBUG_LOGGING"], "true")
 
     def test_configure_reports_acp_auth_failure_without_writing_env(self) -> None:
         collector = CollectingSink()

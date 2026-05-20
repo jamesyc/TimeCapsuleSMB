@@ -65,6 +65,11 @@ def configure_operation(params: dict[str, object], sink: EventSink) -> Operation
             "any_protocol",
             parse_bool(existing.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])),
         ),
+        debug_logging=bool_param(
+            params,
+            "debug_logging",
+            parse_bool(existing.get("TC_DEBUG_LOGGING", DEFAULTS["TC_DEBUG_LOGGING"])),
+        ),
     )
 
     sink.stage(operation, "ssh_probe")

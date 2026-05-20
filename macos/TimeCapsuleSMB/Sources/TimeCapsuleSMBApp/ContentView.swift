@@ -10,6 +10,8 @@ public struct ContentView: View {
     @State private var nbnsEnabled = true
     @State private var noReboot = false
     @State private var dryRun = true
+    @State private var configureDebugLogging = false
+    @State private var deployDebugLogging = false
     @State private var pendingConfirmation: PendingConfirmation?
 
     public init() {}
@@ -88,13 +90,18 @@ public struct ContentView: View {
             CommandPanel(title: "Discover And Connect") {
                 TextField("Host", text: $host)
                 SecureField("Password", text: $password)
+                Toggle("Enable Debug Logging", isOn: $configureDebugLogging)
                 HStack {
                     runButton("Discover", icon: "network", operation: "discover")
                     Button {
-                        backend.run(operation: "configure", params: [
+                        var params: [String: JSONValue] = [
                             "host": .string(host),
                             "password": .string(password)
-                        ])
+                        ]
+                        if configureDebugLogging {
+                            params["debug_logging"] = .bool(true)
+                        }
+                        backend.run(operation: "configure", params: params)
                     } label: {
                         Label("Configure", systemImage: "lock.open")
                     }
@@ -106,15 +113,21 @@ public struct ContentView: View {
                 Toggle("Enable NBNS", isOn: $nbnsEnabled)
                 Toggle("No Reboot", isOn: $noReboot)
                 Toggle("Dry Run", isOn: $dryRun)
+                Toggle("Force Debug Logging", isOn: $deployDebugLogging)
                 Button {
                     if dryRun {
                         backend.run(operation: "deploy", params: [
                             "dry_run": .bool(true),
                             "no_reboot": .bool(noReboot),
-                            "nbns_enabled": .bool(nbnsEnabled)
+                            "nbns_enabled": .bool(nbnsEnabled),
+                            "debug_logging": .bool(deployDebugLogging)
                         ])
                     } else {
-                        pendingConfirmation = .deploy(noReboot: noReboot, nbnsEnabled: nbnsEnabled)
+                        pendingConfirmation = .deploy(
+                            noReboot: noReboot,
+                            nbnsEnabled: nbnsEnabled,
+                            debugLogging: deployDebugLogging
+                        )
                     }
                 } label: {
                     Label(dryRun ? "Plan Deploy" : "Deploy", systemImage: dryRun ? "doc.text.magnifyingglass" : "square.and.arrow.up")

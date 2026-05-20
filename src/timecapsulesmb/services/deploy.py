@@ -45,6 +45,8 @@ def render_flash_runtime_config(
 ) -> str:
     internal_root_default = config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])
     any_protocol_default = config.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])
+    configured_debug_logging = config.get("TC_DEBUG_LOGGING", DEFAULTS["TC_DEBUG_LOGGING"])
+    effective_debug_logging = debug_logging or parse_bool(configured_debug_logging)
 
     values: list[tuple[str, str | int]] = [
         ("TC_CONFIG_VERSION", 2),
@@ -55,7 +57,7 @@ def render_flash_runtime_config(
         ("DISKD_USE_VOLUME_ATTEMPTS", diskd_use_volume_attempts),
         ("ATA_IDLE_SECONDS", ata_idle_seconds),
         ("NBNS_ENABLED", 1 if nbns_enabled else 0),
-        ("SMBD_DEBUG_LOGGING", 1 if debug_logging else 0),
-        ("MDNS_DEBUG_LOGGING", 1 if debug_logging else 0),
+        ("SMBD_DEBUG_LOGGING", 1 if effective_debug_logging else 0),
+        ("MDNS_DEBUG_LOGGING", 1 if effective_debug_logging else 0),
     ]
     return "\n".join(_render_flash_config_assignment(key, value) for key, value in values) + "\n"
