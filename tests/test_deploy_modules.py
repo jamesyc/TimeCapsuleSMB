@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import shutil
 import shlex
-import socket
 import subprocess
 import sys
 import selectors
@@ -1543,8 +1542,12 @@ int main(void) {{
     struct ifreq sample_ifr;
     size_t expected_variable_step;
 
-    if (runtime_ipv4_is_usable(inet_addr("127.0.0.1")) ||
+    if (runtime_ipv4_is_usable(inet_addr("0.1.2.3")) ||
+        runtime_ipv4_is_usable(inet_addr("127.0.0.1")) ||
         runtime_ipv4_is_usable(inet_addr("169.254.1.9")) ||
+        runtime_ipv4_is_usable(inet_addr("224.0.0.1")) ||
+        runtime_ipv4_is_usable(inet_addr("240.0.0.1")) ||
+        runtime_ipv4_is_usable(inet_addr("255.255.255.255")) ||
         runtime_ipv4_is_usable(0) ||
         !runtime_ipv4_is_usable(inet_addr("10.0.1.1"))) {{
         return 1;
@@ -1599,6 +1602,31 @@ int main(void) {{
     if (iface_context_sets_equal(&a, &b)) {{
         return 6;
     }}
+
+    memset(&a, 0, sizeof(a));
+    memset(&b, 0, sizeof(b));
+    append_iface_context(&a, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    append_iface_context(&a, "bcmeth0", inet_addr("192.168.1.217"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    append_iface_context(&b, "bcmeth0", inet_addr("192.168.1.217"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    append_iface_context(&b, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    if (!iface_context_sets_equal(&a, &b)) {{
+        return 10;
+    }}
+
+    memset(&a, 0, sizeof(a));
+    append_iface_context(&a, "ppp0", inet_addr("10.0.1.2"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    append_iface_context(&a, "bridge0", inet_addr("203.0.113.5"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    append_iface_context(&a, "en0", inet_addr("192.168.1.2"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    append_iface_context(&a, "br1", inet_addr("192.168.1.3"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    append_iface_context(&a, "br0", inet_addr("192.168.1.4"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    sort_iface_contexts(&a);
+    if (strcmp(a.contexts[0].name, "br0") != 0 ||
+        strcmp(a.contexts[1].name, "br1") != 0 ||
+        strcmp(a.contexts[2].name, "en0") != 0 ||
+        strcmp(a.contexts[3].name, "bridge0") != 0 ||
+        strcmp(a.contexts[4].name, "ppp0") != 0) {{
+        return 11;
+    }}
     return 0;
 }}
 '''.format(mdns_source=mdns_source)
@@ -1633,6 +1661,10 @@ int main(void) {{
     append_iface_context(&set, "bcmeth0", inet_addr("192.168.1.40"), 0, IFF_UP | IFF_RUNNING);
     append_iface_context(&set, "lo0", inet_addr("127.0.0.1"), inet_addr("255.0.0.0"), IFF_UP | IFF_RUNNING);
     append_iface_context(&set, "ll0", inet_addr("169.254.1.9"), inet_addr("255.255.0.0"), IFF_UP | IFF_RUNNING);
+    append_iface_context(&set, "zero0", inet_addr("0.1.2.3"), inet_addr("255.0.0.0"), IFF_UP | IFF_RUNNING);
+    append_iface_context(&set, "mcast0", inet_addr("224.0.0.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    append_iface_context(&set, "reserved0", inet_addr("240.0.0.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    append_iface_context(&set, "broadcast0", inet_addr("255.255.255.255"), inet_addr("255.255.255.255"), IFF_UP | IFF_RUNNING);
     if (set.count != 2) {{
         return 2;
     }}
@@ -2037,11 +2069,18 @@ static int fake_pclose(FILE *fp);
 #undef socket
 
 static int socket_calls;
+static int socket_domain;
+static int socket_type;
+static int socket_protocol;
 static int bind_calls;
+static int bind_family;
+static unsigned int bind_port;
+static uint32_t bind_addr;
 static int close_calls;
 static int reuseaddr_sets;
 static int reuseport_sets;
 static int membership_sets;
+static int drop_membership_sets;
 static int outbound_sets;
 static int system_calls;
 static int fake_mdns_alive;
@@ -2050,11 +2089,18 @@ static int next_fd = 100;
 
 static void reset_fakes(void) {
     socket_calls = 0;
+    socket_domain = 0;
+    socket_type = 0;
+    socket_protocol = 0;
     bind_calls = 0;
+    bind_family = 0;
+    bind_port = 0;
+    bind_addr = 0xffffffffU;
     close_calls = 0;
     reuseaddr_sets = 0;
     reuseport_sets = 0;
     membership_sets = 0;
+    drop_membership_sets = 0;
     outbound_sets = 0;
     system_calls = 0;
     fake_mdns_alive = 0;
@@ -2063,10 +2109,10 @@ static void reset_fakes(void) {
 }
 
 static int fake_socket(int domain, int type, int protocol) {
-    (void)domain;
-    (void)type;
-    (void)protocol;
     socket_calls++;
+    socket_domain = domain;
+    socket_type = type;
+    socket_protocol = protocol;
     return next_fd++;
 }
 
@@ -2085,6 +2131,11 @@ static int fake_setsockopt(int sockfd, int level, int optname, const void *optva
     if (level == IPPROTO_IP && optname == IP_ADD_MEMBERSHIP) {
         membership_sets++;
     }
+#ifdef IP_DROP_MEMBERSHIP
+    if (level == IPPROTO_IP && optname == IP_DROP_MEMBERSHIP) {
+        drop_membership_sets++;
+    }
+#endif
     if (level == IPPROTO_IP && optname == IP_MULTICAST_IF) {
         outbound_sets++;
     }
@@ -2092,10 +2143,15 @@ static int fake_setsockopt(int sockfd, int level, int optname, const void *optva
 }
 
 static int fake_bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+    const struct sockaddr_in *sin;
     (void)sockfd;
-    (void)addr;
-    (void)addrlen;
     bind_calls++;
+    if (addrlen >= sizeof(*sin) && addr != NULL) {
+        sin = (const struct sockaddr_in *)addr;
+        bind_family = sin->sin_family;
+        bind_port = (unsigned int)ntohs(sin->sin_port);
+        bind_addr = ntohl(sin->sin_addr.s_addr);
+    }
     return 0;
 }
 
@@ -2173,6 +2229,10 @@ int main(void) {
         reuseaddr_sets != 0 || reuseport_sets != 0 || membership_sets != 2 || outbound_sets != 1) {
         return 2;
     }
+    if (socket_domain != AF_INET || socket_type != SOCK_DGRAM || socket_protocol != 0 ||
+        bind_family != AF_INET || bind_port != MDNS_PORT || bind_addr != INADDR_ANY) {
+        return 14;
+    }
 
     reset_fakes();
     fake_mdns_alive = 1;
@@ -2187,137 +2247,66 @@ int main(void) {
     if (fd < 0 || socket_calls != 1 || reuseaddr_sets != 1 || membership_sets != 2) {
         return 4;
     }
+    if (bind_family != AF_INET || bind_port != MDNS_PORT || bind_addr != INADDR_ANY) {
+        return 15;
+    }
 #ifdef SO_REUSEPORT
     if (reuseport_sets != 1) {
         return 5;
     }
 #endif
 
+    {
+        struct iface_context_set old_contexts;
+        struct iface_context_set new_contexts;
+        struct iface_context_set empty_contexts;
+
+        memset(&old_contexts, 0, sizeof(old_contexts));
+        memset(&new_contexts, 0, sizeof(new_contexts));
+        memset(&empty_contexts, 0, sizeof(empty_contexts));
+        append_iface_context(&old_contexts, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+        append_iface_context(&old_contexts, "bcmeth0", inet_addr("192.168.1.217"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+        append_iface_context(&new_contexts, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+        append_iface_context(&new_contexts, "en1", inet_addr("192.168.50.2"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+
+        reset_fakes();
+        if (prepare_mdns_auto_socket_for_contexts(55, &old_contexts, &new_contexts) != 0 ||
+            socket_calls != 0 || bind_calls != 0 || close_calls != 0 ||
+            membership_sets != 1 || outbound_sets != 1) {
+            return 8;
+        }
+        retire_mdns_auto_socket_contexts(55, &old_contexts, &new_contexts);
+        if (close_calls != 0) {
+            return 9;
+        }
+#ifdef IP_DROP_MEMBERSHIP
+        if (drop_membership_sets != 1) {
+            return 10;
+        }
+#endif
+
+        reset_fakes();
+        if (prepare_mdns_auto_socket_for_contexts(55, &old_contexts, &empty_contexts) != 0 ||
+            socket_calls != 0 || bind_calls != 0 || close_calls != 0 ||
+            membership_sets != 0 || outbound_sets != 0) {
+            return 11;
+        }
+        retire_mdns_auto_socket_contexts(55, &old_contexts, &empty_contexts);
+        if (close_calls != 0) {
+            return 12;
+        }
+#ifdef IP_DROP_MEMBERSHIP
+        if (drop_membership_sets != 2) {
+            return 13;
+        }
+#endif
+    }
+
     return 0;
 }
 '''.replace("@MDNS_SOURCE@", mdns_source)
         run = self._compile_and_run_c_helper(source, "mdns_auto_ip_takeover_socket_shape")
         self.assertEqual(run.returncode, 0, run.stderr)
-
-    def test_mdns_auto_ip_runtime_socket_is_exclusive(self) -> None:
-        if shutil.which("cc") is None:
-            self.skipTest("cc not available")
-
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as free_sock:
-            free_sock.bind(("", 0))
-            port = free_sock.getsockname()[1]
-
-        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
-        source = f'''
-#include <stdio.h>
-
-static int fake_system(const char *cmd) {{
-    (void)cmd;
-    return 0;
-}}
-
-static FILE *fake_popen(const char *cmd, const char *mode) {{
-    (void)cmd;
-    (void)mode;
-    return NULL;
-}}
-
-#define system fake_system
-#define popen fake_popen
-#include "{mdns_source}"
-#undef popen
-#undef system
-'''
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            c_path = tmp / "mdns_exclusive_port.c"
-            bin_path = tmp / "mdns_exclusive_port"
-            c_path.write_text(source)
-            proc = subprocess.run(
-                [
-                    "cc",
-                    "-Wall",
-                    "-Wextra",
-                    "-Werror",
-                    f"-DMDNS_PORT={port}",
-                    str(c_path),
-                    "-o",
-                    str(bin_path),
-                ],
-                cwd=REPO_ROOT,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-
-            probe = subprocess.run(
-                [str(bin_path), "--print-auto-ip-cidrs"],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=5,
-            )
-            if probe.returncode == 11:
-                self.skipTest("host has no usable non-loopback IPv4 for auto-IP test")
-            self.assertEqual(probe.returncode, 0, probe.stderr)
-
-            run = subprocess.Popen(
-                [
-                    str(bin_path),
-                    "--auto-ip",
-                    "--instance",
-                    "TimeCapsule",
-                    "--host",
-                    "timecapsule",
-                    "--airport-wama",
-                    "80:EA:96:E6:58:68",
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            stderr_chunks: list[str] = []
-            selector = selectors.DefaultSelector()
-            assert run.stderr is not None
-            selector.register(run.stderr, selectors.EVENT_READ)
-            # The runtime intentionally waits AUTO_IP_STABILIZE_SECONDS before
-            # attempting the exclusive bind. Give slow CI hosts enough margin
-            # after that stabilization window to finish multicast setup.
-            deadline = time.monotonic() + 20
-            ready = False
-            try:
-                while run.poll() is None and time.monotonic() < deadline:
-                    events = selector.select(max(0.0, min(0.05, deadline - time.monotonic())))
-                    if not events:
-                        continue
-                    line = run.stderr.readline()
-                    if line:
-                        stderr_chunks.append(line)
-                        if "mDNS auto-ip takeover established" in line:
-                            ready = True
-                            break
-                self.assertTrue(ready, "".join(stderr_chunks))
-
-                competitor = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                try:
-                    competitor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                    if hasattr(socket, "SO_REUSEPORT"):
-                        competitor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-                    with self.assertRaises(OSError):
-                        competitor.bind(("", port))
-                finally:
-                    competitor.close()
-            finally:
-                selector.close()
-                run.terminate()
-                try:
-                    stdout, stderr = run.communicate(timeout=2)
-                except subprocess.TimeoutExpired:
-                    run.kill()
-                    stdout, stderr = run.communicate(timeout=2)
-                stderr_chunks.append(stderr)
-                self.assertIsNotNone(stdout)
 
     def test_mdns_advertiser_extracts_service_type_from_arbitrary_instance_fqdn(self) -> None:
         if shutil.which("cc") is None:
@@ -3797,6 +3786,17 @@ int main(void) {{
         self.assertEqual(run.returncode, 2)
         self.assertIn("ttl must be between 1 and 86400", run.stderr)
 
+    def test_nbns_advertiser_usage_reports_120_second_default_ttl(self) -> None:
+        if shutil.which("cc") is None:
+            self.skipTest("cc not available")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bin_path = self._compile_nbns_advertiser_binary(Path(tmpdir))
+            run = subprocess.run([str(bin_path), "--help"], capture_output=True, text=True, check=False)
+
+        self.assertEqual(run.returncode, 0)
+        self.assertIn("Record TTL (default: 120)", run.stderr)
+
     def test_nbns_advertiser_builds_rfc_query_and_status_responses(self) -> None:
         nbns_source = (REPO_ROOT / "build" / "nbns-advertiser.c").as_posix()
         source = r'''
@@ -4214,8 +4214,12 @@ int main(void) {{
         return 10;
     }}
 
-    if (runtime_ipv4_is_usable(inet_addr("127.0.0.1")) ||
+    if (runtime_ipv4_is_usable(inet_addr("0.1.2.3")) ||
+        runtime_ipv4_is_usable(inet_addr("127.0.0.1")) ||
         runtime_ipv4_is_usable(inet_addr("169.254.1.9")) ||
+        runtime_ipv4_is_usable(inet_addr("224.0.0.1")) ||
+        runtime_ipv4_is_usable(inet_addr("240.0.0.1")) ||
+        runtime_ipv4_is_usable(inet_addr("255.255.255.255")) ||
         runtime_ipv4_is_usable(0) ||
         !runtime_ipv4_is_usable(inet_addr("10.0.1.1"))) {{
         return 1;
@@ -4268,10 +4272,17 @@ int main(void) {{
     if (choose_response_ipv4(&contexts, inet_addr("192.168.50.99")) != inet_addr("192.168.50.2")) {{
         return 3;
     }}
-    if (choose_response_ipv4(&contexts, inet_addr("172.16.1.5")) != inet_addr("10.0.1.1")) {{
+    if (choose_response_ipv4(&contexts, inet_addr("172.16.1.5")) != 0) {{
         return 4;
     }}
 
+    memset(&contexts, 0, sizeof(contexts));
+    append_iface_context(&contexts, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    if (choose_response_ipv4(&contexts, inet_addr("172.16.1.5")) != inet_addr("10.0.1.1")) {{
+        return 13;
+    }}
+
+    append_iface_context(&contexts, "bcmeth0", inet_addr("192.168.50.2"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
     contexts.contexts[1].netmask = inet_addr("255.255.0.0");
     if (iface_context_sets_equal(&contexts, &contexts) != 1) {{
         return 9;

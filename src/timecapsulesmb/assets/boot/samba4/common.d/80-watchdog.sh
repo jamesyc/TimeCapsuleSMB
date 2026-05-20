@@ -197,6 +197,7 @@ tc_live_reload_disk_runtime() {
 
     tc_prepare_local_hostname_resolution
     tc_init_runtime_identity
+    TC_WATCHDOG_RECOVERY_IDENTITY_REFRESHED=1
     if fresh_bind_interfaces=$(tc_probe_smb_bind_interfaces); then
         if [ -z "$old_bind_interfaces" ] || [ "$fresh_bind_interfaces" != "$old_bind_interfaces" ]; then
             TC_SMB_BIND_INTERFACES=$fresh_bind_interfaces
@@ -242,19 +243,21 @@ tc_live_reload_disk_runtime() {
     if tc_ensure_mdns_auto_ip_seen; then
         tc_launch_mdns_advertiser "watchdog topology refresh" 1 10
     fi
-    if tc_nbns_enabled; then
-        if runtime_process_present_by_ucomm "$NBNS_PROC_NAME"; then
-            :
-        else
-            tc_restart_nbns
-        fi
-    fi
+    tc_watchdog_reconcile_nbns || return 1
     tc_log "watchdog recovery: live disk runtime refresh complete"
     return 0
 }
 
 tc_nbns_enabled() {
     [ "$NBNS_ENABLED" = "1" ]
+}
+
+tc_mark_nbns_deferred_no_ip() {
+    TC_WATCHDOG_NBNS_DEFERRED_NO_IP=1
+    if [ "${TC_NBNS_AUTO_IP_WAIT_LOGGED:-0}" != "1" ]; then
+        tc_log "NBNS startup deferred; no usable IPv4 has appeared yet"
+        TC_NBNS_AUTO_IP_WAIT_LOGGED=1
+    fi
 }
 
 tc_samba_runtime_expected() {
@@ -296,14 +299,23 @@ tc_all_managed_services_healthy() {
         return 1
     fi
 
-    if ! runtime_process_present_by_ucomm "$MDNS_PROC_NAME"; then
-        if [ "${TC_WATCHDOG_MDNS_DEFERRED_NO_IP:-0}" != "1" ]; then
+    if [ "${TC_WATCHDOG_MDNS_DEFERRED_NO_IP:-0}" != "1" ]; then
+        if ! runtime_process_present_by_ucomm "$MDNS_PROC_NAME"; then
+            return 1
+        fi
+        if ! tc_mdns_bound_ipv4_udp_5353; then
             return 1
         fi
     fi
 
     if [ "$samba_expected" = "1" ] && tc_nbns_enabled; then
+        if [ "${TC_WATCHDOG_NBNS_DEFERRED_NO_IP:-0}" = "1" ]; then
+            return 0
+        fi
         if ! runtime_process_present_by_ucomm "$NBNS_PROC_NAME"; then
+            return 1
+        fi
+        if ! tc_nbns_bound_ipv4_udp_137; then
             return 1
         fi
     fi
@@ -368,6 +380,7 @@ tc_watchdog_reset_pass_state() {
     TC_WATCHDOG_SMB_DEFERRED_NO_IP=0
     TC_WATCHDOG_MDNS_DEFERRED_NO_IP=0
     TC_WATCHDOG_MDNS_UNAVAILABLE=0
+    TC_WATCHDOG_NBNS_DEFERRED_NO_IP=0
     TC_AIRPORT_FIELDS_READY=0
     TC_AIRPORT_FIELDS_ADVERTISE_MAC=
 }
@@ -442,6 +455,28 @@ tc_watchdog_reconcile_smb_bind_interfaces() {
 }
 
 tc_watchdog_reconcile_mdns() {
+    mdns_auto_ip_status=0
+
+    if runtime_process_present_by_ucomm "$MDNS_PROC_NAME"; then
+        if tc_mdns_bound_ipv4_udp_5353; then
+            return 0
+        fi
+        tc_log "watchdog recovery: mdns advertiser is running without IPv4 UDP 5353"
+        if tc_mdns_auto_ip_available; then
+            TC_MDNS_AUTO_IP_SEEN=1
+            stop_runtime_process_by_ucomm "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" || return 1
+        else
+            mdns_auto_ip_status=$?
+            if tc_auto_ip_unavailable_status "$mdns_auto_ip_status"; then
+                tc_mark_mdns_deferred_no_ip
+                return 0
+            fi
+            TC_WATCHDOG_MDNS_UNAVAILABLE=1
+            tc_log "watchdog recovery: mDNS auto-ip check failed with exit code $mdns_auto_ip_status"
+            return 0
+        fi
+    fi
+
     if runtime_process_present_by_ucomm "$MDNS_PROC_NAME"; then
         return 0
     fi
@@ -464,8 +499,38 @@ tc_watchdog_start_mdns_if_needed() {
 }
 
 tc_watchdog_reconcile_nbns() {
+    nbns_auto_ip_status=0
+
     if ! tc_nbns_enabled; then
         return 0
+    fi
+
+    if runtime_process_present_by_ucomm "$NBNS_PROC_NAME"; then
+        if tc_nbns_bound_ipv4_udp_137; then
+            return 0
+        fi
+        tc_log "watchdog recovery: nbns responder is running without IPv4 UDP 137"
+        if tc_mdns_auto_ip_available; then
+            stop_runtime_process_by_ucomm "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" || return 1
+        else
+            nbns_auto_ip_status=$?
+            if tc_auto_ip_unavailable_status "$nbns_auto_ip_status"; then
+                tc_mark_nbns_deferred_no_ip
+                return 0
+            fi
+            tc_log "watchdog recovery: NBNS auto-ip check failed with exit code $nbns_auto_ip_status"
+            return 1
+        fi
+    else
+        if ! tc_mdns_auto_ip_available; then
+            nbns_auto_ip_status=$?
+            if tc_auto_ip_unavailable_status "$nbns_auto_ip_status"; then
+                tc_mark_nbns_deferred_no_ip
+                return 0
+            fi
+            tc_log "watchdog recovery: NBNS auto-ip check failed with exit code $nbns_auto_ip_status"
+            return 1
+        fi
     fi
 
     if runtime_process_present_by_ucomm "$NBNS_PROC_NAME"; then

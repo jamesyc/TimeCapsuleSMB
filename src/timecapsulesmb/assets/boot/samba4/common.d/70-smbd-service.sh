@@ -41,6 +41,61 @@ tc_smbd_bound_ipv4_445() {
     return 1
 }
 
+tc_fstat_line_is_ipv4_udp_port() {
+    port=$1
+    case "$2" in
+        *" internet dgram udp "*":$port"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+tc_process_bound_ipv4_udp_port() {
+    proc_name=$1
+    port=$2
+
+    if ps_out=$(/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null); then
+        old_ifs=$IFS
+        IFS='
+'
+        for line in $ps_out; do
+            [ -n "$line" ] || continue
+            line_ifs=$IFS
+            IFS=' 	'
+            set -- $line
+            IFS=$line_ifs
+            [ "$#" -ge 3 ] || continue
+            case "$2" in
+                Z*) continue ;;
+            esac
+            [ "$3" = "$proc_name" ] || continue
+
+            if fstat_out=$(/usr/bin/fstat -p "$1" 2>/dev/null); then
+                fstat_ifs=$IFS
+                IFS='
+'
+                for fstat_line in $fstat_out; do
+                    if tc_fstat_line_is_ipv4_udp_port "$port" "$fstat_line"; then
+                        IFS=$old_ifs
+                        return 0
+                    fi
+                done
+                IFS=$fstat_ifs
+            fi
+        done
+        IFS=$old_ifs
+    fi
+
+    return 1
+}
+
+tc_nbns_bound_ipv4_udp_137() {
+    tc_process_bound_ipv4_udp_port "$NBNS_PROC_NAME" 137
+}
+
+tc_mdns_bound_ipv4_udp_5353() {
+    tc_process_bound_ipv4_udp_port "$MDNS_PROC_NAME" 5353
+}
+
 tc_wait_for_smbd_ipv4_445() {
     max_attempts=${1:-10}
     attempt=0

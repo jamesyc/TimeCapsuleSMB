@@ -2568,6 +2568,7 @@ MaSt = (
                     tc_watchdog_reconcile_smb_bind_interfaces() {{ :; }}
                     tc_start_smbd_if_needed() {{ echo smbd; }}
                     runtime_process_present_by_ucomm() {{ echo "process $1"; return 0; }}
+                    tc_nbns_bound_ipv4_udp_137() {{ return 0; }}
                     tc_all_managed_services_healthy() {{ echo healthy; return 0; }}
                     tc_watchdog_service_iteration
                     """
@@ -2646,6 +2647,8 @@ MaSt = (
                     tc_watchdog_wake_or_mount_volume() {{ echo "mount $1 $2"; return 0; }}
                     tc_generate_smb_conf() {{ echo "generate $1 $TC_SMB_BIND_INTERFACES"; }}
                     tc_restart_smbd_for_bind_change() {{ echo "restart $1"; }}
+                    tc_restart_mdns() {{ echo unexpected-mdns; return 1; }}
+                    tc_restart_nbns() {{ echo unexpected-nbns; return 1; }}
                     tc_watchdog_reconcile_smb_bind_interfaces
                     printf 'bind=%s\\n' "$TC_SMB_BIND_INTERFACES"
                     """
@@ -2995,6 +2998,333 @@ MaSt = (
         self.assertNotIn("advertise\n", proc.stdout)
         self.assertIn("restart\n", proc.stdout)
         self.assertIn("capture_attempted=1\n", proc.stdout)
+
+    def test_common_watchdog_health_requires_mdns_udp_5353(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "watchdog-mdns-health-udp.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    tc_samba_runtime_expected() {{ return 1; }}
+                    mdns_present=1
+                    runtime_process_present_by_ucomm() {{
+                        [ "$1" = "$MDNS_PROC_NAME" ] && [ "$mdns_present" = "1" ]
+                    }}
+                    tc_mdns_bound_ipv4_udp_5353() {{ return 1; }}
+                    status=0
+                    tc_all_managed_services_healthy || status=$?
+                    echo "unbound=$status"
+                    tc_mdns_bound_ipv4_udp_5353() {{ return 0; }}
+                    status=0
+                    tc_all_managed_services_healthy || status=$?
+                    echo "bound=$status"
+                    mdns_present=0
+                    status=0
+                    tc_all_managed_services_healthy || status=$?
+                    echo "missing=$status"
+                    TC_WATCHDOG_MDNS_DEFERRED_NO_IP=1
+                    status=0
+                    tc_all_managed_services_healthy || status=$?
+                    echo "deferred=$status"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "unbound=1\nbound=0\nmissing=1\ndeferred=0\n")
+
+    def test_common_watchdog_restarts_mdns_when_running_without_udp_5353_and_auto_ip_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "watchdog-mdns-restart-unbound.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    TC_MDNS_CAPTURE_ATTEMPTED=1
+                    mdns_present=1
+                    runtime_process_present_by_ucomm() {{
+                        [ "$1" = "$MDNS_PROC_NAME" ] && [ "$mdns_present" = "1" ]
+                    }}
+                    tc_mdns_bound_ipv4_udp_5353() {{ return 1; }}
+                    tc_mdns_auto_ip_available() {{ echo auto-ip; return 0; }}
+                    stop_runtime_process_by_ucomm() {{ echo "stop $1"; mdns_present=0; }}
+                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ echo identity; }}
+                    tc_restart_mdns() {{ echo restart; }}
+                    tc_start_mdns_capture() {{ echo unexpected-capture; return 1; }}
+                    tc_start_mdns_advertiser() {{ echo unexpected-advertise; return 1; }}
+                    tc_watchdog_reconcile_mdns
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "auto-ip\nstop mdns-advertiser\nidentity\nrestart\n")
+        self.assertIn("watchdog recovery: mdns advertiser is running without IPv4 UDP 5353", log_text)
+        self.assertNotIn("unexpected", proc.stdout)
+
+    def test_common_watchdog_defers_mdns_when_running_without_udp_5353_and_no_auto_ip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "watchdog-mdns-defer-unbound.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    runtime_process_present_by_ucomm() {{
+                        [ "$1" = "$MDNS_PROC_NAME" ]
+                    }}
+                    tc_mdns_bound_ipv4_udp_5353() {{ return 1; }}
+                    tc_mdns_auto_ip_available() {{ echo auto-ip; return 11; }}
+                    stop_runtime_process_by_ucomm() {{ echo "unexpected-stop $1"; return 1; }}
+                    tc_restart_mdns() {{ echo unexpected-restart; return 1; }}
+                    tc_watchdog_reconcile_mdns
+                    echo "deferred=$TC_WATCHDOG_MDNS_DEFERRED_NO_IP"
+                    tc_samba_runtime_expected() {{ return 1; }}
+                    status=0
+                    tc_all_managed_services_healthy || status=$?
+                    echo "healthy=$status"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "auto-ip\ndeferred=1\nhealthy=0\n")
+        self.assertIn("watchdog recovery: mdns advertiser is running without IPv4 UDP 5353", log_text)
+        self.assertIn("mDNS startup deferred; no usable IPv4 has appeared yet", log_text)
+        self.assertNotIn("unexpected", proc.stdout)
+
+    def test_common_watchdog_marks_mdns_unavailable_when_unbound_auto_ip_probe_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "watchdog-mdns-unbound-hard-fail.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    runtime_process_present_by_ucomm() {{
+                        [ "$1" = "$MDNS_PROC_NAME" ]
+                    }}
+                    tc_mdns_bound_ipv4_udp_5353() {{ return 1; }}
+                    tc_mdns_auto_ip_available() {{ echo auto-ip; return 13; }}
+                    stop_runtime_process_by_ucomm() {{ echo "unexpected-stop $1"; return 1; }}
+                    tc_restart_mdns() {{ echo unexpected-restart; return 1; }}
+                    tc_watchdog_reconcile_mdns
+                    echo "deferred=$TC_WATCHDOG_MDNS_DEFERRED_NO_IP"
+                    echo "unavailable=$TC_WATCHDOG_MDNS_UNAVAILABLE"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "auto-ip\ndeferred=0\nunavailable=1\n")
+        self.assertIn("watchdog recovery: mdns advertiser is running without IPv4 UDP 5353", log_text)
+        self.assertIn("watchdog recovery: mDNS auto-ip check failed with exit code 13", log_text)
+        self.assertNotIn("unexpected", proc.stdout)
+
+    def test_common_watchdog_health_requires_nbns_udp_137(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "watchdog-nbns-health-udp.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    NBNS_ENABLED=1
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    tc_samba_runtime_expected() {{ return 0; }}
+                    runtime_process_present_by_ucomm() {{ return 0; }}
+                    tc_smbd_bound_ipv4_445() {{ return 0; }}
+                    tc_mdns_bound_ipv4_udp_5353() {{ return 0; }}
+                    tc_nbns_bound_ipv4_udp_137() {{ return 1; }}
+                    status=0
+                    tc_all_managed_services_healthy || status=$?
+                    echo "unbound=$status"
+                    tc_nbns_bound_ipv4_udp_137() {{ return 0; }}
+                    status=0
+                    tc_all_managed_services_healthy || status=$?
+                    echo "bound=$status"
+                    TC_WATCHDOG_NBNS_DEFERRED_NO_IP=1
+                    tc_nbns_bound_ipv4_udp_137() {{ return 1; }}
+                    status=0
+                    tc_all_managed_services_healthy || status=$?
+                    echo "deferred=$status"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "unbound=1\nbound=0\ndeferred=0\n")
+
+    def test_common_watchdog_restarts_nbns_when_running_without_udp_137_and_auto_ip_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "watchdog-nbns-restart-unbound.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    NBNS_ENABLED=1
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    nbns_present=1
+                    runtime_process_present_by_ucomm() {{
+                        [ "$1" = "$NBNS_PROC_NAME" ] && [ "$nbns_present" = "1" ]
+                    }}
+                    tc_nbns_bound_ipv4_udp_137() {{ return 1; }}
+                    tc_mdns_auto_ip_available() {{ echo auto-ip; return 0; }}
+                    stop_runtime_process_by_ucomm() {{ echo "stop $1"; nbns_present=0; }}
+                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ echo identity; }}
+                    tc_restart_nbns() {{ echo restart; }}
+                    tc_watchdog_reconcile_nbns
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "auto-ip\nstop nbns-advertiser\nidentity\nrestart\n")
+        self.assertIn("watchdog recovery: nbns responder is running without IPv4 UDP 137", log_text)
+
+    def test_common_watchdog_defers_nbns_when_running_without_udp_137_and_no_auto_ip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "watchdog-nbns-defer-unbound.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    NBNS_ENABLED=1
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    runtime_process_present_by_ucomm() {{
+                        [ "$1" = "$NBNS_PROC_NAME" ]
+                    }}
+                    tc_nbns_bound_ipv4_udp_137() {{ return 1; }}
+                    tc_mdns_auto_ip_available() {{ echo auto-ip; return 11; }}
+                    stop_runtime_process_by_ucomm() {{ echo "unexpected-stop $1"; return 1; }}
+                    tc_restart_nbns() {{ echo unexpected-restart; return 1; }}
+                    tc_watchdog_reconcile_nbns
+                    echo "deferred=$TC_WATCHDOG_NBNS_DEFERRED_NO_IP"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "auto-ip\ndeferred=1\n")
+        self.assertIn("watchdog recovery: nbns responder is running without IPv4 UDP 137", log_text)
+        self.assertIn("NBNS startup deferred; no usable IPv4 has appeared yet", log_text)
+        self.assertNotIn("unexpected", proc.stdout)
+
+    def test_common_watchdog_reports_nbns_hard_auto_ip_failure_when_unbound(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "watchdog-nbns-unbound-hard-fail.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    NBNS_ENABLED=1
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    runtime_process_present_by_ucomm() {{
+                        [ "$1" = "$NBNS_PROC_NAME" ]
+                    }}
+                    tc_nbns_bound_ipv4_udp_137() {{ return 1; }}
+                    tc_mdns_auto_ip_available() {{ echo auto-ip; return 13; }}
+                    stop_runtime_process_by_ucomm() {{ echo "unexpected-stop $1"; return 1; }}
+                    tc_restart_nbns() {{ echo unexpected-restart; return 1; }}
+                    status=0
+                    tc_watchdog_reconcile_nbns || status=$?
+                    echo "status=$status"
+                    echo "deferred=$TC_WATCHDOG_NBNS_DEFERRED_NO_IP"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "auto-ip\nstatus=1\ndeferred=0\n")
+        self.assertIn("watchdog recovery: nbns responder is running without IPv4 UDP 137", log_text)
+        self.assertIn("watchdog recovery: NBNS auto-ip check failed with exit code 13", log_text)
+        self.assertNotIn("unexpected", proc.stdout)
 
     def test_common_smbd_recovery_mounts_payload_and_share_volumes_before_restart(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4821,6 +5151,7 @@ MaSt = (
                     }}
                     tc_generate_smb_conf() {{ echo "generate $1"; }}
                     runtime_process_present_by_ucomm() {{ echo "process $1"; return 0; }}
+                    tc_nbns_bound_ipv4_udp_137() {{ return 0; }}
                     tc_reload_smbd_config() {{ echo reload; }}
                     stop_runtime_process_by_ucomm() {{ echo "stop $1"; }}
                     tc_start_smbd_if_needed() {{ echo smbd; }}
@@ -5096,6 +5427,183 @@ MaSt = (
         self.assertIn("mDNS auto-ip check failed; missing", log_text)
         self.assertIn("watchdog recovery: live disk runtime refresh complete", log_text)
         self.assertNotIn("re-execing start-samba.sh", log_text)
+
+    def test_common_watchdog_live_reload_restarts_mdns_but_leaves_healthy_nbns_running(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            payload.mkdir(parents=True)
+            script = tmp_path / "watchdog-live-healthy-nbns.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    NBNS_ENABLED=1
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR" "$RAM_SBIN" "$RAM_ETC"
+                    : >"$TC_SMBD_BIN"
+                    chmod 755 "$TC_SMBD_BIN"
+                    TC_MDNS_AUTO_IP_SEEN=1
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
+                    tc_write_payload_state {payload} {volumes}/dk2 /dev/dk2
+                    sleep() {{ :; }}
+                    tc_probe_smb_bind_interfaces() {{ echo "$TC_SMB_BIND_INTERFACES"; }}
+                    tc_watchdog_capture_mast_state() {{ : >"$1"; : >"$2"; return 0; }}
+                    tc_topology_changed_debounced_from_snapshot() {{ return 0; }}
+                    tc_refresh_disk_state() {{
+                        echo refresh
+                        tc_write_payload_state {payload} {volumes}/dk2 /dev/dk2
+                        cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                        cat >"$TC_ADISK_TSV" <<'EOF'
+                    Data	dk2	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa	0x82
+                    EOF
+                    }}
+                    tc_prepare_local_hostname_resolution() {{ echo hostname; }}
+                    tc_init_runtime_identity() {{
+                        echo identity
+                        MDNS_INSTANCE_NAME=Live
+                        MDNS_HOST_LABEL=live
+                        SMB_NETBIOS_NAME=Live
+                        SMB_SERVER_STRING=Live
+                        TC_RUNTIME_IDENTITY_READY=1
+                    }}
+                    tc_generate_smb_conf() {{ echo "generate $1"; }}
+                    tc_reload_smbd_config() {{ echo reload; }}
+                    tc_launch_mdns_advertiser() {{ echo "mdns $1 $2 $3"; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            smbd|nbns-advertiser) return 0 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_nbns_bound_ipv4_udp_137() {{ return 0; }}
+                    tc_restart_nbns() {{ echo unexpected-nbns; return 1; }}
+                    tc_exec_start_samba() {{ echo "exec $1"; exit 42; }}
+                    tc_watchdog_disk_iteration
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            "\n".join(
+                (
+                    "refresh",
+                    "hostname",
+                    "identity",
+                    f"generate {payload}",
+                    "reload",
+                    "mdns watchdog topology refresh 1 10",
+                    "",
+                )
+            ),
+        )
+        self.assertNotIn("unexpected-nbns", proc.stdout)
+        self.assertIn("watchdog recovery: live disk runtime refresh complete", log_text)
+
+    def test_common_watchdog_live_reload_reconciles_unbound_nbns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            payload.mkdir(parents=True)
+            script = tmp_path / "watchdog-live-unbound-nbns.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    NBNS_ENABLED=1
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR" "$RAM_SBIN" "$RAM_ETC"
+                    : >"$TC_SMBD_BIN"
+                    chmod 755 "$TC_SMBD_BIN"
+                    TC_MDNS_AUTO_IP_SEEN=1
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
+                    tc_write_payload_state {payload} {volumes}/dk2 /dev/dk2
+                    nbns_present=1
+                    sleep() {{ :; }}
+                    tc_probe_smb_bind_interfaces() {{ echo "$TC_SMB_BIND_INTERFACES"; }}
+                    tc_watchdog_capture_mast_state() {{ : >"$1"; : >"$2"; return 0; }}
+                    tc_topology_changed_debounced_from_snapshot() {{ return 0; }}
+                    tc_refresh_disk_state() {{
+                        echo refresh
+                        tc_write_payload_state {payload} {volumes}/dk2 /dev/dk2
+                        cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                        cat >"$TC_ADISK_TSV" <<'EOF'
+                    Data	dk2	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa	0x82
+                    EOF
+                    }}
+                    tc_prepare_local_hostname_resolution() {{ echo hostname; }}
+                    tc_init_runtime_identity() {{
+                        echo identity
+                        MDNS_INSTANCE_NAME=Live
+                        MDNS_HOST_LABEL=live
+                        SMB_NETBIOS_NAME=Live
+                        SMB_SERVER_STRING=Live
+                        TC_RUNTIME_IDENTITY_READY=1
+                    }}
+                    tc_generate_smb_conf() {{ echo "generate $1"; }}
+                    tc_reload_smbd_config() {{ echo reload; }}
+                    tc_launch_mdns_advertiser() {{ echo "mdns $1 $2 $3"; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            smbd) return 0 ;;
+                            nbns-advertiser) [ "$nbns_present" = "1" ] ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_nbns_bound_ipv4_udp_137() {{ return 1; }}
+                    tc_mdns_auto_ip_available() {{ echo nbns-auto-ip; return 0; }}
+                    stop_runtime_process_by_ucomm() {{ echo "stop $1"; nbns_present=0; }}
+                    tc_restart_nbns() {{ echo restart-nbns; }}
+                    tc_exec_start_samba() {{ echo "exec $1"; exit 42; }}
+                    tc_watchdog_disk_iteration
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            "\n".join(
+                (
+                    "refresh",
+                    "hostname",
+                    "identity",
+                    f"generate {payload}",
+                    "reload",
+                    "mdns watchdog topology refresh 1 10",
+                    "nbns-auto-ip",
+                    "stop nbns-advertiser",
+                    "restart-nbns",
+                    "",
+                )
+            ),
+        )
+        self.assertIn("watchdog recovery: nbns responder is running without IPv4 UDP 137", log_text)
+        self.assertIn("watchdog recovery: live disk runtime refresh complete", log_text)
 
     def test_common_watchdog_live_reload_restores_bind_when_config_generation_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -224,18 +224,6 @@ enum exit_code {
     EXIT_AUTO_IP_PROBE_FAILED = 13
 };
 
-struct iface_context {
-    char name[IFNAMSIZ];
-    uint32_t ipv4_addr;
-    uint32_t netmask;
-    int flags;
-};
-
-struct iface_context_set {
-    struct iface_context contexts[MAX_IFACE_CONTEXTS];
-    size_t count;
-};
-
 struct adisk_disk {
     char share_name[MAX_NAME];
     char disk_key[MAX_LABEL + 1];
@@ -332,9 +320,6 @@ struct query_answer_routes {
 static int name_equals(const char *a, const char *b);
 static int build_instance_fqdn(char *out, size_t out_len, const char *instance_name, const char *service_type);
 static int open_mdns_socket(int shared_bind, int log_bind_errors, uint32_t ipv4_addr, const char *socket_role);
-static int collect_usable_iface_contexts(struct iface_context_set *out);
-static int iface_context_sets_equal(const struct iface_context_set *a, const struct iface_context_set *b);
-static int print_iface_context_cidrs(FILE *stream, const struct iface_context_set *set);
 static int is_airport_enabled(const struct config *cfg);
 static int smb_enabled(const struct config *cfg);
 static int adisk_enabled(const struct config *cfg);
@@ -373,205 +358,7 @@ static const char *ipv4_to_string(uint32_t ipv4_addr, char *out, size_t out_len)
     return out;
 }
 
-static int runtime_ipv4_is_usable(uint32_t ipv4_addr) {
-    uint32_t host_order = ntohl(ipv4_addr);
-    unsigned int first_octet = (unsigned int)((host_order >> 24) & 0xff);
-    unsigned int second_octet = (unsigned int)((host_order >> 16) & 0xff);
-
-    if (ipv4_addr == 0) {
-        return 0;
-    }
-    if (first_octet == 127) {
-        return 0;
-    }
-    if (first_octet == 169 && second_octet == 254) {
-        return 0;
-    }
-    return 1;
-}
-
-static int iface_flags_are_usable(int flags, int require_running) {
-    if ((flags & IFF_UP) == 0) {
-        return 0;
-    }
-    if ((flags & IFF_LOOPBACK) != 0) {
-        return 0;
-    }
-    if (require_running && (flags & IFF_RUNNING) == 0) {
-        return 0;
-    }
-    return 1;
-}
-
-static int ifreq_table_uses_fixed_entries(size_t ifc_len) {
-    /*
-     * NetBSD 6/7 uses fixed-size struct ifreq records here, while NetBSD 4
-     * returns the older variable-length layout with sa_len-sized sockaddr
-     * payloads.  The fixed layout has the large ifreq union; the old layout
-     * stays close to IFNAMSIZ + struct sockaddr.
-     */
-    return sizeof(struct ifreq) > 64 && ifc_len > 0 && (ifc_len % sizeof(struct ifreq)) == 0;
-}
-
-static size_t ifreq_entry_size(const struct ifreq *ifr, size_t remaining, int fixed_entries) {
-    size_t sockaddr_len = sizeof(struct sockaddr);
-    size_t step;
-    size_t align;
-
-    if (fixed_entries) {
-        if (remaining < sizeof(*ifr)) {
-            return 0;
-        }
-        return sizeof(*ifr);
-    }
-
-    if (remaining < IFNAMSIZ + sizeof(struct sockaddr)) {
-        return 0;
-    }
-#if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
-    if (ifr->ifr_addr.sa_len > sockaddr_len) {
-        sockaddr_len = ifr->ifr_addr.sa_len;
-    }
-#endif
-
-    step = IFNAMSIZ + sockaddr_len;
-    align = sizeof(long);
-    if (align > 0 && (step % align) != 0) {
-        step += align - (step % align);
-    }
-    if (step < sizeof(*ifr)) {
-        step = sizeof(*ifr);
-    }
-    if (step > remaining) {
-        return 0;
-    }
-    return step;
-}
-
-static int copy_ifreq_entry(struct ifreq *out, const char *cursor, size_t remaining) {
-    size_t copy_len;
-
-    if (remaining < IFNAMSIZ + sizeof(struct sockaddr)) {
-        return -1;
-    }
-
-    memset(out, 0, sizeof(*out));
-    copy_len = remaining < sizeof(*out) ? remaining : sizeof(*out);
-    memcpy(out, cursor, copy_len);
-    return 0;
-}
-
-static int append_iface_context(struct iface_context_set *out,
-                                const char *name,
-                                uint32_t ipv4_addr,
-                                uint32_t netmask,
-                                int flags) {
-    size_t i;
-    struct iface_context *ctx;
-
-    if (!runtime_ipv4_is_usable(ipv4_addr)) {
-        return 0;
-    }
-    for (i = 0; i < out->count; i++) {
-        if (out->contexts[i].ipv4_addr == ipv4_addr) {
-            return 0;
-        }
-    }
-    if (out->count >= MAX_IFACE_CONTEXTS) {
-        return 0;
-    }
-
-    ctx = &out->contexts[out->count++];
-    memset(ctx, 0, sizeof(*ctx));
-    strncpy(ctx->name, name, sizeof(ctx->name) - 1);
-    ctx->ipv4_addr = ipv4_addr;
-    ctx->netmask = netmask;
-    ctx->flags = flags;
-    return 1;
-}
-
-static int collect_iface_contexts_with_policy(struct iface_context_set *out, int require_running) {
-    int sockfd = -1;
-    char buffer[8192];
-    struct ifconf ifc;
-    char *cursor;
-    char *end;
-    int fixed_entries;
-
-    memset(out, 0, sizeof(*out));
-
-    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sockfd < 0) {
-        perror("socket interface enumeration");
-        return -1;
-    }
-
-    memset(&ifc, 0, sizeof(ifc));
-    ifc.ifc_len = sizeof(buffer);
-    ifc.ifc_buf = buffer;
-    if (ioctl(sockfd, SIOCGIFCONF, &ifc) < 0) {
-        perror("ioctl(SIOCGIFCONF)");
-        close(sockfd);
-        return -1;
-    }
-
-    cursor = ifc.ifc_buf;
-    end = cursor + ifc.ifc_len;
-    fixed_entries = ifreq_table_uses_fixed_entries((size_t)ifc.ifc_len);
-    while (cursor < end) {
-        struct ifreq ifr_entry;
-        struct ifreq flags_req;
-        struct ifreq mask_req;
-        struct sockaddr_in sin;
-        int flags;
-        uint32_t netmask = 0;
-        size_t remaining = (size_t)(end - cursor);
-        size_t step;
-
-        if (copy_ifreq_entry(&ifr_entry, cursor, remaining) != 0) {
-            break;
-        }
-        step = ifreq_entry_size(&ifr_entry, remaining, fixed_entries);
-        if (step == 0) {
-            break;
-        }
-
-        if (ifr_entry.ifr_addr.sa_family == AF_INET) {
-            memset(&flags_req, 0, sizeof(flags_req));
-            strncpy(flags_req.ifr_name, ifr_entry.ifr_name, sizeof(flags_req.ifr_name) - 1);
-            if (ioctl(sockfd, SIOCGIFFLAGS, &flags_req) == 0) {
-                flags = flags_req.ifr_flags;
-                if (iface_flags_are_usable(flags, require_running)) {
-                    memset(&mask_req, 0, sizeof(mask_req));
-                    strncpy(mask_req.ifr_name, ifr_entry.ifr_name, sizeof(mask_req.ifr_name) - 1);
-                    if (ioctl(sockfd, SIOCGIFNETMASK, &mask_req) == 0) {
-                        struct sockaddr_in netmask_addr;
-                        memset(&netmask_addr, 0, sizeof(netmask_addr));
-                        memcpy(&netmask_addr, &mask_req.ifr_addr, sizeof(netmask_addr));
-                        netmask = netmask_addr.sin_addr.s_addr;
-                    }
-                    memset(&sin, 0, sizeof(sin));
-                    memcpy(&sin, &ifr_entry.ifr_addr, sizeof(sin));
-                    append_iface_context(out, ifr_entry.ifr_name, sin.sin_addr.s_addr, netmask, flags);
-                }
-            }
-        }
-        cursor += step;
-    }
-
-    close(sockfd);
-    return 0;
-}
-
-static int collect_usable_iface_contexts(struct iface_context_set *out) {
-    if (collect_iface_contexts_with_policy(out, 1) != 0) {
-        return -1;
-    }
-    if (out->count > 0) {
-        return 0;
-    }
-    return collect_iface_contexts_with_policy(out, 0);
-}
+#include "auto-ip-common.inc"
 
 typedef int (*mdns_collect_iface_contexts_fn)(struct iface_context_set *out, void *userdata);
 typedef void (*mdns_sleep_fn)(unsigned int seconds, void *userdata);
@@ -605,6 +392,7 @@ static int wait_for_auto_iface_contexts_with_provider(struct iface_context_set *
                     role, AUTO_IP_STABILIZE_SECONDS);
             sleep_fn(AUTO_IP_STABILIZE_SECONDS, userdata);
             if (collect_contexts(out, userdata) == 0 && out->count > 0) {
+                sort_iface_contexts(out);
                 return 0;
             }
             fprintf(stderr, "%s auto-ip: usable IPv4 disappeared during stabilization; retrying\n", role);
@@ -620,85 +408,6 @@ static int wait_for_auto_iface_contexts(struct iface_context_set *out, const cha
                                                      collect_usable_iface_contexts_provider,
                                                      mdns_sleep_provider,
                                                      NULL);
-}
-
-static int iface_context_sets_equal(const struct iface_context_set *a, const struct iface_context_set *b) {
-    size_t i;
-
-    if (a->count != b->count) {
-        return 0;
-    }
-    for (i = 0; i < a->count; i++) {
-        if (strcmp(a->contexts[i].name, b->contexts[i].name) != 0 ||
-            a->contexts[i].ipv4_addr != b->contexts[i].ipv4_addr ||
-            a->contexts[i].netmask != b->contexts[i].netmask) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-static int netmask_prefix_length(uint32_t netmask) {
-    uint32_t mask = ntohl(netmask);
-    int prefix = 0;
-    int saw_zero = 0;
-    int bit;
-
-    if (mask == 0) {
-        return 24;
-    }
-
-    for (bit = 31; bit >= 0; bit--) {
-        if ((mask & (1U << bit)) != 0) {
-            if (saw_zero) {
-                return 24;
-            }
-            prefix++;
-        } else {
-            saw_zero = 1;
-        }
-    }
-
-    return prefix;
-}
-
-static int iface_context_cidr(char *out, size_t out_len, const struct iface_context *ctx) {
-    char ip_buf[INET_ADDRSTRLEN];
-    int written;
-
-    written = snprintf(out,
-                       out_len,
-                       "%s/%d",
-                       ipv4_to_string(ctx->ipv4_addr, ip_buf, sizeof(ip_buf)),
-                       netmask_prefix_length(ctx->netmask));
-    if (written < 0 || (size_t)written >= out_len) {
-        return -1;
-    }
-    return 0;
-}
-
-static int print_iface_context_cidrs(FILE *stream, const struct iface_context_set *set) {
-    size_t i;
-
-    if (set->count == 0) {
-        return -1;
-    }
-    for (i = 0; i < set->count; i++) {
-        char cidr[INET_ADDRSTRLEN + 4];
-        if (iface_context_cidr(cidr, sizeof(cidr), &set->contexts[i]) != 0) {
-            return -1;
-        }
-        if (i > 0 && fputc(' ', stream) == EOF) {
-            return -1;
-        }
-        if (fputs(cidr, stream) == EOF) {
-            return -1;
-        }
-    }
-    if (fputc('\n', stream) == EOF) {
-        return -1;
-    }
-    return 0;
 }
 
 static int print_auto_ip_cidrs_with_provider(FILE *stream,
@@ -717,27 +426,11 @@ static int print_auto_ip_cidrs_with_provider(FILE *stream,
     if (contexts.count == 0) {
         return EXIT_AUTO_IP_UNAVAILABLE;
     }
+    sort_iface_contexts(&contexts);
     if (print_iface_context_cidrs(stream, &contexts) != 0) {
         return EXIT_AUTO_IP_PROBE_FAILED;
     }
     return EXIT_OK;
-}
-
-static void log_iface_contexts(const char *prefix, const struct iface_context_set *set) {
-    size_t i;
-
-    fprintf(stderr, "%s: contexts=%lu\n", prefix, (unsigned long)set->count);
-    for (i = 0; i < set->count; i++) {
-        char ip_buf[INET_ADDRSTRLEN];
-        char mask_buf[INET_ADDRSTRLEN];
-        fprintf(stderr, "%s: context[%lu] iface=%s ip=%s netmask=%s flags=0x%x\n",
-                prefix,
-                (unsigned long)i,
-                set->contexts[i].name,
-                ipv4_to_string(set->contexts[i].ipv4_addr, ip_buf, sizeof(ip_buf)),
-                ipv4_to_string(set->contexts[i].netmask, mask_buf, sizeof(mask_buf)),
-                (unsigned int)set->contexts[i].flags);
-    }
 }
 
 static void log_startup_config(const struct config *cfg, int shared_bind, int auto_ip) {
@@ -2801,6 +2494,76 @@ static int configure_mdns_socket_for_contexts(int sockfd, const struct iface_con
     return 0;
 }
 
+static int iface_context_set_has_ipv4(const struct iface_context_set *set, uint32_t ipv4_addr) {
+    size_t i;
+
+    for (i = 0; i < set->count; i++) {
+        if (set->contexts[i].ipv4_addr == ipv4_addr) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int prepare_mdns_auto_socket_for_contexts(int sockfd,
+                                                const struct iface_context_set *old_contexts,
+                                                const struct iface_context_set *new_contexts) {
+    size_t i;
+
+    if (new_contexts->count == 0) {
+        return 0;
+    }
+    for (i = 0; i < new_contexts->count; i++) {
+        if (iface_context_set_has_ipv4(old_contexts, new_contexts->contexts[i].ipv4_addr)) {
+            continue;
+        }
+        if (join_mdns_multicast_group(sockfd, new_contexts->contexts[i].ipv4_addr, "runtime") != 0) {
+            return -1;
+        }
+    }
+    return configure_outbound_multicast_socket(sockfd, new_contexts->contexts[0].ipv4_addr, "runtime");
+}
+
+static void drop_mdns_multicast_group_best_effort(int sockfd, uint32_t ipv4_addr, const char *socket_role) {
+#ifdef IP_DROP_MEMBERSHIP
+    struct ip_mreq mreq;
+    char ipv4_buf[INET_ADDRSTRLEN];
+    int drop_errno;
+
+    memset(&mreq, 0, sizeof(mreq));
+    mreq.imr_multiaddr.s_addr = inet_addr(MDNS_GROUP);
+    mreq.imr_interface.s_addr = ipv4_addr;
+    if (setsockopt(sockfd, IPPROTO_IP, IP_DROP_MEMBERSHIP, &mreq, sizeof(mreq)) == 0) {
+        fprintf(stderr, "mdns %s socket: dropped multicast membership interface %s\n",
+                socket_role,
+                ipv4_to_string(ipv4_addr, ipv4_buf, sizeof(ipv4_buf)));
+        return;
+    }
+    drop_errno = errno;
+    fprintf(stderr, "warning: mdns %s socket: IP_DROP_MEMBERSHIP failed for interface %s: %s\n",
+            socket_role,
+            ipv4_to_string(ipv4_addr, ipv4_buf, sizeof(ipv4_buf)),
+            strerror(drop_errno));
+#else
+    (void)sockfd;
+    (void)ipv4_addr;
+    (void)socket_role;
+#endif
+}
+
+static void retire_mdns_auto_socket_contexts(int sockfd,
+                                             const struct iface_context_set *old_contexts,
+                                             const struct iface_context_set *new_contexts) {
+    size_t i;
+
+    for (i = 0; i < old_contexts->count; i++) {
+        if (iface_context_set_has_ipv4(new_contexts, old_contexts->contexts[i].ipv4_addr)) {
+            continue;
+        }
+        drop_mdns_multicast_group_best_effort(sockfd, old_contexts->contexts[i].ipv4_addr, "runtime");
+    }
+}
+
 static int acquire_mdns_socket(int shared_bind, uint32_t ipv4_addr) {
     static const unsigned int retry_delays_ms[TAKEOVER_RETRY_COUNT] = {0, 100, 200, 300, 400, 500};
     size_t i;
@@ -3712,13 +3475,6 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len,
     return status;
 }
 
-static int source_matches_context_subnet(uint32_t source_ipv4_addr, const struct iface_context *ctx) {
-    if (ctx->netmask == 0) {
-        return source_ipv4_addr == ctx->ipv4_addr;
-    }
-    return (source_ipv4_addr & ctx->netmask) == (ctx->ipv4_addr & ctx->netmask);
-}
-
 static const struct iface_context *select_response_context(const struct iface_context_set *contexts,
                                                            const struct sockaddr_in *source) {
     size_t i;
@@ -3763,6 +3519,25 @@ static void send_context_goodbyes(int sockfd,
     for (i = 0; i < contexts->count; i++) {
         if (set_context_outbound_interface(sockfd, &contexts->contexts[i]) == 0) {
             (void)send_announcement(sockfd, dest, cfg, contexts->contexts[i].ipv4_addr, 0, snapshot_records, use_snapshot_records);
+        }
+    }
+}
+
+static void send_context_goodbyes_for_missing(int sockfd,
+                                              struct iface_context_set *old_contexts,
+                                              const struct iface_context_set *active_contexts,
+                                              const struct sockaddr_in *dest,
+                                              const struct config *cfg,
+                                              const struct service_record_set *snapshot_records,
+                                              int use_snapshot_records) {
+    size_t i;
+
+    for (i = 0; i < old_contexts->count; i++) {
+        if (iface_context_set_contains(active_contexts, &old_contexts->contexts[i])) {
+            continue;
+        }
+        if (set_context_outbound_interface(sockfd, &old_contexts->contexts[i]) == 0) {
+            (void)send_announcement(sockfd, dest, cfg, old_contexts->contexts[i].ipv4_addr, 0, snapshot_records, use_snapshot_records);
         }
     }
 }
@@ -3822,7 +3597,7 @@ int main(int argc, char **argv) {
     int snapshot_capture_failed = 0;
     int snapshot_capture_skipped = 0;
     int trusted_snapshot_written = 0;
-    static const unsigned int startup_burst_offsets_ms[STARTUP_BURST_COUNT] = {0, 250, 1000, 2000, 3000, 4000, 5000};
+    static const unsigned int startup_burst_offsets_ms[STARTUP_BURST_COUNT] = {0, 250, 1000, 2000, 4000, 8000, 16000};
     size_t startup_burst_index = 0;
     long long startup_burst_start_ms = 0;
 
@@ -4149,27 +3924,54 @@ int main(int argc, char **argv) {
                 memset(&next_contexts, 0, sizeof(next_contexts));
                 if (collect_usable_iface_contexts(&next_contexts) == 0 &&
                     !iface_context_sets_equal(&auto_contexts, &next_contexts)) {
-                    fprintf(stderr, "mdns auto-ip: interface table changed; rebuilding contexts after %ds stabilization\n",
+                    struct iface_context_set stabilized_contexts;
+                    fprintf(stderr, "mdns auto-ip: interface table changed; confirming after %ds stabilization\n",
                             AUTO_IP_STABILIZE_SECONDS);
                     log_iface_contexts("mdns auto-ip old", &auto_contexts);
                     log_iface_contexts("mdns auto-ip observed", &next_contexts);
-                    send_context_goodbyes(sockfd, &auto_contexts, &mdns_dest, &cfg, &snapshot_records, use_snapshot_records);
-                    close(sockfd);
-                    sockfd = -1;
                     sleep(AUTO_IP_STABILIZE_SECONDS);
-                    if (collect_usable_iface_contexts(&next_contexts) == 0 && next_contexts.count > 0) {
-                        auto_contexts = next_contexts;
-                    } else if (wait_for_auto_iface_contexts(&auto_contexts, "mdns runtime") != 0) {
-                        break;
+                    memset(&stabilized_contexts, 0, sizeof(stabilized_contexts));
+                    if (collect_usable_iface_contexts(&stabilized_contexts) == 0) {
+                        if (iface_context_sets_equal(&auto_contexts, &stabilized_contexts)) {
+                            fprintf(stderr, "mdns auto-ip: observed interface change did not persist after stabilization\n");
+                        } else {
+                            if (stabilized_contexts.count > 0) {
+                                log_iface_contexts("mdns auto-ip stabilized", &stabilized_contexts);
+                                if (prepare_mdns_auto_socket_for_contexts(sockfd, &auto_contexts, &stabilized_contexts) != 0) {
+                                    fprintf(stderr, "mdns auto-ip: could not apply stabilized interface contexts on existing socket; keeping previous contexts\n");
+                                    last_iface_poll = time(NULL);
+                                    continue;
+                                }
+                                send_context_goodbyes_for_missing(sockfd,
+                                                                  &auto_contexts,
+                                                                  &stabilized_contexts,
+                                                                  &mdns_dest,
+                                                                  &cfg,
+                                                                  &snapshot_records,
+                                                                  use_snapshot_records);
+                                retire_mdns_auto_socket_contexts(sockfd, &auto_contexts, &stabilized_contexts);
+                                auto_contexts = stabilized_contexts;
+                            } else {
+                                fprintf(stderr, "mdns auto-ip: no usable IPv4 after stabilization; sending goodbyes and waiting\n");
+                                send_context_goodbyes(sockfd, &auto_contexts, &mdns_dest, &cfg, &snapshot_records, use_snapshot_records);
+                                retire_mdns_auto_socket_contexts(sockfd, &auto_contexts, &stabilized_contexts);
+                                memset(&auto_contexts, 0, sizeof(auto_contexts));
+                                if (wait_for_auto_iface_contexts(&stabilized_contexts, "mdns runtime") != 0) {
+                                    break;
+                                }
+                                if (prepare_mdns_auto_socket_for_contexts(sockfd, &auto_contexts, &stabilized_contexts) != 0) {
+                                    fprintf(stderr, "mdns auto-ip: usable IPv4 returned but existing socket could not join new contexts\n");
+                                    last_iface_poll = time(NULL);
+                                    continue;
+                                }
+                                auto_contexts = stabilized_contexts;
+                            }
+                            log_iface_contexts("mdns auto-ip active", &auto_contexts);
+                            startup_burst_start_ms = monotonic_millis();
+                            startup_burst_index = 0;
+                            last_announce = time(NULL);
+                        }
                     }
-                    log_iface_contexts("mdns auto-ip active", &auto_contexts);
-                    sockfd = acquire_mdns_auto_socket(shared_bind, &auto_contexts);
-                    if (sockfd < 0) {
-                        return EXIT_SOCKET_ACQUIRE_FAILED;
-                    }
-                    startup_burst_start_ms = monotonic_millis();
-                    startup_burst_index = 0;
-                    last_announce = time(NULL);
                 }
                 last_iface_poll = time(NULL);
             }
