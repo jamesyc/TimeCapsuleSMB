@@ -311,14 +311,9 @@ class DeployModuleTests(unittest.TestCase):
 
     def test_remote_request_shutdown_reboot_uses_shutdown_with_reboot_fallback(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
+        with mock.patch("timecapsulesmb.deploy.executor.remote_request_reboot") as reboot_mock:
             remote_request_shutdown_reboot(connection)
-        run_ssh_mock.assert_called_once_with(
-            connection,
-            DETACHED_SHUTDOWN_REBOOT_COMMAND,
-            check=False,
-            timeout=REBOOT_REQUEST_TIMEOUT_SECONDS,
-        )
+        reboot_mock.assert_called_once_with(connection)
         self.assertIn("exec </dev/null >/dev/null 2>&1", DETACHED_SHUTDOWN_REBOOT_COMMAND)
         self.assertIn("/bin/sync; /bin/sleep 1;", DETACHED_SHUTDOWN_REBOOT_COMMAND)
         self.assertIn("/sbin/shutdown -r now", DETACHED_SHUTDOWN_REBOOT_COMMAND)

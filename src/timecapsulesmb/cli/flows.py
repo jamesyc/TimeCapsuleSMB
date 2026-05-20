@@ -168,7 +168,7 @@ def _request_reboot_via_ssh_shutdown(
         command_context,
         log=log,
         request_reboot=remote_request_shutdown_reboot,
-        progress_message="SSH: /sbin/shutdown -r now (fallback /sbin/reboot)",
+        progress_message="SSH: /bin/sync; /sbin/shutdown -r now (fallback /sbin/reboot)",
     )
 
 
