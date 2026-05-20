@@ -137,12 +137,16 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual([event["type"] for event in terminals], [event_type])
         return terminals[0]
 
-    def test_event_redacts_password_fields(self) -> None:
+    def test_event_redacts_sensitive_fields(self) -> None:
         event = AppEvent("result", "configure", {
             "ok": True,
             "payload": {
                 "password": "secret",
-                "nested": {"TC_PASSWORD": "secret"},
+                "nested": {
+                    "TC_PASSWORD": "secret",
+                    "api_key": "secret",
+                    "ssh_private_key": "secret",
+                },
             },
         })
 
@@ -150,6 +154,8 @@ class AppApiTests(unittest.TestCase):
 
         self.assertEqual(data["payload"]["password"], "<redacted>")
         self.assertEqual(data["payload"]["nested"]["TC_PASSWORD"], "<redacted>")
+        self.assertEqual(data["payload"]["nested"]["api_key"], "<redacted>")
+        self.assertEqual(data["payload"]["nested"]["ssh_private_key"], "<redacted>")
 
     def test_result_event_preserves_falsey_payloads(self) -> None:
         collector = CollectingSink()
@@ -214,10 +220,22 @@ class AppApiTests(unittest.TestCase):
             "root": "/Volumes/Data",
             "finding_count": 2,
             "repairable_count": 1,
+            "stats": {"scanned": 3},
+        })
+        self.assertEqual(repair["summary"], "repair-xattrs found 2 issue(s), 1 repairable.")
+        self.assertEqual(repair["summary_text"], "repair-xattrs found 2 issue(s), 1 repairable.")
+        self.assertEqual(repair["stats"], {"scanned": 3})
+
+    def test_repair_xattrs_payload_preserves_legacy_summary_stats_as_stats(self) -> None:
+        repair = contracts.repair_xattrs_payload({
+            "finding_count": 2,
+            "repairable_count": 1,
             "summary": {"scanned": 3},
         })
-        self.assertEqual(repair["summary"], {"scanned": 3})
+
+        self.assertEqual(repair["summary"], "repair-xattrs found 2 issue(s), 1 repairable.")
         self.assertEqual(repair["summary_text"], "repair-xattrs found 2 issue(s), 1 repairable.")
+        self.assertEqual(repair["stats"], {"scanned": 3})
 
     def test_request_id_propagates_to_every_event(self) -> None:
         collector = CollectingSink()
@@ -1090,7 +1108,12 @@ class AppApiTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         runner.assert_called_once()
-        self.assertEqual(collector.events_of_type("result")[0]["payload"]["finding_count"], 1)
+        payload = collector.events_of_type("result")[0]["payload"]
+        self.assertEqual(payload["finding_count"], 1)
+        self.assertEqual(payload["summary"], "repair-xattrs found 1 issue(s), 1 repairable.")
+        self.assertEqual(payload["summary_text"], "repair-xattrs found 1 issue(s), 1 repairable.")
+        self.assertEqual(payload["stats"]["scanned"], 1)
+        self.assertNotIsInstance(payload["summary"], dict)
 
     def test_repair_xattrs_captures_direct_stdout_and_stderr_logs(self) -> None:
         collector = CollectingSink()

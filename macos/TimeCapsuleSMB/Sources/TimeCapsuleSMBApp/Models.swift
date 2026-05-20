@@ -63,6 +63,14 @@ public enum JSONValue: Codable, Hashable {
             return "null"
         }
     }
+
+    public func stringValue(for key: String) -> String? {
+        guard case .object(let values) = self, case .string(let value)? = values[key] else {
+            return nil
+        }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : value
+    }
 }
 
 public struct BackendEvent: Decodable, Identifiable {
@@ -169,6 +177,9 @@ public struct BackendEvent: Decodable, Identifiable {
                 message ?? ""
             )
         case "result":
+            if let payloadSummary = payloadSummary {
+                return payloadSummary
+            }
             let result = ok == true
                 ? L10n.string("event.summary.result.finished")
                 : L10n.string("event.summary.result.failed")
@@ -182,5 +193,17 @@ public struct BackendEvent: Decodable, Identifiable {
         default:
             return message ?? stage ?? operation
         }
+    }
+
+    private var payloadSummary: String? {
+        guard let payload else {
+            return nil
+        }
+        for key in ["summary", "message", "summary_text"] {
+            if let value = payload.stringValue(for: key) {
+                return value
+            }
+        }
+        return nil
     }
 }

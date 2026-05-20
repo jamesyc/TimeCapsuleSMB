@@ -273,7 +273,7 @@ def _repair_result_payload(result: RepairRunResult, context: RepairExecutionCont
         "root": str(result.root),
         "finding_count": len(result.findings),
         "repairable_count": len(result.candidates),
-        "summary": jsonable(result.summary),
+        "stats": jsonable(result.summary),
         "report": result.report,
         "telemetry_result": context.result,
         "error": context.error if isinstance(context, RepairExecutionContext) else None,

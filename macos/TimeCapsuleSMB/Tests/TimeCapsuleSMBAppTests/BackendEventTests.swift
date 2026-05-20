@@ -51,6 +51,38 @@ final class BackendEventTests: XCTestCase {
         XCTAssertEqual(error.summary, "deploy: error")
     }
 
+    func testBackendEventResultSummaryPrefersPayloadText() {
+        let summary = BackendEvent(
+            type: "result",
+            operation: "deploy",
+            ok: true,
+            payload: .object(["summary": .string("Deployment completed on the Time Capsule.")])
+        )
+        let message = BackendEvent(
+            type: "result",
+            operation: "activate",
+            ok: true,
+            payload: .object(["message": .string("Activation completed without reboot.")])
+        )
+        let legacySummaryText = BackendEvent(
+            type: "result",
+            operation: "repair-xattrs",
+            ok: true,
+            payload: .object(["summary_text": .string("repair-xattrs found 2 issue(s), 1 repairable.")])
+        )
+        let blankSummaryFallsBack = BackendEvent(
+            type: "result",
+            operation: "doctor",
+            ok: true,
+            payload: .object(["summary": .string("   ")])
+        )
+
+        XCTAssertEqual(summary.summary, "Deployment completed on the Time Capsule.")
+        XCTAssertEqual(message.summary, "Activation completed without reboot.")
+        XCTAssertEqual(legacySummaryText.summary, "repair-xattrs found 2 issue(s), 1 repairable.")
+        XCTAssertEqual(blankSummaryFallsBack.summary, "doctor: finished")
+    }
+
     func testJSONValueRoundTripsNestedObjects() throws {
         let value = JSONValue.object([
             "operation": .string("paths"),

@@ -8,6 +8,8 @@ public struct HelperRunResult: Equatable {
 }
 
 public final class HelperRunner {
+    private static let pipeReadChunkSize = 4096
+
     private let locator: HelperLocator
     private let stderrLimit: Int
 
@@ -113,28 +115,35 @@ public final class HelperRunner {
     }
 
     private static func readOutput(_ handle: FileHandle, parser: OutputLineParser) {
-        while true {
-            let data = handle.availableData
-            if data.isEmpty {
-                parser.finish()
-                return
-            }
+        readChunks(from: handle) { data in
             parser.append(data)
         }
+        parser.finish()
     }
 
     private static func readCapped(_ handle: FileHandle, limit: Int) -> String {
         var output = Data()
-        while true {
-            let data = handle.availableData
-            if data.isEmpty {
-                break
-            }
+        readChunks(from: handle) { data in
             if output.count < limit {
                 output.append(data.prefix(limit - output.count))
             }
         }
         return String(decoding: output, as: UTF8.self)
+    }
+
+    private static func readChunks(from handle: FileHandle, onChunk: (Data) -> Void) {
+        while true {
+            let data: Data?
+            do {
+                data = try handle.read(upToCount: pipeReadChunkSize)
+            } catch {
+                return
+            }
+            guard let data, !data.isEmpty else {
+                return
+            }
+            onChunk(data)
+        }
     }
 
     private static func waitForExit(_ process: Process) async {

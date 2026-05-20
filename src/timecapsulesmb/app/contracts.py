@@ -232,14 +232,23 @@ def fsck_result_payload(
 def repair_xattrs_payload(raw: Mapping[str, object]) -> dict[str, object]:
     finding_count = int(raw.get("finding_count") or 0)
     repairable_count = int(raw.get("repairable_count") or 0)
-    return _with_schema({
+    legacy_summary = raw.get("summary")
+    stats = raw.get("stats", legacy_summary if not isinstance(legacy_summary, str) else None)
+    summary = legacy_summary if isinstance(legacy_summary, str) and legacy_summary.strip() else (
+        f"repair-xattrs found {finding_count} issue(s), {repairable_count} repairable."
+    )
+    payload = {
         **raw,
         "counts": {
             "findings": finding_count,
             "repairable": repairable_count,
         },
-        "summary_text": f"repair-xattrs found {finding_count} issue(s), {repairable_count} repairable.",
-    })
+        "summary": summary,
+        "summary_text": summary,
+    }
+    if stats is not None:
+        payload["stats"] = jsonable(stats)
+    return _with_schema(payload)
 
 
 def doctor_payload(

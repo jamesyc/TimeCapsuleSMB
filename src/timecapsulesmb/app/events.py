@@ -9,7 +9,7 @@ from typing import Callable
 from timecapsulesmb.app.stage_policy import stage_policy
 
 
-SENSITIVE_KEY_PARTS = ("password", "secret", "token")
+SENSITIVE_KEY_PARTS = ("password", "secret", "token", "key")
 REDACTED = "<redacted>"
 
 
