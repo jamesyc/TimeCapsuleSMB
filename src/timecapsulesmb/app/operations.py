@@ -6,7 +6,7 @@ import sys
 import tempfile
 import uuid
 from collections.abc import Callable
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from timecapsulesmb.app.events import EventSink
@@ -36,6 +36,7 @@ from timecapsulesmb.core.config import (
     airport_family_display_name_from_identity,
     parse_bool,
     parse_env_file,
+    preserved_env_file_values,
     write_env_file,
 )
 from timecapsulesmb.core.errors import system_exit_message
@@ -227,7 +228,8 @@ def configure_operation(params: dict[str, object], sink: EventSink) -> Operation
     if resolution_error is not None:
         raise AppOperationError(resolution_error, code="config_error")
 
-    values = {
+    values = preserved_env_file_values(existing)
+    values.update({
         "TC_HOST": host,
         "TC_PASSWORD": password,
         "TC_SSH_OPTS": ssh_opts,
@@ -242,7 +244,7 @@ def configure_operation(params: dict[str, object], sink: EventSink) -> Operation
             parse_bool(existing.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])),
         ) else "false",
         "TC_CONFIGURE_ID": configure_id,
-    }
+    })
 
     sink.stage(operation, "ssh_probe")
     connection = SshConnection(host, password, ssh_opts)
@@ -763,6 +765,31 @@ class _RepairContext:
         self.error = message
 
 
+class _StreamLogCapture:
+    def __init__(self, operation: str, sink: EventSink, *, level: str) -> None:
+        self.operation = operation
+        self.sink = sink
+        self.level = level
+        self._buffer = ""
+
+    def write(self, text: str) -> int:
+        self._buffer += text
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            self._emit(line)
+        return len(text)
+
+    def flush(self) -> None:
+        if self._buffer:
+            self._emit(self._buffer)
+            self._buffer = ""
+
+    def _emit(self, line: str) -> None:
+        message = line.rstrip("\r")
+        if message:
+            self.sink.log(self.operation, message, level=self.level)
+
+
 def repair_xattrs_operation(params: dict[str, object], sink: EventSink) -> OperationResult:
     operation = "repair-xattrs"
     dry_run = _bool_param(params, "dry_run")
@@ -792,16 +819,22 @@ def repair_xattrs_operation(params: dict[str, object], sink: EventSink) -> Opera
     if args.max_depth is not None:
         args.max_depth = int(args.max_depth)
     context = _RepairContext(operation, sink)
+    stdout_capture = _StreamLogCapture(operation, sink, level="info")
+    stderr_capture = _StreamLogCapture(operation, sink, level="warning")
     try:
-        result = repair_xattrs_cli.run_repair_structured(
-            args,
-            context,
-            config,
-            emit_log=lambda message: sink.log(operation, message),
-        )
+        with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+            result = repair_xattrs_cli.run_repair_structured(
+                args,
+                context,
+                config,
+                emit_log=lambda message: sink.log(operation, message),
+            )
     except SystemExit as exc:
         message = system_exit_message(exc) or "repair-xattrs failed"
         raise AppOperationError(message, code="operation_failed") from exc
+    finally:
+        stdout_capture.flush()
+        stderr_capture.flush()
     return OperationResult(result.returncode == 0, {
         "returncode": result.returncode,
         "root": str(result.root),

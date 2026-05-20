@@ -21,7 +21,7 @@ from timecapsulesmb import repair_xattrs as repair_xattrs_domain
 from timecapsulesmb.app import helper, operations, service
 from timecapsulesmb.cli import main as cli_main
 from timecapsulesmb.checks.models import CheckResult
-from timecapsulesmb.core.config import AppConfig, ConfigError
+from timecapsulesmb.core.config import AppConfig, ConfigError, parse_env_file
 from timecapsulesmb.device.compat import DeviceCompatibility
 from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
@@ -215,6 +215,21 @@ class AppApiTests(unittest.TestCase):
                 error = self.assert_single_terminal_event(collector, "error")
                 self.assertEqual(error["code"], code)
 
+    def test_dispatcher_includes_traceback_for_unexpected_errors(self) -> None:
+        collector = CollectingSink()
+
+        def fail(_params, _sink):
+            raise RuntimeError("boom")
+
+        with mock.patch.dict(service.OPERATIONS, {"boom": fail}):
+            rc = service.run_api_request({"operation": "boom", "params": {}}, collector.sink)
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "operation_failed")
+        self.assertIn("Traceback", error["debug"]["traceback"])
+        self.assertIn("RuntimeError: boom", error["debug"]["traceback"])
+
     def test_discover_operation_returns_snapshot_payload(self) -> None:
         collector = CollectingSink()
         snapshot = BonjourDiscoverySnapshot(
@@ -261,6 +276,39 @@ class AppApiTests(unittest.TestCase):
             self.assertIn("TC_PASSWORD=goodpw", config_path.read_text())
             serialized_events = json.dumps(collector.events)
             self.assertNotIn("goodpw", serialized_events)
+
+    def test_configure_preserves_custom_env_keys_and_drops_deprecated_runtime_keys(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text(
+                "TC_HOST=root@10.0.0.1\n"
+                "TC_PASSWORD=oldpw\n"
+                "TC_CUSTOM_SETTING='keep me'\n"
+                "TC_SAMBA_USER=old-admin\n"
+                "TC_PAYLOAD_DIR_NAME=old-payload\n"
+            )
+            with mock.patch("timecapsulesmb.app.operations.probe_connection_state", return_value=probed_state()):
+                rc = service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {
+                            "config": str(config_path),
+                            "host": "root@10.0.0.2",
+                            "password": "newpw",
+                        },
+                    },
+                    collector.sink,
+                )
+
+            values = parse_env_file(config_path)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(values["TC_HOST"], "root@10.0.0.2")
+        self.assertEqual(values["TC_PASSWORD"], "newpw")
+        self.assertEqual(values["TC_CUSTOM_SETTING"], "keep me")
+        self.assertNotIn("TC_SAMBA_USER", values)
+        self.assertNotIn("TC_PAYLOAD_DIR_NAME", values)
 
     def test_configure_reports_acp_auth_failure_without_writing_env(self) -> None:
         collector = CollectingSink()
@@ -636,6 +684,39 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         runner.assert_called_once()
         self.assertEqual(collector.events_of_type("result")[0]["payload"]["finding_count"], 1)
+
+    def test_repair_xattrs_captures_direct_stdout_and_stderr_logs(self) -> None:
+        collector = CollectingSink()
+        summary = repair_xattrs_domain.RepairSummary(scanned=1)
+        repair_result = SimpleNamespace(
+            returncode=0,
+            root=Path("/Volumes/Data"),
+            findings=[],
+            candidates=[],
+            summary=summary,
+            report=None,
+        )
+
+        def fake_runner(*_args, **_kwargs):
+            print("stdout detail")
+            print("stderr detail", file=sys.stderr)
+            return repair_result
+
+        with mock.patch("timecapsulesmb.app.operations.sys.platform", "darwin"):
+            with mock.patch("timecapsulesmb.app.operations.load_optional_env_config", return_value=AppConfig.missing()):
+                with mock.patch("timecapsulesmb.app.operations.repair_xattrs_cli.run_repair_structured", side_effect=fake_runner):
+                    rc = service.run_api_request(
+                        {
+                            "operation": "repair-xattrs",
+                            "params": {"path": "/Volumes/Data", "dry_run": True},
+                        },
+                        collector.sink,
+                    )
+
+        logs = collector.events_of_type("log")
+        self.assertEqual(rc, 0)
+        self.assertIn({"info": "stdout detail"}, [{log["level"]: log["message"]} for log in logs])
+        self.assertIn({"warning": "stderr detail"}, [{log["level"]: log["message"]} for log in logs])
 
     def test_repair_xattrs_requires_confirmation_for_non_dry_run(self) -> None:
         collector = CollectingSink()

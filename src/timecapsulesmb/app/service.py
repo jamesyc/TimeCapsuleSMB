@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import traceback
 from collections.abc import Callable
 
 from timecapsulesmb.app.events import EventSink, redact
@@ -63,7 +64,12 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
     except (SystemExit, KeyboardInterrupt):
         raise
     except Exception as exc:
-        sink.error(operation, f"{type(exc).__name__}: {exc}", code="operation_failed")
+        sink.error(
+            operation,
+            f"{type(exc).__name__}: {exc}",
+            code="operation_failed",
+            debug={"traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))},
+        )
         return 1
     sink.result(operation, ok=result.ok, payload=result.payload)
     return 0 if result.ok else 1

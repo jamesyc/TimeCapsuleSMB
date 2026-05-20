@@ -50,6 +50,33 @@ final class HelperRunnerTests: XCTestCase {
         XCTAssertEqual(events.last?.debug, .object(["stderr": .string("stderr detail\n")]))
     }
 
+    func testRunnerDrainsLargeStderrWhileHelperIsRunning() async throws {
+        let temp = try TemporaryDirectory()
+        let helper = try makeHelper(
+            in: temp.url,
+            body: """
+            i=0
+            while [ "$i" -lt 2000 ]; do
+                printf '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\\n' >&2
+                i=$((i + 1))
+            done
+            cat >/dev/null
+            echo '{"schema_version":1,"request_id":"req","type":"result","operation":"doctor","ok":true,"payload":{"ok":true}}'
+            """
+        )
+        let runner = HelperRunner(locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default))
+        let recorder = EventRecorder()
+
+        let result = await runner.run(helperPath: helper.path, operation: "doctor", params: [:]) {
+            recorder.append($0)
+        }
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stderr.count, 64 * 1024)
+        XCTAssertEqual(recorder.events.last?.type, "result")
+        XCTAssertEqual(recorder.events.last?.ok, true)
+    }
+
     func testRunnerReportsMissingHelper() async {
         let locator = HelperLocator(environment: [:], currentDirectory: URL(fileURLWithPath: NSTemporaryDirectory()), bundle: .main, fileManager: .default)
         let runner = HelperRunner(locator: locator)

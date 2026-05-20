@@ -25,6 +25,7 @@ from timecapsulesmb.core.config import (
     parse_bool,
     parse_env_file,
     parse_env_value,
+    preserved_env_file_values,
     require_valid_app_config,
     render_env_text,
     validate_app_config,
@@ -147,6 +148,41 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("TC_INTERNAL_SHARE_USE_DISK_ROOT=false", rendered)
         self.assertIn("TC_ANY_PROTOCOL=false", rendered)
         self.assertIn("TC_CONFIGURE_ID=12345678-1234-1234-1234-123456789012", rendered)
+
+    def test_render_env_text_preserves_custom_settings_but_omits_deprecated_keys(self) -> None:
+        values = dict(DEFAULTS)
+        values.update({
+            "TC_PASSWORD": "secret",
+            "TC_CUSTOM_SETTING": "kept value",
+            "CUSTOM_FLAG": "",
+            "TC_SAMBA_USER": "admin",
+            "TC_PAYLOAD_DIR_NAME": "samba4",
+            "TC_MDNS_INSTANCE_NAME": "old-name",
+        })
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text(render_env_text(values))
+            reparsed = parse_env_file(path)
+
+        self.assertEqual(reparsed["TC_CUSTOM_SETTING"], "kept value")
+        self.assertEqual(reparsed["CUSTOM_FLAG"], "")
+        self.assertNotIn("TC_SAMBA_USER", reparsed)
+        self.assertNotIn("TC_PAYLOAD_DIR_NAME", reparsed)
+        self.assertNotIn("TC_MDNS_INSTANCE_NAME", reparsed)
+
+    def test_preserved_env_file_values_filters_deprecated_runtime_keys(self) -> None:
+        values = {
+            "TC_HOST": "root@10.0.0.2",
+            "TC_CUSTOM_SETTING": "kept",
+            "TC_AIRPORT_SYAP": "119",
+            "TC_MDNS_DEVICE_MODEL": "TimeCapsule8,119",
+            "NET_IPV4_HINT": "10.0.0.2",
+        }
+
+        preserved = preserved_env_file_values(values)
+
+        self.assertEqual(preserved, {"TC_HOST": "root@10.0.0.2", "TC_CUSTOM_SETTING": "kept"})
 
     def test_env_example_does_not_include_runtime_derived_settings(self) -> None:
         values = parse_env_file(REPO_ROOT / ".env.example")
