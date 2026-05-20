@@ -268,7 +268,7 @@ class CliFlowTests(unittest.TestCase):
         self.assertEqual(command_context.debug_fields["reboot_request_strategy"], "ssh")
         self.assertEqual(command_context.debug_fields["ssh_reboot_attempted"], True)
         self.assertEqual(command_context.debug_fields["ssh_reboot_succeeded"], True)
-        self.assertEqual(messages, ["SSH: /sbin/reboot"])
+        self.assertEqual(messages, ["SSH: /bin/sync; /sbin/shutdown -r now (fallback /sbin/reboot)"])
         self.assertIn("SSH reboot requested.", output.getvalue())
 
     def test_request_ssh_reboot_records_timeout_without_raising(self) -> None:

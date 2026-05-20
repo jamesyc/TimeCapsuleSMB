@@ -10,7 +10,12 @@ from timecapsulesmb.device.storage import ensure_volume_root_mounted_conn
 from timecapsulesmb.transport.ssh import SshConnection, run_scp, run_ssh
 
 
-DETACHED_REBOOT_COMMAND = "/bin/sh -c 'exec </dev/null >/dev/null 2>&1; (/bin/sleep 1; /sbin/reboot) & exit 0'"
+DETACHED_REBOOT_COMMAND = (
+    "/bin/sh -c 'exec </dev/null >/dev/null 2>&1; "
+    "(/bin/sync; /bin/sleep 1; "
+    "if [ -x /sbin/shutdown ]; then /sbin/shutdown -r now || /sbin/reboot; else /sbin/reboot; fi"
+    ") & exit 0'"
+)
 DETACHED_SHUTDOWN_REBOOT_COMMAND = (
     "/bin/sh -c 'exec </dev/null >/dev/null 2>&1; "
     "(/bin/sleep 1; "

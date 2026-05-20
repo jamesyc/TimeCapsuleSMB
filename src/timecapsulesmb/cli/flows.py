@@ -178,7 +178,7 @@ def _request_reboot_via_ssh(
     *,
     log: LogCallback = None,
     request_reboot: Callable[[SshConnection], None] | None = None,
-    progress_message: str = "SSH: /sbin/reboot",
+    progress_message: str = "SSH: /bin/sync; /sbin/shutdown -r now (fallback /sbin/reboot)",
 ) -> None:
     command_context.add_debug_fields(ssh_reboot_attempted=True)
     emit_progress(log, progress_message)
