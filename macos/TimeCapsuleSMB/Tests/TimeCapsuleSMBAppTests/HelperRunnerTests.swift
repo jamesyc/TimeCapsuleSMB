@@ -77,6 +77,30 @@ final class HelperRunnerTests: XCTestCase {
         XCTAssertEqual(recorder.events.last?.ok, true)
     }
 
+    func testRunnerDecodesTruncatedUTF8StderrWithReplacementCharacter() async throws {
+        let temp = try TemporaryDirectory()
+        let helper = try makeHelper(
+            in: temp.url,
+            body: """
+            cat >/dev/null
+            printf '\\303\\251' >&2
+            """
+        )
+        let runner = HelperRunner(
+            locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default),
+            stderrLimit: 1
+        )
+        let recorder = EventRecorder()
+
+        let result = await runner.run(helperPath: helper.path, operation: "doctor", params: [:]) {
+            recorder.append($0)
+        }
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stderr, "\u{FFFD}")
+        XCTAssertEqual(recorder.events.last?.code, "missing_terminal_event")
+    }
+
     func testRunnerReportsMissingHelper() async {
         let locator = HelperLocator(environment: [:], currentDirectory: URL(fileURLWithPath: NSTemporaryDirectory()), bundle: .main, fileManager: .default)
         let runner = HelperRunner(locator: locator)

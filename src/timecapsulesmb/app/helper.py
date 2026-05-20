@@ -11,6 +11,9 @@ from timecapsulesmb.app.recovery import recovery_for
 from timecapsulesmb.app.service import run_api_request
 
 
+MAX_REQUEST_CHARS = 1024 * 1024
+
+
 def _sink_for_stream(stream: TextIO) -> EventSink:
     def emit(event: AppEvent) -> None:
         stream.write(event.to_json_line())
@@ -29,7 +32,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
     sink = _sink_for_stream(sys.stdout).with_request_id(str(uuid.uuid4()))
 
-    raw = sys.stdin.read()
+    raw = sys.stdin.read(MAX_REQUEST_CHARS + 1)
+    if len(raw) > MAX_REQUEST_CHARS:
+        sink.error(
+            "api",
+            f"request exceeds maximum size of {MAX_REQUEST_CHARS} characters",
+            code="invalid_request",
+            recovery=recovery_for("api", "invalid_request"),
+        )
+        if args.pretty_error:
+            print("request too large", file=sys.stderr)
+        return 1
     try:
         request = json.loads(raw)
     except json.JSONDecodeError as exc:

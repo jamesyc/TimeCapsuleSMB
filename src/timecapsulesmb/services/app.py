@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, is_dataclass
+from enum import Enum
 import math
 from pathlib import Path
 
@@ -29,6 +30,8 @@ class OperationResult:
 def jsonable(value: object) -> object:
     if is_dataclass(value):
         return jsonable(asdict(value))
+    if isinstance(value, Enum):
+        return jsonable(value.value)
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, dict):

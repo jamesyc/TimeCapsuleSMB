@@ -134,7 +134,7 @@ public final class HelperRunner {
                 output.append(data.prefix(limit - output.count))
             }
         }
-        return String(data: output, encoding: .utf8) ?? ""
+        return String(decoding: output, as: UTF8.self)
     }
 
     private static func waitForExit(_ process: Process) async {

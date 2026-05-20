@@ -13,6 +13,7 @@ let xcodeLinkerSettings: [LinkerSetting] = xcodeFrameworkFlags.isEmpty ? [] : [.
 
 let package = Package(
     name: "TimeCapsuleSMBMac",
+    defaultLocalization: "en",
     platforms: [.macOS(.v13)],
     products: [
         .executable(name: "TimeCapsuleSMB", targets: ["TimeCapsuleSMBExecutable"])
@@ -20,7 +21,8 @@ let package = Package(
     targets: [
         .target(
             name: "TimeCapsuleSMBApp",
-            path: "Sources/TimeCapsuleSMBApp"
+            path: "Sources/TimeCapsuleSMBApp",
+            resources: [.process("Resources")]
         ),
         .executableTarget(
             name: "TimeCapsuleSMBExecutable",

@@ -37,13 +37,13 @@ public struct ContentView: View {
                     Button {
                         backend.clear()
                     } label: {
-                        Label("Clear", systemImage: "trash")
+                        Label(L10n.string("toolbar.clear"), systemImage: "trash")
                     }
                     .disabled(backend.isRunning)
                     Button {
                         backend.cancel()
                     } label: {
-                        Label("Cancel", systemImage: "xmark.circle")
+                        Label(L10n.string("toolbar.cancel"), systemImage: "xmark.circle")
                     }
                     .disabled(!backend.isRunning)
                 }
@@ -59,7 +59,7 @@ public struct ContentView: View {
                 backend.run(operation: confirmation.operation, params: confirmation.params)
                 pendingConfirmation = nil
             }
-            Button("Cancel", role: .cancel) {
+            Button(L10n.string("action.cancel"), role: .cancel) {
                 pendingConfirmation = nil
             }
         } message: { confirmation in
@@ -82,56 +82,61 @@ public struct ContentView: View {
     private var form: some View {
         switch selection {
         case .readiness:
-            CommandPanel(title: "Readiness") {
-                TextField("Helper", text: $backend.helperPath)
+            CommandPanel(title: L10n.string("screen.readiness")) {
+                TextField(L10n.string("field.helper"), text: $backend.helperPath)
                 HStack {
-                    runButton("Paths", icon: "folder", operation: "paths")
-                    runButton("Validate", icon: "checkmark.seal", operation: "validate-install")
+                    runButton(L10n.string("button.paths"), icon: "folder", operation: "paths")
+                    runButton(L10n.string("button.validate"), icon: "checkmark.seal", operation: "validate-install")
                 }
             }
         case .connect:
-            CommandPanel(title: "Discover And Connect") {
-                TextField("Host", text: $host)
-                SecureField("Password", text: $password)
-                TextField("Bonjour timeout seconds", text: $bonjourTimeout)
-                Toggle("Enable Debug Logging", isOn: $configureDebugLogging)
+            CommandPanel(title: L10n.string("panel.connect")) {
+                TextField(L10n.string("field.host"), text: $host)
+                SecureField(L10n.string("field.password"), text: $password)
+                TextField(L10n.string("field.bonjour_timeout"), text: $bonjourTimeout)
+                Toggle(L10n.string("toggle.enable_debug_logging"), isOn: $configureDebugLogging)
                 HStack {
-                    runButton("Discover", icon: "network", operation: "discover", params: [
-                        "timeout": numberValue(bonjourTimeout, default: 6)
-                    ])
+                    runButton(
+                        L10n.string("button.discover"),
+                        icon: "network",
+                        operation: "discover",
+                        params: OperationParams.discover(timeout: numberDouble(bonjourTimeout, default: 6))
+                    )
                     Button {
-                        var params: [String: JSONValue] = [
-                            "host": .string(host),
-                            "password": .string(password)
-                        ]
-                        if configureDebugLogging {
-                            params["debug_logging"] = .bool(true)
-                        }
-                        backend.run(operation: "configure", params: params)
+                        backend.run(
+                            operation: "configure",
+                            params: OperationParams.configure(
+                                host: host,
+                                password: password,
+                                debugLogging: configureDebugLogging
+                            )
+                        )
                     } label: {
-                        Label("Configure", systemImage: "lock.open")
+                        Label(L10n.string("button.configure"), systemImage: "lock.open")
                     }
                     .disabled(backend.isRunning || password.isEmpty)
                 }
             }
         case .deploy:
-            CommandPanel(title: "Deploy") {
-                Toggle("Enable NBNS", isOn: $nbnsEnabled)
-                Toggle("No Reboot", isOn: $noReboot)
-                Toggle("No Wait", isOn: $noWait)
-                Toggle("Dry Run", isOn: $dryRun)
-                Toggle("Force Debug Logging", isOn: $deployDebugLogging)
-                TextField("Mount wait seconds", text: $mountWait)
+            CommandPanel(title: L10n.string("screen.deploy")) {
+                Toggle(L10n.string("toggle.enable_nbns"), isOn: $nbnsEnabled)
+                Toggle(L10n.string("toggle.no_reboot"), isOn: $noReboot)
+                Toggle(L10n.string("toggle.no_wait"), isOn: $noWait)
+                Toggle(L10n.string("toggle.dry_run"), isOn: $dryRun)
+                Toggle(L10n.string("toggle.force_debug_logging"), isOn: $deployDebugLogging)
+                TextField(L10n.string("field.mount_wait"), text: $mountWait)
                 Button {
                     if dryRun {
-                        backend.run(operation: "deploy", params: [
-                            "dry_run": .bool(true),
-                            "no_reboot": .bool(noReboot),
-                            "no_wait": .bool(noWait),
-                            "nbns_enabled": .bool(nbnsEnabled),
-                            "debug_logging": .bool(deployDebugLogging),
-                            "mount_wait": numberValue(mountWait, default: 30)
-                        ])
+                        backend.run(
+                            operation: "deploy",
+                            params: OperationParams.deployPlan(
+                                noReboot: noReboot,
+                                noWait: noWait,
+                                nbnsEnabled: nbnsEnabled,
+                                debugLogging: deployDebugLogging,
+                                mountWait: numberDouble(mountWait, default: 30)
+                            )
+                        )
                     } else {
                         pendingConfirmation = .deploy(
                             noReboot: noReboot,
@@ -142,37 +147,47 @@ public struct ContentView: View {
                         )
                     }
                 } label: {
-                    Label(dryRun ? "Plan Deploy" : "Deploy", systemImage: dryRun ? "doc.text.magnifyingglass" : "square.and.arrow.up")
+                    Label(
+                        dryRun ? L10n.string("button.plan_deploy") : L10n.string("button.deploy"),
+                        systemImage: dryRun ? "doc.text.magnifyingglass" : "square.and.arrow.up"
+                    )
                 }
                 .disabled(backend.isRunning)
             }
         case .doctor:
-            CommandPanel(title: "Doctor") {
-                TextField("Bonjour timeout seconds", text: $bonjourTimeout)
-                runButton("Run Doctor", icon: "stethoscope", operation: "doctor", params: [
-                    "bonjour_timeout": numberValue(bonjourTimeout, default: 6)
-                ])
+            CommandPanel(title: L10n.string("screen.doctor")) {
+                TextField(L10n.string("field.bonjour_timeout"), text: $bonjourTimeout)
+                runButton(
+                    L10n.string("button.run_doctor"),
+                    icon: "stethoscope",
+                    operation: "doctor",
+                    params: OperationParams.doctor(bonjourTimeout: numberDouble(bonjourTimeout, default: 6))
+                )
             }
         case .maintenance:
-            CommandPanel(title: "Maintenance") {
-                TextField("Repair xattrs path", text: $repairPath)
-                TextField("fsck volume, optional", text: $volume)
-                TextField("Mount wait seconds", text: $mountWait)
-                Toggle("No Reboot", isOn: $noReboot)
-                Toggle("No Wait", isOn: $noWait)
+            CommandPanel(title: L10n.string("screen.maintenance")) {
+                TextField(L10n.string("field.repair_xattrs_path"), text: $repairPath)
+                TextField(L10n.string("field.fsck_volume"), text: $volume)
+                TextField(L10n.string("field.mount_wait"), text: $mountWait)
+                Toggle(L10n.string("toggle.no_reboot"), isOn: $noReboot)
+                Toggle(L10n.string("toggle.no_wait"), isOn: $noWait)
                 HStack {
                     Button {
                         pendingConfirmation = .activate()
                     } label: {
-                        Label("Activate", systemImage: "power")
+                        Label(L10n.string("button.activate"), systemImage: "power")
                     }
                     .disabled(backend.isRunning)
-                    runButton("Uninstall Plan", icon: "xmark.bin", operation: "uninstall", params: [
-                        "dry_run": .bool(true),
-                        "no_reboot": .bool(noReboot),
-                        "no_wait": .bool(noWait),
-                        "mount_wait": numberValue(mountWait, default: 30)
-                    ])
+                    runButton(
+                        L10n.string("button.uninstall_plan"),
+                        icon: "xmark.bin",
+                        operation: "uninstall",
+                        params: OperationParams.uninstallPlan(
+                            noReboot: noReboot,
+                            noWait: noWait,
+                            mountWait: numberDouble(mountWait, default: 30)
+                        )
+                    )
                     Button {
                         pendingConfirmation = .uninstall(
                             noReboot: noReboot,
@@ -180,22 +195,28 @@ public struct ContentView: View {
                             noWait: noWait
                         )
                     } label: {
-                        Label("Uninstall", systemImage: "xmark.bin.fill")
+                        Label(L10n.string("button.uninstall"), systemImage: "xmark.bin.fill")
                     }
                     .disabled(backend.isRunning)
                 }
                 HStack {
-                    runButton("List fsck Volumes", icon: "list.bullet.rectangle", operation: "fsck", params: [
-                        "list_volumes": .bool(true),
-                        "mount_wait": numberValue(mountWait, default: 30)
-                    ])
-                    runButton("Plan fsck", icon: "doc.text.magnifyingglass", operation: "fsck", params: [
-                        "dry_run": .bool(true),
-                        "no_reboot": .bool(noReboot),
-                        "no_wait": .bool(noWait),
-                        "mount_wait": numberValue(mountWait, default: 30),
-                        "volume": .string(volume)
-                    ])
+                    runButton(
+                        L10n.string("button.list_fsck_volumes"),
+                        icon: "list.bullet.rectangle",
+                        operation: "fsck",
+                        params: OperationParams.fsckList(mountWait: numberDouble(mountWait, default: 30))
+                    )
+                    runButton(
+                        L10n.string("button.plan_fsck"),
+                        icon: "doc.text.magnifyingglass",
+                        operation: "fsck",
+                        params: OperationParams.fsckPlan(
+                            volume: volume,
+                            noReboot: noReboot,
+                            noWait: noWait,
+                            mountWait: numberDouble(mountWait, default: 30)
+                        )
+                    )
                     Button {
                         pendingConfirmation = .fsck(
                             volume: volume,
@@ -204,33 +225,33 @@ public struct ContentView: View {
                             noWait: noWait
                         )
                     } label: {
-                        Label("Run fsck", systemImage: "externaldrive.badge.checkmark")
+                        Label(L10n.string("button.run_fsck"), systemImage: "externaldrive.badge.checkmark")
                     }
                     .disabled(backend.isRunning)
                 }
                 HStack {
                     Button {
-                        backend.run(operation: "repair-xattrs", params: [
-                            "path": .string(repairPath),
-                            "dry_run": .bool(true)
-                        ])
+                        backend.run(
+                            operation: "repair-xattrs",
+                            params: OperationParams.repairXattrsScan(path: repairPath)
+                        )
                     } label: {
-                        Label("Scan xattrs", systemImage: "wand.and.stars")
+                        Label(L10n.string("button.scan_xattrs"), systemImage: "wand.and.stars")
                     }
                     .disabled(backend.isRunning || repairPath.isEmpty)
                     Button {
                         pendingConfirmation = .repairXattrs(path: repairPath)
                     } label: {
-                        Label("Repair xattrs", systemImage: "wand.and.stars.inverse")
+                        Label(L10n.string("button.repair_xattrs"), systemImage: "wand.and.stars.inverse")
                     }
                     .disabled(backend.isRunning || repairPath.isEmpty)
                 }
             }
         case .advanced:
-            CommandPanel(title: "Advanced") {
-                Text("Flash backup, patch, and restore remain CLI-only in this version.")
+            CommandPanel(title: L10n.string("screen.advanced")) {
+                Text(L10n.string("advanced.flash_cli_only"))
                     .foregroundStyle(.secondary)
-                Text("Use `.venv/bin/tcapsule flash --help` for firmware operations.")
+                Text(L10n.string("advanced.flash_help"))
                     .font(.system(.body, design: .monospaced))
             }
         }
@@ -255,9 +276,6 @@ public struct ContentView: View {
         return Double(trimmed) ?? defaultValue
     }
 
-    private func numberValue(_ text: String, default defaultValue: Double) -> JSONValue {
-        .number(numberDouble(text, default: defaultValue))
-    }
 }
 
 private enum Screen: String, CaseIterable, Identifiable {
@@ -272,12 +290,12 @@ private enum Screen: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .readiness: return "Readiness"
-        case .connect: return "Connect"
-        case .deploy: return "Deploy"
-        case .doctor: return "Doctor"
-        case .maintenance: return "Maintenance"
-        case .advanced: return "Advanced"
+        case .readiness: return L10n.string("screen.readiness")
+        case .connect: return L10n.string("screen.connect")
+        case .deploy: return L10n.string("screen.deploy")
+        case .doctor: return L10n.string("screen.doctor")
+        case .maintenance: return L10n.string("screen.maintenance")
+        case .advanced: return L10n.string("screen.advanced")
         }
     }
 

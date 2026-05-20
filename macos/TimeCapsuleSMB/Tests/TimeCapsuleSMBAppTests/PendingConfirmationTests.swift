@@ -2,6 +2,20 @@ import XCTest
 @testable import TimeCapsuleSMBApp
 
 final class PendingConfirmationTests: XCTestCase {
+    func testLocalizedStringsLoadFromResourceBundle() {
+        XCTAssertEqual(L10n.string("screen.readiness"), "Readiness")
+        XCTAssertEqual(L10n.string("button.uninstall_plan"), "Uninstall Plan")
+    }
+
+    func testUninstallPlanParamsCarryNoRebootSelection() {
+        let params = OperationParams.uninstallPlan(noReboot: true, noWait: true, mountWait: 9)
+
+        XCTAssertEqual(params["dry_run"], .bool(true))
+        XCTAssertEqual(params["no_reboot"], .bool(true))
+        XCTAssertEqual(params["no_wait"], .bool(true))
+        XCTAssertEqual(params["mount_wait"], .number(9))
+    }
+
     func testDeployConfirmationCarriesDeployAndRebootConsent() {
         let confirmation = PendingConfirmation.deploy(noReboot: false, nbnsEnabled: true, debugLogging: true, mountWait: 45, noWait: true)
 

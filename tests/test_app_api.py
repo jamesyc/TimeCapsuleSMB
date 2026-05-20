@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import Enum
 import io
 import json
 import sys
@@ -27,8 +29,18 @@ from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState
 from timecapsulesmb.device.storage import MaStVolume
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
 from timecapsulesmb.integrations.acp import ACPAuthError
+from timecapsulesmb.services.app import jsonable
 from timecapsulesmb.transport.errors import SshError, TransportError
 from timecapsulesmb.transport.ssh import SshConnection
+
+
+class SampleMode(Enum):
+    FAST = "fast"
+
+
+@dataclass(frozen=True)
+class SamplePayload:
+    mode: SampleMode
 
 
 class CollectingSink:
@@ -148,6 +160,9 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(result["payload"], [])
         self.assertEqual(result["schema_version"], 1)
         self.assertTrue(result["request_id"])
+
+    def test_jsonable_serializes_enum_values_inside_dataclasses(self) -> None:
+        self.assertEqual(jsonable(SamplePayload(SampleMode.FAST)), {"mode": "fast"})
 
     def test_stage_events_include_policy_metadata(self) -> None:
         collector = CollectingSink()
@@ -477,6 +492,32 @@ class AppApiTests(unittest.TestCase):
         self.assertFalse(config_path.exists())
         self.assertEqual(collector.events_of_type("error")[0]["code"], "unsupported_device")
 
+    def test_configure_rejects_boolean_ssh_wait_timeout(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.app.operations.probe_connection_state", return_value=unreachable_probed_state()):
+                with mock.patch("timecapsulesmb.app.operations.enable_ssh") as enable_ssh:
+                    rc = service.run_api_request(
+                        {
+                            "operation": "configure",
+                            "params": {
+                                "config": str(config_path),
+                                "host": "root@10.0.0.2",
+                                "password": "pw",
+                                "ssh_wait_timeout": True,
+                            },
+                        },
+                        collector.sink,
+                    )
+
+        self.assertEqual(rc, 1)
+        enable_ssh.assert_called_once()
+        self.assertFalse(config_path.exists())
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "validation_failed")
+        self.assertIn("ssh_wait_timeout must be an integer", error["message"])
+
     def test_doctor_streams_check_events(self) -> None:
         collector = CollectingSink()
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
@@ -628,6 +669,27 @@ class AppApiTests(unittest.TestCase):
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "confirmation_required")
         load_config.assert_not_called()
+
+    def test_deploy_rejects_boolean_mount_wait_before_remote_connection(self) -> None:
+        collector = CollectingSink()
+
+        with mock.patch("timecapsulesmb.app.operations.load_env_config") as load_config:
+            rc = service.run_api_request(
+                {
+                    "operation": "deploy",
+                    "params": {
+                        "dry_run": True,
+                        "mount_wait": True,
+                    },
+                },
+                collector.sink,
+            )
+
+        self.assertEqual(rc, 1)
+        load_config.assert_not_called()
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "validation_failed")
+        self.assertIn("mount_wait must be an integer", error["message"])
 
     def test_deploy_no_reboot_uploads_and_skips_reboot_wait(self) -> None:
         collector = CollectingSink()
@@ -1166,6 +1228,23 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(event["type"], "error")
         self.assertEqual(event["code"], "invalid_request")
         self.assertNotIn("secret", error_output.getvalue())
+
+    def test_helper_rejects_oversized_request_without_leaking_body(self) -> None:
+        output = io.StringIO()
+        error_output = io.StringIO()
+        secret = "secret"
+        oversized = secret + ("x" * (helper.MAX_REQUEST_CHARS + 1))
+        with mock.patch.object(sys, "stdin", io.StringIO(oversized)):
+            with redirect_stdout(output):
+                with mock.patch.object(sys, "stderr", error_output):
+                    rc = helper.main(["--pretty-error"])
+
+        self.assertEqual(rc, 1)
+        event = json.loads(output.getvalue())
+        self.assertEqual(event["type"], "error")
+        self.assertEqual(event["code"], "invalid_request")
+        self.assertIn("maximum size", event["message"])
+        self.assertNotIn(secret, error_output.getvalue())
 
     def test_helper_rejects_top_level_non_object_json(self) -> None:
         output = io.StringIO()
