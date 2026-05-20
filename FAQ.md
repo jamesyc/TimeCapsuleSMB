@@ -107,8 +107,9 @@ If macOS is searching a different keychain, list the available keychains and pas
 
 ```bash
 security list-keychains
-sudo security find-generic-password -l "Bob's MacBook Pro.sparsebundle" /Users/username/Library/Keychains/login.keychain-db
+security find-generic-password -l "Bob's MacBook Pro.sparsebundle" ~/Library/Keychains/login.keychain-db
 sudo security find-generic-password -l "Bob's MacBook Pro.sparsebundle" /Library/Keychains/System.keychain
+sudo security delete-generic-password -l "Bob's MacBook Pro.sparsebundle" /Library/Keychains/System.keychain
 ```
 
 If it still fails, check Keychain Access for older Time Machine entries that refer to the same Time Capsule or backup and remove only entries you recognize as related to this backup.
