@@ -11,6 +11,7 @@ from timecapsulesmb.cli.context import CommandContext
 from timecapsulesmb.cli.runtime import add_config_argument, load_env_config, print_json
 from timecapsulesmb.cli.util import color_green, color_red
 from timecapsulesmb.identity import ensure_install_id
+from timecapsulesmb.services.doctor import doctor_status_counts
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.core.paths import resolve_app_paths
 
@@ -283,7 +284,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             debug_fields=doctor_debug,
         )
         command_context.add_debug_fields(**doctor_debug)
-        status_counts = {status: sum(1 for result in results if result.status == status) for status in ("PASS", "WARN", "FAIL", "INFO")}
+        status_counts = doctor_status_counts(results)
         command_context.update_fields(
             fatal=fatal,
             check_count=len(results),

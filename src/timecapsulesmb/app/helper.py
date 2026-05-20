@@ -7,6 +7,7 @@ import uuid
 from typing import Optional, TextIO
 
 from timecapsulesmb.app.events import AppEvent, EventSink
+from timecapsulesmb.app.recovery import recovery_for
 from timecapsulesmb.app.service import run_api_request
 
 
@@ -33,12 +34,23 @@ def main(argv: Optional[list[str]] = None) -> int:
         request = json.loads(raw)
     except json.JSONDecodeError as exc:
         message = f"invalid JSON request: {exc.msg}"
-        sink.error("api", message, code="invalid_request", debug={"pos": exc.pos})
+        sink.error(
+            "api",
+            message,
+            code="invalid_request",
+            debug={"pos": exc.pos},
+            recovery=recovery_for("api", "invalid_request"),
+        )
         if args.pretty_error:
             print("invalid JSON request", file=sys.stderr)
         return 1
     if not isinstance(request, dict):
-        sink.error("api", "request must be a JSON object", code="invalid_request")
+        sink.error(
+            "api",
+            "request must be a JSON object",
+            code="invalid_request",
+            recovery=recovery_for("api", "invalid_request"),
+        )
         return 1
     return run_api_request(request, sink)
 

@@ -13,13 +13,8 @@ from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS, buil
 from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
 from timecapsulesmb.device.storage import UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER
 from timecapsulesmb.identity import ensure_install_id
+from timecapsulesmb.services.maintenance import UNINSTALL_REBOOT_NO_DOWN_MESSAGE as REBOOT_NO_DOWN_MESSAGE
 from timecapsulesmb.telemetry import TelemetryClient
-
-
-REBOOT_NO_DOWN_MESSAGE = (
-    "Reboot was requested but the device did not go down.\n"
-    "The uninstall removed managed TimeCapsuleSMB files before reboot; power-cycle or rerun uninstall."
-)
 
 
 def main(argv: Optional[list[str]] = None) -> int:

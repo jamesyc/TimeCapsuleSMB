@@ -1,0 +1,218 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Mapping
+
+from timecapsulesmb.checks.models import CheckResult
+from timecapsulesmb.services.app import jsonable
+from timecapsulesmb.services.doctor import doctor_status_counts
+
+
+SCHEMA_VERSION = 1
+
+
+def _with_schema(payload: Mapping[str, object]) -> dict[str, object]:
+    data = dict(payload)
+    data.setdefault("schema_version", SCHEMA_VERSION)
+    return data
+
+
+def _device_payload(*, host: str | None = None, syap: str | None = None, model: str | None = None) -> dict[str, object]:
+    return {
+        "host": host,
+        "syap": syap,
+        "model": model,
+    }
+
+
+def discover_payload(raw: Mapping[str, object]) -> dict[str, object]:
+    instances = list(raw.get("instances", [])) if isinstance(raw.get("instances"), list) else []
+    resolved = list(raw.get("resolved", [])) if isinstance(raw.get("resolved"), list) else []
+    return _with_schema({
+        **raw,
+        "counts": {
+            "instances": len(instances),
+            "resolved": len(resolved),
+        },
+        "summary": f"discovered {len(resolved)} resolved AirPort service(s).",
+    })
+
+
+def paths_payload(raw: Mapping[str, object]) -> dict[str, object]:
+    artifacts = raw.get("artifacts")
+    artifact_count = len(artifacts) if isinstance(artifacts, list) else 0
+    return _with_schema({
+        **raw,
+        "counts": {"artifacts": artifact_count},
+        "summary": f"resolved app paths with {artifact_count} artifact path(s).",
+    })
+
+
+def install_validation_payload(*, ok: bool, checks: list[object]) -> dict[str, object]:
+    checks_payload = jsonable(checks)
+    checks_list = checks_payload if isinstance(checks_payload, list) else []
+    pass_count = sum(1 for check in checks_list if isinstance(check, dict) and check.get("ok") is True)
+    fail_count = sum(1 for check in checks_list if isinstance(check, dict) and check.get("ok") is False)
+    return _with_schema({
+        "ok": ok,
+        "checks": checks_list,
+        "counts": {
+            "checks": len(checks_list),
+            "pass": pass_count,
+            "fail": fail_count,
+        },
+        "summary": "install validation passed." if ok else "install validation failed.",
+    })
+
+
+def configure_payload(
+    *,
+    config_path: str,
+    host: str,
+    configure_id: str,
+    ssh_authenticated: bool,
+    device_syap: str | None,
+    device_model: str | None,
+    compatibility: object | None,
+) -> dict[str, object]:
+    return _with_schema({
+        "config_path": config_path,
+        "host": host,
+        "configure_id": configure_id,
+        "ssh_authenticated": ssh_authenticated,
+        "device_syap": device_syap,
+        "device_model": device_model,
+        "compatibility": jsonable(compatibility),
+        "device": _device_payload(host=host, syap=device_syap, model=device_model),
+        "summary": "configuration saved and SSH authentication verified.",
+    })
+
+
+def deploy_plan_payload(raw: Mapping[str, object], *, payload_family: str | None, netbsd4: bool) -> dict[str, object]:
+    requires_reboot = bool(raw.get("reboot_required"))
+    return _with_schema({
+        **raw,
+        "requires_reboot": requires_reboot,
+        "payload_family": payload_family,
+        "netbsd4": netbsd4,
+        "summary": "deployment dry-run plan generated.",
+    })
+
+
+def deploy_result_payload(
+    *,
+    payload_dir: str,
+    rebooted: bool | None = None,
+    netbsd4: bool = False,
+    message: str | None = None,
+    payload_family: str | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "payload_dir": payload_dir,
+        "netbsd4": netbsd4,
+        "payload_family": payload_family,
+        "requires_reboot": False if netbsd4 else bool(rebooted),
+        "summary": "deployment completed.",
+    }
+    if rebooted is not None:
+        payload["rebooted"] = rebooted
+    if message is not None:
+        payload["message"] = message
+        payload["summary"] = message
+    return _with_schema(payload)
+
+
+def activation_plan_payload(raw: object) -> dict[str, object]:
+    payload = jsonable(raw)
+    if not isinstance(payload, dict):
+        payload = {"plan": payload}
+    actions = payload.get("actions")
+    action_count = len(actions) if isinstance(actions, list) else 0
+    return _with_schema({
+        **payload,
+        "counts": {"actions": action_count},
+        "summary": "NetBSD4 activation dry-run plan generated.",
+    })
+
+
+def activation_result_payload(*, already_active: bool, message: str | None = None) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "already_active": already_active,
+        "summary": "NetBSD4 payload was already active." if already_active else "NetBSD4 activation completed.",
+    }
+    if message is not None:
+        payload["message"] = message
+        payload["summary"] = message
+    return _with_schema(payload)
+
+
+def uninstall_plan_payload(raw: Mapping[str, object]) -> dict[str, object]:
+    requires_reboot = bool(raw.get("reboot_required"))
+    payload_dirs = raw.get("payload_dirs")
+    payload_dir_count = len(payload_dirs) if isinstance(payload_dirs, list) else 0
+    return _with_schema({
+        **raw,
+        "requires_reboot": requires_reboot,
+        "counts": {"payload_dirs": payload_dir_count},
+        "summary": "uninstall dry-run plan generated.",
+    })
+
+
+def uninstall_result_payload(*, rebooted: bool, verified: bool) -> dict[str, object]:
+    return _with_schema({
+        "rebooted": rebooted,
+        "verified": verified,
+        "requires_reboot": rebooted,
+        "summary": "uninstall completed." if verified else "uninstall completed without post-reboot verification.",
+    })
+
+
+def fsck_result_payload(
+    *,
+    device: str,
+    mountpoint: str,
+    returncode: int | None = None,
+    waited: bool | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "device": device,
+        "mountpoint": mountpoint,
+        "summary": "fsck completed.",
+    }
+    if returncode is not None:
+        payload["returncode"] = returncode
+    if waited is not None:
+        payload["waited"] = waited
+    return _with_schema(payload)
+
+
+def repair_xattrs_payload(raw: Mapping[str, object]) -> dict[str, object]:
+    finding_count = int(raw.get("finding_count") or 0)
+    repairable_count = int(raw.get("repairable_count") or 0)
+    return _with_schema({
+        **raw,
+        "counts": {
+            "findings": finding_count,
+            "repairable": repairable_count,
+        },
+        "summary_text": f"repair-xattrs found {finding_count} issue(s), {repairable_count} repairable.",
+    })
+
+
+def doctor_payload(
+    *,
+    fatal: bool,
+    results: list[CheckResult],
+    error: str | None = None,
+) -> dict[str, object]:
+    result_payload = [jsonable(result) for result in results]
+    counts = doctor_status_counts(results)
+    payload: dict[str, object] = {
+        "fatal": fatal,
+        "results": result_payload,
+        "counts": counts,
+        "summary": "doctor found one or more fatal problems." if fatal else "doctor checks passed.",
+    }
+    if error:
+        payload["error"] = error
+    return _with_schema(payload)

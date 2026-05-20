@@ -45,16 +45,32 @@ public struct ContentView: View {
             }
         }
         .frame(minWidth: 980, minHeight: 680)
-        .alert(item: $pendingConfirmation) { confirmation in
-            Alert(
-                title: Text(confirmation.title),
-                message: Text(confirmation.message),
-                primaryButton: .destructive(Text(confirmation.actionTitle)) {
-                    backend.run(operation: confirmation.operation, params: confirmation.params)
-                },
-                secondaryButton: .cancel()
-            )
+        .alert(
+            pendingConfirmation?.title ?? "",
+            isPresented: confirmationPresented,
+            presenting: pendingConfirmation
+        ) { confirmation in
+            Button(confirmation.actionTitle, role: .destructive) {
+                backend.run(operation: confirmation.operation, params: confirmation.params)
+                pendingConfirmation = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingConfirmation = nil
+            }
+        } message: { confirmation in
+            Text(confirmation.message)
         }
+    }
+
+    private var confirmationPresented: Binding<Bool> {
+        Binding(
+            get: { pendingConfirmation != nil },
+            set: { isPresented in
+                if !isPresented {
+                    pendingConfirmation = nil
+                }
+            }
+        )
     }
 
     @ViewBuilder

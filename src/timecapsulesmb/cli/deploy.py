@@ -15,16 +15,11 @@ from timecapsulesmb.cli.runtime import (
     require_supported_device_compatibility,
 )
 from timecapsulesmb.core.config import (
-    DEFAULTS,
     MANAGED_PAYLOAD_DIR_NAME,
-    AppConfig,
     airport_family_display_name_from_identity,
-    parse_bool,
-    shell_quote,
 )
 from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE
 from timecapsulesmb.core.paths import resolve_app_paths
-from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
@@ -36,8 +31,6 @@ from timecapsulesmb.deploy.planner import (
     BINARY_NBNS_SOURCE,
     BINARY_SMBD_SOURCE,
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
-    DEFAULT_ATA_IDLE_SECONDS,
-    DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_SMBPASSWD_SOURCE,
     GENERATED_USERNAME_MAP_SOURCE,
@@ -55,64 +48,19 @@ from timecapsulesmb.device.compat import is_netbsd4_payload_family, payload_fami
 from timecapsulesmb.device.storage import (
     MAST_DISCOVERY_ATTEMPTS,
     MAST_DISCOVERY_DELAY_SECONDS,
-    PayloadHome,
-    PayloadVerificationResult,
     build_dry_run_payload_home,
     verify_payload_home_conn,
+)
+from timecapsulesmb.services.deploy import (
+    DEPLOY_REBOOT_NO_DOWN_MESSAGE as REBOOT_NO_DOWN_MESSAGE,
+    no_mast_volumes_message,
+    no_writable_mast_volumes_message,
+    payload_verification_error,
+    render_flash_runtime_config,
 )
 from timecapsulesmb.device.probe import read_interface_ipv4_addrs_conn
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import color_green, color_red
-
-
-REBOOT_NO_DOWN_MESSAGE = (
-    "Reboot was requested but the device did not go down.\n"
-    "The deploy stopped the managed runtime before reboot; power-cycle or rerun deploy."
-)
-
-
-def _no_mast_volumes_message(*, attempts: int, delay_seconds: int) -> str:
-    return (
-        f"No deployable HFS disk was found after {attempts} MaSt queries "
-        f"spaced {delay_seconds} seconds apart."
-    )
-
-
-def _no_writable_mast_volumes_message(volume_count: int) -> str:
-    return f"MaSt found {volume_count} deployable HFS volume(s), but deploy could not write to any of them."
-
-
-def _render_flash_config_assignment(key: str, value: str | int) -> str:
-    if isinstance(value, int):
-        return f"{key}={value}"
-    return f"{key}={shell_quote(value)}"
-
-
-def render_flash_runtime_config(
-    config: AppConfig,
-    payload_home: PayloadHome,
-    *,
-    nbns_enabled: bool,
-    debug_logging: bool,
-    ata_idle_seconds: int = DEFAULT_ATA_IDLE_SECONDS,
-    diskd_use_volume_attempts: int = DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
-) -> str:
-    internal_root_default = config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])
-    any_protocol_default = config.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])
-
-    values: list[tuple[str, str | int]] = [
-        ("TC_CONFIG_VERSION", 2),
-        ("TC_DEPLOY_RELEASE_TAG", RELEASE_TAG),
-        ("TC_DEPLOY_CLI_VERSION_CODE", CLI_VERSION_CODE),
-        ("INTERNAL_SHARE_USE_DISK_ROOT", 1 if parse_bool(internal_root_default) else 0),
-        ("ANY_PROTOCOL", 1 if parse_bool(any_protocol_default) else 0),
-        ("DISKD_USE_VOLUME_ATTEMPTS", diskd_use_volume_attempts),
-        ("ATA_IDLE_SECONDS", ata_idle_seconds),
-        ("NBNS_ENABLED", 1 if nbns_enabled else 0),
-        ("SMBD_DEBUG_LOGGING", 1 if debug_logging else 0),
-        ("MDNS_DEBUG_LOGGING", 1 if debug_logging else 0),
-    ]
-    return "\n".join(_render_flash_config_assignment(key, value) for key, value in values) + "\n"
 
 
 def _target_family_display_name(target) -> str:
@@ -121,10 +69,6 @@ def _target_family_display_name(target) -> str:
         model=None if probe is None else probe.airport_model,
         syap=None if probe is None else probe.airport_syap,
     )
-
-
-def _payload_verification_error(payload_home: PayloadHome, result: PayloadVerificationResult) -> str:
-    return f"managed payload verification failed at {payload_home.payload_dir}: {result.detail}"
 
 
 def _non_negative_int(value: str) -> int:
@@ -212,7 +156,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             mast_volumes = mast_discovery.volumes
             if not mast_volumes:
                 raise SystemExit(
-                    _no_mast_volumes_message(
+                    no_mast_volumes_message(
                         attempts=MAST_DISCOVERY_ATTEMPTS,
                         delay_seconds=MAST_DISCOVERY_DELAY_SECONDS,
                     )
@@ -224,7 +168,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 wait_seconds=apple_mount_wait_seconds,
             )
             if selection.payload_home is None:
-                raise SystemExit(_no_writable_mast_volumes_message(len(mast_volumes)))
+                raise SystemExit(no_writable_mast_volumes_message(len(mast_volumes)))
             payload_home = selection.payload_home
         command_context.set_stage("build_deployment_plan")
         plan = build_deployment_plan(
@@ -318,7 +262,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         command_context.add_debug_fields(payload_upload_verification=payload_verification.detail)
         if not payload_verification.ok:
-            raise SystemExit(_payload_verification_error(payload_home, payload_verification))
+            raise SystemExit(payload_verification_error(payload_home, payload_verification))
 
         command_context.set_stage("flush_payload_upload")
         if not args.json:
@@ -336,7 +280,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         command_context.add_debug_fields(payload_post_sync_verification=payload_verification.detail)
         if not payload_verification.ok:
-            raise SystemExit(_payload_verification_error(payload_home, payload_verification))
+            raise SystemExit(payload_verification_error(payload_home, payload_verification))
 
         print(f"Deployed Samba payload to {plan.payload_dir}")
         print("Updated /mnt/Flash boot files.")

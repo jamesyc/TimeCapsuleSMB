@@ -4,22 +4,10 @@ import traceback
 from collections.abc import Callable
 
 from timecapsulesmb.app.events import EventSink, redact
-from timecapsulesmb.app.operations import (
-    OPERATIONS,
-    AppOperationError,
-    OperationResult,
-    activate_operation,
-    configure_operation,
-    deploy_operation,
-    discover_operation,
-    doctor_operation,
-    fsck_operation,
-    paths_operation,
-    repair_xattrs_operation,
-    uninstall_operation,
-    validate_install_operation,
-)
+from timecapsulesmb.app.operations import OPERATIONS
+from timecapsulesmb.app.recovery import recovery_for
 from timecapsulesmb.core.config import ConfigError
+from timecapsulesmb.services.app import AppOperationError, OperationResult
 from timecapsulesmb.transport.errors import TransportError
 
 
@@ -41,25 +29,58 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
     operation = _request_operation(request)
     params = _request_params(request)
     if not operation:
-        sink.error("api", "missing required field: operation", code="invalid_request")
+        sink.error(
+            "api",
+            "missing required field: operation",
+            code="invalid_request",
+            recovery=recovery_for("api", "invalid_request"),
+        )
         return 1
     if not isinstance(params, dict):
-        sink.error(operation, "params must be a JSON object", code="invalid_request")
+        sink.error(
+            operation,
+            "params must be a JSON object",
+            code="invalid_request",
+            recovery=recovery_for(operation, "invalid_request"),
+        )
         return 1
     handler: Callable[[dict[str, object], EventSink], OperationResult] | None = OPERATIONS.get(operation)
     if handler is None:
-        sink.error(operation, f"unknown operation: {operation}", code="unknown_operation", debug={"known_operations": sorted(OPERATIONS)})
+        sink.error(
+            operation,
+            f"unknown operation: {operation}",
+            code="unknown_operation",
+            debug={"known_operations": sorted(OPERATIONS)},
+            recovery=recovery_for(operation, "unknown_operation"),
+        )
         return 1
     try:
         result = handler(params, sink)
     except AppOperationError as exc:
-        sink.error(operation, str(exc), code=exc.code, debug=redact(exc.debug) if exc.debug is not None else None)
+        recovery = exc.recovery or recovery_for(operation, exc.code, stage=sink.current_stage(operation))
+        sink.error(
+            operation,
+            str(exc),
+            code=exc.code,
+            debug=redact(exc.debug) if exc.debug is not None else None,
+            recovery=recovery,
+        )
         return 1
     except ConfigError as exc:
-        sink.error(operation, str(exc), code="config_error")
+        sink.error(
+            operation,
+            str(exc),
+            code="config_error",
+            recovery=recovery_for(operation, "config_error", stage=sink.current_stage(operation)),
+        )
         return 1
     except TransportError as exc:
-        sink.error(operation, str(exc), code="remote_error")
+        sink.error(
+            operation,
+            str(exc),
+            code="remote_error",
+            recovery=recovery_for(operation, "remote_error", stage=sink.current_stage(operation)),
+        )
         return 1
     except (SystemExit, KeyboardInterrupt):
         raise
@@ -69,6 +90,7 @@ def run_api_request(request: dict[str, object], sink: EventSink) -> int:
             f"{type(exc).__name__}: {exc}",
             code="operation_failed",
             debug={"traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))},
+            recovery=recovery_for(operation, "operation_failed", stage=sink.current_stage(operation)),
         )
         return 1
     sink.result(operation, ok=result.ok, payload=result.payload)

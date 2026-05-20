@@ -12,11 +12,11 @@ from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
 from timecapsulesmb.device.processes import render_direct_pkill9_by_ucomm, render_direct_pkill9_watchdog
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.device.storage import MaStVolume
+from timecapsulesmb.services.maintenance import FSCK_REBOOT_NO_DOWN_MESSAGE
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import run_ssh
 
 
-FSCK_REBOOT_NO_DOWN_MESSAGE = "fsck requested reboot from the device, but SSH did not go down."
 FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS = 3 * 60 * 60
 NO_MOUNTED_HFS_VOLUMES_MESSAGE = "no mounted HFS volumes found"
 MULTIPLE_MOUNTED_HFS_VOLUMES_MESSAGE = "multiple mounted HFS volumes found; specify --volume to select one"

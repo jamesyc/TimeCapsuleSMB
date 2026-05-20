@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, is_dataclass
+import math
 from pathlib import Path
 
 
@@ -11,10 +12,12 @@ class AppOperationError(RuntimeError):
         *,
         code: str = "operation_failed",
         debug: object | None = None,
+        recovery: object | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.debug = debug
+        self.recovery = recovery
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,36 @@ def int_param(params: dict[str, object], name: str, default: int) -> int:
         parsed = int(value)
     except (TypeError, ValueError) as exc:
         raise AppOperationError(f"{name} must be an integer", code="validation_failed") from exc
+    if parsed < 0:
+        raise AppOperationError(f"{name} must be 0 or greater", code="validation_failed")
+    return parsed
+
+
+def optional_int_param(params: dict[str, object], name: str) -> int | None:
+    value = params.get(name)
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        raise AppOperationError(f"{name} must be an integer", code="validation_failed")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise AppOperationError(f"{name} must be an integer", code="validation_failed") from exc
+    if parsed < 0:
+        raise AppOperationError(f"{name} must be 0 or greater", code="validation_failed")
+    return parsed
+
+
+def float_param(params: dict[str, object], name: str, default: float) -> float:
+    value = params.get(name, default)
+    if isinstance(value, bool):
+        raise AppOperationError(f"{name} must be a number", code="validation_failed")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise AppOperationError(f"{name} must be a number", code="validation_failed") from exc
+    if not math.isfinite(parsed):
+        raise AppOperationError(f"{name} must be finite", code="validation_failed")
     if parsed < 0:
         raise AppOperationError(f"{name} must be 0 or greater", code="validation_failed")
     return parsed

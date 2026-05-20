@@ -70,22 +70,21 @@ public final class HelperRunner {
             try input.fileHandleForWriting.close()
         } catch {
             try? input.fileHandleForWriting.close()
-            terminate(process)
+            await Self.terminate(process)
             eventSink(BackendEvent.error(operation: operation, code: "helper_write_failed", message: error.localizedDescription))
             await stdoutTask.value
             let stderr = await stderrTask.value
             return HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: stderr)
         }
 
-        var cancelled = false
-        while process.isRunning {
-            if Task.isCancelled {
-                cancelled = true
-                terminate(process)
-                break
+        await withTaskCancellationHandler {
+            await Self.waitForExit(process)
+        } onCancel: {
+            Task {
+                await Self.terminate(process)
             }
-            try? await Task.sleep(nanoseconds: 100_000_000)
         }
+        let cancelled = Task.isCancelled
 
         await stdoutTask.value
         let stderrText = await stderrTask.value
@@ -138,17 +137,50 @@ public final class HelperRunner {
         return String(data: output, encoding: .utf8) ?? ""
     }
 
-    private func terminate(_ process: Process) {
+    private static func waitForExit(_ process: Process) async {
+        if !process.isRunning {
+            return
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let box = TerminationContinuation(continuation)
+            process.terminationHandler = { _ in
+                box.resume()
+            }
+            if !process.isRunning {
+                box.resume()
+            }
+        }
+        process.terminationHandler = nil
+    }
+
+    private static func terminate(_ process: Process) async {
         process.terminate()
         for _ in 0..<10 {
             if !process.isRunning {
                 return
             }
-            Thread.sleep(forTimeInterval: 0.1)
+            try? await Task.sleep(nanoseconds: 100_000_000)
         }
         if process.isRunning {
             kill(process.processIdentifier, SIGKILL)
         }
+    }
+}
+
+private final class TerminationContinuation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    init(_ continuation: CheckedContinuation<Void, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume() {
+        lock.lock()
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume()
     }
 }
 

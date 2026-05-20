@@ -5,7 +5,7 @@ import XCTest
 final class BackendEventTests: XCTestCase {
     func testBackendEventDecodesContractFields() throws {
         let data = """
-        {"schema_version":1,"request_id":"req-1","type":"error","operation":"deploy","code":"remote_error","message":"failed","debug":{"stderr":"detail"}}
+        {"schema_version":1,"request_id":"req-1","type":"error","operation":"deploy","code":"remote_error","message":"failed","debug":{"stderr":"detail"},"recovery":{"title":"No HFS volumes found","retryable":true,"actions":["retry"]}}
         """.data(using: .utf8)!
 
         let event = try JSONDecoder().decode(BackendEvent.self, from: data)
@@ -17,6 +17,24 @@ final class BackendEventTests: XCTestCase {
         XCTAssertEqual(event.code, "remote_error")
         XCTAssertEqual(event.message, "failed")
         XCTAssertEqual(event.debug, .object(["stderr": .string("detail")]))
+        XCTAssertEqual(event.recovery, .object([
+            "title": .string("No HFS volumes found"),
+            "retryable": .bool(true),
+            "actions": .array([.string("retry")])
+        ]))
+    }
+
+    func testBackendEventDecodesStagePolicyFields() throws {
+        let data = """
+        {"schema_version":1,"type":"stage","operation":"deploy","stage":"upload_payload","risk":"remote_write","cancellable":false,"description":"Upload managed Samba payload files."}
+        """.data(using: .utf8)!
+
+        let event = try JSONDecoder().decode(BackendEvent.self, from: data)
+
+        XCTAssertEqual(event.stage, "upload_payload")
+        XCTAssertEqual(event.risk, "remote_write")
+        XCTAssertEqual(event.cancellable, false)
+        XCTAssertEqual(event.description, "Upload managed Samba payload files.")
     }
 
     func testJSONValueRoundTripsNestedObjects() throws {

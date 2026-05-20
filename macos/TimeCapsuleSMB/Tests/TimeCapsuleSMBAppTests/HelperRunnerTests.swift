@@ -91,6 +91,34 @@ final class HelperRunnerTests: XCTestCase {
         XCTAssertEqual(recorder.events.last?.code, "helper_not_found")
     }
 
+    func testRunnerCancelsLongRunningHelper() async throws {
+        let temp = try TemporaryDirectory()
+        let helper = try makeHelper(
+            in: temp.url,
+            body: """
+            cat >/dev/null
+            while true; do
+                sleep 1
+            done
+            """
+        )
+        let runner = HelperRunner(locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default))
+        let recorder = EventRecorder()
+
+        let task = Task {
+            await runner.run(helperPath: helper.path, operation: "doctor", params: [:]) {
+                recorder.append($0)
+            }
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        task.cancel()
+        let result = await task.value
+
+        XCTAssertEqual(result.exitCode, 130)
+        XCTAssertEqual(recorder.events.last?.type, "error")
+        XCTAssertEqual(recorder.events.last?.code, "cancelled")
+    }
+
     private func makeHelper(in directory: URL, body: String) throws -> URL {
         let helper = directory.appendingPathComponent("tcapsule")
         try "#!/bin/sh\n\(body)\n".write(to: helper, atomically: true, encoding: .utf8)

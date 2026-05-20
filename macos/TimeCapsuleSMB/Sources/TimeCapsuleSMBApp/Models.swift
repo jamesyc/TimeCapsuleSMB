@@ -80,6 +80,10 @@ public struct BackendEvent: Decodable, Identifiable {
     public let payload: JSONValue?
     public let details: JSONValue?
     public let debug: JSONValue?
+    public let recovery: JSONValue?
+    public let risk: String?
+    public let cancellable: Bool?
+    public let description: String?
 
     public init(
         schemaVersion: Int? = 1,
@@ -94,7 +98,11 @@ public struct BackendEvent: Decodable, Identifiable {
         ok: Bool? = nil,
         payload: JSONValue? = nil,
         details: JSONValue? = nil,
-        debug: JSONValue? = nil
+        debug: JSONValue? = nil,
+        recovery: JSONValue? = nil,
+        risk: String? = nil,
+        cancellable: Bool? = nil,
+        description: String? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.requestId = requestId
@@ -109,6 +117,10 @@ public struct BackendEvent: Decodable, Identifiable {
         self.payload = payload
         self.details = details
         self.debug = debug
+        self.recovery = recovery
+        self.risk = risk
+        self.cancellable = cancellable
+        self.description = description
     }
 
     public static func error(
@@ -140,6 +152,10 @@ public struct BackendEvent: Decodable, Identifiable {
         case payload
         case details
         case debug
+        case recovery
+        case risk
+        case cancellable
+        case description
     }
 
     public var summary: String {

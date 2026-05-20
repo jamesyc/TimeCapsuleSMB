@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from timecapsulesmb.app.stage_policy import stage_policy
+
 
 SENSITIVE_KEY_PARTS = ("password", "secret", "token")
 REDACTED = "<redacted>"
@@ -57,6 +59,7 @@ class EventSink:
         self._emit = emit
         self.request_id = request_id or str(uuid.uuid4())
         self.schema_version = schema_version
+        self._current_stage_by_operation: dict[str, str] = {}
 
     def with_request_id(self, request_id: str) -> "EventSink":
         return EventSink(self._emit, request_id=request_id, schema_version=self.schema_version)
@@ -72,8 +75,16 @@ class EventSink:
             )
         self._emit(event)
 
+    def current_stage(self, operation: str) -> str | None:
+        return self._current_stage_by_operation.get(operation)
+
     def stage(self, operation: str, stage: str) -> None:
-        self.emit(AppEvent("stage", operation, {"stage": stage}))
+        self._current_stage_by_operation[operation] = stage
+        fields: dict[str, object] = {"stage": stage}
+        policy = stage_policy(operation, stage)
+        if policy is not None:
+            fields.update(policy.to_jsonable())
+        self.emit(AppEvent("stage", operation, fields))
 
     def log(self, operation: str, message: str, *, level: str = "info") -> None:
         self.emit(AppEvent("log", operation, {"level": level, "message": message}))
@@ -102,8 +113,11 @@ class EventSink:
         *,
         code: str = "operation_failed",
         debug: object | None = None,
+        recovery: object | None = None,
     ) -> None:
         fields: dict[str, object] = {"code": code, "message": message}
         if debug is not None:
             fields["debug"] = debug
+        if recovery is not None:
+            fields["recovery"] = recovery
         self.emit(AppEvent("error", operation, fields))

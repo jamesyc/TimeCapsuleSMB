@@ -18,7 +18,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.app.events import AppEvent, EventSink
 from timecapsulesmb import repair_xattrs as repair_xattrs_domain
-from timecapsulesmb.app import helper, operations, service
+from timecapsulesmb.app import contracts, helper, operations, service
 from timecapsulesmb.cli import main as cli_main
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import AppConfig, ConfigError, parse_env_file
@@ -148,6 +148,61 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(result["schema_version"], 1)
         self.assertTrue(result["request_id"])
 
+    def test_stage_events_include_policy_metadata(self) -> None:
+        collector = CollectingSink()
+
+        collector.sink.stage("paths", "resolve_paths")
+        collector.sink.stage("deploy", "upload_payload")
+        collector.sink.stage("uninstall", "uninstall_payload")
+        collector.sink.stage("deploy", "reboot")
+
+        stages = collector.events_of_type("stage")
+        self.assertEqual(stages[0]["risk"], "local_read")
+        self.assertTrue(stages[0]["cancellable"])
+        self.assertEqual(stages[1]["risk"], "remote_write")
+        self.assertEqual(stages[2]["risk"], "destructive")
+        self.assertEqual(stages[3]["risk"], "reboot")
+        self.assertIn("description", stages[3])
+
+    def test_contract_builders_keep_stable_representative_shapes(self) -> None:
+        deploy_plan = contracts.deploy_plan_payload(
+            {"host": "root@10.0.0.2", "reboot_required": True},
+            payload_family="netbsd6_samba4",
+            netbsd4=False,
+        )
+        self.assertEqual(deploy_plan, {
+            "host": "root@10.0.0.2",
+            "reboot_required": True,
+            "requires_reboot": True,
+            "payload_family": "netbsd6_samba4",
+            "netbsd4": False,
+            "summary": "deployment dry-run plan generated.",
+            "schema_version": 1,
+        })
+
+        doctor = contracts.doctor_payload(
+            fatal=True,
+            results=[
+                CheckResult("PASS", "ok"),
+                CheckResult("WARN", "slow"),
+                CheckResult("FAIL", "bad"),
+            ],
+            error="Doctor failures:\nFAIL bad",
+        )
+        self.assertEqual(doctor["counts"], {"PASS": 1, "WARN": 1, "FAIL": 1, "INFO": 0})
+        self.assertEqual(doctor["summary"], "doctor found one or more fatal problems.")
+        self.assertEqual(doctor["schema_version"], 1)
+
+        repair = contracts.repair_xattrs_payload({
+            "returncode": 0,
+            "root": "/Volumes/Data",
+            "finding_count": 2,
+            "repairable_count": 1,
+            "summary": {"scanned": 3},
+        })
+        self.assertEqual(repair["summary"], {"scanned": 3})
+        self.assertEqual(repair["summary_text"], "repair-xattrs found 2 issue(s), 1 repairable.")
+
     def test_request_id_propagates_to_every_event(self) -> None:
         collector = CollectingSink()
 
@@ -176,6 +231,8 @@ class AppApiTests(unittest.TestCase):
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["operation"], "api")
         self.assertEqual(error["code"], "invalid_request")
+        self.assertEqual(error["recovery"]["title"], "Invalid request")
+        self.assertTrue(error["recovery"]["retryable"])
 
     def test_unknown_operation_emits_error_without_result(self) -> None:
         collector = CollectingSink()
@@ -185,6 +242,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "unknown_operation")
+        self.assertEqual(error["recovery"]["title"], "Unknown operation")
 
     def test_non_object_params_emits_invalid_request_error(self) -> None:
         collector = CollectingSink()
@@ -214,6 +272,7 @@ class AppApiTests(unittest.TestCase):
                 self.assertEqual(rc, 1)
                 error = self.assert_single_terminal_event(collector, "error")
                 self.assertEqual(error["code"], code)
+                self.assertIn("recovery", error)
 
     def test_dispatcher_includes_traceback_for_unexpected_errors(self) -> None:
         collector = CollectingSink()
@@ -253,6 +312,38 @@ class AppApiTests(unittest.TestCase):
         result = collector.events_of_type("result")[0]
         self.assertEqual(result["payload"]["resolved"][0]["name"], "TC")
         self.assertEqual(result["payload"]["resolved"][0]["ipv4"], ["10.0.0.2"])
+        self.assertEqual(result["payload"]["schema_version"], 1)
+        self.assertEqual(result["payload"]["counts"], {"instances": 1, "resolved": 1})
+        self.assertEqual(result["payload"]["summary"], "discovered 1 resolved AirPort service(s).")
+
+    def test_discover_rejects_invalid_timeout_values(self) -> None:
+        for timeout in ("bad", "nan", -1, True):
+            with self.subTest(timeout=timeout):
+                collector = CollectingSink()
+                with mock.patch("timecapsulesmb.app.operations.discover_snapshot") as discover:
+                    rc = service.run_api_request(
+                        {"operation": "discover", "params": {"timeout": timeout}},
+                        collector.sink,
+                    )
+
+                self.assertEqual(rc, 1)
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], "validation_failed")
+                self.assertEqual(error["recovery"]["title"], "Request validation failed")
+                discover.assert_not_called()
+
+    def test_discover_accepts_numeric_timeout_string(self) -> None:
+        collector = CollectingSink()
+        snapshot = BonjourDiscoverySnapshot(instances=[], resolved=[])
+
+        with mock.patch("timecapsulesmb.app.operations.discover_snapshot", return_value=snapshot) as discover:
+            rc = service.run_api_request(
+                {"operation": "discover", "params": {"timeout": "0.25"}},
+                collector.sink,
+            )
+
+        self.assertEqual(rc, 0)
+        discover.assert_called_once_with(timeout=0.25)
 
     def test_configure_writes_env_without_leaking_password_to_events(self) -> None:
         collector = CollectingSink()
@@ -331,6 +422,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertFalse(config_path.exists())
         self.assertEqual(collector.events_of_type("error")[0]["code"], "auth_failed")
+        self.assertEqual(collector.events_of_type("error")[0]["recovery"]["suggested_operation"], "configure")
         self.assertNotIn("badpw", json.dumps(collector.events))
 
     def test_configure_reports_unsupported_device(self) -> None:
@@ -424,6 +516,9 @@ class AppApiTests(unittest.TestCase):
         result = collector.events_of_type("result")[0]
         self.assertEqual(result["payload"]["host"], "root@10.0.0.2")
         self.assertEqual(result["payload"]["reboot_required"], True)
+        self.assertEqual(result["payload"]["requires_reboot"], True)
+        self.assertEqual(result["payload"]["payload_family"], "netbsd6_samba4")
+        self.assertEqual(result["payload"]["schema_version"], 1)
 
     def test_deploy_requires_reboot_confirmation_before_remote_actions(self) -> None:
         collector = CollectingSink()
@@ -560,7 +655,9 @@ class AppApiTests(unittest.TestCase):
                                 )
 
         self.assertEqual(rc, 1)
-        self.assertEqual(collector.events_of_type("error")[0]["code"], "remote_error")
+        error = collector.events_of_type("error")[0]
+        self.assertEqual(error["code"], "remote_error")
+        self.assertEqual(error["recovery"]["title"], "No HFS volumes found")
 
     def test_activate_requires_explicit_confirmation(self) -> None:
         collector = CollectingSink()
@@ -598,7 +695,9 @@ class AppApiTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         result = self.assert_single_terminal_event(collector, "result")
-        self.assertEqual(result["payload"], {"already_active": True})
+        self.assertEqual(result["payload"]["already_active"], True)
+        self.assertEqual(result["payload"]["schema_version"], 1)
+        self.assertEqual(result["payload"]["summary"], "NetBSD4 payload was already active.")
         remote_actions.assert_not_called()
 
     def test_uninstall_requires_confirmation_before_remote_removal(self) -> None:
@@ -644,6 +743,8 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         result = self.assert_single_terminal_event(collector, "result")
         self.assertIn("remote_actions", result["payload"])
+        self.assertEqual(result["payload"]["requires_reboot"], True)
+        self.assertEqual(result["payload"]["schema_version"], 1)
         uninstall.assert_not_called()
 
     def test_fsck_requires_confirmation_before_remote_connection(self) -> None:
@@ -718,6 +819,62 @@ class AppApiTests(unittest.TestCase):
         self.assertIn({"info": "stdout detail"}, [{log["level"]: log["message"]} for log in logs])
         self.assertIn({"warning": "stderr detail"}, [{log["level"]: log["message"]} for log in logs])
 
+    def test_repair_xattrs_rejects_invalid_max_depth_before_runner(self) -> None:
+        for max_depth in ("bad", -1, True):
+            with self.subTest(max_depth=max_depth):
+                collector = CollectingSink()
+                with mock.patch("timecapsulesmb.app.operations.sys.platform", "darwin"):
+                    with mock.patch("timecapsulesmb.app.operations.load_optional_env_config", return_value=AppConfig.missing()):
+                        with mock.patch("timecapsulesmb.app.operations.repair_xattrs_cli.run_repair_structured") as runner:
+                            rc = service.run_api_request(
+                                {
+                                    "operation": "repair-xattrs",
+                                    "params": {
+                                        "path": "/Volumes/Data",
+                                        "dry_run": True,
+                                        "max_depth": max_depth,
+                                    },
+                                },
+                                collector.sink,
+                            )
+
+                self.assertEqual(rc, 1)
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], "validation_failed")
+                self.assertEqual(error["recovery"]["title"], "Invalid repair options")
+                runner.assert_not_called()
+
+    def test_repair_xattrs_passes_valid_max_depth_as_int(self) -> None:
+        collector = CollectingSink()
+        summary = repair_xattrs_domain.RepairSummary(scanned=1)
+        repair_result = SimpleNamespace(
+            returncode=0,
+            root=Path("/Volumes/Data"),
+            findings=[],
+            candidates=[],
+            summary=summary,
+            report=None,
+        )
+
+        with mock.patch("timecapsulesmb.app.operations.sys.platform", "darwin"):
+            with mock.patch("timecapsulesmb.app.operations.load_optional_env_config", return_value=AppConfig.missing()):
+                with mock.patch("timecapsulesmb.app.operations.repair_xattrs_cli.run_repair_structured", return_value=repair_result) as runner:
+                    rc = service.run_api_request(
+                        {
+                            "operation": "repair-xattrs",
+                            "params": {
+                                "path": "/Volumes/Data",
+                                "dry_run": True,
+                                "max_depth": "2",
+                            },
+                        },
+                        collector.sink,
+                    )
+
+        self.assertEqual(rc, 0)
+        args = runner.call_args.args[0]
+        self.assertEqual(args.max_depth, 2)
+
     def test_repair_xattrs_requires_confirmation_for_non_dry_run(self) -> None:
         collector = CollectingSink()
 
@@ -733,6 +890,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "confirmation_required")
+        self.assertEqual(error["recovery"]["title"], "Repair confirmation required")
         runner.assert_not_called()
 
     def test_helper_reads_request_and_writes_ndjson(self) -> None:
