@@ -83,6 +83,36 @@ See this [Cult of Mac report](https://www.cultofmac.com/news/macos-tahoe-26-4-br
 
 **Workaround:** Macs running these versions can still use the device as a standard Samba network share in Finder, but Time Machine backups will not work properly. You can also try the workaround mentioned in the article.
 
+#### If you have the OSStatus Error 80
+
+OSStatus Error 80 can happen when macOS is trying to reuse an existing Time Machine backup and stale local backup state gets in the way.
+
+Try these steps:
+
+1. Make sure the Time Machine backup is not mounted or in use on any Mac.
+2. In Finder, open the SMB share and find the affected `.sparsebundle`.
+3. Right-click the `.sparsebundle`, choose "Show Package Contents", and delete the `lock` file if one is present.
+4. Open Keychain Access and delete entries that reference the affected `.sparsebundle` or `.sparsebund` name, especially matching entries in the System keychain.
+
+If Keychain Access cannot remove the entries, use Terminal to find and delete the matching generic password entries. Replace the example sparsebundle name with your real one:
+
+```bash
+sudo security find-generic-password -l "Bob's MacBook Pro.sparsebundle"
+sudo security delete-generic-password -l "Bob's MacBook Pro.sparsebundle"
+```
+
+The `-l` option matches the keychain item label. You can also use `-a` for an account name or `-s` for a service name if the label does not match.
+
+If macOS is searching a different keychain, list the available keychains and pass the specific keychain path at the end of the command:
+
+```bash
+security list-keychains
+sudo security find-generic-password -l "Bob's MacBook Pro.sparsebundle" /Users/username/Library/Keychains/login.keychain-db
+sudo security find-generic-password -l "Bob's MacBook Pro.sparsebundle" /Library/Keychains/System.keychain
+```
+
+If it still fails, check Keychain Access for older Time Machine entries that refer to the same Time Capsule or backup and remove only entries you recognize as related to this backup.
+
 #### The Time Capsule doesn't show up in Finder
 
 1. Try connecting directly:
