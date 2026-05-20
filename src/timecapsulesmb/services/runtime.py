@@ -8,7 +8,7 @@ from typing import Callable
 from timecapsulesmb.core.config import DEFAULTS, AppConfig, ConfigError, load_app_config, require_valid_app_config
 from timecapsulesmb.core.net import extract_host, ipv4_literal, is_link_local_ipv4, resolve_host_ipv4s
 from timecapsulesmb.core.paths import resolve_app_paths
-from timecapsulesmb.device.compat import require_compatibility
+from timecapsulesmb.device.compat import DeviceCompatibility, require_compatibility
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
     RemoteInterfaceProbeResult,
@@ -134,7 +134,7 @@ def resolve_validated_managed_target(
     return ManagedTargetState(connection=connection, interface_probe=None, probe_state=probe_state)
 
 
-def require_connection_compatibility(connection: SshConnection):
+def require_connection_compatibility(connection: SshConnection) -> DeviceCompatibility:
     state = probe_connection_state(connection)
     return require_compatibility(
         state.compatibility,

@@ -344,15 +344,15 @@ def observe_reboot_cycle(
 
 def repair_xattrs_operation(params: dict[str, object], sink: EventSink) -> OperationResult:
     operation = "repair-xattrs"
-    dry_run = bool_param(params, "dry_run")
-    sink.stage(operation, "platform_check")
-    if sys.platform != "darwin":
-        raise AppOperationError(
-            "repair-xattrs must be run on macOS because it uses xattr/chflags on the mounted SMB share.",
-            code="validation_failed",
-        )
     sink.stage(operation, "validate_params")
+    dry_run = bool_param(params, "dry_run")
     path = required_path_param(params, "path")
+    recursive = bool_param(params, "recursive", True)
+    max_depth = optional_int_param(params, "max_depth")
+    include_hidden = bool_param(params, "include_hidden")
+    include_time_machine = bool_param(params, "include_time_machine")
+    fix_permissions = bool_param(params, "fix_permissions")
+    verbose = bool_param(params, "verbose")
     if not dry_run:
         require_confirmation(
             params,
@@ -368,17 +368,23 @@ def repair_xattrs_operation(params: dict[str, object], sink: EventSink) -> Opera
             ),
             legacy_names=("confirm_repair",),
         )
+    sink.stage(operation, "platform_check")
+    if sys.platform != "darwin":
+        raise AppOperationError(
+            "repair-xattrs must be run on macOS because it uses xattr/chflags on the mounted SMB share.",
+            code="validation_failed",
+        )
     config = load_optional_env_config(env_path=config_path(params))
     args = argparse.Namespace(
         path=path,
         dry_run=dry_run,
         yes=not dry_run,
-        recursive=bool_param(params, "recursive", True),
-        max_depth=optional_int_param(params, "max_depth"),
-        include_hidden=bool_param(params, "include_hidden"),
-        include_time_machine=bool_param(params, "include_time_machine"),
-        fix_permissions=bool_param(params, "fix_permissions"),
-        verbose=bool_param(params, "verbose"),
+        recursive=recursive,
+        max_depth=max_depth,
+        include_hidden=include_hidden,
+        include_time_machine=include_time_machine,
+        fix_permissions=fix_permissions,
+        verbose=verbose,
     )
     context = RepairExecutionContext(lambda stage: sink.stage(operation, stage))
     stdout_capture = LineLogCapture(lambda message: sink.log(operation, message, level="info"))

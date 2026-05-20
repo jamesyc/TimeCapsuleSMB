@@ -43,6 +43,7 @@ from timecapsulesmb.deploy.verify import (
     verify_managed_runtime,
 )
 from timecapsulesmb.device.compat import (
+    DeviceCompatibility,
     is_netbsd4_payload_family,
     payload_family_description,
     render_compatibility_message,
@@ -74,14 +75,14 @@ from timecapsulesmb.services.deploy import (
     payload_verification_error,
     render_flash_runtime_config,
 )
-from timecapsulesmb.services.runtime import load_env_config, resolve_validated_managed_target
+from timecapsulesmb.services.runtime import ManagedTargetState, load_env_config, resolve_validated_managed_target
 from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
 
 ACP_REBOOT_REQUEST_TIMEOUT_SECONDS = 10
 
 
-def require_supported_payload(target, *, allow_unsupported: bool) -> object:
+def require_supported_payload(target: ManagedTargetState, *, allow_unsupported: bool) -> DeviceCompatibility:
     probe_state = target.probe_state
     if probe_state is None:
         raise AppOperationError("Failed to determine remote device OS compatibility.", code="remote_error")
@@ -103,7 +104,7 @@ def load_config_and_target(
     *,
     profile: str,
     include_probe: bool,
-) -> tuple[AppConfig, object]:
+) -> tuple[AppConfig, ManagedTargetState]:
     sink.stage(operation, "load_config")
     config = overlay_request_credentials(load_env_config(env_path=config_path(params)), params)
     sink.stage(operation, "resolve_managed_target")

@@ -1358,19 +1358,41 @@ class AppApiTests(unittest.TestCase):
     def test_repair_xattrs_requires_confirmation_for_non_dry_run(self) -> None:
         collector = CollectingSink()
 
-        with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair_structured") as runner:
-            rc = service.run_api_request(
-                {
-                    "operation": "repair-xattrs",
-                    "params": {"path": "/Volumes/Data", "dry_run": False},
-                },
-                collector.sink,
-            )
+        with mock.patch("timecapsulesmb.app.ops.maintenance.sys.platform", "linux"):
+            with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair_structured") as runner:
+                rc = service.run_api_request(
+                    {
+                        "operation": "repair-xattrs",
+                        "params": {"path": "/Volumes/Data", "dry_run": False},
+                    },
+                    collector.sink,
+                )
 
         self.assertEqual(rc, 1)
         error = self.assert_single_terminal_event(collector, "error")
         self.assertEqual(error["code"], "confirmation_required")
         self.assertEqual(error["recovery"]["title"], "Repair confirmation required")
+        runner.assert_not_called()
+
+    def test_repair_xattrs_checks_platform_after_confirmation(self) -> None:
+        collector = CollectingSink()
+
+        with mock.patch("timecapsulesmb.app.ops.maintenance.sys.platform", "linux"):
+            with mock.patch("timecapsulesmb.app.ops.maintenance.load_optional_env_config") as load_config:
+                with mock.patch("timecapsulesmb.app.ops.maintenance.repair_xattrs_service.run_repair_structured") as runner:
+                    rc = service.run_api_request(
+                        {
+                            "operation": "repair-xattrs",
+                            "params": {"path": "/Volumes/Data", "dry_run": False, "confirm_repair": True},
+                        },
+                        collector.sink,
+                    )
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "validation_failed")
+        self.assertEqual(error["recovery"]["title"], "repair-xattrs requires macOS")
+        load_config.assert_not_called()
         runner.assert_not_called()
 
     def test_helper_reads_request_and_writes_ndjson(self) -> None:
