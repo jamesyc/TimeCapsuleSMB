@@ -1,13 +1,22 @@
 import Darwin
 import Foundation
 
-public struct HelperRunResult: Equatable {
+public struct HelperRunResult: Equatable, Sendable {
     public let exitCode: Int32
     public let sawTerminalEvent: Bool
     public let stderr: String
 }
 
-public final class HelperRunner {
+public protocol HelperRunning: Sendable {
+    func run(
+        helperPath: String?,
+        operation: String,
+        params: [String: JSONValue],
+        onEvent: @escaping @Sendable (BackendEvent) async -> Void
+    ) async -> HelperRunResult
+}
+
+public final class HelperRunner: @unchecked Sendable, HelperRunning {
     private static let pipeReadChunkSize = 4096
 
     private let locator: HelperLocator
@@ -22,19 +31,19 @@ public final class HelperRunner {
         helperPath: String?,
         operation: String,
         params: [String: JSONValue],
-        onEvent: @escaping (BackendEvent) -> Void
+        onEvent: @escaping @Sendable (BackendEvent) async -> Void
     ) async -> HelperRunResult {
         let terminalTracker = TerminalEventTracker()
-        let eventSink: (BackendEvent) -> Void = { event in
-            terminalTracker.record(event)
-            onEvent(event)
+        let eventSink: @Sendable (BackendEvent) async -> Void = { event in
+            await terminalTracker.record(event)
+            await onEvent(event)
         }
 
         let resolution: HelperResolution
         do {
             resolution = try locator.resolve(helperPath: helperPath)
         } catch {
-            eventSink(BackendEvent.error(operation: operation, code: "helper_not_found", message: error.localizedDescription))
+            await eventSink(BackendEvent.error(operation: operation, code: "helper_not_found", message: error.localizedDescription))
             return HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")
         }
 
@@ -50,19 +59,19 @@ public final class HelperRunner {
         process.standardOutput = output
         process.standardError = error
 
-        let parser = OutputLineParser(onEvent: eventSink)
         do {
             try process.run()
         } catch {
-            eventSink(BackendEvent.error(operation: operation, code: "helper_launch_failed", message: error.localizedDescription))
+            await eventSink(BackendEvent.error(operation: operation, code: "helper_launch_failed", message: error.localizedDescription))
             return HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")
         }
 
         let stdoutTask = Task.detached {
-            Self.readOutput(output.fileHandleForReading, parser: parser)
+            await Self.readOutput(output.fileHandleForReading, onEvent: eventSink)
         }
+        let stderrLimit = self.stderrLimit
         let stderrTask = Task.detached {
-            Self.readCapped(error.fileHandleForReading, limit: self.stderrLimit)
+            Self.readCapped(error.fileHandleForReading, limit: stderrLimit)
         }
 
         do {
@@ -73,7 +82,7 @@ public final class HelperRunner {
         } catch {
             try? input.fileHandleForWriting.close()
             await Self.terminate(process)
-            eventSink(BackendEvent.error(operation: operation, code: "helper_write_failed", message: error.localizedDescription))
+            await eventSink(BackendEvent.error(operation: operation, code: "helper_write_failed", message: error.localizedDescription))
             await stdoutTask.value
             let stderr = await stderrTask.value
             return HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: stderr)
@@ -90,40 +99,49 @@ public final class HelperRunner {
 
         await stdoutTask.value
         let stderrText = await stderrTask.value
-        let sawTerminalEvent = terminalTracker.sawTerminalEvent
+        let sawTerminalEvent = await terminalTracker.sawTerminalEvent
         if cancelled {
-            eventSink(BackendEvent.error(
+            await eventSink(BackendEvent.error(
                 operation: operation,
                 code: "cancelled",
                 message: L10n.string("helper.error.cancelled"),
                 debug: stderrText.isEmpty ? nil : .object(["stderr": .string(stderrText)])
             ))
         } else if !sawTerminalEvent {
-            eventSink(BackendEvent.error(
+            await eventSink(BackendEvent.error(
                 operation: operation,
                 code: "missing_terminal_event",
                 message: L10n.string("helper.error.missing_terminal_event"),
                 debug: stderrText.isEmpty ? nil : .object(["stderr": .string(stderrText)])
             ))
         }
+        let finalSawTerminalEvent = await terminalTracker.sawTerminalEvent
 
         return HelperRunResult(
             exitCode: cancelled ? 130 : process.terminationStatus,
-            sawTerminalEvent: terminalTracker.sawTerminalEvent,
+            sawTerminalEvent: finalSawTerminalEvent,
             stderr: stderrText
         )
     }
 
-    private static func readOutput(_ handle: FileHandle, parser: OutputLineParser) {
-        readChunks(from: handle) { data in
-            parser.append(data)
+    private static func readOutput(
+        _ handle: FileHandle,
+        onEvent: @escaping @Sendable (BackendEvent) async -> Void
+    ) async {
+        var parser = OutputLineParser()
+        while let data = readChunk(from: handle) {
+            for event in parser.append(data) {
+                await onEvent(event)
+            }
         }
-        parser.finish()
+        for event in parser.finish() {
+            await onEvent(event)
+        }
     }
 
     private static func readCapped(_ handle: FileHandle, limit: Int) -> String {
         var output = Data()
-        readChunks(from: handle) { data in
+        while let data = readChunk(from: handle) {
             if output.count < limit {
                 output.append(data.prefix(limit - output.count))
             }
@@ -131,19 +149,17 @@ public final class HelperRunner {
         return String(decoding: output, as: UTF8.self)
     }
 
-    private static func readChunks(from handle: FileHandle, onChunk: (Data) -> Void) {
-        while true {
-            let data: Data?
-            do {
-                data = try handle.read(upToCount: pipeReadChunkSize)
-            } catch {
-                return
-            }
-            guard let data, !data.isEmpty else {
-                return
-            }
-            onChunk(data)
+    private static func readChunk(from handle: FileHandle) -> Data? {
+        let data: Data?
+        do {
+            data = try handle.read(upToCount: pipeReadChunkSize)
+        } catch {
+            return nil
         }
+        guard let data, !data.isEmpty else {
+            return nil
+        }
+        return data
     }
 
     private static func waitForExit(_ process: Process) async {
@@ -193,20 +209,15 @@ private final class TerminationContinuation: @unchecked Sendable {
     }
 }
 
-private final class TerminalEventTracker: @unchecked Sendable {
-    private let lock = NSLock()
+private actor TerminalEventTracker {
     private var seen = false
 
     var sawTerminalEvent: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return seen
+        seen
     }
 
     func record(_ event: BackendEvent) {
         guard event.type == "result" || event.type == "error" else { return }
-        lock.lock()
         seen = true
-        lock.unlock()
     }
 }

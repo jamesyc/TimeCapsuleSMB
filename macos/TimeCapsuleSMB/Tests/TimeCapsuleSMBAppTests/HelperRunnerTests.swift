@@ -17,13 +17,35 @@ final class HelperRunnerTests: XCTestCase {
         let recorder = EventRecorder()
 
         let result = await runner.run(helperPath: helper.path, operation: "paths", params: [:]) {
-            recorder.append($0)
+            await recorder.append($0)
         }
 
-        let events = recorder.events
+        let events = await recorder.events
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertEqual(events.map(\.type), ["stage", "result"])
         XCTAssertEqual(events.last?.ok, true)
+    }
+
+    func testRunnerWaitsForEventDeliveryBeforeReturning() async throws {
+        let temp = try TemporaryDirectory()
+        let helper = try makeHelper(
+            in: temp.url,
+            body: """
+            cat >/dev/null
+            echo '{"schema_version":1,"request_id":"req","type":"result","operation":"paths","ok":true,"payload":{"ok":true}}'
+            """
+        )
+        let runner = HelperRunner(locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default))
+        let recorder = EventRecorder()
+
+        let result = await runner.run(helperPath: helper.path, operation: "paths", params: [:]) { event in
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            await recorder.append(event)
+        }
+
+        let events = await recorder.events
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(events.map(\.type), ["result"])
     }
 
     func testRunnerSynthesizesErrorWhenHelperHasNoTerminalEvent() async throws {
@@ -40,10 +62,10 @@ final class HelperRunnerTests: XCTestCase {
         let recorder = EventRecorder()
 
         let result = await runner.run(helperPath: helper.path, operation: "doctor", params: [:]) {
-            recorder.append($0)
+            await recorder.append($0)
         }
 
-        let events = recorder.events
+        let events = await recorder.events
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertEqual(events.last?.type, "error")
         XCTAssertEqual(events.last?.code, "missing_terminal_event")
@@ -69,13 +91,14 @@ final class HelperRunnerTests: XCTestCase {
         let recorder = EventRecorder()
 
         let result = await runner.run(helperPath: helper.path, operation: "doctor", params: [:]) {
-            recorder.append($0)
+            await recorder.append($0)
         }
 
+        let events = await recorder.events
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertEqual(result.stderr.count, 64 * 1024)
-        XCTAssertEqual(recorder.events.last?.type, "result")
-        XCTAssertEqual(recorder.events.last?.ok, true)
+        XCTAssertEqual(events.last?.type, "result")
+        XCTAssertEqual(events.last?.ok, true)
     }
 
     func testRunnerDecodesTruncatedUTF8StderrWithReplacementCharacter() async throws {
@@ -94,12 +117,13 @@ final class HelperRunnerTests: XCTestCase {
         let recorder = EventRecorder()
 
         let result = await runner.run(helperPath: helper.path, operation: "doctor", params: [:]) {
-            recorder.append($0)
+            await recorder.append($0)
         }
 
+        let events = await recorder.events
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertEqual(result.stderr, "\u{FFFD}")
-        XCTAssertEqual(recorder.events.last?.code, "missing_terminal_event")
+        XCTAssertEqual(events.last?.code, "missing_terminal_event")
     }
 
     func testRunnerReportsMissingHelper() async {
@@ -108,12 +132,13 @@ final class HelperRunnerTests: XCTestCase {
         let recorder = EventRecorder()
 
         let result = await runner.run(helperPath: "/missing/tcapsule", operation: "paths", params: [:]) {
-            recorder.append($0)
+            await recorder.append($0)
         }
 
+        let events = await recorder.events
         XCTAssertEqual(result.exitCode, 1)
-        XCTAssertEqual(recorder.events.last?.type, "error")
-        XCTAssertEqual(recorder.events.last?.code, "helper_not_found")
+        XCTAssertEqual(events.last?.type, "error")
+        XCTAssertEqual(events.last?.code, "helper_not_found")
     }
 
     func testRunnerCancelsLongRunningHelper() async throws {
@@ -132,17 +157,18 @@ final class HelperRunnerTests: XCTestCase {
 
         let task = Task {
             await runner.run(helperPath: helper.path, operation: "doctor", params: [:]) {
-                recorder.append($0)
+                await recorder.append($0)
             }
         }
         try await Task.sleep(nanoseconds: 100_000_000)
         task.cancel()
         let result = await task.value
 
+        let events = await recorder.events
         XCTAssertEqual(result.exitCode, 130)
-        XCTAssertEqual(recorder.events.last?.type, "error")
-        XCTAssertEqual(recorder.events.last?.code, "cancelled")
-        XCTAssertEqual(recorder.events.last?.message, L10n.string("helper.error.cancelled"))
+        XCTAssertEqual(events.last?.type, "error")
+        XCTAssertEqual(events.last?.code, "cancelled")
+        XCTAssertEqual(events.last?.message, L10n.string("helper.error.cancelled"))
     }
 
     private func makeHelper(in directory: URL, body: String) throws -> URL {
@@ -153,19 +179,14 @@ final class HelperRunnerTests: XCTestCase {
     }
 }
 
-private final class EventRecorder: @unchecked Sendable {
-    private let lock = NSLock()
+private actor EventRecorder {
     private var storage: [BackendEvent] = []
 
     var events: [BackendEvent] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage
+        storage
     }
 
     func append(_ event: BackendEvent) {
-        lock.lock()
         storage.append(event)
-        lock.unlock()
     }
 }

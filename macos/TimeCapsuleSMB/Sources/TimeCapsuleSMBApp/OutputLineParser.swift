@@ -1,42 +1,38 @@
 import Foundation
 
-public final class OutputLineParser: @unchecked Sendable {
-    private let lock = NSLock()
+public struct OutputLineParser {
     private var buffer = Data()
     private let decoder = JSONDecoder()
-    private let onEvent: (BackendEvent) -> Void
 
-    public init(onEvent: @escaping (BackendEvent) -> Void) {
-        self.onEvent = onEvent
+    public init() {
     }
 
-    public func append(_ data: Data) {
-        lock.lock()
-        defer { lock.unlock() }
+    public mutating func append(_ data: Data) -> [BackendEvent] {
         buffer.append(data)
-        consumeCompleteLines()
+        return consumeCompleteLines()
     }
 
-    public func finish() {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !buffer.isEmpty else { return }
-        emit(buffer)
+    public mutating func finish() -> [BackendEvent] {
+        guard !buffer.isEmpty else { return [] }
+        let event = decode(buffer)
         buffer.removeAll()
+        return event.map { [$0] } ?? []
     }
 
-    private func consumeCompleteLines() {
+    private mutating func consumeCompleteLines() -> [BackendEvent] {
+        var events: [BackendEvent] = []
         while let newline = buffer.firstIndex(of: 0x0A) {
             let line = buffer.prefix(upTo: newline)
             buffer.removeSubrange(...newline)
-            emit(line)
+            if let event = decode(line) {
+                events.append(event)
+            }
         }
+        return events
     }
 
-    private func emit(_ line: Data.SubSequence) {
-        guard !line.isEmpty, let event = try? decoder.decode(BackendEvent.self, from: Data(line)) else {
-            return
-        }
-        onEvent(event)
+    private func decode(_ line: Data.SubSequence) -> BackendEvent? {
+        guard !line.isEmpty else { return nil }
+        return try? decoder.decode(BackendEvent.self, from: Data(line))
     }
 }

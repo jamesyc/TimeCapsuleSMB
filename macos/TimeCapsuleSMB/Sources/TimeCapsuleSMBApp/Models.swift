@@ -1,6 +1,6 @@
 import Foundation
 
-public enum JSONValue: Codable, Hashable {
+public enum JSONValue: Codable, Hashable, Sendable {
     case string(String)
     case number(Double)
     case bool(Bool)
@@ -73,7 +73,7 @@ public enum JSONValue: Codable, Hashable {
     }
 }
 
-public struct BackendEvent: Decodable, Identifiable {
+public struct BackendEvent: Decodable, Identifiable, Sendable {
     public let id = UUID()
     public let schemaVersion: Int?
     public let requestId: String?

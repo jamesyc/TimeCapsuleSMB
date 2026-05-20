@@ -4,14 +4,14 @@ import XCTest
 
 final class OutputLineParserTests: XCTestCase {
     func testParserHandlesSplitMultipleAndUnterminatedLines() {
-        var events: [BackendEvent] = []
-        let parser = OutputLineParser { events.append($0) }
+        var parser = OutputLineParser()
 
-        parser.append(Data(#"{"type":"stage","operation":"paths","stage":"resolve"#.utf8))
-        parser.append(Data(#"_paths"}"#.utf8))
-        parser.append(Data("\nnot-json\n".utf8))
-        parser.append(Data(#"{"type":"result","operation":"paths","ok":true,"payload":{}}"#.utf8))
-        parser.finish()
+        var events: [BackendEvent] = []
+        events.append(contentsOf: parser.append(Data(#"{"type":"stage","operation":"paths","stage":"resolve"#.utf8)))
+        events.append(contentsOf: parser.append(Data(#"_paths"}"#.utf8)))
+        events.append(contentsOf: parser.append(Data("\nnot-json\n".utf8)))
+        events.append(contentsOf: parser.append(Data(#"{"type":"result","operation":"paths","ok":true,"payload":{}}"#.utf8)))
+        events.append(contentsOf: parser.finish())
 
         XCTAssertEqual(events.map(\.type), ["stage", "result"])
         XCTAssertEqual(events.first?.stage, "resolve_paths")
