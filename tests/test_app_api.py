@@ -1125,6 +1125,37 @@ class AppApiTests(unittest.TestCase):
         self.assertIn({"info": "stdout detail"}, [{log["level"]: log["message"]} for log in logs])
         self.assertIn({"warning": "stderr detail"}, [{log["level"]: log["message"]} for log in logs])
 
+    def test_repair_xattrs_rejects_invalid_path_before_runner(self) -> None:
+        cases = [
+            ({}, "missing required parameter: path"),
+            ({"path": ""}, "missing required parameter: path"),
+            ({"path": "   "}, "missing required parameter: path"),
+            ({"path": True}, "path must be a path string"),
+        ]
+        for extra_params, message in cases:
+            with self.subTest(extra_params=extra_params):
+                collector = CollectingSink()
+                params = {"dry_run": True}
+                params.update(extra_params)
+                with mock.patch("timecapsulesmb.app.operations.sys.platform", "darwin"):
+                    with mock.patch("timecapsulesmb.app.operations.load_optional_env_config") as load_config:
+                        with mock.patch("timecapsulesmb.app.operations.repair_xattrs_cli.run_repair_structured") as runner:
+                            rc = service.run_api_request(
+                                {
+                                    "operation": "repair-xattrs",
+                                    "params": params,
+                                },
+                                collector.sink,
+                            )
+
+                self.assertEqual(rc, 1)
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], "validation_failed")
+                self.assertEqual(error["message"], message)
+                self.assertEqual(error["recovery"]["title"], "Invalid repair options")
+                load_config.assert_not_called()
+                runner.assert_not_called()
+
     def test_repair_xattrs_rejects_invalid_max_depth_before_runner(self) -> None:
         for max_depth in ("bad", -1, True):
             with self.subTest(max_depth=max_depth):

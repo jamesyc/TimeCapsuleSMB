@@ -130,3 +130,18 @@ def require_string_param(params: dict[str, object], name: str) -> str:
     if not value:
         raise AppOperationError(f"missing required parameter: {name}", code="validation_failed")
     return value
+
+
+def required_path_param(params: dict[str, object], name: str) -> Path:
+    value = params.get(name)
+    if value is None:
+        raise AppOperationError(f"missing required parameter: {name}", code="validation_failed")
+    if isinstance(value, Path):
+        path_text = str(value).strip()
+    elif isinstance(value, str):
+        path_text = value.strip()
+    else:
+        raise AppOperationError(f"{name} must be a path string", code="validation_failed")
+    if not path_text:
+        raise AppOperationError(f"missing required parameter: {name}", code="validation_failed")
+    return Path(path_text)

@@ -4151,6 +4151,30 @@ class CliTests(unittest.TestCase):
         self.assertIn("stage=load_config", finished["error"])
         self.assertNotIn("TC_PASSWORD", finished["error"])
 
+    def test_set_ssh_action_selection_covers_cli_modes(self) -> None:
+        cases = [
+            (False, False, False, set_ssh.SetSshAction.ENABLE),
+            (False, False, True, set_ssh.SetSshAction.PROMPT_DISABLE),
+            (True, False, False, set_ssh.SetSshAction.ENABLE),
+            (True, False, True, set_ssh.SetSshAction.ENABLE_NOOP),
+            (False, True, False, set_ssh.SetSshAction.DISABLE_NOOP),
+            (False, True, True, set_ssh.SetSshAction.DISABLE),
+        ]
+        for explicit_enable, explicit_disable, ssh_open, expected in cases:
+            with self.subTest(
+                explicit_enable=explicit_enable,
+                explicit_disable=explicit_disable,
+                ssh_open=ssh_open,
+            ):
+                self.assertIs(
+                    set_ssh.select_set_ssh_action(
+                        explicit_enable=explicit_enable,
+                        explicit_disable=explicit_disable,
+                        ssh_open=ssh_open,
+                    ),
+                    expected,
+                )
+
     def test_set_ssh_enable_flow_succeeds(self) -> None:
         output = io.StringIO()
         values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
@@ -4286,6 +4310,24 @@ class CliTests(unittest.TestCase):
         self.assertIn(f"Failed to disable SSH over SSH: {error}", finished["error"])
         self.assertNotIn("AirPyrt", finished["error"])
         self.assertNotIn(ANSI_RED, finished["error"])
+
+    def test_set_ssh_legacy_enabled_state_can_leave_ssh_enabled(self) -> None:
+        output = io.StringIO()
+        values = {"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"}
+        with mock.patch("timecapsulesmb.cli.set_ssh.load_env_config", return_value=self.make_app_config(values)):
+            with mock.patch("timecapsulesmb.cli.set_ssh.tcp_open", return_value=True):
+                with mock.patch("builtins.input", return_value="n"):
+                    with mock.patch("timecapsulesmb.cli.set_ssh.disable_ssh_over_ssh") as disable_mock:
+                        with redirect_stdout(output):
+                            rc = set_ssh.main([])
+
+        self.assertEqual(rc, 0)
+        self.assertIn("Leaving SSH enabled.", output.getvalue())
+        disable_mock.assert_not_called()
+        finished = self.telemetry_payload("set_ssh_finished")
+        self.assertEqual(finished["result"], "success")
+        self.assertEqual(finished["set_ssh_action"], "leave_enabled")
+        self.assertEqual(finished["ssh_final_reachable"], True)
 
     def test_set_ssh_disable_fails_when_ssh_never_goes_down(self) -> None:
         output = io.StringIO()

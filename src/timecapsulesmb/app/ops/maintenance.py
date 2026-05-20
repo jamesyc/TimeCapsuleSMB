@@ -4,7 +4,6 @@ import argparse
 import shlex
 import sys
 from contextlib import redirect_stderr, redirect_stdout
-from pathlib import Path
 
 from timecapsulesmb.app.contracts import (
     activation_plan_payload,
@@ -57,6 +56,7 @@ from timecapsulesmb.services.app import (
     int_param,
     jsonable,
     optional_int_param,
+    required_path_param,
     string_param,
 )
 from timecapsulesmb.services.deploy import DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE
@@ -310,9 +310,10 @@ def repair_xattrs_operation(params: dict[str, object], sink: EventSink) -> Opera
             code="validation_failed",
         )
     sink.stage(operation, "validate_params")
+    path = required_path_param(params, "path")
     config = load_optional_env_config(env_path=config_path(params))
     args = argparse.Namespace(
-        path=Path(str(params["path"])) if params.get("path") else None,
+        path=path,
         dry_run=dry_run,
         yes=confirm_repair,
         recursive=bool_param(params, "recursive", True),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from enum import Enum
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
@@ -26,6 +27,22 @@ def _dbug_property_already_absent(output: str) -> bool:
 def _looks_like_ssh_auth_failure(output: str) -> bool:
     lowered = output.lower()
     return "permission denied" in lowered or "please try again" in lowered
+
+
+class SetSshAction(Enum):
+    ENABLE = "enable_ssh"
+    ENABLE_NOOP = "enable_noop"
+    DISABLE = "disable_ssh"
+    DISABLE_NOOP = "disable_noop"
+    PROMPT_DISABLE = "prompt_disable_ssh"
+
+
+def select_set_ssh_action(*, explicit_enable: bool, explicit_disable: bool, ssh_open: bool) -> SetSshAction:
+    if explicit_enable:
+        return SetSshAction.ENABLE_NOOP if ssh_open else SetSshAction.ENABLE
+    if explicit_disable:
+        return SetSshAction.DISABLE if ssh_open else SetSshAction.DISABLE_NOOP
+    return SetSshAction.PROMPT_DISABLE if ssh_open else SetSshAction.ENABLE
 
 
 def disable_ssh_over_ssh(
@@ -109,17 +126,20 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 0
 
         assert connection is not None
-        should_enable = args.enable or (not args.disable and not ssh_open)
-        should_disable = args.disable or (not args.enable and ssh_open)
+        action = select_set_ssh_action(
+            explicit_enable=args.enable,
+            explicit_disable=args.disable,
+            ssh_open=ssh_open,
+        )
 
-        if should_enable:
-            if ssh_open:
-                command_context.update_fields(set_ssh_action="enable_noop", ssh_final_reachable=True)
-                print("SSH already enabled.")
-                command_context.succeed()
-                return 0
+        if action is SetSshAction.ENABLE_NOOP:
+            command_context.update_fields(set_ssh_action=action.value, ssh_final_reachable=True)
+            print("SSH already enabled.")
+            command_context.succeed()
+            return 0
 
-            command_context.update_fields(set_ssh_action="enable_ssh")
+        if action is SetSshAction.ENABLE:
+            command_context.update_fields(set_ssh_action=action.value)
             print("SSH not reachable. Attempting to enable via ACP...")
             try:
                 command_context.set_stage("enable_ssh")
@@ -149,85 +169,82 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.succeed()
             return 0
 
-        if should_disable:
-            if not ssh_open:
-                command_context.update_fields(set_ssh_action="disable_noop", ssh_final_reachable=False)
-                print("SSH already disabled.")
-                command_context.succeed()
-                return 0
+        if action is SetSshAction.DISABLE_NOOP:
+            command_context.update_fields(set_ssh_action=action.value, ssh_final_reachable=False)
+            print("SSH already disabled.")
+            command_context.succeed()
+            return 0
 
+        if action is SetSshAction.PROMPT_DISABLE:
             command_context.set_stage("prompt_disable_ssh")
-            if not args.disable and not args.yes:
-                should_disable = confirm(
+            if not args.yes:
+                confirmed = confirm(
                     "SSH already enabled. Disable?",
                     default=False,
                     eof_default=False,
                     interrupt_default=False,
                 )
-            if not should_disable:
+            else:
+                confirmed = True
+            if not confirmed:
                 command_context.update_fields(set_ssh_action="leave_enabled", ssh_final_reachable=True)
                 print("Leaving SSH enabled.")
                 command_context.succeed()
                 return 0
+            action = SetSshAction.DISABLE
 
-            if should_disable:
-                command_context.update_fields(set_ssh_action="disable_ssh")
-                try:
-                    command_context.set_stage("disable_ssh")
-                    disable_ssh_over_ssh(connection, reboot_device=True, log=print)
-                except Exception as e:
-                    error_text = str(e)
-                    message = f"Failed to disable SSH over SSH: {error_text}"
-                    print(color_red("Failed to disable SSH over SSH:"))
-                    print(error_text)
-                    command_context.fail_with_error(message)
-                    return 1
+        command_context.update_fields(set_ssh_action=action.value)
+        try:
+            command_context.set_stage("disable_ssh")
+            disable_ssh_over_ssh(connection, reboot_device=True, log=print)
+        except Exception as e:
+            error_text = str(e)
+            message = f"Failed to disable SSH over SSH: {error_text}"
+            print(color_red("Failed to disable SSH over SSH:"))
+            print(error_text)
+            command_context.fail_with_error(message)
+            return 1
 
-                if args.no_wait:
-                    command_context.update_fields(ssh_verification_skipped=True)
-                    print("SSH disable requested; not waiting for reboot or verifying SSH stays closed.")
-                    command_context.succeed()
-                    return 0
+        if args.no_wait:
+            command_context.update_fields(ssh_verification_skipped=True)
+            print("SSH disable requested; not waiting for reboot or verifying SSH stays closed.")
+            command_context.succeed()
+            return 0
 
-                print("Device is starting reboot now, waiting for it to shut down...")
-                command_context.set_stage("wait_for_ssh_down")
-                if not wait_for_tcp_port_state(acp_host, 22, expected_state=False, service_name="SSH port"):
-                    message = "SSH did not close after disable/reboot request; disable could not be verified."
-                    command_context.update_fields(
-                        ssh_final_reachable=True,
-                        ssh_disable_persisted=False,
-                        ssh_reboot_observed_down=False,
-                    )
-                    print(color_red("Failed to verify SSH disable:"))
-                    print(message)
-                    command_context.fail_with_error(message)
-                    return 1
-                print("Device is down now, verifying persistence after reboot...")
-                command_context.update_fields(ssh_reboot_observed_down=True)
-                command_context.set_stage("wait_for_device_up")
-                if not wait_for_device_up(acp_host):
-                    message = "Device went down after disable request but did not come back within timeout."
-                    command_context.update_fields(device_recovered=False)
-                    print(color_red("Failed to verify SSH disable:"))
-                    print(message)
-                    command_context.fail_with_error(message)
-                    return 1
-                command_context.update_fields(device_recovered=True)
-                print("Device successfully rebooted. Checking if SSH is still disabled...")
-                command_context.set_stage("verify_ssh_disabled")
-                if not wait_for_tcp_port_state(acp_host, 22, expected_state=False, timeout_seconds=30, service_name="SSH port"):
-                    command_context.update_fields(ssh_final_reachable=True, ssh_disable_persisted=False)
-                    message = "SSH reopened after reboot. Disable did not persist."
-                    print(color_red("Failed to verify SSH disable:"))
-                    print(message)
-                    command_context.fail_with_error(message)
-                    return 1
-                else:
-                    command_context.update_fields(ssh_final_reachable=False, ssh_disable_persisted=True)
-                    print("SSH disabled (remains closed after reboot). Enable SSH again if this was not intended.")
-                    command_context.succeed()
-                    return 0
-
-        command_context.fail_with_error("No set-ssh action selected.")
-        return 1
-    return 1
+        print("Device is starting reboot now, waiting for it to shut down...")
+        command_context.set_stage("wait_for_ssh_down")
+        if not wait_for_tcp_port_state(acp_host, 22, expected_state=False, service_name="SSH port"):
+            message = "SSH did not close after disable/reboot request; disable could not be verified."
+            command_context.update_fields(
+                ssh_final_reachable=True,
+                ssh_disable_persisted=False,
+                ssh_reboot_observed_down=False,
+            )
+            print(color_red("Failed to verify SSH disable:"))
+            print(message)
+            command_context.fail_with_error(message)
+            return 1
+        print("Device is down now, verifying persistence after reboot...")
+        command_context.update_fields(ssh_reboot_observed_down=True)
+        command_context.set_stage("wait_for_device_up")
+        if not wait_for_device_up(acp_host):
+            message = "Device went down after disable request but did not come back within timeout."
+            command_context.update_fields(device_recovered=False)
+            print(color_red("Failed to verify SSH disable:"))
+            print(message)
+            command_context.fail_with_error(message)
+            return 1
+        command_context.update_fields(device_recovered=True)
+        print("Device successfully rebooted. Checking if SSH is still disabled...")
+        command_context.set_stage("verify_ssh_disabled")
+        if not wait_for_tcp_port_state(acp_host, 22, expected_state=False, timeout_seconds=30, service_name="SSH port"):
+            command_context.update_fields(ssh_final_reachable=True, ssh_disable_persisted=False)
+            message = "SSH reopened after reboot. Disable did not persist."
+            print(color_red("Failed to verify SSH disable:"))
+            print(message)
+            command_context.fail_with_error(message)
+            return 1
+        command_context.update_fields(ssh_final_reachable=False, ssh_disable_persisted=True)
+        print("SSH disabled (remains closed after reboot). Enable SSH again if this was not intended.")
+        command_context.succeed()
+        return 0
