@@ -1,6 +1,7 @@
 import XCTest
 @testable import TimeCapsuleSMBApp
 
+@MainActor
 final class DashboardPresentationTests: XCTestCase {
     func testCheckupPresentationHeadlineFollowsState() throws {
         let payload = try testDoctorPayload(checks: [
@@ -13,7 +14,73 @@ final class DashboardPresentationTests: XCTestCase {
 
         XCTAssertEqual(presentation.headline, "Checkup found warnings.")
         XCTAssertEqual(presentation.summaryRows.first, PresentationRow(label: "Pass", value: "1"))
-        XCTAssertEqual(presentation.groups.first?.domain, "Finder")
+        XCTAssertEqual(presentation.domains.first?.domain, .finderBonjour)
+        XCTAssertEqual(presentation.domains.first?.status, .warning)
+    }
+
+    func testDoctorDomainPolicyUsesTypedDetailsDomainAndSeverity() throws {
+        let payload = try testDoctorPayload(checks: [
+            testDoctorCheck(status: "PASS", message: "ssh ok", domain: "Device"),
+            testDoctorCheck(status: "WARN", message: "bonjour warning", domain: "Bonjour"),
+            testDoctorCheck(status: "FAIL", message: "smb failed", domain: "SMB"),
+            doctorCheckWithoutDomain(status: "INFO", message: "misc info")
+        ]).decode(DoctorPayload.self)
+        let summary = DoctorSummary(payload: payload)
+
+        let signals = DoctorCheckDomainPolicy.signals(from: summary)
+
+        XCTAssertEqual(signals.map(\.domain), [.smbAuth, .finderBonjour, .connection, .general])
+        XCTAssertEqual(signals.first?.severity, .failed)
+        XCTAssertEqual(DoctorCheckDomainPolicy.signal(for: .connection, summary: summary)?.passCount, 1)
+        XCTAssertEqual(DoctorCheckDomainPolicy.signal(for: .general, summary: summary)?.infoCount, 1)
+        XCTAssertNil(DoctorCheckDomainPolicy.signal(for: .disk, summary: summary))
+
+        let lowerStatusSummary = DoctorSummary(payload: try testDoctorPayload(checks: [
+            testDoctorCheck(status: " warn ", message: "disk warning", domain: "Disk")
+        ]).decode(DoctorPayload.self))
+        XCTAssertEqual(DoctorCheckDomainPolicy.signal(for: .disk, summary: lowerStatusSummary)?.warnCount, 1)
+        XCTAssertEqual(CheckupStatusPresentation(status: " warn "), .warning)
+    }
+
+    func testCheckupPresentationCoversStatesTimelineAndHostWarning() throws {
+        let summary = DoctorSummary(payload: try testDoctorPayload(checks: [
+            testDoctorCheck(status: "PASS", message: "ssh ok", domain: "Device")
+        ]).decode(DoctorPayload.self))
+        let headlines: [DoctorWorkflowState: String] = [
+            .idle: "Run a checkup to inspect this Time Capsule.",
+            .running: "Checkup is running.",
+            .passed: "Checkup passed.",
+            .warning: "Checkup found warnings.",
+            .failed: "Checkup failed.",
+            .runFailed: "Checkup could not complete."
+        ]
+
+        for state in DoctorWorkflowState.allCases {
+            let presentation = CheckupPresentation(summary: summary, state: state)
+
+            XCTAssertEqual(presentation.headline, headlines[state], "Unexpected headline for \(state).")
+            XCTAssertEqual(presentation.primaryAction, state == .running ? nil : .runCheckup)
+        }
+
+        let stageEvent = BackendEvent(
+            type: "stage",
+            operation: "doctor",
+            stage: "run_checks",
+            risk: "local_read",
+            cancellable: true,
+            description: "checking"
+        )
+        let running = CheckupPresentation(
+            summary: summary,
+            state: .running,
+            events: [stageEvent],
+            currentStage: OperationStageState(event: stageEvent),
+            hostWarning: HostCompatibilityWarning(title: "macOS Warning", message: "Known Time Machine issue.")
+        )
+
+        XCTAssertEqual(running.timeline.count, 1)
+        XCTAssertEqual(running.timeline.first?.title, "Running Checkup")
+        XCTAssertEqual(running.hostWarning?.message, "Known Time Machine issue.")
     }
 
     func testOverviewPresentationPromptsForMissingPassword() throws {
@@ -204,6 +271,137 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.items.first?.title, "Uploading")
     }
 
+    func testMaintenanceActionPolicyCoversAllStates() {
+        let expectedActivate: [MaintenanceOperationState: MaintenanceUserAction] = [
+            .idle: .planActivation,
+            .planReady: .runActivation,
+            .succeeded: .planActivation,
+            .failed: .planActivation
+        ]
+        let expectedUninstall: [MaintenanceOperationState: MaintenanceUserAction] = [
+            .idle: .planUninstall,
+            .planReady: .runUninstall,
+            .planStale: .planUninstall,
+            .succeeded: .planUninstall,
+            .failed: .planUninstall
+        ]
+        let expectedFsck: [MaintenanceOperationState: MaintenanceUserAction] = [
+            .idle: .findVolumes,
+            .listReady: .planFsck,
+            .planReady: .runFsck,
+            .planStale: .planFsck,
+            .succeeded: .findVolumes,
+            .failed: .findVolumes
+        ]
+        let expectedRepair: [MaintenanceOperationState: MaintenanceUserAction] = [
+            .idle: .scanMetadata,
+            .scanReady: .repairMetadata,
+            .scanStale: .scanMetadata,
+            .repaired: .scanMetadata,
+            .failed: .scanMetadata
+        ]
+
+        for state in MaintenanceOperationState.allCases {
+            XCTAssertEqual(primaryAction(.activate, state: state), expectedActivate[state], "Unexpected activate action for \(state).")
+            XCTAssertEqual(primaryAction(.uninstall, state: state), expectedUninstall[state], "Unexpected uninstall action for \(state).")
+            XCTAssertEqual(primaryAction(.fsck, state: state), expectedFsck[state], "Unexpected fsck action for \(state).")
+            XCTAssertEqual(primaryAction(.repairXattrs, state: state), expectedRepair[state], "Unexpected repair action for \(state).")
+        }
+
+        XCTAssertNil(primaryAction(.fsck, state: .listReady, hasSelectedFsckTarget: false))
+        XCTAssertEqual(primaryAction(.repairXattrs, state: .scanReady, canRepairXattrs: false), .scanMetadata)
+        XCTAssertEqual(MaintenanceActionPolicy.secondaryActions(workflow: .fsck, state: .planReady), [.planFsck, .findVolumes])
+        XCTAssertEqual(MaintenanceActionPolicy.secondaryActions(workflow: .repairXattrs, state: .scanReady), [.scanMetadata])
+    }
+
+    func testMaintenanceStatusMessagesCoverAllStates() {
+        for state in MaintenanceOperationState.allCases {
+            XCTAssertFalse(state.maintenanceStatusMessage(for: .activate).isEmpty)
+            XCTAssertFalse(state.maintenanceStatusMessage(for: .repairXattrs).isEmpty)
+        }
+
+        XCTAssertEqual(MaintenanceOperationState.listReady.maintenanceStatusMessage(for: .fsck), "Choose a volume, then plan disk repair.")
+        XCTAssertEqual(MaintenanceOperationState.scanReady.maintenanceStatusMessage(for: .repairXattrs), "Review the scan before repairing metadata.")
+        XCTAssertEqual(MaintenanceOperationState.scanReady.maintenanceStatusMessage(for: .activate), "Scan Ready")
+    }
+
+    func testMaintenancePresentationBuildsWorkflowPlansAndCompletions() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationPlanPayload())
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: true))
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallPlanPayload())
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckListPayload(targets: [testFsckTargetPayload(name: "Data")]))
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckPlanPayload())
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "repair-xattrs", ok: true, payload: testRepairXattrsPayload(findings: 2, repairable: 1))
+            ])
+        ])
+        let store = MaintenanceStore(backend: BackendClient(runner: runner))
+        let profile = try makeProfile()
+
+        store.planActivation(password: "pw")
+        try await waitUntilStoreState { store.activateState == .planReady && !store.isRunning }
+        var presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
+        XCTAssertEqual(presentation.detail.workflow, .activate)
+        XCTAssertEqual(presentation.detail.primaryAction, .runActivation)
+        XCTAssertEqual(presentation.detail.plan?.title, "Start SMB Plan")
+        XCTAssertEqual(presentation.detail.plan?.rows.first, PresentationRow(label: "Device", value: profile.title))
+
+        store.runActivation(password: "pw")
+        try await waitUntilStoreState { store.activateState == .succeeded && !store.isRunning }
+        presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
+        XCTAssertEqual(presentation.detail.completion?.title, "Start SMB Complete")
+        XCTAssertTrue(presentation.detail.completion?.rows.contains(PresentationRow(label: "Already Active", value: "yes")) == true)
+
+        store.planUninstall(password: "pw")
+        try await waitUntilStoreState { store.uninstallState == .planReady && !store.isRunning }
+        presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
+        XCTAssertEqual(presentation.detail.workflow, .uninstall)
+        XCTAssertEqual(presentation.detail.primaryAction, .runUninstall)
+        XCTAssertEqual(presentation.detail.plan?.warnings, ["Uninstall removes managed SMB files from this Time Capsule."])
+
+        store.refreshFsckTargets(password: "pw")
+        try await waitUntilStoreState { store.fsckState == .listReady && !store.isRunning }
+        presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
+        XCTAssertEqual(presentation.detail.workflow, .fsck)
+        XCTAssertEqual(presentation.detail.primaryAction, .planFsck)
+
+        store.planFsck(password: "pw")
+        try await waitUntilStoreState { store.fsckState == .planReady && !store.isRunning }
+        presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
+        XCTAssertEqual(presentation.detail.plan?.title, "Disk Repair Plan")
+        XCTAssertEqual(presentation.detail.plan?.warnings, ["Disk repair can modify the selected Time Capsule volume."])
+
+        store.repairPath = "/Volumes/Data"
+        store.scanRepairXattrs()
+        try await waitUntilStoreState { store.repairState == .scanReady && !store.isRunning }
+        presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
+        XCTAssertEqual(presentation.detail.workflow, .repairXattrs)
+        XCTAssertEqual(presentation.detail.primaryAction, .repairMetadata)
+        XCTAssertEqual(presentation.detail.plan?.title, "Metadata Scan")
+        XCTAssertEqual(presentation.detail.plan?.warnings, ["Metadata repair modifies files under the selected local SMB mount."])
+    }
+
+    func testMaintenanceTimelineFiltersByWorkflowOperation() {
+        let presentation = MaintenanceTimelinePresentation(events: [
+            BackendEvent(type: "stage", operation: "doctor", stage: "run_checks"),
+            BackendEvent(type: "stage", operation: "uninstall", stage: "remove_payload", description: "removing")
+        ], currentStage: nil, workflow: .uninstall)
+
+        XCTAssertEqual(presentation.items.count, 1)
+        XCTAssertEqual(presentation.items.first?.title, "Remove Payload")
+    }
+
     private func netbsd4DeployPlan() -> JSONValue {
         .object([
             "schema_version": .number(1),
@@ -220,6 +418,28 @@ final class DashboardPresentationTests: XCTestCase {
             "activation_actions": .array([.object(["description": .string("start smbd")])]),
             "post_deploy_checks": .array([]),
             "summary": .string("deployment dry-run plan generated.")
+        ])
+    }
+
+    private func primaryAction(
+        _ workflow: MaintenanceWorkflow,
+        state: MaintenanceOperationState,
+        hasSelectedFsckTarget: Bool = true,
+        canRepairXattrs: Bool = true
+    ) -> MaintenanceUserAction? {
+        MaintenanceActionPolicy.primaryAction(for: MaintenanceActionContext(
+            workflow: workflow,
+            state: state,
+            hasSelectedFsckTarget: hasSelectedFsckTarget,
+            canRepairXattrs: canRepairXattrs
+        ))
+    }
+
+    private func doctorCheckWithoutDomain(status: String, message: String) -> JSONValue {
+        .object([
+            "status": .string(status),
+            "message": .string(message),
+            "details": .object([:])
         ])
     }
 

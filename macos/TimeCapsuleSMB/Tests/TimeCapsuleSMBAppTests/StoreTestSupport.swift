@@ -332,3 +332,124 @@ func testDeployResultPayload(
         "summary": .string("deployment completed.")
     ])
 }
+
+func testActivationPlanPayload() -> JSONValue {
+    .object([
+        "schema_version": .number(1),
+        "actions": .array([.object(["type": .string("run_script")])]),
+        "post_activation_checks": .array([
+            .object(["id": .string("runtime_ready"), "description": .string("runtime ready")])
+        ]),
+        "counts": .object(["actions": .number(1)]),
+        "summary": .string("NetBSD4 activation dry-run plan generated.")
+    ])
+}
+
+func testActivationResultPayload(alreadyActive: Bool) -> JSONValue {
+    .object([
+        "schema_version": .number(1),
+        "already_active": .bool(alreadyActive),
+        "summary": .string(alreadyActive ? "NetBSD4 payload was already active." : "NetBSD4 activation completed.")
+    ])
+}
+
+func testUninstallPlanPayload() -> JSONValue {
+    .object([
+        "schema_version": .number(1),
+        "host": .string("root@10.0.0.2"),
+        "volume_roots": .array([.string("/Volumes/dk2")]),
+        "payload_dirs": .array([.string("/Volumes/dk2/.samba4")]),
+        "remote_actions": .array([.object(["type": .string("remove_path")])]),
+        "requires_reboot": .bool(true),
+        "reboot_required": .bool(true),
+        "post_uninstall_checks": .array([
+            .object(["id": .string("managed_files_absent"), "description": .string("managed files absent")])
+        ]),
+        "counts": .object(["payload_dirs": .number(1)]),
+        "summary": .string("uninstall dry-run plan generated.")
+    ])
+}
+
+func testUninstallResultPayload(waited: Bool, verified: Bool) -> JSONValue {
+    .object([
+        "schema_version": .number(1),
+        "summary": .string(verified ? "uninstall completed." : "uninstall completed without post-reboot verification."),
+        "requires_reboot": .bool(true),
+        "rebooted": .bool(false),
+        "reboot_requested": .bool(true),
+        "waited": .bool(waited),
+        "verified": .bool(verified)
+    ])
+}
+
+func testFsckListPayload(targets: [JSONValue]) -> JSONValue {
+    .object([
+        "schema_version": .number(1),
+        "targets": .array(targets),
+        "counts": .object(["targets": .number(Double(targets.count))]),
+        "summary": .string("found \(targets.count) mounted HFS volume(s).")
+    ])
+}
+
+func testFsckTargetPayload(
+    name: String?,
+    device: String = "/dev/dk2",
+    mountpoint: String = "/Volumes/dk2"
+) -> JSONValue {
+    var payload: [String: JSONValue] = [
+        "device": .string(device),
+        "mountpoint": .string(mountpoint),
+        "builtin": .bool(true)
+    ]
+    if let name {
+        payload["name"] = .string(name)
+    }
+    return .object(payload)
+}
+
+func testFsckPlanPayload(
+    target: JSONValue? = nil,
+    device: String = "/dev/dk2",
+    mountpoint: String = "/Volumes/dk2"
+) -> JSONValue {
+    .object([
+        "schema_version": .number(1),
+        "target": target ?? testFsckTargetPayload(name: "Data"),
+        "device": .string(device),
+        "mountpoint": .string(mountpoint),
+        "reboot_required": .bool(true),
+        "wait_after_reboot": .bool(false),
+        "summary": .string("fsck dry-run plan generated.")
+    ])
+}
+
+func testFsckResultPayload(returncode: Int) -> JSONValue {
+    .object([
+        "schema_version": .number(1),
+        "device": .string("/dev/dk2"),
+        "mountpoint": .string("/Volumes/dk2"),
+        "returncode": .number(Double(returncode)),
+        "reboot_requested": .bool(false),
+        "waited": .bool(false),
+        "verified": .bool(false),
+        "summary": .string("fsck completed.")
+    ])
+}
+
+func testRepairXattrsPayload(findings: Int, repairable: Int) -> JSONValue {
+    .object([
+        "schema_version": .number(1),
+        "returncode": .number(0),
+        "root": .string("/Volumes/Data"),
+        "finding_count": .number(Double(findings)),
+        "repairable_count": .number(Double(repairable)),
+        "counts": .object([
+            "findings": .number(Double(findings)),
+            "repairable": .number(Double(repairable))
+        ]),
+        "stats": .object([:]),
+        "report": .string("report"),
+        "summary": .string("repair-xattrs found \(findings) issue(s), \(repairable) repairable."),
+        "summary_text": .string("repair-xattrs found \(findings) issue(s), \(repairable) repairable.")
+    ])
+}

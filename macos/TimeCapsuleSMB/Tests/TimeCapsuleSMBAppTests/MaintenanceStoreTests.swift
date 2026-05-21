@@ -28,10 +28,10 @@ final class MaintenanceStoreTests: XCTestCase {
         let runner = StoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(type: "stage", operation: "activate", stage: "build_activation_plan", risk: "local_read", cancellable: true),
-                BackendEvent(type: "result", operation: "activate", ok: true, payload: activationPlanPayload())
+                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationPlanPayload())
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "activate", ok: true, payload: activationResultPayload(alreadyActive: true))
+                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: true))
             ])
         ])
         let store = MaintenanceStore(backend: BackendClient(runner: runner))
@@ -74,14 +74,14 @@ final class MaintenanceStoreTests: XCTestCase {
     func testActivationRequiresPlanAndHandlesConfirmationReplay() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "activate", ok: true, payload: activationPlanPayload())
+                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationPlanPayload())
             ]),
             .init(events: [
                 confirmationRequired(operation: "activate", id: "activate-confirm")
             ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")),
             .init(events: [
                 BackendEvent(type: "stage", operation: "activate", stage: "run_activation", risk: "remote_write", cancellable: false),
-                BackendEvent(type: "result", operation: "activate", ok: true, payload: activationResultPayload(alreadyActive: false))
+                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationResultPayload(alreadyActive: false))
             ])
         ])
         let backend = BackendClient(runner: runner)
@@ -132,16 +132,16 @@ final class MaintenanceStoreTests: XCTestCase {
     func testUninstallPlanStaleRunAndBackendError() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: uninstallPlanPayload())
+                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallPlanPayload())
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: uninstallPlanPayload())
+                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallPlanPayload())
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: uninstallResultPayload(waited: false, verified: false))
+                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallResultPayload(waited: false, verified: false))
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: uninstallPlanPayload())
+                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallPlanPayload())
             ]),
             .init(events: [
                 BackendEvent(
@@ -209,14 +209,14 @@ final class MaintenanceStoreTests: XCTestCase {
     func testUninstallConfirmationReplayCompletes() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: uninstallPlanPayload())
+                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallPlanPayload())
             ]),
             .init(events: [
                 confirmationRequired(operation: "uninstall", id: "uninstall-confirm")
             ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")),
             .init(events: [
                 BackendEvent(type: "stage", operation: "uninstall", stage: "remove_payload", risk: "remote_write", cancellable: false),
-                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: uninstallResultPayload(waited: true, verified: true))
+                BackendEvent(type: "result", operation: "uninstall", ok: true, payload: testUninstallResultPayload(waited: true, verified: true))
             ])
         ])
         let backend = BackendClient(runner: runner)
@@ -238,19 +238,19 @@ final class MaintenanceStoreTests: XCTestCase {
     func testFsckListPlanStaleAndRunConfirmation() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "fsck", ok: true, payload: fsckListPayload(targets: [fsckTargetPayload(name: "Data")]))
+                BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckListPayload(targets: [testFsckTargetPayload(name: "Data")]))
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "fsck", ok: true, payload: fsckPlanPayload())
+                BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckPlanPayload())
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "fsck", ok: true, payload: fsckPlanPayload())
+                BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckPlanPayload())
             ]),
             .init(events: [
                 confirmationRequired(operation: "fsck", id: "fsck-confirm")
             ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")),
             .init(events: [
-                BackendEvent(type: "result", operation: "fsck", ok: true, payload: fsckResultPayload(returncode: 0))
+                BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckResultPayload(returncode: 0))
             ])
         ])
         let backend = BackendClient(runner: runner)
@@ -286,16 +286,16 @@ final class MaintenanceStoreTests: XCTestCase {
     func testFsckEmptyListPlanValidationAndFalseResult() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "fsck", ok: true, payload: fsckListPayload(targets: []))
+                BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckListPayload(targets: []))
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "fsck", ok: true, payload: fsckListPayload(targets: [fsckTargetPayload(name: "Data")]))
+                BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckListPayload(targets: [testFsckTargetPayload(name: "Data")]))
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "fsck", ok: true, payload: fsckPlanPayload())
+                BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckPlanPayload())
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "fsck", ok: false, payload: fsckResultPayload(returncode: 1))
+                BackendEvent(type: "result", operation: "fsck", ok: false, payload: testFsckResultPayload(returncode: 1))
             ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
         ])
         let store = MaintenanceStore(backend: BackendClient(runner: runner))
@@ -318,16 +318,16 @@ final class MaintenanceStoreTests: XCTestCase {
     }
 
     func testFsckFallbackVolumeParamTargetChangeBackendErrorAndMalformedPayloads() async throws {
-        let targetWithoutName = fsckTargetPayload(name: nil, device: "/dev/dk3", mountpoint: "/Volumes/External")
+        let targetWithoutName = testFsckTargetPayload(name: nil, device: "/dev/dk3", mountpoint: "/Volumes/External")
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "fsck", ok: true, payload: fsckListPayload(targets: [
+                BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckListPayload(targets: [
                     targetWithoutName,
-                    fsckTargetPayload(name: "Data")
+                    testFsckTargetPayload(name: "Data")
                 ]))
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "fsck", ok: true, payload: fsckPlanPayload(target: targetWithoutName, device: "/dev/dk3", mountpoint: "/Volumes/External"))
+                BackendEvent(type: "result", operation: "fsck", ok: true, payload: testFsckPlanPayload(target: targetWithoutName, device: "/dev/dk3", mountpoint: "/Volumes/External"))
             ]),
             .init(events: [
                 BackendEvent(
@@ -371,16 +371,16 @@ final class MaintenanceStoreTests: XCTestCase {
         let runner = StoreTestRunner(responses: [
             .init(events: [
                 BackendEvent(type: "stage", operation: "repair-xattrs", stage: "scan_findings", risk: "local_read", cancellable: true),
-                BackendEvent(type: "result", operation: "repair-xattrs", ok: true, payload: repairPayload(findings: 2, repairable: 1))
+                BackendEvent(type: "result", operation: "repair-xattrs", ok: true, payload: testRepairXattrsPayload(findings: 2, repairable: 1))
             ]),
             .init(events: [
-                BackendEvent(type: "result", operation: "repair-xattrs", ok: true, payload: repairPayload(findings: 2, repairable: 1))
+                BackendEvent(type: "result", operation: "repair-xattrs", ok: true, payload: testRepairXattrsPayload(findings: 2, repairable: 1))
             ]),
             .init(events: [
                 confirmationRequired(operation: "repair-xattrs", id: "repair-confirm")
             ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")),
             .init(events: [
-                BackendEvent(type: "result", operation: "repair-xattrs", ok: true, payload: repairPayload(findings: 2, repairable: 0))
+                BackendEvent(type: "result", operation: "repair-xattrs", ok: true, payload: testRepairXattrsPayload(findings: 2, repairable: 0))
             ]),
             .init(events: [
                 BackendEvent(
@@ -429,7 +429,7 @@ final class MaintenanceStoreTests: XCTestCase {
     func testRepairXattrsMissingPathZeroRepairableAndMalformedPayload() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "repair-xattrs", ok: true, payload: repairPayload(findings: 0, repairable: 0))
+                BackendEvent(type: "result", operation: "repair-xattrs", ok: true, payload: testRepairXattrsPayload(findings: 0, repairable: 0))
             ]),
             .init(events: [
                 BackendEvent(type: "result", operation: "repair-xattrs", ok: true, payload: .object(["schema_version": .string("wrong")]))
@@ -453,7 +453,7 @@ final class MaintenanceStoreTests: XCTestCase {
     func testClearResetsMaintenanceState() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
-                BackendEvent(type: "result", operation: "activate", ok: true, payload: activationPlanPayload())
+                BackendEvent(type: "result", operation: "activate", ok: true, payload: testActivationPlanPayload())
             ])
         ])
         let store = MaintenanceStore(backend: BackendClient(runner: runner))
@@ -489,124 +489,4 @@ final class MaintenanceStoreTests: XCTestCase {
         )
     }
 
-    private func activationPlanPayload() -> JSONValue {
-        .object([
-            "schema_version": .number(1),
-            "actions": .array([.object(["type": .string("run_script")])]),
-            "post_activation_checks": .array([
-                .object(["id": .string("runtime_ready"), "description": .string("runtime ready")])
-            ]),
-            "counts": .object(["actions": .number(1)]),
-            "summary": .string("NetBSD4 activation dry-run plan generated.")
-        ])
-    }
-
-    private func activationResultPayload(alreadyActive: Bool) -> JSONValue {
-        .object([
-            "schema_version": .number(1),
-            "already_active": .bool(alreadyActive),
-            "summary": .string(alreadyActive ? "NetBSD4 payload was already active." : "NetBSD4 activation completed.")
-        ])
-    }
-
-    private func uninstallPlanPayload() -> JSONValue {
-        .object([
-            "schema_version": .number(1),
-            "host": .string("root@10.0.0.2"),
-            "volume_roots": .array([.string("/Volumes/dk2")]),
-            "payload_dirs": .array([.string("/Volumes/dk2/.samba4")]),
-            "remote_actions": .array([.object(["type": .string("remove_path")])]),
-            "requires_reboot": .bool(true),
-            "reboot_required": .bool(true),
-            "post_uninstall_checks": .array([
-                .object(["id": .string("managed_files_absent"), "description": .string("managed files absent")])
-            ]),
-            "counts": .object(["payload_dirs": .number(1)]),
-            "summary": .string("uninstall dry-run plan generated.")
-        ])
-    }
-
-    private func uninstallResultPayload(waited: Bool, verified: Bool) -> JSONValue {
-        .object([
-            "schema_version": .number(1),
-            "summary": .string(verified ? "uninstall completed." : "uninstall completed without post-reboot verification."),
-            "requires_reboot": .bool(true),
-            "rebooted": .bool(false),
-            "reboot_requested": .bool(true),
-            "waited": .bool(waited),
-            "verified": .bool(verified)
-        ])
-    }
-
-    private func fsckListPayload(targets: [JSONValue]) -> JSONValue {
-        .object([
-            "schema_version": .number(1),
-            "targets": .array(targets),
-            "counts": .object(["targets": .number(Double(targets.count))]),
-            "summary": .string("found \(targets.count) mounted HFS volume(s).")
-        ])
-    }
-
-    private func fsckTargetPayload(
-        name: String?,
-        device: String = "/dev/dk2",
-        mountpoint: String = "/Volumes/dk2"
-    ) -> JSONValue {
-        var payload: [String: JSONValue] = [
-            "device": .string(device),
-            "mountpoint": .string(mountpoint),
-            "builtin": .bool(true)
-        ]
-        if let name {
-            payload["name"] = .string(name)
-        }
-        return .object(payload)
-    }
-
-    private func fsckPlanPayload(
-        target: JSONValue? = nil,
-        device: String = "/dev/dk2",
-        mountpoint: String = "/Volumes/dk2"
-    ) -> JSONValue {
-        .object([
-            "schema_version": .number(1),
-            "target": target ?? fsckTargetPayload(name: "Data"),
-            "device": .string(device),
-            "mountpoint": .string(mountpoint),
-            "reboot_required": .bool(true),
-            "wait_after_reboot": .bool(false),
-            "summary": .string("fsck dry-run plan generated.")
-        ])
-    }
-
-    private func fsckResultPayload(returncode: Int) -> JSONValue {
-        .object([
-            "schema_version": .number(1),
-            "device": .string("/dev/dk2"),
-            "mountpoint": .string("/Volumes/dk2"),
-            "returncode": .number(Double(returncode)),
-            "reboot_requested": .bool(false),
-            "waited": .bool(false),
-            "verified": .bool(false),
-            "summary": .string("fsck completed.")
-        ])
-    }
-
-    private func repairPayload(findings: Int, repairable: Int) -> JSONValue {
-        .object([
-            "schema_version": .number(1),
-            "returncode": .number(0),
-            "root": .string("/Volumes/Data"),
-            "finding_count": .number(Double(findings)),
-            "repairable_count": .number(Double(repairable)),
-            "counts": .object([
-                "findings": .number(Double(findings)),
-                "repairable": .number(Double(repairable))
-            ]),
-            "stats": .object([:]),
-            "report": .string("report"),
-            "summary": .string("repair-xattrs found \(findings) issue(s), \(repairable) repairable."),
-            "summary_text": .string("repair-xattrs found \(findings) issue(s), \(repairable) repairable.")
-        ])
-    }
 }

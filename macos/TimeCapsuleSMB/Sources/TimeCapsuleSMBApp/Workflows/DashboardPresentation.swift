@@ -55,36 +55,6 @@ struct PresentationRow: Equatable, Identifiable {
     let value: String
 }
 
-struct CheckupPresentation: Equatable {
-    let headline: String
-    let summaryRows: [PresentationRow]
-    let groups: [DoctorCheckGroup]
-
-    init(summary: DoctorSummary, state: DoctorWorkflowState) {
-        switch state {
-        case .passed:
-            self.headline = L10n.string("checkup.presentation.headline.passed")
-        case .warning:
-            self.headline = L10n.string("checkup.presentation.headline.warning")
-        case .failed:
-            self.headline = L10n.string("checkup.presentation.headline.failed")
-        case .runFailed:
-            self.headline = L10n.string("checkup.presentation.headline.run_failed")
-        case .idle:
-            self.headline = L10n.string("checkup.presentation.headline.idle")
-        case .running:
-            self.headline = L10n.string("checkup.presentation.headline.running")
-        }
-        self.summaryRows = [
-            PresentationRow(label: L10n.string("checkup.presentation.row.pass"), value: "\(summary.passCount)"),
-            PresentationRow(label: L10n.string("checkup.presentation.row.warning"), value: "\(summary.warnCount)"),
-            PresentationRow(label: L10n.string("checkup.presentation.row.fail"), value: "\(summary.failCount)"),
-            PresentationRow(label: L10n.string("checkup.presentation.row.info"), value: "\(summary.infoCount)")
-        ]
-        self.groups = summary.groups
-    }
-}
-
 struct MaintenanceWorkflowPresentation: Equatable {
     let title: String
     let subtitle: String

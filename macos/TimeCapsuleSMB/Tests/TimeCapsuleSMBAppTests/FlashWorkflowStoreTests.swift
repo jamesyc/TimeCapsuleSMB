@@ -53,6 +53,26 @@ final class FlashWorkflowStoreTests: XCTestCase {
         XCTAssertFalse(eligibility.writeAllowed)
     }
 
+    func testFlashPresentationExposesAllActionsButEnablesOnlyReadOnlyEntryPoint() {
+        let readOnlyStates: Set<FlashWorkflowState> = [
+            .eligibleForReadOnlyAnalysis,
+            .planAvailable,
+            .writeLocked,
+            .awaitingStrongConfirmation
+        ]
+
+        for state in FlashWorkflowState.allCases {
+            let presentation = FlashPresentation(state: state, message: "message")
+
+            XCTAssertEqual(presentation.actions, [.backupAndInspect, .patchBootHook, .restoreFirmware])
+            XCTAssertEqual(presentation.message, "message")
+            XCTAssertEqual(presentation.stateTitle, state.title)
+            XCTAssertEqual(presentation.isEnabled(.backupAndInspect), readOnlyStates.contains(state), "Unexpected backup action state for \(state).")
+            XCTAssertFalse(presentation.isEnabled(.patchBootHook), "Patch action must remain disabled for \(state).")
+            XCTAssertFalse(presentation.isEnabled(.restoreFirmware), "Restore action must remain disabled for \(state).")
+        }
+    }
+
     private func makeProfile(payloadFamily: String) throws -> DeviceProfile {
         DeviceProfile.make(
             id: "device-one",

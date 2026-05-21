@@ -8,47 +8,37 @@ struct MaintenanceTab: View {
 
     var body: some View {
         let store = session.maintenanceStore
-        let presentation = MaintenanceWorkflowPresentation.presentation(for: store.selectedWorkflow)
-        VStack(alignment: .leading, spacing: 12) {
-            Text(L10n.string("dashboard.tab.maintenance"))
-                .font(.title2.weight(.semibold))
-            Picker(L10n.string("dashboard.tab.maintenance"), selection: $session.maintenanceStore.selectedWorkflow) {
-                Text(L10n.string("maintenance.workflow.activate")).tag(MaintenanceWorkflow.activate)
-                Text(L10n.string("maintenance.workflow.uninstall")).tag(MaintenanceWorkflow.uninstall)
-                Text(L10n.string("maintenance.workflow.fsck")).tag(MaintenanceWorkflow.fsck)
-                Text(L10n.string("maintenance.workflow.repair_xattrs")).tag(MaintenanceWorkflow.repairXattrs)
-            }
-            .pickerStyle(.segmented)
+        let presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(presentation.title)
-                    .font(.headline)
-                Text(presentation.subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Label(presentation.risk, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text(L10n.string("dashboard.tab.maintenance"))
+                    .font(.title2.weight(.semibold))
 
-            HStack {
-                TextField(L10n.string("field.mount_wait"), text: $session.maintenanceStore.mountWait)
-                    .frame(width: 150)
-                Toggle(L10n.string("toggle.no_reboot"), isOn: $session.maintenanceStore.noReboot)
-                Toggle(L10n.string("toggle.no_wait"), isOn: $session.maintenanceStore.noWait)
-            }
+                MaintenanceWorkflowCardsView(cards: presentation.cards) { workflow in
+                    session.maintenanceStore.selectedWorkflow = workflow
+                }
 
-            maintenanceControls(store: store)
-            FlashBootHookSection(profile: profile)
+                MaintenanceDetailView(
+                    presentation: presentation.detail,
+                    store: store,
+                    performAction: { action in
+                        session.performMaintenanceAction(action, profile: profile, showDiagnostics: showDiagnostics)
+                    },
+                    chooseRepairPath: {
+                        chooseRepairPath(store: store)
+                    }
+                )
 
-            if let stage = store.currentStage {
-                StageLine(stage: stage)
-            }
-            if let error = store.error {
-                ErrorRecoveryView(error: error) { action in
-                    handleRecovery(action: action, error: error)
+                FlashBootHookSection(profile: profile)
+
+                if let error = store.error {
+                    ErrorRecoveryView(error: error) { action in
+                        handleRecovery(action: action, error: error)
+                    }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -60,61 +50,180 @@ struct MaintenanceTab: View {
         _ = session.handleRecoveryAction(action, error: error, profile: profile)
     }
 
-    @ViewBuilder
-    private func maintenanceControls(store: MaintenanceStore) -> some View {
-        switch store.selectedWorkflow {
-        case .activate:
-            HStack {
-                Button(L10n.string("maintenance.action.plan_start_smb")) {
-                    if let password = session.maintenancePassword(for: profile) {
-                        store.planActivation(password: password, profile: profile)
+    private func chooseRepairPath(store: MaintenanceStore) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = L10n.string("maintenance.action.choose")
+        if panel.runModal() == .OK, let url = panel.url {
+            store.repairPath = url.path
+        }
+    }
+}
+
+private struct MaintenanceWorkflowCardsView: View {
+    let cards: [MaintenanceWorkflowCardPresentation]
+    let select: (MaintenanceWorkflow) -> Void
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 10)], alignment: .leading, spacing: 10) {
+            ForEach(cards) { card in
+                Button {
+                    select(card.workflow)
+                } label: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(card.title)
+                                .font(.headline)
+                            Spacer()
+                            Image(systemName: card.isSelected ? "checkmark.circle.fill" : "circle")
+                        }
+                        Text(card.subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                        Text(card.stateTitle)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
                     }
+                    .frame(maxWidth: .infinity, minHeight: 92, alignment: .topLeading)
+                    .padding(10)
+                    .background(card.isSelected ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
-                Button(L10n.string("maintenance.action.start_smb")) {
-                    if let password = session.maintenancePassword(for: profile) {
-                        store.runActivation(password: password, profile: profile)
-                    }
-                }
-                .disabled(!store.canRunActivation)
-                Label(store.activateState.title, systemImage: "circle")
+                .buttonStyle(.plain)
             }
-        case .uninstall:
-            HStack {
-                Button(L10n.string("maintenance.action.plan_uninstall")) {
-                    if let password = session.maintenancePassword(for: profile) {
-                        store.planUninstall(password: password, profile: profile)
-                    }
+        }
+    }
+}
+
+private struct MaintenanceDetailView: View {
+    let presentation: MaintenanceWorkflowDetailPresentation
+    @ObservedObject var store: MaintenanceStore
+    let performAction: (MaintenanceUserAction) -> Void
+    let chooseRepairPath: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(presentation.title)
+                        .font(.headline)
+                    Text(presentation.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                Button(L10n.string("maintenance.action.uninstall")) {
-                    if let password = session.maintenancePassword(for: profile) {
-                        store.runUninstall(password: password, profile: profile)
-                    }
-                }
-                .disabled(!store.canRunUninstall)
-                Label(store.uninstallState.title, systemImage: "circle")
+                Spacer()
+                Text(presentation.stateTitle)
+                    .font(.caption.weight(.medium))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(.quaternary)
+                    .clipShape(Capsule())
             }
-        case .fsck:
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Button(L10n.string("maintenance.action.find_volumes")) {
-                        if let password = session.maintenancePassword(for: profile) {
-                            store.refreshFsckTargets(password: password, profile: profile)
-                        }
+
+            Label(presentation.risk, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(presentation.statusMessage)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            if presentation.workflow == .repairXattrs {
+                RepairPathPicker(store: store, chooseRepairPath: chooseRepairPath)
+            }
+
+            if presentation.workflow == .fsck {
+                FsckTargetListView(store: store)
+            }
+
+            HStack {
+                if let action = presentation.primaryAction {
+                    Button {
+                        performAction(action)
+                    } label: {
+                        Label(action.title, systemImage: action.systemImage)
                     }
-                    Button(L10n.string("maintenance.action.plan_disk_repair")) {
-                        if let password = session.maintenancePassword(for: profile) {
-                            store.planFsck(password: password, profile: profile)
-                        }
-                    }
-                    .disabled(!store.canPlanFsck)
-                    Button(L10n.string("maintenance.action.run_disk_repair")) {
-                        if let password = session.maintenancePassword(for: profile) {
-                            store.runFsck(password: password, profile: profile)
-                        }
-                    }
-                    .disabled(!store.canRunFsck)
-                    Label(store.fsckState.title, systemImage: "circle")
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isDisabled(action))
                 }
+                ForEach(presentation.secondaryActions) { action in
+                    Button {
+                        performAction(action)
+                    } label: {
+                        Label(action.title, systemImage: action.systemImage)
+                    }
+                    .disabled(isDisabled(action))
+                }
+            }
+
+            if let timeline = presentation.timeline, !timeline.items.isEmpty {
+                MaintenanceTimelineView(presentation: timeline)
+            }
+
+            if let plan = presentation.plan {
+                MaintenancePlanView(presentation: plan)
+            }
+
+            if let completion = presentation.completion {
+                MaintenanceCompletionView(presentation: completion)
+            }
+
+            MaintenanceAdvancedOptionsView(store: store)
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func isDisabled(_ action: MaintenanceUserAction) -> Bool {
+        if store.isRunning {
+            return true
+        }
+        switch action {
+        case .runActivation:
+            return !store.canRunActivation
+        case .runUninstall:
+            return !store.canRunUninstall
+        case .planFsck:
+            return !store.canPlanFsck
+        case .runFsck:
+            return !store.canRunFsck
+        case .repairMetadata:
+            return !store.canRepairXattrs
+        case .planActivation, .planUninstall, .findVolumes, .scanMetadata, .viewDiagnostics:
+            return false
+        }
+    }
+}
+
+private struct RepairPathPicker: View {
+    @ObservedObject var store: MaintenanceStore
+    let chooseRepairPath: () -> Void
+
+    var body: some View {
+        HStack {
+            TextField(L10n.string("field.repair_xattrs_path"), text: $store.repairPath)
+            Button {
+                chooseRepairPath()
+            } label: {
+                Label(L10n.string("maintenance.action.choose_folder"), systemImage: "folder")
+            }
+        }
+    }
+}
+
+private struct FsckTargetListView: View {
+    @ObservedObject var store: MaintenanceStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if store.fsckTargets.isEmpty {
+                Text(L10n.string("maintenance.fsck.no_volumes"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
                 ForEach(store.fsckTargets) { target in
                     Button {
                         store.selectedFsckTargetID = target.id
@@ -128,42 +237,98 @@ struct MaintenanceTab: View {
                     .buttonStyle(.plain)
                 }
             }
-        case .repairXattrs:
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    TextField(L10n.string("field.repair_xattrs_path"), text: $session.maintenanceStore.repairPath)
-                    Button {
-                        chooseRepairPath(store: store)
-                    } label: {
-                        Label(L10n.string("maintenance.action.choose_folder"), systemImage: "folder")
+        }
+    }
+}
+
+private struct MaintenancePlanView: View {
+    let presentation: MaintenancePlanPresentation
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(presentation.title)
+                .font(.headline)
+            SummaryGrid(rows: presentation.rows.map { ($0.label, $0.value) })
+            ForEach(presentation.warnings, id: \.self) { warning in
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.yellow)
+            }
+        }
+    }
+}
+
+private struct MaintenanceCompletionView: View {
+    let presentation: MaintenanceCompletionPresentation
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(presentation.title)
+                .font(.headline)
+            SummaryGrid(rows: presentation.rows.map { ($0.label, $0.value) })
+        }
+    }
+}
+
+private struct MaintenanceTimelineView: View {
+    let presentation: MaintenanceTimelinePresentation
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(L10n.string("maintenance.timeline.title"))
+                .font(.headline)
+            ForEach(presentation.items) { item in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: icon(for: item.state))
+                        .frame(width: 16)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.title)
+                            .font(.body.weight(.medium))
+                        if let detail = item.detail {
+                            Text(detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                }
-                HStack {
-                    Button(L10n.string("maintenance.action.scan_metadata")) {
-                        store.scanRepairXattrs()
-                    }
-                    Button(L10n.string("maintenance.action.repair_metadata")) {
-                        store.runRepairXattrs()
-                    }
-                    .disabled(!store.canRepairXattrs)
-                    Label(store.repairState.title, systemImage: "circle")
-                }
-                if let scan = store.repairScan {
-                    Text(L10n.format("maintenance.repairable_count", scan.repairableCount))
-                        .foregroundStyle(.secondary)
                 }
             }
         }
     }
 
-    private func chooseRepairPath(store: MaintenanceStore) {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = L10n.string("maintenance.action.choose")
-        if panel.runModal() == .OK, let url = panel.url {
-            store.repairPath = url.path
+    private func icon(for state: OperationTimelineItem.State) -> String {
+        switch state {
+        case .pending:
+            return "circle"
+        case .running:
+            return "progress.indicator"
+        case .succeeded:
+            return "checkmark.circle"
+        case .warning:
+            return "exclamationmark.triangle"
+        case .failed:
+            return "xmark.octagon"
+        }
+    }
+}
+
+private struct MaintenanceAdvancedOptionsView: View {
+    @ObservedObject var store: MaintenanceStore
+
+    var body: some View {
+        DisclosureGroup(L10n.string("maintenance.advanced_options")) {
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                GridRow {
+                    Text(L10n.string("field.mount_wait"))
+                        .foregroundStyle(.secondary)
+                    TextField(L10n.string("field.mount_wait"), text: $store.mountWait)
+                        .frame(width: 150)
+                }
+                GridRow {
+                    Toggle(L10n.string("toggle.no_reboot"), isOn: $store.noReboot)
+                    Toggle(L10n.string("toggle.no_wait"), isOn: $store.noWait)
+                }
+            }
+            .padding(.top, 8)
         }
     }
 }

@@ -103,18 +103,18 @@ enum DashboardHealthDomain: String, CaseIterable, Equatable, Identifiable {
         }
     }
 
-    fileprivate var checkupDomains: Set<String> {
+    fileprivate var doctorDomain: DoctorCheckDomain {
         switch self {
         case .connection:
-            return ["connection", "device", "ssh"]
+            return .connection
         case .runtime:
-            return ["runtime", "process", "service"]
+            return .runtime
         case .finderBonjour:
-            return ["bonjour", "finder", "advertising"]
+            return .finderBonjour
         case .smbAuth:
-            return ["smb", "smb auth", "auth"]
+            return .smbAuth
         case .timeMachine:
-            return ["time machine", "timemachine"]
+            return .timeMachine
         }
     }
 }
@@ -330,9 +330,9 @@ struct DeviceDashboardOverviewPresentation: Equatable {
             return DashboardHealthRow(
                 id: "runtime-checkup",
                 title: DashboardHealthDomain.runtime.title,
-                detail: signal.detail,
-                status: signal.status,
-                action: signal.status == .good ? nil : .viewCheckup
+                detail: signal.countSummary,
+                status: dashboardStatus(signal.severity),
+                action: dashboardStatus(signal.severity) == .good ? nil : .viewCheckup
             )
         }
         guard let lastDeploy = summary.profile.lastDeploy else {
@@ -368,12 +368,13 @@ struct DeviceDashboardOverviewPresentation: Equatable {
         currentCheckupSummary: DoctorSummary?
     ) -> DashboardHealthRow {
         if let signal = checkupSignal(for: domain, summary: currentCheckupSummary) {
+            let status = dashboardStatus(signal.severity)
             return DashboardHealthRow(
                 id: "\(domain.rawValue)-current-checkup",
                 title: domain.title,
-                detail: signal.detail,
-                status: signal.status,
-                action: signal.status == .good ? nil : .viewCheckup
+                detail: signal.countSummary,
+                status: status,
+                action: status == .good ? nil : .viewCheckup
             )
         }
         guard let lastCheckup = summary.profile.lastCheckup else {
@@ -412,34 +413,21 @@ struct DeviceDashboardOverviewPresentation: Equatable {
     private static func checkupSignal(
         for domain: DashboardHealthDomain,
         summary: DoctorSummary?
-    ) -> (status: DashboardHealthStatus, detail: String)? {
-        guard let summary else {
-            return nil
+    ) -> DoctorDomainSignal? {
+        DoctorCheckDomainPolicy.signal(for: domain.doctorDomain, summary: summary)
+    }
+
+    private static func dashboardStatus(_ severity: DoctorCheckSeverity) -> DashboardHealthStatus {
+        switch severity {
+        case .failed:
+            return .failed
+        case .warning:
+            return .warning
+        case .passed:
+            return .good
+        case .unknown:
+            return .unknown
         }
-        let groups = summary.groups.filter { group in
-            domain.checkupDomains.contains(group.domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
-        }
-        guard !groups.isEmpty else {
-            return nil
-        }
-        let checks = groups.flatMap(\.checks)
-        let passCount = checks.filter { $0.status == "PASS" }.count
-        let warnCount = checks.filter { $0.status == "WARN" }.count
-        let failCount = checks.filter { $0.status == "FAIL" }.count
-        let status: DashboardHealthStatus
-        if failCount > 0 {
-            status = .failed
-        } else if warnCount > 0 {
-            status = .warning
-        } else if passCount > 0 {
-            status = .good
-        } else {
-            status = .unknown
-        }
-        return (
-            status: status,
-            detail: L10n.format("dashboard.health.check_counts", passCount, warnCount, failCount)
-        )
     }
 
     private static func snapshotStatus(_ snapshot: DeviceCheckupSnapshot) -> DashboardHealthStatus {

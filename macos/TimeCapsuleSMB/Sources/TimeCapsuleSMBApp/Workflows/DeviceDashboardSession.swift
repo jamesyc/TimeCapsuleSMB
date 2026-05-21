@@ -92,6 +92,65 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         }
     }
 
+    func performCheckupAction(_ action: CheckupUserAction, profile: DeviceProfile, showDiagnostics: () -> Void) {
+        switch action {
+        case .runCheckup:
+            runCheckup(profile: profile)
+        case .installUpdate:
+            runInstallPlan(profile: profile)
+        case .startSMB:
+            selectedTab = .maintenance
+            maintenanceStore.selectedWorkflow = .activate
+        case .replacePassword:
+            showPasswordReplacement()
+        case .openFinder:
+            openSMBAddress(for: profile)
+        case .viewDiagnostics:
+            showDiagnostics()
+        }
+    }
+
+    func performMaintenanceAction(_ action: MaintenanceUserAction, profile: DeviceProfile, showDiagnostics: () -> Void) {
+        switch action {
+        case .planActivation:
+            if let password = maintenancePassword(for: profile) {
+                maintenanceStore.planActivation(password: password, profile: profile)
+            }
+        case .runActivation:
+            if let password = maintenancePassword(for: profile) {
+                maintenanceStore.runActivation(password: password, profile: profile)
+            }
+        case .planUninstall:
+            if let password = maintenancePassword(for: profile) {
+                maintenanceStore.planUninstall(password: password, profile: profile)
+            }
+        case .runUninstall:
+            if let password = maintenancePassword(for: profile) {
+                maintenanceStore.runUninstall(password: password, profile: profile)
+            }
+        case .findVolumes:
+            if let password = maintenancePassword(for: profile) {
+                maintenanceStore.refreshFsckTargets(password: password, profile: profile)
+            }
+        case .planFsck:
+            if let password = maintenancePassword(for: profile) {
+                maintenanceStore.planFsck(password: password, profile: profile)
+            }
+        case .runFsck:
+            if let password = maintenancePassword(for: profile) {
+                maintenanceStore.runFsck(password: password, profile: profile)
+            }
+        case .scanMetadata:
+            selectedTab = .maintenance
+            maintenanceStore.scanRepairXattrs()
+        case .repairMetadata:
+            selectedTab = .maintenance
+            maintenanceStore.runRepairXattrs()
+        case .viewDiagnostics:
+            showDiagnostics()
+        }
+    }
+
     func saveReplacementPassword(for profile: DeviceProfile) async {
         let password = replacementPassword
         guard !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

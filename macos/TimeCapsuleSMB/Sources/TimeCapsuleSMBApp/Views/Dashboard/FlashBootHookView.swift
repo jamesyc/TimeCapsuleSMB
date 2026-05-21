@@ -5,28 +5,27 @@ struct FlashBootHookSection: View {
     @StateObject private var store = FlashWorkflowStore()
 
     var body: some View {
+        let presentation = FlashPresentation(state: store.state, message: store.eligibilityMessage)
         VStack(alignment: .leading, spacing: 8) {
             Divider()
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Persistent NetBSD4 Boot Hook")
+                    Text(presentation.title)
                         .font(.headline)
-                    Text(store.eligibilityMessage)
+                    Text(presentation.message)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Label(store.state.title, systemImage: "lock")
+                Label(presentation.stateTitle, systemImage: "lock")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             HStack {
-                Button("Back Up and Inspect") {}
-                    .disabled(true)
-                Button("Patch Boot Hook") {}
-                    .disabled(true)
-                Button("Restore Apple Firmware") {}
-                    .disabled(true)
+                ForEach(presentation.actions) { action in
+                    Button(action.title) {}
+                        .disabled(!presentation.isEnabled(action))
+                }
             }
         }
         .onAppear {
