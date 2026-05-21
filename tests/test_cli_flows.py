@@ -439,7 +439,7 @@ class CliFlowTests(unittest.TestCase):
             mock.patch(
                 "timecapsulesmb.cli.flows.read_runtime_log_tails_conn",
                 return_value={
-                    "remote_watchdog_log_tail": "watchdog: mDNS startup deferred; no usable IPv4 has appeared yet",
+                    "remote_watchdog_log_tail": "watchdog: mDNS startup deferred; no usable address has appeared yet",
                 },
             ),
             mock.patch(
