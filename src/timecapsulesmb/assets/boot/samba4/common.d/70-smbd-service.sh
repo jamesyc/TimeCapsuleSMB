@@ -1,15 +1,30 @@
-tc_fstat_line_is_ipv4_tcp_445() {
-    case "$1" in
-        *" internet stream tcp "*":445"*) return 0 ;;
+tc_fstat_line_matches_socket() {
+    family=$1
+    sock_type=$2
+    proto=$3
+    port=$4
+    line=$5
+
+    case "$line" in
+        *" $family $sock_type $proto "*":$port"*) return 0 ;;
         *) return 1 ;;
     esac
 }
 
+tc_runtime_process_table() {
+    /bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null
+}
+
+tc_runtime_fstat_pid() {
+    /usr/bin/fstat -p "$1" 2>/dev/null
+}
+
+tc_fstat_line_is_ipv4_tcp_445() {
+    tc_fstat_line_matches_socket internet stream tcp 445 "$1"
+}
+
 tc_fstat_line_is_ipv6_tcp_445() {
-    case "$1" in
-        *" internet6 stream tcp "*":445"*) return 0 ;;
-        *) return 1 ;;
-    esac
+    tc_fstat_line_matches_socket internet6 stream tcp 445 "$1"
 }
 
 tc_bind_interfaces_have_ipv6() {
@@ -24,43 +39,21 @@ tc_bind_interfaces_have_ipv6() {
 }
 
 tc_smbd_bound_ipv4_445() {
-    if ps_out=$(/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null); then
-        old_ifs=$IFS
-        IFS='
-'
-        for line in $ps_out; do
-            [ -n "$line" ] || continue
-            line_ifs=$IFS
-            IFS=' 	'
-            set -- $line
-            IFS=$line_ifs
-            [ "$#" -ge 3 ] || continue
-            case "$2" in
-                Z*) continue ;;
-            esac
-            [ "$3" = "smbd" ] || continue
-
-            if fstat_out=$(/usr/bin/fstat -p "$1" 2>/dev/null); then
-                fstat_ifs=$IFS
-                IFS='
-'
-                for fstat_line in $fstat_out; do
-                    if tc_fstat_line_is_ipv4_tcp_445 "$fstat_line"; then
-                        IFS=$old_ifs
-                        return 0
-                    fi
-                done
-                IFS=$fstat_ifs
-            fi
-        done
-        IFS=$old_ifs
-    fi
-
-    return 1
+    tc_process_has_fstat_socket smbd internet stream tcp 445
 }
 
 tc_smbd_bound_ipv6_445() {
-    if ps_out=$(/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null); then
+    tc_process_has_fstat_socket smbd internet6 stream tcp 445
+}
+
+tc_process_has_fstat_socket() {
+    proc_name=$1
+    family=$2
+    sock_type=$3
+    proto=$4
+    port=$5
+
+    if ps_out=$(tc_runtime_process_table); then
         old_ifs=$IFS
         IFS='
 '
@@ -74,14 +67,14 @@ tc_smbd_bound_ipv6_445() {
             case "$2" in
                 Z*) continue ;;
             esac
-            [ "$3" = "smbd" ] || continue
+            [ "$3" = "$proc_name" ] || continue
 
-            if fstat_out=$(/usr/bin/fstat -p "$1" 2>/dev/null); then
+            if fstat_out=$(tc_runtime_fstat_pid "$1"); then
                 fstat_ifs=$IFS
                 IFS='
 '
                 for fstat_line in $fstat_out; do
-                    if tc_fstat_line_is_ipv6_tcp_445 "$fstat_line"; then
+                    if tc_fstat_line_matches_socket "$family" "$sock_type" "$proto" "$port" "$fstat_line"; then
                         IFS=$old_ifs
                         return 0
                     fi
@@ -109,97 +102,25 @@ tc_smbd_bound_tcp_445() {
 }
 
 tc_fstat_line_is_ipv4_udp_port() {
-    port=$1
-    case "$2" in
-        *" internet dgram udp "*":$port"*) return 0 ;;
-        *) return 1 ;;
-    esac
+    tc_fstat_line_matches_socket internet dgram udp "$1" "$2"
 }
 
 tc_fstat_line_is_ipv6_udp_port() {
-    port=$1
-    case "$2" in
-        *" internet6 dgram udp "*":$port"*) return 0 ;;
-        *) return 1 ;;
-    esac
+    tc_fstat_line_matches_socket internet6 dgram udp "$1" "$2"
 }
 
 tc_process_bound_ipv4_udp_port() {
     proc_name=$1
     port=$2
 
-    if ps_out=$(/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null); then
-        old_ifs=$IFS
-        IFS='
-'
-        for line in $ps_out; do
-            [ -n "$line" ] || continue
-            line_ifs=$IFS
-            IFS=' 	'
-            set -- $line
-            IFS=$line_ifs
-            [ "$#" -ge 3 ] || continue
-            case "$2" in
-                Z*) continue ;;
-            esac
-            [ "$3" = "$proc_name" ] || continue
-
-            if fstat_out=$(/usr/bin/fstat -p "$1" 2>/dev/null); then
-                fstat_ifs=$IFS
-                IFS='
-'
-                for fstat_line in $fstat_out; do
-                    if tc_fstat_line_is_ipv4_udp_port "$port" "$fstat_line"; then
-                        IFS=$old_ifs
-                        return 0
-                    fi
-                done
-                IFS=$fstat_ifs
-            fi
-        done
-        IFS=$old_ifs
-    fi
-
-    return 1
+    tc_process_has_fstat_socket "$proc_name" internet dgram udp "$port"
 }
 
 tc_process_bound_ipv6_udp_port() {
     proc_name=$1
     port=$2
 
-    if ps_out=$(/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null); then
-        old_ifs=$IFS
-        IFS='
-'
-        for line in $ps_out; do
-            [ -n "$line" ] || continue
-            line_ifs=$IFS
-            IFS=' 	'
-            set -- $line
-            IFS=$line_ifs
-            [ "$#" -ge 3 ] || continue
-            case "$2" in
-                Z*) continue ;;
-            esac
-            [ "$3" = "$proc_name" ] || continue
-
-            if fstat_out=$(/usr/bin/fstat -p "$1" 2>/dev/null); then
-                fstat_ifs=$IFS
-                IFS='
-'
-                for fstat_line in $fstat_out; do
-                    if tc_fstat_line_is_ipv6_udp_port "$port" "$fstat_line"; then
-                        IFS=$old_ifs
-                        return 0
-                    fi
-                done
-                IFS=$fstat_ifs
-            fi
-        done
-        IFS=$old_ifs
-    fi
-
-    return 1
+    tc_process_has_fstat_socket "$proc_name" internet6 dgram udp "$port"
 }
 
 tc_bind_interfaces_have_nonloopback_ipv4() {

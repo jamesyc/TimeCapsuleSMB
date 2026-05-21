@@ -1582,7 +1582,7 @@ static int append_host_address_records(uint8_t *buf,
     }
     if (include_aaaa) {
         for (i = 0; i < link->ipv6_count; i++) {
-            if (!runtime_ipv6_is_bindable(&link->ipv6[i].addr)) {
+            if (!link_ipv6_addr_is_samba_bindable(&link->ipv6[i])) {
                 continue;
             }
             if (add_rr_aaaa(buf, off, cap, owner, &link->ipv6[i].addr, ttl) != 0) {

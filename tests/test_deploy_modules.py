@@ -1531,7 +1531,15 @@ int main(void) {{
     struct iface_context_set a;
     struct iface_context_set b;
     struct ifreq sample_ifr;
+    struct ifconf_entry_view view;
+    struct sockaddr_in6 raw_sin6;
+    struct sockaddr_in6 copied_sin6;
+    union {{
+        long align;
+        char bytes[IFNAMSIZ + sizeof(struct sockaddr_in6) + sizeof(long)];
+    }} raw_entry;
     size_t expected_variable_step;
+    size_t expected_raw_step;
 
     if (runtime_ipv4_is_usable(inet_addr("0.1.2.3")) ||
         runtime_ipv4_is_usable(inet_addr("127.0.0.1")) ||
@@ -1570,6 +1578,35 @@ int main(void) {{
     }}
     if (ifreq_entry_size(&sample_ifr, expected_variable_step, 0) != expected_variable_step) {{
         return 9;
+    }}
+    memset(&raw_entry, 0, sizeof(raw_entry));
+    memcpy(raw_entry.bytes, "bridge0", 7);
+    memset(&raw_sin6, 0, sizeof(raw_sin6));
+    raw_sin6.sin6_family = AF_INET6;
+#if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
+    raw_sin6.sin6_len = sizeof(raw_sin6);
+#endif
+    if (inet_pton(AF_INET6, "fdbb:1111:2222:3333::40", &raw_sin6.sin6_addr) != 1) {{
+        return 12;
+    }}
+    memcpy(raw_entry.bytes + IFNAMSIZ, &raw_sin6, sizeof(raw_sin6));
+    expected_raw_step = IFNAMSIZ + sizeof(raw_sin6);
+    if ((expected_raw_step % sizeof(long)) != 0) {{
+        expected_raw_step += sizeof(long) - (expected_raw_step % sizeof(long));
+    }}
+    if (expected_raw_step < sizeof(sample_ifr)) {{
+        expected_raw_step = sizeof(sample_ifr);
+    }}
+    if (ifconf_entry_view_from_cursor(&view, raw_entry.bytes, sizeof(raw_entry.bytes), 0) != 0 ||
+        view.step != expected_raw_step ||
+        view.addr_len != sizeof(raw_sin6) ||
+        strcmp(view.name, "bridge0") != 0) {{
+        return 13;
+    }}
+    memset(&copied_sin6, 0, sizeof(copied_sin6));
+    memcpy(&copied_sin6, view.addr, sizeof(copied_sin6));
+    if (memcmp(&copied_sin6.sin6_addr, &raw_sin6.sin6_addr, sizeof(raw_sin6.sin6_addr)) != 0) {{
+        return 14;
     }}
 
     memset(&a, 0, sizeof(a));
@@ -1636,12 +1673,28 @@ int main(void) {{
 int main(void) {{
     struct iface_context_set set;
     char cidr[INET_ADDRSTRLEN + 4];
+    struct in6_addr mask6;
 
     if (netmask_prefix_length(inet_addr("255.255.255.0")) != 24 ||
         netmask_prefix_length(inet_addr("255.255.0.0")) != 16 ||
         netmask_prefix_length(0) != 24 ||
         netmask_prefix_length(inet_addr("255.0.255.0")) != 24) {{
         return 1;
+    }}
+    if (netmask_prefix_length(ipv4_link_local_netmask()) != 16) {{
+        return 6;
+    }}
+    if (inet_pton(AF_INET6, "ffff:ffff:ffff:ffff::", &mask6) != 1 ||
+        ipv6_prefix_length_from_mask(&mask6) != 64) {{
+        return 7;
+    }}
+    memset(&mask6, 0, sizeof(mask6));
+    if (ipv6_prefix_length_from_mask(&mask6) != -1) {{
+        return 8;
+    }}
+    if (inet_pton(AF_INET6, "ffff:ffff::ffff", &mask6) != 1 ||
+        ipv6_prefix_length_from_mask(&mask6) != -1) {{
+        return 9;
     }}
 
     memset(&set, 0, sizeof(set));
@@ -1694,6 +1747,7 @@ static int buffer_contains(const uint8_t *buf, size_t len, const void *needle, s
 int main(void) {{
     struct link_context_set set;
     struct in6_addr ula;
+    struct in6_addr unknown_prefix;
     struct in6_addr ll;
     uint8_t packet[512];
     size_t off;
@@ -1701,6 +1755,7 @@ int main(void) {{
 
     memset(&set, 0, sizeof(set));
     if (inet_pton(AF_INET6, "fdbb:1111:2222:3333::40", &ula) != 1 ||
+        inet_pton(AF_INET6, "fdbb:1111:2222:3333::41", &unknown_prefix) != 1 ||
         inet_pton(AF_INET6, "fe80::40", &ll) != 1) {{
         return 1;
     }}
@@ -1708,9 +1763,10 @@ int main(void) {{
     append_link_ipv4(&set, "bridge0", inet_addr("169.254.1.9"), inet_addr("255.255.0.0"), IFF_UP | IFF_RUNNING);
     append_link_ipv4(&set, "lo0", inet_addr("127.0.0.1"), inet_addr("255.0.0.0"), IFF_UP | IFF_RUNNING);
     append_link_ipv6(&set, "bridge0", &ula, 64, 7, IFF_UP | IFF_RUNNING);
+    append_link_ipv6(&set, "bridge0", &unknown_prefix, -1, 7, IFF_UP | IFF_RUNNING);
     append_link_ipv6(&set, "bridge0", &ll, 64, 7, IFF_UP | IFF_RUNNING);
 
-    if (set.count != 1 || set.links[0].ipv4_count != 2 || set.links[0].ipv6_count != 2) {{
+    if (set.count != 1 || set.links[0].ipv4_count != 2 || set.links[0].ipv6_count != 3) {{
         return 2;
     }}
     if (print_smb_link_bind_tokens(stdout, &set) != 0) {{
@@ -1727,6 +1783,7 @@ int main(void) {{
         !buffer_contains(packet, off, &set.links[0].ipv4[0].addr, sizeof(set.links[0].ipv4[0].addr)) ||
         !buffer_contains(packet, off, &set.links[0].ipv4[1].addr, sizeof(set.links[0].ipv4[1].addr)) ||
         !buffer_contains(packet, off, &ula, sizeof(ula)) ||
+        buffer_contains(packet, off, &unknown_prefix, sizeof(unknown_prefix)) ||
         buffer_contains(packet, off, &ll, sizeof(ll))) {{
         return 5;
     }}

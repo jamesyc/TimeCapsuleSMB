@@ -3098,6 +3098,82 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "ipv4_only=0\nipv6_only=0\ndual_missing_v6=1\ndual_bound=0\n")
 
+    def test_common_fstat_socket_scanner_matches_process_family_and_port(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            calls = tmp_path / "fstat-calls"
+            script = tmp_path / "fstat-socket-scanner.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    : > {calls}
+                    tc_runtime_process_table() {{
+                        cat <<'EOF'
+                    100 Z smbd smbd
+                    101 S smbd smbd
+                    102 S mdns-advertiser mdns-advertiser
+                    103 S other other
+                    EOF
+                    }}
+                    tc_runtime_fstat_pid() {{
+                        echo "$1" >> {calls}
+                        case "$1" in
+                            100) echo "root smbd 100 10 internet stream tcp 0x0 *:445" ;;
+                            101)
+                                echo "root smbd 101 10 internet stream tcp 0x0 *:445"
+                                echo "root smbd 101 11 internet6 stream tcp 0x0 [*]:445"
+                                ;;
+                            102)
+                                echo "root mdns-advertiser 102 10 internet dgram udp 0x0 *:5353"
+                                echo "root mdns-advertiser 102 11 internet6 dgram udp 0x0 [*]:5353"
+                                ;;
+                            *) echo "root other $1 10 internet dgram udp 0x0 *:5353" ;;
+                        esac
+                    }}
+
+                    status=0
+                    tc_smbd_bound_ipv4_445 || status=$?
+                    echo "smbd4=$status"
+                    status=0
+                    tc_smbd_bound_ipv6_445 || status=$?
+                    echo "smbd6=$status"
+                    status=0
+                    tc_process_bound_ipv4_udp_port "$MDNS_PROC_NAME" 5353 || status=$?
+                    echo "mdns4=$status"
+                    status=0
+                    tc_process_bound_ipv6_udp_port "$MDNS_PROC_NAME" 5353 || status=$?
+                    echo "mdns6=$status"
+                    status=0
+                    tc_process_bound_ipv4_udp_port "$MDNS_PROC_NAME" 9999 || status=$?
+                    echo "mdns4_wrong_port=$status"
+                    echo "calls=$(cat {calls})"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            "smbd4=0\n"
+            "smbd6=0\n"
+            "mdns4=0\n"
+            "mdns6=0\n"
+            "mdns4_wrong_port=1\n"
+            "calls=101\n"
+            "101\n"
+            "102\n"
+            "102\n"
+            "102\n",
+        )
+
     def test_common_mdns_bound_udp_5353_requires_reported_socket_families(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
