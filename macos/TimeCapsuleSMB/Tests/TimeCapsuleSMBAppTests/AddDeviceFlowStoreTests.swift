@@ -24,6 +24,17 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(AddDeviceEntryMode.allCases, [.discover, .manual])
     }
 
+    func testInvalidDiscoverTimeoutFailsWithoutRunningHelper() async throws {
+        let fixture = try await makeStore(responses: [])
+        fixture.store.bonjourTimeout = "bad"
+
+        fixture.store.runDiscover()
+
+        XCTAssertEqual(fixture.store.state, .failed)
+        XCTAssertEqual(fixture.store.error?.code, "validation_failed")
+        XCTAssertEqual(fixture.runner.calls, [])
+    }
+
     func testDiscoverEmptyReadyAndFailureStates() async throws {
         let empty = try await makeStore(responses: [
             .init(events: [
@@ -139,6 +150,20 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.store.devices.map(\.name), ["Lab Capsule", "Office Capsule"])
         XCTAssertEqual(fixture.store.devices.map(\.host), ["10.0.0.3", "10.0.0.2"])
         XCTAssertEqual(fixture.store.devices[1].addresses, ["169.254.44.9", "10.0.0.2"])
+    }
+
+    func testMalformedDiscoverPayloadFailsContract() async throws {
+        let fixture = try await makeStore(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "discover", ok: true, payload: .object(["schema_version": .string("wrong")]))
+            ])
+        ])
+
+        fixture.store.runDiscover()
+
+        try await waitUntilStoreState { fixture.store.state == .failed }
+        XCTAssertEqual(fixture.store.error?.code, "contract_decode_failed")
+        XCTAssertEqual(fixture.store.devices, [])
     }
 
     func testDiscoveredDeviceModelTextUsesFullModelIdentifier() throws {
@@ -320,6 +345,52 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(profile.addresses, ["10.0.0.5"])
         XCTAssertNotNil(fixture.runner.calls[1].params["selected_record"])
         XCTAssertNil(fixture.runner.calls[1].params["host"])
+    }
+
+    func testConfigureAuthFailurePreservesDiscoverySelection() async throws {
+        let record = testDeviceRecord(
+            name: "Office Capsule",
+            hostname: "office.local.",
+            ipv4: ["10.0.0.5"],
+            fullname: "Office Capsule._airport._tcp.local."
+        )
+        let fixture = try await makeStore(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [record]))
+            ]),
+            .init(events: [
+                BackendEvent(type: "error", operation: "configure", code: "auth_failed", message: "bad password")
+            ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
+        ])
+
+        fixture.store.runDiscover()
+        try await waitUntilStoreState { fixture.store.state == .discoveryReady }
+        let selectedID = fixture.store.selectedDeviceID
+        fixture.store.password = "bad"
+        fixture.store.runConfigure()
+
+        try await waitUntilStoreState { fixture.store.state == .authFailed }
+        XCTAssertEqual(fixture.store.selectedDeviceID, selectedID)
+        XCTAssertEqual(fixture.store.devices.count, 1)
+        XCTAssertEqual(fixture.registry.profiles, [])
+    }
+
+    func testMalformedConfigurePayloadFailsContractAndSavesNothing() async throws {
+        let fixture = try await makeStore(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "configure", ok: true, payload: .object(["schema_version": .string("wrong")]))
+            ])
+        ])
+        fixture.store.startManualEntry()
+        fixture.store.manualHost = "10.0.0.2"
+        fixture.store.password = "secret"
+
+        fixture.store.runConfigure()
+
+        try await waitUntilStoreState { fixture.store.state == .failed }
+        XCTAssertEqual(fixture.store.error?.code, "contract_decode_failed")
+        XCTAssertEqual(fixture.registry.profiles, [])
+        XCTAssertNil(fixture.store.savedProfile)
     }
 
     func testAuthFailureAndUnsupportedDeviceSaveNothing() async throws {

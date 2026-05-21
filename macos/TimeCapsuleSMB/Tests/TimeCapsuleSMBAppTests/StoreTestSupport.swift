@@ -313,11 +313,15 @@ func testDeployPlanPayload(payloadFamily: String = "netbsd6_samba4") -> JSONValu
     ])
 }
 
-func testDeployResultPayload(payloadFamily: String = "netbsd6_samba4", verified: Bool = true) -> JSONValue {
+func testDeployResultPayload(
+    payloadFamily: String = "netbsd6_samba4",
+    verified: Bool = true,
+    netbsd4: Bool = false
+) -> JSONValue {
     .object([
         "schema_version": .number(1),
         "payload_dir": .string("/Volumes/dk2/.samba4"),
-        "netbsd4": .bool(false),
+        "netbsd4": .bool(netbsd4),
         "payload_family": .string(payloadFamily),
         "requires_reboot": .bool(true),
         "rebooted": .bool(true),

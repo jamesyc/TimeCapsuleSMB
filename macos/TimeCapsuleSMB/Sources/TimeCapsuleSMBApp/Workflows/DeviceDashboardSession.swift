@@ -1,39 +1,12 @@
 import Combine
 import Foundation
-#if canImport(AppKit)
-import AppKit
-#endif
-
-enum DeviceDashboardTab: String, CaseIterable, Equatable, Identifiable {
-    case overview
-    case install
-    case checkup
-    case maintenance
-    case advanced
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .overview:
-            return L10n.string("dashboard.tab.overview")
-        case .install:
-            return L10n.string("dashboard.tab.install")
-        case .checkup:
-            return L10n.string("dashboard.tab.checkup")
-        case .maintenance:
-            return L10n.string("dashboard.tab.maintenance")
-        case .advanced:
-            return L10n.string("dashboard.tab.advanced")
-        }
-    }
-}
 
 @MainActor
 final class DeviceDashboardSession: ObservableObject, Identifiable {
     let id: DeviceProfile.ID
     @Published var selectedTab: DeviceDashboardTab = .overview
     @Published var replacementPassword = ""
+    @Published var isReplacingPassword = false
     @Published private(set) var passwordError: String?
 
     let appStore: AppStore
@@ -42,13 +15,19 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     var maintenanceStore: MaintenanceStore
     let profileEditorStore: DeviceProfileEditorStore
 
+    private let urlOpener: URLOpening
     private var activeCheckupOperation: ActiveOperation?
     private var activeDeployOperation: ActiveOperation?
     private var cancellables: Set<AnyCancellable> = []
 
-    init(profile: DeviceProfile, appStore: AppStore) {
+    init(
+        profile: DeviceProfile,
+        appStore: AppStore,
+        urlOpener: URLOpening = WorkspaceURLOpener()
+    ) {
         self.id = profile.id
         self.appStore = appStore
+        self.urlOpener = urlOpener
         self.deployStore = DeployWorkflowStore(coordinator: appStore.operationCoordinator)
         self.doctorStore = DoctorStore(coordinator: appStore.operationCoordinator)
         self.maintenanceStore = MaintenanceStore(coordinator: appStore.operationCoordinator)
@@ -63,9 +42,78 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         appStore.dashboardSummary(for: profile)
     }
 
+    func performPrimaryAction(_ action: DashboardPrimaryAction, profile: DeviceProfile) {
+        switch action {
+        case .replacePassword:
+            showPasswordReplacement()
+        case .runCheckup:
+            runCheckup(profile: profile)
+        case .installSMB:
+            runInstallPlan(profile: profile)
+        case .viewCheckup:
+            selectedTab = .checkup
+        case .openSMB:
+            openSMBAddress(for: profile)
+        }
+    }
+
+    func performSecondaryAction(_ action: DashboardSecondaryAction, profile: DeviceProfile) {
+        switch action {
+        case .runCheckup:
+            runCheckup(profile: profile)
+        case .installUpdate:
+            runInstallPlan(profile: profile)
+        case .openFinder:
+            openSMBAddress(for: profile)
+        case .replacePassword:
+            showPasswordReplacement()
+        case .viewCheckup:
+            selectedTab = .checkup
+        case .startSMB:
+            selectedTab = .maintenance
+            maintenanceStore.selectedWorkflow = .activate
+        case .advanced:
+            selectedTab = .advanced
+        }
+    }
+
+    func performInstallAction(_ action: InstallUserAction, profile: DeviceProfile, showDiagnostics: () -> Void) {
+        switch action {
+        case .createPlan, .regeneratePlan:
+            runInstallPlan(profile: profile)
+        case .installUpdate:
+            runInstall(profile: profile)
+        case .openFinder:
+            openSMBAddress(for: profile)
+        case .runCheckup:
+            runCheckup(profile: profile)
+        case .viewDiagnostics:
+            showDiagnostics()
+        }
+    }
+
+    func saveReplacementPassword(for profile: DeviceProfile) async {
+        let password = replacementPassword
+        guard !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            passwordError = L10n.string("password.error.required")
+            isReplacingPassword = true
+            return
+        }
+        do {
+            try await appStore.savePassword(password, for: profile)
+            replacementPassword = ""
+            passwordError = nil
+            isReplacingPassword = false
+        } catch {
+            passwordError = error.localizedDescription
+            isReplacingPassword = true
+        }
+    }
+
     func runCheckup(profile: DeviceProfile) {
         guard let password = appStore.password(for: profile) else {
             passwordError = L10n.string("password.error.required")
+            isReplacingPassword = true
             return
         }
         passwordError = nil
@@ -78,6 +126,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     func runInstallPlan(profile: DeviceProfile) {
         guard let password = appStore.password(for: profile) else {
             passwordError = L10n.string("password.error.required")
+            isReplacingPassword = true
             return
         }
         passwordError = nil
@@ -88,6 +137,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     func runInstall(profile: DeviceProfile) {
         guard let password = appStore.password(for: profile) else {
             passwordError = L10n.string("password.error.required")
+            isReplacingPassword = true
             return
         }
         passwordError = nil
@@ -100,6 +150,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     func maintenancePassword(for profile: DeviceProfile) -> String? {
         guard let password = appStore.password(for: profile) else {
             passwordError = L10n.string("password.error.required")
+            isReplacingPassword = true
             return nil
         }
         passwordError = nil
@@ -135,7 +186,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             maintenanceStore.selectedWorkflow = .repairXattrs
             return true
         case .replacePassword:
-            selectedTab = .overview
+            showPasswordReplacement()
             return true
         case .openFinder:
             openSMBAddress(for: profile)
@@ -143,6 +194,13 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         case .diagnostics, .copyDiagnostics, .generic:
             return false
         }
+    }
+
+    private func showPasswordReplacement() {
+        replacementPassword = ""
+        passwordError = nil
+        isReplacingPassword = true
+        selectedTab = .overview
     }
 
     func applyProfileSettings(_ settings: DeviceProfileSettings) {
@@ -241,9 +299,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         guard !host.isEmpty, let url = URL(string: "smb://\(host)") else {
             return
         }
-        #if canImport(AppKit)
-        NSWorkspace.shared.open(url)
-        #endif
+        urlOpener.open(url)
     }
 
     private func forwardChildChanges() {
@@ -315,55 +371,6 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
                 verified: result.verified,
                 summary: result.message ?? L10n.string("deploy.result.default_message")
             ), for: profile.id)
-        }
-    }
-}
-
-@MainActor
-final class DashboardStore: ObservableObject {
-    let appStore: AppStore
-
-    private var sessions: [DeviceProfile.ID: DeviceDashboardSession] = [:]
-    private var cancellables: Set<AnyCancellable> = []
-
-    init(appStore: AppStore) {
-        self.appStore = appStore
-        appStore.deviceRegistry.$profiles
-            .sink { [weak self] profiles in
-                Task { @MainActor in
-                    self?.pruneSessions(profiles: profiles)
-                }
-            }
-            .store(in: &cancellables)
-        appStore.operationCoordinator.$activeOperation
-            .sink { [weak self] _ in
-                Task { @MainActor in
-                    guard let self else { return }
-                    self.pruneSessions(profiles: self.appStore.deviceRegistry.profiles)
-                }
-            }
-            .store(in: &cancellables)
-    }
-
-    func session(for profile: DeviceProfile) -> DeviceDashboardSession {
-        if let session = sessions[profile.id] {
-            return session
-        }
-        let session = DeviceDashboardSession(profile: profile, appStore: appStore)
-        sessions[profile.id] = session
-        objectWillChange.send()
-        return session
-    }
-
-    func hasSession(for profileID: DeviceProfile.ID) -> Bool {
-        sessions[profileID] != nil
-    }
-
-    private func pruneSessions(profiles: [DeviceProfile]) {
-        let existingIDs = Set(profiles.map(\.id))
-        let activeProfileID = appStore.operationCoordinator.activeOperation?.profileID
-        sessions = sessions.filter { id, _ in
-            existingIDs.contains(id) || id == activeProfileID
         }
     }
 }

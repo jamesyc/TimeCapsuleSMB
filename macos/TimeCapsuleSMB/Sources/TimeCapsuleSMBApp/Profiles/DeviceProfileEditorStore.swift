@@ -105,6 +105,10 @@ struct DeviceProfileEditorDraft: Equatable {
             mountWaitSeconds: mountWait
         )
     }
+
+    func editableFields() throws -> DeviceProfileEditableFields {
+        DeviceProfileEditableFields(displayName: displayName, settings: try validatedSettings())
+    }
 }
 
 @MainActor
@@ -214,7 +218,7 @@ final class DeviceProfileEditorStore: ObservableObject {
         error = nil
         currentStage = nil
         do {
-            let saved = try await appStore.saveProfileEdits(profile: profile, draft: draft)
+            let saved = try await appStore.saveProfileEdits(profile: profile, fields: draft.editableFields())
             savedProfile = saved
             applyDraft(DeviceProfileEditorDraft(profile: saved))
             state = .saved

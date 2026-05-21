@@ -1,5 +1,51 @@
 import Foundation
 
+enum DashboardPrimaryAction: String, Equatable {
+    case replacePassword
+    case runCheckup
+    case installSMB
+    case viewCheckup
+    case openSMB
+
+    var title: String {
+        switch self {
+        case .replacePassword:
+            return L10n.string("dashboard.action.replace_password")
+        case .runCheckup:
+            return L10n.string("dashboard.action.run_checkup")
+        case .installSMB:
+            return L10n.string("dashboard.action.install_update_smb")
+        case .viewCheckup:
+            return L10n.string("dashboard.action.view_checkup")
+        case .openSMB:
+            return L10n.string("dashboard.action.open_smb")
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .replacePassword:
+            return "key"
+        case .runCheckup:
+            return "stethoscope"
+        case .installSMB:
+            return "square.and.arrow.up"
+        case .viewCheckup:
+            return "list.bullet.clipboard"
+        case .openSMB:
+            return "folder"
+        }
+    }
+}
+
+struct DeviceDashboardSummary: Equatable {
+    let profile: DeviceProfile
+    let passwordState: DevicePasswordState
+    let displayStatus: DeviceDisplayStatus
+    let primaryAction: DashboardPrimaryAction
+    let hostWarning: HostCompatibilityWarning?
+}
+
 struct PresentationRow: Equatable, Identifiable {
     var id: String {
         "\(label):\(value)"
@@ -7,45 +53,6 @@ struct PresentationRow: Equatable, Identifiable {
 
     let label: String
     let value: String
-}
-
-struct DeployPlanPresentation: Equatable {
-    let title: String
-    let summaryRows: [PresentationRow]
-    let advancedRows: [PresentationRow]
-    let warnings: [String]
-
-    init(plan: DeployPlanPayload, profile: DeviceProfile, hostWarning: HostCompatibilityWarning? = nil) {
-        self.title = plan.netbsd4
-            ? L10n.string("deploy.presentation.title.netbsd4")
-            : L10n.string("deploy.presentation.title.standard")
-        self.summaryRows = [
-            PresentationRow(label: L10n.string("deploy.presentation.row.target"), value: profile.title),
-            PresentationRow(label: L10n.string("deploy.presentation.row.host"), value: plan.host),
-            PresentationRow(label: L10n.string("deploy.presentation.row.payload"), value: plan.payloadFamily ?? profile.payloadFamily ?? L10n.string("value.unknown")),
-            PresentationRow(label: L10n.string("deploy.presentation.row.disk_location"), value: plan.volumeRoot ?? plan.payloadDir),
-            PresentationRow(label: L10n.string("deploy.presentation.row.reboot"), value: plan.requiresReboot ? L10n.string("value.required") : L10n.string("value.not_required")),
-            PresentationRow(
-                label: L10n.string("deploy.presentation.row.expected_changes"),
-                value: L10n.format("deploy.presentation.expected_changes", plan.uploads.count, plan.postUploadActions.count)
-            )
-        ]
-        self.advancedRows = [
-            PresentationRow(label: L10n.string("deploy.presentation.row.payload_directory"), value: plan.payloadDir),
-            PresentationRow(label: L10n.string("deploy.presentation.row.pre_upload_actions"), value: "\(plan.preUploadActions.count)"),
-            PresentationRow(label: L10n.string("deploy.presentation.row.post_upload_actions"), value: "\(plan.postUploadActions.count)"),
-            PresentationRow(label: L10n.string("deploy.presentation.row.activation_actions"), value: "\(plan.activationActions.count)"),
-            PresentationRow(label: L10n.string("deploy.presentation.row.post_install_checks"), value: plan.postDeployChecks.map(\.description).joined(separator: ", "))
-        ]
-        var warnings: [String] = []
-        if plan.netbsd4 {
-            warnings.append(L10n.string("deploy.presentation.warning.netbsd4_activation"))
-        }
-        if let hostWarning {
-            warnings.append(hostWarning.message)
-        }
-        self.warnings = warnings
-    }
 }
 
 struct CheckupPresentation: Equatable {

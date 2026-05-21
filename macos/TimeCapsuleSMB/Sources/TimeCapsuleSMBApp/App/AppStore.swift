@@ -1,23 +1,6 @@
 import Combine
 import Foundation
 
-enum DashboardPrimaryAction: String, Equatable {
-    case addDevice
-    case replacePassword
-    case runCheckup
-    case installSMB
-    case viewCheckup
-    case openSMB
-}
-
-struct DeviceDashboardSummary: Equatable {
-    let profile: DeviceProfile
-    let passwordState: DevicePasswordState
-    let displayStatus: DeviceDisplayStatus
-    let primaryAction: DashboardPrimaryAction
-    let hostWarning: HostCompatibilityWarning?
-}
-
 @MainActor
 final class AppStore: ObservableObject {
     @Published var selectedDeviceID: DeviceProfile.ID?
@@ -149,31 +132,12 @@ final class AppStore: ObservableObject {
         await deviceRegistry.updatePasswordState(.available, for: profile.id)
     }
 
-    func updateSettings(_ settings: DeviceProfileSettings, for profile: DeviceProfile) async throws {
-        var updated = profile
-        updated.settings = settings
-        try await deviceRegistry.updateProfile(updated)
-    }
-
     @discardableResult
-    func saveProfileEdits(profile: DeviceProfile, draft: DeviceProfileEditorDraft) async throws -> DeviceProfile {
+    func saveProfileEdits(profile: DeviceProfile, fields: DeviceProfileEditableFields) async throws -> DeviceProfile {
         var updated = profile
-        updated.displayName = draft.displayName
-        updated.host = draft.trimmedHost
-        updated.settings = try draft.validatedSettings()
+        updated.displayName = fields.displayName
+        updated.settings = fields.settings
         return try await deviceRegistry.updateProfile(updated)
-    }
-
-    func rename(_ profile: DeviceProfile, displayName: String) async throws {
-        var updated = profile
-        updated.displayName = displayName
-        try await deviceRegistry.updateProfile(updated)
-    }
-
-    func updateHost(_ profile: DeviceProfile, host: String) async throws {
-        var updated = profile
-        updated.host = host
-        try await deviceRegistry.updateProfile(updated)
     }
 
     func forget(_ profile: DeviceProfile) async throws {

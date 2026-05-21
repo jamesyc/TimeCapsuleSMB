@@ -58,6 +58,91 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(fixture.appStore.dashboardSummary(for: warning).primaryAction, .viewCheckup)
     }
 
+    func testPrimaryActionsRouteThroughDashboardSession() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+                ]))
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload())
+            ])
+        ])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        let opener = RecordingURLOpener()
+        let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore, urlOpener: opener)
+
+        session.performPrimaryAction(.runCheckup, profile: profile)
+        try await waitUntilStoreState { fixture.runner.calls.count == 1 && !fixture.appStore.backend.isRunning }
+        XCTAssertEqual(fixture.runner.calls[0].operation, "doctor")
+        XCTAssertEqual(session.selectedTab, .checkup)
+
+        session.performPrimaryAction(.installSMB, profile: profile)
+        try await waitUntilStoreState { fixture.runner.calls.count == 2 && !fixture.appStore.backend.isRunning }
+        XCTAssertEqual(fixture.runner.calls[1].operation, "deploy")
+        XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(true))
+        XCTAssertEqual(session.selectedTab, .install)
+
+        session.performPrimaryAction(.viewCheckup, profile: profile)
+        XCTAssertEqual(session.selectedTab, .checkup)
+
+        session.replacementPassword = "draft"
+        session.performPrimaryAction(.replacePassword, profile: profile)
+        XCTAssertEqual(session.selectedTab, .overview)
+        XCTAssertEqual(session.replacementPassword, "")
+        XCTAssertTrue(session.isReplacingPassword)
+
+        session.performPrimaryAction(.openSMB, profile: profile)
+        XCTAssertEqual(opener.openedURLs.map(\.absoluteString), ["smb://10.0.0.2"])
+    }
+
+    func testPasswordReplacementSaveUpdatesPasswordStateAndHidesEditor() async throws {
+        let fixture = try await makeFixture(responses: [])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .missing,
+            preferredID: "device-one"
+        )
+        let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore)
+        session.performPrimaryAction(.replacePassword, profile: profile)
+        session.replacementPassword = "new-password"
+
+        await session.saveReplacementPassword(for: profile)
+
+        XCTAssertFalse(session.isReplacingPassword)
+        XCTAssertEqual(session.replacementPassword, "")
+        XCTAssertNil(session.passwordError)
+        XCTAssertEqual(try fixture.passwordStore.password(for: profile.keychainAccount), "new-password")
+        XCTAssertEqual(fixture.registry.profile(id: profile.id)?.passwordState, .available)
+    }
+
+    func testPasswordReplacementSaveFailureKeepsEditorOpen() async throws {
+        let fixture = try await makeFixture(responses: [])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .missing,
+            preferredID: "device-one"
+        )
+        fixture.passwordStore.saveFailure = .save
+        let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore)
+        session.replacementPassword = "new-password"
+
+        await session.saveReplacementPassword(for: profile)
+
+        XCTAssertTrue(session.isReplacingPassword)
+        XCTAssertEqual(session.passwordError, "In-memory password store save failed.")
+        XCTAssertEqual(fixture.registry.profile(id: profile.id)?.passwordState, .missing)
+    }
+
     func testDashboardSessionsAreIsolatedByProfile() async throws {
         let fixture = try await makeFixture(responses: [])
         let first = try await fixture.registry.saveConfiguredDevice(
@@ -426,6 +511,7 @@ final class DashboardStoreTests: XCTestCase {
             profile: profile
         ))
         XCTAssertEqual(session.selectedTab, .overview)
+        XCTAssertTrue(session.isReplacingPassword)
     }
 
     func testRecoveryRunCheckupAndInstallActionsStartBackendOperations() async throws {
@@ -526,6 +612,44 @@ final class DashboardStoreTests: XCTestCase {
         ))
     }
 
+    func testInstallCompletionActionsRunThroughSession() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+                ]))
+            ])
+        ])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        let opener = RecordingURLOpener()
+        let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore, urlOpener: opener)
+        var diagnosticsShown = false
+
+        session.performInstallAction(.openFinder, profile: profile) {
+            diagnosticsShown = true
+        }
+        XCTAssertEqual(opener.openedURLs.map(\.absoluteString), ["smb://10.0.0.2"])
+        XCTAssertFalse(diagnosticsShown)
+
+        session.performInstallAction(.runCheckup, profile: profile) {
+            diagnosticsShown = true
+        }
+        try await waitUntilStoreState { fixture.runner.calls.count == 1 && !fixture.appStore.backend.isRunning }
+        XCTAssertEqual(fixture.runner.calls[0].operation, "doctor")
+        XCTAssertEqual(session.selectedTab, .checkup)
+
+        session.performInstallAction(.viewDiagnostics, profile: profile) {
+            diagnosticsShown = true
+        }
+        XCTAssertTrue(diagnosticsShown)
+    }
+
     func testForgetProfileDeletesRegistryConfigDirectoryAndPassword() async throws {
         let fixture = try await makeFixture(responses: [])
         let profile = try await fixture.registry.saveConfiguredDevice(
@@ -567,5 +691,13 @@ final class DashboardStoreTests: XCTestCase {
             passwordStore: passwordStore
         )
         return (appStore, registry, passwordStore, runner)
+    }
+}
+
+private final class RecordingURLOpener: URLOpening {
+    private(set) var openedURLs: [URL] = []
+
+    func open(_ url: URL) {
+        openedURLs.append(url)
     }
 }
