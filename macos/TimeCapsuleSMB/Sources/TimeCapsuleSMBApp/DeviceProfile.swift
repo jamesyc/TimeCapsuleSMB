@@ -16,6 +16,21 @@ enum DevicePasswordState: String, Codable, CaseIterable, Equatable {
     case missing
     case invalid
     case keychainUnavailable
+
+    var title: String {
+        switch self {
+        case .unknown:
+            return L10n.string("password_state.unknown")
+        case .available:
+            return L10n.string("password_state.available")
+        case .missing:
+            return L10n.string("password_state.missing")
+        case .invalid:
+            return L10n.string("password_state.invalid")
+        case .keychainUnavailable:
+            return L10n.string("password_state.keychain_unavailable")
+        }
+    }
 }
 
 struct DeviceProfileSettings: Codable, Equatable {

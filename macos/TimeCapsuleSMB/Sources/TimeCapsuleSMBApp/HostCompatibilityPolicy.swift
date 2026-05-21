@@ -5,24 +5,45 @@ struct HostCompatibilityWarning: Equatable {
     let message: String
 }
 
+private struct KnownHostCompatibilityIssue {
+    let majorVersion: Int
+    let minorVersion: Int
+    let patchVersions: Set<Int>?
+
+    func matches(_ version: OperatingSystemVersion) -> Bool {
+        guard version.majorVersion == majorVersion, version.minorVersion == minorVersion else {
+            return false
+        }
+        guard let patchVersions else {
+            return true
+        }
+        return patchVersions.contains(version.patchVersion)
+    }
+}
+
 enum HostCompatibilityPolicy {
+    // Product guidance tracks macOS 26.4.x separately from the 15.7 patch band.
+    private static let knownTimeMachineIssues = [
+        KnownHostCompatibilityIssue(majorVersion: 15, minorVersion: 7, patchVersions: [5, 6, 7]),
+        KnownHostCompatibilityIssue(majorVersion: 26, minorVersion: 4, patchVersions: nil)
+    ]
+
     static func warning(for version: OperatingSystemVersion = ProcessInfo.processInfo.operatingSystemVersion) -> HostCompatibilityWarning? {
-        guard version.majorVersion == 15 || version.majorVersion == 26 else {
+        guard knownTimeMachineIssues.contains(where: { $0.matches(version) }) else {
             return nil
         }
-        if version.majorVersion == 15 && version.minorVersion == 7 && [5, 6, 7].contains(version.patchVersion) {
-            return timeMachineWarning(version: version)
-        }
-        if version.majorVersion == 26 && version.minorVersion == 4 {
-            return timeMachineWarning(version: version)
-        }
-        return nil
+        return timeMachineWarning(version: version)
     }
 
     private static func timeMachineWarning(version: OperatingSystemVersion) -> HostCompatibilityWarning {
         HostCompatibilityWarning(
-            title: "macOS Time Machine Warning",
-            message: "macOS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion) has known Time Machine network backup issues. SMB may work, but backup reliability can be affected by the host OS."
+            title: L10n.string("host_warning.time_machine.title"),
+            message: L10n.format(
+                "host_warning.time_machine.message",
+                version.majorVersion,
+                version.minorVersion,
+                version.patchVersion
+            )
         )
     }
 }

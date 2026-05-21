@@ -9,6 +9,25 @@ enum AppReadinessStateKind: String, CaseIterable, Equatable {
     case ready
     case degraded
     case blocked
+
+    var title: String {
+        switch self {
+        case .idle:
+            return L10n.string("app_readiness.state.idle")
+        case .resolvingBundle:
+            return L10n.string("app_readiness.state.resolving_bundle")
+        case .checkingCapabilities:
+            return L10n.string("app_readiness.state.checking_capabilities")
+        case .validatingInstall:
+            return L10n.string("app_readiness.state.validating_install")
+        case .ready:
+            return L10n.string("app_readiness.state.ready")
+        case .degraded:
+            return L10n.string("app_readiness.state.degraded")
+        case .blocked:
+            return L10n.string("app_readiness.state.blocked")
+        }
+    }
 }
 
 struct AppReadinessSummary: Equatable {
@@ -134,7 +153,7 @@ final class AppReadinessStore: ObservableObject {
                 code: .helperMissing,
                 severity: .error,
                 message: error.localizedDescription,
-                recovery: "Reinstall TimeCapsuleSMB or choose a valid helper in Diagnostics."
+                recovery: L10n.string("app_readiness.recovery.helper_missing")
             ))
             return
         }
@@ -205,7 +224,7 @@ final class AppReadinessStore: ObservableObject {
                     code: .operationFailed,
                     severity: .error,
                     message: payload.summary,
-                    recovery: "Open Diagnostics and retry app readiness."
+                    recovery: L10n.string("app_readiness.recovery.retry_diagnostics")
                 ))
                 return
             }
@@ -225,7 +244,7 @@ final class AppReadinessStore: ObservableObject {
                     code: .installValidationFailed,
                     severity: .error,
                     message: payload.summary,
-                    recovery: "Reinstall TimeCapsuleSMB or open Diagnostics for the failed checks."
+                    recovery: L10n.string("app_readiness.recovery.install_validation_failed")
                 ))
                 return
             }
@@ -272,7 +291,7 @@ final class AppReadinessStore: ObservableObject {
             code: code,
             severity: .error,
             message: event.message ?? event.summary,
-            recovery: BackendErrorViewModel(event: event).recovery?.message ?? "Open Diagnostics and retry app readiness."
+            recovery: BackendErrorViewModel(event: event).recovery?.message ?? L10n.string("app_readiness.recovery.retry_diagnostics")
         )
     }
 
@@ -280,8 +299,8 @@ final class AppReadinessStore: ObservableObject {
         BundleRuntimeIssue(
             code: .contractDecodeFailed,
             severity: .error,
-            message: "\(operation) returned an unexpected payload: \(error.localizedDescription)",
-            recovery: "Update or reinstall TimeCapsuleSMB so the app and helper use the same API contract."
+            message: L10n.format("app_readiness.error.unexpected_payload", operation, error.localizedDescription),
+            recovery: L10n.string("app_readiness.recovery.contract_mismatch")
         )
     }
 

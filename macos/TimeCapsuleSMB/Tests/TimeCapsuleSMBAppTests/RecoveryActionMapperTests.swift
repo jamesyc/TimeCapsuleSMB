@@ -15,7 +15,8 @@ final class RecoveryActionMapperTests: XCTestCase {
         let recovery = try recoveryValue(
             title: "Disk issue",
             actions: ["Wake the disk by opening it in Finder.", "Retry deploy."],
-            suggestedOperation: "fsck"
+            suggestedOperation: "fsck",
+            actionIDs: ["open_finder", "install_smb"]
         ).decode(BackendRecoveryPayload.self)
         let error = BackendErrorViewModel(
             operation: "deploy",
@@ -27,7 +28,27 @@ final class RecoveryActionMapperTests: XCTestCase {
         let actions = RecoveryActionMapper.actions(for: error)
 
         XCTAssertTrue(actions.contains(RecoveryAction(title: "Run Disk Repair", kind: .diskRepair)))
-        XCTAssertTrue(actions.contains(where: { $0.kind == .openFinder }))
-        XCTAssertTrue(actions.contains(where: { $0.kind == .installSMB }))
+        XCTAssertTrue(actions.contains(RecoveryAction(title: "Open Finder", kind: .openFinder)))
+        XCTAssertTrue(actions.contains(RecoveryAction(title: "Install SMB", kind: .installSMB)))
+    }
+
+    func testHumanRecoveryTextDoesNotCreateActionButtons() throws {
+        let recovery = try recoveryValue(
+            title: "Disk issue",
+            actions: ["Wake the disk by opening it in Finder.", "Retry deploy."],
+            suggestedOperation: "unknown"
+        ).decode(BackendRecoveryPayload.self)
+        let error = BackendErrorViewModel(
+            operation: "deploy",
+            code: "remote_error",
+            message: "Disk did not mount.",
+            recovery: recovery
+        )
+
+        let actions = RecoveryActionMapper.actions(for: error)
+
+        XCTAssertFalse(actions.contains(where: { $0.kind == .openFinder }))
+        XCTAssertFalse(actions.contains(where: { $0.kind == .installSMB }))
+        XCTAssertTrue(actions.contains(RecoveryAction(title: "Retry", kind: .retry)))
     }
 }

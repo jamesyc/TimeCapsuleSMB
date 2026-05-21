@@ -36,7 +36,7 @@ enum OperationTimelineBuilder {
                 return OperationTimelineItem(
                     id: "\(index):\(event.operation):result",
                     operation: event.operation,
-                    title: event.ok == true ? "Done" : "Failed",
+                    title: event.ok == true ? L10n.string("timeline.result.done") : L10n.string("timeline.result.failed"),
                     detail: event.payloadSummaryText ?? event.summary,
                     state: event.ok == true ? .succeeded : .failed,
                     risk: nil,
@@ -46,7 +46,9 @@ enum OperationTimelineBuilder {
                 return OperationTimelineItem(
                     id: "\(index):\(event.operation):error",
                     operation: event.operation,
-                    title: event.code == "confirmation_required" ? "Needs Confirmation" : "Needs Attention",
+                    title: event.code == "confirmation_required"
+                        ? L10n.string("timeline.error.needs_confirmation")
+                        : L10n.string("timeline.error.needs_attention"),
                     detail: event.message,
                     state: event.code == "confirmation_required" ? .warning : .failed,
                     risk: event.risk,
@@ -61,25 +63,25 @@ enum OperationTimelineBuilder {
     static func operationTitle(_ operation: String) -> String {
         switch operation {
         case "discover":
-            return "Discovery"
+            return L10n.string("timeline.operation.discovery")
         case "configure":
-            return "Add Time Capsule"
+            return L10n.string("timeline.operation.configure")
         case "deploy":
-            return "Install / Update"
+            return L10n.string("timeline.operation.deploy")
         case "doctor":
-            return "Checkup"
+            return L10n.string("timeline.operation.doctor")
         case "activate":
-            return "Start SMB"
+            return L10n.string("timeline.operation.activate")
         case "fsck":
-            return "Disk Repair"
+            return L10n.string("timeline.operation.fsck")
         case "repair-xattrs":
-            return "File Metadata Repair"
+            return L10n.string("timeline.operation.repair_xattrs")
         case "uninstall":
-            return "Uninstall"
+            return L10n.string("timeline.operation.uninstall")
         case "capabilities", "validate-install", "paths":
-            return "App Readiness"
+            return L10n.string("timeline.operation.readiness")
         case "flash":
-            return "Persistent NetBSD4 Boot Hook"
+            return L10n.string("timeline.operation.flash")
         default:
             return operation
         }
@@ -91,51 +93,51 @@ enum OperationTimelineBuilder {
         }
         switch (operation, stage) {
         case ("discover", "bonjour_discovery"):
-            return "Finding Time Capsules"
+            return L10n.string("timeline.stage.finding_time_capsules")
         case ("configure", "ssh_probe"), ("configure", "ssh_probe_after_acp"):
-            return "Checking SSH"
+            return L10n.string("timeline.stage.checking_ssh")
         case ("configure", "acp_enable_ssh"):
-            return "Enabling SSH"
+            return L10n.string("timeline.stage.enabling_ssh")
         case ("configure", "wait_for_ssh_after_acp"):
-            return "Waiting for Device"
+            return L10n.string("timeline.stage.waiting_for_device")
         case ("configure", "write_env"):
-            return "Saving Device"
+            return L10n.string("timeline.stage.saving_device")
         case ("deploy", "build_deployment_plan"):
-            return "Planning Install"
+            return L10n.string("timeline.stage.planning_install")
         case ("deploy", "validate_artifacts"):
-            return "Checking Bundled Files"
+            return L10n.string("timeline.stage.checking_bundled_files")
         case ("deploy", "read_mast"), ("deploy", "select_payload_home"):
-            return "Finding Disk"
+            return L10n.string("timeline.stage.finding_disk")
         case ("deploy", "upload_payload"):
-            return "Uploading"
+            return L10n.string("timeline.stage.uploading")
         case ("deploy", "flush_payload_upload"):
-            return "Syncing to Disk"
+            return L10n.string("timeline.stage.syncing_to_disk")
         case ("deploy", "reboot"), ("deploy", "wait_for_reboot_down"), ("deploy", "wait_for_reboot_up"):
-            return "Rebooting"
+            return L10n.string("timeline.stage.rebooting")
         case ("deploy", "netbsd4_activation"):
-            return "Starting SMB"
+            return L10n.string("timeline.stage.starting_smb")
         case ("deploy", "verify_runtime_activation"), ("deploy", "verify_runtime_reboot"):
-            return "Verifying SMB"
+            return L10n.string("timeline.stage.verifying_smb")
         case ("doctor", "run_checks"):
-            return "Running Checkup"
+            return L10n.string("timeline.stage.running_checkup")
         case ("activate", "build_activation_plan"):
-            return "Planning Start SMB"
+            return L10n.string("timeline.stage.planning_start_smb")
         case ("activate", "run_activation"):
-            return "Starting SMB"
+            return L10n.string("timeline.stage.starting_smb")
         case ("uninstall", "build_uninstall_plan"):
-            return "Planning Uninstall"
+            return L10n.string("timeline.stage.planning_uninstall")
         case ("uninstall", "uninstall_payload"):
-            return "Removing Managed Files"
+            return L10n.string("timeline.stage.removing_managed_files")
         case ("fsck", "read_mast"), ("fsck", "select_fsck_volume"):
-            return "Finding Volumes"
+            return L10n.string("timeline.stage.finding_volumes")
         case ("fsck", "run_fsck"):
-            return "Repairing Disk"
+            return L10n.string("timeline.stage.repairing_disk")
         case ("repair-xattrs", "scan_findings"):
-            return "Scanning Metadata"
+            return L10n.string("timeline.stage.scanning_metadata")
         case ("repair-xattrs", "repair_findings"):
-            return "Repairing Metadata"
+            return L10n.string("timeline.stage.repairing_metadata")
         case ("validate-install", "validate_install"):
-            return "Validating App Bundle"
+            return L10n.string("timeline.stage.validating_app_bundle")
         default:
             return stage
                 .split(separator: "_")

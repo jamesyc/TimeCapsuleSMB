@@ -22,6 +22,46 @@ final class DeviceStatusPolicyTests: XCTestCase {
         ])
     }
 
+    func testDisplayStatusTitlesAreLocalized() {
+        XCTAssertEqual(DeviceDisplayStatus.allCases.map(\.title), [
+            "Unchecked",
+            "Password Needed",
+            "Password Invalid",
+            "Keychain Unavailable",
+            "Checking",
+            "Installing",
+            "Maintenance",
+            "Ready to Install",
+            "Healthy",
+            "Warning",
+            "Failed",
+            "Activation Needed",
+            "Removed",
+            "Offline",
+            "Unsupported"
+        ])
+    }
+
+    func testPasswordStateTitlesAreLocalized() {
+        XCTAssertEqual(DevicePasswordState.allCases.map(\.title), [
+            "Unknown",
+            "Available",
+            "Missing",
+            "Invalid",
+            "Keychain unavailable"
+        ])
+    }
+
+    func testDashboardTabTitlesAreLocalized() {
+        XCTAssertEqual(DeviceDashboardTab.allCases.map(\.title), [
+            "Overview",
+            "Install / Update",
+            "Checkup",
+            "Maintenance",
+            "Advanced"
+        ])
+    }
+
     func testPasswordStatesTakePriority() throws {
         let profile = try makeProfile()
 

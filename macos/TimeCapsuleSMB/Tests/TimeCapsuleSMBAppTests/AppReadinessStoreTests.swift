@@ -10,6 +10,18 @@ final class AppReadinessStoreTests: XCTestCase {
         )
     }
 
+    func testStateTitlesAreLocalized() {
+        XCTAssertEqual(AppReadinessStateKind.allCases.map(\.title), [
+            "Idle",
+            "Preparing app runtime",
+            "Checking helper",
+            "Validating bundled files",
+            "Ready",
+            "Degraded",
+            "Blocked"
+        ])
+    }
+
     func testSuccessfulReadinessRunsCapabilitiesThenValidation() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [

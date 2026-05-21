@@ -62,6 +62,8 @@ struct ErrorRecoveryView: View {
             return "square.and.arrow.up"
         case .startSMB:
             return "play.circle"
+        case .uninstall:
+            return "trash"
         case .diskRepair:
             return "externaldrive.badge.exclamationmark"
         case .metadataRepair:

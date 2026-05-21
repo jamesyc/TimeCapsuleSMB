@@ -85,11 +85,17 @@ func waitUntilStoreState(
     }
 }
 
-func recoveryValue(title: String, actions: [String], suggestedOperation: String = "doctor") -> JSONValue {
+func recoveryValue(
+    title: String,
+    actions: [String],
+    suggestedOperation: String = "doctor",
+    actionIDs: [String] = []
+) -> JSONValue {
     return .object([
         "title": .string(title),
         "message": .string(title),
         "actions": .array(actions.map(JSONValue.string)),
+        "action_ids": .array(actionIDs.map(JSONValue.string)),
         "retryable": .bool(true),
         "suggested_operation": .string(suggestedOperation)
     ])

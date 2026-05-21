@@ -56,6 +56,23 @@ final class BackendClientTests: XCTestCase {
         XCTAssertEqual(client.events.last?.type, "error")
     }
 
+    func testDeinitCancelsActiveRun() async throws {
+        let recorder = CancellationRecorder()
+        let runner = CancellationObservingRunner(recorder: recorder)
+        var client: BackendClient? = BackendClient(runner: runner)
+
+        client?.run(operation: "doctor")
+        try await waitUntilAsync {
+            await recorder.started
+        }
+
+        client = nil
+
+        try await waitUntilAsync {
+            await recorder.cancelled
+        }
+    }
+
     func testStagePolicyControlsCancellation() async throws {
         let runner = RecordingHelperRunner(
             events: [
@@ -214,6 +231,64 @@ final class BackendClientTests: XCTestCase {
             }
             try await Task.sleep(nanoseconds: 10_000_000)
         }
+    }
+
+    private func waitUntilAsync(
+        timeoutNanoseconds: UInt64 = 2_000_000_000,
+        _ condition: @escaping () async -> Bool
+    ) async throws {
+        let start = DispatchTime.now().uptimeNanoseconds
+        while !(await condition()) {
+            if DispatchTime.now().uptimeNanoseconds - start > timeoutNanoseconds {
+                XCTFail("Timed out waiting for async BackendClient state change.")
+                return
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+}
+
+private actor CancellationRecorder {
+    private var didStart = false
+    private var didCancel = false
+
+    var started: Bool {
+        didStart
+    }
+
+    var cancelled: Bool {
+        didCancel
+    }
+
+    func markStarted() {
+        didStart = true
+    }
+
+    func markCancelled() {
+        didCancel = true
+    }
+}
+
+private final class CancellationObservingRunner: HelperRunning, @unchecked Sendable {
+    private let recorder: CancellationRecorder
+
+    init(recorder: CancellationRecorder) {
+        self.recorder = recorder
+    }
+
+    func run(
+        helperPath: String?,
+        operation: String,
+        params: [String: JSONValue],
+        context: DeviceRuntimeContext?,
+        onEvent: @escaping @Sendable (BackendEvent) async -> Void
+    ) async -> HelperRunResult {
+        await recorder.markStarted()
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        await recorder.markCancelled()
+        return HelperRunResult(exitCode: 130, sawTerminalEvent: false, stderr: "")
     }
 }
 

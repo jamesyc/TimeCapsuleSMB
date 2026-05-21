@@ -18,7 +18,6 @@ from timecapsulesmb.app.contracts import (
 from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
 from timecapsulesmb.app.events import EventSink
 from timecapsulesmb.app.ops.deploy import (
-    load_config_and_target,
     request_reboot,
     request_reboot_and_wait,
     require_supported_payload,
@@ -70,28 +69,26 @@ from timecapsulesmb.services.maintenance import (
     select_fsck_target,
 )
 from timecapsulesmb.services import repair_xattrs as repair_xattrs_service
-from timecapsulesmb.services.runtime import load_env_config, load_optional_env_config, resolve_env_connection
+from timecapsulesmb.services.runtime import (
+    load_env_config,
+    load_optional_env_config,
+    resolve_env_connection,
+    resolve_validated_managed_target,
+)
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 
 
 def activate_operation(params: dict[str, object], sink: EventSink) -> OperationResult:
     operation = "activate"
     dry_run = bool_param(params, "dry_run")
-    _, target = load_config_and_target(operation, params, sink, profile="activate", include_probe=True)
-    compatibility = require_supported_payload(target, allow_unsupported=False)
-    if not is_netbsd4_payload_family(compatibility.payload_family):
-        raise AppOperationError(
-            "activate is only supported for NetBSD4 AirPort storage devices; use deploy for persistent NetBSD6 installs.",
-            code="unsupported_device",
-        )
     sink.stage(operation, "build_activation_plan")
     plan = build_netbsd4_activation_plan()
     if dry_run:
         return OperationResult(True, activation_plan_payload(activation_plan_to_jsonable(plan)))
-    connection = target.connection
-    sink.stage(operation, "probe_runtime")
-    if probe_managed_runtime_conn(connection, timeout_seconds=20).ready:
-        return OperationResult(True, activation_result_payload(already_active=True))
+
+    sink.stage(operation, "load_config")
+    config = overlay_request_credentials(load_env_config(env_path=config_path(params)), params)
+    confirmation_connection = resolve_env_connection(config, allow_empty_password=True)
     require_confirmation(
         params,
         build_confirmation(
@@ -103,13 +100,31 @@ def activate_operation(params: dict[str, object], sink: EventSink) -> OperationR
             risk="destructive",
             summary="NetBSD4 service activation",
             context={
-                "host": connection.host,
-                "payload_family": compatibility.payload_family,
+                "host": confirmation_connection.host,
                 "netbsd4": True,
             },
         ),
         legacy_names=("confirm_netbsd4_activation",),
     )
+
+    sink.stage(operation, "resolve_managed_target")
+    target = resolve_validated_managed_target(
+        config,
+        command_name=operation,
+        profile="activate",
+        include_probe=True,
+    )
+    compatibility = require_supported_payload(target, allow_unsupported=False)
+    if not is_netbsd4_payload_family(compatibility.payload_family):
+        raise AppOperationError(
+            "activate is only supported for NetBSD4 AirPort storage devices; use deploy for persistent NetBSD6 installs.",
+            code="unsupported_device",
+        )
+    connection = target.connection
+    sink.stage(operation, "probe_runtime")
+    if probe_managed_runtime_conn(connection, timeout_seconds=20).ready:
+        return OperationResult(True, activation_result_payload(already_active=True))
+
     sink.stage(operation, "run_activation")
     run_remote_actions(connection, plan.actions)
     verify_runtime(operation, sink, connection, stage="verify_runtime_activation", timeout_seconds=180)

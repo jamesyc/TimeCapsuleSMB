@@ -672,6 +672,7 @@ struct BackendRecoveryPayload: Decodable, Equatable {
     let title: String
     let message: String?
     let actions: [String]
+    let actionIDs: [String]
     let retryable: Bool
     let suggestedOperation: String?
     let docsAnchor: String?
@@ -680,8 +681,20 @@ struct BackendRecoveryPayload: Decodable, Equatable {
         case title
         case message
         case actions
+        case actionIDs = "action_ids"
         case retryable
         case suggestedOperation = "suggested_operation"
         case docsAnchor = "docs_anchor"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.title = try container.decode(String.self, forKey: .title)
+        self.message = try container.decodeIfPresent(String.self, forKey: .message)
+        self.actions = try container.decodeIfPresent([String].self, forKey: .actions) ?? []
+        self.actionIDs = try container.decodeIfPresent([String].self, forKey: .actionIDs) ?? []
+        self.retryable = try container.decode(Bool.self, forKey: .retryable)
+        self.suggestedOperation = try container.decodeIfPresent(String.self, forKey: .suggestedOperation)
+        self.docsAnchor = try container.decodeIfPresent(String.self, forKey: .docsAnchor)
     }
 }

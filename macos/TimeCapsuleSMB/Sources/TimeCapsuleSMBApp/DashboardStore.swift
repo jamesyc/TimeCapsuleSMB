@@ -16,15 +16,15 @@ enum DeviceDashboardTab: String, CaseIterable, Equatable, Identifiable {
     var title: String {
         switch self {
         case .overview:
-            return "Overview"
+            return L10n.string("dashboard.tab.overview")
         case .install:
-            return "Install / Update"
+            return L10n.string("dashboard.tab.install")
         case .checkup:
-            return "Checkup"
+            return L10n.string("dashboard.tab.checkup")
         case .maintenance:
-            return "Maintenance"
+            return L10n.string("dashboard.tab.maintenance")
         case .advanced:
-            return "Advanced"
+            return L10n.string("dashboard.tab.advanced")
         }
     }
 }
@@ -58,7 +58,7 @@ final class DashboardStore: ObservableObject {
 
     func runCheckup(profile: DeviceProfile) {
         guard let password = appStore.password(for: profile) else {
-            passwordError = "Password is required."
+            passwordError = L10n.string("password.error.required")
             return
         }
         passwordError = nil
@@ -70,7 +70,7 @@ final class DashboardStore: ObservableObject {
 
     func runInstallPlan(profile: DeviceProfile) {
         guard let password = appStore.password(for: profile) else {
-            passwordError = "Password is required."
+            passwordError = L10n.string("password.error.required")
             return
         }
         passwordError = nil
@@ -83,7 +83,7 @@ final class DashboardStore: ObservableObject {
 
     func runInstall(profile: DeviceProfile) {
         guard let password = appStore.password(for: profile) else {
-            passwordError = "Password is required."
+            passwordError = L10n.string("password.error.required")
             return
         }
         passwordError = nil
@@ -95,7 +95,7 @@ final class DashboardStore: ObservableObject {
 
     func maintenancePassword(for profile: DeviceProfile) -> String? {
         guard let password = appStore.password(for: profile) else {
-            passwordError = "Password is required."
+            passwordError = L10n.string("password.error.required")
             return nil
         }
         passwordError = nil
@@ -117,6 +117,10 @@ final class DashboardStore: ObservableObject {
         case .startSMB:
             selectedTab = .maintenance
             maintenanceStore.selectedWorkflow = .activate
+            return true
+        case .uninstall:
+            selectedTab = .maintenance
+            maintenanceStore.selectedWorkflow = .uninstall
             return true
         case .diskRepair:
             selectedTab = .maintenance
@@ -255,7 +259,7 @@ final class DashboardStore: ObservableObject {
             passCount: summary.passCount,
             warnCount: summary.warnCount,
             failCount: summary.failCount,
-            summary: "PASS \(summary.passCount), WARN \(summary.warnCount), FAIL \(summary.failCount)"
+            summary: L10n.format("summary.checkup_counts", summary.passCount, summary.warnCount, summary.failCount)
         ), for: profileID)
     }
 
@@ -278,7 +282,7 @@ final class DashboardStore: ObservableObject {
             payloadFamily: deployStore.plan?.payloadFamily ?? profile.payloadFamily,
             rebootRequested: result.rebootRequested,
             verified: result.verified,
-            summary: result.message ?? "Install completed."
+            summary: result.message ?? L10n.string("deploy.result.default_message")
         ), for: profile.id)
     }
 }

@@ -24,6 +24,10 @@ final class BackendClient: ObservableObject {
         self.helperPath = helperPath
     }
 
+    deinit {
+        runTask?.cancel()
+    }
+
     func clear() {
         guard !isRunning else {
             return

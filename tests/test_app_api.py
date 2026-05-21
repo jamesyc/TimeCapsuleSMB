@@ -591,6 +591,7 @@ class AppApiTests(unittest.TestCase):
         self.assertFalse(config_path.exists())
         self.assertEqual(collector.events_of_type("error")[0]["code"], "auth_failed")
         self.assertEqual(collector.events_of_type("error")[0]["recovery"]["suggested_operation"], "configure")
+        self.assertEqual(collector.events_of_type("error")[0]["recovery"]["action_ids"], ["replace_password"])
         self.assertNotIn("badpw", json.dumps(collector.events))
 
     def test_configure_reports_unsupported_device(self) -> None:
@@ -1060,25 +1061,21 @@ class AppApiTests(unittest.TestCase):
         error = collector.events_of_type("error")[0]
         self.assertEqual(error["code"], "remote_error")
         self.assertEqual(error["recovery"]["title"], "No HFS volumes found")
+        self.assertEqual(error["recovery"]["action_ids"], ["open_finder", "install_smb"])
 
     def test_activate_requires_explicit_confirmation(self) -> None:
         collector = CollectingSink()
-        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
-        target = SimpleNamespace(
-            connection=connection,
-            probe_state=ProbedDeviceState(
-                probe_result=probed_state().probe_result,
-                compatibility=supported_compatibility("netbsd4le_samba4"),
-            ),
-        )
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
-            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
-                with mock.patch("timecapsulesmb.app.ops.maintenance.run_remote_actions") as remote_actions:
-                    rc = service.run_api_request({"operation": "activate", "params": {}}, collector.sink)
+        with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_validated_managed_target") as resolve_target:
+                with mock.patch("timecapsulesmb.app.ops.maintenance.probe_managed_runtime_conn") as runtime_probe:
+                    with mock.patch("timecapsulesmb.app.ops.maintenance.run_remote_actions") as remote_actions:
+                        rc = service.run_api_request({"operation": "activate", "params": {}}, collector.sink)
 
         self.assertEqual(rc, 1)
         self.assertEqual(collector.events_of_type("error")[0]["code"], "confirmation_required")
+        resolve_target.assert_not_called()
+        runtime_probe.assert_not_called()
         remote_actions.assert_not_called()
 
     def test_activate_accepts_yes_alias_for_confirmation(self) -> None:
@@ -1086,8 +1083,8 @@ class AppApiTests(unittest.TestCase):
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         target = SimpleNamespace(connection=connection, probe_state=netbsd4_probed_state())
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
-            with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
+        with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+            with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.maintenance.probe_managed_runtime_conn", return_value=SimpleNamespace(ready=True)):
                     with mock.patch("timecapsulesmb.app.ops.maintenance.run_remote_actions") as remote_actions:
                         rc = service.run_api_request(

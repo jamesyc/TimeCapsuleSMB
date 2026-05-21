@@ -20,7 +20,7 @@ final class ActivityStore: ObservableObject {
     @Published private(set) var snapshot = ActivitySnapshot(
         isRunning: false,
         scope: .unknown,
-        operationTitle: "No active operation",
+        operationTitle: L10n.string("activity.no_active_operation"),
         latestMessage: nil,
         timeline: []
     )
@@ -86,7 +86,8 @@ final class ActivityStore: ObservableObject {
         snapshot = ActivitySnapshot(
             isRunning: coordinator.backend.isRunning,
             scope: scope,
-            operationTitle: operation.map(OperationTimelineBuilder.operationTitle) ?? (timeline.isEmpty ? "No active operation" : "Last operation"),
+            operationTitle: operation.map(OperationTimelineBuilder.operationTitle)
+                ?? (timeline.isEmpty ? L10n.string("activity.no_active_operation") : L10n.string("activity.last_operation")),
             latestMessage: latestMessage,
             timeline: timeline
         )

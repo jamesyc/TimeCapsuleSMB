@@ -48,12 +48,12 @@ public struct ContentView: View {
                     Button {
                         appStore.showAddDevice()
                     } label: {
-                        Label("Add", systemImage: "plus")
+                        Label(L10n.string("toolbar.add"), systemImage: "plus")
                     }
                     Button {
                         diagnosticsPresented = true
                     } label: {
-                        Label("Diagnostics", systemImage: "wrench.and.screwdriver")
+                        Label(L10n.string("toolbar.diagnostics"), systemImage: "wrench.and.screwdriver")
                     }
                     Button {
                         if let profile = appStore.selectedProfile {
@@ -62,7 +62,7 @@ public struct ContentView: View {
                             appStore.operationCoordinator.clear()
                         }
                     } label: {
-                        Label(appStore.selectedProfile == nil ? L10n.string("toolbar.clear") : "Forget", systemImage: "trash")
+                        Label(appStore.selectedProfile == nil ? L10n.string("toolbar.clear") : L10n.string("toolbar.forget"), systemImage: "trash")
                     }
                     .disabled(appStore.backend.isRunning)
                     Button {
@@ -93,11 +93,11 @@ public struct ContentView: View {
             )
         }
         .confirmationDialog(
-            "Forget Time Capsule?",
+            L10n.string("dialog.forget.title"),
             isPresented: deleteConfirmationPresented,
             presenting: profilePendingDeletion
         ) { profile in
-            Button("Forget \(profile.title)", role: .destructive) {
+            Button(L10n.format("dialog.forget.action", profile.title), role: .destructive) {
                 do {
                     try appStore.forget(profile)
                     profilePendingDeletion = nil
@@ -109,10 +109,10 @@ public struct ContentView: View {
                 profilePendingDeletion = nil
             }
         } message: { profile in
-            Text("Remove \(profile.title) from this Mac. This does not uninstall SMB from the Time Capsule.")
+            Text(L10n.format("dialog.forget.message", profile.title))
         }
-        .alert("Could Not Forget Time Capsule", isPresented: deleteErrorPresented) {
-            Button("OK", role: .cancel) {
+        .alert(L10n.string("dialog.forget.error_title"), isPresented: deleteErrorPresented) {
+            Button(L10n.string("action.ok"), role: .cancel) {
                 deleteErrorMessage = nil
             }
         } message: {
@@ -197,10 +197,10 @@ public struct ContentView: View {
 
     private var sidebar: some View {
         List(selection: sidebarSelection) {
-            Label("All Time Capsules", systemImage: "externaldrive.connected.to.line.below")
+            Label(L10n.string("sidebar.all_time_capsules"), systemImage: "externaldrive.connected.to.line.below")
                 .tag("all")
 
-            Section("Devices") {
+            Section(L10n.string("sidebar.devices")) {
                 ForEach(appStore.deviceRegistry.profiles) { profile in
                     DeviceSidebarRow(
                         profile: profile,
@@ -211,7 +211,7 @@ public struct ContentView: View {
             }
 
             Section {
-                Label("Add Time Capsule", systemImage: "plus.circle")
+                Label(L10n.string("sidebar.add_time_capsule"), systemImage: "plus.circle")
                     .tag("add")
             }
         }
@@ -244,15 +244,15 @@ private struct DeviceListOverviewView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(appStore.deviceRegistry.profiles.isEmpty ? "No Time Capsules Saved" : "All Time Capsules")
+            Text(appStore.deviceRegistry.profiles.isEmpty ? L10n.string("overview.empty.title") : L10n.string("sidebar.all_time_capsules"))
                 .font(.title2.weight(.semibold))
             if appStore.deviceRegistry.profiles.isEmpty {
-                Text("Add a Time Capsule to configure SMB, run checkups, and manage maintenance tasks.")
+                Text(L10n.string("overview.empty.message"))
                     .foregroundStyle(.secondary)
                 Button {
                     appStore.showAddDevice()
                 } label: {
-                    Label("Add Time Capsule", systemImage: "plus.circle")
+                    Label(L10n.string("sidebar.add_time_capsule"), systemImage: "plus.circle")
                 }
             } else {
                 ForEach(appStore.deviceRegistry.profiles) { profile in
@@ -290,10 +290,10 @@ private struct AddDeviceView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Add Time Capsule")
+                Text(L10n.string("add_device.title"))
                     .font(.title2.weight(.semibold))
                 Spacer()
-                Picker("Connection Method", selection: Binding(
+                Picker(L10n.string("add_device.connection_method"), selection: Binding(
                     get: { store.entryMode },
                     set: { store.setEntryMode($0) }
                 )) {
@@ -307,7 +307,7 @@ private struct AddDeviceView: View {
 
             HStack {
                 if store.entryMode == .discover {
-                    Text(store.currentStage?.description ?? "Browse for AirPort Bonjour services")
+                    Text(store.currentStage?.description ?? L10n.string("add_device.discover.placeholder"))
                         .foregroundStyle(.secondary)
                     Button {
                         store.runDiscover()
@@ -323,7 +323,7 @@ private struct AddDeviceView: View {
 
             if store.entryMode == .discover && !store.devices.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Discovered Devices")
+                    Text(L10n.string("add_device.discovered_devices"))
                         .font(.headline)
                     ForEach(store.devices) { device in
                         Button {
@@ -337,32 +337,32 @@ private struct AddDeviceView: View {
             }
 
             HStack {
-                TextField("Host or IP", text: Binding(
+                TextField(L10n.string("add_device.host_or_ip"), text: Binding(
                     get: { store.hostFieldText },
                     set: { store.manualHost = $0 }
                 ))
                 .disabled(!store.isHostFieldEditable)
-                SecureField("Time Capsule password", text: $store.password)
+                SecureField(L10n.string("add_device.password"), text: $store.password)
             }
 
             HStack {
                 Button {
                     store.runConfigure()
                 } label: {
-                    Label("Save Device", systemImage: "checkmark.circle")
+                    Label(L10n.string("add_device.save_device"), systemImage: "checkmark.circle")
                 }
                 .disabled(!store.canConfigure)
 
                 Button {
                     store.reset()
                 } label: {
-                    Label("Reset", systemImage: "arrow.counterclockwise")
+                    Label(L10n.string("add_device.reset"), systemImage: "arrow.counterclockwise")
                 }
                 .disabled(store.isRunning)
             }
 
             if let profile = store.savedProfile {
-                Label("Saved \(profile.title)", systemImage: "checkmark.circle")
+                Label(L10n.format("add_device.saved", profile.title), systemImage: "checkmark.circle")
                     .foregroundStyle(.green)
             }
 
@@ -482,14 +482,14 @@ private struct OverviewTab: View {
                 .font(.title2.weight(.semibold))
 
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
-                GridRow { Text("Status").foregroundStyle(.secondary); Text(summary.displayStatus.title) }
-                GridRow { Text("Host").foregroundStyle(.secondary); Text(profile.host) }
-                GridRow { Text("Model").foregroundStyle(.secondary); Text(profile.model ?? "Unknown") }
-                GridRow { Text("Generation").foregroundStyle(.secondary); Text(profile.deviceGeneration ?? "Unknown") }
-                GridRow { Text("Payload").foregroundStyle(.secondary); Text(profile.payloadFamily ?? "Unknown") }
-                GridRow { Text("Password").foregroundStyle(.secondary); Text(summary.passwordState.rawValue) }
-                GridRow { Text("Last Checkup").foregroundStyle(.secondary); Text(profile.lastCheckup?.summary ?? "Never") }
-                GridRow { Text("Last Install").foregroundStyle(.secondary); Text(profile.lastDeploy?.summary ?? "Never") }
+                GridRow { Text(L10n.string("dashboard.overview.status")).foregroundStyle(.secondary); Text(summary.displayStatus.title) }
+                GridRow { Text(L10n.string("dashboard.overview.host")).foregroundStyle(.secondary); Text(profile.host) }
+                GridRow { Text(L10n.string("dashboard.overview.model")).foregroundStyle(.secondary); Text(profile.model ?? L10n.string("value.unknown")) }
+                GridRow { Text(L10n.string("dashboard.overview.generation")).foregroundStyle(.secondary); Text(profile.deviceGeneration ?? L10n.string("value.unknown")) }
+                GridRow { Text(L10n.string("dashboard.overview.payload")).foregroundStyle(.secondary); Text(profile.payloadFamily ?? L10n.string("value.unknown")) }
+                GridRow { Text(L10n.string("dashboard.overview.password")).foregroundStyle(.secondary); Text(summary.passwordState.title) }
+                GridRow { Text(L10n.string("dashboard.overview.last_checkup")).foregroundStyle(.secondary); Text(profile.lastCheckup?.summary ?? L10n.string("value.never")) }
+                GridRow { Text(L10n.string("dashboard.overview.last_install")).foregroundStyle(.secondary); Text(profile.lastDeploy?.summary ?? L10n.string("value.never")) }
             }
 
             HStack {
@@ -501,17 +501,17 @@ private struct OverviewTab: View {
                 Button {
                     dashboardStore.runCheckup(profile: profile)
                 } label: {
-                    Label("Run Checkup", systemImage: "stethoscope")
+                    Label(L10n.string("dashboard.action.run_checkup"), systemImage: "stethoscope")
                 }
             }
 
             HStack {
-                SecureField("Replacement password", text: $replacementPassword)
+                SecureField(L10n.string("dashboard.replacement_password"), text: $replacementPassword)
                 Button {
                     try? appStore.savePassword(replacementPassword, for: profile)
                     replacementPassword = ""
                 } label: {
-                    Label("Save Password", systemImage: "key")
+                    Label(L10n.string("dashboard.action.save_password"), systemImage: "key")
                 }
                 .disabled(replacementPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
@@ -526,17 +526,17 @@ private struct OverviewTab: View {
     private func primaryActionTitle(_ action: DashboardPrimaryAction) -> String {
         switch action {
         case .addDevice:
-            return "Add Time Capsule"
+            return L10n.string("sidebar.add_time_capsule")
         case .replacePassword:
-            return "Replace Password"
+            return L10n.string("dashboard.action.replace_password")
         case .runCheckup:
-            return "Run Checkup"
+            return L10n.string("dashboard.action.run_checkup")
         case .installSMB:
-            return "Install SMB"
+            return L10n.string("dashboard.action.install_smb")
         case .viewCheckup:
-            return "View Checkup"
+            return L10n.string("dashboard.action.view_checkup")
         case .openSMB:
-            return "Open SMB Address"
+            return L10n.string("dashboard.action.open_smb")
         }
     }
 
@@ -576,7 +576,7 @@ private struct InstallTab: View {
     var body: some View {
         let store = dashboardStore.deployStore
         VStack(alignment: .leading, spacing: 12) {
-            Text("Install / Update")
+            Text(L10n.string("dashboard.tab.install"))
                 .font(.title2.weight(.semibold))
             HStack {
                 Toggle(L10n.string("toggle.enable_nbns"), isOn: $dashboardStore.deployStore.nbnsEnabled)
@@ -590,13 +590,13 @@ private struct InstallTab: View {
                 Button {
                     dashboardStore.runInstallPlan(profile: profile)
                 } label: {
-                    Label("Plan Install", systemImage: "doc.text.magnifyingglass")
+                    Label(L10n.string("deploy.action.plan_install"), systemImage: "doc.text.magnifyingglass")
                 }
                 .disabled(store.isRunning || store.mountWaitValue == nil)
                 Button {
                     dashboardStore.runInstall(profile: profile)
                 } label: {
-                    Label("Install SMB", systemImage: "square.and.arrow.up")
+                    Label(L10n.string("dashboard.action.install_smb"), systemImage: "square.and.arrow.up")
                 }
                 .disabled(!store.canDeploy)
                 Label(store.state.title, systemImage: "circle")
@@ -618,16 +618,16 @@ private struct InstallTab: View {
                         .font(.caption)
                         .foregroundStyle(.yellow)
                 }
-                DisclosureGroup("Advanced Plan Details") {
+                DisclosureGroup(L10n.string("deploy.advanced_plan_details")) {
                     SummaryGrid(rows: presentation.advancedRows.map { ($0.label, $0.value) })
                         .padding(.top, 6)
                 }
             }
             if let result = store.result {
                 SummaryGrid(rows: [
-                    ("Verified", result.verified == true ? "yes" : "no"),
-                    ("Reboot Requested", result.rebootRequested == true ? "yes" : "no"),
-                    ("Message", result.message ?? "Install completed.")
+                    (L10n.string("deploy.result.verified"), result.verified == true ? L10n.string("value.yes") : L10n.string("value.no")),
+                    (L10n.string("deploy.result.reboot_requested"), result.rebootRequested == true ? L10n.string("value.yes") : L10n.string("value.no")),
+                    (L10n.string("deploy.result.message"), result.message ?? L10n.string("deploy.result.default_message"))
                 ])
             }
             if let error = store.error {
@@ -655,7 +655,7 @@ private struct CheckupTab: View {
     var body: some View {
         let store = dashboardStore.doctorStore
         VStack(alignment: .leading, spacing: 12) {
-            Text("Checkup")
+            Text(L10n.string("dashboard.tab.checkup"))
                 .font(.title2.weight(.semibold))
             HStack {
                 TextField(L10n.string("field.bonjour_timeout"), text: $dashboardStore.doctorStore.bonjourTimeout)
@@ -663,7 +663,7 @@ private struct CheckupTab: View {
                 Button {
                     dashboardStore.runCheckup(profile: profile)
                 } label: {
-                    Label("Run Checkup", systemImage: "stethoscope")
+                    Label(L10n.string("dashboard.action.run_checkup"), systemImage: "stethoscope")
                 }
                 .disabled(store.isRunning || store.bonjourTimeoutValue == nil)
                 Label(store.state.title, systemImage: "circle")
@@ -717,13 +717,13 @@ private struct MaintenanceTab: View {
         let store = dashboardStore.maintenanceStore
         let presentation = MaintenanceWorkflowPresentation.presentation(for: store.selectedWorkflow)
         VStack(alignment: .leading, spacing: 12) {
-            Text("Maintenance")
+            Text(L10n.string("dashboard.tab.maintenance"))
                 .font(.title2.weight(.semibold))
-            Picker("Maintenance", selection: $dashboardStore.maintenanceStore.selectedWorkflow) {
-                Text("NetBSD4 Activation").tag(MaintenanceWorkflow.activate)
-                Text("Uninstall").tag(MaintenanceWorkflow.uninstall)
-                Text("Disk Repair").tag(MaintenanceWorkflow.fsck)
-                Text("File Metadata Repair").tag(MaintenanceWorkflow.repairXattrs)
+            Picker(L10n.string("dashboard.tab.maintenance"), selection: $dashboardStore.maintenanceStore.selectedWorkflow) {
+                Text(L10n.string("maintenance.workflow.activate")).tag(MaintenanceWorkflow.activate)
+                Text(L10n.string("maintenance.workflow.uninstall")).tag(MaintenanceWorkflow.uninstall)
+                Text(L10n.string("maintenance.workflow.fsck")).tag(MaintenanceWorkflow.fsck)
+                Text(L10n.string("maintenance.workflow.repair_xattrs")).tag(MaintenanceWorkflow.repairXattrs)
             }
             .pickerStyle(.segmented)
 
@@ -772,12 +772,12 @@ private struct MaintenanceTab: View {
         switch store.selectedWorkflow {
         case .activate:
             HStack {
-                Button("Plan Start SMB") {
+                Button(L10n.string("maintenance.action.plan_start_smb")) {
                     if let password = dashboardStore.maintenancePassword(for: profile) {
                         store.planActivation(password: password, profile: profile)
                     }
                 }
-                Button("Start SMB") {
+                Button(L10n.string("maintenance.action.start_smb")) {
                     if let password = dashboardStore.maintenancePassword(for: profile) {
                         store.runActivation(password: password, profile: profile)
                     }
@@ -787,12 +787,12 @@ private struct MaintenanceTab: View {
             }
         case .uninstall:
             HStack {
-                Button("Plan Uninstall") {
+                Button(L10n.string("maintenance.action.plan_uninstall")) {
                     if let password = dashboardStore.maintenancePassword(for: profile) {
                         store.planUninstall(password: password, profile: profile)
                     }
                 }
-                Button("Uninstall") {
+                Button(L10n.string("maintenance.action.uninstall")) {
                     if let password = dashboardStore.maintenancePassword(for: profile) {
                         store.runUninstall(password: password, profile: profile)
                     }
@@ -803,18 +803,18 @@ private struct MaintenanceTab: View {
         case .fsck:
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Button("Find Volumes") {
+                    Button(L10n.string("maintenance.action.find_volumes")) {
                         if let password = dashboardStore.maintenancePassword(for: profile) {
                             store.refreshFsckTargets(password: password, profile: profile)
                         }
                     }
-                    Button("Plan Disk Repair") {
+                    Button(L10n.string("maintenance.action.plan_disk_repair")) {
                         if let password = dashboardStore.maintenancePassword(for: profile) {
                             store.planFsck(password: password, profile: profile)
                         }
                     }
                     .disabled(!store.canPlanFsck)
-                    Button("Run Disk Repair") {
+                    Button(L10n.string("maintenance.action.run_disk_repair")) {
                         if let password = dashboardStore.maintenancePassword(for: profile) {
                             store.runFsck(password: password, profile: profile)
                         }
@@ -842,21 +842,21 @@ private struct MaintenanceTab: View {
                     Button {
                         chooseRepairPath(store: store)
                     } label: {
-                        Label("Choose Folder", systemImage: "folder")
+                        Label(L10n.string("maintenance.action.choose_folder"), systemImage: "folder")
                     }
                 }
                 HStack {
-                    Button("Scan Metadata") {
+                    Button(L10n.string("maintenance.action.scan_metadata")) {
                         store.scanRepairXattrs()
                     }
-                    Button("Repair Metadata") {
+                    Button(L10n.string("maintenance.action.repair_metadata")) {
                         store.runRepairXattrs()
                     }
                     .disabled(!store.canRepairXattrs)
                     Label(store.repairState.title, systemImage: "circle")
                 }
                 if let scan = store.repairScan {
-                    Text("\(scan.repairableCount) repairable item(s)")
+                    Text(L10n.format("maintenance.repairable_count", scan.repairableCount))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -868,7 +868,7 @@ private struct MaintenanceTab: View {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.prompt = "Choose"
+        panel.prompt = L10n.string("maintenance.action.choose")
         if panel.runModal() == .OK, let url = panel.url {
             store.repairPath = url.path
         }
@@ -881,12 +881,12 @@ private struct AdvancedTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Advanced")
+            Text(L10n.string("dashboard.tab.advanced"))
                 .font(.title2.weight(.semibold))
             SummaryGrid(rows: [
-                ("Profile ID", profile.id),
-                ("Config", profile.configPath),
-                ("Helper", appStore.backend.helperPath.isEmpty ? "Auto" : appStore.backend.helperPath)
+                (L10n.string("advanced.profile_id"), profile.id),
+                (L10n.string("advanced.config"), profile.configPath),
+                (L10n.string("advanced.helper"), appStore.backend.helperPath.isEmpty ? L10n.string("value.auto") : appStore.backend.helperPath)
             ])
             EventList(events: appStore.backend.events)
         }
@@ -921,10 +921,10 @@ private struct AppReadinessBannerView: View {
             HStack(spacing: 10) {
                 Image(systemName: "exclamationmark.triangle")
                     .foregroundStyle(.yellow)
-                Text(issues.first?.message ?? "TimeCapsuleSMB is running with warnings.")
+                Text(issues.first?.message ?? L10n.string("readiness.warning.default"))
                     .font(.caption)
                 Spacer()
-                Button("Diagnostics", action: showDiagnostics)
+                Button(L10n.string("toolbar.diagnostics"), action: showDiagnostics)
             }
             .padding(.horizontal)
             .padding(.vertical, 8)
@@ -937,11 +937,11 @@ private struct AppReadinessBannerView: View {
     private var title: String {
         switch store.state.kind {
         case .resolvingBundle:
-            return "Preparing app runtime"
+            return L10n.string("readiness.state.resolving_bundle")
         case .checkingCapabilities:
-            return "Checking helper"
+            return L10n.string("readiness.state.checking_capabilities")
         case .validatingInstall:
-            return "Validating bundled files"
+            return L10n.string("readiness.state.validating_install")
         default:
             return ""
         }
@@ -954,7 +954,7 @@ private struct AppReadinessBlockedView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("TimeCapsuleSMB cannot start", systemImage: "exclamationmark.octagon")
+            Label(L10n.string("readiness.blocked.title"), systemImage: "exclamationmark.octagon")
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(.red)
             if case .blocked(let issue) = store.state {
@@ -966,14 +966,14 @@ private struct AppReadinessBlockedView: View {
                 Button {
                     store.start()
                 } label: {
-                    Label("Retry", systemImage: "arrow.clockwise")
+                    Label(L10n.string("recovery.action.retry"), systemImage: "arrow.clockwise")
                 }
                 .disabled(!store.canRetry)
 
                 Button {
                     showDiagnostics()
                 } label: {
-                    Label("Diagnostics", systemImage: "wrench.and.screwdriver")
+                    Label(L10n.string("toolbar.diagnostics"), systemImage: "wrench.and.screwdriver")
                 }
             }
         }
@@ -991,10 +991,10 @@ private struct AppDiagnosticsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Diagnostics")
+                Text(L10n.string("diagnostics.title"))
                     .font(.title2.weight(.semibold))
                 Spacer()
-                Button("Done") {
+                Button(L10n.string("action.done")) {
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -1004,16 +1004,16 @@ private struct AppDiagnosticsView: View {
 
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
                 GridRow {
-                    Text("State").foregroundStyle(.secondary)
-                    Text(store.state.kind.rawValue)
+                    Text(L10n.string("diagnostics.state")).foregroundStyle(.secondary)
+                    Text(store.state.kind.title)
                 }
                 if let capabilities = store.capabilities {
                     GridRow {
-                        Text("Helper").foregroundStyle(.secondary)
+                        Text(L10n.string("diagnostics.helper")).foregroundStyle(.secondary)
                         Text(capabilities.helperVersion)
                     }
                     GridRow {
-                        Text("Distribution").foregroundStyle(.secondary)
+                        Text(L10n.string("diagnostics.distribution")).foregroundStyle(.secondary)
                         Text(capabilities.distributionRoot)
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -1021,7 +1021,7 @@ private struct AppDiagnosticsView: View {
                 }
                 if let validation = store.validation {
                     GridRow {
-                        Text("Validation").foregroundStyle(.secondary)
+                        Text(L10n.string("diagnostics.validation")).foregroundStyle(.secondary)
                         Text(validation.summary)
                     }
                 }
@@ -1030,7 +1030,7 @@ private struct AppDiagnosticsView: View {
 
             if !store.issues.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Runtime Issues")
+                    Text(L10n.string("diagnostics.runtime_issues"))
                         .font(.headline)
                     ForEach(store.issues) { issue in
                         VStack(alignment: .leading, spacing: 2) {
@@ -1043,7 +1043,7 @@ private struct AppDiagnosticsView: View {
                 }
             }
 
-            Text("Backend Events")
+            Text(L10n.string("diagnostics.backend_events"))
                 .font(.headline)
             EventList(events: events)
         }

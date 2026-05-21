@@ -2,15 +2,16 @@ import Foundation
 
 enum RecoveryActionKind: String, Equatable {
     case retry
-    case runCheckup
-    case installSMB
-    case startSMB
-    case diskRepair
-    case metadataRepair
-    case openFinder
-    case replacePassword
-    case copyDiagnostics
-    case diagnostics
+    case runCheckup = "run_checkup"
+    case installSMB = "install_smb"
+    case startSMB = "start_smb"
+    case uninstall
+    case diskRepair = "disk_repair"
+    case metadataRepair = "repair_metadata"
+    case openFinder = "open_finder"
+    case replacePassword = "replace_password"
+    case copyDiagnostics = "copy_diagnostics"
+    case diagnostics = "open_diagnostics"
     case generic
 }
 
@@ -27,73 +28,79 @@ enum RecoveryActionMapper {
     static func actions(for error: BackendErrorViewModel) -> [RecoveryAction] {
         var actions: [RecoveryAction] = []
         if error.code == "auth_failed" {
-            actions.append(RecoveryAction(title: "Replace Password", kind: .replacePassword))
+            actions.append(action(for: .replacePassword))
+        }
+
+        for actionID in error.recovery?.actionIDs ?? [] {
+            guard let kind = RecoveryActionKind(rawValue: actionID), kind != .generic else {
+                continue
+            }
+            actions.append(action(for: kind))
         }
 
         if let suggested = error.recovery?.suggestedOperation {
             actions.append(action(forSuggestedOperation: suggested))
         }
 
-        for title in error.recovery?.actions ?? [] {
-            actions.append(RecoveryAction(title: title, kind: inferKind(from: title)))
-        }
-
         if error.recovery?.retryable == true || error.code == "operation_failed" {
-            actions.append(RecoveryAction(title: "Retry", kind: .retry))
+            actions.append(action(for: .retry))
         }
-        actions.append(RecoveryAction(title: "Copy Diagnostics", kind: .copyDiagnostics))
+        actions.append(action(for: .copyDiagnostics))
         return deduplicated(actions)
     }
 
     private static func action(forSuggestedOperation operation: String) -> RecoveryAction {
         switch operation {
         case "doctor":
-            return RecoveryAction(title: "Run Checkup", kind: .runCheckup)
+            return action(for: .runCheckup)
         case "deploy":
-            return RecoveryAction(title: "Install SMB", kind: .installSMB)
+            return action(for: .installSMB)
         case "activate":
-            return RecoveryAction(title: "Start SMB", kind: .startSMB)
+            return action(for: .startSMB)
+        case "uninstall":
+            return action(for: .uninstall)
         case "fsck":
-            return RecoveryAction(title: "Run Disk Repair", kind: .diskRepair)
+            return action(for: .diskRepair)
         case "repair-xattrs":
-            return RecoveryAction(title: "Repair File Metadata", kind: .metadataRepair)
+            return action(for: .metadataRepair)
         case "validate-install":
-            return RecoveryAction(title: "Open Diagnostics", kind: .diagnostics)
+            return action(for: .diagnostics)
         default:
             return RecoveryAction(title: operation, kind: .generic)
         }
     }
 
-    private static func inferKind(from title: String) -> RecoveryActionKind {
-        let lower = title.lowercased()
-        if lower.contains("password") {
-            return .replacePassword
+    private static func action(for kind: RecoveryActionKind) -> RecoveryAction {
+        RecoveryAction(title: title(for: kind), kind: kind)
+    }
+
+    private static func title(for kind: RecoveryActionKind) -> String {
+        switch kind {
+        case .retry:
+            return L10n.string("recovery.action.retry")
+        case .runCheckup:
+            return L10n.string("recovery.action.run_checkup")
+        case .installSMB:
+            return L10n.string("recovery.action.install_smb")
+        case .startSMB:
+            return L10n.string("recovery.action.start_smb")
+        case .uninstall:
+            return L10n.string("recovery.action.uninstall")
+        case .diskRepair:
+            return L10n.string("recovery.action.disk_repair")
+        case .metadataRepair:
+            return L10n.string("recovery.action.metadata_repair")
+        case .openFinder:
+            return L10n.string("recovery.action.open_finder")
+        case .replacePassword:
+            return L10n.string("recovery.action.replace_password")
+        case .copyDiagnostics:
+            return L10n.string("recovery.action.copy_diagnostics")
+        case .diagnostics:
+            return L10n.string("recovery.action.open_diagnostics")
+        case .generic:
+            return L10n.string("recovery.action.open")
         }
-        if lower.contains("checkup") || lower.contains("doctor") {
-            return .runCheckup
-        }
-        if lower.contains("deploy") || lower.contains("install") {
-            return .installSMB
-        }
-        if lower.contains("activate") || lower.contains("start smb") {
-            return .startSMB
-        }
-        if lower.contains("finder") || lower.contains("smb://") {
-            return .openFinder
-        }
-        if lower.contains("fsck") || lower.contains("disk") {
-            return .diskRepair
-        }
-        if lower.contains("xattr") || lower.contains("metadata") {
-            return .metadataRepair
-        }
-        if lower.contains("diagnostic") {
-            return .diagnostics
-        }
-        if lower.contains("retry") {
-            return .retry
-        }
-        return .generic
     }
 
     private static func deduplicated(_ actions: [RecoveryAction]) -> [RecoveryAction] {

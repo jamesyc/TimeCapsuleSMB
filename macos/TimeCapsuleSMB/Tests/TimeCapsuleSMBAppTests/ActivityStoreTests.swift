@@ -24,6 +24,8 @@ final class ActivityStoreTests: XCTestCase {
         let activity = ActivityStore(coordinator: coordinator)
         let context = DeviceRuntimeContext(profileID: "device-one", configURL: URL(fileURLWithPath: "/tmp/device-one/.env"))
 
+        XCTAssertEqual(activity.snapshot.operationTitle, "No active operation")
+
         _ = coordinator.run(operation: "deploy", context: context, activeDeviceID: "device-one")
 
         try await waitUntilStoreState { activity.snapshot.isRunning }

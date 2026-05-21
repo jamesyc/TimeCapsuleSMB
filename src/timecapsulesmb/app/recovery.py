@@ -10,6 +10,7 @@ class RecoveryInfo:
     actions: tuple[str, ...]
     retryable: bool
     suggested_operation: str | None = None
+    action_ids: tuple[str, ...] = ()
     docs_anchor: str | None = None
 
     def to_jsonable(self) -> dict[str, object]:
@@ -17,6 +18,7 @@ class RecoveryInfo:
             "title": self.title,
             "message": self.message,
             "actions": list(self.actions),
+            "action_ids": list(self.action_ids),
             "retryable": self.retryable,
             "suggested_operation": self.suggested_operation,
         }
@@ -50,6 +52,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         ("Open the configuration step.", "Verify host, password, and SSH options."),
         retryable=True,
         suggested_operation="configure",
+        action_ids=("replace_password",),
     ),
     "auth_failed": RecoveryInfo(
         "Authentication failed",
@@ -57,6 +60,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         ("Re-enter the AirPort admin password.", "Verify that SSH is enabled on the device."),
         retryable=True,
         suggested_operation="configure",
+        action_ids=("replace_password",),
     ),
     "unsupported_device": RecoveryInfo(
         "Unsupported device",
@@ -76,6 +80,7 @@ _DEFAULTS: dict[str, RecoveryInfo] = {
         ("Check the operation log.", "Run doctor after the device is reachable."),
         retryable=True,
         suggested_operation="doctor",
+        action_ids=("run_checkup",),
     ),
     "operation_failed": RecoveryInfo(
         "Operation failed",
@@ -93,6 +98,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         ("Re-enter the AirPort admin password.", "Confirm the selected device is the intended Time Capsule."),
         retryable=True,
         suggested_operation="configure",
+        action_ids=("replace_password",),
     ),
     ("configure", "unsupported_device"): RecoveryInfo(
         "Unsupported Time Capsule",
@@ -112,6 +118,7 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         ("Open Readiness.", "Fix missing artifacts or invalid fields before retrying."),
         retryable=True,
         suggested_operation="validate-install",
+        action_ids=("open_diagnostics",),
     ),
     ("deploy", "unsupported_device"): RecoveryInfo(
         "No supported deploy payload",
@@ -124,36 +131,42 @@ _OPERATION_CODE_RECOVERY: dict[tuple[str, str], RecoveryInfo] = {
         "NetBSD4 activation starts the deployed runtime and must be confirmed.",
         ("Review the NetBSD4 activation guidance.", "Confirm activation before retrying."),
         retryable=True,
+        action_ids=("start_smb",),
     ),
     ("uninstall", "confirmation_required"): RecoveryInfo(
         "Uninstall confirmation required",
         "Uninstall removes managed files and may reboot the device.",
         ("Review the uninstall plan.", "Confirm uninstall and reboot before retrying."),
         retryable=True,
+        action_ids=("uninstall",),
     ),
     ("fsck", "confirmation_required"): RecoveryInfo(
         "fsck confirmation required",
         "fsck stops file sharing, unmounts the selected HFS disk, and may reboot the device.",
         ("Review the selected volume.", "Confirm fsck before retrying."),
         retryable=True,
+        action_ids=("disk_repair",),
     ),
     ("fsck", "validation_failed"): RecoveryInfo(
         "Volume selection failed",
         "The helper could not choose a mounted HFS volume for fsck.",
         ("Select a specific HFS volume.", "Refresh mounted volumes and retry."),
         retryable=True,
+        action_ids=("disk_repair",),
     ),
     ("repair-xattrs", "confirmation_required"): RecoveryInfo(
         "Repair confirmation required",
         "repair-xattrs needs dry-run mode or explicit confirmation before changing local file metadata.",
         ("Run a dry run first.", "Confirm repair before retrying."),
         retryable=True,
+        action_ids=("repair_metadata",),
     ),
     ("repair-xattrs", "validation_failed"): RecoveryInfo(
         "repair-xattrs cannot run",
         "repair-xattrs must run on macOS against a valid mounted SMB share path.",
         ("Choose a mounted share path.", "Run this from macOS."),
         retryable=True,
+        action_ids=("repair_metadata",),
     ),
 }
 
@@ -165,6 +178,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         ("Verify the AirPort admin password.", "Power-cycle the device if AirPort Utility also cannot manage it."),
         retryable=True,
         suggested_operation="configure",
+        action_ids=("replace_password",),
     ),
     ("configure", "remote_error", "wait_for_ssh_after_acp"): RecoveryInfo(
         "SSH did not open",
@@ -179,6 +193,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         ("Wake the disk by opening it in Finder.", "Check the disk is installed and formatted HFS.", "Retry deploy."),
         retryable=True,
         suggested_operation="deploy",
+        action_ids=("open_finder", "install_smb"),
     ),
     ("deploy", "remote_error", "select_payload_home"): RecoveryInfo(
         "No writable payload volume",
@@ -186,6 +201,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         ("Wake or remount the disk.", "Check available free space.", "Retry deploy."),
         retryable=True,
         suggested_operation="deploy",
+        action_ids=("open_finder", "install_smb"),
     ),
     ("deploy", "remote_error", "verify_payload_upload"): RecoveryInfo(
         "Payload verification failed",
@@ -214,6 +230,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         ("Wait a few more minutes.", "Power-cycle the device if needed.", "Run doctor once SSH returns."),
         retryable=True,
         suggested_operation="doctor",
+        action_ids=("run_checkup",),
     ),
     ("deploy", "remote_error", "verify_runtime_reboot"): RecoveryInfo(
         "Runtime not ready",
@@ -221,6 +238,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         ("Run doctor for details.", "Check boot logs from the CLI if doctor still fails."),
         retryable=True,
         suggested_operation="doctor",
+        action_ids=("run_checkup",),
     ),
     ("deploy", "remote_error", "verify_runtime_activation"): RecoveryInfo(
         "Activated runtime not ready",
@@ -228,6 +246,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         ("Retry activation.", "Run doctor for detailed runtime checks."),
         retryable=True,
         suggested_operation="doctor",
+        action_ids=("start_smb", "run_checkup"),
     ),
     ("uninstall", "remote_error", "verify_post_uninstall"): RecoveryInfo(
         "Post-uninstall verification failed",
@@ -235,6 +254,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         ("Retry uninstall.", "Run doctor if the device is reachable."),
         retryable=True,
         suggested_operation="uninstall",
+        action_ids=("uninstall",),
     ),
     ("fsck", "validation_failed", "select_fsck_volume"): RecoveryInfo(
         "Volume selection failed",
@@ -242,6 +262,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         ("Select the target volume explicitly.", "Refresh mounted volumes and retry."),
         retryable=True,
         suggested_operation="fsck",
+        action_ids=("disk_repair",),
     ),
     ("repair-xattrs", "validation_failed", "platform_check"): RecoveryInfo(
         "repair-xattrs requires macOS",
@@ -249,6 +270,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         ("Run the app on macOS.", "Use dry run or repair from a mounted share path."),
         retryable=False,
         suggested_operation="repair-xattrs",
+        action_ids=("repair_metadata",),
     ),
     ("repair-xattrs", "validation_failed", "validate_params"): RecoveryInfo(
         "Invalid repair options",
@@ -256,6 +278,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         ("Review the repair options.", "Retry with valid values."),
         retryable=True,
         suggested_operation="repair-xattrs",
+        action_ids=("repair_metadata",),
     ),
     ("repair-xattrs", "validation_failed", "resolve_scan_root"): RecoveryInfo(
         "Path cannot be scanned",
@@ -263,6 +286,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         ("Choose a mounted SMB share path.", "Confirm the share is accessible in Finder."),
         retryable=True,
         suggested_operation="repair-xattrs",
+        action_ids=("repair_metadata",),
     ),
     ("repair-xattrs", "validation_failed", "scan_findings"): RecoveryInfo(
         "Path cannot be scanned",
@@ -270,6 +294,7 @@ _STAGE_RECOVERY: dict[tuple[str, str, str], RecoveryInfo] = {
         ("Choose a mounted SMB share path.", "Confirm the share is accessible in Finder."),
         retryable=True,
         suggested_operation="repair-xattrs",
+        action_ids=("repair_metadata",),
     ),
 }
 
