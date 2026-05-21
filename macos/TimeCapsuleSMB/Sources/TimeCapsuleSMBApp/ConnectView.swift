@@ -70,7 +70,7 @@ struct ConnectView: View {
             }
 
             if let error = store.error {
-                ErrorRecoveryView(error: error)
+                ErrorBlock(error: error)
             }
         }
         .padding()
@@ -184,26 +184,5 @@ private struct ConfiguredDeviceView: View {
             }
         }
         .font(.caption)
-    }
-}
-
-private struct ErrorRecoveryView: View {
-    let error: BackendErrorViewModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(error.recovery?.title ?? error.code)
-                .font(.body.weight(.medium))
-            Text(error.message)
-                .font(.caption)
-            if let recovery = error.recovery, !recovery.actions.isEmpty {
-                ForEach(recovery.actions, id: \.self) { action in
-                    Text(action)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .foregroundStyle(.red)
     }
 }

@@ -13,6 +13,7 @@ enum DashboardPrimaryAction: String, Equatable {
 struct DeviceDashboardSummary: Equatable {
     let profile: DeviceProfile
     let passwordState: DevicePasswordState
+    let displayStatus: DeviceDisplayStatus
     let primaryAction: DashboardPrimaryAction
     let hostWarning: HostCompatibilityWarning?
 }
@@ -26,6 +27,7 @@ final class AppStore: ObservableObject {
     let deviceRegistry: DeviceRegistryStore
     let operationCoordinator: OperationCoordinator
     let passwordStore: PasswordStore
+    let activityStore: ActivityStore
 
     private var cancellables: Set<AnyCancellable> = []
 
@@ -35,7 +37,8 @@ final class AppStore: ObservableObject {
             appReadinessStore: AppReadinessStore(backend: coordinator.backend),
             deviceRegistry: DeviceRegistryStore(),
             operationCoordinator: coordinator,
-            passwordStore: KeychainPasswordStore()
+            passwordStore: KeychainPasswordStore(),
+            activityStore: ActivityStore(coordinator: coordinator)
         )
     }
 
@@ -43,12 +46,14 @@ final class AppStore: ObservableObject {
         appReadinessStore: AppReadinessStore,
         deviceRegistry: DeviceRegistryStore,
         operationCoordinator: OperationCoordinator,
-        passwordStore: PasswordStore
+        passwordStore: PasswordStore,
+        activityStore: ActivityStore? = nil
     ) {
         self.appReadinessStore = appReadinessStore
         self.deviceRegistry = deviceRegistry
         self.operationCoordinator = operationCoordinator
         self.passwordStore = passwordStore
+        self.activityStore = activityStore ?? ActivityStore(coordinator: operationCoordinator)
 
         appReadinessStore.objectWillChange
             .sink { [weak self] _ in
@@ -61,6 +66,11 @@ final class AppStore: ObservableObject {
             }
             .store(in: &cancellables)
         operationCoordinator.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+        self.activityStore.objectWillChange
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
             }
@@ -99,28 +109,30 @@ final class AppStore: ObservableObject {
     }
 
     func dashboardSummary(for profile: DeviceProfile) -> DeviceDashboardSummary {
-        let passwordState = passwordStore.state(for: profile.keychainAccount)
-        let primaryAction: DashboardPrimaryAction
-        if passwordState != .available {
-            primaryAction = .replacePassword
-        } else if profile.lastCheckup == nil {
-            primaryAction = .runCheckup
-        } else if profile.lastDeploy == nil {
-            primaryAction = .installSMB
-        } else if profile.lastCheckup?.failCount ?? 0 > 0 || profile.lastCheckup?.warnCount ?? 0 > 0 {
-            primaryAction = .viewCheckup
-        } else {
-            primaryAction = .openSMB
-        }
+        let passwordState = effectivePasswordState(for: profile)
+        let displayStatus = DeviceStatusPolicy.status(
+            for: profile,
+            passwordState: passwordState,
+            activeOperation: operationCoordinator.activeOperation
+        )
+        let primaryAction = DashboardPrimaryActionPolicy.primaryAction(
+            for: profile,
+            passwordState: passwordState,
+            activeOperation: operationCoordinator.activeOperation
+        )
         return DeviceDashboardSummary(
             profile: profile,
             passwordState: passwordState,
+            displayStatus: displayStatus,
             primaryAction: primaryAction,
             hostWarning: HostCompatibilityPolicy.warning()
         )
     }
 
     func password(for profile: DeviceProfile) -> String? {
+        if profile.passwordState == .invalid {
+            return nil
+        }
         do {
             return try passwordStore.password(for: profile.keychainAccount)
         } catch PasswordStoreError.missing {
@@ -137,6 +149,24 @@ final class AppStore: ObservableObject {
         deviceRegistry.updatePasswordState(.available, for: profile.id)
     }
 
+    func updateSettings(_ settings: DeviceProfileSettings, for profile: DeviceProfile) throws {
+        var updated = profile
+        updated.settings = settings
+        try deviceRegistry.updateProfile(updated)
+    }
+
+    func rename(_ profile: DeviceProfile, displayName: String) throws {
+        var updated = profile
+        updated.displayName = displayName
+        try deviceRegistry.updateProfile(updated)
+    }
+
+    func updateHost(_ profile: DeviceProfile, host: String) throws {
+        var updated = profile
+        updated.host = host
+        try deviceRegistry.updateProfile(updated)
+    }
+
     func forget(_ profile: DeviceProfile) throws {
         try passwordStore.deletePassword(for: profile.keychainAccount)
         try deviceRegistry.delete(profile)
@@ -148,8 +178,15 @@ final class AppStore: ObservableObject {
 
     func refreshPasswordStates() {
         for profile in deviceRegistry.profiles {
-            deviceRegistry.updatePasswordState(passwordStore.state(for: profile.keychainAccount), for: profile.id)
+            deviceRegistry.updatePasswordState(effectivePasswordState(for: profile), for: profile.id)
         }
+    }
+
+    private func effectivePasswordState(for profile: DeviceProfile) -> DevicePasswordState {
+        if profile.passwordState == .invalid {
+            return .invalid
+        }
+        return passwordStore.state(for: profile.keychainAccount)
     }
 
     private func syncSelection(profiles: [DeviceProfile]) {

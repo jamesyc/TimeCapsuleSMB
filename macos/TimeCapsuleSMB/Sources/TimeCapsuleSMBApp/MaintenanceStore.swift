@@ -137,6 +137,7 @@ final class MaintenanceStore: ObservableObject {
     @Published private(set) var repairResult: RepairXattrsPayload?
     @Published private(set) var currentStage: OperationStageState?
     @Published private(set) var error: BackendErrorViewModel?
+    @Published private(set) var passwordInvalidProfileID: DeviceProfile.ID?
 
     let backend: BackendClient
     private let coordinator: OperationCoordinator?
@@ -508,6 +509,7 @@ final class MaintenanceStore: ObservableObject {
         repairResult = nil
         currentStage = nil
         error = nil
+        passwordInvalidProfileID = nil
         plannedUninstallOptions = nil
         plannedFsckOptions = nil
         plannedFsckTargetID = nil
@@ -535,6 +537,7 @@ final class MaintenanceStore: ObservableObject {
         lastProcessedEventCount = 0
         error = nil
         currentStage = nil
+        passwordInvalidProfileID = nil
         activeOperation = nil
     }
 
@@ -711,6 +714,9 @@ final class MaintenanceStore: ObservableObject {
                 break
             }
             return
+        }
+        if event.code == "auth_failed" {
+            passwordInvalidProfileID = activeOperation?.profileID
         }
         error = BackendErrorViewModel(event: event)
         failState(for: event.operation)

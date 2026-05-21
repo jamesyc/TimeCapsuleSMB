@@ -385,7 +385,7 @@ final class AddDeviceFlowStore: ObservableObject {
                 try passwordStore.save(password, for: profile.keychainAccount)
                 var saved = profile
                 saved.passwordState = .available
-                saved = try registry.save(saved)
+                saved = try registry.updateProfile(saved)
                 savedProfile = saved
             } catch {
                 registry.updatePasswordState(.missing, for: profile.id)

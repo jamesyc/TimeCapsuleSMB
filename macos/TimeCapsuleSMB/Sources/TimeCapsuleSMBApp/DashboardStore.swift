@@ -1,5 +1,8 @@
 import Combine
 import Foundation
+#if canImport(AppKit)
+import AppKit
+#endif
 
 enum DeviceDashboardTab: String, CaseIterable, Equatable, Identifiable {
     case overview
@@ -100,11 +103,53 @@ final class DashboardStore: ObservableObject {
         return password
     }
 
+    @discardableResult
+    func handleRecoveryAction(_ action: RecoveryAction, error: BackendErrorViewModel, profile: DeviceProfile) -> Bool {
+        switch action.kind {
+        case .retry:
+            return retry(error: error, profile: profile)
+        case .runCheckup:
+            runCheckup(profile: profile)
+            return true
+        case .installSMB:
+            runInstallPlan(profile: profile)
+            return true
+        case .startSMB:
+            selectedTab = .maintenance
+            maintenanceStore.selectedWorkflow = .activate
+            return true
+        case .diskRepair:
+            selectedTab = .maintenance
+            maintenanceStore.selectedWorkflow = .fsck
+            return true
+        case .metadataRepair:
+            selectedTab = .maintenance
+            maintenanceStore.selectedWorkflow = .repairXattrs
+            return true
+        case .replacePassword:
+            selectedTab = .overview
+            return true
+        case .openFinder:
+            openSMBAddress(for: profile)
+            return true
+        case .diagnostics, .copyDiagnostics, .generic:
+            return false
+        }
+    }
+
     private func observeSnapshots() {
         doctorStore.$state
             .sink { [weak self] state in
                 Task { @MainActor in
                     self?.updateCheckupSnapshot(state: state)
+                }
+            }
+            .store(in: &cancellables)
+        doctorStore.$passwordInvalidProfileID
+            .sink { [weak self] profileID in
+                guard let profileID else { return }
+                Task { @MainActor in
+                    self?.appStore.deviceRegistry.updatePasswordState(.invalid, for: profileID)
                 }
             }
             .store(in: &cancellables)
@@ -115,6 +160,63 @@ final class DashboardStore: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+        deployStore.$passwordInvalidProfileID
+            .sink { [weak self] profileID in
+                guard let profileID else { return }
+                Task { @MainActor in
+                    self?.appStore.deviceRegistry.updatePasswordState(.invalid, for: profileID)
+                }
+            }
+            .store(in: &cancellables)
+        maintenanceStore.$passwordInvalidProfileID
+            .sink { [weak self] profileID in
+                guard let profileID else { return }
+                Task { @MainActor in
+                    self?.appStore.deviceRegistry.updatePasswordState(.invalid, for: profileID)
+                }
+            }
+            .store(in: &cancellables)
+    }
+
+    private func retry(error: BackendErrorViewModel, profile: DeviceProfile) -> Bool {
+        switch error.operation {
+        case "doctor":
+            runCheckup(profile: profile)
+            return true
+        case "deploy":
+            runInstallPlan(profile: profile)
+            return true
+        case "activate":
+            selectedTab = .maintenance
+            maintenanceStore.selectedWorkflow = .activate
+            return true
+        case "uninstall":
+            selectedTab = .maintenance
+            maintenanceStore.selectedWorkflow = .uninstall
+            return true
+        case "fsck":
+            selectedTab = .maintenance
+            maintenanceStore.selectedWorkflow = .fsck
+            return true
+        case "repair-xattrs":
+            selectedTab = .maintenance
+            maintenanceStore.selectedWorkflow = .repairXattrs
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func openSMBAddress(for profile: DeviceProfile) {
+        let host = profile.host
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"^.*@"#, with: "", options: .regularExpression)
+        guard !host.isEmpty, let url = URL(string: "smb://\(host)") else {
+            return
+        }
+        #if canImport(AppKit)
+        NSWorkspace.shared.open(url)
+        #endif
     }
 
     private func forwardChildChanges() {

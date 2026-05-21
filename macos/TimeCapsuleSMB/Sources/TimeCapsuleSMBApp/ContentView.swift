@@ -36,6 +36,11 @@ public struct ContentView: View {
                         diagnosticsPresented = true
                     }
                     detail
+                    Divider()
+                    ActivityCompactView(
+                        activityStore: appStore.activityStore,
+                        registry: appStore.deviceRegistry
+                    )
                 }
             }
             .toolbar {
@@ -197,7 +202,10 @@ public struct ContentView: View {
 
             Section("Devices") {
                 ForEach(appStore.deviceRegistry.profiles) { profile in
-                    Label(profile.title, systemImage: "externaldrive")
+                    DeviceSidebarRow(
+                        profile: profile,
+                        summary: appStore.dashboardSummary(for: profile)
+                    )
                         .tag("device:\(profile.id)")
                 }
             }
@@ -220,7 +228,10 @@ public struct ContentView: View {
                 profile: profile,
                 dashboardStore: dashboardStore,
                 appStore: appStore,
-                replacementPassword: $replacementPassword
+                replacementPassword: $replacementPassword,
+                showDiagnostics: {
+                    diagnosticsPresented = true
+                }
             )
         } else {
             DeviceListOverviewView(appStore: appStore)
@@ -245,6 +256,7 @@ private struct DeviceListOverviewView: View {
                 }
             } else {
                 ForEach(appStore.deviceRegistry.profiles) { profile in
+                    let summary = appStore.dashboardSummary(for: profile)
                     Button {
                         appStore.select(profile)
                     } label: {
@@ -257,7 +269,7 @@ private struct DeviceListOverviewView: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Text(profile.payloadFamily ?? "Unchecked")
+                            Label(summary.displayStatus.title, systemImage: summary.displayStatus.systemImage)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -417,6 +429,7 @@ private struct DeviceDashboardView: View {
     @ObservedObject var dashboardStore: DashboardStore
     @ObservedObject var appStore: AppStore
     @Binding var replacementPassword: String
+    let showDiagnostics: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -436,11 +449,11 @@ private struct DeviceDashboardView: View {
                     case .overview:
                         OverviewTab(profile: profile, dashboardStore: dashboardStore, appStore: appStore, replacementPassword: $replacementPassword)
                     case .install:
-                        InstallTab(profile: profile, dashboardStore: dashboardStore)
+                        InstallTab(profile: profile, dashboardStore: dashboardStore, showDiagnostics: showDiagnostics)
                     case .checkup:
-                        CheckupTab(profile: profile, dashboardStore: dashboardStore)
+                        CheckupTab(profile: profile, dashboardStore: dashboardStore, showDiagnostics: showDiagnostics)
                     case .maintenance:
-                        MaintenanceTab(profile: profile, dashboardStore: dashboardStore)
+                        MaintenanceTab(profile: profile, dashboardStore: dashboardStore, showDiagnostics: showDiagnostics)
                     case .advanced:
                         AdvancedTab(profile: profile, appStore: appStore)
                     }
@@ -469,6 +482,7 @@ private struct OverviewTab: View {
                 .font(.title2.weight(.semibold))
 
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+                GridRow { Text("Status").foregroundStyle(.secondary); Text(summary.displayStatus.title) }
                 GridRow { Text("Host").foregroundStyle(.secondary); Text(profile.host) }
                 GridRow { Text("Model").foregroundStyle(.secondary); Text(profile.model ?? "Unknown") }
                 GridRow { Text("Generation").foregroundStyle(.secondary); Text(profile.deviceGeneration ?? "Unknown") }
@@ -557,6 +571,7 @@ private struct OverviewTab: View {
 private struct InstallTab: View {
     let profile: DeviceProfile
     @ObservedObject var dashboardStore: DashboardStore
+    let showDiagnostics: () -> Void
 
     var body: some View {
         let store = dashboardStore.deployStore
@@ -590,12 +605,23 @@ private struct InstallTab: View {
                 StageLine(stage: stage)
             }
             if let plan = store.plan {
-                SummaryGrid(rows: [
-                    ("Host", plan.host),
-                    ("Payload", plan.payloadFamily ?? "unknown"),
-                    ("Reboot", plan.requiresReboot ? "required" : "not required"),
-                    ("Actions", "\(plan.uploads.count) uploads")
-                ])
+                let presentation = DeployPlanPresentation(
+                    plan: plan,
+                    profile: profile,
+                    hostWarning: HostCompatibilityPolicy.warning()
+                )
+                Text(presentation.title)
+                    .font(.headline)
+                SummaryGrid(rows: presentation.summaryRows.map { ($0.label, $0.value) })
+                ForEach(presentation.warnings, id: \.self) { warning in
+                    Label(warning, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.yellow)
+                }
+                DisclosureGroup("Advanced Plan Details") {
+                    SummaryGrid(rows: presentation.advancedRows.map { ($0.label, $0.value) })
+                        .padding(.top, 6)
+                }
             }
             if let result = store.result {
                 SummaryGrid(rows: [
@@ -605,15 +631,26 @@ private struct InstallTab: View {
                 ])
             }
             if let error = store.error {
-                ErrorBlock(error: error)
+                ErrorRecoveryView(error: error) { action in
+                    handleRecovery(action: action, error: error)
+                }
             }
         }
+    }
+
+    private func handleRecovery(action: RecoveryAction, error: BackendErrorViewModel) {
+        if action.kind == .diagnostics {
+            showDiagnostics()
+            return
+        }
+        _ = dashboardStore.handleRecoveryAction(action, error: error, profile: profile)
     }
 }
 
 private struct CheckupTab: View {
     let profile: DeviceProfile
     @ObservedObject var dashboardStore: DashboardStore
+    let showDiagnostics: () -> Void
 
     var body: some View {
         let store = dashboardStore.doctorStore
@@ -635,13 +672,11 @@ private struct CheckupTab: View {
                 StageLine(stage: stage)
             }
             if let summary = store.summary {
-                SummaryGrid(rows: [
-                    ("PASS", "\(summary.passCount)"),
-                    ("WARN", "\(summary.warnCount)"),
-                    ("FAIL", "\(summary.failCount)"),
-                    ("INFO", "\(summary.infoCount)")
-                ])
-                ForEach(summary.groups) { group in
+                let presentation = CheckupPresentation(summary: summary, state: store.state)
+                Text(presentation.headline)
+                    .font(.headline)
+                SummaryGrid(rows: presentation.summaryRows.map { ($0.label, $0.value) })
+                ForEach(presentation.groups) { group in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(group.domain).font(.headline)
                         ForEach(Array(group.checks.enumerated()), id: \.offset) { _, check in
@@ -657,18 +692,30 @@ private struct CheckupTab: View {
                 }
             }
             if let error = store.error {
-                ErrorBlock(error: error)
+                ErrorRecoveryView(error: error) { action in
+                    handleRecovery(action: action, error: error)
+                }
             }
         }
+    }
+
+    private func handleRecovery(action: RecoveryAction, error: BackendErrorViewModel) {
+        if action.kind == .diagnostics {
+            showDiagnostics()
+            return
+        }
+        _ = dashboardStore.handleRecoveryAction(action, error: error, profile: profile)
     }
 }
 
 private struct MaintenanceTab: View {
     let profile: DeviceProfile
     @ObservedObject var dashboardStore: DashboardStore
+    let showDiagnostics: () -> Void
 
     var body: some View {
         let store = dashboardStore.maintenanceStore
+        let presentation = MaintenanceWorkflowPresentation.presentation(for: store.selectedWorkflow)
         VStack(alignment: .leading, spacing: 12) {
             Text("Maintenance")
                 .font(.title2.weight(.semibold))
@@ -680,6 +727,17 @@ private struct MaintenanceTab: View {
             }
             .pickerStyle(.segmented)
 
+            VStack(alignment: .leading, spacing: 4) {
+                Text(presentation.title)
+                    .font(.headline)
+                Text(presentation.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Label(presentation.risk, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             HStack {
                 TextField(L10n.string("field.mount_wait"), text: $dashboardStore.maintenanceStore.mountWait)
                     .frame(width: 150)
@@ -688,14 +746,25 @@ private struct MaintenanceTab: View {
             }
 
             maintenanceControls(store: store)
+            FlashBootHookSection(profile: profile)
 
             if let stage = store.currentStage {
                 StageLine(stage: stage)
             }
             if let error = store.error {
-                ErrorBlock(error: error)
+                ErrorRecoveryView(error: error) { action in
+                    handleRecovery(action: action, error: error)
+                }
             }
         }
+    }
+
+    private func handleRecovery(action: RecoveryAction, error: BackendErrorViewModel) {
+        if action.kind == .diagnostics {
+            showDiagnostics()
+            return
+        }
+        _ = dashboardStore.handleRecoveryAction(action, error: error, profile: profile)
     }
 
     @ViewBuilder
@@ -768,7 +837,14 @@ private struct MaintenanceTab: View {
             }
         case .repairXattrs:
             VStack(alignment: .leading, spacing: 8) {
-                TextField(L10n.string("field.repair_xattrs_path"), text: $dashboardStore.maintenanceStore.repairPath)
+                HStack {
+                    TextField(L10n.string("field.repair_xattrs_path"), text: $dashboardStore.maintenanceStore.repairPath)
+                    Button {
+                        chooseRepairPath(store: store)
+                    } label: {
+                        Label("Choose Folder", systemImage: "folder")
+                    }
+                }
                 HStack {
                     Button("Scan Metadata") {
                         store.scanRepairXattrs()
@@ -784,6 +860,17 @@ private struct MaintenanceTab: View {
                         .foregroundStyle(.secondary)
                 }
             }
+        }
+    }
+
+    private func chooseRepairPath(store: MaintenanceStore) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        if panel.runModal() == .OK, let url = panel.url {
+            store.repairPath = url.path
         }
     }
 }
@@ -803,82 +890,6 @@ private struct AdvancedTab: View {
             ])
             EventList(events: appStore.backend.events)
         }
-    }
-}
-
-private struct WarningBanner: View {
-    let warning: HostCompatibilityWarning
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "exclamationmark.triangle")
-                .foregroundStyle(.yellow)
-            VStack(alignment: .leading) {
-                Text(warning.title)
-                    .font(.body.weight(.medium))
-                Text(warning.message)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(10)
-        .background(Color.yellow.opacity(0.12))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-    }
-}
-
-private struct SummaryGrid: View {
-    let rows: [(String, String)]
-
-    var body: some View {
-        Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
-            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                GridRow {
-                    Text(row.0).foregroundStyle(.secondary)
-                    Text(row.1)
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                }
-            }
-        }
-        .font(.caption)
-    }
-}
-
-private struct StageLine: View {
-    let stage: OperationStageState
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text(stage.stage)
-                .font(.system(.caption, design: .monospaced))
-            if let description = stage.description {
-                Text(description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-}
-
-private struct ErrorBlock: View {
-    let error: BackendErrorViewModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(error.recovery?.title ?? error.code)
-                .font(.body.weight(.medium))
-            Text(error.message)
-                .font(.caption)
-            if let recovery = error.recovery, !recovery.actions.isEmpty {
-                ForEach(recovery.actions, id: \.self) { action in
-                    Text(action)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .foregroundStyle(.red)
     }
 }
 

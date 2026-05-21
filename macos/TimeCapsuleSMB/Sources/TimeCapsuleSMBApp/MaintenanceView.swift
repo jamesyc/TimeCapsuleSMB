@@ -260,22 +260,6 @@ private struct StatusLabel: View {
     }
 }
 
-private struct StageLine: View {
-    let stage: OperationStageState
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text(stage.stage)
-                .font(.system(.caption, design: .monospaced))
-            if let description = stage.description {
-                Text(description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-}
-
 private struct MaintenanceErrorView: View {
     let error: BackendErrorViewModel
 

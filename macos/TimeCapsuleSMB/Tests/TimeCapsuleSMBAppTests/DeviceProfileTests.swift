@@ -55,6 +55,29 @@ final class DeviceProfileTests: XCTestCase {
         XCTAssertEqual(profile.runtimeContext.configURL.path, "/tmp/devices/abc/.env")
     }
 
+    func testTraitsClassifyNetBSD4NetBSD6AndUnsupportedDevices() {
+        let netbsd4 = makeProfile(payloadFamily: "netbsd4_samba4")
+        XCTAssertTrue(netbsd4.traits.isNetBSD4)
+        XCTAssertFalse(netbsd4.traits.isNetBSD6)
+        XCTAssertTrue(netbsd4.traits.needsActivationAfterReboot)
+        XCTAssertTrue(netbsd4.traits.supportsFlashBootHook)
+        XCTAssertTrue(netbsd4.traits.isSupported)
+
+        let netbsd4ByRelease = makeProfile(osRelease: "4.0")
+        XCTAssertTrue(netbsd4ByRelease.traits.isNetBSD4)
+        XCTAssertTrue(netbsd4ByRelease.traits.supportsFlashBootHook)
+
+        let netbsd6 = makeProfile(osRelease: "6.0")
+        XCTAssertFalse(netbsd6.traits.isNetBSD4)
+        XCTAssertTrue(netbsd6.traits.isNetBSD6)
+        XCTAssertFalse(netbsd6.traits.needsActivationAfterReboot)
+        XCTAssertFalse(netbsd6.traits.supportsFlashBootHook)
+        XCTAssertTrue(netbsd6.traits.isSupported)
+
+        let unsupported = makeProfile(payloadFamily: "unsupported", deviceGeneration: "unsupported")
+        XCTAssertFalse(unsupported.traits.isSupported)
+    }
+
     private func makeProfile(
         id: String = "profile",
         displayName: String = "Office Capsule",
@@ -63,6 +86,9 @@ final class DeviceProfileTests: XCTestCase {
         bonjourFullname: String? = nil,
         syap: String? = nil,
         model: String? = nil,
+        osRelease: String? = nil,
+        payloadFamily: String? = nil,
+        deviceGeneration: String? = nil,
         configPath: String = "/tmp/profile/.env"
     ) -> DeviceProfile {
         DeviceProfile(
@@ -76,11 +102,11 @@ final class DeviceProfileTests: XCTestCase {
             syap: syap,
             model: model,
             osName: nil,
-            osRelease: nil,
+            osRelease: osRelease,
             arch: nil,
             elfEndianness: nil,
-            payloadFamily: nil,
-            deviceGeneration: nil,
+            payloadFamily: payloadFamily,
+            deviceGeneration: deviceGeneration,
             configPath: configPath,
             keychainAccount: id,
             createdAt: Date(timeIntervalSince1970: 10),

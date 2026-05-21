@@ -12,6 +12,8 @@ enum DeviceRegistryState: String, CaseIterable, Equatable {
 enum DeviceRegistryError: Error, Equatable, LocalizedError {
     case applicationSupportUnavailable
     case corruptRegistry(String)
+    case profileNotFound(DeviceProfile.ID)
+    case duplicateProfile(field: String, value: String, conflictingProfileID: DeviceProfile.ID)
     case io(String)
 
     var errorDescription: String? {
@@ -20,6 +22,10 @@ enum DeviceRegistryError: Error, Equatable, LocalizedError {
             return "Application Support is unavailable."
         case .corruptRegistry(let message):
             return "Saved devices could not be read: \(message)"
+        case .profileNotFound(let id):
+            return "Saved device \(id) could not be found."
+        case .duplicateProfile(let field, let value, let conflictingProfileID):
+            return "Another saved device already uses \(field) \(value): \(conflictingProfileID)."
         case .io(let message):
             return message
         }
@@ -114,11 +120,11 @@ final class DeviceRegistryStore: ObservableObject {
             date: now()
         )
         profile.passwordState = passwordState
-        return try save(profile)
+        return try saveMergingDuplicates(profile)
     }
 
     @discardableResult
-    func save(_ profile: DeviceProfile) throws -> DeviceProfile {
+    private func saveMergingDuplicates(_ profile: DeviceProfile) throws -> DeviceProfile {
         state = .saving
         error = nil
         do {
@@ -133,6 +139,39 @@ final class DeviceRegistryStore: ObservableObject {
             try persist()
             state = profiles.isEmpty ? .empty : .loaded
             return profile
+        } catch {
+            self.error = .io(error.localizedDescription)
+            state = .failed
+            throw error
+        }
+    }
+
+    @discardableResult
+    func updateProfile(_ profile: DeviceProfile) throws -> DeviceProfile {
+        guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else {
+            let error = DeviceRegistryError.profileNotFound(profile.id)
+            self.error = error
+            throw error
+        }
+        if let conflict = duplicateConflict(for: profile, excluding: profile.id) {
+            self.error = conflict
+            throw conflict
+        }
+        state = .saving
+        error = nil
+        var updated = profile
+        updated.updatedAt = now()
+        do {
+            try fileManager.createDirectory(at: devicesDirectoryURL, withIntermediateDirectories: true)
+            try fileManager.createDirectory(
+                at: URL(fileURLWithPath: updated.configPath).deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            profiles[index] = updated
+            profiles = profiles.sorted { $0.updatedAt > $1.updatedAt }
+            try persist()
+            state = profiles.isEmpty ? .empty : .loaded
+            return updated
         } catch {
             self.error = .io(error.localizedDescription)
             state = .failed
@@ -206,6 +245,38 @@ final class DeviceRegistryStore: ObservableObject {
             return nil
         }
         return profiles.first { $0.normalizedHost == normalizedHost }
+    }
+
+    private func duplicateConflict(for profile: DeviceProfile, excluding profileID: DeviceProfile.ID) -> DeviceRegistryError? {
+        if let normalizedFullname = normalizedBonjourFullname(profile.bonjourFullname),
+           let conflicting = profiles.first(where: {
+               $0.id != profileID && normalizedBonjourFullname($0.bonjourFullname) == normalizedFullname
+           }) {
+            return .duplicateProfile(
+                field: "Bonjour fullname",
+                value: normalizedFullname,
+                conflictingProfileID: conflicting.id
+            )
+        }
+
+        let normalizedHost = profile.normalizedHost
+        if !normalizedHost.isEmpty,
+           let conflicting = profiles.first(where: { $0.id != profileID && $0.normalizedHost == normalizedHost }) {
+            return .duplicateProfile(
+                field: "host",
+                value: normalizedHost,
+                conflictingProfileID: conflicting.id
+            )
+        }
+        return nil
+    }
+
+    private func normalizedBonjourFullname(_ value: String?) -> String? {
+        guard let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !normalized.isEmpty else {
+            return nil
+        }
+        return normalized
     }
 
     private func persist() throws {

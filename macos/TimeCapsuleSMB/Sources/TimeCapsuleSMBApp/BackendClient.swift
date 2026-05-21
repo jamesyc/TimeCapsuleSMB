@@ -10,6 +10,7 @@ final class BackendClient: ObservableObject {
     @Published var currentStage: String?
     @Published var currentRisk: String?
     @Published var currentCancellable: Bool?
+    @Published private(set) var activeOperationName: String?
 
     private let runner: any HelperRunning
     private var runTask: Task<Void, Never>?
@@ -33,6 +34,7 @@ final class BackendClient: ObservableObject {
         currentStage = nil
         currentRisk = nil
         currentCancellable = nil
+        activeOperationName = nil
     }
 
     var canCancel: Bool {
@@ -51,6 +53,7 @@ final class BackendClient: ObservableObject {
         currentStage = nil
         currentRisk = nil
         currentCancellable = nil
+        activeOperationName = operation
         activeCall = BackendCall(operation: operation, params: runParams, context: context)
         let helperPath = self.helperPath.trimmingCharacters(in: .whitespacesAndNewlines)
         let runner = self.runner
@@ -107,6 +110,7 @@ final class BackendClient: ObservableObject {
         isRunning = false
         runTask = nil
         activeCall = nil
+        activeOperationName = nil
     }
 }
 

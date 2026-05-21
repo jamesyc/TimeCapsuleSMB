@@ -97,6 +97,7 @@ final class DoctorStore: ObservableObject {
     @Published private(set) var summary: DoctorSummary?
     @Published private(set) var error: BackendErrorViewModel?
     @Published private(set) var currentStage: OperationStageState?
+    @Published private(set) var passwordInvalidProfileID: DeviceProfile.ID?
 
     let backend: BackendClient
     private let coordinator: OperationCoordinator?
@@ -180,6 +181,7 @@ final class DoctorStore: ObservableObject {
         summary = nil
         error = nil
         currentStage = nil
+        passwordInvalidProfileID = nil
         return start
     }
 
@@ -191,6 +193,7 @@ final class DoctorStore: ObservableObject {
         summary = nil
         error = nil
         currentStage = nil
+        passwordInvalidProfileID = nil
         activeOperation = nil
     }
 
@@ -225,6 +228,9 @@ final class DoctorStore: ObservableObject {
         }
 
         if event.type == "error" {
+            if event.code == "auth_failed" {
+                passwordInvalidProfileID = activeOperation?.profileID
+            }
             error = BackendErrorViewModel(event: event)
             state = .runFailed
             activeOperation = nil

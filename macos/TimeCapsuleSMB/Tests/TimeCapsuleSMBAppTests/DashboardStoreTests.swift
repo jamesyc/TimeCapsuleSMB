@@ -189,6 +189,164 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(fixture.registry.profile(id: profile.id)?.passwordState, .missing)
     }
 
+    func testAuthFailureMarksSavedPasswordInvalid() async throws {
+        let fixture = try makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "error", operation: "doctor", code: "auth_failed", message: "Password rejected.")
+            ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
+        ])
+        let profile = try fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("bad-password", for: profile.keychainAccount)
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+
+        dashboard.runCheckup(profile: profile)
+
+        try await waitUntilStoreState { dashboard.doctorStore.state == .runFailed }
+        XCTAssertEqual(fixture.registry.profile(id: profile.id)?.passwordState, .invalid)
+        XCTAssertEqual(fixture.appStore.dashboardSummary(for: fixture.registry.profile(id: profile.id)!).primaryAction, .replacePassword)
+    }
+
+    func testRecoveryActionsRouteToMaintenanceAndPasswordWorkflows() throws {
+        let fixture = try makeFixture(responses: [])
+        let profile = try fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+        let error = BackendErrorViewModel(operation: "doctor", code: "operation_failed", message: "Needs recovery.")
+
+        XCTAssertTrue(dashboard.handleRecoveryAction(
+            RecoveryAction(title: "Run Disk Repair", kind: .diskRepair),
+            error: error,
+            profile: profile
+        ))
+        XCTAssertEqual(dashboard.selectedTab, .maintenance)
+        XCTAssertEqual(dashboard.maintenanceStore.selectedWorkflow, .fsck)
+
+        XCTAssertTrue(dashboard.handleRecoveryAction(
+            RecoveryAction(title: "Repair File Metadata", kind: .metadataRepair),
+            error: error,
+            profile: profile
+        ))
+        XCTAssertEqual(dashboard.maintenanceStore.selectedWorkflow, .repairXattrs)
+
+        XCTAssertTrue(dashboard.handleRecoveryAction(
+            RecoveryAction(title: "Start SMB", kind: .startSMB),
+            error: error,
+            profile: profile
+        ))
+        XCTAssertEqual(dashboard.maintenanceStore.selectedWorkflow, .activate)
+
+        XCTAssertTrue(dashboard.handleRecoveryAction(
+            RecoveryAction(title: "Replace Password", kind: .replacePassword),
+            error: error,
+            profile: profile
+        ))
+        XCTAssertEqual(dashboard.selectedTab, .overview)
+    }
+
+    func testRecoveryRunCheckupAndInstallActionsStartBackendOperations() async throws {
+        let fixture = try makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+                ]))
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload())
+            ])
+        ])
+        let profile = try fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+        let error = BackendErrorViewModel(operation: "deploy", code: "operation_failed", message: "Needs recovery.")
+
+        XCTAssertTrue(dashboard.handleRecoveryAction(
+            RecoveryAction(title: "Run Checkup", kind: .runCheckup),
+            error: error,
+            profile: profile
+        ))
+        try await waitUntilStoreState { fixture.runner.calls.count == 1 && !fixture.appStore.backend.isRunning }
+        XCTAssertEqual(fixture.runner.calls[0].operation, "doctor")
+        XCTAssertEqual(fixture.runner.calls[0].params["credentials"], .object(["password": .string("pw")]))
+        XCTAssertEqual(dashboard.selectedTab, .checkup)
+
+        XCTAssertTrue(dashboard.handleRecoveryAction(
+            RecoveryAction(title: "Install SMB", kind: .installSMB),
+            error: error,
+            profile: profile
+        ))
+        try await waitUntilStoreState { fixture.runner.calls.count == 2 && !fixture.appStore.backend.isRunning }
+        XCTAssertEqual(fixture.runner.calls[1].operation, "deploy")
+        XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(true))
+        XCTAssertEqual(fixture.runner.calls[1].params["credentials"], .object(["password": .string("pw")]))
+        XCTAssertEqual(dashboard.selectedTab, .install)
+    }
+
+    func testRecoveryRetryUsesFailedOperation() async throws {
+        let fixture = try makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+                ]))
+            ])
+        ])
+        let profile = try fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+        let doctorError = BackendErrorViewModel(operation: "doctor", code: "operation_failed", message: "Doctor failed.")
+
+        XCTAssertTrue(dashboard.handleRecoveryAction(
+            RecoveryAction(title: "Retry", kind: .retry),
+            error: doctorError,
+            profile: profile
+        ))
+
+        try await waitUntilStoreState { fixture.runner.calls.count == 1 && !fixture.appStore.backend.isRunning }
+        XCTAssertEqual(fixture.runner.calls[0].operation, "doctor")
+        XCTAssertEqual(dashboard.selectedTab, .checkup)
+    }
+
+    func testNonActionableRecoveryKindsReturnFalse() throws {
+        let fixture = try makeFixture(responses: [])
+        let profile = try fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+        let error = BackendErrorViewModel(operation: "validate-install", code: "operation_failed", message: "Needs diagnostics.")
+
+        XCTAssertFalse(dashboard.handleRecoveryAction(
+            RecoveryAction(title: "Open Diagnostics", kind: .diagnostics),
+            error: error,
+            profile: profile
+        ))
+        XCTAssertFalse(dashboard.handleRecoveryAction(
+            RecoveryAction(title: "Unknown", kind: .generic),
+            error: error,
+            profile: profile
+        ))
+    }
+
     func testForgetProfileDeletesRegistryConfigDirectoryAndPassword() throws {
         let fixture = try makeFixture(responses: [])
         let profile = try fixture.registry.saveConfiguredDevice(
