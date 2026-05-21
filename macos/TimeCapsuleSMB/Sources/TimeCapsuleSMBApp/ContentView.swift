@@ -6,13 +6,9 @@ public struct ContentView: View {
     @StateObject private var connectionStore: ConnectionWorkflowStore
     @StateObject private var deployStore: DeployWorkflowStore
     @StateObject private var doctorStore: DoctorStore
+    @StateObject private var maintenanceStore: MaintenanceStore
     @State private var selection: Screen = .readiness
     @State private var password = ""
-    @State private var repairPath = ""
-    @State private var volume = ""
-    @State private var noReboot = false
-    @State private var mountWait = "30"
-    @State private var noWait = false
 
     @MainActor
     public init() {
@@ -22,6 +18,7 @@ public struct ContentView: View {
         _connectionStore = StateObject(wrappedValue: ConnectionWorkflowStore(backend: backend))
         _deployStore = StateObject(wrappedValue: DeployWorkflowStore(backend: backend))
         _doctorStore = StateObject(wrappedValue: DoctorStore(backend: backend))
+        _maintenanceStore = StateObject(wrappedValue: MaintenanceStore(backend: backend))
     }
 
     public var body: some View {
@@ -94,104 +91,7 @@ public struct ContentView: View {
         case .doctor:
             DoctorView(store: doctorStore, password: $password)
         case .maintenance:
-            CommandPanel(title: L10n.string("screen.maintenance")) {
-                TextField(L10n.string("field.repair_xattrs_path"), text: $repairPath)
-                TextField(L10n.string("field.fsck_volume"), text: $volume)
-                TextField(L10n.string("field.mount_wait"), text: $mountWait)
-                Toggle(L10n.string("toggle.no_reboot"), isOn: $noReboot)
-                Toggle(L10n.string("toggle.no_wait"), isOn: $noWait)
-                HStack {
-                    Button {
-                        backend.run(operation: "activate", params: OperationParams.activateRun(password: password))
-                    } label: {
-                        Label(L10n.string("button.activate"), systemImage: "power")
-                    }
-                    .disabled(backend.isRunning)
-                    runButton(
-                        L10n.string("button.uninstall_plan"),
-                        icon: "xmark.bin",
-                        operation: "uninstall",
-                        params: OperationParams.uninstallPlan(
-                            noReboot: noReboot,
-                            noWait: noWait,
-                            mountWait: mountWaitValue ?? 30,
-                            password: password
-                        ),
-                        disabled: mountWaitValue == nil
-                    )
-                    Button {
-                        backend.run(
-                            operation: "uninstall",
-                            params: OperationParams.uninstallRun(
-                                noReboot: noReboot,
-                                noWait: noWait,
-                                mountWait: mountWaitValue ?? 30,
-                                password: password
-                            )
-                        )
-                    } label: {
-                        Label(L10n.string("button.uninstall"), systemImage: "xmark.bin.fill")
-                    }
-                    .disabled(backend.isRunning || mountWaitValue == nil)
-                }
-                HStack {
-                    runButton(
-                        L10n.string("button.list_fsck_volumes"),
-                        icon: "list.bullet.rectangle",
-                        operation: "fsck",
-                        params: OperationParams.fsckList(mountWait: mountWaitValue ?? 30, password: password),
-                        disabled: mountWaitValue == nil
-                    )
-                    runButton(
-                        L10n.string("button.plan_fsck"),
-                        icon: "doc.text.magnifyingglass",
-                        operation: "fsck",
-                        params: OperationParams.fsckPlan(
-                            volume: volume,
-                            noReboot: noReboot,
-                            noWait: noWait,
-                            mountWait: mountWaitValue ?? 30,
-                            password: password
-                        ),
-                        disabled: mountWaitValue == nil
-                    )
-                    Button {
-                        backend.run(
-                            operation: "fsck",
-                            params: OperationParams.fsckRun(
-                                volume: volume,
-                                noReboot: noReboot,
-                                noWait: noWait,
-                                mountWait: mountWaitValue ?? 30,
-                                password: password
-                            )
-                        )
-                    } label: {
-                        Label(L10n.string("button.run_fsck"), systemImage: "externaldrive.badge.checkmark")
-                    }
-                    .disabled(backend.isRunning || mountWaitValue == nil)
-                }
-                HStack {
-                    Button {
-                        backend.run(
-                            operation: "repair-xattrs",
-                            params: OperationParams.repairXattrsScan(path: repairPath)
-                        )
-                    } label: {
-                        Label(L10n.string("button.scan_xattrs"), systemImage: "wand.and.stars")
-                    }
-                    .disabled(backend.isRunning || repairPath.isEmpty)
-                    Button {
-                        backend.run(
-                            operation: "repair-xattrs",
-                            params: OperationParams.repairXattrsRun(path: repairPath)
-                        )
-                    } label: {
-                        Label(L10n.string("button.repair_xattrs"), systemImage: "wand.and.stars.inverse")
-                    }
-                    .disabled(backend.isRunning || repairPath.isEmpty)
-                }
-            }
+            MaintenanceView(store: maintenanceStore, password: $password)
         case .advanced:
             CommandPanel(title: L10n.string("screen.advanced")) {
                 Text(L10n.string("advanced.flash_cli_only"))
@@ -200,21 +100,6 @@ public struct ContentView: View {
                     .font(.system(.body, design: .monospaced))
             }
         }
-    }
-
-    private func runButton(
-        _ title: String,
-        icon: String,
-        operation: String,
-        params: [String: JSONValue] = [:],
-        disabled: Bool = false
-    ) -> some View {
-        Button {
-            backend.run(operation: operation, params: params)
-        } label: {
-            Label(title, systemImage: icon)
-        }
-        .disabled(backend.isRunning || disabled)
     }
 
     private func clearActive() {
@@ -227,21 +112,11 @@ public struct ContentView: View {
             deployStore.clear()
         case .doctor:
             doctorStore.clear()
+        case .maintenance:
+            maintenanceStore.clear()
         default:
             backend.clear()
         }
-    }
-
-    private var mountWaitValue: Double? {
-        nonNegativeIntegerDouble(mountWait)
-    }
-
-    private func nonNegativeIntegerDouble(_ text: String) -> Double? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let value = Double(trimmed), value.isFinite, value >= 0, value.rounded(.towardZero) == value else {
-            return nil
-        }
-        return value
     }
 
 }

@@ -104,8 +104,12 @@ enum OperationParams {
         ], password: password)
     }
 
+    static func activatePlan(password: String) -> [String: JSONValue] {
+        withCredentials(["dry_run": .bool(true)], password: password)
+    }
+
     static func activateRun(password: String) -> [String: JSONValue] {
-        withCredentials([:], password: password)
+        withCredentials(["dry_run": .bool(false)], password: password)
     }
 
     static func fsckList(mountWait: Double, password: String) -> [String: JSONValue] {
