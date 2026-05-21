@@ -229,13 +229,17 @@ tc_run_mdns_snapshot_command() {
 }
 
 tc_mdns_auto_ip_available() {
+    tc_probe_mdns_socket_families >/dev/null 2>&1
+}
+
+tc_nbns_auto_ip_available() {
     tc_probe_auto_ip_cidrs >/dev/null 2>&1
 }
 
 tc_mark_mdns_deferred_no_ip() {
     TC_WATCHDOG_MDNS_DEFERRED_NO_IP=1
     if [ "$TC_MDNS_AUTO_IP_WAIT_LOGGED" != "1" ]; then
-        tc_log "mDNS startup deferred; no usable IPv4 has appeared yet"
+        tc_log "mDNS startup deferred; no usable address has appeared yet"
         TC_MDNS_AUTO_IP_WAIT_LOGGED=1
     fi
 }
@@ -251,10 +255,10 @@ tc_ensure_mdns_auto_ip_seen() {
         return 1
     fi
 
-    tc_log "mDNS auto-ip check: running $TC_MDNS_BIN --print-auto-ip-cidrs"
+    tc_log "mDNS auto-ip check: running $TC_MDNS_BIN --print-mdns-socket-families"
     if tc_mdns_auto_ip_available; then
         TC_MDNS_AUTO_IP_SEEN=1
-        tc_log "mDNS auto-ip check: usable IPv4 is available"
+        tc_log "mDNS auto-ip check: usable address is available"
         tc_log "mDNS auto-ip is available; starting capture and advertiser"
         return 0
     else
@@ -262,7 +266,7 @@ tc_ensure_mdns_auto_ip_seen() {
     fi
 
     if tc_auto_ip_unavailable_status "$mdns_auto_ip_status"; then
-        tc_log "mDNS auto-ip check: no usable IPv4 yet"
+        tc_log "mDNS auto-ip check: no usable address yet"
         tc_mark_mdns_deferred_no_ip
     else
         TC_WATCHDOG_MDNS_UNAVAILABLE=1

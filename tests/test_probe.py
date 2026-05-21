@@ -203,8 +203,8 @@ class ProbeTests(unittest.TestCase):
         fields = runtime_startup_failure_debug_fields(
             {
                 "remote_watchdog_log_tail": (
-                    "watchdog: mDNS auto-ip check: no usable IPv4 yet\n"
-                    "watchdog: mDNS startup deferred; no usable IPv4 has appeared yet\n"
+                    "watchdog: mDNS auto-ip check: no usable address yet\n"
+                    "watchdog: mDNS startup deferred; no usable address has appeared yet\n"
                 )
             }
         )
