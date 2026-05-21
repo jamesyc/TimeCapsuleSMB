@@ -15,6 +15,7 @@ from timecapsulesmb.discovery.bonjour import (
     discovery_record_to_jsonable,
     service_instance_to_jsonable,
 )
+from timecapsulesmb.discovery.devices import device_candidate_to_jsonable, device_candidates_from_records
 from timecapsulesmb.install_validation import (
     install_checks_to_jsonable,
     install_ok,
@@ -56,9 +57,11 @@ def selected_record_host(params: dict[str, object]) -> str:
 
 
 def snapshot_payload(snapshot: BonjourDiscoverySnapshot) -> dict[str, object]:
+    devices = device_candidates_from_records(snapshot.resolved)
     return {
         "instances": [service_instance_to_jsonable(instance) for instance in snapshot.instances],
         "resolved": [discovery_record_to_jsonable(record) for record in snapshot.resolved],
+        "devices": [device_candidate_to_jsonable(device) for device in devices],
     }
 
 

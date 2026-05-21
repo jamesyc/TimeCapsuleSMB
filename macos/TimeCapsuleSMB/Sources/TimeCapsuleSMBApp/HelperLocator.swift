@@ -62,11 +62,14 @@ public struct HelperLocator {
         throw HelperLocatorError.notFound(attempts)
     }
 
-    public func helperEnvironment(for resolution: HelperResolution) -> [String: String] {
+    public func helperEnvironment(for resolution: HelperResolution, context: DeviceRuntimeContext? = nil) -> [String: String] {
         var output = environment
         if let appSupport = applicationSupportDirectory() {
             try? fileManager.createDirectory(at: appSupport, withIntermediateDirectories: true)
-            if output["TCAPSULE_CONFIG"] == nil {
+            if let context {
+                try? fileManager.createDirectory(at: context.configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                output["TCAPSULE_CONFIG"] = context.configURL.path
+            } else if output["TCAPSULE_CONFIG"] == nil {
                 output["TCAPSULE_CONFIG"] = appSupport.appendingPathComponent(".env").path
             }
             if output["TCAPSULE_STATE_DIR"] == nil {

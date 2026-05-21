@@ -27,6 +27,26 @@ final class HelperLocatorTests: XCTestCase {
         XCTAssertEqual(environment["PYTHONNOUSERSITE"], "1")
     }
 
+    func testLocatorUsesDeviceContextConfigWithoutChangingAppStateDirectory() throws {
+        let temp = try TemporaryDirectory()
+        let helper = temp.url.appendingPathComponent("tcapsule")
+        try "#!/bin/sh\nexit 0\n".write(to: helper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        let context = DeviceRuntimeContext(
+            profileID: "device-one",
+            configURL: temp.url.appendingPathComponent("Devices/device-one/.env")
+        )
+        let locator = HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default)
+
+        let resolution = try locator.resolve(helperPath: helper.path)
+        let environment = locator.helperEnvironment(for: resolution, context: context)
+
+        XCTAssertEqual(environment["TCAPSULE_CONFIG"], context.configURL.path)
+        XCTAssertNotNil(environment["TCAPSULE_STATE_DIR"])
+        XCTAssertNotEqual(environment["TCAPSULE_STATE_DIR"], context.configURL.deletingLastPathComponent().path)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: context.configURL.deletingLastPathComponent().path))
+    }
+
     func testLocatorDiscoversRepoHelperFromSourceRoot() throws {
         let temp = try TemporaryDirectory()
         let repo = temp.url.appendingPathComponent("Repo", isDirectory: true)

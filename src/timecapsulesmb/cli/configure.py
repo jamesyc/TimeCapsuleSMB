@@ -32,7 +32,7 @@ from timecapsulesmb.cli.runtime import (
     ssh_target_link_local_resolution_error,
 )
 from timecapsulesmb.core.errors import missing_dependency_message, missing_required_python_module
-from timecapsulesmb.core.net import extract_host, is_link_local_ipv4
+from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.core.paths import resolve_app_paths
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.device.compat import DeviceCompatibility, render_compatibility_message
@@ -48,6 +48,7 @@ from timecapsulesmb.discovery.bonjour import (
     discover_resolved_records,
     discovered_record_root_host,
 )
+from timecapsulesmb.discovery.devices import DiscoveredDeviceCandidate, device_candidates_from_records
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.transport.ssh import SshConnection
 from timecapsulesmb.integrations.acp import ACPAuthError, ACPError, enable_ssh
@@ -79,16 +80,15 @@ def confirm(prompt_text: str, default_no: bool = False) -> bool:
     return confirm_prompt(prompt_text, default=not default_no, eof_default=False)
 
 
-def list_devices(records) -> None:
+def list_devices(candidates: list[DiscoveredDeviceCandidate]) -> None:
     print("Found devices:")
-    for i, record in enumerate(records, start=1):
-        root_host = discovered_record_root_host(record)
-        pref = root_host.removeprefix("root@") if root_host else record.hostname or "-"
-        ipv4 = ",".join(record.ipv4) if record.ipv4 else "-"
-        print(f"  {i}. {record.name} | host: {pref} | IPv4: {ipv4}")
+    for i, candidate in enumerate(candidates, start=1):
+        pref = candidate.host or "-"
+        ipv4 = ",".join(candidate.ipv4) if candidate.ipv4 else "-"
+        print(f"  {i}. {candidate.name} | host: {pref} | IPv4: {ipv4}")
 
 
-def choose_device(records):
+def choose_device(candidates: list[DiscoveredDeviceCandidate]) -> DiscoveredDeviceCandidate | None:
     while True:
         try:
             raw = input("Select a device by number (q to skip discovery): ").strip()
@@ -101,39 +101,40 @@ def choose_device(records):
             print("Please enter a valid number.")
             continue
         idx = int(raw)
-        if not (1 <= idx <= len(records)):
+        if not (1 <= idx <= len(candidates)):
             print("Out of range.")
             continue
-        return records[idx - 1]
+        return candidates[idx - 1]
 
 
 def discover_default_record(existing: dict[str, str], *, timeout: float) -> Optional[BonjourResolvedService]:
     print("Attempting to discover Time Capsule/Airport Extreme devices on the local network via mDNS...", flush=True)
     records = discover_resolved_records(AIRPORT_SERVICE, timeout=timeout)
-    if not records:
+    candidates = device_candidates_from_records(records, airport_only=False)
+    if not candidates:
         print("No Time Capsule/Airport Extreme devices discovered. Falling back to manual SSH target entry.\n", flush=True)
         return None
-    list_devices(records)
-    selected = choose_device(records)
+    list_devices(candidates)
+    selected = choose_device(candidates)
     if selected is None:
         existing_target = valid_existing_config_value(existing, "TC_HOST", "Device SSH target") or DEFAULTS["TC_HOST"]
         print(f"Discovery skipped. Falling back to {existing_target}.\n", flush=True)
         return None
 
-    chosen_host = discovered_record_root_host(selected)
+    chosen_host = selected.ssh_host
     selected_host = (
         chosen_host.removeprefix("root@")
         if chosen_host
         else selected.hostname or "manual SSH target required"
     )
     print(f"Selected: {selected.name} ({selected_host})\n", flush=True)
-    if chosen_host is None and any(is_link_local_ipv4(ip) for ip in selected.ipv4):
+    if chosen_host is None and selected.link_local_only:
         print(
             "Selected device only advertised 169.254.x.x link-local IPv4. "
             "Enter the device's LAN IP or LAN-resolving hostname manually.\n",
             flush=True,
         )
-    return selected
+    return selected.selected_record
 
 
 def exception_summary(exc: BaseException) -> str:

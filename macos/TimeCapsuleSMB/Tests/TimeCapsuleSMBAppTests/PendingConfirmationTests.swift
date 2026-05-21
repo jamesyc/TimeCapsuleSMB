@@ -63,6 +63,18 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["debug_logging"], .bool(true))
     }
 
+    func testConfigureParamsDefaultBareManualHostToRootUser() {
+        let params = OperationParams.configure(
+            host: " 10.0.0.2 ",
+            password: "pw",
+            debugLogging: false
+        )
+
+        XCTAssertEqual(params["host"], .string("root@10.0.0.2"))
+        XCTAssertEqual(params["password"], .string("pw"))
+        XCTAssertEqual(params["persist_password"], .bool(false))
+    }
+
     func testPendingConfirmationBuildsFromBackendEvent() throws {
         let event = BackendEvent(
             type: "error",

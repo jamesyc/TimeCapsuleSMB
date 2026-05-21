@@ -346,8 +346,9 @@ class AppApiTests(unittest.TestCase):
                     hostname="tc.local.",
                     service_type="_airport._tcp.local.",
                     port=5009,
-                    ipv4=("10.0.0.2",),
+                    ipv4=("169.254.44.9", "10.0.0.2"),
                     properties={"syAP": "119"},
+                    fullname="TC._airport._tcp.local.",
                 )
             ],
         )
@@ -358,10 +359,49 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         result = collector.events_of_type("result")[0]
         self.assertEqual(result["payload"]["resolved"][0]["name"], "TC")
-        self.assertEqual(result["payload"]["resolved"][0]["ipv4"], ["10.0.0.2"])
+        self.assertEqual(result["payload"]["resolved"][0]["ipv4"], ["169.254.44.9", "10.0.0.2"])
+        self.assertEqual(result["payload"]["devices"][0]["name"], "TC")
+        self.assertEqual(result["payload"]["devices"][0]["host"], "10.0.0.2")
+        self.assertEqual(result["payload"]["devices"][0]["preferred_ipv4"], "10.0.0.2")
+        self.assertEqual(result["payload"]["devices"][0]["selected_record"]["fullname"], "TC._airport._tcp.local.")
         self.assertEqual(result["payload"]["schema_version"], 1)
-        self.assertEqual(result["payload"]["counts"], {"instances": 1, "resolved": 1})
-        self.assertEqual(result["payload"]["summary"], "discovered 1 resolved AirPort service(s).")
+        self.assertEqual(result["payload"]["counts"], {"instances": 1, "resolved": 1, "devices": 1})
+        self.assertEqual(result["payload"]["summary"], "discovered 1 Time Capsule device(s).")
+
+    def test_discover_operation_exposes_deduped_devices_separately_from_raw_services(self) -> None:
+        collector = CollectingSink()
+        raw_records = [
+            BonjourResolvedService(
+                name=name,
+                hostname=f"{name.lower()}.local.",
+                service_type=service_type,
+                port=5009,
+                ipv4=ipv4,
+                properties={"syAP": syap},
+                fullname=f"{name}.{service_type}",
+            )
+            for name, ipv4, syap in (
+                ("James", ("169.254.155.207", "192.168.1.217"), "119"),
+                ("Office", ("10.0.0.9",), "116"),
+            )
+            for service_type in (
+                "_adisk._tcp.local.",
+                "_airport._tcp.local.",
+                "_device-info._tcp.local.",
+                "_smb._tcp.local.",
+            )
+        ]
+        snapshot = BonjourDiscoverySnapshot(instances=[], resolved=raw_records)
+
+        with mock.patch("timecapsulesmb.app.ops.readiness.discover_snapshot", return_value=snapshot):
+            rc = service.run_api_request({"operation": "discover", "params": {"timeout": 0.1}}, collector.sink)
+
+        self.assertEqual(rc, 0)
+        payload = collector.events_of_type("result")[0]["payload"]
+        self.assertEqual(payload["counts"], {"instances": 0, "resolved": 8, "devices": 2})
+        self.assertEqual([device["name"] for device in payload["devices"]], ["James", "Office"])
+        self.assertEqual(payload["devices"][0]["host"], "192.168.1.217")
+        self.assertEqual(payload["devices"][0]["selected_record"]["service_type"], "_airport._tcp.local.")
 
     def test_discover_rejects_invalid_timeout_values(self) -> None:
         for timeout in ("bad", "nan", -1, True):
@@ -416,6 +456,36 @@ class AppApiTests(unittest.TestCase):
             self.assertIn("TC_DEBUG_LOGGING=false", config_path.read_text())
             serialized_events = json.dumps(collector.events)
             self.assertNotIn("goodpw", serialized_events)
+
+    def test_configure_defaults_bare_host_to_root_user(self) -> None:
+        collector = CollectingSink()
+        captured_connections: list[SshConnection] = []
+
+        def capture_probe(connection: SshConnection) -> ProbedDeviceState:
+            captured_connections.append(connection)
+            return probed_state()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", side_effect=capture_probe):
+                rc = service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {
+                            "config": str(config_path),
+                            "host": " 10.0.0.2 ",
+                            "password": "goodpw",
+                        },
+                    },
+                    collector.sink,
+                )
+
+            values = parse_env_file(config_path)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(captured_connections[0].host, "root@10.0.0.2")
+        self.assertEqual(values["TC_HOST"], "root@10.0.0.2")
+        self.assertEqual(collector.events_of_type("result")[0]["payload"]["host"], "root@10.0.0.2")
 
     def test_configure_can_persist_password_for_env_compatibility_when_requested(self) -> None:
         collector = CollectingSink()

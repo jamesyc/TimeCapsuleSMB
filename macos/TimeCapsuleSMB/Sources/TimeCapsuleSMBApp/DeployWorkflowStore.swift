@@ -9,7 +9,7 @@ struct DeployOptions: Equatable {
     let mountWait: Int
 }
 
-enum DeployWorkflowState: String, CaseIterable, Equatable {
+enum DeployWorkflowState: String, CaseIterable, Equatable, Codable {
     case idle
     case planning
     case planReady
@@ -70,7 +70,9 @@ final class DeployWorkflowStore: ObservableObject {
     @Published private(set) var plannedOptions: DeployOptions?
 
     let backend: BackendClient
+    private let coordinator: OperationCoordinator?
 
+    private var activeOperation: ActiveOperation?
     private var lastProcessedEventCount = 0
     private var cancellables: Set<AnyCancellable> = []
 
@@ -80,6 +82,17 @@ final class DeployWorkflowStore: ObservableObject {
 
     init(backend: BackendClient) {
         self.backend = backend
+        self.coordinator = nil
+        observeBackend(backend)
+    }
+
+    init(coordinator: OperationCoordinator) {
+        self.backend = coordinator.backend
+        self.coordinator = coordinator
+        observeBackend(coordinator.backend)
+    }
+
+    private func observeBackend(_ backend: BackendClient) {
         backend.$events
             .sink { [weak self] events in
                 Task { @MainActor in
@@ -109,20 +122,18 @@ final class DeployWorkflowStore: ObservableObject {
         !backend.isRunning && state == .planReady && plan != nil && currentOptions == plannedOptions
     }
 
-    func runPlan(password: String) {
+    @discardableResult
+    func runPlan(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         guard let options = currentOptions else {
             failLocally(state: .planFailed, message: "Mount wait must be a non-negative integer.")
-            return
+            return .rejected("Mount wait must be a non-negative integer.")
+        }
+        guard !backend.isRunning else {
+            rejectRun(state: .planFailed, message: "Another operation is already running.")
+            return .rejected("Another operation is already running.")
         }
         backend.clear()
-        lastProcessedEventCount = 0
-        state = .planning
-        plan = nil
-        result = nil
-        error = nil
-        currentStage = nil
-        plannedOptions = options
-        backend.run(
+        let start = run(
             operation: "deploy",
             params: OperationParams.deployPlan(
                 noReboot: options.noReboot,
@@ -131,11 +142,26 @@ final class DeployWorkflowStore: ObservableObject {
                 debugLogging: options.debugLogging,
                 mountWait: Double(options.mountWait),
                 password: password
-            )
+            ),
+            profile: profile
         )
+        guard case .started(let operation) = start else {
+            rejectRun(state: .planFailed, message: start.rejectionMessage ?? "Operation could not start.")
+            return start
+        }
+        lastProcessedEventCount = 0
+        activeOperation = operation
+        state = .planning
+        plan = nil
+        result = nil
+        error = nil
+        currentStage = nil
+        plannedOptions = options
+        return start
     }
 
-    func runDeploy(password: String) {
+    @discardableResult
+    func runDeploy(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         guard let options = plannedOptions, plan != nil, currentOptions == options else {
             state = .planStale
             error = BackendErrorViewModel(
@@ -143,18 +169,17 @@ final class DeployWorkflowStore: ObservableObject {
                 code: "plan_stale",
                 message: "Review and regenerate the deploy plan before deploying."
             )
-            return
+            return .rejected("Review and regenerate the deploy plan before deploying.")
         }
         guard state == .planReady else {
-            return
+            return .rejected("Deploy plan is not ready.")
+        }
+        guard !backend.isRunning else {
+            rejectRun(state: .deployFailed, message: "Another operation is already running.")
+            return .rejected("Another operation is already running.")
         }
         backend.clear()
-        lastProcessedEventCount = 0
-        state = .deploying
-        result = nil
-        error = nil
-        currentStage = nil
-        backend.run(
+        let start = run(
             operation: "deploy",
             params: OperationParams.deployRun(
                 noReboot: options.noReboot,
@@ -163,8 +188,20 @@ final class DeployWorkflowStore: ObservableObject {
                 debugLogging: options.debugLogging,
                 mountWait: Double(options.mountWait),
                 password: password
-            )
+            ),
+            profile: profile
         )
+        guard case .started(let operation) = start else {
+            rejectRun(state: .deployFailed, message: start.rejectionMessage ?? "Operation could not start.")
+            return start
+        }
+        lastProcessedEventCount = 0
+        activeOperation = operation
+        state = .deploying
+        result = nil
+        error = nil
+        currentStage = nil
+        return start
     }
 
     func clear() {
@@ -176,6 +213,7 @@ final class DeployWorkflowStore: ObservableObject {
         error = nil
         currentStage = nil
         plannedOptions = nil
+        activeOperation = nil
     }
 
     func cancel() {
@@ -219,6 +257,9 @@ final class DeployWorkflowStore: ObservableObject {
         guard event.operation == "deploy" else {
             return
         }
+        guard activeOperation?.operation == event.operation else {
+            return
+        }
 
         if let stage = OperationStageState(event: event) {
             currentStage = stage
@@ -257,6 +298,7 @@ final class DeployWorkflowStore: ObservableObject {
             result = nil
             error = nil
             state = .planReady
+            activeOperation = nil
         } catch {
             failContract(state: .planFailed, error: error)
         }
@@ -267,6 +309,7 @@ final class DeployWorkflowStore: ObservableObject {
             result = try event.decodePayload(DeployResultPayload.self)
             error = nil
             state = .deployed
+            activeOperation = nil
         } catch {
             failContract(state: .deployFailed, error: error)
         }
@@ -280,6 +323,7 @@ final class DeployWorkflowStore: ObservableObject {
         }
         error = BackendErrorViewModel(event: event)
         state = state == .planning ? .planFailed : .deployFailed
+        activeOperation = nil
     }
 
     private func applyFailureResult(_ event: BackendEvent) {
@@ -289,6 +333,7 @@ final class DeployWorkflowStore: ObservableObject {
             message: event.payloadSummaryText ?? event.summary
         )
         state = state == .planning ? .planFailed : .deployFailed
+        activeOperation = nil
     }
 
     private func failContract(state: DeployWorkflowState, error: Error) {
@@ -298,6 +343,7 @@ final class DeployWorkflowStore: ObservableObject {
             message: error.localizedDescription
         )
         self.state = state
+        activeOperation = nil
     }
 
     private func failLocally(state: DeployWorkflowState, message: String) {
@@ -308,6 +354,18 @@ final class DeployWorkflowStore: ObservableObject {
         )
         currentStage = nil
         self.state = state
+        activeOperation = nil
+    }
+
+    private func rejectRun(state: DeployWorkflowState, message: String) {
+        error = BackendErrorViewModel(
+            operation: "deploy",
+            code: "operation_rejected",
+            message: message
+        )
+        currentStage = nil
+        self.state = state
+        activeOperation = nil
     }
 
     private func nonNegativeInteger(_ text: String) -> Int? {
@@ -316,5 +374,19 @@ final class DeployWorkflowStore: ObservableObject {
             return nil
         }
         return value
+    }
+
+    private func run(operation: String, params: [String: JSONValue], profile: DeviceProfile?) -> OperationStartResult {
+        if let coordinator {
+            return coordinator.run(operation: operation, params: params, profile: profile)
+        } else {
+            guard !backend.isRunning else {
+                return .rejected("Another operation is already running.")
+            }
+            let context = profile?.runtimeContext
+            let activeOperation = ActiveOperation(operation: operation, profileID: profile?.id, context: context)
+            backend.run(operation: operation, params: params, context: profile?.runtimeContext)
+            return .started(activeOperation)
+        }
     }
 }

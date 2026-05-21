@@ -31,6 +31,13 @@ from timecapsulesmb.services.runtime import ssh_target_link_local_resolution_err
 from timecapsulesmb.transport.ssh import SshConnection
 
 
+def configure_ssh_target(value: str) -> str:
+    host = value.strip()
+    if not host or "@" in host:
+        return host
+    return f"root@{host}"
+
+
 def configure_operation(params: dict[str, object], sink: EventSink) -> OperationResult:
     operation = "configure"
     sink.stage(operation, "load_existing_config")
@@ -39,7 +46,7 @@ def configure_operation(params: dict[str, object], sink: EventSink) -> Operation
     existing = parse_env_file(env_path)
     configure_id = str(uuid.uuid4())
     ssh_opts = string_param(params, "ssh_opts", existing.get("TC_SSH_OPTS", DEFAULTS["TC_SSH_OPTS"]))
-    host = string_param(params, "host") or selected_record_host(params) or existing.get("TC_HOST", "")
+    host = configure_ssh_target(string_param(params, "host") or selected_record_host(params) or existing.get("TC_HOST", ""))
     password = require_string_param(params, "password")
     if not host:
         raise AppOperationError("missing required parameter: host", code="validation_failed")

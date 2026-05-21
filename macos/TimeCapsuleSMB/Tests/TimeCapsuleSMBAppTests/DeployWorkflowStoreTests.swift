@@ -60,6 +60,26 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[0].params["credentials"], .object(["password": .string("pw")]))
     }
 
+    func testRejectedPlanDoesNotEnterPlanning() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: .object(["ok": .bool(true)]))
+            ], delayNanoseconds: 100_000_000)
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let store = DeployWorkflowStore(coordinator: coordinator)
+
+        _ = coordinator.run(operation: "doctor", profile: nil)
+        try await waitUntilStoreState { runner.calls.count == 1 }
+        let result = store.runPlan(password: "pw")
+
+        XCTAssertEqual(result.rejectionMessage, "Another operation is already running.")
+        XCTAssertEqual(store.state, .planFailed)
+        XCTAssertEqual(store.error?.code, "operation_rejected")
+        XCTAssertEqual(runner.calls.count, 1)
+        try await waitUntilStoreState { !store.isRunning }
+    }
+
     func testMalformedPlanPayloadMovesToPlanFailed() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [

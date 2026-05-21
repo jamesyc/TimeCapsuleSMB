@@ -27,7 +27,8 @@ final class BackendClientTests: XCTestCase {
             [RecordingHelperRunner.Call(
                 helperPath: "/tmp/tcapsule",
                 operation: "paths",
-                params: ["dry_run": .bool(true)]
+                params: ["dry_run": .bool(true)],
+                context: nil
             )]
         )
     }
@@ -110,6 +111,97 @@ final class BackendClientTests: XCTestCase {
         XCTAssertEqual(client.pendingConfirmation?.params["dry_run"], .bool(false))
     }
 
+    func testProfileContextInjectsConfigAndPreservesExplicitConfig() async throws {
+        let runner = RecordingHelperRunner(
+            events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: .object(["ok": .bool(true)]))
+            ],
+            result: HelperRunResult(exitCode: 0, sawTerminalEvent: true, stderr: "")
+        )
+        let client = BackendClient(runner: runner)
+        let context = DeviceRuntimeContext(profileID: "device-one", configURL: URL(fileURLWithPath: "/tmp/device-one/.env"))
+
+        client.run(operation: "doctor", params: [:], context: context)
+
+        try await waitUntil { !client.isRunning && runner.calls.count == 1 }
+        XCTAssertEqual(runner.calls[0].context, context)
+        XCTAssertEqual(runner.calls[0].params["config"], .string("/tmp/device-one/.env"))
+
+        client.run(
+            operation: "doctor",
+            params: ["config": .string("/tmp/manual.env")],
+            context: context
+        )
+
+        try await waitUntil { !client.isRunning && runner.calls.count == 2 }
+        XCTAssertEqual(runner.calls[1].params["config"], .string("/tmp/manual.env"))
+    }
+
+    func testConfirmationReplayPreservesDeviceContext() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(
+                    type: "error",
+                    operation: "deploy",
+                    code: "confirmation_required",
+                    message: "Confirm deploy.",
+                    details: .object([
+                        "confirmation_id": .string("confirm-1")
+                    ])
+                )
+            ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")),
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload())
+            ])
+        ])
+        let client = BackendClient(runner: runner)
+        let context = DeviceRuntimeContext(profileID: "device-one", configURL: URL(fileURLWithPath: "/tmp/device-one/.env"))
+
+        client.run(operation: "deploy", params: ["dry_run": .bool(false)], context: context)
+        try await waitUntil { client.pendingConfirmation != nil && !client.isRunning }
+        XCTAssertEqual(client.pendingConfirmation?.context, context)
+
+        client.confirmPending()
+
+        try await waitUntil { !client.isRunning && runner.calls.count == 2 }
+        XCTAssertEqual(runner.calls[0].context, context)
+        XCTAssertEqual(runner.calls[1].context, context)
+        XCTAssertEqual(runner.calls[1].params["confirmation_id"], .string("confirm-1"))
+        XCTAssertEqual(runner.calls[1].params["config"], .string("/tmp/device-one/.env"))
+    }
+
+    func testOperationCoordinatorRejectsSecondOperationWhileActive() async throws {
+        let runner = RecordingHelperRunner(
+            events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: .object(["ok": .bool(true)]))
+            ],
+            result: HelperRunResult(exitCode: 0, sawTerminalEvent: true, stderr: ""),
+            delayNanoseconds: 200_000_000
+        )
+        let client = BackendClient(runner: runner)
+        let coordinator = OperationCoordinator(backend: client)
+        let context = DeviceRuntimeContext(profileID: "device-one", configURL: URL(fileURLWithPath: "/tmp/device-one/.env"))
+
+        guard case .started(let activeOperation) = coordinator.run(operation: "doctor", context: context, activeDeviceID: "device-one") else {
+            XCTFail("Expected first operation to start.")
+            return
+        }
+        guard case .rejected(let rejectionMessage) = coordinator.run(operation: "deploy", context: context, activeDeviceID: "device-one") else {
+            XCTFail("Expected second operation to be rejected.")
+            return
+        }
+        XCTAssertEqual(activeOperation.operation, "doctor")
+        XCTAssertEqual(activeOperation.profileID, "device-one")
+        XCTAssertEqual(rejectionMessage, "Another operation is already running.")
+        XCTAssertEqual(coordinator.rejectedOperationMessage, "Another operation is already running.")
+        XCTAssertEqual(coordinator.activeOperation, activeOperation)
+        XCTAssertEqual(coordinator.activeDeviceID, "device-one")
+
+        try await waitUntil { !client.isRunning }
+        XCTAssertNil(coordinator.activeOperation)
+        XCTAssertNil(coordinator.activeDeviceID)
+    }
+
     private func waitUntil(
         timeoutNanoseconds: UInt64 = 2_000_000_000,
         _ condition: @escaping @MainActor () -> Bool
@@ -130,6 +222,7 @@ private final class RecordingHelperRunner: HelperRunning, @unchecked Sendable {
         let helperPath: String?
         let operation: String
         let params: [String: JSONValue]
+        let context: DeviceRuntimeContext?
     }
 
     private let queue = DispatchQueue(label: "TimeCapsuleSMBAppTests.RecordingHelperRunner")
@@ -152,10 +245,11 @@ private final class RecordingHelperRunner: HelperRunning, @unchecked Sendable {
         helperPath: String?,
         operation: String,
         params: [String: JSONValue],
+        context: DeviceRuntimeContext?,
         onEvent: @escaping @Sendable (BackendEvent) async -> Void
     ) async -> HelperRunResult {
         queue.sync {
-            storedCalls.append(Call(helperPath: helperPath, operation: operation, params: params))
+            storedCalls.append(Call(helperPath: helperPath, operation: operation, params: params, context: context))
         }
 
         if delayNanoseconds > 0 {

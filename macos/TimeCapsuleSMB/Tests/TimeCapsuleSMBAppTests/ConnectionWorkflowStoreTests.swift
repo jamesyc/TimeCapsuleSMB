@@ -374,6 +374,7 @@ private final class WorkflowRecordingRunner: HelperRunning, @unchecked Sendable 
         let helperPath: String?
         let operation: String
         let params: [String: JSONValue]
+        let context: DeviceRuntimeContext?
     }
 
     struct Response: Sendable {
@@ -405,10 +406,11 @@ private final class WorkflowRecordingRunner: HelperRunning, @unchecked Sendable 
         helperPath: String?,
         operation: String,
         params: [String: JSONValue],
+        context: DeviceRuntimeContext?,
         onEvent: @escaping @Sendable (BackendEvent) async -> Void
     ) async -> HelperRunResult {
         let response = queue.sync {
-            storedCalls.append(Call(helperPath: helperPath, operation: operation, params: params))
+            storedCalls.append(Call(helperPath: helperPath, operation: operation, params: params, context: context))
             if storedResponses.isEmpty {
                 return Response(
                     events: [BackendEvent.error(operation: operation, code: "missing_test_response", message: "No test response queued.")],

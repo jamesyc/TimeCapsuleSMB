@@ -74,12 +74,41 @@ final class BackendPayloadTests: XCTestCase {
             "properties": {"syAP": "119", "model": "Time Capsule"},
             "fullname": "TC._airport._tcp.local."
           }],
-          "counts": {"instances": 1, "resolved": 1},
-          "summary": "discovered 1 resolved AirPort service(s)."
+          "devices": [{
+            "id": "bonjour:tc._airport._tcp.local",
+            "name": "TC",
+            "host": "10.0.0.2",
+            "ssh_host": "root@10.0.0.2",
+            "hostname": "tc.local.",
+            "addresses": ["10.0.0.2"],
+            "ipv4": ["10.0.0.2"],
+            "ipv6": [],
+            "preferred_ipv4": "10.0.0.2",
+            "link_local_only": false,
+            "syap": "119",
+            "model": "Time Capsule",
+            "service_type": "_airport._tcp.local.",
+            "fullname": "TC._airport._tcp.local.",
+            "selected_record": {
+              "name": "TC",
+              "hostname": "tc.local.",
+              "service_type": "_airport._tcp.local.",
+              "port": 5009,
+              "ipv4": ["10.0.0.2"],
+              "ipv6": [],
+              "services": ["_airport._tcp.local."],
+              "properties": {"syAP": "119", "model": "Time Capsule"},
+              "fullname": "TC._airport._tcp.local."
+            }
+          }],
+          "counts": {"instances": 1, "resolved": 1, "devices": 1},
+          "summary": "discovered 1 Time Capsule device(s)."
         }
         """).decode(DiscoverPayload.self)
 
         XCTAssertEqual(discovery.resolved[0].name, "TC")
+        XCTAssertEqual(discovery.devices[0].host, "10.0.0.2")
+        XCTAssertEqual(discovery.devices[0].selectedRecord.stringValue(for: "fullname"), "TC._airport._tcp.local.")
         XCTAssertEqual(discovery.resolved[0].properties["syAP"], "119")
         XCTAssertEqual(discovery.resolved[0].jsonValue.stringValue(for: "name"), "TC")
 

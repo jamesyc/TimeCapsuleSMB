@@ -51,6 +51,26 @@ final class MaintenanceStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[1].params["credentials"], .object(["password": .string("pw2")]))
     }
 
+    func testRejectedActivationPlanDoesNotEnterPlanning() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: .object(["ok": .bool(true)]))
+            ], delayNanoseconds: 100_000_000)
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let store = MaintenanceStore(coordinator: coordinator)
+
+        _ = coordinator.run(operation: "doctor", profile: nil)
+        try await waitUntilStoreState { runner.calls.count == 1 }
+        let result = store.planActivation(password: "pw")
+
+        XCTAssertEqual(result.rejectionMessage, "Another operation is already running.")
+        XCTAssertEqual(store.activateState, .failed)
+        XCTAssertEqual(store.error?.code, "operation_rejected")
+        XCTAssertEqual(runner.calls.count, 1)
+        try await waitUntilStoreState { !store.isRunning }
+    }
+
     func testActivationRequiresPlanAndHandlesConfirmationReplay() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [

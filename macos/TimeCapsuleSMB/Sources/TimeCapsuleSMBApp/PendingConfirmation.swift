@@ -7,10 +7,12 @@ struct PendingConfirmation: Identifiable {
     let actionTitle: String
     let operation: String
     let params: [String: JSONValue]
+    let context: DeviceRuntimeContext?
 
     init?(
         confirmationEvent event: BackendEvent,
-        originalParams: [String: JSONValue]
+        originalParams: [String: JSONValue],
+        context: DeviceRuntimeContext? = nil
     ) {
         guard
             event.type == "error",
@@ -28,6 +30,7 @@ struct PendingConfirmation: Identifiable {
         var confirmedParams = originalParams
         confirmedParams["confirmation_id"] = .string(confirmationId)
         self.params = confirmedParams
+        self.context = context
     }
 
     private static func detailString(_ details: [String: JSONValue], _ key: String) -> String? {

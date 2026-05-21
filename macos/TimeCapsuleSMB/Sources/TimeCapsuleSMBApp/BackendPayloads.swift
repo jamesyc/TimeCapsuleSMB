@@ -93,6 +93,7 @@ struct DiscoverPayload: Decodable, Equatable {
     let schemaVersion: Int
     let instances: [BonjourServiceInstancePayload]
     let resolved: [BonjourResolvedServicePayload]
+    let devices: [DiscoveredDevicePayload]
     let counts: [String: Int]
     let summary: String
 
@@ -100,8 +101,74 @@ struct DiscoverPayload: Decodable, Equatable {
         case schemaVersion = "schema_version"
         case instances
         case resolved
+        case devices
         case counts
         case summary
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        self.instances = try container.decodeIfPresent([BonjourServiceInstancePayload].self, forKey: .instances) ?? []
+        self.resolved = try container.decodeIfPresent([BonjourResolvedServicePayload].self, forKey: .resolved) ?? []
+        self.devices = try container.decodeIfPresent([DiscoveredDevicePayload].self, forKey: .devices) ?? []
+        self.counts = try container.decodeIfPresent([String: Int].self, forKey: .counts) ?? [:]
+        self.summary = try container.decodeIfPresent(String.self, forKey: .summary) ?? ""
+    }
+}
+
+struct DiscoveredDevicePayload: Decodable, Equatable {
+    let id: String
+    let name: String
+    let host: String
+    let sshHost: String?
+    let hostname: String
+    let addresses: [String]
+    let ipv4: [String]
+    let ipv6: [String]
+    let preferredIPv4: String?
+    let linkLocalOnly: Bool
+    let syap: String?
+    let model: String?
+    let serviceType: String
+    let fullname: String
+    let selectedRecord: JSONValue
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case host
+        case sshHost = "ssh_host"
+        case hostname
+        case addresses
+        case ipv4
+        case ipv6
+        case preferredIPv4 = "preferred_ipv4"
+        case linkLocalOnly = "link_local_only"
+        case syap
+        case model
+        case serviceType = "service_type"
+        case fullname
+        case selectedRecord = "selected_record"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decodeIfPresent(String.self, forKey: .id) ?? ""
+        self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
+        self.host = try container.decodeIfPresent(String.self, forKey: .host) ?? ""
+        self.sshHost = try container.decodeIfPresent(String.self, forKey: .sshHost)
+        self.hostname = try container.decodeIfPresent(String.self, forKey: .hostname) ?? ""
+        self.addresses = try container.decodeIfPresent([String].self, forKey: .addresses) ?? []
+        self.ipv4 = try container.decodeIfPresent([String].self, forKey: .ipv4) ?? []
+        self.ipv6 = try container.decodeIfPresent([String].self, forKey: .ipv6) ?? []
+        self.preferredIPv4 = try container.decodeIfPresent(String.self, forKey: .preferredIPv4)
+        self.linkLocalOnly = try container.decodeIfPresent(Bool.self, forKey: .linkLocalOnly) ?? false
+        self.syap = try container.decodeIfPresent(String.self, forKey: .syap)
+        self.model = try container.decodeIfPresent(String.self, forKey: .model)
+        self.serviceType = try container.decodeIfPresent(String.self, forKey: .serviceType) ?? ""
+        self.fullname = try container.decodeIfPresent(String.self, forKey: .fullname) ?? ""
+        self.selectedRecord = try container.decodeIfPresent(JSONValue.self, forKey: .selectedRecord) ?? .null
     }
 }
 

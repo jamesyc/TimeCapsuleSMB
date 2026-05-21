@@ -43,6 +43,17 @@ struct DiscoveredDevice: Identifiable, Equatable {
     let model: String?
     let rawRecord: JSONValue
 
+    init(payload: DiscoveredDevicePayload, index: Int) {
+        self.id = payload.id.isEmpty ? "discovered-\(index)" : payload.id
+        self.name = payload.name.isEmpty ? (payload.hostname.isEmpty ? "AirPort Device" : payload.hostname) : payload.name
+        self.host = payload.host
+        self.hostname = payload.hostname
+        self.addresses = payload.addresses.isEmpty ? payload.ipv4 + payload.ipv6 : payload.addresses
+        self.syap = payload.syap
+        self.model = payload.model
+        self.rawRecord = payload.selectedRecord
+    }
+
     init(record: BonjourResolvedServicePayload, index: Int) {
         let stableParts = [
             record.fullname,
@@ -274,9 +285,9 @@ final class ConnectionWorkflowStore: ObservableObject {
     private func applyDiscoverResult(_ event: BackendEvent) {
         do {
             let payload = try event.decodePayload(DiscoverPayload.self)
-            let discoveredDevices = payload.resolved.enumerated().map { index, record in
-                DiscoveredDevice(record: record, index: index)
-            }
+            let discoveredDevices = payload.devices.isEmpty
+                ? payload.resolved.enumerated().map { index, record in DiscoveredDevice(record: record, index: index) }
+                : payload.devices.enumerated().map { index, device in DiscoveredDevice(payload: device, index: index) }
             devices = discoveredDevices
             selectedDeviceID = discoveredDevices.count == 1 ? discoveredDevices[0].id : nil
             error = nil

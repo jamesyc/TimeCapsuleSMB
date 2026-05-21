@@ -12,6 +12,7 @@ public protocol HelperRunning: Sendable {
         helperPath: String?,
         operation: String,
         params: [String: JSONValue],
+        context: DeviceRuntimeContext?,
         onEvent: @escaping @Sendable (BackendEvent) async -> Void
     ) async -> HelperRunResult
 }
@@ -31,6 +32,7 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
         helperPath: String?,
         operation: String,
         params: [String: JSONValue],
+        context: DeviceRuntimeContext? = nil,
         onEvent: @escaping @Sendable (BackendEvent) async -> Void
     ) async -> HelperRunResult {
         let terminalTracker = TerminalEventTracker()
@@ -50,7 +52,7 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
         let process = Process()
         process.executableURL = resolution.executableURL
         process.arguments = ["api"]
-        process.environment = locator.helperEnvironment(for: resolution)
+        process.environment = locator.helperEnvironment(for: resolution, context: context)
 
         let input = Pipe()
         let output = Pipe()
@@ -75,7 +77,11 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
         }
 
         do {
-            let request = ["operation": JSONValue.string(operation), "params": JSONValue.object(params)]
+            var requestParams = params
+            if let context, requestParams["config"] == nil {
+                requestParams["config"] = .string(context.configURL.path)
+            }
+            let request = ["operation": JSONValue.string(operation), "params": JSONValue.object(requestParams)]
             let requestData = try JSONEncoder().encode(JSONValue.object(request))
             try input.fileHandleForWriting.write(contentsOf: requestData)
             try input.fileHandleForWriting.close()

@@ -1,178 +1,884 @@
+import AppKit
 import SwiftUI
 
 public struct ContentView: View {
-    @StateObject private var backend: BackendClient
-    @StateObject private var appReadinessStore: AppReadinessStore
-    @StateObject private var connectionStore: ConnectionWorkflowStore
-    @StateObject private var deployStore: DeployWorkflowStore
-    @StateObject private var doctorStore: DoctorStore
-    @StateObject private var maintenanceStore: MaintenanceStore
-    @State private var selection: Screen = .connect
+    @StateObject private var appStore: AppStore
+    @StateObject private var addDeviceStore: AddDeviceFlowStore
+    @StateObject private var dashboardStore: DashboardStore
     @State private var diagnosticsPresented = false
-    @State private var password = ""
+    @State private var replacementPassword = ""
+    @State private var profilePendingDeletion: DeviceProfile?
+    @State private var deleteErrorMessage: String?
 
     @MainActor
     public init() {
-        let backend = BackendClient()
-        _backend = StateObject(wrappedValue: backend)
-        _appReadinessStore = StateObject(wrappedValue: AppReadinessStore(backend: backend))
-        _connectionStore = StateObject(wrappedValue: ConnectionWorkflowStore(backend: backend))
-        _deployStore = StateObject(wrappedValue: DeployWorkflowStore(backend: backend))
-        _doctorStore = StateObject(wrappedValue: DoctorStore(backend: backend))
-        _maintenanceStore = StateObject(wrappedValue: MaintenanceStore(backend: backend))
+        let appStore = AppStore()
+        _appStore = StateObject(wrappedValue: appStore)
+        _addDeviceStore = StateObject(wrappedValue: AddDeviceFlowStore(
+            coordinator: appStore.operationCoordinator,
+            registry: appStore.deviceRegistry,
+            passwordStore: appStore.passwordStore
+        ))
+        _dashboardStore = StateObject(wrappedValue: DashboardStore(appStore: appStore))
     }
 
     public var body: some View {
         NavigationSplitView {
-            List(Screen.allCases, selection: $selection) { screen in
-                Label(screen.title, systemImage: screen.icon)
-                    .tag(screen)
-            }
-            .navigationTitle("TimeCapsuleSMB")
+            sidebar
         } detail: {
             VStack(spacing: 0) {
-                if case .blocked = appReadinessStore.state {
-                    AppReadinessBlockedView(store: appReadinessStore) {
+                if case .blocked = appStore.appReadinessStore.state {
+                    AppReadinessBlockedView(store: appStore.appReadinessStore) {
                         diagnosticsPresented = true
                     }
                 } else {
-                    AppReadinessBannerView(store: appReadinessStore) {
+                    AppReadinessBannerView(store: appStore.appReadinessStore) {
                         diagnosticsPresented = true
                     }
-                    form
+                    detail
                 }
-                Divider()
-                EventList(events: visibleEvents)
             }
             .toolbar {
                 ToolbarItemGroup {
+                    Button {
+                        appStore.showAddDevice()
+                    } label: {
+                        Label("Add", systemImage: "plus")
+                    }
                     Button {
                         diagnosticsPresented = true
                     } label: {
                         Label("Diagnostics", systemImage: "wrench.and.screwdriver")
                     }
                     Button {
-                        clearActive()
+                        if let profile = appStore.selectedProfile {
+                            profilePendingDeletion = profile
+                        } else {
+                            appStore.operationCoordinator.clear()
+                        }
                     } label: {
-                        Label(L10n.string("toolbar.clear"), systemImage: "trash")
+                        Label(appStore.selectedProfile == nil ? L10n.string("toolbar.clear") : "Forget", systemImage: "trash")
                     }
-                    .disabled(backend.isRunning)
+                    .disabled(appStore.backend.isRunning)
                     Button {
-                        backend.cancel()
+                        appStore.operationCoordinator.cancel()
                     } label: {
                         Label(L10n.string("toolbar.cancel"), systemImage: "xmark.circle")
                     }
-                    .disabled(!backend.canCancel)
+                    .disabled(!appStore.backend.canCancel)
                 }
             }
         }
-        .frame(minWidth: 980, minHeight: 680)
+        .frame(minWidth: 1080, minHeight: 720)
         .task {
-            appReadinessStore.start()
+            appStore.start()
+        }
+        .onChange(of: addDeviceStore.savedProfile) { profile in
+            guard let profile else { return }
+            appStore.select(profile)
         }
         .sheet(isPresented: $diagnosticsPresented) {
             AppDiagnosticsView(
-                store: appReadinessStore,
-                events: backend.events,
-                helperPath: $backend.helperPath
+                store: appStore.appReadinessStore,
+                events: appStore.backend.events,
+                helperPath: Binding(
+                    get: { appStore.backend.helperPath },
+                    set: { appStore.backend.helperPath = $0 }
+                )
             )
         }
-        .alert(
-            backend.pendingConfirmation?.title ?? "",
-            isPresented: confirmationPresented,
-            presenting: backend.pendingConfirmation
-        ) { confirmation in
-            Button(confirmation.actionTitle, role: .destructive) {
-                backend.confirmPending()
+        .confirmationDialog(
+            "Forget Time Capsule?",
+            isPresented: deleteConfirmationPresented,
+            presenting: profilePendingDeletion
+        ) { profile in
+            Button("Forget \(profile.title)", role: .destructive) {
+                do {
+                    try appStore.forget(profile)
+                    profilePendingDeletion = nil
+                } catch {
+                    deleteErrorMessage = error.localizedDescription
+                }
             }
             Button(L10n.string("action.cancel"), role: .cancel) {
-                backend.pendingConfirmation = nil
+                profilePendingDeletion = nil
+            }
+        } message: { profile in
+            Text("Remove \(profile.title) from this Mac. This does not uninstall SMB from the Time Capsule.")
+        }
+        .alert("Could Not Forget Time Capsule", isPresented: deleteErrorPresented) {
+            Button("OK", role: .cancel) {
+                deleteErrorMessage = nil
+            }
+        } message: {
+            Text(deleteErrorMessage ?? "")
+        }
+        .alert(
+            appStore.backend.pendingConfirmation?.title ?? "",
+            isPresented: confirmationPresented,
+            presenting: appStore.backend.pendingConfirmation
+        ) { confirmation in
+            Button(confirmation.actionTitle, role: .destructive) {
+                appStore.backend.confirmPending()
+            }
+            Button(L10n.string("action.cancel"), role: .cancel) {
+                appStore.backend.pendingConfirmation = nil
             }
         } message: { confirmation in
             Text(confirmation.message)
         }
     }
 
-    private var confirmationPresented: Binding<Bool> {
+    private var deleteConfirmationPresented: Binding<Bool> {
         Binding(
-            get: { backend.pendingConfirmation != nil },
+            get: { profilePendingDeletion != nil },
             set: { isPresented in
                 if !isPresented {
-                    backend.pendingConfirmation = nil
+                    profilePendingDeletion = nil
                 }
             }
         )
     }
 
+    private var deleteErrorPresented: Binding<Bool> {
+        Binding(
+            get: { deleteErrorMessage != nil },
+            set: { isPresented in
+                if !isPresented {
+                    deleteErrorMessage = nil
+                }
+            }
+        )
+    }
+
+    private var confirmationPresented: Binding<Bool> {
+        Binding(
+            get: { appStore.backend.pendingConfirmation != nil },
+            set: { isPresented in
+                if !isPresented {
+                    appStore.backend.pendingConfirmation = nil
+                }
+            }
+        )
+    }
+
+    private var sidebarSelection: Binding<String?> {
+        Binding(
+            get: {
+                if appStore.showingAddDevice {
+                    return "add"
+                }
+                if let selectedDeviceID = appStore.selectedDeviceID {
+                    return "device:\(selectedDeviceID)"
+                }
+                return "all"
+            },
+            set: { value in
+                guard let value else { return }
+                if value == "add" {
+                    appStore.showAddDevice()
+                } else if value == "all" {
+                    appStore.selectedDeviceID = nil
+                    appStore.showingAddDevice = false
+                } else if value.hasPrefix("device:") {
+                    let id = String(value.dropFirst("device:".count))
+                    if let profile = appStore.deviceRegistry.profile(id: id) {
+                        appStore.select(profile)
+                    }
+                }
+            }
+        )
+    }
+
+    private var sidebar: some View {
+        List(selection: sidebarSelection) {
+            Label("All Time Capsules", systemImage: "externaldrive.connected.to.line.below")
+                .tag("all")
+
+            Section("Devices") {
+                ForEach(appStore.deviceRegistry.profiles) { profile in
+                    Label(profile.title, systemImage: "externaldrive")
+                        .tag("device:\(profile.id)")
+                }
+            }
+
+            Section {
+                Label("Add Time Capsule", systemImage: "plus.circle")
+                    .tag("add")
+            }
+        }
+        .navigationTitle("TimeCapsuleSMB")
+        .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
+    }
+
     @ViewBuilder
-    private var form: some View {
-        switch selection {
-        case .connect:
-            ConnectView(store: connectionStore, password: $password)
-        case .deploy:
-            DeployView(store: deployStore, password: $password)
-        case .doctor:
-            DoctorView(store: doctorStore, password: $password)
-        case .maintenance:
-            MaintenanceView(store: maintenanceStore, password: $password)
-        case .advanced:
-            CommandPanel(title: L10n.string("screen.advanced")) {
-                Text(L10n.string("advanced.flash_cli_only"))
+    private var detail: some View {
+        if appStore.showingAddDevice {
+            AddDeviceView(store: addDeviceStore)
+        } else if let profile = appStore.selectedProfile {
+            DeviceDashboardView(
+                profile: profile,
+                dashboardStore: dashboardStore,
+                appStore: appStore,
+                replacementPassword: $replacementPassword
+            )
+        } else {
+            DeviceListOverviewView(appStore: appStore)
+        }
+    }
+}
+
+private struct DeviceListOverviewView: View {
+    @ObservedObject var appStore: AppStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(appStore.deviceRegistry.profiles.isEmpty ? "No Time Capsules Saved" : "All Time Capsules")
+                .font(.title2.weight(.semibold))
+            if appStore.deviceRegistry.profiles.isEmpty {
+                Text("Add a Time Capsule to configure SMB, run checkups, and manage maintenance tasks.")
                     .foregroundStyle(.secondary)
-                Text(L10n.string("advanced.flash_help"))
-                    .font(.system(.body, design: .monospaced))
+                Button {
+                    appStore.showAddDevice()
+                } label: {
+                    Label("Add Time Capsule", systemImage: "plus.circle")
+                }
+            } else {
+                ForEach(appStore.deviceRegistry.profiles) { profile in
+                    Button {
+                        appStore.select(profile)
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(profile.title)
+                                    .font(.body.weight(.medium))
+                                Text(profile.host)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(profile.payloadFamily ?? "Unchecked")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    Divider()
+                }
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct AddDeviceView: View {
+    @ObservedObject var store: AddDeviceFlowStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Add Time Capsule")
+                    .font(.title2.weight(.semibold))
+                Spacer()
+                Picker("Connection Method", selection: Binding(
+                    get: { store.entryMode },
+                    set: { store.setEntryMode($0) }
+                )) {
+                    ForEach(AddDeviceEntryMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 360)
+            }
+
+            HStack {
+                if store.entryMode == .discover {
+                    Text(store.currentStage?.description ?? "Browse for AirPort Bonjour services")
+                        .foregroundStyle(.secondary)
+                    Button {
+                        store.runDiscover()
+                    } label: {
+                        Label(L10n.string("button.discover"), systemImage: "network")
+                    }
+                    .disabled(store.isRunning || store.bonjourTimeoutValue == nil)
+                }
+                Label(store.state.title, systemImage: statusIcon)
+                    .foregroundStyle(statusColor)
+            }
+            .frame(minHeight: 28, alignment: .center)
+
+            if store.entryMode == .discover && !store.devices.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Discovered Devices")
+                        .font(.headline)
+                    ForEach(store.devices) { device in
+                        Button {
+                            store.select(device)
+                        } label: {
+                            DeviceCandidateRow(device: device, selected: store.selectedDeviceID == device.id)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            HStack {
+                TextField("Host or IP", text: Binding(
+                    get: { store.hostFieldText },
+                    set: { store.manualHost = $0 }
+                ))
+                .disabled(!store.isHostFieldEditable)
+                SecureField("Time Capsule password", text: $store.password)
+            }
+
+            HStack {
+                Button {
+                    store.runConfigure()
+                } label: {
+                    Label("Save Device", systemImage: "checkmark.circle")
+                }
+                .disabled(!store.canConfigure)
+
+                Button {
+                    store.reset()
+                } label: {
+                    Label("Reset", systemImage: "arrow.counterclockwise")
+                }
+                .disabled(store.isRunning)
+            }
+
+            if let profile = store.savedProfile {
+                Label("Saved \(profile.title)", systemImage: "checkmark.circle")
+                    .foregroundStyle(.green)
+            }
+
+            if let error = store.error {
+                ErrorBlock(error: error)
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var statusIcon: String {
+        switch store.state {
+        case .idle, .manualEntry, .passwordEntry:
+            return "circle"
+        case .discovering, .configuring, .savingProfile:
+            return "hourglass"
+        case .discoveryReady, .saved:
+            return "checkmark.circle"
+        case .discoveryEmpty:
+            return "magnifyingglass"
+        case .authFailed, .unsupported, .failed:
+            return "exclamationmark.triangle"
+        }
+    }
+
+    private var statusColor: Color {
+        switch store.state {
+        case .discoveryReady, .saved:
+            return .green
+        case .authFailed, .unsupported, .failed:
+            return .red
+        default:
+            return .secondary
+        }
+    }
+}
+
+private struct DeviceCandidateRow: View {
+    let device: DiscoveredDevice
+    let selected: Bool
+
+    var body: some View {
+        HStack {
+            Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+            VStack(alignment: .leading) {
+                Text(device.name)
+                Text([device.host, device.hostname].filter { !$0.isEmpty }.joined(separator: "  "))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(device.model ?? device.syap ?? "")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 6)
+    }
+}
+
+private struct DeviceDashboardView: View {
+    let profile: DeviceProfile
+    @ObservedObject var dashboardStore: DashboardStore
+    @ObservedObject var appStore: AppStore
+    @Binding var replacementPassword: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Picker("", selection: $dashboardStore.selectedTab) {
+                ForEach(DeviceDashboardTab.allCases) { tab in
+                    Text(tab.title).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding()
+
+            Divider()
+
+            ScrollView {
+                Group {
+                    switch dashboardStore.selectedTab {
+                    case .overview:
+                        OverviewTab(profile: profile, dashboardStore: dashboardStore, appStore: appStore, replacementPassword: $replacementPassword)
+                    case .install:
+                        InstallTab(profile: profile, dashboardStore: dashboardStore)
+                    case .checkup:
+                        CheckupTab(profile: profile, dashboardStore: dashboardStore)
+                    case .maintenance:
+                        MaintenanceTab(profile: profile, dashboardStore: dashboardStore)
+                    case .advanced:
+                        AdvancedTab(profile: profile, appStore: appStore)
+                    }
+                }
+                .padding()
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+}
+
+private struct OverviewTab: View {
+    let profile: DeviceProfile
+    @ObservedObject var dashboardStore: DashboardStore
+    @ObservedObject var appStore: AppStore
+    @Binding var replacementPassword: String
+
+    var body: some View {
+        let summary = dashboardStore.summary(for: profile)
+        VStack(alignment: .leading, spacing: 16) {
+            if let warning = summary.hostWarning {
+                WarningBanner(warning: warning)
+            }
+
+            Text(profile.title)
+                .font(.title2.weight(.semibold))
+
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+                GridRow { Text("Host").foregroundStyle(.secondary); Text(profile.host) }
+                GridRow { Text("Model").foregroundStyle(.secondary); Text(profile.model ?? "Unknown") }
+                GridRow { Text("Generation").foregroundStyle(.secondary); Text(profile.deviceGeneration ?? "Unknown") }
+                GridRow { Text("Payload").foregroundStyle(.secondary); Text(profile.payloadFamily ?? "Unknown") }
+                GridRow { Text("Password").foregroundStyle(.secondary); Text(summary.passwordState.rawValue) }
+                GridRow { Text("Last Checkup").foregroundStyle(.secondary); Text(profile.lastCheckup?.summary ?? "Never") }
+                GridRow { Text("Last Install").foregroundStyle(.secondary); Text(profile.lastDeploy?.summary ?? "Never") }
+            }
+
+            HStack {
+                Button(primaryActionTitle(summary.primaryAction)) {
+                    runPrimary(summary.primaryAction)
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button {
+                    dashboardStore.runCheckup(profile: profile)
+                } label: {
+                    Label("Run Checkup", systemImage: "stethoscope")
+                }
+            }
+
+            HStack {
+                SecureField("Replacement password", text: $replacementPassword)
+                Button {
+                    try? appStore.savePassword(replacementPassword, for: profile)
+                    replacementPassword = ""
+                } label: {
+                    Label("Save Password", systemImage: "key")
+                }
+                .disabled(replacementPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            if let passwordError = dashboardStore.passwordError {
+                Text(passwordError)
+                    .foregroundStyle(.red)
             }
         }
     }
 
-    private func clearActive() {
-        switch selection {
-        case .connect:
-            connectionStore.clear()
-        case .deploy:
-            deployStore.clear()
-        case .doctor:
-            doctorStore.clear()
-        case .maintenance:
-            maintenanceStore.clear()
-        default:
-            backend.clear()
+    private func primaryActionTitle(_ action: DashboardPrimaryAction) -> String {
+        switch action {
+        case .addDevice:
+            return "Add Time Capsule"
+        case .replacePassword:
+            return "Replace Password"
+        case .runCheckup:
+            return "Run Checkup"
+        case .installSMB:
+            return "Install SMB"
+        case .viewCheckup:
+            return "View Checkup"
+        case .openSMB:
+            return "Open SMB Address"
         }
     }
 
-    private var visibleEvents: [BackendEvent] {
-        backend.events.filter { !["capabilities", "validate-install"].contains($0.operation) }
+    private func runPrimary(_ action: DashboardPrimaryAction) {
+        switch action {
+        case .replacePassword:
+            replacementPassword = ""
+        case .runCheckup:
+            dashboardStore.runCheckup(profile: profile)
+        case .viewCheckup:
+            dashboardStore.selectedTab = .checkup
+        case .openSMB:
+            openSMBAddress()
+        case .installSMB:
+            dashboardStore.runInstallPlan(profile: profile)
+        case .addDevice:
+            appStore.showAddDevice()
+        }
     }
 
+    private func openSMBAddress() {
+        let host = profile.host
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"^.*@"#, with: "", options: .regularExpression)
+        guard !host.isEmpty, let url = URL(string: "smb://\(host)") else {
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
 }
 
-private enum Screen: String, CaseIterable, Identifiable {
-    case connect
-    case deploy
-    case doctor
-    case maintenance
-    case advanced
+private struct InstallTab: View {
+    let profile: DeviceProfile
+    @ObservedObject var dashboardStore: DashboardStore
 
-    var id: String { rawValue }
+    var body: some View {
+        let store = dashboardStore.deployStore
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Install / Update")
+                .font(.title2.weight(.semibold))
+            HStack {
+                Toggle(L10n.string("toggle.enable_nbns"), isOn: $dashboardStore.deployStore.nbnsEnabled)
+                Toggle(L10n.string("toggle.no_reboot"), isOn: $dashboardStore.deployStore.noReboot)
+                Toggle(L10n.string("toggle.no_wait"), isOn: $dashboardStore.deployStore.noWait)
+                Toggle(L10n.string("toggle.force_debug_logging"), isOn: $dashboardStore.deployStore.debugLogging)
+                TextField(L10n.string("field.mount_wait"), text: $dashboardStore.deployStore.mountWait)
+                    .frame(width: 150)
+            }
+            HStack {
+                Button {
+                    dashboardStore.runInstallPlan(profile: profile)
+                } label: {
+                    Label("Plan Install", systemImage: "doc.text.magnifyingglass")
+                }
+                .disabled(store.isRunning || store.mountWaitValue == nil)
+                Button {
+                    dashboardStore.runInstall(profile: profile)
+                } label: {
+                    Label("Install SMB", systemImage: "square.and.arrow.up")
+                }
+                .disabled(!store.canDeploy)
+                Label(store.state.title, systemImage: "circle")
+            }
+            if let stage = store.currentStage {
+                StageLine(stage: stage)
+            }
+            if let plan = store.plan {
+                SummaryGrid(rows: [
+                    ("Host", plan.host),
+                    ("Payload", plan.payloadFamily ?? "unknown"),
+                    ("Reboot", plan.requiresReboot ? "required" : "not required"),
+                    ("Actions", "\(plan.uploads.count) uploads")
+                ])
+            }
+            if let result = store.result {
+                SummaryGrid(rows: [
+                    ("Verified", result.verified == true ? "yes" : "no"),
+                    ("Reboot Requested", result.rebootRequested == true ? "yes" : "no"),
+                    ("Message", result.message ?? "Install completed.")
+                ])
+            }
+            if let error = store.error {
+                ErrorBlock(error: error)
+            }
+        }
+    }
+}
 
-    var title: String {
-        switch self {
-        case .connect: return L10n.string("screen.connect")
-        case .deploy: return L10n.string("screen.deploy")
-        case .doctor: return L10n.string("screen.doctor")
-        case .maintenance: return L10n.string("screen.maintenance")
-        case .advanced: return L10n.string("screen.advanced")
+private struct CheckupTab: View {
+    let profile: DeviceProfile
+    @ObservedObject var dashboardStore: DashboardStore
+
+    var body: some View {
+        let store = dashboardStore.doctorStore
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Checkup")
+                .font(.title2.weight(.semibold))
+            HStack {
+                TextField(L10n.string("field.bonjour_timeout"), text: $dashboardStore.doctorStore.bonjourTimeout)
+                    .frame(width: 180)
+                Button {
+                    dashboardStore.runCheckup(profile: profile)
+                } label: {
+                    Label("Run Checkup", systemImage: "stethoscope")
+                }
+                .disabled(store.isRunning || store.bonjourTimeoutValue == nil)
+                Label(store.state.title, systemImage: "circle")
+            }
+            if let stage = store.currentStage {
+                StageLine(stage: stage)
+            }
+            if let summary = store.summary {
+                SummaryGrid(rows: [
+                    ("PASS", "\(summary.passCount)"),
+                    ("WARN", "\(summary.warnCount)"),
+                    ("FAIL", "\(summary.failCount)"),
+                    ("INFO", "\(summary.infoCount)")
+                ])
+                ForEach(summary.groups) { group in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(group.domain).font(.headline)
+                        ForEach(Array(group.checks.enumerated()), id: \.offset) { _, check in
+                            HStack {
+                                Text(check.status)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .frame(width: 44, alignment: .leading)
+                                Text(check.message)
+                                    .font(.caption)
+                            }
+                        }
+                    }
+                }
+            }
+            if let error = store.error {
+                ErrorBlock(error: error)
+            }
+        }
+    }
+}
+
+private struct MaintenanceTab: View {
+    let profile: DeviceProfile
+    @ObservedObject var dashboardStore: DashboardStore
+
+    var body: some View {
+        let store = dashboardStore.maintenanceStore
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Maintenance")
+                .font(.title2.weight(.semibold))
+            Picker("Maintenance", selection: $dashboardStore.maintenanceStore.selectedWorkflow) {
+                Text("NetBSD4 Activation").tag(MaintenanceWorkflow.activate)
+                Text("Uninstall").tag(MaintenanceWorkflow.uninstall)
+                Text("Disk Repair").tag(MaintenanceWorkflow.fsck)
+                Text("File Metadata Repair").tag(MaintenanceWorkflow.repairXattrs)
+            }
+            .pickerStyle(.segmented)
+
+            HStack {
+                TextField(L10n.string("field.mount_wait"), text: $dashboardStore.maintenanceStore.mountWait)
+                    .frame(width: 150)
+                Toggle(L10n.string("toggle.no_reboot"), isOn: $dashboardStore.maintenanceStore.noReboot)
+                Toggle(L10n.string("toggle.no_wait"), isOn: $dashboardStore.maintenanceStore.noWait)
+            }
+
+            maintenanceControls(store: store)
+
+            if let stage = store.currentStage {
+                StageLine(stage: stage)
+            }
+            if let error = store.error {
+                ErrorBlock(error: error)
+            }
         }
     }
 
-    var icon: String {
-        switch self {
-        case .connect: return "network"
-        case .deploy: return "square.and.arrow.up"
-        case .doctor: return "stethoscope"
-        case .maintenance: return "wrench.and.screwdriver"
-        case .advanced: return "exclamationmark.triangle"
+    @ViewBuilder
+    private func maintenanceControls(store: MaintenanceStore) -> some View {
+        switch store.selectedWorkflow {
+        case .activate:
+            HStack {
+                Button("Plan Start SMB") {
+                    if let password = dashboardStore.maintenancePassword(for: profile) {
+                        store.planActivation(password: password, profile: profile)
+                    }
+                }
+                Button("Start SMB") {
+                    if let password = dashboardStore.maintenancePassword(for: profile) {
+                        store.runActivation(password: password, profile: profile)
+                    }
+                }
+                .disabled(!store.canRunActivation)
+                Label(store.activateState.title, systemImage: "circle")
+            }
+        case .uninstall:
+            HStack {
+                Button("Plan Uninstall") {
+                    if let password = dashboardStore.maintenancePassword(for: profile) {
+                        store.planUninstall(password: password, profile: profile)
+                    }
+                }
+                Button("Uninstall") {
+                    if let password = dashboardStore.maintenancePassword(for: profile) {
+                        store.runUninstall(password: password, profile: profile)
+                    }
+                }
+                .disabled(!store.canRunUninstall)
+                Label(store.uninstallState.title, systemImage: "circle")
+            }
+        case .fsck:
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Button("Find Volumes") {
+                        if let password = dashboardStore.maintenancePassword(for: profile) {
+                            store.refreshFsckTargets(password: password, profile: profile)
+                        }
+                    }
+                    Button("Plan Disk Repair") {
+                        if let password = dashboardStore.maintenancePassword(for: profile) {
+                            store.planFsck(password: password, profile: profile)
+                        }
+                    }
+                    .disabled(!store.canPlanFsck)
+                    Button("Run Disk Repair") {
+                        if let password = dashboardStore.maintenancePassword(for: profile) {
+                            store.runFsck(password: password, profile: profile)
+                        }
+                    }
+                    .disabled(!store.canRunFsck)
+                    Label(store.fsckState.title, systemImage: "circle")
+                }
+                ForEach(store.fsckTargets) { target in
+                    Button {
+                        store.selectedFsckTargetID = target.id
+                    } label: {
+                        HStack {
+                            Image(systemName: store.selectedFsckTargetID == target.id ? "checkmark.circle.fill" : "circle")
+                            Text(target.name ?? target.device)
+                            Text(target.mountpoint).foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        case .repairXattrs:
+            VStack(alignment: .leading, spacing: 8) {
+                TextField(L10n.string("field.repair_xattrs_path"), text: $dashboardStore.maintenanceStore.repairPath)
+                HStack {
+                    Button("Scan Metadata") {
+                        store.scanRepairXattrs()
+                    }
+                    Button("Repair Metadata") {
+                        store.runRepairXattrs()
+                    }
+                    .disabled(!store.canRepairXattrs)
+                    Label(store.repairState.title, systemImage: "circle")
+                }
+                if let scan = store.repairScan {
+                    Text("\(scan.repairableCount) repairable item(s)")
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
+    }
+}
+
+private struct AdvancedTab: View {
+    let profile: DeviceProfile
+    @ObservedObject var appStore: AppStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Advanced")
+                .font(.title2.weight(.semibold))
+            SummaryGrid(rows: [
+                ("Profile ID", profile.id),
+                ("Config", profile.configPath),
+                ("Helper", appStore.backend.helperPath.isEmpty ? "Auto" : appStore.backend.helperPath)
+            ])
+            EventList(events: appStore.backend.events)
+        }
+    }
+}
+
+private struct WarningBanner: View {
+    let warning: HostCompatibilityWarning
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.yellow)
+            VStack(alignment: .leading) {
+                Text(warning.title)
+                    .font(.body.weight(.medium))
+                Text(warning.message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .background(Color.yellow.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+private struct SummaryGrid: View {
+    let rows: [(String, String)]
+
+    var body: some View {
+        Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                GridRow {
+                    Text(row.0).foregroundStyle(.secondary)
+                    Text(row.1)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                }
+            }
+        }
+        .font(.caption)
+    }
+}
+
+private struct StageLine: View {
+    let stage: OperationStageState
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(stage.stage)
+                .font(.system(.caption, design: .monospaced))
+            if let description = stage.description {
+                Text(description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct ErrorBlock: View {
+    let error: BackendErrorViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(error.recovery?.title ?? error.code)
+                .font(.body.weight(.medium))
+            Text(error.message)
+                .font(.caption)
+            if let recovery = error.recovery, !recovery.actions.isEmpty {
+                ForEach(recovery.actions, id: \.self) { action in
+                    Text(action)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .foregroundStyle(.red)
     }
 }
 
@@ -332,21 +1038,6 @@ private struct AppDiagnosticsView: View {
         }
         .padding()
         .frame(minWidth: 720, minHeight: 520)
-    }
-}
-
-private struct CommandPanel<Content: View>: View {
-    let title: String
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(.title2.weight(.semibold))
-            content
-        }
-        .padding()
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

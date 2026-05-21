@@ -1,6 +1,14 @@
 import Foundation
 
 enum OperationParams {
+    private static func rootSSHTarget(_ host: String) -> String {
+        let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.contains("@") else {
+            return trimmed
+        }
+        return "root@\(trimmed)"
+    }
+
     private static func withCredentials(_ params: [String: JSONValue], password: String) -> [String: JSONValue] {
         let trimmed = password.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -22,12 +30,13 @@ enum OperationParams {
         debugLogging: Bool
     ) -> [String: JSONValue] {
         var params: [String: JSONValue] = [
-            "password": .string(password)
+            "password": .string(password),
+            "persist_password": .bool(false)
         ]
         if let selectedRecord {
             params["selected_record"] = selectedRecord
         } else {
-            params["host"] = .string(host)
+            params["host"] = .string(rootSSHTarget(host))
         }
         if debugLogging {
             params["debug_logging"] = .bool(true)

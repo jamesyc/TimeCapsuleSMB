@@ -1,0 +1,234 @@
+import XCTest
+@testable import TimeCapsuleSMBApp
+
+@MainActor
+final class DashboardStoreTests: XCTestCase {
+    func testNoDeviceRegistryLeavesNoSelectedProfile() throws {
+        let fixture = try makeFixture(responses: [])
+
+        XCTAssertEqual(fixture.registry.state, .empty)
+        XCTAssertNil(fixture.appStore.selectedProfile)
+    }
+
+    func testPrimaryActionDerivesFromPasswordCheckupAndDeployState() throws {
+        let fixture = try makeFixture(responses: [])
+        let profile = try fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .missing,
+            preferredID: "device-one"
+        )
+
+        XCTAssertEqual(fixture.appStore.dashboardSummary(for: profile).primaryAction, .replacePassword)
+
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        XCTAssertEqual(fixture.appStore.dashboardSummary(for: profile).primaryAction, .runCheckup)
+
+        fixture.registry.updateCheckup(DeviceCheckupSnapshot(
+            checkedAt: Date(timeIntervalSince1970: 100),
+            state: .passed,
+            passCount: 2,
+            warnCount: 0,
+            failCount: 0,
+            summary: "healthy"
+        ), for: profile.id)
+        let checked = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+        XCTAssertEqual(fixture.appStore.dashboardSummary(for: checked).primaryAction, .installSMB)
+
+        fixture.registry.updateDeploy(DeviceDeploySnapshot(
+            deployedAt: Date(timeIntervalSince1970: 110),
+            state: .deployed,
+            payloadFamily: "netbsd6_samba4",
+            rebootRequested: true,
+            verified: true,
+            summary: "installed"
+        ), for: profile.id)
+        let installed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+        XCTAssertEqual(fixture.appStore.dashboardSummary(for: installed).primaryAction, .openSMB)
+
+        fixture.registry.updateCheckup(DeviceCheckupSnapshot(
+            checkedAt: Date(timeIntervalSince1970: 120),
+            state: .warning,
+            passCount: 1,
+            warnCount: 1,
+            failCount: 0,
+            summary: "warning"
+        ), for: profile.id)
+        let warning = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+        XCTAssertEqual(fixture.appStore.dashboardSummary(for: warning).primaryAction, .viewCheckup)
+    }
+
+    func testDashboardOperationsUpdateLastCheckupAndDeploySnapshots() async throws {
+        let fixture = try makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime"),
+                    testDoctorCheck(status: "WARN", message: "bonjour missing", domain: "Bonjour")
+                ]))
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload(payloadFamily: "netbsd6_samba4"))
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload(payloadFamily: "netbsd6_samba4"))
+            ])
+        ])
+        let profile = try fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        fixture.appStore.select(profile)
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+
+        dashboard.runCheckup(profile: profile)
+
+        try await waitUntilStoreState { dashboard.doctorStore.state == .warning }
+        let checked = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+        XCTAssertEqual(checked.lastCheckup?.state, .warning)
+        XCTAssertEqual(checked.lastCheckup?.warnCount, 1)
+        XCTAssertEqual(fixture.runner.calls[0].params["credentials"], .object(["password": .string("pw")]))
+        XCTAssertEqual(fixture.runner.calls[0].context?.profileID, profile.id)
+
+        dashboard.runInstallPlan(profile: checked)
+        try await waitUntilStoreState { dashboard.deployStore.state == .planReady }
+        dashboard.runInstall(profile: checked)
+
+        try await waitUntilStoreState { dashboard.deployStore.state == .deployed }
+        let installed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
+        XCTAssertEqual(installed.lastDeploy?.state, .deployed)
+        XCTAssertEqual(installed.lastDeploy?.payloadFamily, "netbsd6_samba4")
+        XCTAssertEqual(installed.lastDeploy?.verified, true)
+        XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(true))
+        XCTAssertEqual(fixture.runner.calls[2].params["dry_run"], .bool(false))
+        XCTAssertEqual(fixture.runner.calls[2].context?.profileID, profile.id)
+    }
+
+    func testCheckupSnapshotUsesStartedProfileWhenSelectionChanges() async throws {
+        let fixture = try makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+                ]))
+            ], delayNanoseconds: 100_000_000)
+        ])
+        let first = try fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let second = try fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-two"
+        )
+        try fixture.passwordStore.save("pw", for: first.keychainAccount)
+        fixture.appStore.select(first)
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+
+        dashboard.runCheckup(profile: first)
+        fixture.appStore.select(second)
+
+        try await waitUntilStoreState { dashboard.doctorStore.state == .passed }
+        XCTAssertEqual(fixture.registry.profile(id: first.id)?.lastCheckup?.state, .passed)
+        XCTAssertNil(fixture.registry.profile(id: second.id)?.lastCheckup)
+    }
+
+    func testDeploySnapshotUsesStartedProfileWhenSelectionChanges() async throws {
+        let fixture = try makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployPlanPayload(payloadFamily: "netbsd6_samba4"))
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: testDeployResultPayload(payloadFamily: "netbsd6_samba4"))
+            ], delayNanoseconds: 100_000_000)
+        ])
+        let first = try fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let second = try fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-two"
+        )
+        try fixture.passwordStore.save("pw", for: first.keychainAccount)
+        fixture.appStore.select(first)
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+
+        dashboard.runInstallPlan(profile: first)
+        try await waitUntilStoreState { dashboard.deployStore.state == .planReady }
+        dashboard.runInstall(profile: first)
+        fixture.appStore.select(second)
+
+        try await waitUntilStoreState { dashboard.deployStore.state == .deployed }
+        XCTAssertEqual(fixture.registry.profile(id: first.id)?.lastDeploy?.state, .deployed)
+        XCTAssertNil(fixture.registry.profile(id: second.id)?.lastDeploy)
+    }
+
+    func testPasswordLookupFailureMarksProfileMissing() throws {
+        let fixture = try makeFixture(responses: [])
+        let profile = try fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .unknown,
+            preferredID: "device-one"
+        )
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+
+        dashboard.runCheckup(profile: profile)
+
+        XCTAssertEqual(dashboard.passwordError, "Password is required.")
+        XCTAssertEqual(fixture.registry.profile(id: profile.id)?.passwordState, .missing)
+    }
+
+    func testForgetProfileDeletesRegistryConfigDirectoryAndPassword() throws {
+        let fixture = try makeFixture(responses: [])
+        let profile = try fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        let configDirectory = URL(fileURLWithPath: profile.configPath).deletingLastPathComponent()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: configDirectory.path))
+        fixture.appStore.select(profile)
+
+        try fixture.appStore.forget(profile)
+
+        XCTAssertEqual(fixture.registry.profiles, [])
+        XCTAssertNil(fixture.appStore.selectedProfile)
+        XCTAssertNil(fixture.appStore.selectedDeviceID)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: configDirectory.path))
+        XCTAssertEqual(fixture.passwordStore.state(for: profile.keychainAccount), .missing)
+    }
+
+    private func makeFixture(responses: [StoreTestRunner.Response]) throws -> (
+        appStore: AppStore,
+        registry: DeviceRegistryStore,
+        passwordStore: InMemoryPasswordStore,
+        runner: StoreTestRunner
+    ) {
+        let temp = try TemporaryDirectory()
+        let registry = DeviceRegistryStore(applicationSupportURL: temp.url)
+        registry.load()
+        let runner = StoreTestRunner(responses: responses)
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let passwordStore = InMemoryPasswordStore()
+        let appStore = AppStore(
+            appReadinessStore: AppReadinessStore(backend: coordinator.backend),
+            deviceRegistry: registry,
+            operationCoordinator: coordinator,
+            passwordStore: passwordStore
+        )
+        return (appStore, registry, passwordStore, runner)
+    }
+}

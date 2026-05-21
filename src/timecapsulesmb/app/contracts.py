@@ -48,13 +48,15 @@ def _device_payload(*, host: str | None = None, syap: str | None = None, model: 
 def discover_payload(raw: Mapping[str, object]) -> dict[str, object]:
     instances = list(raw.get("instances", [])) if isinstance(raw.get("instances"), list) else []
     resolved = list(raw.get("resolved", [])) if isinstance(raw.get("resolved"), list) else []
+    devices = list(raw.get("devices", [])) if isinstance(raw.get("devices"), list) else []
     return _with_schema({
         **raw,
         "counts": {
             "instances": len(instances),
             "resolved": len(resolved),
+            "devices": len(devices),
         },
-        "summary": f"discovered {len(resolved)} resolved AirPort service(s).",
+        "summary": f"discovered {len(devices)} Time Capsule device(s).",
     })
 
 

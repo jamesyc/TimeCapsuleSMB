@@ -8,7 +8,7 @@ struct DoctorOptions: Equatable {
     let skipSMB: Bool
 }
 
-enum DoctorWorkflowState: String, CaseIterable, Equatable {
+enum DoctorWorkflowState: String, CaseIterable, Equatable, Codable {
     case idle
     case running
     case passed
@@ -99,7 +99,9 @@ final class DoctorStore: ObservableObject {
     @Published private(set) var currentStage: OperationStageState?
 
     let backend: BackendClient
+    private let coordinator: OperationCoordinator?
 
+    private var activeOperation: ActiveOperation?
     private var lastProcessedEventCount = 0
     private var cancellables: Set<AnyCancellable> = []
 
@@ -109,6 +111,17 @@ final class DoctorStore: ObservableObject {
 
     init(backend: BackendClient) {
         self.backend = backend
+        self.coordinator = nil
+        observeBackend(backend)
+    }
+
+    init(coordinator: OperationCoordinator) {
+        self.backend = coordinator.backend
+        self.coordinator = coordinator
+        observeBackend(coordinator.backend)
+    }
+
+    private func observeBackend(_ backend: BackendClient) {
         backend.$events
             .sink { [weak self] events in
                 Task { @MainActor in
@@ -134,19 +147,18 @@ final class DoctorStore: ObservableObject {
         nonNegativeDouble(bonjourTimeout)
     }
 
-    func runDoctor(password: String) {
+    @discardableResult
+    func runDoctor(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         guard let timeout = bonjourTimeoutValue else {
             failLocally(message: "Bonjour timeout must be a non-negative number.")
-            return
+            return .rejected("Bonjour timeout must be a non-negative number.")
+        }
+        guard !backend.isRunning else {
+            rejectRun("Another operation is already running.")
+            return .rejected("Another operation is already running.")
         }
         backend.clear()
-        lastProcessedEventCount = 0
-        state = .running
-        payload = nil
-        summary = nil
-        error = nil
-        currentStage = nil
-        backend.run(
+        let start = run(
             operation: "doctor",
             params: OperationParams.doctor(
                 bonjourTimeout: timeout,
@@ -154,8 +166,21 @@ final class DoctorStore: ObservableObject {
                 skipSSH: skipSSH,
                 skipBonjour: skipBonjour,
                 skipSMB: skipSMB
-            )
+            ),
+            profile: profile
         )
+        guard case .started(let operation) = start else {
+            rejectRun(start.rejectionMessage ?? "Operation could not start.")
+            return start
+        }
+        lastProcessedEventCount = 0
+        activeOperation = operation
+        state = .running
+        payload = nil
+        summary = nil
+        error = nil
+        currentStage = nil
+        return start
     }
 
     func clear() {
@@ -166,6 +191,7 @@ final class DoctorStore: ObservableObject {
         summary = nil
         error = nil
         currentStage = nil
+        activeOperation = nil
     }
 
     func cancel() {
@@ -189,6 +215,9 @@ final class DoctorStore: ObservableObject {
         guard event.operation == "doctor" else {
             return
         }
+        guard activeOperation?.operation == event.operation else {
+            return
+        }
 
         if let stage = OperationStageState(event: event) {
             currentStage = stage
@@ -198,6 +227,7 @@ final class DoctorStore: ObservableObject {
         if event.type == "error" {
             error = BackendErrorViewModel(event: event)
             state = .runFailed
+            activeOperation = nil
             return
         }
 
@@ -220,6 +250,7 @@ final class DoctorStore: ObservableObject {
             } else {
                 state = .passed
             }
+            activeOperation = nil
         } catch {
             self.error = BackendErrorViewModel(
                 operation: "doctor",
@@ -227,6 +258,7 @@ final class DoctorStore: ObservableObject {
                 message: error.localizedDescription
             )
             state = .runFailed
+            activeOperation = nil
         }
     }
 
@@ -238,6 +270,18 @@ final class DoctorStore: ObservableObject {
         )
         currentStage = nil
         state = .runFailed
+        activeOperation = nil
+    }
+
+    private func rejectRun(_ message: String) {
+        error = BackendErrorViewModel(
+            operation: "doctor",
+            code: "operation_rejected",
+            message: message
+        )
+        currentStage = nil
+        state = .runFailed
+        activeOperation = nil
     }
 
     private func nonNegativeDouble(_ text: String) -> Double? {
@@ -246,5 +290,19 @@ final class DoctorStore: ObservableObject {
             return nil
         }
         return value
+    }
+
+    private func run(operation: String, params: [String: JSONValue], profile: DeviceProfile?) -> OperationStartResult {
+        if let coordinator {
+            return coordinator.run(operation: operation, params: params, profile: profile)
+        } else {
+            guard !backend.isRunning else {
+                return .rejected("Another operation is already running.")
+            }
+            let context = profile?.runtimeContext
+            let activeOperation = ActiveOperation(operation: operation, profileID: profile?.id, context: context)
+            backend.run(operation: operation, params: params, context: context)
+            return .started(activeOperation)
+        }
     }
 }
