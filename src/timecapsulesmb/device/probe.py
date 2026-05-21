@@ -215,35 +215,10 @@ smbd_bound_445() {{
 
 mdns_bound_5353() {{
     fstat_out=$1
-    mdns_socket_families=$2
-    require_ipv4=0
-    require_ipv6=0
-    set -- $mdns_socket_families
-    for token in "$@"; do
-        case "$token" in
-            ipv4) require_ipv4=1 ;;
-            ipv6) require_ipv6=1 ;;
-        esac
-    done
-    if [ "$require_ipv4" -eq 0 ] && [ "$require_ipv6" -eq 0 ]; then
-        require_ipv4=1
-    fi
-
-    has_ipv4=0
-    has_ipv6=0
     case "$fstat_out" in
-        *mdns-advertiser*" internet dgram udp "*":5353"*) has_ipv4=1 ;;
+        *mdns-advertiser*" internet dgram udp "*":5353"*) return 0 ;;
+        *) return 1 ;;
     esac
-    case "$fstat_out" in
-        *mdns-advertiser*" internet6 dgram udp "*":5353"*) has_ipv6=1 ;;
-    esac
-    if [ "$require_ipv4" -eq 1 ] && [ "$has_ipv4" -ne 1 ]; then
-        return 1
-    fi
-    if [ "$require_ipv6" -eq 1 ] && [ "$has_ipv6" -ne 1 ]; then
-        return 1
-    fi
-    return 0
 }}
 
 describe_managed_smbd_status() {{
@@ -361,8 +336,8 @@ describe_managed_mdns_status() {{
         fi
         status=1
     fi
-    if mdns_bound_5353 "$fstat_out" "$mdns_socket_families"; then
-        echo "PASS:mdns-advertiser bound to required UDP 5353 sockets"
+    if mdns_bound_5353 "$fstat_out"; then
+        echo "PASS:mdns-advertiser bound to IPv4 UDP 5353"
         if [ "$mdns_auto_ip_state" = "active" ]; then
             echo "PASS:mdns-advertiser bind address active"
         else

@@ -3174,7 +3174,7 @@ MaSt = (
             "102\n",
         )
 
-    def test_common_mdns_bound_udp_5353_requires_reported_socket_families(self) -> None:
+    def test_common_mdns_bound_udp_5353_requires_ipv4_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
@@ -3225,7 +3225,7 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "dual_missing_v6=1\ndual_bound=0\nipv4_only=0\n")
+        self.assertEqual(proc.stdout, "dual_missing_v6=0\ndual_bound=0\nipv4_only=0\n")
 
     def test_common_watchdog_restarts_mdns_when_running_without_udp_5353_and_auto_ip_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

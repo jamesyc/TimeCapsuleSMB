@@ -2,15 +2,15 @@
   "artifacts": {
     "mdns-advertiser": {
       "path": "bin/mdns/mdns-advertiser",
-      "sha256": "d9f42d88969b1642d77292272f234da4aaf0a24c0a9bf2aef786e278c5a9f976"
+      "sha256": "6a1aa44140912d3a5623147c15a85902403c3a4e2d6df7132f9689a2c8b669c8"
     },
     "mdns-advertiser-netbsd4le": {
       "path": "bin/mdns-netbsd4le/mdns-advertiser",
-      "sha256": "fb440bbf30716ab26cbf74c9a7ee7726e726913deabda65687ba2b47d3be12c6"
+      "sha256": "f32268151c66983d4e3493ca9faca0a098b5b2b330e5d51dbfb487c5e7a6cd16"
     },
     "mdns-advertiser-netbsd4be": {
       "path": "bin/mdns-netbsd4be/mdns-advertiser",
-      "sha256": "bae412d4dee9b3bb57f7397e26af48f4940004795b6a10a85224f913e4514954"
+      "sha256": "8e9e2b8e3a600fd0dbdf49db6be1ea6ea4e9bba736c7d60abec8dcc8108b65e7"
     },
     "nbns-advertiser": {
       "path": "bin/nbns/nbns-advertiser",
@@ -18,7 +18,7 @@
     },
     "nbns-advertiser-netbsd4le": {
       "path": "bin/nbns-netbsd4le/nbns-advertiser",
-      "sha256": "4e8b6c6f8778aa2f186d0732b5888a63d5c966c999d256ac714486e47c03e7a0"
+      "sha256": "97c93dd74ea3808d023880123267d0017346f5b8a786733055b9cf959954dd48"
     },
     "nbns-advertiser-netbsd4be": {
       "path": "bin/nbns-netbsd4be/nbns-advertiser",

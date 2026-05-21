@@ -48,6 +48,8 @@ struct link_context {
     char name[IFNAMSIZ];
     int flags;
     unsigned int ifindex;
+    int mdns_ipv4_transport;
+    uint32_t mdns_ipv4_transport_addr;
     int mdns_ipv6_transport;
     struct link_ipv4_addr ipv4[MAX_LINK_IPV4_ADDRS];
     size_t ipv4_count;
@@ -792,6 +794,7 @@ static int TC_AUTO_IP_UNUSED append_link_ipv4(struct link_context_set *out,
     pos = ctx->ipv4_count++;
     ctx->ipv4[pos].addr = ipv4_addr;
     ctx->ipv4[pos].netmask = netmask;
+    ctx->mdns_ipv4_transport = 1;
     if (ctx->ipv4_count == 1) {
         ctx->flags = flags;
     }
@@ -880,6 +883,19 @@ static int TC_AUTO_IP_UNUSED link_context_has_advertisable_address(const struct 
            link_context_has_advertisable_ipv6(ctx);
 }
 
+static int TC_AUTO_IP_UNUSED link_context_has_mdns_ipv4_transport(const struct link_context *ctx) {
+    return ctx->mdns_ipv4_transport && ctx->ipv4_count > 0;
+}
+
+static void TC_AUTO_IP_UNUSED disable_link_contexts_mdns_ipv4_transport(struct link_context_set *set) {
+    size_t i;
+
+    for (i = 0; i < set->count; i++) {
+        set->links[i].mdns_ipv4_transport = 0;
+        set->links[i].mdns_ipv4_transport_addr = 0;
+    }
+}
+
 static int TC_AUTO_IP_UNUSED link_context_has_mdns_ipv6_transport(const struct link_context *ctx) {
     return ctx->mdns_ipv6_transport && ctx->ifindex != 0 && ctx->ipv6_count > 0;
 }
@@ -921,6 +937,7 @@ static int TC_AUTO_IP_UNUSED link_context_identity_equal(const struct link_conte
     if (strcmp(a->name, b->name) != 0 ||
         a->flags != b->flags ||
         a->ifindex != b->ifindex ||
+        a->mdns_ipv4_transport != b->mdns_ipv4_transport ||
         a->mdns_ipv6_transport != b->mdns_ipv6_transport ||
         a->ipv4_count != b->ipv4_count ||
         a->ipv6_count != b->ipv6_count) {
@@ -1209,13 +1226,16 @@ static void TC_AUTO_IP_UNUSED log_link_contexts(const char *prefix, const struct
     fprintf(stderr, "%s: links=%lu\n", prefix, (unsigned long)set->count);
     for (i = 0; i < set->count; i++) {
         size_t j;
+        char transport_ip_buf[INET_ADDRSTRLEN];
         const struct link_context *ctx = &set->links[i];
-        fprintf(stderr, "%s: link[%lu] iface=%s flags=0x%x ifindex=%u mdns_ipv6=%d score=%d ipv4=%lu ipv6=%lu\n",
+        fprintf(stderr, "%s: link[%lu] iface=%s flags=0x%x ifindex=%u mdns_ipv4=%d mdns_ipv4_addr=%s mdns_ipv6=%d score=%d ipv4=%lu ipv6=%lu\n",
                 prefix,
                 (unsigned long)i,
                 ctx->name,
                 (unsigned int)ctx->flags,
                 ctx->ifindex,
+                ctx->mdns_ipv4_transport,
+                ctx->mdns_ipv4_transport_addr != 0 ? ipv4_to_string(ctx->mdns_ipv4_transport_addr, transport_ip_buf, sizeof(transport_ip_buf)) : "(auto)",
                 ctx->mdns_ipv6_transport,
                 link_context_priority_score(ctx),
                 (unsigned long)ctx->ipv4_count,

@@ -79,8 +79,14 @@
 #define DNS_CLASS_IN_UNIQUE (DNS_CLASS_IN | DNS_CLASS_CACHE_FLUSH)
 #define MDNS_REPLY_UNICAST 1
 #define MDNS_REPLY_MULTICAST 2
+#define MDNS_REPLY_LEGACY_UNICAST 4
 #define DNS_FLAG_QR 0x8000
+#define DNS_FLAG_TC 0x0200
 #define DNS_FLAG_AA 0x0400
+#define LEGACY_UNICAST_TTL_MAX 10
+#define TC_KNOWN_ANSWER_DEFER_MS 450
+#define PLANNED_RR_MAX 192
+#define PLANNED_RDATA_MAX 1024
 
 #if !defined(IPV6_JOIN_GROUP) && defined(IPV6_ADD_MEMBERSHIP)
 #define IPV6_JOIN_GROUP IPV6_ADD_MEMBERSHIP
@@ -301,27 +307,37 @@ struct mdns_membership_delta {
     size_t ipv6_count;
 };
 
-struct query_answer_routes {
-    int smb_ptr;
-    int smb_srv;
-    int smb_txt;
-    int host_a;
-    int host_aaaa;
-    int adisk_ptr;
-    int adisk_srv;
-    int adisk_txt;
-    int device_info_ptr;
-    int device_info_srv;
-    int device_info_txt;
-    int airport_ptr;
-    int airport_srv;
-    int airport_txt;
-    int snapshot_ptr[SNAPSHOT_MAX_RECORDS];
-    int snapshot_srv[SNAPSHOT_MAX_RECORDS];
-    int snapshot_txt[SNAPSHOT_MAX_RECORDS];
-    int snapshot_a[SNAPSHOT_MAX_RECORDS];
-    int snapshot_aaaa[SNAPSHOT_MAX_RECORDS];
+
+struct planned_rr {
+    char owner[MAX_NAME];
+    uint16_t type;
+    uint16_t rrclass;
+    uint32_t ttl;
+    uint8_t rdata[PLANNED_RDATA_MAX];
+    uint16_t rdlength;
+    int routes;
 };
+
+struct planned_rr_set {
+    struct planned_rr records[PLANNED_RR_MAX];
+    size_t count;
+    int truncated;
+};
+
+struct deferred_response {
+    int active;
+    int sockfd;
+    long long due_ms;
+    uint16_t response_id;
+    int use_snapshot_records;
+    struct sockaddr_storage multicast_dest;
+    socklen_t multicast_dest_len;
+    struct sockaddr_storage source;
+    socklen_t source_len;
+    struct planned_rr_set planned;
+};
+
+static struct deferred_response g_deferred_response;
 
 static int name_equals(const char *a, const char *b);
 static int build_instance_fqdn(char *out, size_t out_len, const char *instance_name, const char *service_type);
@@ -366,6 +382,13 @@ static const char *ipv4_to_string(uint32_t ipv4_addr, char *out, size_t out_len)
 }
 
 #include "auto-ip-common.inc"
+
+static uint32_t link_preferred_ipv4_source(const struct link_context *link);
+static int link_set_has_ipv4_membership(const struct link_context_set *set, uint32_t ipv4_addr);
+static int source_matches_link_ipv4_subnet(uint32_t source_ipv4_addr, const struct link_context *link);
+static int flush_deferred_response_if_due(long long now_ms);
+static long long deferred_response_adjust_wait_ms(long long now_ms, long long wait_ms);
+static void clear_deferred_response_for_sockfd(int sockfd);
 
 typedef int (*mdns_collect_iface_contexts_fn)(struct iface_context_set *out, void *userdata);
 typedef int (*mdns_collect_link_contexts_fn)(struct link_context_set *out, void *userdata);
@@ -2479,8 +2502,10 @@ static void send_capture_query_to_all_links(const struct mdns_socket_pair *socke
     size_t i;
 
     for (i = 0; i < links->count; i++) {
-        if (sockets->ipv4_fd >= 0 && links->links[i].ipv4_count > 0 &&
-            set_outbound_multicast_interface(sockets->ipv4_fd, links->links[i].ipv4[0].addr, "capture", 0, 0) == 0) {
+        uint32_t ipv4_source = link_preferred_ipv4_source(&links->links[i]);
+        if (sockets->ipv4_fd >= 0 && link_context_has_mdns_ipv4_transport(&links->links[i]) &&
+            ipv4_source != 0 &&
+            set_outbound_multicast_interface(sockets->ipv4_fd, ipv4_source, "capture", 0, 0) == 0) {
             (void)send_query_question_any(sockets->ipv4_fd,
                                           (const struct sockaddr *)dest4,
                                           sizeof(*dest4),
@@ -3135,11 +3160,93 @@ static int MDNS_UNUSED acquire_mdns_auto_socket(int shared_bind, const struct if
     return -1;
 }
 
+static int link_has_any_mdns_transport(const struct link_context *link) {
+    return link_context_has_mdns_ipv4_transport(link) ||
+           link_context_has_mdns_ipv6_transport(link);
+}
+
+static void compact_link_contexts_for_mdns_transport(struct link_context_set *set) {
+    size_t i;
+    size_t write_i = 0;
+
+    for (i = 0; i < set->count; i++) {
+        if (!link_has_any_mdns_transport(&set->links[i])) {
+            continue;
+        }
+        if (write_i != i) {
+            set->links[write_i] = set->links[i];
+        }
+        write_i++;
+    }
+    set->count = write_i;
+}
+
+static int link_ipv4_source_score(uint32_t ipv4_addr) {
+    if (ipv4_is_rfc1918(ipv4_addr)) {
+        return 0;
+    }
+    if (!ipv4_is_link_local(ipv4_addr)) {
+        return 100;
+    }
+    return 200;
+}
+
+static uint32_t link_preferred_ipv4_source(const struct link_context *link) {
+    size_t i;
+    uint32_t best = 0;
+    int best_score = 0;
+
+    if (link == NULL || link->ipv4_count == 0) {
+        return 0;
+    }
+    if (link->mdns_ipv4_transport_addr != 0) {
+        return link->mdns_ipv4_transport_addr;
+    }
+    for (i = 0; i < link->ipv4_count; i++) {
+        int score = link_ipv4_source_score(link->ipv4[i].addr);
+        if (best == 0 || score < best_score) {
+            best = link->ipv4[i].addr;
+            best_score = score;
+        }
+    }
+    return best;
+}
+
+static uint32_t link_ipv4_source_for_peer(const struct link_context *link, uint32_t source_ipv4_addr) {
+    size_t i;
+    uint32_t best = 0;
+    int best_score = 0;
+
+    if (link == NULL || source_ipv4_addr == 0) {
+        return link_preferred_ipv4_source(link);
+    }
+    for (i = 0; i < link->ipv4_count; i++) {
+        uint32_t netmask = link->ipv4[i].netmask;
+        int matches;
+        int score;
+
+        if (netmask == 0) {
+            matches = source_ipv4_addr == link->ipv4[i].addr;
+        } else {
+            matches = (source_ipv4_addr & netmask) == (link->ipv4[i].addr & netmask);
+        }
+        if (!matches) {
+            continue;
+        }
+        score = link_ipv4_source_score(link->ipv4[i].addr);
+        if (best == 0 || score < best_score) {
+            best = link->ipv4[i].addr;
+            best_score = score;
+        }
+    }
+    return best != 0 ? best : link_preferred_ipv4_source(link);
+}
+
 static int link_contexts_need_ipv4_socket(const struct link_context_set *set) {
     size_t i;
 
     for (i = 0; i < set->count; i++) {
-        if (link_context_has_advertisable_ipv4(&set->links[i])) {
+        if (link_context_has_mdns_ipv4_transport(&set->links[i])) {
             return 1;
         }
     }
@@ -3159,10 +3266,12 @@ static int link_contexts_need_ipv6_socket(const struct link_context_set *set) {
 
 static void close_mdns_socket_pair(struct mdns_socket_pair *sockets) {
     if (sockets->ipv4_fd >= 0) {
+        clear_deferred_response_for_sockfd(sockets->ipv4_fd);
         close(sockets->ipv4_fd);
         sockets->ipv4_fd = -1;
     }
     if (sockets->ipv6_fd >= 0) {
+        clear_deferred_response_for_sockfd(sockets->ipv6_fd);
         close(sockets->ipv6_fd);
         sockets->ipv6_fd = -1;
     }
@@ -3348,46 +3457,107 @@ static int set_outbound_multicast_interface6(int sockfd, unsigned int ifindex, c
     return 0;
 }
 
-static int configure_mdns_socket6_for_links(int sockfd, const struct link_context_set *set, const char *socket_role) {
+static int join_mdns_multicast_group_for_link4(int sockfd,
+                                               struct link_context *link,
+                                               const struct link_context_set *old_links,
+                                               const char *socket_role,
+                                               struct mdns_membership_delta *delta) {
     size_t i;
-    int joined = 0;
+    unsigned int tried_mask = 0;
+
+    if (!link_context_has_mdns_ipv4_transport(link)) {
+        return 0;
+    }
+
+    for (;;) {
+        size_t best_i = 0;
+        int best_score = 0;
+        int found = 0;
+
+        for (i = 0; i < link->ipv4_count; i++) {
+            int score;
+            if ((tried_mask & (1U << i)) != 0) {
+                continue;
+            }
+            score = link_ipv4_source_score(link->ipv4[i].addr);
+            if (!found || score < best_score) {
+                best_i = i;
+                best_score = score;
+                found = 1;
+            }
+        }
+
+        if (!found) {
+            break;
+        }
+        tried_mask |= 1U << best_i;
+
+        if (link_set_has_ipv4_membership(old_links, link->ipv4[best_i].addr)) {
+            link->mdns_ipv4_transport_addr = link->ipv4[best_i].addr;
+            return 1;
+        }
+        if (join_mdns_multicast_group(sockfd, link->ipv4[best_i].addr, socket_role) != 0) {
+            continue;
+        }
+        if (record_mdns_membership_ipv4(delta, link->ipv4[best_i].addr) != 0) {
+            drop_mdns_multicast_group_best_effort(sockfd, link->ipv4[best_i].addr, socket_role);
+            errno = ENOMEM;
+            return -1;
+        }
+        link->mdns_ipv4_transport_addr = link->ipv4[best_i].addr;
+        return 1;
+    }
+
+    fprintf(stderr, "warning: mdns %s socket: disabling IPv4 transport on iface=%s; no IPv4 multicast membership succeeded\n",
+            socket_role, link->name);
+    link->mdns_ipv4_transport = 0;
+    link->mdns_ipv4_transport_addr = 0;
+    return 0;
+}
+
+static int configure_mdns_socket6_for_links(int sockfd, struct link_context_set *set, const char *socket_role) {
+    size_t i;
+    unsigned int first_ifindex = 0;
 
     for (i = 0; i < set->count; i++) {
         if (!link_context_has_mdns_ipv6_transport(&set->links[i])) {
             continue;
         }
         if (join_mdns_multicast_group6(sockfd, set->links[i].ifindex, set->links[i].name, socket_role) != 0) {
-            return -1;
+            set->links[i].mdns_ipv6_transport = 0;
+            continue;
         }
-        joined = 1;
+        if (first_ifindex == 0) {
+            first_ifindex = set->links[i].ifindex;
+        }
     }
-    if (!joined) {
+    compact_link_contexts_for_mdns_transport(set);
+    if (first_ifindex == 0) {
         errno = EADDRNOTAVAIL;
         return -1;
     }
-    for (i = 0; i < set->count; i++) {
-        if (link_context_has_mdns_ipv6_transport(&set->links[i])) {
-            return set_outbound_multicast_interface6(sockfd, set->links[i].ifindex, socket_role, 1, 1);
-        }
-    }
-    return -1;
+    return set_outbound_multicast_interface6(sockfd, first_ifindex, socket_role, 1, 1);
 }
 
-static int configure_mdns_socket4_for_links(int sockfd, const struct link_context_set *set, const char *socket_role) {
+static int configure_mdns_socket4_for_links(int sockfd, struct link_context_set *set, const char *socket_role) {
     size_t i;
     uint32_t first_ipv4 = 0;
 
     for (i = 0; i < set->count; i++) {
-        if (set->links[i].ipv4_count == 0) {
+        int status;
+
+        if (!link_context_has_mdns_ipv4_transport(&set->links[i])) {
             continue;
         }
-        if (join_mdns_multicast_group(sockfd, set->links[i].ipv4[0].addr, socket_role) != 0) {
+        status = join_mdns_multicast_group_for_link4(sockfd, &set->links[i], NULL, socket_role, NULL);
+        if (status < 0) {
             return -1;
         }
-        if (first_ipv4 == 0) {
-            first_ipv4 = set->links[i].ipv4[0].addr;
+        if (status > 0 && first_ipv4 == 0) {
+            first_ipv4 = link_preferred_ipv4_source(&set->links[i]);
         }
     }
+    compact_link_contexts_for_mdns_transport(set);
     if (first_ipv4 == 0) {
         errno = EADDRNOTAVAIL;
         return -1;
@@ -3402,7 +3572,8 @@ static int link_set_has_ipv4_membership(const struct link_context_set *set, uint
         return 0;
     }
     for (i = 0; i < set->count; i++) {
-        if (set->links[i].ipv4_count > 0 && set->links[i].ipv4[0].addr == ipv4_addr) {
+        if (link_context_has_mdns_ipv4_transport(&set->links[i]) &&
+            link_preferred_ipv4_source(&set->links[i]) == ipv4_addr) {
             return 1;
         }
     }
@@ -3426,31 +3597,27 @@ static int link_set_has_ipv6_membership(const struct link_context_set *set, unsi
 
 static int prepare_mdns_socket4_memberships(int sockfd,
                                             const struct link_context_set *old_links,
-                                            const struct link_context_set *new_links,
+                                            struct link_context_set *new_links,
                                             const char *socket_role,
                                             struct mdns_membership_delta *delta) {
     size_t i;
     uint32_t first_ipv4 = 0;
 
     for (i = 0; i < new_links->count; i++) {
-        if (new_links->links[i].ipv4_count == 0) {
+        int status;
+
+        if (!link_context_has_mdns_ipv4_transport(&new_links->links[i])) {
             continue;
         }
-        if (first_ipv4 == 0) {
-            first_ipv4 = new_links->links[i].ipv4[0].addr;
-        }
-        if (link_set_has_ipv4_membership(old_links, new_links->links[i].ipv4[0].addr)) {
-            continue;
-        }
-        if (join_mdns_multicast_group(sockfd, new_links->links[i].ipv4[0].addr, socket_role) != 0) {
+        status = join_mdns_multicast_group_for_link4(sockfd, &new_links->links[i], old_links, socket_role, delta);
+        if (status < 0) {
             return -1;
         }
-        if (record_mdns_membership_ipv4(delta, new_links->links[i].ipv4[0].addr) != 0) {
-            drop_mdns_multicast_group_best_effort(sockfd, new_links->links[i].ipv4[0].addr, socket_role);
-            errno = ENOMEM;
-            return -1;
+        if (status > 0 && first_ipv4 == 0) {
+            first_ipv4 = link_preferred_ipv4_source(&new_links->links[i]);
         }
     }
+    compact_link_contexts_for_mdns_transport(new_links);
     if (first_ipv4 == 0) {
         errno = EADDRNOTAVAIL;
         return -1;
@@ -3460,7 +3627,7 @@ static int prepare_mdns_socket4_memberships(int sockfd,
 
 static int prepare_mdns_socket6_memberships(int sockfd,
                                             const struct link_context_set *old_links,
-                                            const struct link_context_set *new_links,
+                                            struct link_context_set *new_links,
                                             const char *socket_role,
                                             struct mdns_membership_delta *delta) {
     size_t i;
@@ -3470,14 +3637,15 @@ static int prepare_mdns_socket6_memberships(int sockfd,
         if (!link_context_has_mdns_ipv6_transport(&new_links->links[i])) {
             continue;
         }
-        if (first_ifindex == 0) {
-            first_ifindex = new_links->links[i].ifindex;
-        }
         if (link_set_has_ipv6_membership(old_links, new_links->links[i].ifindex)) {
+            if (first_ifindex == 0) {
+                first_ifindex = new_links->links[i].ifindex;
+            }
             continue;
         }
         if (join_mdns_multicast_group6(sockfd, new_links->links[i].ifindex, new_links->links[i].name, socket_role) != 0) {
-            return -1;
+            new_links->links[i].mdns_ipv6_transport = 0;
+            continue;
         }
         if (record_mdns_membership_ipv6(delta, new_links->links[i].ifindex, new_links->links[i].name) != 0) {
             drop_mdns_multicast_group6_best_effort(sockfd,
@@ -3487,7 +3655,11 @@ static int prepare_mdns_socket6_memberships(int sockfd,
             errno = ENOMEM;
             return -1;
         }
+        if (first_ifindex == 0) {
+            first_ifindex = new_links->links[i].ifindex;
+        }
     }
+    compact_link_contexts_for_mdns_transport(new_links);
     if (first_ifindex == 0) {
         errno = EADDRNOTAVAIL;
         return -1;
@@ -3501,6 +3673,7 @@ static int open_dualstack_mdns_sockets(int shared_bind,
                                        struct mdns_socket_pair *out) {
     int need_ipv4 = link_contexts_need_ipv4_socket(links);
     int need_ipv6 = link_contexts_need_ipv6_socket(links);
+    int ipv4_errno = 0;
     int ipv6_errno = 0;
 
     out->ipv4_fd = -1;
@@ -3513,8 +3686,23 @@ static int open_dualstack_mdns_sockets(int shared_bind,
         out->ipv4_fd = open_bound_mdns_socket(shared_bind, log_bind_errors);
         if (out->ipv4_fd < 0 ||
             configure_mdns_socket4_for_links(out->ipv4_fd, links, "runtime") != 0) {
-            close_mdns_socket_pair(out);
-            return -1;
+            ipv4_errno = errno;
+            if (out->ipv4_fd >= 0) {
+                clear_deferred_response_for_sockfd(out->ipv4_fd);
+                close(out->ipv4_fd);
+                out->ipv4_fd = -1;
+            }
+            disable_link_contexts_mdns_ipv4_transport(links);
+            compact_link_contexts_for_mdns_transport(links);
+            need_ipv4 = 0;
+            if (!need_ipv6) {
+                errno = ipv4_errno;
+                close_mdns_socket_pair(out);
+                return -1;
+            }
+            fprintf(stderr,
+                    "warning: mdns runtime socket: IPv4 setup failed (%s); continuing with remaining mDNS transports\n",
+                    strerror(ipv4_errno));
         }
     }
     if (need_ipv6) {
@@ -3523,20 +3711,28 @@ static int open_dualstack_mdns_sockets(int shared_bind,
             configure_mdns_socket6_for_links(out->ipv6_fd, links, "runtime") != 0) {
             ipv6_errno = errno;
             if (out->ipv6_fd >= 0) {
+                clear_deferred_response_for_sockfd(out->ipv6_fd);
                 close(out->ipv6_fd);
                 out->ipv6_fd = -1;
             }
             if (need_ipv4 && out->ipv4_fd >= 0) {
                 fprintf(stderr,
-                        "warning: mdns runtime socket: IPv6 setup failed (%s); continuing with IPv4 mDNS\n",
+                        "warning: mdns runtime socket: IPv6 setup failed (%s); continuing with remaining mDNS transports\n",
                         strerror(ipv6_errno));
                 disable_link_contexts_mdns_ipv6_transport(links);
+                compact_link_contexts_for_mdns_transport(links);
                 return 0;
             }
             close_mdns_socket_pair(out);
             errno = ipv6_errno;
             return -1;
         }
+    }
+    compact_link_contexts_for_mdns_transport(links);
+    if (links->count == 0) {
+        close_mdns_socket_pair(out);
+        errno = EADDRNOTAVAIL;
+        return -1;
     }
     return 0;
 }
@@ -4021,298 +4217,428 @@ static int send_announcement(int sockfd, const struct sockaddr_in *dest, const s
                                  use_snapshot_records);
 }
 
-static int query_routes_have_destination(const struct query_answer_routes *routes,
-                                         const struct service_record_set *snapshot_records,
-                                         int use_snapshot_records,
-                                         int route) {
-    size_t j;
+static int known_answer_ttl_is_fresh(uint32_t known_ttl, uint32_t advertised_ttl) {
+    return known_ttl > advertised_ttl / 2;
+}
 
-    if ((routes->smb_ptr | routes->smb_srv | routes->smb_txt | routes->host_a | routes->host_aaaa |
-         routes->adisk_ptr | routes->adisk_srv | routes->adisk_txt |
-         routes->device_info_ptr | routes->device_info_srv | routes->device_info_txt |
-         routes->airport_ptr | routes->airport_srv | routes->airport_txt) & route) {
-        return 1;
-    }
-    if (!use_snapshot_records) {
+static int planned_rr_rdata_equals(const struct planned_rr *rr, const uint8_t *rdata, uint16_t rdlength) {
+    return rr->rdlength == rdlength && memcmp(rr->rdata, rdata, rdlength) == 0;
+}
+
+static int planned_rr_add_raw(struct planned_rr_set *set,
+                              int routes,
+                              const char *owner,
+                              uint16_t type,
+                              uint16_t rrclass,
+                              uint32_t ttl,
+                              const uint8_t *rdata,
+                              uint16_t rdlength) {
+    size_t i;
+
+    if (routes == 0 || owner == NULL || owner[0] == '\0') {
         return 0;
     }
-    for (j = 0; j < snapshot_records->count; j++) {
-        if ((routes->snapshot_ptr[j] | routes->snapshot_srv[j] |
-             routes->snapshot_txt[j] | routes->snapshot_a[j] | routes->snapshot_aaaa[j]) & route) {
+    if (rdlength > PLANNED_RDATA_MAX) {
+        set->truncated = 1;
+        return -1;
+    }
+    for (i = 0; i < set->count; i++) {
+        if (set->records[i].type == type &&
+            set->records[i].rrclass == rrclass &&
+            name_equals(set->records[i].owner, owner) &&
+            planned_rr_rdata_equals(&set->records[i], rdata, rdlength)) {
+            set->records[i].routes |= routes;
+            return 0;
+        }
+    }
+    if (set->count >= PLANNED_RR_MAX) {
+        set->truncated = 1;
+        return -1;
+    }
+    strncpy(set->records[set->count].owner, owner, sizeof(set->records[set->count].owner) - 1);
+    set->records[set->count].owner[sizeof(set->records[set->count].owner) - 1] = '\0';
+    set->records[set->count].type = type;
+    set->records[set->count].rrclass = rrclass;
+    set->records[set->count].ttl = ttl;
+    memcpy(set->records[set->count].rdata, rdata, rdlength);
+    set->records[set->count].rdlength = rdlength;
+    set->records[set->count].routes = routes;
+    set->count++;
+    return 0;
+}
+
+static int planned_rr_add_name(struct planned_rr_set *set,
+                               int routes,
+                               const char *owner,
+                               uint16_t type,
+                               uint16_t rrclass,
+                               uint32_t ttl,
+                               const char *target) {
+    uint8_t rdata[PLANNED_RDATA_MAX];
+    size_t off = 0;
+
+    if (encode_name(rdata, &off, sizeof(rdata), target) != 0) {
+        return -1;
+    }
+    return planned_rr_add_raw(set, routes, owner, type, rrclass, ttl, rdata, (uint16_t)off);
+}
+
+static int planned_rr_add_srv(struct planned_rr_set *set,
+                              int routes,
+                              const char *owner,
+                              const char *target,
+                              uint16_t port,
+                              uint32_t ttl) {
+    uint8_t rdata[PLANNED_RDATA_MAX];
+    size_t off = 0;
+
+    if (append_u16(rdata, &off, sizeof(rdata), 0) != 0 ||
+        append_u16(rdata, &off, sizeof(rdata), 0) != 0 ||
+        append_u16(rdata, &off, sizeof(rdata), port) != 0 ||
+        encode_name(rdata, &off, sizeof(rdata), target) != 0) {
+        return -1;
+    }
+    return planned_rr_add_raw(set, routes, owner, DNS_TYPE_SRV, DNS_CLASS_IN_UNIQUE, ttl, rdata, (uint16_t)off);
+}
+
+static int planned_rr_add_txt_items(struct planned_rr_set *set,
+                                    int routes,
+                                    const char *owner,
+                                    const char **strings,
+                                    const uint8_t *lengths,
+                                    size_t string_count,
+                                    uint32_t ttl) {
+    uint8_t rdata[PLANNED_RDATA_MAX];
+    size_t off = 0;
+    size_t i;
+
+    if (string_count == 0) {
+        uint8_t zero = 0;
+        return planned_rr_add_raw(set, routes, owner, DNS_TYPE_TXT, DNS_CLASS_IN_UNIQUE, ttl, &zero, 1);
+    }
+    for (i = 0; i < string_count; i++) {
+        size_t slen = lengths != NULL ? lengths[i] : strlen(strings[i]);
+        uint8_t len;
+        if (slen > 255) {
+            return -1;
+        }
+        len = (uint8_t)slen;
+        if (append_bytes(rdata, &off, sizeof(rdata), &len, 1) != 0 ||
+            append_bytes(rdata, &off, sizeof(rdata), strings[i], slen) != 0) {
+            return -1;
+        }
+    }
+    return planned_rr_add_raw(set, routes, owner, DNS_TYPE_TXT, DNS_CLASS_IN_UNIQUE, ttl, rdata, (uint16_t)off);
+}
+
+static int planned_rr_add_txt_empty(struct planned_rr_set *set, int routes, const char *owner, uint32_t ttl) {
+    return planned_rr_add_txt_items(set, routes, owner, NULL, NULL, 0, ttl);
+}
+
+static int planned_rr_add_a(struct planned_rr_set *set, int routes, const char *owner, uint32_t ipv4_addr, uint32_t ttl) {
+    return planned_rr_add_raw(set, routes, owner, DNS_TYPE_A, DNS_CLASS_IN_UNIQUE, ttl,
+                              (const uint8_t *)&ipv4_addr, 4);
+}
+
+static int planned_rr_add_aaaa(struct planned_rr_set *set,
+                               int routes,
+                               const char *owner,
+                               const struct in6_addr *ipv6_addr,
+                               uint32_t ttl) {
+    return planned_rr_add_raw(set, routes, owner, DNS_TYPE_AAAA, DNS_CLASS_IN_UNIQUE, ttl,
+                              ipv6_addr->s6_addr, 16);
+}
+
+static int planned_rr_add_link_addresses(struct planned_rr_set *set,
+                                         int routes,
+                                         const char *owner,
+                                         const struct link_context *link,
+                                         int include_a,
+                                         int include_aaaa,
+                                         uint32_t ttl) {
+    size_t i;
+
+    if (owner == NULL || owner[0] == '\0' || link == NULL) {
+        return 0;
+    }
+    if (include_a) {
+        for (i = 0; i < link->ipv4_count; i++) {
+            if (planned_rr_add_a(set, routes, owner, link->ipv4[i].addr, ttl) != 0) {
+                return -1;
+            }
+        }
+    }
+    if (include_aaaa) {
+        for (i = 0; i < link->ipv6_count; i++) {
+            if (!link_ipv6_addr_is_samba_bindable(&link->ipv6[i])) {
+                continue;
+            }
+            if (planned_rr_add_aaaa(set, routes, owner, &link->ipv6[i].addr, ttl) != 0) {
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int plan_smb_records(struct planned_rr_set *set,
+                            int routes,
+                            const struct config *cfg,
+                            const char *instance_fqdn,
+                            const struct link_context *link,
+                            int include_ptr,
+                            int include_srv,
+                            int include_txt,
+                            int include_a,
+                            int include_aaaa) {
+    if (!smb_enabled(cfg)) {
+        return 0;
+    }
+    if (include_ptr &&
+        planned_rr_add_name(set, routes, cfg->service_type, DNS_TYPE_PTR, DNS_CLASS_IN, cfg->ttl, instance_fqdn) != 0) {
+        return -1;
+    }
+    if (include_srv && planned_rr_add_srv(set, routes, instance_fqdn, cfg->host_fqdn, cfg->port, cfg->ttl) != 0) {
+        return -1;
+    }
+    if (include_txt && planned_rr_add_txt_empty(set, routes, instance_fqdn, cfg->ttl) != 0) {
+        return -1;
+    }
+    return planned_rr_add_link_addresses(set, routes, cfg->host_fqdn, link, include_a, include_aaaa, cfg->ttl);
+}
+
+static int plan_adisk_records(struct planned_rr_set *set,
+                              int routes,
+                              const struct config *cfg,
+                              const char *instance_fqdn,
+                              const struct link_context *link,
+                              int include_ptr,
+                              int include_srv,
+                              int include_txt,
+                              int include_a,
+                              int include_aaaa) {
+    char txt1[128];
+    char disk_txts[ADISK_MAX_DISKS][256];
+    const char *txts[ADISK_MAX_DISKS + 1];
+    size_t i;
+
+    if (!adisk_enabled(cfg)) {
+        return 0;
+    }
+    if (include_ptr &&
+        planned_rr_add_name(set, routes, cfg->adisk_service_type, DNS_TYPE_PTR, DNS_CLASS_IN, cfg->ttl, instance_fqdn) != 0) {
+        return -1;
+    }
+    if (include_srv && planned_rr_add_srv(set, routes, instance_fqdn, cfg->host_fqdn, cfg->adisk_port, cfg->ttl) != 0) {
+        return -1;
+    }
+    if (include_txt) {
+        if (build_adisk_system_txt(txt1, sizeof(txt1), cfg->adisk_sys_wama) != 0) {
+            return -1;
+        }
+        txts[0] = txt1;
+        for (i = 0; i < cfg->adisk_disks.count; i++) {
+            const struct adisk_disk *disk = &cfg->adisk_disks.disks[i];
+            if (build_adisk_disk_txt(disk_txts[i], sizeof(disk_txts[i]), disk->disk_key, disk->share_name, disk->uuid, disk->disk_advf) != 0) {
+                return -1;
+            }
+            txts[i + 1] = disk_txts[i];
+        }
+        if (planned_rr_add_txt_items(set, routes, instance_fqdn, txts, NULL, cfg->adisk_disks.count + 1, cfg->ttl) != 0) {
+            return -1;
+        }
+    }
+    return planned_rr_add_link_addresses(set, routes, cfg->host_fqdn, link, include_a, include_aaaa, cfg->ttl);
+}
+
+static int plan_device_info_records(struct planned_rr_set *set,
+                                    int routes,
+                                    const struct config *cfg,
+                                    const char *instance_fqdn,
+                                    const struct link_context *link,
+                                    int include_ptr,
+                                    int include_srv,
+                                    int include_txt,
+                                    int include_a,
+                                    int include_aaaa) {
+    char model_txt[MAX_NAME + 16];
+    const char *txts[1];
+
+    if (cfg->device_model[0] == '\0') {
+        return 0;
+    }
+    if (include_ptr &&
+        planned_rr_add_name(set, routes, cfg->device_info_service_type, DNS_TYPE_PTR, DNS_CLASS_IN, cfg->ttl, instance_fqdn) != 0) {
+        return -1;
+    }
+    if (include_srv && planned_rr_add_srv(set, routes, instance_fqdn, cfg->host_fqdn, 0, cfg->ttl) != 0) {
+        return -1;
+    }
+    if (include_txt) {
+        if (build_model_txt(model_txt, sizeof(model_txt), cfg->device_model) != 0) {
+            return -1;
+        }
+        txts[0] = model_txt;
+        if (planned_rr_add_txt_items(set, routes, instance_fqdn, txts, NULL, 1, cfg->ttl) != 0) {
+            return -1;
+        }
+    }
+    return planned_rr_add_link_addresses(set, routes, cfg->host_fqdn, link, include_a, include_aaaa, cfg->ttl);
+}
+
+static int plan_airport_records(struct planned_rr_set *set,
+                                int routes,
+                                const struct config *cfg,
+                                const char *instance_fqdn,
+                                const struct link_context *link,
+                                int include_ptr,
+                                int include_srv,
+                                int include_txt,
+                                int include_a,
+                                int include_aaaa) {
+    char airport_txt[256];
+    const char *txts[1];
+
+    if (!is_airport_enabled(cfg)) {
+        return 0;
+    }
+    if (include_ptr &&
+        planned_rr_add_name(set, routes, cfg->airport_service_type, DNS_TYPE_PTR, DNS_CLASS_IN, cfg->ttl, instance_fqdn) != 0) {
+        return -1;
+    }
+    if (include_srv && planned_rr_add_srv(set, routes, instance_fqdn, cfg->host_fqdn, cfg->airport_port, cfg->ttl) != 0) {
+        return -1;
+    }
+    if (include_txt) {
+        if (build_airport_txt(airport_txt, sizeof(airport_txt), cfg) != 0) {
+            return -1;
+        }
+        txts[0] = airport_txt;
+        if (planned_rr_add_txt_items(set, routes, instance_fqdn, txts, NULL, 1, cfg->ttl) != 0) {
+            return -1;
+        }
+    }
+    return planned_rr_add_link_addresses(set, routes, cfg->host_fqdn, link, include_a, include_aaaa, cfg->ttl);
+}
+
+static int plan_snapshot_record(struct planned_rr_set *set,
+                                int routes,
+                                const struct service_record *record,
+                                const struct link_context *link,
+                                int include_ptr,
+                                int include_srv,
+                                int include_txt,
+                                int include_a,
+                                int include_aaaa,
+                                uint32_t ttl) {
+    const char *txts[SNAPSHOT_MAX_TXT_ITEMS];
+    uint8_t txt_lengths[SNAPSHOT_MAX_TXT_ITEMS];
+    size_t i;
+
+    if (is_suppressed_snapshot_service_type(record->service_type)) {
+        return 0;
+    }
+    if (include_ptr &&
+        planned_rr_add_name(set, routes, record->service_type, DNS_TYPE_PTR, DNS_CLASS_IN, ttl, record->instance_fqdn) != 0) {
+        return -1;
+    }
+    if (include_srv && planned_rr_add_srv(set, routes, record->instance_fqdn, record->host_fqdn, record->port, ttl) != 0) {
+        return -1;
+    }
+    if (include_txt) {
+        for (i = 0; i < record->txt_count; i++) {
+            txts[i] = record->txt[i];
+            txt_lengths[i] = record->txt_len[i];
+        }
+        if (planned_rr_add_txt_items(set, routes, record->instance_fqdn, txts, txt_lengths, record->txt_count, ttl) != 0) {
+            return -1;
+        }
+    }
+    return planned_rr_add_link_addresses(set, routes, record->host_fqdn, link, include_a, include_aaaa, ttl);
+}
+
+static int planned_set_has_route(const struct planned_rr_set *set, int route) {
+    size_t i;
+
+    for (i = 0; i < set->count; i++) {
+        if ((set->records[i].routes & route) != 0) {
             return 1;
         }
     }
     return 0;
 }
 
-static int known_answer_ttl_is_fresh(uint32_t known_ttl, uint32_t advertised_ttl) {
-    return known_ttl > advertised_ttl / 2;
+static int planned_set_has_any_route(const struct planned_rr_set *set) {
+    size_t i;
+
+    for (i = 0; i < set->count; i++) {
+        if (set->records[i].routes != 0) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
-static int known_answer_rdata_matches_name(const uint8_t *packet,
+static int planned_rr_matches_known_answer(const struct planned_rr *rr,
+                                           const char *owner,
+                                           uint16_t type,
+                                           uint16_t rrclass,
+                                           const uint8_t *packet,
                                            size_t packet_len,
                                            size_t rdata_cursor,
-                                           const char *expected_name) {
-    char name[MAX_NAME];
-
-    if (decode_name(packet, packet_len, &rdata_cursor, name, sizeof(name)) != 0) {
+                                           uint16_t rdlength) {
+    if (rr->type != type ||
+        (rr->rrclass & 0x7FFF) != (rrclass & 0x7FFF) ||
+        !name_equals(rr->owner, owner)) {
         return 0;
     }
-    return name_equals(name, expected_name);
-}
-
-static int known_answer_rdata_matches_srv(const uint8_t *packet,
-                                          size_t packet_len,
-                                          size_t rdata_cursor,
-                                          uint16_t rdlength,
-                                          const char *expected_target,
-                                          uint16_t expected_port) {
-    uint16_t port;
-    char target[MAX_NAME];
-    size_t target_cursor;
-
-    if (rdlength < 6 || rdata_cursor + rdlength > packet_len) {
+    if (type == DNS_TYPE_PTR) {
+        char known_name[MAX_NAME];
+        char planned_name[MAX_NAME];
+        size_t rdata_end = rdata_cursor + rdlength;
+        size_t planned_cursor = 0;
+        if (decode_name(packet, packet_len, &rdata_cursor, known_name, sizeof(known_name)) != 0 ||
+            decode_name(rr->rdata, rr->rdlength, &planned_cursor, planned_name, sizeof(planned_name)) != 0) {
+            return 0;
+        }
+        if (rdata_cursor != rdata_end || planned_cursor != rr->rdlength) {
+            return 0;
+        }
+        return name_equals(known_name, planned_name);
+    }
+    if (type == DNS_TYPE_SRV) {
+        char known_target[MAX_NAME];
+        char planned_target[MAX_NAME];
+        size_t rdata_end = rdata_cursor + rdlength;
+        size_t known_cursor = rdata_cursor + 6;
+        size_t planned_cursor = 6;
+        if (rdlength < 6 || rr->rdlength < 6 || rdata_cursor + rdlength > packet_len ||
+            memcmp(packet + rdata_cursor, rr->rdata, 6) != 0 ||
+            decode_name(packet, packet_len, &known_cursor, known_target, sizeof(known_target)) != 0 ||
+            decode_name(rr->rdata, rr->rdlength, &planned_cursor, planned_target, sizeof(planned_target)) != 0) {
+            return 0;
+        }
+        if (known_cursor != rdata_end || planned_cursor != rr->rdlength) {
+            return 0;
+        }
+        return name_equals(known_target, planned_target);
+    }
+    if (rdata_cursor + rdlength > packet_len) {
         return 0;
     }
-    memcpy(&port, packet + rdata_cursor + 4, 2);
-    if (ntohs(port) != expected_port) {
+    if (rr->rdlength != rdlength) {
         return 0;
     }
-    target_cursor = rdata_cursor + 6;
-    if (decode_name(packet, packet_len, &target_cursor, target, sizeof(target)) != 0) {
-        return 0;
-    }
-    return name_equals(target, expected_target);
+    return memcmp(packet + rdata_cursor, rr->rdata, rdlength) == 0;
 }
 
-struct known_answer_address_coverage {
-    uint32_t host_a;
-    uint32_t host_aaaa;
-    uint32_t snapshot_a[SNAPSHOT_MAX_RECORDS];
-    uint32_t snapshot_aaaa[SNAPSHOT_MAX_RECORDS];
-};
-
-static uint32_t link_ipv4_advertise_mask(const struct link_context *link) {
-    uint32_t mask = 0;
-    size_t i;
-
-    if (link == NULL) {
-        return 0;
-    }
-    for (i = 0; i < link->ipv4_count && i < 32; i++) {
-        mask |= (uint32_t)1 << i;
-    }
-    return mask;
-}
-
-static uint32_t link_ipv6_advertise_mask(const struct link_context *link) {
-    uint32_t mask = 0;
-    size_t i;
-
-    if (link == NULL) {
-        return 0;
-    }
-    for (i = 0; i < link->ipv6_count && i < 32; i++) {
-        if (!link_ipv6_addr_is_samba_bindable(&link->ipv6[i])) {
-            continue;
-        }
-        mask |= (uint32_t)1 << i;
-    }
-    return mask;
-}
-
-static int known_answer_mask_covers_all(uint32_t known_mask, uint32_t advertised_mask) {
-    return advertised_mask != 0 && (known_mask & advertised_mask) == advertised_mask;
-}
-
-static uint32_t known_answer_rdata_link_ipv4_mask(const uint8_t *packet,
-                                                  size_t packet_len,
-                                                  size_t rdata_cursor,
-                                                  uint16_t rdlength,
-                                                  const struct link_context *link) {
-    uint32_t ipv4_addr;
-    size_t i;
-
-    if (link == NULL || rdlength != 4 || rdata_cursor + 4 > packet_len) {
-        return 0;
-    }
-    memcpy(&ipv4_addr, packet + rdata_cursor, sizeof(ipv4_addr));
-    for (i = 0; i < link->ipv4_count && i < 32; i++) {
-        if (link->ipv4[i].addr == ipv4_addr) {
-            return (uint32_t)1 << i;
-        }
-    }
-    return 0;
-}
-
-static uint32_t known_answer_rdata_link_ipv6_mask(const uint8_t *packet,
-                                                  size_t packet_len,
-                                                  size_t rdata_cursor,
-                                                  uint16_t rdlength,
-                                                  const struct link_context *link) {
-    size_t i;
-
-    if (link == NULL || rdlength != 16 || rdata_cursor + 16 > packet_len) {
-        return 0;
-    }
-    for (i = 0; i < link->ipv6_count && i < 32; i++) {
-        if (!link_ipv6_addr_is_samba_bindable(&link->ipv6[i])) {
-            continue;
-        }
-        if (memcmp(packet + rdata_cursor, link->ipv6[i].addr.s6_addr, 16) == 0) {
-            return (uint32_t)1 << i;
-        }
-    }
-    return 0;
-}
-
-static void suppress_known_answer_generated_routes(struct query_answer_routes *routes,
-                                                   const char *owner,
-                                                   uint16_t type,
-                                                   const uint8_t *packet,
-                                                   size_t packet_len,
-                                                   size_t rdata_cursor,
-                                                   uint16_t rdlength,
-                                                   const char *instance_fqdn,
-                                                   const char *adisk_instance_fqdn,
-                                                   const char *device_info_instance_fqdn,
-                                                   const char *airport_instance_fqdn,
-                                                   const struct config *cfg,
-                                                   const struct link_context *response_link,
-                                                   struct known_answer_address_coverage *coverage,
-                                                   int use_snapshot_records) {
-    uint32_t known_mask;
-
-    if (smb_enabled(cfg)) {
-        if (type == DNS_TYPE_PTR && name_equals(owner, cfg->service_type) &&
-            known_answer_rdata_matches_name(packet, packet_len, rdata_cursor, instance_fqdn)) {
-            routes->smb_ptr = 0;
-        } else if (type == DNS_TYPE_SRV && name_equals(owner, instance_fqdn) &&
-                   known_answer_rdata_matches_srv(packet, packet_len, rdata_cursor, rdlength, cfg->host_fqdn, cfg->port)) {
-            routes->smb_srv = 0;
-        } else if (type == DNS_TYPE_TXT && name_equals(owner, instance_fqdn)) {
-            routes->smb_txt = 0;
-        }
-    }
-    if (adisk_enabled(cfg)) {
-        if (type == DNS_TYPE_PTR && name_equals(owner, cfg->adisk_service_type) &&
-            known_answer_rdata_matches_name(packet, packet_len, rdata_cursor, adisk_instance_fqdn)) {
-            routes->adisk_ptr = 0;
-        } else if (type == DNS_TYPE_SRV && name_equals(owner, adisk_instance_fqdn) &&
-                   known_answer_rdata_matches_srv(packet, packet_len, rdata_cursor, rdlength, cfg->host_fqdn, cfg->adisk_port)) {
-            routes->adisk_srv = 0;
-        } else if (type == DNS_TYPE_TXT && name_equals(owner, adisk_instance_fqdn)) {
-            routes->adisk_txt = 0;
-        }
-    }
-    if (cfg->device_model[0] != '\0') {
-        if (type == DNS_TYPE_PTR && name_equals(owner, cfg->device_info_service_type) &&
-            known_answer_rdata_matches_name(packet, packet_len, rdata_cursor, device_info_instance_fqdn)) {
-            routes->device_info_ptr = 0;
-        } else if (type == DNS_TYPE_SRV && name_equals(owner, device_info_instance_fqdn) &&
-                   known_answer_rdata_matches_srv(packet, packet_len, rdata_cursor, rdlength, cfg->host_fqdn, 0)) {
-            routes->device_info_srv = 0;
-        } else if (type == DNS_TYPE_TXT && name_equals(owner, device_info_instance_fqdn)) {
-            routes->device_info_txt = 0;
-        }
-    }
-    if (!use_snapshot_records && is_airport_enabled(cfg)) {
-        if (type == DNS_TYPE_PTR && name_equals(owner, cfg->airport_service_type) &&
-            known_answer_rdata_matches_name(packet, packet_len, rdata_cursor, airport_instance_fqdn)) {
-            routes->airport_ptr = 0;
-        } else if (type == DNS_TYPE_SRV && name_equals(owner, airport_instance_fqdn) &&
-                   known_answer_rdata_matches_srv(packet, packet_len, rdata_cursor, rdlength, cfg->host_fqdn, cfg->airport_port)) {
-            routes->airport_srv = 0;
-        } else if (type == DNS_TYPE_TXT && name_equals(owner, airport_instance_fqdn)) {
-            routes->airport_txt = 0;
-        }
-    }
-    if (type == DNS_TYPE_A && name_equals(owner, cfg->host_fqdn)) {
-        known_mask = known_answer_rdata_link_ipv4_mask(packet, packet_len, rdata_cursor, rdlength, response_link);
-        if (known_mask != 0) {
-            coverage->host_a |= known_mask;
-            if (known_answer_mask_covers_all(coverage->host_a, link_ipv4_advertise_mask(response_link))) {
-                routes->host_a = 0;
-            }
-        }
-    } else if (type == DNS_TYPE_AAAA && name_equals(owner, cfg->host_fqdn)) {
-        known_mask = known_answer_rdata_link_ipv6_mask(packet, packet_len, rdata_cursor, rdlength, response_link);
-        if (known_mask != 0) {
-            coverage->host_aaaa |= known_mask;
-            if (known_answer_mask_covers_all(coverage->host_aaaa, link_ipv6_advertise_mask(response_link))) {
-                routes->host_aaaa = 0;
-            }
-        }
-    }
-}
-
-static void suppress_known_answer_snapshot_routes(struct query_answer_routes *routes,
-                                                  const char *owner,
-                                                  uint16_t type,
-                                                  const uint8_t *packet,
-                                                  size_t packet_len,
-                                                  size_t rdata_cursor,
-                                                  uint16_t rdlength,
-                                                  const struct link_context *response_link,
-                                                  const struct service_record_set *snapshot_records,
-                                                  struct known_answer_address_coverage *coverage,
-                                                  int use_snapshot_records) {
-    size_t j;
-    uint32_t known_mask;
-
-    if (!use_snapshot_records) {
-        return;
-    }
-    for (j = 0; j < snapshot_records->count; j++) {
-        const struct service_record *record = &snapshot_records->records[j];
-        if (is_suppressed_snapshot_service_type(record->service_type)) {
-            continue;
-        }
-        if (type == DNS_TYPE_PTR && name_equals(owner, record->service_type) &&
-            known_answer_rdata_matches_name(packet, packet_len, rdata_cursor, record->instance_fqdn)) {
-            routes->snapshot_ptr[j] = 0;
-        } else if (type == DNS_TYPE_SRV && name_equals(owner, record->instance_fqdn) &&
-                   known_answer_rdata_matches_srv(packet, packet_len, rdata_cursor, rdlength, record->host_fqdn, record->port)) {
-            routes->snapshot_srv[j] = 0;
-        } else if (type == DNS_TYPE_TXT && name_equals(owner, record->instance_fqdn)) {
-            routes->snapshot_txt[j] = 0;
-        } else if (type == DNS_TYPE_A && name_equals(owner, record->host_fqdn)) {
-            known_mask = known_answer_rdata_link_ipv4_mask(packet, packet_len, rdata_cursor, rdlength, response_link);
-            if (known_mask != 0) {
-                coverage->snapshot_a[j] |= known_mask;
-                if (known_answer_mask_covers_all(coverage->snapshot_a[j], link_ipv4_advertise_mask(response_link))) {
-                    routes->snapshot_a[j] = 0;
-                }
-            }
-        } else if (type == DNS_TYPE_AAAA && name_equals(owner, record->host_fqdn)) {
-            known_mask = known_answer_rdata_link_ipv6_mask(packet, packet_len, rdata_cursor, rdlength, response_link);
-            if (known_mask != 0) {
-                coverage->snapshot_aaaa[j] |= known_mask;
-                if (known_answer_mask_covers_all(coverage->snapshot_aaaa[j], link_ipv6_advertise_mask(response_link))) {
-                    routes->snapshot_aaaa[j] = 0;
-                }
-            }
-        }
-    }
-}
-
-static void suppress_known_answer_routes(const uint8_t *packet,
-                                         size_t packet_len,
-                                         size_t cursor,
-                                         uint16_t answer_count,
-                                         struct query_answer_routes *routes,
-                                         const char *instance_fqdn,
-                                         const char *adisk_instance_fqdn,
-                                         const char *device_info_instance_fqdn,
-                                         const char *airport_instance_fqdn,
-                                         const struct config *cfg,
-                                         const struct link_context *response_link,
-                                         const struct service_record_set *snapshot_records,
-                                         int use_snapshot_records) {
+static void suppress_planned_known_answers(const uint8_t *packet,
+                                           size_t packet_len,
+                                           size_t cursor,
+                                           uint16_t answer_count,
+                                           struct planned_rr_set *planned) {
     uint16_t i;
-    struct known_answer_address_coverage coverage;
 
-    memset(&coverage, 0, sizeof(coverage));
     for (i = 0; i < answer_count; i++) {
         char owner[MAX_NAME];
         uint16_t type;
@@ -4320,6 +4646,7 @@ static void suppress_known_answer_routes(const uint8_t *packet,
         uint32_t ttl;
         uint16_t rdlength;
         size_t rdata_cursor;
+        size_t j;
 
         if (decode_name(packet, packet_len, &cursor, owner, sizeof(owner)) != 0 || cursor + 10 > packet_len) {
             return;
@@ -4338,269 +4665,428 @@ static void suppress_known_answer_routes(const uint8_t *packet,
         }
         rdata_cursor = cursor;
         cursor += rdlength;
-        if ((rrclass & 0x7FFF) != DNS_CLASS_IN || !known_answer_ttl_is_fresh(ttl, cfg->ttl)) {
+        if ((rrclass & 0x7FFF) != DNS_CLASS_IN) {
             continue;
         }
-        suppress_known_answer_generated_routes(routes,
-                                               owner,
-                                               type,
-                                               packet,
-                                               packet_len,
-                                               rdata_cursor,
-                                               rdlength,
-                                               instance_fqdn,
-                                               adisk_instance_fqdn,
-                                               device_info_instance_fqdn,
-                                               airport_instance_fqdn,
-                                               cfg,
-                                               response_link,
-                                               &coverage,
-                                               use_snapshot_records);
-        suppress_known_answer_snapshot_routes(routes,
-                                              owner,
-                                              type,
-                                              packet,
-                                              packet_len,
-                                              rdata_cursor,
-                                              rdlength,
-                                              response_link,
-                                              snapshot_records,
-                                              &coverage,
-                                              use_snapshot_records);
+        for (j = 0; j < planned->count; j++) {
+            if (planned->records[j].routes == 0 ||
+                !known_answer_ttl_is_fresh(ttl, planned->records[j].ttl)) {
+                continue;
+            }
+            if (planned_rr_matches_known_answer(&planned->records[j],
+                                                owner,
+                                                type,
+                                                rrclass,
+                                                packet,
+                                                packet_len,
+                                                rdata_cursor,
+                                                rdlength)) {
+                planned->records[j].routes = 0;
+            }
+        }
     }
 }
 
-static int build_query_response_packet(uint8_t *reply, size_t reply_cap, size_t *reply_len, int *answer_count,
-                                       uint16_t response_id, int route,
-                                       const struct query_answer_routes *routes,
-                                       const char *instance_fqdn,
-                                       const char *adisk_instance_fqdn,
-                                       const char *device_info_instance_fqdn,
-                                       const char *airport_instance_fqdn,
-                                       const struct config *cfg,
-                                       const struct link_context *response_link,
-                                       const struct service_record_set *snapshot_records,
-                                       int use_snapshot_records) {
+static uint16_t sockaddr_port_host(const struct sockaddr *addr) {
+    if (addr == NULL) {
+        return 0;
+    }
+    if (addr->sa_family == AF_INET) {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)addr;
+        return ntohs(sin->sin_port);
+    }
+    if (addr->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)addr;
+        return ntohs(sin6->sin6_port);
+    }
+    return 0;
+}
+
+static int source_can_receive_unicast_response(const struct sockaddr *source,
+                                               const struct link_context *response_link) {
+    if (source == NULL || response_link == NULL) {
+        return 0;
+    }
+    if (source->sa_family == AF_INET) {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)source;
+        return source_matches_link_ipv4_subnet(sin->sin_addr.s_addr, response_link);
+    }
+    if (source->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)source;
+        size_t i;
+
+        if (sin6->sin6_scope_id != 0 && sin6->sin6_scope_id == response_link->ifindex) {
+            return 1;
+        }
+        for (i = 0; i < response_link->ipv6_count; i++) {
+            if (response_link->ipv6[i].link_local) {
+                continue;
+            }
+            if (ipv6_prefix_matches(&sin6->sin6_addr,
+                                    &response_link->ipv6[i].addr,
+                                    response_link->ipv6[i].prefix_len)) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int plan_question_answers(struct planned_rr_set *planned,
+                                 int route,
+                                 const char *qname,
+                                 uint16_t qtype,
+                                 const struct config *cfg,
+                                 const struct link_context *response_link,
+                                 const struct service_record_set *snapshot_records,
+                                 int use_snapshot_records,
+                                 const char *instance_fqdn,
+                                 const char *adisk_instance_fqdn,
+                                 const char *device_info_instance_fqdn,
+                                 const char *airport_instance_fqdn) {
+    if (smb_enabled(cfg) && name_equals(qname, cfg->service_type) &&
+        (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
+        return plan_smb_records(planned, route, cfg, instance_fqdn, response_link, 1, 1, 1, 1, 1);
+    }
+    if (adisk_enabled(cfg) && name_equals(qname, cfg->adisk_service_type) &&
+        (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
+        return plan_adisk_records(planned, route, cfg, adisk_instance_fqdn, response_link, 1, 1, 1, 1, 1);
+    }
+    if (cfg->device_model[0] != '\0' && name_equals(qname, cfg->device_info_service_type) &&
+        (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
+        return plan_device_info_records(planned, route, cfg, device_info_instance_fqdn, response_link, 1, 1, 1, 1, 1);
+    }
+    if (!use_snapshot_records && is_airport_enabled(cfg) && name_equals(qname, cfg->airport_service_type) &&
+        (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
+        return plan_airport_records(planned, route, cfg, airport_instance_fqdn, response_link, 1, 1, 1, 1, 1);
+    }
+    if (smb_enabled(cfg) && name_equals(qname, instance_fqdn)) {
+        return plan_smb_records(planned, route, cfg, instance_fqdn, response_link,
+                                0,
+                                qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
+                                qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY,
+                                qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
+                                qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY);
+    }
+    if (adisk_enabled(cfg) && name_equals(qname, adisk_instance_fqdn)) {
+        return plan_adisk_records(planned, route, cfg, adisk_instance_fqdn, response_link,
+                                  0,
+                                  qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
+                                  qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY,
+                                  qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
+                                  qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY);
+    }
+    if (cfg->device_model[0] != '\0' && name_equals(qname, device_info_instance_fqdn)) {
+        return plan_device_info_records(planned, route, cfg, device_info_instance_fqdn, response_link,
+                                        0,
+                                        qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
+                                        qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY,
+                                        qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
+                                        qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY);
+    }
+    if (!use_snapshot_records && is_airport_enabled(cfg) && name_equals(qname, airport_instance_fqdn)) {
+        return plan_airport_records(planned, route, cfg, airport_instance_fqdn, response_link,
+                                    0,
+                                    qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
+                                    qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY,
+                                    qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
+                                    qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY);
+    }
+    if (name_equals(qname, cfg->host_fqdn)) {
+        return planned_rr_add_link_addresses(planned,
+                                             route,
+                                             cfg->host_fqdn,
+                                             response_link,
+                                             qtype == DNS_TYPE_A || qtype == DNS_TYPE_ANY,
+                                             qtype == DNS_TYPE_AAAA || qtype == DNS_TYPE_ANY,
+                                             cfg->ttl);
+    }
+    if (use_snapshot_records) {
+        size_t j;
+        for (j = 0; j < snapshot_records->count; j++) {
+            const struct service_record *record = &snapshot_records->records[j];
+            if (is_suppressed_snapshot_service_type(record->service_type)) {
+                continue;
+            }
+            if (name_equals(qname, record->service_type) && (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
+                if (plan_snapshot_record(planned, route, record, response_link, 1, 1, 1, 1, 1, cfg->ttl) != 0) {
+                    return -1;
+                }
+            } else if (name_equals(qname, record->instance_fqdn)) {
+                if (plan_snapshot_record(planned,
+                                         route,
+                                         record,
+                                         response_link,
+                                         0,
+                                         qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
+                                         qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY,
+                                         qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
+                                         qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY,
+                                         cfg->ttl) != 0) {
+                    return -1;
+                }
+            } else if (name_equals(qname, record->host_fqdn)) {
+                if (planned_rr_add_link_addresses(planned,
+                                                  route,
+                                                  record->host_fqdn,
+                                                  response_link,
+                                                  qtype == DNS_TYPE_A || qtype == DNS_TYPE_ANY,
+                                                  qtype == DNS_TYPE_AAAA || qtype == DNS_TYPE_ANY,
+                                                  cfg->ttl) != 0) {
+                    return -1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+static int add_planned_rr_to_packet(uint8_t *reply,
+                                    size_t *off,
+                                    size_t reply_cap,
+                                    const struct planned_rr *rr,
+                                    int legacy_unicast) {
+    uint16_t rrclass = rr->rrclass;
+    uint32_t ttl = rr->ttl;
+
+    if (legacy_unicast) {
+        rrclass = (uint16_t)(rrclass & 0x7FFF);
+        if (ttl > LEGACY_UNICAST_TTL_MAX) {
+            ttl = LEGACY_UNICAST_TTL_MAX;
+        }
+    }
+    return encode_name(reply, off, reply_cap, rr->owner) != 0 ||
+           append_u16(reply, off, reply_cap, rr->type) != 0 ||
+           append_u16(reply, off, reply_cap, rrclass) != 0 ||
+           append_u32(reply, off, reply_cap, ttl) != 0 ||
+           append_u16(reply, off, reply_cap, rr->rdlength) != 0 ||
+           append_bytes(reply, off, reply_cap, rr->rdata, rr->rdlength) != 0
+               ? -1
+               : 0;
+}
+
+static int build_planned_response_packet(uint8_t *reply,
+                                         size_t reply_cap,
+                                         size_t *reply_len,
+                                         int *answer_count,
+                                         uint16_t response_id,
+                                         int route,
+                                         int legacy_unicast,
+                                         const struct planned_rr_set *planned) {
     struct dns_header hdr;
     size_t off = sizeof(struct dns_header);
     int answers = 0;
+    size_t i;
 
     memset(&hdr, 0, sizeof(hdr));
     hdr.id = response_id;
     hdr.flags = htons(DNS_FLAG_QR | DNS_FLAG_AA);
-
-    if (routes->smb_ptr & route) {
-        if (add_rr_ptr(reply, &off, reply_cap, cfg->service_type, instance_fqdn, cfg->ttl) != 0) {
-            log_packet_build_failure("query_response", "add_ptr", off, answers, use_snapshot_records);
+    for (i = 0; i < planned->count; i++) {
+        if ((planned->records[i].routes & route) == 0) {
+            continue;
+        }
+        if (add_planned_rr_to_packet(reply, &off, reply_cap, &planned->records[i], legacy_unicast) != 0) {
             return -1;
         }
         answers++;
     }
-    if (routes->smb_srv & route) {
-        if (add_rr_srv(reply, &off, reply_cap, instance_fqdn, cfg->host_fqdn, cfg->port, cfg->ttl) != 0) {
-            log_packet_build_failure("query_response", "add_srv", off, answers, use_snapshot_records);
-            return -1;
-        }
-        answers++;
-    }
-    if (routes->smb_txt & route) {
-        if (add_rr_txt_empty(reply, &off, reply_cap, instance_fqdn, cfg->ttl) != 0) {
-            log_packet_build_failure("query_response", "add_txt", off, answers, use_snapshot_records);
-            return -1;
-        }
-        answers++;
-    }
-    if ((routes->adisk_ptr | routes->adisk_srv | routes->adisk_txt) & route) {
-        char txt1[128];
-        char disk_txts[ADISK_MAX_DISKS][256];
-        const char *txts[ADISK_MAX_DISKS + 1];
-        size_t disk_i;
-
-        if (build_adisk_system_txt(txt1, sizeof(txt1), cfg->adisk_sys_wama) != 0) {
-            log_packet_build_failure("query_response", "build_adisk_system_txt", off, answers, use_snapshot_records);
-            return -1;
-        }
-        txts[0] = txt1;
-        for (disk_i = 0; disk_i < cfg->adisk_disks.count; disk_i++) {
-            const struct adisk_disk *disk = &cfg->adisk_disks.disks[disk_i];
-            if (build_adisk_disk_txt(disk_txts[disk_i], sizeof(disk_txts[disk_i]), disk->disk_key, disk->share_name, disk->uuid, disk->disk_advf) != 0) {
-                log_packet_build_failure("query_response", "build_adisk_disk_txt", off, answers, use_snapshot_records);
-                return -1;
-            }
-            txts[disk_i + 1] = disk_txts[disk_i];
-        }
-
-        if (routes->adisk_ptr & route) {
-            if (add_rr_ptr(reply, &off, reply_cap, cfg->adisk_service_type, adisk_instance_fqdn, cfg->ttl) != 0) {
-                log_packet_build_failure("query_response", "add_adisk_ptr", off, answers, use_snapshot_records);
-                return -1;
-            }
-            answers++;
-        }
-        if (routes->adisk_srv & route) {
-            if (add_rr_srv(reply, &off, reply_cap, adisk_instance_fqdn, cfg->host_fqdn, cfg->adisk_port, cfg->ttl) != 0) {
-                log_packet_build_failure("query_response", "add_adisk_srv", off, answers, use_snapshot_records);
-                return -1;
-            }
-            answers++;
-        }
-        if (routes->adisk_txt & route) {
-            if (add_rr_txt_strings(reply, &off, reply_cap, adisk_instance_fqdn, cfg->ttl, txts, cfg->adisk_disks.count + 1) != 0) {
-                log_packet_build_failure("query_response", "add_adisk_txt", off, answers, use_snapshot_records);
-                return -1;
-            }
-            answers++;
-        }
-    }
-    if ((routes->device_info_ptr | routes->device_info_srv | routes->device_info_txt) & route) {
-        char model_txt[MAX_NAME + 16];
-        const char *txts[1];
-
-        if (build_model_txt(model_txt, sizeof(model_txt), cfg->device_model) != 0) {
-            log_packet_build_failure("query_response", "build_model_txt", off, answers, use_snapshot_records);
-            return -1;
-        }
-        txts[0] = model_txt;
-
-        if (routes->device_info_ptr & route) {
-            if (add_rr_ptr(reply, &off, reply_cap, cfg->device_info_service_type, device_info_instance_fqdn, cfg->ttl) != 0) {
-                log_packet_build_failure("query_response", "add_device_info_ptr", off, answers, use_snapshot_records);
-                return -1;
-            }
-            answers++;
-        }
-        if (routes->device_info_srv & route) {
-            if (add_rr_srv(reply, &off, reply_cap, device_info_instance_fqdn, cfg->host_fqdn, 0, cfg->ttl) != 0) {
-                log_packet_build_failure("query_response", "add_device_info_srv", off, answers, use_snapshot_records);
-                return -1;
-            }
-            answers++;
-        }
-        if (routes->device_info_txt & route) {
-            if (add_rr_txt_strings(reply, &off, reply_cap, device_info_instance_fqdn, cfg->ttl, txts, 1) != 0) {
-                log_packet_build_failure("query_response", "add_device_info_txt", off, answers, use_snapshot_records);
-                return -1;
-            }
-            answers++;
-        }
-    }
-    if (!use_snapshot_records && ((routes->airport_ptr | routes->airport_srv | routes->airport_txt) & route)) {
-        char airport_txt[256];
-        const char *txts[1];
-
-        if (build_airport_txt(airport_txt, sizeof(airport_txt), cfg) != 0) {
-            log_packet_build_failure("query_response", "build_airport_txt", off, answers, use_snapshot_records);
-            return -1;
-        }
-        txts[0] = airport_txt;
-
-        if (routes->airport_ptr & route) {
-            if (add_rr_ptr(reply, &off, reply_cap, cfg->airport_service_type, airport_instance_fqdn, cfg->ttl) != 0) {
-                log_packet_build_failure("query_response", "add_airport_ptr", off, answers, use_snapshot_records);
-                return -1;
-            }
-            answers++;
-        }
-        if (routes->airport_srv & route) {
-            if (add_rr_srv(reply, &off, reply_cap, airport_instance_fqdn, cfg->host_fqdn, cfg->airport_port, cfg->ttl) != 0) {
-                log_packet_build_failure("query_response", "add_airport_srv", off, answers, use_snapshot_records);
-                return -1;
-            }
-            answers++;
-        }
-        if (routes->airport_txt & route) {
-            if (add_rr_txt_strings(reply, &off, reply_cap, airport_instance_fqdn, cfg->ttl, txts, 1) != 0) {
-                log_packet_build_failure("query_response", "add_airport_txt", off, answers, use_snapshot_records);
-                return -1;
-            }
-            answers++;
-        }
-    }
-    if (routes->host_a & route) {
-        if (append_host_address_records(reply, &off, reply_cap, cfg->host_fqdn, response_link, 1, 0, cfg->ttl, &answers) != 0) {
-            log_packet_build_failure("query_response", "add_a", off, answers, use_snapshot_records);
-            return -1;
-        }
-    }
-    if (routes->host_aaaa & route) {
-        if (append_host_address_records(reply, &off, reply_cap, cfg->host_fqdn, response_link, 0, 1, cfg->ttl, &answers) != 0) {
-            log_packet_build_failure("query_response", "add_aaaa", off, answers, use_snapshot_records);
-            return -1;
-        }
-    }
-
-    if (use_snapshot_records) {
-        size_t j;
-        struct announced_host_set announced_hosts;
-
-        memset(&announced_hosts, 0, sizeof(announced_hosts));
-
-        for (j = 0; j < snapshot_records->count; j++) {
-            const struct service_record *record = &snapshot_records->records[j];
-            const char *txts[SNAPSHOT_MAX_TXT_ITEMS];
-            uint8_t txt_lengths[SNAPSHOT_MAX_TXT_ITEMS];
-            size_t k;
-
-            if (is_suppressed_snapshot_service_type(record->service_type)) {
-                continue;
-            }
-            for (k = 0; k < record->txt_count; k++) {
-                txts[k] = record->txt[k];
-                txt_lengths[k] = record->txt_len[k];
-            }
-            if (routes->snapshot_ptr[j] & route) {
-                if (add_rr_ptr(reply, &off, reply_cap, record->service_type, record->instance_fqdn, cfg->ttl) != 0) {
-                    log_snapshot_record_build_failure("query_response", "add_snapshot_ptr", j, record, off, answers);
-                    log_packet_build_failure("query_response", "add_snapshot_ptr", off, answers, use_snapshot_records);
-                    return -1;
-                }
-                answers++;
-            }
-            if (routes->snapshot_srv[j] & route) {
-                if (add_rr_srv(reply, &off, reply_cap, record->instance_fqdn, record->host_fqdn, record->port, cfg->ttl) != 0) {
-                    log_snapshot_record_build_failure("query_response", "add_snapshot_srv", j, record, off, answers);
-                    log_packet_build_failure("query_response", "add_snapshot_srv", off, answers, use_snapshot_records);
-                    return -1;
-                }
-                answers++;
-            }
-            if (routes->snapshot_txt[j] & route) {
-                if (record->txt_count > 0) {
-                    if (add_rr_txt_items(reply, &off, reply_cap, record->instance_fqdn, cfg->ttl, txts, txt_lengths, record->txt_count) != 0) {
-                        log_snapshot_record_build_failure("query_response", "add_snapshot_txt", j, record, off, answers);
-                        log_packet_build_failure("query_response", "add_snapshot_txt", off, answers, use_snapshot_records);
-                        return -1;
-                    }
-                } else {
-                    if (add_rr_txt_empty(reply, &off, reply_cap, record->instance_fqdn, cfg->ttl) != 0) {
-                        log_snapshot_record_build_failure("query_response", "add_snapshot_txt_empty", j, record, off, answers);
-                        log_packet_build_failure("query_response", "add_snapshot_txt_empty", off, answers, use_snapshot_records);
-                        return -1;
-                    }
-                }
-                answers++;
-            }
-            if (((routes->snapshot_a[j] | routes->snapshot_aaaa[j]) & route) && record->host_fqdn[0] != '\0' &&
-                !host_already_announced(&announced_hosts, record->host_fqdn)) {
-                int include_a = (routes->snapshot_a[j] & route) != 0;
-                int include_aaaa = (routes->snapshot_aaaa[j] & route) != 0;
-                if (add_snapshot_host_address_records(reply, &off, reply_cap, record, response_link, include_a, include_aaaa, cfg->ttl, &answers) != 0) {
-                    log_snapshot_record_build_failure("query_response", "add_snapshot_a", j, record, off, answers);
-                    log_packet_build_failure("query_response", "add_snapshot_a", off, answers, use_snapshot_records);
-                    return -1;
-                }
-                if (remember_announced_host(&announced_hosts, record->host_fqdn) != 0) {
-                    log_packet_build_failure("query_response", "remember_snapshot_a_host", off, answers, use_snapshot_records);
-                    return -1;
-                }
-            }
-        }
-    }
-
     hdr.ancount = htons((uint16_t)answers);
     memcpy(reply, &hdr, sizeof(hdr));
     *reply_len = off;
     *answer_count = answers;
+    return 0;
+}
+
+static void clear_deferred_response(void) {
+    memset(&g_deferred_response, 0, sizeof(g_deferred_response));
+}
+
+static void clear_deferred_response_for_sockfd(int sockfd) {
+    if (g_deferred_response.active && g_deferred_response.sockfd == sockfd) {
+        clear_deferred_response();
+    }
+}
+
+static int sockaddr_endpoint_equal(const struct sockaddr *a, socklen_t a_len,
+                                   const struct sockaddr *b, socklen_t b_len) {
+    if (a == NULL || b == NULL || a->sa_family != b->sa_family) {
+        return 0;
+    }
+    if (a->sa_family == AF_INET) {
+        const struct sockaddr_in *sin_a = (const struct sockaddr_in *)a;
+        const struct sockaddr_in *sin_b = (const struct sockaddr_in *)b;
+        if (a_len < (socklen_t)sizeof(*sin_a) || b_len < (socklen_t)sizeof(*sin_b)) {
+            return 0;
+        }
+        return sin_a->sin_port == sin_b->sin_port &&
+               sin_a->sin_addr.s_addr == sin_b->sin_addr.s_addr;
+    }
+    if (a->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *sin6_a = (const struct sockaddr_in6 *)a;
+        const struct sockaddr_in6 *sin6_b = (const struct sockaddr_in6 *)b;
+        if (a_len < (socklen_t)sizeof(*sin6_a) || b_len < (socklen_t)sizeof(*sin6_b)) {
+            return 0;
+        }
+        return sin6_a->sin6_port == sin6_b->sin6_port &&
+               sin6_a->sin6_scope_id == sin6_b->sin6_scope_id &&
+               memcmp(&sin6_a->sin6_addr, &sin6_b->sin6_addr, sizeof(sin6_a->sin6_addr)) == 0;
+    }
+    return 0;
+}
+
+static int deferred_response_matches_source(int sockfd, const struct sockaddr *source, socklen_t source_len) {
+    if (!g_deferred_response.active || g_deferred_response.sockfd != sockfd) {
+        return 0;
+    }
+    return sockaddr_endpoint_equal((const struct sockaddr *)&g_deferred_response.source,
+                                   g_deferred_response.source_len,
+                                   source,
+                                   source_len);
+}
+
+static int copy_sockaddr_storage(struct sockaddr_storage *out,
+                                 socklen_t *out_len,
+                                 const struct sockaddr *src,
+                                 socklen_t src_len) {
+    if (src == NULL || src_len > (socklen_t)sizeof(*out)) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+    memcpy(out, src, src_len);
+    *out_len = src_len;
+    return 0;
+}
+
+static int flush_deferred_response_now(void) {
+    uint8_t reply[BUF_SIZE];
+    int status = 0;
+
+    if (!g_deferred_response.active) {
+        return 0;
+    }
+    if (planned_set_has_route(&g_deferred_response.planned, MDNS_REPLY_LEGACY_UNICAST)) {
+        size_t reply_len;
+        int answers;
+        if (build_planned_response_packet(reply,
+                                          sizeof(reply),
+                                          &reply_len,
+                                          &answers,
+                                          g_deferred_response.response_id,
+                                          MDNS_REPLY_LEGACY_UNICAST,
+                                          1,
+                                          &g_deferred_response.planned) != 0 ||
+            (answers > 0 &&
+             send_dns_packet_any("query_response",
+                                 g_deferred_response.sockfd,
+                                 reply,
+                                 reply_len,
+                                 (const struct sockaddr *)&g_deferred_response.source,
+                                 g_deferred_response.source_len,
+                                 answers,
+                                 g_deferred_response.use_snapshot_records) != 0)) {
+            status = -1;
+        }
+    }
+    if (planned_set_has_route(&g_deferred_response.planned, MDNS_REPLY_UNICAST)) {
+        size_t reply_len;
+        int answers;
+        if (build_planned_response_packet(reply,
+                                          sizeof(reply),
+                                          &reply_len,
+                                          &answers,
+                                          g_deferred_response.response_id,
+                                          MDNS_REPLY_UNICAST,
+                                          0,
+                                          &g_deferred_response.planned) != 0 ||
+            (answers > 0 &&
+             send_dns_packet_any("query_response",
+                                 g_deferred_response.sockfd,
+                                 reply,
+                                 reply_len,
+                                 (const struct sockaddr *)&g_deferred_response.source,
+                                 g_deferred_response.source_len,
+                                 answers,
+                                 g_deferred_response.use_snapshot_records) != 0)) {
+            status = -1;
+        }
+    }
+    if (planned_set_has_route(&g_deferred_response.planned, MDNS_REPLY_MULTICAST)) {
+        size_t reply_len;
+        int answers;
+        if (build_planned_response_packet(reply,
+                                          sizeof(reply),
+                                          &reply_len,
+                                          &answers,
+                                          0,
+                                          MDNS_REPLY_MULTICAST,
+                                          0,
+                                          &g_deferred_response.planned) != 0 ||
+            (answers > 0 &&
+             send_dns_packet_any("query_response",
+                                 g_deferred_response.sockfd,
+                                 reply,
+                                 reply_len,
+                                 (const struct sockaddr *)&g_deferred_response.multicast_dest,
+                                 g_deferred_response.multicast_dest_len,
+                                 answers,
+                                 g_deferred_response.use_snapshot_records) != 0)) {
+            status = -1;
+        }
+    }
+    clear_deferred_response();
+    return status;
+}
+
+static int flush_deferred_response_if_due(long long now_ms) {
+    if (!g_deferred_response.active || now_ms < g_deferred_response.due_ms) {
+        return 0;
+    }
+    return flush_deferred_response_now();
+}
+
+static long long deferred_response_adjust_wait_ms(long long now_ms, long long wait_ms) {
+    long long deferred_wait;
+
+    if (!g_deferred_response.active) {
+        return wait_ms;
+    }
+    deferred_wait = g_deferred_response.due_ms - now_ms;
+    if (deferred_wait < 0) {
+        deferred_wait = 0;
+    }
+    return deferred_wait < wait_ms ? deferred_wait : wait_ms;
+}
+
+static int defer_planned_response(int sockfd,
+                                  uint16_t response_id,
+                                  const struct sockaddr *multicast_dest,
+                                  socklen_t multicast_dest_len,
+                                  const struct sockaddr *source,
+                                  socklen_t source_len,
+                                  int use_snapshot_records,
+                                  const struct planned_rr_set *planned) {
+    if (!planned_set_has_any_route(planned)) {
+        clear_deferred_response();
+        return 0;
+    }
+    clear_deferred_response();
+    g_deferred_response.active = 1;
+    g_deferred_response.sockfd = sockfd;
+    g_deferred_response.due_ms = monotonic_millis() + TC_KNOWN_ANSWER_DEFER_MS;
+    g_deferred_response.response_id = response_id;
+    g_deferred_response.use_snapshot_records = use_snapshot_records;
+    g_deferred_response.planned = *planned;
+    if (copy_sockaddr_storage(&g_deferred_response.multicast_dest,
+                              &g_deferred_response.multicast_dest_len,
+                              multicast_dest,
+                              multicast_dest_len) != 0 ||
+        copy_sockaddr_storage(&g_deferred_response.source,
+                              &g_deferred_response.source_len,
+                              source,
+                              source_len) != 0) {
+        clear_deferred_response();
+        return -1;
+    }
     return 0;
 }
 
@@ -4620,16 +5106,20 @@ static int handle_query_any(int sockfd,
     uint16_t qdcount;
     uint16_t ancount;
     uint16_t query_id;
+    uint16_t flags;
     uint8_t reply[BUF_SIZE];
     char instance_fqdn[MAX_NAME];
     char adisk_instance_fqdn[MAX_NAME];
     char device_info_instance_fqdn[MAX_NAME];
     char airport_instance_fqdn[MAX_NAME];
-    struct query_answer_routes routes;
     uint16_t i;
     int status = 0;
+    int source_port;
+    int legacy_unicast_query;
+    int source_allows_unicast;
+    static struct planned_rr_set planned;
 
-    memset(&routes, 0, sizeof(routes));
+    memset(&planned, 0, sizeof(planned));
     instance_fqdn[0] = '\0';
     adisk_instance_fqdn[0] = '\0';
     device_info_instance_fqdn[0] = '\0';
@@ -4639,13 +5129,17 @@ static int handle_query_any(int sockfd,
         return 0;
     }
     memcpy(&hdr, packet, sizeof(hdr));
-    if (ntohs(hdr.flags) & DNS_FLAG_QR) {
+    flags = ntohs(hdr.flags);
+    if (flags & DNS_FLAG_QR) {
         return 0;
     }
 
     qdcount = ntohs(hdr.qdcount);
     ancount = ntohs(hdr.ancount);
     query_id = hdr.id;
+    source_port = sockaddr_port_host(source);
+    legacy_unicast_query = source_port != 0 && source_port != MDNS_PORT;
+    source_allows_unicast = source_can_receive_unicast_response(source, response_link);
     if (smb_enabled(cfg) &&
         build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->service_type) != 0) {
         log_packet_build_failure("query_response", "build_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
@@ -4665,6 +5159,20 @@ static int handle_query_any(int sockfd,
         build_instance_fqdn(airport_instance_fqdn, sizeof(airport_instance_fqdn), cfg->instance_name, cfg->airport_service_type) != 0) {
         log_packet_build_failure("query_response", "build_airport_instance_fqdn", sizeof(struct dns_header), 0, use_snapshot_records);
         return 0;
+    }
+
+    if (qdcount == 0) {
+        if (deferred_response_matches_source(sockfd, source, source_len)) {
+            suppress_planned_known_answers(packet, packet_len, cursor, ancount, &g_deferred_response.planned);
+            if ((flags & DNS_FLAG_TC) == 0) {
+                return flush_deferred_response_now();
+            }
+        }
+        return 0;
+    }
+
+    if (deferred_response_matches_source(sockfd, source, source_len) && (flags & DNS_FLAG_TC) == 0) {
+        clear_deferred_response();
     }
 
     for (i = 0; i < qdcount; i++) {
@@ -4688,154 +5196,70 @@ static int handle_query_any(int sockfd,
         if (qclass_base != DNS_CLASS_IN) {
             continue;
         }
-        reply_route = (qclass_raw & DNS_CLASS_QU) ? MDNS_REPLY_UNICAST : MDNS_REPLY_MULTICAST;
-
-        if (smb_enabled(cfg) &&
-            name_equals(qname, cfg->service_type) &&
-            (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
-            routes.smb_ptr |= reply_route;
-            routes.smb_srv |= reply_route;
-            routes.smb_txt |= reply_route;
-            routes.host_a |= reply_route;
-            routes.host_aaaa |= reply_route;
-        } else if (adisk_enabled(cfg) &&
-                   name_equals(qname, cfg->adisk_service_type) &&
-                   (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
-            routes.adisk_ptr |= reply_route;
-            routes.adisk_srv |= reply_route;
-            routes.adisk_txt |= reply_route;
-            routes.host_a |= reply_route;
-            routes.host_aaaa |= reply_route;
-        } else if (cfg->device_model[0] != '\0' &&
-                   name_equals(qname, cfg->device_info_service_type) &&
-                   (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
-            routes.device_info_ptr |= reply_route;
-            routes.device_info_srv |= reply_route;
-            routes.device_info_txt |= reply_route;
-            routes.host_a |= reply_route;
-            routes.host_aaaa |= reply_route;
-        } else if (!use_snapshot_records && is_airport_enabled(cfg) &&
-                   name_equals(qname, cfg->airport_service_type) &&
-                   (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
-            routes.airport_ptr |= reply_route;
-            routes.airport_srv |= reply_route;
-            routes.airport_txt |= reply_route;
-            routes.host_a |= reply_route;
-            routes.host_aaaa |= reply_route;
-        } else if (smb_enabled(cfg) && name_equals(qname, instance_fqdn)) {
-            if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
-                routes.smb_srv |= reply_route;
-                routes.host_a |= reply_route;
-                routes.host_aaaa |= reply_route;
-            }
-            if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
-                routes.smb_txt |= reply_route;
-            }
-        } else if (adisk_enabled(cfg) &&
-                   name_equals(qname, adisk_instance_fqdn)) {
-            if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
-                routes.adisk_srv |= reply_route;
-                routes.host_a |= reply_route;
-                routes.host_aaaa |= reply_route;
-            }
-            if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
-                routes.adisk_txt |= reply_route;
-            }
-        } else if (cfg->device_model[0] != '\0' &&
-                   name_equals(qname, device_info_instance_fqdn)) {
-            if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
-                routes.device_info_srv |= reply_route;
-                routes.host_a |= reply_route;
-                routes.host_aaaa |= reply_route;
-            }
-            if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
-                routes.device_info_txt |= reply_route;
-            }
-        } else if (!use_snapshot_records && is_airport_enabled(cfg) &&
-                   name_equals(qname, airport_instance_fqdn)) {
-            if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
-                routes.airport_srv |= reply_route;
-                routes.host_a |= reply_route;
-                routes.host_aaaa |= reply_route;
-            }
-            if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
-                routes.airport_txt |= reply_route;
-            }
-        } else if (name_equals(qname, cfg->host_fqdn) && (qtype == DNS_TYPE_A || qtype == DNS_TYPE_ANY)) {
-            routes.host_a |= reply_route;
-            if (qtype == DNS_TYPE_ANY) {
-                routes.host_aaaa |= reply_route;
-            }
-        } else if (name_equals(qname, cfg->host_fqdn) && qtype == DNS_TYPE_AAAA) {
-            routes.host_aaaa |= reply_route;
-        } else if (use_snapshot_records) {
-            size_t j;
-            for (j = 0; j < snapshot_records->count; j++) {
-                const struct service_record *record = &snapshot_records->records[j];
-                if (is_suppressed_snapshot_service_type(record->service_type)) {
-                    continue;
-                }
-                if (name_equals(qname, record->service_type) && (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
-                    routes.snapshot_ptr[j] |= reply_route;
-                    routes.snapshot_srv[j] |= reply_route;
-                    routes.snapshot_txt[j] |= reply_route;
-                    routes.snapshot_a[j] |= reply_route;
-                    routes.snapshot_aaaa[j] |= reply_route;
-                } else if (name_equals(qname, record->instance_fqdn)) {
-                    if (qtype == DNS_TYPE_SRV || qtype == DNS_TYPE_ANY) {
-                        routes.snapshot_srv[j] |= reply_route;
-                        routes.snapshot_a[j] |= reply_route;
-                        routes.snapshot_aaaa[j] |= reply_route;
-                    }
-                    if (qtype == DNS_TYPE_TXT || qtype == DNS_TYPE_ANY) {
-                        routes.snapshot_txt[j] |= reply_route;
-                    }
-                } else if (name_equals(qname, record->host_fqdn) && (qtype == DNS_TYPE_A || qtype == DNS_TYPE_ANY)) {
-                    routes.snapshot_a[j] |= reply_route;
-                    if (qtype == DNS_TYPE_ANY) {
-                        routes.snapshot_aaaa[j] |= reply_route;
-                    }
-                } else if (name_equals(qname, record->host_fqdn) && qtype == DNS_TYPE_AAAA) {
-                    routes.snapshot_aaaa[j] |= reply_route;
-                }
-            }
+        if (legacy_unicast_query && source_allows_unicast) {
+            reply_route = MDNS_REPLY_LEGACY_UNICAST;
+        } else if ((qclass_raw & DNS_CLASS_QU) && source_allows_unicast) {
+            reply_route = MDNS_REPLY_UNICAST;
+        } else {
+            reply_route = MDNS_REPLY_MULTICAST;
+        }
+        if (plan_question_answers(&planned,
+                                  reply_route,
+                                  qname,
+                                  qtype,
+                                  cfg,
+                                  response_link,
+                                  snapshot_records,
+                                  use_snapshot_records,
+                                  instance_fqdn,
+                                  adisk_instance_fqdn,
+                                  device_info_instance_fqdn,
+                                  airport_instance_fqdn) != 0) {
+            log_packet_build_failure("query_response", "plan_question_answers", cursor, 0, use_snapshot_records);
+            return -1;
         }
     }
 
-    suppress_known_answer_routes(packet,
-                                 packet_len,
-                                 cursor,
-                                 ancount,
-                                 &routes,
-                                 instance_fqdn,
-                                 adisk_instance_fqdn,
-                                 device_info_instance_fqdn,
-                                 airport_instance_fqdn,
-                                 cfg,
-                                 response_link,
-                                 snapshot_records,
-                                 use_snapshot_records);
+    suppress_planned_known_answers(packet, packet_len, cursor, ancount, &planned);
 
-    if (query_routes_have_destination(&routes, snapshot_records, use_snapshot_records, MDNS_REPLY_UNICAST)) {
+    if (flags & DNS_FLAG_TC) {
+        if (defer_planned_response(sockfd,
+                                   query_id,
+                                   multicast_dest,
+                                   multicast_dest_len,
+                                   source,
+                                   source_len,
+                                   use_snapshot_records,
+                                   &planned) != 0) {
+            return -1;
+        }
+        return 0;
+    }
+
+    if (planned_set_has_route(&planned, MDNS_REPLY_LEGACY_UNICAST)) {
         size_t reply_len;
         int answers;
-        if (build_query_response_packet(reply, sizeof(reply), &reply_len, &answers, query_id, MDNS_REPLY_UNICAST,
-                                        &routes, instance_fqdn, adisk_instance_fqdn, device_info_instance_fqdn,
-                                        airport_instance_fqdn, cfg, response_link,
-                                        snapshot_records, use_snapshot_records) != 0 ||
+        if (build_planned_response_packet(reply, sizeof(reply), &reply_len, &answers, query_id, MDNS_REPLY_LEGACY_UNICAST, 1, &planned) != 0 ||
             (answers > 0 &&
              send_dns_packet_any("query_response", sockfd, reply, reply_len, source, source_len, answers, use_snapshot_records) != 0)) {
             status = -1;
         }
     }
 
-    if (query_routes_have_destination(&routes, snapshot_records, use_snapshot_records, MDNS_REPLY_MULTICAST)) {
+    if (planned_set_has_route(&planned, MDNS_REPLY_UNICAST)) {
         size_t reply_len;
         int answers;
-        if (build_query_response_packet(reply, sizeof(reply), &reply_len, &answers, 0, MDNS_REPLY_MULTICAST,
-                                        &routes, instance_fqdn, adisk_instance_fqdn, device_info_instance_fqdn,
-                                        airport_instance_fqdn, cfg, response_link,
-                                        snapshot_records, use_snapshot_records) != 0 ||
+        if (build_planned_response_packet(reply, sizeof(reply), &reply_len, &answers, query_id, MDNS_REPLY_UNICAST, 0, &planned) != 0 ||
+            (answers > 0 &&
+             send_dns_packet_any("query_response", sockfd, reply, reply_len, source, source_len, answers, use_snapshot_records) != 0)) {
+            status = -1;
+        }
+    }
+
+    if (planned_set_has_route(&planned, MDNS_REPLY_MULTICAST)) {
+        size_t reply_len;
+        int answers;
+        if (build_planned_response_packet(reply, sizeof(reply), &reply_len, &answers, 0, MDNS_REPLY_MULTICAST, 0, &planned) != 0 ||
             (answers > 0 &&
              send_dns_packet_any("query_response", sockfd, reply, reply_len, multicast_dest, multicast_dest_len, answers, use_snapshot_records) != 0)) {
             status = -1;
@@ -4886,6 +5310,18 @@ static void link_context_from_iface_context(struct link_context *out, const stru
     out->ipv4[0].addr = ctx->ipv4_addr;
     out->ipv4[0].netmask = ctx->netmask;
     out->ipv4_count = 1;
+    out->mdns_ipv4_transport = 1;
+    out->mdns_ipv4_transport_addr = ctx->ipv4_addr;
+}
+
+static void init_explicit_link_context(struct link_context *out, uint32_t ipv4_addr) {
+    memset(out, 0, sizeof(*out));
+    strncpy(out->name, "explicit", sizeof(out->name) - 1);
+    out->ipv4[0].addr = ipv4_addr;
+    out->ipv4[0].netmask = htonl(0xffffffffU);
+    out->ipv4_count = 1;
+    out->mdns_ipv4_transport = 1;
+    out->mdns_ipv4_transport_addr = ipv4_addr;
 }
 
 static int set_context_outbound_interface(int sockfd, const struct iface_context *ctx) {
@@ -4992,12 +5428,20 @@ static const struct link_context *select_response_link_ipv4(const struct link_co
     }
     if (source != NULL && source->sin_addr.s_addr != 0) {
         for (i = 0; i < links->count; i++) {
+            if (!link_context_has_mdns_ipv4_transport(&links->links[i])) {
+                continue;
+            }
             if (source_matches_link_ipv4_subnet(source->sin_addr.s_addr, &links->links[i])) {
                 return &links->links[i];
             }
         }
     }
-    return &links->links[0];
+    for (i = 0; i < links->count; i++) {
+        if (link_context_has_mdns_ipv4_transport(&links->links[i])) {
+            return &links->links[i];
+        }
+    }
+    return NULL;
 }
 
 static const struct link_context *select_response_link_ipv6(const struct link_context_set *links,
@@ -5010,13 +5454,17 @@ static const struct link_context *select_response_link_ipv6(const struct link_co
     if (source != NULL) {
         if (source->sin6_scope_id != 0) {
             for (i = 0; i < links->count; i++) {
-                if (links->links[i].ifindex == source->sin6_scope_id) {
+                if (link_context_has_mdns_ipv6_transport(&links->links[i]) &&
+                    links->links[i].ifindex == source->sin6_scope_id) {
                     return &links->links[i];
                 }
             }
         }
         for (i = 0; i < links->count; i++) {
             size_t j;
+            if (!link_context_has_mdns_ipv6_transport(&links->links[i])) {
+                continue;
+            }
             for (j = 0; j < links->links[i].ipv6_count; j++) {
                 if (links->links[i].ipv6[j].link_local) {
                     continue;
@@ -5029,15 +5477,32 @@ static const struct link_context *select_response_link_ipv6(const struct link_co
             }
         }
     }
-    return links->count == 1 ? &links->links[0] : &links->links[0];
+    for (i = 0; i < links->count; i++) {
+        if (link_context_has_mdns_ipv6_transport(&links->links[i])) {
+            return &links->links[i];
+        }
+    }
+    return NULL;
 }
 
 static int set_link_outbound_interface4(int sockfd, const struct link_context *link) {
-    if (link->ipv4_count == 0) {
+    uint32_t ipv4_addr = link_preferred_ipv4_source(link);
+
+    if (ipv4_addr == 0) {
         errno = EADDRNOTAVAIL;
         return -1;
     }
-    return set_outbound_multicast_interface(sockfd, link->ipv4[0].addr, "runtime", 0, 0);
+    return set_outbound_multicast_interface(sockfd, ipv4_addr, "runtime", 0, 0);
+}
+
+static int set_link_outbound_interface4_for_peer(int sockfd, const struct link_context *link, uint32_t source_ipv4_addr) {
+    uint32_t ipv4_addr = link_ipv4_source_for_peer(link, source_ipv4_addr);
+
+    if (ipv4_addr == 0) {
+        errno = EADDRNOTAVAIL;
+        return -1;
+    }
+    return set_outbound_multicast_interface(sockfd, ipv4_addr, "runtime", 0, 0);
 }
 
 static int set_link_outbound_interface6(int sockfd, const struct link_context *link) {
@@ -5053,7 +5518,7 @@ static void send_link_announcement_pair(const struct mdns_socket_pair *sockets,
                                         const struct service_record_set *snapshot_records,
                                         int use_snapshot_records,
                                         const char *stage) {
-    if (sockets->ipv4_fd >= 0 && link->ipv4_count > 0) {
+    if (sockets->ipv4_fd >= 0 && link_context_has_mdns_ipv4_transport(link)) {
         if (set_link_outbound_interface4(sockets->ipv4_fd, link) != 0 ||
             send_announcement(sockets->ipv4_fd, dest4, cfg, link, ttl, snapshot_records, use_snapshot_records) != 0) {
             char detail[160];
@@ -5164,6 +5629,8 @@ static int prepare_runtime_mdns_sockets_for_links(int shared_bind,
     int need_ipv6 = link_contexts_need_ipv6_socket(new_links);
     int opened_ipv4 = 0;
     int opened_ipv6 = 0;
+    int ipv4_errno = 0;
+    int ipv6_errno = 0;
     struct mdns_membership_delta delta;
 
     init_mdns_membership_delta(&delta);
@@ -5176,18 +5643,32 @@ static int prepare_runtime_mdns_sockets_for_links(int shared_bind,
     if (need_ipv4 && sockets->ipv4_fd < 0) {
         sockets->ipv4_fd = open_bound_mdns_socket(shared_bind, 1);
         if (sockets->ipv4_fd < 0) {
-            goto fail;
+            ipv4_errno = errno;
+            if (need_ipv6) {
+                fprintf(stderr,
+                        "warning: mdns runtime socket: IPv4 socket open failed (%s); continuing with remaining mDNS transports\n",
+                        strerror(ipv4_errno));
+                disable_link_contexts_mdns_ipv4_transport(new_links);
+                compact_link_contexts_for_mdns_transport(new_links);
+                need_ipv4 = 0;
+            } else {
+                goto fail;
+            }
         }
-        opened_ipv4 = 1;
+        if (sockets->ipv4_fd >= 0) {
+            opened_ipv4 = 1;
+        }
     }
     if (need_ipv6 && sockets->ipv6_fd < 0) {
         sockets->ipv6_fd = open_bound_mdns_socket6(shared_bind, 1);
         if (sockets->ipv6_fd < 0) {
+            ipv6_errno = errno;
             if (need_ipv4 && sockets->ipv4_fd >= 0) {
                 fprintf(stderr,
-                        "warning: mdns runtime socket: IPv6 socket open failed (%s); continuing with IPv4 mDNS\n",
-                        strerror(errno));
+                        "warning: mdns runtime socket: IPv6 socket open failed (%s); continuing with remaining mDNS transports\n",
+                        strerror(ipv6_errno));
                 disable_link_contexts_mdns_ipv6_transport(new_links);
+                compact_link_contexts_for_mdns_transport(new_links);
                 need_ipv6 = 0;
             } else {
                 goto fail;
@@ -5204,7 +5685,20 @@ static int prepare_runtime_mdns_sockets_for_links(int shared_bind,
                                          new_links,
                                          "runtime",
                                          &delta) != 0) {
-        goto fail;
+        ipv4_errno = errno;
+        if (ipv4_errno == EADDRNOTAVAIL && need_ipv6 && sockets->ipv6_fd >= 0) {
+            fprintf(stderr,
+                    "warning: mdns runtime socket: IPv4 membership update found no usable links; continuing with remaining mDNS transports\n");
+            disable_link_contexts_mdns_ipv4_transport(new_links);
+            need_ipv4 = 0;
+            if (opened_ipv4 && sockets->ipv4_fd >= 0) {
+                clear_deferred_response_for_sockfd(sockets->ipv4_fd);
+                close(sockets->ipv4_fd);
+                sockets->ipv4_fd = -1;
+            }
+        } else {
+            goto fail;
+        }
     }
     if (need_ipv6 &&
         prepare_mdns_socket6_memberships(sockets->ipv6_fd,
@@ -5212,17 +5706,25 @@ static int prepare_runtime_mdns_sockets_for_links(int shared_bind,
                                          new_links,
                                          "runtime",
                                          &delta) != 0) {
+        ipv6_errno = errno;
         if (need_ipv4 && sockets->ipv4_fd >= 0) {
             fprintf(stderr,
-                    "warning: mdns runtime socket: IPv6 membership update failed (%s); continuing with IPv4 mDNS\n",
-                    strerror(errno));
+                    "warning: mdns runtime socket: IPv6 membership update failed (%s); continuing with remaining mDNS transports\n",
+                    strerror(ipv6_errno));
             disable_link_contexts_mdns_ipv6_transport(new_links);
             if (opened_ipv6 && sockets->ipv6_fd >= 0) {
+                clear_deferred_response_for_sockfd(sockets->ipv6_fd);
                 close(sockets->ipv6_fd);
                 sockets->ipv6_fd = -1;
             }
+            compact_link_contexts_for_mdns_transport(new_links);
             return 0;
         }
+        goto fail;
+    }
+    compact_link_contexts_for_mdns_transport(new_links);
+    if (new_links->count == 0) {
+        errno = EADDRNOTAVAIL;
         goto fail;
     }
     return 0;
@@ -5230,10 +5732,12 @@ static int prepare_runtime_mdns_sockets_for_links(int shared_bind,
 fail:
     rollback_mdns_membership_delta(sockets, &delta);
     if (opened_ipv4 && sockets->ipv4_fd >= 0) {
+        clear_deferred_response_for_sockfd(sockets->ipv4_fd);
         close(sockets->ipv4_fd);
         sockets->ipv4_fd = -1;
     }
     if (opened_ipv6 && sockets->ipv6_fd >= 0) {
+        clear_deferred_response_for_sockfd(sockets->ipv6_fd);
         close(sockets->ipv6_fd);
         sockets->ipv6_fd = -1;
     }
@@ -5247,11 +5751,13 @@ static void retire_runtime_mdns_memberships_for_missing(struct mdns_socket_pair 
 
     if (sockets->ipv4_fd >= 0) {
         for (i = 0; i < old_links->count; i++) {
-            if (old_links->links[i].ipv4_count == 0 ||
-                link_set_has_ipv4_membership(new_links, old_links->links[i].ipv4[0].addr)) {
+            uint32_t ipv4_addr = link_preferred_ipv4_source(&old_links->links[i]);
+            if (!link_context_has_mdns_ipv4_transport(&old_links->links[i]) ||
+                ipv4_addr == 0 ||
+                link_set_has_ipv4_membership(new_links, ipv4_addr)) {
                 continue;
             }
-            drop_mdns_multicast_group_best_effort(sockets->ipv4_fd, old_links->links[i].ipv4[0].addr, "runtime");
+            drop_mdns_multicast_group_best_effort(sockets->ipv4_fd, ipv4_addr, "runtime");
         }
     }
     if (sockets->ipv6_fd >= 0) {
@@ -5271,10 +5777,12 @@ static void retire_runtime_mdns_memberships_for_missing(struct mdns_socket_pair 
 static void close_unused_runtime_mdns_socket_families(struct mdns_socket_pair *sockets,
                                                       const struct link_context_set *links) {
     if (!link_contexts_need_ipv4_socket(links) && sockets->ipv4_fd >= 0) {
+        clear_deferred_response_for_sockfd(sockets->ipv4_fd);
         close(sockets->ipv4_fd);
         sockets->ipv4_fd = -1;
     }
     if (!link_contexts_need_ipv6_socket(links) && sockets->ipv6_fd >= 0) {
+        clear_deferred_response_for_sockfd(sockets->ipv6_fd);
         close(sockets->ipv6_fd);
         sockets->ipv6_fd = -1;
     }
@@ -5588,6 +6096,11 @@ int main(int argc, char **argv) {
                  capture_mdns_snapshot_links_with_retry(&captured_records, &capture_links) == 0) ||
                 (!auto_ip && capture_mdns_snapshot_raw_with_retry(&captured_records, cfg.ipv4_addr) == 0)) {
                 fprintf(stderr, "snapshot capture: captured %lu records\n", (unsigned long)captured_records.count);
+                if (captured_records.truncated) {
+                    fprintf(stderr,
+                            "snapshot capture: record list truncated; kept first %lu unique records in receive order\n",
+                            (unsigned long)captured_records.count);
+                }
                 if (cfg.save_all_snapshot_path[0] != '\0' &&
                     write_snapshot_file_atomic(cfg.save_all_snapshot_path, &captured_records) != 0) {
                     fprintf(stderr, "failed to write all snapshot file: %s\n", cfg.save_all_snapshot_path);
@@ -5746,6 +6259,7 @@ int main(int argc, char **argv) {
             }
 
             now_ms = monotonic_millis();
+            (void)flush_deferred_response_if_due(now_ms);
             while (startup_burst_index < STARTUP_BURST_COUNT &&
                    now_ms - startup_burst_start_ms >= (long long)startup_burst_offsets_ms[startup_burst_index]) {
                 announce_all_links(&sockets, &auto_links, &mdns_dest, &mdns_dest6, &cfg, &snapshot_records, use_snapshot_records, "startup_announce");
@@ -5775,6 +6289,7 @@ int main(int argc, char **argv) {
                     wait_ms = 1000;
                 }
             }
+            wait_ms = deferred_response_adjust_wait_ms(now_ms, wait_ms);
             tv.tv_sec = (time_t)(wait_ms / 1000);
             tv.tv_usec = (suseconds_t)((wait_ms % 1000) * 1000);
 
@@ -5794,7 +6309,7 @@ int main(int argc, char **argv) {
                     if (nread > 0) {
                         const struct link_context *link = select_response_link_ipv4(&auto_links, &src);
                         if (link != NULL &&
-                            (set_link_outbound_interface4(sockets.ipv4_fd, link) != 0 ||
+                            (set_link_outbound_interface4_for_peer(sockets.ipv4_fd, link, src.sin_addr.s_addr) != 0 ||
                              handle_query(sockets.ipv4_fd, packet, (size_t)nread, &mdns_dest, &src, &cfg, link, &snapshot_records, use_snapshot_records) != 0)) {
                             char detail[160];
                             snprintf(detail, sizeof(detail), "iface=%s packet_len=%ld from=%s:%u",
@@ -5872,14 +6387,11 @@ int main(int argc, char **argv) {
         long long wait_ms = 1000;
 
         now_ms = monotonic_millis();
+        (void)flush_deferred_response_if_due(now_ms);
         while (startup_burst_index < STARTUP_BURST_COUNT &&
                now_ms - startup_burst_start_ms >= (long long)startup_burst_offsets_ms[startup_burst_index]) {
             struct link_context link;
-            memset(&link, 0, sizeof(link));
-            strncpy(link.name, "explicit", sizeof(link.name) - 1);
-            link.ipv4[0].addr = cfg.ipv4_addr;
-            link.ipv4[0].netmask = htonl(0xffffffffU);
-            link.ipv4_count = 1;
+            init_explicit_link_context(&link, cfg.ipv4_addr);
             if (send_announcement(sockfd, &mdns_dest, &cfg, &link, cfg.ttl, &snapshot_records, use_snapshot_records) != 0) {
                 char detail[96];
                 snprintf(detail, sizeof(detail), "burst_index=%lu offset_ms=%u",
@@ -5901,6 +6413,7 @@ int main(int argc, char **argv) {
                 wait_ms = 1000;
             }
         }
+        wait_ms = deferred_response_adjust_wait_ms(now_ms, wait_ms);
         tv.tv_sec = (time_t)(wait_ms / 1000);
         tv.tv_usec = (suseconds_t)((wait_ms % 1000) * 1000);
 
@@ -5910,11 +6423,7 @@ int main(int argc, char **argv) {
             nread = recvfrom(sockfd, packet, sizeof(packet), 0, (struct sockaddr *)&src, &src_len);
             if (nread > 0) {
                 struct link_context link;
-                memset(&link, 0, sizeof(link));
-                strncpy(link.name, "explicit", sizeof(link.name) - 1);
-                link.ipv4[0].addr = cfg.ipv4_addr;
-                link.ipv4[0].netmask = htonl(0xffffffffU);
-                link.ipv4_count = 1;
+                init_explicit_link_context(&link, cfg.ipv4_addr);
                 if (handle_query(sockfd, packet, (size_t)nread, &mdns_dest, &src, &cfg, &link, &snapshot_records, use_snapshot_records) != 0) {
                     char detail[128];
                     snprintf(detail, sizeof(detail), "packet_len=%ld from=%s:%u",
@@ -5926,11 +6435,7 @@ int main(int argc, char **argv) {
 
         if (time(NULL) - last_announce >= ANNOUNCE_INTERVAL) {
             struct link_context link;
-            memset(&link, 0, sizeof(link));
-            strncpy(link.name, "explicit", sizeof(link.name) - 1);
-            link.ipv4[0].addr = cfg.ipv4_addr;
-            link.ipv4[0].netmask = htonl(0xffffffffU);
-            link.ipv4_count = 1;
+            init_explicit_link_context(&link, cfg.ipv4_addr);
             if (send_announcement(sockfd, &mdns_dest, &cfg, &link, cfg.ttl, &snapshot_records, use_snapshot_records) != 0) {
                 char detail[96];
                 snprintf(detail, sizeof(detail), "interval=%d last_announce_age=%ld",
@@ -5941,6 +6446,7 @@ int main(int argc, char **argv) {
         }
     }
 
+    clear_deferred_response_for_sockfd(sockfd);
     close(sockfd);
     return 0;
 }
