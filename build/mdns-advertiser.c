@@ -32,7 +32,7 @@
 #define MAX_NAME 256
 #define MAX_LABEL 63
 #define MAX_TXT_STRING 255
-#define ANNOUNCE_INTERVAL 30
+#define STARTUP_BURST_COUNT 4
 #define MODEL_TXT_PREFIX "model="
 #define ADISK_DEFAULT_DISK_KEY "dk0"
 #define ADISK_SYS_ADVF "0x1010"
@@ -60,12 +60,12 @@
 #define SNAPSHOT_CAPTURE_STEP_SECONDS 5
 #endif
 #define TAKEOVER_RETRY_COUNT 6
-#define STARTUP_BURST_COUNT 7
 #define MAX_IFACE_CONTEXTS 16
 #define AUTO_IP_STABILIZE_SECONDS 3
 #define AUTO_IP_STARTUP_POLL_SECONDS 2
 #define AUTO_IP_STABLE_POLL_SECONDS 30
 #define ADVERTISER_VERSION_CODE 2104
+#define DNS_SD_SERVICE_ENUMERATION_NAME "_services._dns-sd._udp.local."
 
 #define DNS_TYPE_A 1
 #define DNS_TYPE_PTR 12
@@ -74,6 +74,7 @@
 #define DNS_TYPE_SRV 33
 #define DNS_TYPE_ANY 255
 #define DNS_CLASS_IN 1
+#define DNS_CLASS_ANY 255
 #define DNS_CLASS_CACHE_FLUSH 0x8000
 #define DNS_CLASS_QU 0x8000
 #define DNS_CLASS_IN_UNIQUE (DNS_CLASS_IN | DNS_CLASS_CACHE_FLUSH)
@@ -85,6 +86,8 @@
 #define DNS_FLAG_AA 0x0400
 #define LEGACY_UNICAST_TTL_MAX 10
 #define TC_KNOWN_ANSWER_DEFER_MS 450
+#define MDNS_MULTICAST_RESPONSE_DELAY_MIN_MS 20
+#define MDNS_MULTICAST_RESPONSE_DELAY_MAX_MS 120
 #define PLANNED_RR_MAX 192
 #define PLANNED_RDATA_MAX 1024
 
@@ -324,6 +327,18 @@ struct planned_rr_set {
     int truncated;
 };
 
+struct response_question_section {
+    const uint8_t *bytes;
+    size_t len;
+    uint16_t count;
+};
+
+struct stored_question_section {
+    uint8_t bytes[BUF_SIZE];
+    size_t len;
+    uint16_t count;
+};
+
 struct deferred_response {
     int active;
     int sockfd;
@@ -334,10 +349,12 @@ struct deferred_response {
     socklen_t multicast_dest_len;
     struct sockaddr_storage source;
     socklen_t source_len;
+    struct stored_question_section questions;
     struct planned_rr_set planned;
 };
 
 static struct deferred_response g_deferred_response;
+static const unsigned int g_startup_burst_offsets_ms[STARTUP_BURST_COUNT] = {0, 1000, 3000, 7000};
 
 static int name_equals(const char *a, const char *b);
 static int build_instance_fqdn(char *out, size_t out_len, const char *instance_name, const char *service_type);
@@ -2782,6 +2799,22 @@ static void sleep_millis(unsigned int delay_ms) {
     (void)usleep((useconds_t)delay_ms * 1000U);
 }
 
+static unsigned int random_multicast_response_delay_ms(void) {
+    static int seeded = 0;
+    unsigned int span;
+
+    if (!seeded) {
+        srand((unsigned int)(time(NULL) ^ (time_t)getpid()));
+        seeded = 1;
+    }
+    span = (MDNS_MULTICAST_RESPONSE_DELAY_MAX_MS - MDNS_MULTICAST_RESPONSE_DELAY_MIN_MS) + 1U;
+    return MDNS_MULTICAST_RESPONSE_DELAY_MIN_MS + (unsigned int)(rand() % (int)span);
+}
+
+static void delay_multicast_query_response(void) {
+    sleep_millis(random_multicast_response_delay_ms());
+}
+
 static long long monotonic_millis(void) {
     struct timeval tv;
 
@@ -2886,6 +2919,28 @@ configure_multicast_options:
     return 0;
 }
 
+static void configure_unicast_response_hop_limit4(int sockfd) {
+#ifdef IP_TTL
+    int ttl = 255;
+    if (setsockopt(sockfd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) < 0) {
+        fprintf(stderr, "warning: mdns socket: IP_TTL=255 failed: %s\n", strerror(errno));
+    }
+#else
+    (void)sockfd;
+#endif
+}
+
+static void configure_unicast_response_hop_limit6(int sockfd) {
+#ifdef IPV6_UNICAST_HOPS
+    int hops = 255;
+    if (setsockopt(sockfd, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &hops, sizeof(hops)) < 0) {
+        fprintf(stderr, "warning: mdns socket: IPV6_UNICAST_HOPS=255 failed: %s\n", strerror(errno));
+    }
+#else
+    (void)sockfd;
+#endif
+}
+
 static int configure_multicast_socket_options(int sockfd) {
     int yes;
 
@@ -2893,6 +2948,7 @@ static int configure_multicast_socket_options(int sockfd) {
     (void)setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_TTL, &yes, sizeof(yes));
     yes = 1;
     (void)setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_LOOP, &yes, sizeof(yes));
+    configure_unicast_response_hop_limit4(sockfd);
     return 0;
 }
 
@@ -3451,6 +3507,7 @@ static int set_outbound_multicast_interface6(int sockfd, unsigned int ifindex, c
     }
     (void)setsockopt(sockfd, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &hops, sizeof(hops));
     (void)setsockopt(sockfd, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &loop, sizeof(loop));
+    configure_unicast_response_hop_limit6(sockfd);
     if (log_success) {
         fprintf(stderr, "mdns %s socket: IPv6 outbound multicast ifindex=%u\n", socket_role, ifindex);
     }
@@ -4557,6 +4614,61 @@ static int plan_snapshot_record(struct planned_rr_set *set,
     return planned_rr_add_link_addresses(set, routes, record->host_fqdn, link, include_a, include_aaaa, ttl);
 }
 
+static int plan_service_type_enumeration_type(struct planned_rr_set *set,
+                                              int routes,
+                                              const char *service_type,
+                                              uint32_t ttl) {
+    if (service_type == NULL || service_type[0] == '\0') {
+        return 0;
+    }
+    return planned_rr_add_name(set,
+                               routes,
+                               DNS_SD_SERVICE_ENUMERATION_NAME,
+                               DNS_TYPE_PTR,
+                               DNS_CLASS_IN,
+                               ttl,
+                               service_type);
+}
+
+static int plan_service_type_enumeration_records(struct planned_rr_set *set,
+                                                 int routes,
+                                                 const struct config *cfg,
+                                                 const struct service_record_set *snapshot_records,
+                                                 int use_snapshot_records) {
+    size_t i;
+
+    if (smb_enabled(cfg) &&
+        plan_service_type_enumeration_type(set, routes, cfg->service_type, cfg->ttl) != 0) {
+        return -1;
+    }
+    if (adisk_enabled(cfg) &&
+        plan_service_type_enumeration_type(set, routes, cfg->adisk_service_type, cfg->ttl) != 0) {
+        return -1;
+    }
+    if (cfg->device_model[0] != '\0' &&
+        plan_service_type_enumeration_type(set, routes, cfg->device_info_service_type, cfg->ttl) != 0) {
+        return -1;
+    }
+    if (!use_snapshot_records && is_airport_enabled(cfg) &&
+        plan_service_type_enumeration_type(set, routes, cfg->airport_service_type, cfg->ttl) != 0) {
+        return -1;
+    }
+    if (use_snapshot_records) {
+        for (i = 0; i < snapshot_records->count; i++) {
+            if (is_suppressed_snapshot_service_type(snapshot_records->records[i].service_type)) {
+                continue;
+            }
+            if (plan_service_type_enumeration_type(set,
+                                                   routes,
+                                                   snapshot_records->records[i].service_type,
+                                                   cfg->ttl) != 0) {
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
 static int planned_set_has_route(const struct planned_rr_set *set, int route) {
     size_t i;
 
@@ -4744,6 +4856,14 @@ static int plan_question_answers(struct planned_rr_set *planned,
                                  const char *adisk_instance_fqdn,
                                  const char *device_info_instance_fqdn,
                                  const char *airport_instance_fqdn) {
+    if (name_equals(qname, DNS_SD_SERVICE_ENUMERATION_NAME) &&
+        (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
+        return plan_service_type_enumeration_records(planned,
+                                                     route,
+                                                     cfg,
+                                                     snapshot_records,
+                                                     use_snapshot_records);
+    }
     if (smb_enabled(cfg) && name_equals(qname, cfg->service_type) &&
         (qtype == DNS_TYPE_PTR || qtype == DNS_TYPE_ANY)) {
         return plan_smb_records(planned, route, cfg, instance_fqdn, response_link, 1, 1, 1, 1, 1);
@@ -4872,6 +4992,7 @@ static int build_planned_response_packet(uint8_t *reply,
                                          uint16_t response_id,
                                          int route,
                                          int legacy_unicast,
+                                         const struct response_question_section *questions,
                                          const struct planned_rr_set *planned) {
     struct dns_header hdr;
     size_t off = sizeof(struct dns_header);
@@ -4881,6 +5002,13 @@ static int build_planned_response_packet(uint8_t *reply,
     memset(&hdr, 0, sizeof(hdr));
     hdr.id = response_id;
     hdr.flags = htons(DNS_FLAG_QR | DNS_FLAG_AA);
+    if (legacy_unicast && questions != NULL && questions->count > 0) {
+        if (questions->bytes == NULL || questions->len == 0 ||
+            append_bytes(reply, &off, reply_cap, questions->bytes, questions->len) != 0) {
+            return -1;
+        }
+        hdr.qdcount = htons(questions->count);
+    }
     for (i = 0; i < planned->count; i++) {
         if ((planned->records[i].routes & route) == 0) {
             continue;
@@ -4895,6 +5023,54 @@ static int build_planned_response_packet(uint8_t *reply,
     *reply_len = off;
     *answer_count = answers;
     return 0;
+}
+
+static void stored_question_section_as_response(const struct stored_question_section *stored,
+                                                struct response_question_section *out) {
+    out->bytes = stored->bytes;
+    out->len = stored->len;
+    out->count = stored->count;
+}
+
+static int send_planned_response_route(int sockfd,
+                                       const struct planned_rr_set *planned,
+                                       int route,
+                                       uint16_t response_id,
+                                       const struct response_question_section *questions,
+                                       const struct sockaddr *dest,
+                                       socklen_t dest_len,
+                                       int use_snapshot_records,
+                                       int delay_multicast) {
+    uint8_t reply[BUF_SIZE];
+    size_t reply_len;
+    int answers;
+    int legacy_unicast = route == MDNS_REPLY_LEGACY_UNICAST;
+
+    if (build_planned_response_packet(reply,
+                                      sizeof(reply),
+                                      &reply_len,
+                                      &answers,
+                                      response_id,
+                                      route,
+                                      legacy_unicast,
+                                      questions,
+                                      planned) != 0) {
+        return -1;
+    }
+    if (answers <= 0) {
+        return 0;
+    }
+    if (delay_multicast && route == MDNS_REPLY_MULTICAST) {
+        delay_multicast_query_response();
+    }
+    return send_dns_packet_any("query_response",
+                               sockfd,
+                               reply,
+                               reply_len,
+                               dest,
+                               dest_len,
+                               answers,
+                               use_snapshot_records);
 }
 
 static void clear_deferred_response(void) {
@@ -4958,78 +5134,49 @@ static int copy_sockaddr_storage(struct sockaddr_storage *out,
 }
 
 static int flush_deferred_response_now(void) {
-    uint8_t reply[BUF_SIZE];
     int status = 0;
+    struct response_question_section questions;
 
     if (!g_deferred_response.active) {
         return 0;
     }
+    stored_question_section_as_response(&g_deferred_response.questions, &questions);
     if (planned_set_has_route(&g_deferred_response.planned, MDNS_REPLY_LEGACY_UNICAST)) {
-        size_t reply_len;
-        int answers;
-        if (build_planned_response_packet(reply,
-                                          sizeof(reply),
-                                          &reply_len,
-                                          &answers,
-                                          g_deferred_response.response_id,
-                                          MDNS_REPLY_LEGACY_UNICAST,
-                                          1,
-                                          &g_deferred_response.planned) != 0 ||
-            (answers > 0 &&
-             send_dns_packet_any("query_response",
-                                 g_deferred_response.sockfd,
-                                 reply,
-                                 reply_len,
-                                 (const struct sockaddr *)&g_deferred_response.source,
-                                 g_deferred_response.source_len,
-                                 answers,
-                                 g_deferred_response.use_snapshot_records) != 0)) {
+        if (send_planned_response_route(g_deferred_response.sockfd,
+                                        &g_deferred_response.planned,
+                                        MDNS_REPLY_LEGACY_UNICAST,
+                                        g_deferred_response.response_id,
+                                        &questions,
+                                        (const struct sockaddr *)&g_deferred_response.source,
+                                        g_deferred_response.source_len,
+                                        g_deferred_response.use_snapshot_records,
+                                        0) != 0) {
             status = -1;
         }
     }
     if (planned_set_has_route(&g_deferred_response.planned, MDNS_REPLY_UNICAST)) {
-        size_t reply_len;
-        int answers;
-        if (build_planned_response_packet(reply,
-                                          sizeof(reply),
-                                          &reply_len,
-                                          &answers,
-                                          g_deferred_response.response_id,
-                                          MDNS_REPLY_UNICAST,
-                                          0,
-                                          &g_deferred_response.planned) != 0 ||
-            (answers > 0 &&
-             send_dns_packet_any("query_response",
-                                 g_deferred_response.sockfd,
-                                 reply,
-                                 reply_len,
-                                 (const struct sockaddr *)&g_deferred_response.source,
-                                 g_deferred_response.source_len,
-                                 answers,
-                                 g_deferred_response.use_snapshot_records) != 0)) {
+        if (send_planned_response_route(g_deferred_response.sockfd,
+                                        &g_deferred_response.planned,
+                                        MDNS_REPLY_UNICAST,
+                                        g_deferred_response.response_id,
+                                        &questions,
+                                        (const struct sockaddr *)&g_deferred_response.source,
+                                        g_deferred_response.source_len,
+                                        g_deferred_response.use_snapshot_records,
+                                        0) != 0) {
             status = -1;
         }
     }
     if (planned_set_has_route(&g_deferred_response.planned, MDNS_REPLY_MULTICAST)) {
-        size_t reply_len;
-        int answers;
-        if (build_planned_response_packet(reply,
-                                          sizeof(reply),
-                                          &reply_len,
-                                          &answers,
-                                          0,
-                                          MDNS_REPLY_MULTICAST,
-                                          0,
-                                          &g_deferred_response.planned) != 0 ||
-            (answers > 0 &&
-             send_dns_packet_any("query_response",
-                                 g_deferred_response.sockfd,
-                                 reply,
-                                 reply_len,
-                                 (const struct sockaddr *)&g_deferred_response.multicast_dest,
-                                 g_deferred_response.multicast_dest_len,
-                                 answers,
-                                 g_deferred_response.use_snapshot_records) != 0)) {
+        if (send_planned_response_route(g_deferred_response.sockfd,
+                                        &g_deferred_response.planned,
+                                        MDNS_REPLY_MULTICAST,
+                                        0,
+                                        &questions,
+                                        (const struct sockaddr *)&g_deferred_response.multicast_dest,
+                                        g_deferred_response.multicast_dest_len,
+                                        g_deferred_response.use_snapshot_records,
+                                        0) != 0) {
             status = -1;
         }
     }
@@ -5063,6 +5210,7 @@ static int defer_planned_response(int sockfd,
                                   socklen_t multicast_dest_len,
                                   const struct sockaddr *source,
                                   socklen_t source_len,
+                                  const struct response_question_section *questions,
                                   int use_snapshot_records,
                                   const struct planned_rr_set *planned) {
     if (!planned_set_has_any_route(planned)) {
@@ -5076,6 +5224,15 @@ static int defer_planned_response(int sockfd,
     g_deferred_response.response_id = response_id;
     g_deferred_response.use_snapshot_records = use_snapshot_records;
     g_deferred_response.planned = *planned;
+    if (questions != NULL && questions->count > 0) {
+        if (questions->bytes == NULL || questions->len > sizeof(g_deferred_response.questions.bytes)) {
+            clear_deferred_response();
+            return -1;
+        }
+        memcpy(g_deferred_response.questions.bytes, questions->bytes, questions->len);
+        g_deferred_response.questions.len = questions->len;
+        g_deferred_response.questions.count = questions->count;
+    }
     if (copy_sockaddr_storage(&g_deferred_response.multicast_dest,
                               &g_deferred_response.multicast_dest_len,
                               multicast_dest,
@@ -5107,7 +5264,6 @@ static int handle_query_any(int sockfd,
     uint16_t ancount;
     uint16_t query_id;
     uint16_t flags;
-    uint8_t reply[BUF_SIZE];
     char instance_fqdn[MAX_NAME];
     char adisk_instance_fqdn[MAX_NAME];
     char device_info_instance_fqdn[MAX_NAME];
@@ -5117,9 +5273,12 @@ static int handle_query_any(int sockfd,
     int source_port;
     int legacy_unicast_query;
     int source_allows_unicast;
+    size_t question_section_start = sizeof(struct dns_header);
+    struct response_question_section questions;
     static struct planned_rr_set planned;
 
     memset(&planned, 0, sizeof(planned));
+    memset(&questions, 0, sizeof(questions));
     instance_fqdn[0] = '\0';
     adisk_instance_fqdn[0] = '\0';
     device_info_instance_fqdn[0] = '\0';
@@ -5193,7 +5352,7 @@ static int handle_query_any(int sockfd,
         qtype = ntohs(qtype);
         qclass_raw = ntohs(qclass);
         qclass_base = (uint16_t)(qclass_raw & 0x7FFF);
-        if (qclass_base != DNS_CLASS_IN) {
+        if (qclass_base != DNS_CLASS_IN && qclass_base != DNS_CLASS_ANY) {
             continue;
         }
         if (legacy_unicast_query && source_allows_unicast) {
@@ -5219,6 +5378,9 @@ static int handle_query_any(int sockfd,
             return -1;
         }
     }
+    questions.bytes = packet + question_section_start;
+    questions.len = cursor - question_section_start;
+    questions.count = qdcount;
 
     suppress_planned_known_answers(packet, packet_len, cursor, ancount, &planned);
 
@@ -5229,6 +5391,7 @@ static int handle_query_any(int sockfd,
                                    multicast_dest_len,
                                    source,
                                    source_len,
+                                   &questions,
                                    use_snapshot_records,
                                    &planned) != 0) {
             return -1;
@@ -5237,31 +5400,43 @@ static int handle_query_any(int sockfd,
     }
 
     if (planned_set_has_route(&planned, MDNS_REPLY_LEGACY_UNICAST)) {
-        size_t reply_len;
-        int answers;
-        if (build_planned_response_packet(reply, sizeof(reply), &reply_len, &answers, query_id, MDNS_REPLY_LEGACY_UNICAST, 1, &planned) != 0 ||
-            (answers > 0 &&
-             send_dns_packet_any("query_response", sockfd, reply, reply_len, source, source_len, answers, use_snapshot_records) != 0)) {
+        if (send_planned_response_route(sockfd,
+                                        &planned,
+                                        MDNS_REPLY_LEGACY_UNICAST,
+                                        query_id,
+                                        &questions,
+                                        source,
+                                        source_len,
+                                        use_snapshot_records,
+                                        0) != 0) {
             status = -1;
         }
     }
 
     if (planned_set_has_route(&planned, MDNS_REPLY_UNICAST)) {
-        size_t reply_len;
-        int answers;
-        if (build_planned_response_packet(reply, sizeof(reply), &reply_len, &answers, query_id, MDNS_REPLY_UNICAST, 0, &planned) != 0 ||
-            (answers > 0 &&
-             send_dns_packet_any("query_response", sockfd, reply, reply_len, source, source_len, answers, use_snapshot_records) != 0)) {
+        if (send_planned_response_route(sockfd,
+                                        &planned,
+                                        MDNS_REPLY_UNICAST,
+                                        query_id,
+                                        &questions,
+                                        source,
+                                        source_len,
+                                        use_snapshot_records,
+                                        0) != 0) {
             status = -1;
         }
     }
 
     if (planned_set_has_route(&planned, MDNS_REPLY_MULTICAST)) {
-        size_t reply_len;
-        int answers;
-        if (build_planned_response_packet(reply, sizeof(reply), &reply_len, &answers, 0, MDNS_REPLY_MULTICAST, 0, &planned) != 0 ||
-            (answers > 0 &&
-             send_dns_packet_any("query_response", sockfd, reply, reply_len, multicast_dest, multicast_dest_len, answers, use_snapshot_records) != 0)) {
+        if (send_planned_response_route(sockfd,
+                                        &planned,
+                                        MDNS_REPLY_MULTICAST,
+                                        0,
+                                        &questions,
+                                        multicast_dest,
+                                        multicast_dest_len,
+                                        use_snapshot_records,
+                                        1) != 0) {
             status = -1;
         }
     }
@@ -5839,7 +6014,6 @@ int main(int argc, char **argv) {
     struct sockaddr_in mdns_dest;
     struct sockaddr_in6 mdns_dest6;
     int i;
-    time_t last_announce = 0;
     int use_snapshot_records = 0;
     int shared_bind = 0;
     int auto_ip = 0;
@@ -5853,7 +6027,6 @@ int main(int argc, char **argv) {
     int snapshot_capture_failed = 0;
     int snapshot_capture_skipped = 0;
     int trusted_snapshot_written = 0;
-    static const unsigned int startup_burst_offsets_ms[STARTUP_BURST_COUNT] = {0, 250, 1000, 2000, 4000, 8000, 16000};
     size_t startup_burst_index = 0;
     long long startup_burst_start_ms = 0;
 
@@ -6190,7 +6363,6 @@ int main(int argc, char **argv) {
         }
 
         startup_burst_start_ms = monotonic_millis();
-        last_announce = time(NULL);
         last_iface_poll = time(NULL);
 
         while (!g_stop) {
@@ -6251,7 +6423,6 @@ int main(int argc, char **argv) {
                             log_link_contexts("mdns auto-ip active", &auto_links);
                             startup_burst_start_ms = monotonic_millis();
                             startup_burst_index = 0;
-                            last_announce = time(NULL);
                         }
                     }
                 }
@@ -6261,7 +6432,7 @@ int main(int argc, char **argv) {
             now_ms = monotonic_millis();
             (void)flush_deferred_response_if_due(now_ms);
             while (startup_burst_index < STARTUP_BURST_COUNT &&
-                   now_ms - startup_burst_start_ms >= (long long)startup_burst_offsets_ms[startup_burst_index]) {
+                   now_ms - startup_burst_start_ms >= (long long)g_startup_burst_offsets_ms[startup_burst_index]) {
                 announce_all_links(&sockets, &auto_links, &mdns_dest, &mdns_dest6, &cfg, &snapshot_records, use_snapshot_records, "startup_announce");
                 startup_burst_index++;
                 now_ms = monotonic_millis();
@@ -6281,7 +6452,7 @@ int main(int argc, char **argv) {
                 }
             }
             if (startup_burst_index < STARTUP_BURST_COUNT) {
-                next_burst_ms = startup_burst_start_ms + (long long)startup_burst_offsets_ms[startup_burst_index];
+                next_burst_ms = startup_burst_start_ms + (long long)g_startup_burst_offsets_ms[startup_burst_index];
                 wait_ms = next_burst_ms - now_ms;
                 if (wait_ms < 0) {
                     wait_ms = 0;
@@ -6358,10 +6529,6 @@ int main(int argc, char **argv) {
                 }
             }
 
-            if (time(NULL) - last_announce >= ANNOUNCE_INTERVAL) {
-                announce_all_links(&sockets, &auto_links, &mdns_dest, &mdns_dest6, &cfg, &snapshot_records, use_snapshot_records, "periodic_announce");
-                last_announce = time(NULL);
-            }
         }
 
         send_link_goodbyes(&sockets, &auto_links, &mdns_dest, &mdns_dest6, &cfg, &snapshot_records, use_snapshot_records);
@@ -6375,7 +6542,6 @@ int main(int argc, char **argv) {
     }
 
     startup_burst_start_ms = monotonic_millis();
-    last_announce = time(NULL);
 
     while (!g_stop) {
         fd_set rfds;
@@ -6389,13 +6555,13 @@ int main(int argc, char **argv) {
         now_ms = monotonic_millis();
         (void)flush_deferred_response_if_due(now_ms);
         while (startup_burst_index < STARTUP_BURST_COUNT &&
-               now_ms - startup_burst_start_ms >= (long long)startup_burst_offsets_ms[startup_burst_index]) {
+               now_ms - startup_burst_start_ms >= (long long)g_startup_burst_offsets_ms[startup_burst_index]) {
             struct link_context link;
             init_explicit_link_context(&link, cfg.ipv4_addr);
             if (send_announcement(sockfd, &mdns_dest, &cfg, &link, cfg.ttl, &snapshot_records, use_snapshot_records) != 0) {
                 char detail[96];
                 snprintf(detail, sizeof(detail), "burst_index=%lu offset_ms=%u",
-                         (unsigned long)startup_burst_index, startup_burst_offsets_ms[startup_burst_index]);
+                         (unsigned long)startup_burst_index, g_startup_burst_offsets_ms[startup_burst_index]);
                 log_send_failure("startup_announce", &mdns_dest, use_snapshot_records, detail);
             }
             startup_burst_index++;
@@ -6405,7 +6571,7 @@ int main(int argc, char **argv) {
         FD_ZERO(&rfds);
         FD_SET(sockfd, &rfds);
         if (startup_burst_index < STARTUP_BURST_COUNT) {
-            next_burst_ms = startup_burst_start_ms + (long long)startup_burst_offsets_ms[startup_burst_index];
+            next_burst_ms = startup_burst_start_ms + (long long)g_startup_burst_offsets_ms[startup_burst_index];
             wait_ms = next_burst_ms - now_ms;
             if (wait_ms < 0) {
                 wait_ms = 0;
@@ -6433,17 +6599,6 @@ int main(int argc, char **argv) {
             }
         }
 
-        if (time(NULL) - last_announce >= ANNOUNCE_INTERVAL) {
-            struct link_context link;
-            init_explicit_link_context(&link, cfg.ipv4_addr);
-            if (send_announcement(sockfd, &mdns_dest, &cfg, &link, cfg.ttl, &snapshot_records, use_snapshot_records) != 0) {
-                char detail[96];
-                snprintf(detail, sizeof(detail), "interval=%d last_announce_age=%ld",
-                         ANNOUNCE_INTERVAL, (long)(time(NULL) - last_announce));
-                log_send_failure("periodic_announce", &mdns_dest, use_snapshot_records, detail);
-            }
-            last_announce = time(NULL);
-        }
     }
 
     clear_deferred_response_for_sockfd(sockfd);

@@ -3319,15 +3319,39 @@ static size_t make_mixed_query(unsigned char *packet, const char *qu_name, const
     return off;
 }
 
+static int skip_response_questions(const unsigned char *packet, size_t packet_len, size_t *cursor) {
+    struct dns_header hdr;
+    unsigned short i;
+    unsigned short qdcount;
+
+    if (packet_len < sizeof(hdr)) {
+        return -1;
+    }
+    memcpy(&hdr, packet, sizeof(hdr));
+    qdcount = ntohs(hdr.qdcount);
+    *cursor = sizeof(hdr);
+    for (i = 0; i < qdcount; i++) {
+        char name[MAX_NAME];
+        if (decode_name(packet, packet_len, cursor, name, sizeof(name)) != 0 || *cursor + 4 > packet_len) {
+            return -1;
+        }
+        *cursor += 4;
+    }
+    return 0;
+}
+
 static int count_rr_type(const unsigned char *packet, size_t packet_len, unsigned short want_type) {
     struct dns_header hdr;
-    size_t cursor = sizeof(hdr);
+    size_t cursor;
     unsigned short total_answers;
     int matches = 0;
     unsigned short i;
 
     memcpy(&hdr, packet, sizeof(hdr));
     total_answers = ntohs(hdr.ancount);
+    if (skip_response_questions(packet, packet_len, &cursor) != 0) {
+        return -1;
+    }
     for (i = 0; i < total_answers; i++) {
         char name[MAX_NAME];
         unsigned short rrtype;
@@ -3361,12 +3385,15 @@ static int packet_has_smb_browse_additionals(const unsigned char *packet, size_t
 
 static int legacy_unicast_ttls_and_classes_are_capped(const unsigned char *packet, size_t packet_len) {
     struct dns_header hdr;
-    size_t cursor = sizeof(hdr);
+    size_t cursor;
     unsigned short total_answers;
     unsigned short i;
 
     memcpy(&hdr, packet, sizeof(hdr));
     total_answers = ntohs(hdr.ancount);
+    if (skip_response_questions(packet, packet_len, &cursor) != 0) {
+        return 0;
+    }
     for (i = 0; i < total_answers; i++) {
         char name[MAX_NAME];
         unsigned short rrclass;
@@ -3389,6 +3416,21 @@ static int legacy_unicast_ttls_and_classes_are_capped(const unsigned char *packe
         cursor += rdlength;
     }
     return 1;
+}
+
+static int legacy_response_repeats_question(const unsigned char *response, size_t response_len,
+                                            const unsigned char *query, size_t query_len) {
+    struct dns_header hdr;
+    size_t question_len = query_len - sizeof(hdr);
+
+    if (response_len < query_len || query_len < sizeof(hdr)) {
+        return 0;
+    }
+    memcpy(&hdr, response, sizeof(hdr));
+    if (ntohs(hdr.qdcount) != 1) {
+        return 0;
+    }
+    return memcmp(response + sizeof(hdr), query + sizeof(hdr), question_len) == 0;
 }
 
 static int run_route_cases(void) {
@@ -3420,6 +3462,7 @@ static int run_route_cases(void) {
         captured_dests[0].sin_addr.s_addr != source.sin_addr.s_addr ||
         captured_dests[0].sin_port != source.sin_port ||
         !packet_has_smb_browse_additionals(captured_packets[0], captured_lengths[0]) ||
+        !legacy_response_repeats_question(captured_packets[0], captured_lengths[0], query, query_len) ||
         !legacy_unicast_ttls_and_classes_are_capped(captured_packets[0], captured_lengths[0])) {
         return 2;
     }
@@ -3456,13 +3499,37 @@ static int run_route_cases(void) {
     }
 
     reset_captures();
-    query_len = make_query(query, cfg.service_type, DNS_TYPE_PTR, DNS_CLASS_CACHE_FLUSH | 2);
+    query_len = make_query(query, cfg.service_type, DNS_TYPE_PTR, DNS_CLASS_ANY);
     if (query_len == 0 ||
         handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0) {
         return 7;
     }
-    if (captured_count != 0) {
+    if (captured_count != 1 ||
+        captured_dests[0].sin_addr.s_addr != mdns_dest.sin_addr.s_addr ||
+        !packet_has_smb_browse_additionals(captured_packets[0], captured_lengths[0])) {
         return 8;
+    }
+
+    reset_captures();
+    query_len = make_query(query, cfg.service_type, DNS_TYPE_ANY, DNS_CLASS_IN);
+    if (query_len == 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0) {
+        return 9;
+    }
+    if (captured_count != 1 ||
+        captured_dests[0].sin_addr.s_addr != mdns_dest.sin_addr.s_addr ||
+        !packet_has_smb_browse_additionals(captured_packets[0], captured_lengths[0])) {
+        return 10;
+    }
+
+    reset_captures();
+    query_len = make_query(query, cfg.service_type, DNS_TYPE_PTR, DNS_CLASS_CACHE_FLUSH | 2);
+    if (query_len == 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0) {
+        return 11;
+    }
+    if (captured_count != 0) {
+        return 12;
     }
 
     return 0;
@@ -3478,6 +3545,522 @@ int main(void) {
 }
 '''.replace("@MDNS_SOURCE@", mdns_source)
         run = self._compile_and_run_c_helper(source, "mdns_qu_qm_query_routes")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.strip(), "ok")
+
+    def test_mdns_advertiser_enumerates_dns_sd_service_types(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = r'''
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+
+ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
+                    const struct sockaddr *dest, socklen_t dest_len);
+
+#define sendto fake_sendto
+#define main mdns_advertiser_main
+#include "@MDNS_SOURCE@"
+#undef main
+#undef sendto
+
+static unsigned char captured[BUF_SIZE];
+static size_t captured_len = 0;
+static struct sockaddr_in captured_dest;
+static size_t captured_count = 0;
+
+ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
+                    const struct sockaddr *dest, socklen_t dest_len) {
+    (void)sockfd;
+    (void)flags;
+    if (dest_len != sizeof(struct sockaddr_in) || len > sizeof(captured)) {
+        return -1;
+    }
+    memcpy(captured, buf, len);
+    captured_len = len;
+    memcpy(&captured_dest, dest, sizeof(captured_dest));
+    captured_count++;
+    return (ssize_t)len;
+}
+
+static void reset_capture(void) {
+    memset(captured, 0, sizeof(captured));
+    captured_len = 0;
+    memset(&captured_dest, 0, sizeof(captured_dest));
+    captured_count = 0;
+}
+
+static void configure_base(struct config *cfg) {
+    memset(cfg, 0, sizeof(*cfg));
+    snprintf(cfg->instance_name, sizeof(cfg->instance_name), "%s", "Alton Time Capsule");
+    snprintf(cfg->host_label, sizeof(cfg->host_label), "%s", "alton-time-capsule");
+    snprintf(cfg->host_fqdn, sizeof(cfg->host_fqdn), "%s", "alton-time-capsule.local.");
+    snprintf(cfg->service_type, sizeof(cfg->service_type), "%s", "_smb._tcp.local.");
+    snprintf(cfg->adisk_service_type, sizeof(cfg->adisk_service_type), "%s", "_adisk._tcp.local.");
+    snprintf(cfg->device_info_service_type, sizeof(cfg->device_info_service_type), "%s", "_device-info._tcp.local.");
+    snprintf(cfg->airport_service_type, sizeof(cfg->airport_service_type), "%s", "_airport._tcp.local.");
+    snprintf(cfg->device_model, sizeof(cfg->device_model), "%s", "TimeCapsule8,119");
+    snprintf(cfg->airport_wama, sizeof(cfg->airport_wama), "%s", "80:EA:96:E6:58:68");
+    cfg->adisk_disks.count = 1;
+    cfg->port = 445;
+    cfg->adisk_port = 9;
+    cfg->airport_port = 5009;
+    cfg->ttl = 120;
+    cfg->ipv4_addr = inet_addr("10.0.1.77");
+}
+
+static void configure_link(struct link_context *link, uint32_t ipv4_addr) {
+    struct iface_context ctx;
+
+    memset(&ctx, 0, sizeof(ctx));
+    snprintf(ctx.name, sizeof(ctx.name), "%s", "bridge0");
+    ctx.ipv4_addr = ipv4_addr;
+    ctx.netmask = inet_addr("255.255.255.0");
+    link_context_from_iface_context(link, &ctx);
+}
+
+static void configure_addrs(struct sockaddr_in *mdns_dest, struct sockaddr_in *source) {
+    memset(mdns_dest, 0, sizeof(*mdns_dest));
+    mdns_dest->sin_family = AF_INET;
+    mdns_dest->sin_port = htons(MDNS_PORT);
+    mdns_dest->sin_addr.s_addr = inet_addr(MDNS_GROUP);
+
+    memset(source, 0, sizeof(*source));
+    source->sin_family = AF_INET;
+    source->sin_port = htons(62001);
+    source->sin_addr.s_addr = inet_addr("10.0.1.42");
+}
+
+static size_t make_query(unsigned char *packet, unsigned short qtype) {
+    struct dns_header hdr;
+    size_t off = sizeof(hdr);
+
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.id = htons(0x4444);
+    hdr.qdcount = htons(1);
+    memcpy(packet, &hdr, sizeof(hdr));
+    if (encode_name(packet, &off, BUF_SIZE, DNS_SD_SERVICE_ENUMERATION_NAME) != 0 ||
+        append_u16(packet, &off, BUF_SIZE, qtype) != 0 ||
+        append_u16(packet, &off, BUF_SIZE, DNS_CLASS_IN) != 0) {
+        return 0;
+    }
+    return off;
+}
+
+static void add_snapshot_service(struct service_record_set *snapshot, const char *service_type) {
+    struct service_record *record = &snapshot->records[snapshot->count++];
+    memset(record, 0, sizeof(*record));
+    snprintf(record->service_type, sizeof(record->service_type), "%s", service_type);
+    snprintf(record->instance_name, sizeof(record->instance_name), "%s", "Snapshot");
+    snprintf(record->instance_fqdn, sizeof(record->instance_fqdn), "%s%s", "Snapshot.", service_type);
+    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s", "snapshot-host.local.");
+    record->port = 1;
+}
+
+static int skip_questions(size_t *cursor) {
+    struct dns_header hdr;
+    unsigned short i;
+
+    if (captured_len < sizeof(hdr)) {
+        return -1;
+    }
+    memcpy(&hdr, captured, sizeof(hdr));
+    *cursor = sizeof(hdr);
+    for (i = 0; i < ntohs(hdr.qdcount); i++) {
+        char qname[MAX_NAME];
+        if (decode_name(captured, captured_len, cursor, qname, sizeof(qname)) != 0 ||
+            *cursor + 4 > captured_len) {
+            return -1;
+        }
+        *cursor += 4;
+    }
+    return 0;
+}
+
+static int count_ptr_target(const char *target) {
+    struct dns_header hdr;
+    size_t cursor;
+    unsigned short i;
+    int matches = 0;
+
+    memcpy(&hdr, captured, sizeof(hdr));
+    if (skip_questions(&cursor) != 0) {
+        return -1;
+    }
+    for (i = 0; i < ntohs(hdr.ancount); i++) {
+        char owner[MAX_NAME];
+        char ptr_target[MAX_NAME];
+        unsigned short rrtype;
+        unsigned short rdlength;
+        size_t rdata_cursor;
+        size_t rdata_end;
+
+        if (decode_name(captured, captured_len, &cursor, owner, sizeof(owner)) != 0 ||
+            cursor + 10 > captured_len) {
+            return -1;
+        }
+        memcpy(&rrtype, captured + cursor, 2);
+        memcpy(&rdlength, captured + cursor + 8, 2);
+        cursor += 10;
+        rrtype = ntohs(rrtype);
+        rdlength = ntohs(rdlength);
+        if (cursor + rdlength > captured_len) {
+            return -1;
+        }
+        rdata_cursor = cursor;
+        rdata_end = cursor + rdlength;
+        if (rrtype == DNS_TYPE_PTR &&
+            decode_name(captured, captured_len, &rdata_cursor, ptr_target, sizeof(ptr_target)) == 0 &&
+            rdata_cursor == rdata_end &&
+            name_equals(ptr_target, target)) {
+            matches++;
+        }
+        cursor += rdlength;
+    }
+    return matches;
+}
+
+static int expect_generated_types(void) {
+    if (captured_count != 1 ||
+        captured_dest.sin_addr.s_addr != inet_addr("10.0.1.42") ||
+        count_ptr_target("_smb._tcp.local.") != 1 ||
+        count_ptr_target("_adisk._tcp.local.") != 1 ||
+        count_ptr_target("_device-info._tcp.local.") != 1 ||
+        count_ptr_target("_airport._tcp.local.") != 1 ||
+        count_ptr_target("_ipp._tcp.local.") != 0) {
+        return 1;
+    }
+    return 0;
+}
+
+static int expect_snapshot_types(void) {
+    if (captured_count != 1 ||
+        count_ptr_target("_smb._tcp.local.") != 1 ||
+        count_ptr_target("_adisk._tcp.local.") != 1 ||
+        count_ptr_target("_device-info._tcp.local.") != 1 ||
+        count_ptr_target("_airport._tcp.local.") != 1 ||
+        count_ptr_target("_ipp._tcp.local.") != 1 ||
+        count_ptr_target("_afpovertcp._tcp.local.") != 0) {
+        return 1;
+    }
+    return 0;
+}
+
+int main(void) {
+    struct config cfg;
+    struct link_context link;
+    struct service_record_set snapshot;
+    struct sockaddr_in mdns_dest;
+    struct sockaddr_in source;
+    unsigned char query[BUF_SIZE];
+    size_t query_len;
+
+    configure_base(&cfg);
+    configure_link(&link, cfg.ipv4_addr);
+    configure_addrs(&mdns_dest, &source);
+    memset(&snapshot, 0, sizeof(snapshot));
+
+    query_len = make_query(query, DNS_TYPE_PTR);
+    reset_capture();
+    if (query_len == 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &link, &snapshot, 0) != 0 ||
+        expect_generated_types() != 0) {
+        return 1;
+    }
+
+    add_snapshot_service(&snapshot, "_airport._tcp.local.");
+    add_snapshot_service(&snapshot, "_ipp._tcp.local.");
+    add_snapshot_service(&snapshot, "_smb._tcp.local.");
+    add_snapshot_service(&snapshot, "_afpovertcp._tcp.local.");
+
+    query_len = make_query(query, DNS_TYPE_ANY);
+    reset_capture();
+    if (query_len == 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &link, &snapshot, 1) != 0 ||
+        expect_snapshot_types() != 0) {
+        return 2;
+    }
+
+    printf("ok\n");
+    return 0;
+}
+'''.replace("@MDNS_SOURCE@", mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_service_type_enumeration")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.strip(), "ok")
+
+    def test_mdns_advertiser_multicast_delay_and_unicast_hop_limits(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = r'''
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
+                    const struct sockaddr *dest, socklen_t dest_len);
+int fake_setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen);
+int fake_usleep(useconds_t usec);
+int fake_rand(void);
+void fake_srand(unsigned int seed);
+
+#define sendto fake_sendto
+#define setsockopt fake_setsockopt
+#define usleep fake_usleep
+#define rand fake_rand
+#define srand fake_srand
+#define main mdns_advertiser_main
+#include "@MDNS_SOURCE@"
+#undef main
+#undef srand
+#undef rand
+#undef usleep
+#undef setsockopt
+#undef sendto
+
+struct opt_call {
+    int level;
+    int optname;
+    unsigned int value;
+};
+
+static unsigned char captured_packets[4][BUF_SIZE];
+static size_t captured_lengths[4];
+static size_t captured_count = 0;
+static useconds_t captured_usleeps[8];
+static size_t captured_usleep_count = 0;
+static struct opt_call captured_opts[32];
+static size_t captured_opt_count = 0;
+
+ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
+                    const struct sockaddr *dest, socklen_t dest_len) {
+    (void)sockfd;
+    (void)flags;
+    (void)dest;
+    (void)dest_len;
+    if (captured_count < 4 && len <= sizeof(captured_packets[0])) {
+        memcpy(captured_packets[captured_count], buf, len);
+        captured_lengths[captured_count] = len;
+        captured_count++;
+    }
+    return (ssize_t)len;
+}
+
+int fake_setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen) {
+    (void)sockfd;
+    if (captured_opt_count < 32) {
+        captured_opts[captured_opt_count].level = level;
+        captured_opts[captured_opt_count].optname = optname;
+        captured_opts[captured_opt_count].value = 0;
+        if (optval != NULL) {
+            if (optlen == sizeof(int)) {
+                int value;
+                memcpy(&value, optval, sizeof(value));
+                captured_opts[captured_opt_count].value = (unsigned int)value;
+            } else if (optlen == sizeof(unsigned int)) {
+                unsigned int value;
+                memcpy(&value, optval, sizeof(value));
+                captured_opts[captured_opt_count].value = value;
+            }
+        }
+        captured_opt_count++;
+    }
+    return 0;
+}
+
+int fake_usleep(useconds_t usec) {
+    if (captured_usleep_count < 8) {
+        captured_usleeps[captured_usleep_count++] = usec;
+    }
+    return 0;
+}
+
+int fake_rand(void) {
+    return 0;
+}
+
+void fake_srand(unsigned int seed) {
+    (void)seed;
+}
+
+static void reset_packet_capture(void) {
+    memset(captured_packets, 0, sizeof(captured_packets));
+    memset(captured_lengths, 0, sizeof(captured_lengths));
+    captured_count = 0;
+    captured_usleep_count = 0;
+}
+
+static void reset_option_capture(void) {
+    memset(captured_opts, 0, sizeof(captured_opts));
+    captured_opt_count = 0;
+}
+
+static int saw_opt(int level, int optname, unsigned int value) {
+    size_t i;
+
+    for (i = 0; i < captured_opt_count; i++) {
+        if (captured_opts[i].level == level &&
+            captured_opts[i].optname == optname &&
+            captured_opts[i].value == value) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void configure_base(struct config *cfg) {
+    memset(cfg, 0, sizeof(*cfg));
+    snprintf(cfg->instance_name, sizeof(cfg->instance_name), "%s", "Alton Time Capsule");
+    snprintf(cfg->host_label, sizeof(cfg->host_label), "%s", "alton-time-capsule");
+    snprintf(cfg->host_fqdn, sizeof(cfg->host_fqdn), "%s", "alton-time-capsule.local.");
+    snprintf(cfg->service_type, sizeof(cfg->service_type), "%s", "_smb._tcp.local.");
+    cfg->port = 445;
+    cfg->ttl = 120;
+    cfg->ipv4_addr = inet_addr("10.0.1.77");
+}
+
+static void configure_link(struct link_context *link, uint32_t ipv4_addr) {
+    struct iface_context ctx;
+
+    memset(&ctx, 0, sizeof(ctx));
+    snprintf(ctx.name, sizeof(ctx.name), "%s", "bridge0");
+    ctx.ipv4_addr = ipv4_addr;
+    ctx.netmask = inet_addr("255.255.255.0");
+    link_context_from_iface_context(link, &ctx);
+    link->ifindex = 5;
+}
+
+static size_t make_query(unsigned char *packet, const char *qname) {
+    struct dns_header hdr;
+    size_t off = sizeof(hdr);
+
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.qdcount = htons(1);
+    memcpy(packet, &hdr, sizeof(hdr));
+    if (encode_name(packet, &off, BUF_SIZE, qname) != 0 ||
+        append_u16(packet, &off, BUF_SIZE, DNS_TYPE_PTR) != 0 ||
+        append_u16(packet, &off, BUF_SIZE, DNS_CLASS_IN) != 0) {
+        return 0;
+    }
+    return off;
+}
+
+static int handle_query_from_port(uint16_t port) {
+    struct config cfg;
+    struct link_context link;
+    struct service_record_set snapshot;
+    struct sockaddr_in mdns_dest;
+    struct sockaddr_in source;
+    unsigned char query[BUF_SIZE];
+    size_t query_len;
+
+    configure_base(&cfg);
+    configure_link(&link, cfg.ipv4_addr);
+    memset(&snapshot, 0, sizeof(snapshot));
+    memset(&mdns_dest, 0, sizeof(mdns_dest));
+    mdns_dest.sin_family = AF_INET;
+    mdns_dest.sin_port = htons(MDNS_PORT);
+    mdns_dest.sin_addr.s_addr = inet_addr(MDNS_GROUP);
+    memset(&source, 0, sizeof(source));
+    source.sin_family = AF_INET;
+    source.sin_port = htons(port);
+    source.sin_addr.s_addr = inet_addr("10.0.1.42");
+
+    query_len = make_query(query, cfg.service_type);
+    return query_len == 0 ? -1 : handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &link, &snapshot, 0);
+}
+
+int main(void) {
+    reset_packet_capture();
+    if (handle_query_from_port(MDNS_PORT) != 0 ||
+        captured_count != 1 ||
+        captured_usleep_count != 1 ||
+        captured_usleeps[0] != 20000) {
+        return 1;
+    }
+
+    reset_packet_capture();
+    if (handle_query_from_port(62001) != 0 ||
+        captured_count != 1 ||
+        captured_usleep_count != 0) {
+        return 2;
+    }
+
+    reset_option_capture();
+    if (configure_multicast_socket_options(77) != 0 ||
+        !saw_opt(IPPROTO_IP, IP_MULTICAST_TTL, 255) ||
+        !saw_opt(IPPROTO_IP, IP_MULTICAST_LOOP, 1)) {
+        return 3;
+    }
+#ifdef IP_TTL
+    if (!saw_opt(IPPROTO_IP, IP_TTL, 255)) {
+        return 4;
+    }
+#endif
+
+#ifdef IPV6_MULTICAST_IF
+    reset_option_capture();
+    if (set_outbound_multicast_interface6(77, 5, "test", 0, 0) != 0 ||
+        !saw_opt(IPPROTO_IPV6, IPV6_MULTICAST_IF, 5)) {
+        return 5;
+    }
+#ifdef IPV6_MULTICAST_HOPS
+    if (!saw_opt(IPPROTO_IPV6, IPV6_MULTICAST_HOPS, 255)) {
+        return 6;
+    }
+#endif
+#ifdef IPV6_MULTICAST_LOOP
+    if (!saw_opt(IPPROTO_IPV6, IPV6_MULTICAST_LOOP, 1)) {
+        return 7;
+    }
+#endif
+#ifdef IPV6_UNICAST_HOPS
+    if (!saw_opt(IPPROTO_IPV6, IPV6_UNICAST_HOPS, 255)) {
+        return 8;
+    }
+#endif
+#endif
+
+    printf("ok\n");
+    return 0;
+}
+'''.replace("@MDNS_SOURCE@", mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_multicast_delay_and_hops")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.strip(), "ok")
+
+    def test_mdns_advertiser_startup_burst_schedule_is_apple_compatible(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = r'''
+#include <stdio.h>
+
+#define main mdns_advertiser_main
+#include "@MDNS_SOURCE@"
+#undef main
+
+int main(void) {
+    static const unsigned int expected[STARTUP_BURST_COUNT] = {0, 1000, 3000, 7000};
+    size_t i;
+
+    if (STARTUP_BURST_COUNT != 4) {
+        return 1;
+    }
+    for (i = 0; i < STARTUP_BURST_COUNT; i++) {
+        if (g_startup_burst_offsets_ms[i] != expected[i]) {
+            return 2;
+        }
+    }
+    printf("ok\n");
+    return 0;
+}
+'''.replace("@MDNS_SOURCE@", mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_startup_schedule")
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(run.stdout.strip(), "ok")
 
@@ -3564,6 +4147,13 @@ static int count_rr_type(const unsigned char *packet, size_t packet_len, unsigne
 
     memcpy(&hdr, packet, sizeof(hdr));
     total_answers = ntohs(hdr.ancount);
+    for (i = 0; i < ntohs(hdr.qdcount); i++) {
+        char qname[MAX_NAME];
+        if (decode_name(packet, packet_len, &cursor, qname, sizeof(qname)) != 0 || cursor + 4 > packet_len) {
+            return -1;
+        }
+        cursor += 4;
+    }
     for (i = 0; i < total_answers; i++) {
         char name[MAX_NAME];
         unsigned short rrtype;
@@ -3745,6 +4335,13 @@ static int count_rr_type(const unsigned char *packet, size_t packet_len, unsigne
 
     memcpy(&hdr, packet, sizeof(hdr));
     total_answers = ntohs(hdr.ancount);
+    for (i = 0; i < ntohs(hdr.qdcount); i++) {
+        char qname[MAX_NAME];
+        if (decode_name(packet, packet_len, &cursor, qname, sizeof(qname)) != 0 || cursor + 4 > packet_len) {
+            return -1;
+        }
+        cursor += 4;
+    }
     for (i = 0; i < total_answers; i++) {
         char name[MAX_NAME];
         unsigned short rrtype;
@@ -3919,6 +4516,13 @@ static int count_rr_type(const unsigned char *packet, size_t packet_len, unsigne
 
     memcpy(&hdr, packet, sizeof(hdr));
     total_answers = ntohs(hdr.ancount);
+    for (i = 0; i < ntohs(hdr.qdcount); i++) {
+        char qname[MAX_NAME];
+        if (decode_name(packet, packet_len, &cursor, qname, sizeof(qname)) != 0 || cursor + 4 > packet_len) {
+            return -1;
+        }
+        cursor += 4;
+    }
     for (i = 0; i < total_answers; i++) {
         char name[MAX_NAME];
         unsigned short rrtype;
@@ -4242,6 +4846,13 @@ static int count_rr_type(const unsigned char *packet, size_t packet_len, unsigne
 
     memcpy(&hdr, packet, sizeof(hdr));
     total_answers = ntohs(hdr.ancount);
+    for (i = 0; i < ntohs(hdr.qdcount); i++) {
+        char qname[MAX_NAME];
+        if (decode_name(packet, packet_len, &cursor, qname, sizeof(qname)) != 0 || cursor + 4 > packet_len) {
+            return -1;
+        }
+        cursor += 4;
+    }
     for (i = 0; i < total_answers; i++) {
         char name[MAX_NAME];
         unsigned short rrtype;
@@ -4427,6 +5038,13 @@ static int count_rr_type(const unsigned char *packet, size_t packet_len, unsigne
 
     memcpy(&hdr, packet, sizeof(hdr));
     total_answers = ntohs(hdr.ancount);
+    for (i = 0; i < ntohs(hdr.qdcount); i++) {{
+        char qname[MAX_NAME];
+        if (decode_name(packet, packet_len, &cursor, qname, sizeof(qname)) != 0 || cursor + 4 > packet_len) {{
+            return -1;
+        }}
+        cursor += 4;
+    }}
     for (i = 0; i < total_answers; i++) {{
         char name[MAX_NAME];
         unsigned short rrtype;
@@ -4631,6 +5249,13 @@ static int count_rr_type(const unsigned char *packet, size_t packet_len, unsigne
 
     memcpy(&hdr, packet, sizeof(hdr));
     total_answers = ntohs(hdr.ancount);
+    for (i = 0; i < ntohs(hdr.qdcount); i++) {
+        char qname[MAX_NAME];
+        if (decode_name(packet, packet_len, &cursor, qname, sizeof(qname)) != 0 || cursor + 4 > packet_len) {
+            return -1;
+        }
+        cursor += 4;
+    }
     for (i = 0; i < total_answers; i++) {
         char name[MAX_NAME];
         unsigned short rrtype;
@@ -5051,11 +5676,42 @@ static int expect_positive_nb_response(const uint8_t *query, size_t qname_len) {
     return 0;
 }
 
+static int expect_nbstat_response(const uint8_t *query, size_t qname_len) {
+    size_t off = 12;
+    size_t rdata_off;
+    size_t stats_off;
+    size_t i;
+
+    if (captured_len != 12 + qname_len + 10 + 83) return 30;
+    if (get_u16(captured, 0) != 0x1337) return 31;
+    if (get_u16(captured, 2) != 0x8400) return 32;
+    if (get_u16(captured, 4) != 0 || get_u16(captured, 6) != 1) return 33;
+    if (get_u16(captured, 8) != 0 || get_u16(captured, 10) != 0) return 34;
+    if (memcmp(captured + off, query + 12, qname_len) != 0) return 35;
+    off += qname_len;
+    if (get_u16(captured, off) != NB_TYPE_NBSTAT) return 36;
+    if (get_u16(captured, off + 2) != DNS_CLASS_IN) return 37;
+    if (get_u32(captured, off + 4) != 0) return 38;
+    if (get_u16(captured, off + 8) != 83) return 39;
+    rdata_off = off + 10;
+    if (captured[rdata_off] != 2) return 40;
+    if (memcmp(captured + rdata_off + 1, "TIMECAPSULE    ", 15) != 0) return 41;
+    if (captured[rdata_off + 16] != NBNS_SUFFIX_WORKSTATION) return 42;
+    if (get_u16(captured, rdata_off + 17) != NBNS_NAME_FLAGS_ACTIVE) return 43;
+    if (memcmp(captured + rdata_off + 19, "TIMECAPSULE    ", 15) != 0) return 44;
+    if (captured[rdata_off + 34] != NBNS_SUFFIX_SERVER) return 45;
+    if (get_u16(captured, rdata_off + 35) != NBNS_NAME_FLAGS_ACTIVE) return 46;
+    stats_off = rdata_off + 1 + (NBNS_NODE_STATUS_NAME_COUNT * 18);
+    for (i = 0; i < NBNS_NODE_STATUS_STATS_LEN; i++) {
+        if (captured[stats_off + i] != 0) return 47;
+    }
+    return 0;
+}
+
 int main(void) {
     uint8_t query[256];
     size_t query_len;
     size_t qname_len;
-    size_t off;
     int rc;
 
     query_len = build_query(query, "TimeCapsule", NBNS_SUFFIX_SERVER, NB_TYPE_NB, 0x0110, NULL);
@@ -5076,22 +5732,15 @@ int main(void) {
     qname_len = query_len - 12 - 4;
     reset_capture();
     if (invoke_query(query, query_len) != 1 || sendto_call_count != 1) return 3;
-    if (captured_len != 12 + qname_len + 10 + 83) return 30;
-    if (get_u16(captured, 2) != 0x8400) return 31;
-    if (get_u16(captured, 4) != 0 || get_u16(captured, 6) != 1) return 32;
-    off = 12 + qname_len;
-    if (get_u16(captured, off) != NB_TYPE_NBSTAT) return 33;
-    if (get_u16(captured, off + 2) != DNS_CLASS_IN) return 34;
-    if (get_u32(captured, off + 4) != 0) return 35;
-    if (get_u16(captured, off + 8) != 83) return 36;
-    off += 10;
-    if (captured[off] != 2) return 37;
-    if (memcmp(captured + off + 1, "TIMECAPSULE    ", 15) != 0) return 38;
-    if (captured[off + 16] != NBNS_SUFFIX_WORKSTATION) return 39;
-    if (get_u16(captured, off + 17) != NBNS_NAME_FLAGS_ACTIVE) return 40;
-    if (memcmp(captured + off + 19, "TIMECAPSULE    ", 15) != 0) return 41;
-    if (captured[off + 34] != NBNS_SUFFIX_SERVER) return 42;
-    if (get_u16(captured, off + 35) != NBNS_NAME_FLAGS_ACTIVE) return 43;
+    rc = expect_nbstat_response(query, qname_len);
+    if (rc != 0) return 200 + rc;
+
+    query_len = build_query(query, "*", NBNS_SUFFIX_WORKSTATION, NB_TYPE_NBSTAT, 0, "office.local");
+    qname_len = query_len - 12 - 4;
+    reset_capture();
+    if (invoke_query(query, query_len) != 1 || sendto_call_count != 1) return 4;
+    rc = expect_nbstat_response(query, qname_len);
+    if (rc != 0) return 300 + rc;
 
     return 0;
 }
