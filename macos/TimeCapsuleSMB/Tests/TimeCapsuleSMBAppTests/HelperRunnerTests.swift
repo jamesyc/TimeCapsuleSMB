@@ -171,6 +171,33 @@ final class HelperRunnerTests: XCTestCase {
         XCTAssertEqual(events.last?.message, L10n.string("helper.error.cancelled"))
     }
 
+    func testRunnerCancelsBlockedRequestWrite() async throws {
+        let temp = try TemporaryDirectory()
+        let helper = try makeHelper(
+            in: temp.url,
+            body: """
+            sleep 10
+            """
+        )
+        let runner = HelperRunner(locator: HelperLocator(environment: [:], currentDirectory: temp.url, bundle: .main, fileManager: .default))
+        let recorder = EventRecorder()
+        let largePayload = String(repeating: "x", count: 8 * 1024 * 1024)
+
+        let task = Task {
+            await runner.run(helperPath: helper.path, operation: "doctor", params: ["payload": .string(largePayload)]) {
+                await recorder.append($0)
+            }
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        task.cancel()
+        let result = await task.value
+
+        let events = await recorder.events
+        XCTAssertEqual(result.exitCode, 130)
+        XCTAssertEqual(events.last?.type, "error")
+        XCTAssertEqual(events.last?.code, "cancelled")
+    }
+
     private func makeHelper(in directory: URL, body: String) throws -> URL {
         let helper = directory.appendingPathComponent("tcapsule")
         try "#!/bin/sh\n\(body)\n".write(to: helper, atomically: true, encoding: .utf8)

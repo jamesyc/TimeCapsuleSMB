@@ -1,3 +1,4 @@
+import Security
 import XCTest
 @testable import TimeCapsuleSMBApp
 
@@ -51,5 +52,70 @@ final class PasswordStoreTests: XCTestCase {
                 return XCTFail("unexpected error \(error)")
             }
         }
+    }
+
+    func testKeychainStoreAddsPasswordWithWhenUnlockedThisDeviceOnlyAccessibility() throws {
+        let keychain = RecordingKeychainClient()
+        keychain.updateStatus = errSecItemNotFound
+        let store = KeychainPasswordStore(service: "test.service", keychainClient: keychain)
+
+        try store.save("secret", for: "device")
+
+        XCTAssertEqual(keychain.addedQuery?[kSecAttrService as String] as? String, "test.service")
+        XCTAssertEqual(keychain.addedQuery?[kSecAttrAccount as String] as? String, "device")
+        XCTAssertEqual(keychain.addedQuery?[kSecAttrAccessible as String] as? String, kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String)
+        XCTAssertEqual(keychain.addedQuery?[kSecValueData as String] as? Data, Data("secret".utf8))
+    }
+
+    func testKeychainStoreMigratesAccessibilityOnPasswordUpdate() throws {
+        let keychain = RecordingKeychainClient()
+        keychain.updateStatus = errSecSuccess
+        let store = KeychainPasswordStore(service: "test.service", keychainClient: keychain)
+
+        try store.save("updated", for: "device")
+
+        XCTAssertNil(keychain.addedQuery)
+        XCTAssertEqual(keychain.updatedAttributes?[kSecAttrAccessible as String] as? String, kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String)
+        XCTAssertEqual(keychain.updatedAttributes?[kSecValueData as String] as? Data, Data("updated".utf8))
+    }
+}
+
+private final class RecordingKeychainClient: KeychainClient {
+    var copyStatus: OSStatus = errSecItemNotFound
+    var copyResult: CFTypeRef?
+    var addStatus: OSStatus = errSecSuccess
+    var updateStatus: OSStatus = errSecItemNotFound
+    var deleteStatus: OSStatus = errSecSuccess
+
+    private(set) var copiedQuery: [String: Any]?
+    private(set) var addedQuery: [String: Any]?
+    private(set) var updatedQuery: [String: Any]?
+    private(set) var updatedAttributes: [String: Any]?
+    private(set) var deletedQuery: [String: Any]?
+
+    func copyMatching(_ query: [String: Any], result: inout CFTypeRef?) -> OSStatus {
+        copiedQuery = query
+        result = copyResult
+        return copyStatus
+    }
+
+    func add(_ query: [String: Any]) -> OSStatus {
+        addedQuery = query
+        return addStatus
+    }
+
+    func update(_ query: [String: Any], attributes: [String: Any]) -> OSStatus {
+        updatedQuery = query
+        updatedAttributes = attributes
+        return updateStatus
+    }
+
+    func delete(_ query: [String: Any]) -> OSStatus {
+        deletedQuery = query
+        return deleteStatus
+    }
+
+    func message(for status: OSStatus) -> String? {
+        "status \(status)"
     }
 }

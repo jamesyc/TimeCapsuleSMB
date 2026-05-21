@@ -325,7 +325,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls[0].context?.profileID, existing.id)
     }
 
-    func testKeychainSaveFailureLeavesProfilePasswordMissing() async throws {
+    func testKeychainSaveFailureDoesNotSaveProfile() async throws {
         let fixture = try makeStore(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "10.0.0.2"))
@@ -338,11 +338,10 @@ final class AddDeviceFlowStoreTests: XCTestCase {
 
         fixture.store.runConfigure()
 
-        try await waitUntilStoreState { fixture.store.state == .saved }
-        let profile = try XCTUnwrap(fixture.store.savedProfile)
-        XCTAssertEqual(profile.passwordState, .missing)
-        XCTAssertEqual(fixture.registry.profile(id: profile.id)?.passwordState, .missing)
-        XCTAssertEqual(fixture.passwordStore.state(for: profile.keychainAccount), .missing)
+        try await waitUntilStoreState { fixture.store.state == .failed }
+        XCTAssertEqual(fixture.store.error?.code, "profile_save_failed")
+        XCTAssertNil(fixture.store.savedProfile)
+        XCTAssertEqual(fixture.registry.profiles, [])
     }
 
     func testSelectingAlreadySavedDiscoveryRoutesToExistingProfile() async throws {

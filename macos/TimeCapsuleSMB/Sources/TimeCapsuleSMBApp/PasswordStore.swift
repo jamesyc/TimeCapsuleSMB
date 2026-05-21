@@ -1,6 +1,36 @@
 import Foundation
 import Security
 
+protocol KeychainClient: AnyObject {
+    func copyMatching(_ query: [String: Any], result: inout CFTypeRef?) -> OSStatus
+    func add(_ query: [String: Any]) -> OSStatus
+    func update(_ query: [String: Any], attributes: [String: Any]) -> OSStatus
+    func delete(_ query: [String: Any]) -> OSStatus
+    func message(for status: OSStatus) -> String?
+}
+
+final class SystemKeychainClient: KeychainClient {
+    func copyMatching(_ query: [String: Any], result: inout CFTypeRef?) -> OSStatus {
+        SecItemCopyMatching(query as CFDictionary, &result)
+    }
+
+    func add(_ query: [String: Any]) -> OSStatus {
+        SecItemAdd(query as CFDictionary, nil)
+    }
+
+    func update(_ query: [String: Any], attributes: [String: Any]) -> OSStatus {
+        SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+    }
+
+    func delete(_ query: [String: Any]) -> OSStatus {
+        SecItemDelete(query as CFDictionary)
+    }
+
+    func message(for status: OSStatus) -> String? {
+        SecCopyErrorMessageString(status, nil) as String?
+    }
+}
+
 enum PasswordStoreError: Error, Equatable, LocalizedError {
     case missing
     case unavailable(String)
@@ -8,7 +38,7 @@ enum PasswordStoreError: Error, Equatable, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missing:
-            return "Password is missing."
+            return L10n.string("password.error.missing")
         case .unavailable(let message):
             return message
         }
@@ -26,9 +56,17 @@ final class KeychainPasswordStore: PasswordStore {
     static let service = "TimeCapsuleSMB.DevicePassword"
 
     private let service: String
+    private let accessibility: CFString
+    private let keychainClient: KeychainClient
 
-    init(service: String = KeychainPasswordStore.service) {
+    init(
+        service: String = KeychainPasswordStore.service,
+        accessibility: CFString = kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+        keychainClient: KeychainClient = SystemKeychainClient()
+    ) {
         self.service = service
+        self.accessibility = accessibility
+        self.keychainClient = keychainClient
     }
 
     func password(for account: String) throws -> String {
@@ -37,7 +75,7 @@ final class KeychainPasswordStore: PasswordStore {
         query[kSecReturnData as String] = true
 
         var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        let status = keychainClient.copyMatching(query, result: &result)
         if status == errSecItemNotFound {
             throw PasswordStoreError.missing
         }
@@ -46,7 +84,7 @@ final class KeychainPasswordStore: PasswordStore {
         }
         guard let data = result as? Data,
               let password = String(data: data, encoding: .utf8) else {
-            throw PasswordStoreError.unavailable("Keychain returned an unreadable password.")
+            throw PasswordStoreError.unavailable(L10n.string("password.error.unreadable_keychain_item"))
         }
         return password
     }
@@ -54,8 +92,11 @@ final class KeychainPasswordStore: PasswordStore {
     func save(_ password: String, for account: String) throws {
         let data = Data(password.utf8)
         var query = baseQuery(account: account)
-        let attributes = [kSecValueData as String: data]
-        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: accessibility
+        ]
+        let status = keychainClient.update(query, attributes: attributes)
         if status == errSecSuccess {
             return
         }
@@ -63,15 +104,15 @@ final class KeychainPasswordStore: PasswordStore {
             throw PasswordStoreError.unavailable(message(for: status))
         }
         query[kSecValueData as String] = data
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        let addStatus = SecItemAdd(query as CFDictionary, nil)
+        query[kSecAttrAccessible as String] = accessibility
+        let addStatus = keychainClient.add(query)
         guard addStatus == errSecSuccess else {
             throw PasswordStoreError.unavailable(message(for: addStatus))
         }
     }
 
     func deletePassword(for account: String) throws {
-        let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
+        let status = keychainClient.delete(baseQuery(account: account))
         if status == errSecSuccess || status == errSecItemNotFound {
             return
         }
@@ -98,10 +139,10 @@ final class KeychainPasswordStore: PasswordStore {
     }
 
     private func message(for status: OSStatus) -> String {
-        if let message = SecCopyErrorMessageString(status, nil) as String? {
+        if let message = keychainClient.message(for: status) {
             return message
         }
-        return "Keychain error \(status)."
+        return L10n.format("password.error.keychain_status", status)
     }
 }
 
@@ -126,7 +167,7 @@ final class InMemoryPasswordStore: PasswordStore {
 
     func password(for account: String) throws -> String {
         if readFailure != nil {
-            throw PasswordStoreError.unavailable("In-memory password store read failed.")
+            throw PasswordStoreError.unavailable(L10n.string("password.error.memory_read_failed"))
         }
         guard let password = passwords[account] else {
             throw PasswordStoreError.missing
@@ -136,7 +177,7 @@ final class InMemoryPasswordStore: PasswordStore {
 
     func save(_ password: String, for account: String) throws {
         if saveFailure != nil {
-            throw PasswordStoreError.unavailable("In-memory password store save failed.")
+            throw PasswordStoreError.unavailable(L10n.string("password.error.memory_save_failed"))
         }
         passwords[account] = password
         invalidAccounts.remove(account)
@@ -144,7 +185,7 @@ final class InMemoryPasswordStore: PasswordStore {
 
     func deletePassword(for account: String) throws {
         if deleteFailure != nil {
-            throw PasswordStoreError.unavailable("In-memory password store delete failed.")
+            throw PasswordStoreError.unavailable(L10n.string("password.error.memory_delete_failed"))
         }
         passwords.removeValue(forKey: account)
         invalidAccounts.remove(account)

@@ -22,10 +22,16 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
 
     private let locator: HelperLocator
     private let stderrLimit: Int
+    private let requestWriter: any HelperRequestWriting
 
-    public init(locator: HelperLocator = HelperLocator(), stderrLimit: Int = 64 * 1024) {
+    public init(
+        locator: HelperLocator = HelperLocator(),
+        stderrLimit: Int = 64 * 1024,
+        requestWriter: any HelperRequestWriting = PipeRequestWriter()
+    ) {
         self.locator = locator
         self.stderrLimit = stderrLimit
+        self.requestWriter = requestWriter
     }
 
     public func run(
@@ -76,21 +82,54 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
             Self.readCapped(error.fileHandleForReading, limit: stderrLimit)
         }
 
+        let requestData: Data
         do {
             var requestParams = params
             if let context, requestParams["config"] == nil {
                 requestParams["config"] = .string(context.configURL.path)
             }
             let request = ["operation": JSONValue.string(operation), "params": JSONValue.object(requestParams)]
-            let requestData = try JSONEncoder().encode(JSONValue.object(request))
-            try input.fileHandleForWriting.write(contentsOf: requestData)
-            try input.fileHandleForWriting.close()
+            requestData = try JSONEncoder().encode(JSONValue.object(request))
         } catch {
-            try? input.fileHandleForWriting.close()
             await Self.terminate(process)
             await eventSink(BackendEvent.error(operation: operation, code: "helper_write_failed", message: error.localizedDescription))
             await stdoutTask.value
             let stderr = await stderrTask.value
+            return HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: stderr)
+        }
+
+        let requestWriter = self.requestWriter
+        let writeResult: Result<Void, Error> = await withTaskCancellationHandler {
+            do {
+                try await requestWriter.write(requestData, to: input.fileHandleForWriting)
+                try input.fileHandleForWriting.close()
+                return .success(())
+            } catch {
+                return .failure(error)
+            }
+        } onCancel: {
+            try? input.fileHandleForWriting.close()
+            Task {
+                await Self.terminate(process)
+            }
+        }
+
+        if case .failure(let error) = writeResult {
+            try? input.fileHandleForWriting.close()
+            await Self.terminate(process)
+            await stdoutTask.value
+            let stderr = await stderrTask.value
+            if Task.isCancelled || error is CancellationError {
+                await eventSink(BackendEvent.error(
+                    operation: operation,
+                    code: "cancelled",
+                    message: L10n.string("helper.error.cancelled"),
+                    debug: stderr.isEmpty ? nil : .object(["stderr": .string(stderr)])
+                ))
+                let sawTerminalEvent = await terminalTracker.sawTerminalEvent
+                return HelperRunResult(exitCode: 130, sawTerminalEvent: sawTerminalEvent, stderr: stderr)
+            }
+            await eventSink(BackendEvent.error(operation: operation, code: "helper_write_failed", message: error.localizedDescription))
             return HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: stderr)
         }
 

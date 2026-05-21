@@ -18,29 +18,29 @@ enum AddDeviceFlowState: String, CaseIterable, Equatable {
     var title: String {
         switch self {
         case .idle:
-            return "Idle"
+            return L10n.string("add_device.state.idle")
         case .discovering:
-            return "Discovering"
+            return L10n.string("add_device.state.discovering")
         case .discoveryEmpty:
-            return "No Devices Found"
+            return L10n.string("add_device.state.discovery_empty")
         case .discoveryReady:
-            return "Devices Found"
+            return L10n.string("add_device.state.discovery_ready")
         case .manualEntry:
-            return "Manual Address"
+            return L10n.string("add_device.state.manual_entry")
         case .passwordEntry:
-            return "Password Required"
+            return L10n.string("add_device.state.password_entry")
         case .configuring:
-            return "Configuring"
+            return L10n.string("add_device.state.configuring")
         case .savingProfile:
-            return "Saving"
+            return L10n.string("add_device.state.saving_profile")
         case .saved:
-            return "Saved"
+            return L10n.string("add_device.state.saved")
         case .authFailed:
-            return "Password Rejected"
+            return L10n.string("add_device.state.auth_failed")
         case .unsupported:
-            return "Unsupported"
+            return L10n.string("add_device.state.unsupported")
         case .failed:
-            return "Failed"
+            return L10n.string("add_device.state.failed")
         }
     }
 }
@@ -54,9 +54,9 @@ enum AddDeviceEntryMode: String, CaseIterable, Equatable, Identifiable {
     var title: String {
         switch self {
         case .discover:
-            return "Discover"
+            return L10n.string("add_device.entry.discover")
         case .manual:
-            return "Manual Address"
+            return L10n.string("add_device.entry.manual")
         }
     }
 }
@@ -78,6 +78,7 @@ final class AddDeviceFlowStore: ObservableObject {
     let coordinator: OperationCoordinator
     let registry: DeviceRegistryStore
     let passwordStore: PasswordStore
+    let profileSaver: ConfiguredDeviceProfileSaving
 
     private var pendingProfileID: DeviceProfile.ID?
     private var pendingDiscoveredDevice: DiscoveredDevice?
@@ -88,11 +89,13 @@ final class AddDeviceFlowStore: ObservableObject {
     init(
         coordinator: OperationCoordinator,
         registry: DeviceRegistryStore,
-        passwordStore: PasswordStore
+        passwordStore: PasswordStore,
+        profileSaver: ConfiguredDeviceProfileSaving? = nil
     ) {
         self.coordinator = coordinator
         self.registry = registry
         self.passwordStore = passwordStore
+        self.profileSaver = profileSaver ?? ConfiguredDeviceProfileSaver(registry: registry, passwordStore: passwordStore)
         coordinator.backend.$events
             .sink { [weak self] events in
                 Task { @MainActor in
@@ -177,7 +180,7 @@ final class AddDeviceFlowStore: ObservableObject {
 
     func promptForPassword() {
         guard hasSelectedTarget else {
-            failLocally("Choose a discovered device or enter a host.")
+            failLocally(L10n.string("add_device.error.choose_target"))
             return
         }
         state = .passwordEntry
@@ -186,11 +189,11 @@ final class AddDeviceFlowStore: ObservableObject {
 
     func runDiscover() {
         guard let timeout = bonjourTimeoutValue else {
-            failLocally("Bonjour timeout must be a non-negative number.")
+            failLocally(L10n.string("add_device.error.invalid_bonjour_timeout"))
             return
         }
         guard !coordinator.backend.isRunning else {
-            rejectRun("Another operation is already running.")
+            rejectRun(L10n.string("operation.error.already_running"))
             return
         }
         resetRunState(clearDevices: true)
@@ -209,13 +212,13 @@ final class AddDeviceFlowStore: ObservableObject {
         let trimmedPassword = password.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPassword.isEmpty else {
             state = .passwordEntry
-            failLocally("Time Capsule password is required.")
+            failLocally(L10n.string("add_device.error.password_required"))
             return
         }
         let selectedDevice = entryMode == .discover ? selectedDevice : nil
         let trimmedHost = manualHost.trimmingCharacters(in: .whitespacesAndNewlines)
         guard selectedDevice != nil || (entryMode == .manual && !trimmedHost.isEmpty) else {
-            failLocally("Choose a discovered device or enter a host.")
+            failLocally(L10n.string("add_device.error.choose_target"))
             return
         }
 
@@ -233,7 +236,7 @@ final class AddDeviceFlowStore: ObservableObject {
         guard !coordinator.backend.isRunning else {
             pendingProfileID = nil
             pendingDiscoveredDevice = nil
-            rejectRun("Another operation is already running.")
+            rejectRun(L10n.string("operation.error.already_running"))
             return
         }
         resetRunState(clearDevices: false)
@@ -370,32 +373,28 @@ final class AddDeviceFlowStore: ObservableObject {
     }
 
     private func applyConfigureResult(_ event: BackendEvent) {
+        let configured: ConfiguredDeviceState
+        do {
+            configured = ConfiguredDeviceState(payload: try event.decodePayload(ConfigurePayload.self))
+        } catch {
+            failContract(error)
+            return
+        }
+
         do {
             state = .savingProfile
-            let payload = try event.decodePayload(ConfigurePayload.self)
-            let configured = ConfiguredDeviceState(payload: payload)
             let profileID = pendingProfileID ?? UUID().uuidString.lowercased()
-            let profile = try registry.saveConfiguredDevice(
+            savedProfile = try profileSaver.saveConfiguredDevice(
                 configuredDevice: configured,
                 discoveredDevice: pendingDiscoveredDevice,
-                passwordState: .missing,
+                password: password,
                 preferredID: profileID
             )
-            do {
-                try passwordStore.save(password, for: profile.keychainAccount)
-                var saved = profile
-                saved.passwordState = .available
-                saved = try registry.updateProfile(saved)
-                savedProfile = saved
-            } catch {
-                registry.updatePasswordState(.missing, for: profile.id)
-                savedProfile = registry.profile(id: profile.id) ?? profile
-            }
             error = nil
             state = .saved
             activeOperation = nil
         } catch {
-            failContract(error)
+            failProfileSave(error)
         }
     }
 
@@ -426,6 +425,16 @@ final class AddDeviceFlowStore: ObservableObject {
         self.error = BackendErrorViewModel(
             operation: "add-device",
             code: "contract_decode_failed",
+            message: error.localizedDescription
+        )
+        state = .failed
+        activeOperation = nil
+    }
+
+    private func failProfileSave(_ error: Error) {
+        self.error = BackendErrorViewModel(
+            operation: "add-device",
+            code: "profile_save_failed",
             message: error.localizedDescription
         )
         state = .failed

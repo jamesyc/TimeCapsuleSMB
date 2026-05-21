@@ -89,7 +89,7 @@ final class OperationCoordinator: ObservableObject {
         password: String? = nil
     ) -> OperationStartResult {
         guard !backend.isRunning else {
-            let message = "Another operation is already running."
+            let message = L10n.string("operation.error.already_running")
             rejectedOperationMessage = message
             return .rejected(message)
         }
