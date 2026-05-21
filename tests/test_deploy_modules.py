@@ -6528,7 +6528,7 @@ fi
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"FAIL:mdns-advertiser binary missing at {missing_mdns}", result.stdout)
         self.assertIn("FAIL:mdns-advertiser process is not running", result.stdout)
-        self.assertIn("FAIL:mdns-advertiser is not bound to UDP 5353", result.stdout)
+        self.assertIn("FAIL:mdns-advertiser is not bound to required UDP 5353 listener", result.stdout)
         self.assertIn("PASS:Apple mDNSResponder is stopped", result.stdout)
         self.assertIn("status=1", result.stdout)
         self.assertNotIn("mDNS startup deferred; no usable address has appeared yet", result.stdout)
@@ -6556,7 +6556,7 @@ fi
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("PASS:mdns-advertiser process is running", result.stdout)
-        self.assertIn("PASS:mdns-advertiser bound to IPv4 UDP 5353", result.stdout)
+        self.assertIn("PASS:mdns-advertiser bound to required ipv4 UDP 5353 listener", result.stdout)
         self.assertIn("FAIL:mdns-advertiser bound to UDP 5353 but bind address is not active", result.stdout)
         self.assertIn("status=1", result.stdout)
         self.assertNotIn("PASS:mdns-advertiser bind address active", result.stdout)
@@ -6585,14 +6585,14 @@ fi
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("FAIL:mdns-advertiser mDNS socket family probe failed with exit code 3", result.stdout)
         self.assertIn("PASS:mdns-advertiser process is running", result.stdout)
-        self.assertIn("PASS:mdns-advertiser bound to IPv4 UDP 5353", result.stdout)
+        self.assertIn("PASS:mdns-advertiser bound to required ipv4 UDP 5353 listener", result.stdout)
         self.assertIn("FAIL:mdns-advertiser bound to UDP 5353 but bind address is not active", result.stdout)
         self.assertIn("status=1", result.stdout)
 
     def test_mdns_status_helper_passes_only_when_bound_and_auto_ip_active(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             mdns_bin = Path(tmpdir) / "mdns-advertiser"
-            mdns_bin.write_text("#!/bin/sh\nexit 0\n")
+            mdns_bin.write_text("#!/bin/sh\necho ipv4\n")
             mdns_bin.chmod(0o755)
             ps_out = "201 1 S 0:00.00 mdns-advertiser /mnt/Flash/mdns-advertiser"
             fstat_out = "root mdns-advertiser 201 10 internet dgram udp 0x0 *:5353"
@@ -6612,12 +6612,12 @@ fi
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("PASS:mdns-advertiser process is running", result.stdout)
-        self.assertIn("PASS:mdns-advertiser bound to IPv4 UDP 5353", result.stdout)
+        self.assertIn("PASS:mdns-advertiser bound to required ipv4 UDP 5353 listener", result.stdout)
         self.assertIn("PASS:mdns-advertiser bind address active", result.stdout)
         self.assertIn("PASS:Apple mDNSResponder is stopped", result.stdout)
         self.assertIn("status=0", result.stdout)
 
-    def test_mdns_status_helper_requires_ipv4_udp_5353_only(self) -> None:
+    def test_mdns_status_helper_prefers_ipv4_udp_5353_when_advertiser_is_dual_stack(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             mdns_bin = Path(tmpdir) / "mdns-advertiser"
             mdns_bin.write_text("#!/bin/sh\necho 'ipv4 ipv6'\n")
@@ -6640,8 +6640,61 @@ fi
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("PASS:mdns-advertiser process is running", result.stdout)
-        self.assertIn("PASS:mdns-advertiser bound to IPv4 UDP 5353", result.stdout)
+        self.assertIn("PASS:mdns-advertiser bound to required ipv4 UDP 5353 listener", result.stdout)
         self.assertIn("status=0", result.stdout)
+
+    def test_mdns_status_helper_accepts_ipv6_udp_5353_when_advertiser_is_ipv6_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mdns_bin = Path(tmpdir) / "mdns-advertiser"
+            mdns_bin.write_text("#!/bin/sh\necho ipv6\n")
+            mdns_bin.chmod(0o755)
+            ps_out = "201 1 S 0:00.00 mdns-advertiser /mnt/Flash/mdns-advertiser"
+            fstat_out = "root mdns-advertiser 201 10 internet6 dgram udp 0x0 [*]:5353"
+            script = f"""
+RUNTIME_MDNS_BIN={shlex.quote(str(mdns_bin))}
+{SMBD_STATUS_HELPERS}
+ps_out={shlex.quote(ps_out)}
+fstat_out={shlex.quote(fstat_out)}
+if describe_managed_mdns_status "$ps_out" "$fstat_out"; then
+    echo status=0
+else
+    echo status=$?
+fi
+"""
+
+            result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("PASS:mdns-advertiser process is running", result.stdout)
+        self.assertIn("PASS:mdns-advertiser bound to required ipv6 UDP 5353 listener", result.stdout)
+        self.assertIn("PASS:mdns-advertiser bind address active", result.stdout)
+        self.assertIn("status=0", result.stdout)
+
+    def test_mdns_status_helper_rejects_ipv4_udp_5353_when_advertiser_is_ipv6_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mdns_bin = Path(tmpdir) / "mdns-advertiser"
+            mdns_bin.write_text("#!/bin/sh\necho ipv6\n")
+            mdns_bin.chmod(0o755)
+            ps_out = "201 1 S 0:00.00 mdns-advertiser /mnt/Flash/mdns-advertiser"
+            fstat_out = "root mdns-advertiser 201 10 internet dgram udp 0x0 *:5353"
+            script = f"""
+RUNTIME_MDNS_BIN={shlex.quote(str(mdns_bin))}
+{SMBD_STATUS_HELPERS}
+ps_out={shlex.quote(ps_out)}
+fstat_out={shlex.quote(fstat_out)}
+if describe_managed_mdns_status "$ps_out" "$fstat_out"; then
+    echo status=0
+else
+    echo status=$?
+fi
+"""
+
+            result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("PASS:mdns-advertiser process is running", result.stdout)
+        self.assertIn("FAIL:mdns-advertiser is not bound to required UDP 5353 listener", result.stdout)
+        self.assertIn("status=1", result.stdout)
 
     def test_probe_managed_smbd_reports_runtime_invariant_failures(self) -> None:
         stdout = "\n".join(

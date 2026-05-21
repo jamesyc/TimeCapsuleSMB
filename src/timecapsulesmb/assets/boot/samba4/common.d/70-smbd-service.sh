@@ -146,8 +146,32 @@ tc_mdns_bound_ipv6_udp_5353() {
     tc_process_bound_ipv6_udp_port "$MDNS_PROC_NAME" 5353
 }
 
+tc_mdns_health_socket_family() {
+    families=$(tc_probe_mdns_socket_families) || return $?
+
+    set -- $families
+    for family in "$@"; do
+        if [ "$family" = "ipv4" ]; then
+            printf '%s\n' ipv4
+            return 0
+        fi
+    done
+    for family in "$@"; do
+        if [ "$family" = "ipv6" ]; then
+            printf '%s\n' ipv6
+            return 0
+        fi
+    done
+    return 1
+}
+
 tc_mdns_bound_udp_5353() {
-    tc_mdns_bound_ipv4_udp_5353
+    family=$(tc_mdns_health_socket_family) || return $?
+    case "$family" in
+        ipv4) tc_mdns_bound_ipv4_udp_5353 ;;
+        ipv6) tc_mdns_bound_ipv6_udp_5353 ;;
+        *) return 1 ;;
+    esac
 }
 
 tc_wait_for_smbd_ipv4_445() {

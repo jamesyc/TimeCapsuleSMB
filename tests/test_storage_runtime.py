@@ -3174,7 +3174,7 @@ MaSt = (
             "102\n",
         )
 
-    def test_common_mdns_bound_udp_5353_requires_ipv4_only(self) -> None:
+    def test_common_mdns_bound_udp_5353_uses_ipv4_preferred_family_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
@@ -3204,12 +3204,13 @@ MaSt = (
                     v6_status=1
                     status=0
                     tc_mdns_bound_udp_5353 || status=$?
-                    echo "dual_missing_v6=$status"
+                    echo "dual_prefers_ipv4=$status"
 
+                    v4_status=1
                     v6_status=0
                     status=0
                     tc_mdns_bound_udp_5353 || status=$?
-                    echo "dual_bound=$status"
+                    echo "dual_missing_ipv4=$status"
 
                     printf 'ipv4\\n' >{families_file}
                     v4_status=0
@@ -3217,6 +3218,26 @@ MaSt = (
                     status=0
                     tc_mdns_bound_udp_5353 || status=$?
                     echo "ipv4_only=$status"
+
+                    printf 'ipv6\\n' >{families_file}
+                    v4_status=1
+                    v6_status=0
+                    status=0
+                    tc_mdns_bound_udp_5353 || status=$?
+                    echo "ipv6_only=$status"
+
+                    v4_status=0
+                    v6_status=1
+                    status=0
+                    tc_mdns_bound_udp_5353 || status=$?
+                    echo "ipv6_only_missing=$status"
+
+                    printf 'ethernet\\n' >{families_file}
+                    v4_status=0
+                    v6_status=0
+                    status=0
+                    tc_mdns_bound_udp_5353 || status=$?
+                    echo "unsupported_family=$status"
                     """
                 )
             )
@@ -3225,7 +3246,54 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "dual_missing_v6=0\ndual_bound=0\nipv4_only=0\n")
+        self.assertEqual(
+            proc.stdout,
+            "dual_prefers_ipv4=0\n"
+            "dual_missing_ipv4=1\n"
+            "ipv4_only=0\n"
+            "ipv6_only=0\n"
+            "ipv6_only_missing=1\n"
+            "unsupported_family=1\n",
+        )
+
+    def test_common_watchdog_accepts_ipv6_udp_5353_when_advertiser_is_ipv6_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "watchdog-mdns-ipv6-only-bound.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    runtime_process_present_by_ucomm() {{
+                        [ "$1" = "$MDNS_PROC_NAME" ]
+                    }}
+                    tc_probe_mdns_socket_families() {{ echo ipv6; }}
+                    tc_mdns_bound_ipv4_udp_5353() {{ echo unexpected-ipv4; return 1; }}
+                    tc_mdns_bound_ipv6_udp_5353() {{ echo ipv6-bound; return 0; }}
+                    tc_mdns_auto_ip_available() {{ echo unexpected-auto-ip; return 0; }}
+                    stop_runtime_process_by_ucomm() {{ echo "unexpected-stop $1"; return 1; }}
+                    tc_restart_mdns() {{ echo unexpected-restart; return 1; }}
+                    tc_watchdog_reconcile_mdns
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_path = memory / "samba4/var/test.log"
+            log_text = log_path.read_text() if log_path.exists() else ""
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "ipv6-bound\n")
+        self.assertNotIn("watchdog recovery: mdns advertiser is running without required UDP 5353 listeners", log_text)
+        self.assertNotIn("unexpected", proc.stdout)
 
     def test_common_watchdog_restarts_mdns_when_running_without_udp_5353_and_auto_ip_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

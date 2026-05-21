@@ -213,10 +213,42 @@ smbd_bound_445() {{
     return 0
 }}
 
+mdns_health_socket_family() {{
+    families=$1
+
+    set -- $families
+    for family in "$@"; do
+        if [ "$family" = "ipv4" ]; then
+            printf '%s\n' ipv4
+            return 0
+        fi
+    done
+    for family in "$@"; do
+        if [ "$family" = "ipv6" ]; then
+            printf '%s\n' ipv6
+            return 0
+        fi
+    done
+    return 1
+}}
+
 mdns_bound_5353() {{
     fstat_out=$1
-    case "$fstat_out" in
-        *mdns-advertiser*" internet dgram udp "*":5353"*) return 0 ;;
+    family=$2
+
+    case "$family" in
+        ipv4)
+            case "$fstat_out" in
+                *mdns-advertiser*" internet dgram udp "*":5353"*) return 0 ;;
+                *) return 1 ;;
+            esac
+            ;;
+        ipv6)
+            case "$fstat_out" in
+                *mdns-advertiser*" internet6 dgram udp "*":5353"*) return 0 ;;
+                *) return 1 ;;
+            esac
+            ;;
         *) return 1 ;;
     esac
 }}
@@ -302,6 +334,8 @@ describe_managed_mdns_status() {{
     mdns_auto_ip_state=waiting
     mdns_auto_ip_failure=
     mdns_socket_families=
+    mdns_health_family=ipv4
+    mdns_health_family_supported=1
     if [ ! -e "$RUNTIME_MDNS_BIN" ]; then
         mdns_auto_ip_state=failed
         mdns_auto_ip_failure="mdns-advertiser binary missing at $RUNTIME_MDNS_BIN"
@@ -320,6 +354,13 @@ describe_managed_mdns_status() {{
                 ;;
         esac
     fi
+    if [ "$mdns_auto_ip_state" = "active" ]; then
+        if mdns_health_family=$(mdns_health_socket_family "$mdns_socket_families"); then
+            mdns_health_family_supported=1
+        else
+            mdns_health_family_supported=0
+        fi
+    fi
 
     if [ "$mdns_auto_ip_state" = "failed" ]; then
         echo "FAIL:$mdns_auto_ip_failure"
@@ -336,8 +377,8 @@ describe_managed_mdns_status() {{
         fi
         status=1
     fi
-    if mdns_bound_5353 "$fstat_out"; then
-        echo "PASS:mdns-advertiser bound to IPv4 UDP 5353"
+    if [ "$mdns_health_family_supported" -eq 1 ] && mdns_bound_5353 "$fstat_out" "$mdns_health_family"; then
+        echo "PASS:mdns-advertiser bound to required $mdns_health_family UDP 5353 listener"
         if [ "$mdns_auto_ip_state" = "active" ]; then
             echo "PASS:mdns-advertiser bind address active"
         else
@@ -349,7 +390,11 @@ describe_managed_mdns_status() {{
             echo "FAIL:mdns-advertiser is waiting for a usable address"
             status=1
         else
-            echo "FAIL:mdns-advertiser is not bound to UDP 5353"
+            if [ "$mdns_health_family_supported" -eq 1 ]; then
+                echo "FAIL:mdns-advertiser is not bound to required UDP 5353 listener"
+            else
+                echo "FAIL:mdns-advertiser mDNS socket family probe returned no supported family"
+            fi
             status=1
         fi
     fi
