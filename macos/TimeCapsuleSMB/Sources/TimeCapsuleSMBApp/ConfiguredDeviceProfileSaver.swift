@@ -7,7 +7,7 @@ protocol ConfiguredDeviceProfileSaving: AnyObject {
         discoveredDevice: DiscoveredDevice?,
         password: String,
         preferredID: DeviceProfile.ID
-    ) throws -> DeviceProfile
+    ) async throws -> DeviceProfile
 }
 
 @MainActor
@@ -30,8 +30,8 @@ final class ConfiguredDeviceProfileSaver: ConfiguredDeviceProfileSaving {
         discoveredDevice: DiscoveredDevice?,
         password: String,
         preferredID: DeviceProfile.ID
-    ) throws -> DeviceProfile {
-        let profile = registry.makeConfiguredDeviceProfile(
+    ) async throws -> DeviceProfile {
+        let profile = await registry.makeConfiguredDeviceProfile(
             configuredDevice: configuredDevice,
             discoveredDevice: discoveredDevice,
             passwordState: .available,
@@ -44,17 +44,17 @@ final class ConfiguredDeviceProfileSaver: ConfiguredDeviceProfileSaving {
             try passwordStore.save(password, for: profile.keychainAccount)
         } catch {
             if !wasSavedProfile {
-                registry.discardArtifacts(for: profile)
+                await registry.discardArtifacts(for: profile)
             }
             throw error
         }
 
         do {
-            return try registry.saveProfileMergingDuplicates(profile)
+            return try await registry.saveProfileMergingDuplicates(profile)
         } catch {
             rollbackPassword(rollback, account: profile.keychainAccount)
             if !wasSavedProfile {
-                registry.discardArtifacts(for: profile)
+                await registry.discardArtifacts(for: profile)
             }
             throw error
         }

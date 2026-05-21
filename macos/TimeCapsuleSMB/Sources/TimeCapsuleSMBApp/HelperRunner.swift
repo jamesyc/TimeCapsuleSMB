@@ -18,20 +18,21 @@ public protocol HelperRunning: Sendable {
 }
 
 public final class HelperRunner: @unchecked Sendable, HelperRunning {
-    private static let pipeReadChunkSize = 4096
-
     private let locator: HelperLocator
     private let stderrLimit: Int
     private let requestWriter: any HelperRequestWriting
+    private let pipeReader: any HelperPipeReading
 
     public init(
         locator: HelperLocator = HelperLocator(),
         stderrLimit: Int = 64 * 1024,
-        requestWriter: any HelperRequestWriting = PipeRequestWriter()
+        requestWriter: any HelperRequestWriting = PipeRequestWriter(),
+        pipeReader: any HelperPipeReading = ReadabilityPipeReader()
     ) {
         self.locator = locator
         self.stderrLimit = stderrLimit
         self.requestWriter = requestWriter
+        self.pipeReader = pipeReader
     }
 
     public func run(
@@ -74,12 +75,13 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
             return HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")
         }
 
+        let pipeReader = self.pipeReader
         let stdoutTask = Task.detached {
-            await Self.readOutput(output.fileHandleForReading, onEvent: eventSink)
+            await Self.readOutput(output.fileHandleForReading, pipeReader: pipeReader, onEvent: eventSink)
         }
         let stderrLimit = self.stderrLimit
         let stderrTask = Task.detached {
-            Self.readCapped(error.fileHandleForReading, limit: stderrLimit)
+            await Self.readCapped(error.fileHandleForReading, limit: stderrLimit, pipeReader: pipeReader)
         }
 
         let requestData: Data
@@ -171,40 +173,40 @@ public final class HelperRunner: @unchecked Sendable, HelperRunning {
 
     private static func readOutput(
         _ handle: FileHandle,
+        pipeReader: any HelperPipeReading,
         onEvent: @escaping @Sendable (BackendEvent) async -> Void
     ) async {
         var parser = OutputLineParser()
-        while let data = readChunk(from: handle) {
-            for event in parser.append(data) {
-                await onEvent(event)
+        do {
+            for try await data in pipeReader.chunks(from: handle) {
+                for event in parser.append(data) {
+                    await onEvent(event)
+                }
             }
+        } catch {
+            return
         }
         for event in parser.finish() {
             await onEvent(event)
         }
     }
 
-    private static func readCapped(_ handle: FileHandle, limit: Int) -> String {
+    private static func readCapped(
+        _ handle: FileHandle,
+        limit: Int,
+        pipeReader: any HelperPipeReading
+    ) async -> String {
         var output = Data()
-        while let data = readChunk(from: handle) {
-            if output.count < limit {
-                output.append(data.prefix(limit - output.count))
+        do {
+            for try await data in pipeReader.chunks(from: handle) {
+                if output.count < limit {
+                    output.append(data.prefix(limit - output.count))
+                }
             }
+        } catch {
+            return String(decoding: output, as: UTF8.self)
         }
         return String(decoding: output, as: UTF8.self)
-    }
-
-    private static func readChunk(from handle: FileHandle) -> Data? {
-        let data: Data?
-        do {
-            data = try handle.read(upToCount: pipeReadChunkSize)
-        } catch {
-            return nil
-        }
-        guard let data, !data.isEmpty else {
-            return nil
-        }
-        return data
     }
 
     private static func waitForExit(_ process: Process) async {

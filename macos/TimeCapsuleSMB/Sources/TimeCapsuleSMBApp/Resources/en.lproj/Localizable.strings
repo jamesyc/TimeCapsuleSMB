@@ -9,7 +9,7 @@
 "action.run_fsck" = "Run fsck";
 "action.uninstall" = "Uninstall";
 "add_device.connection_method" = "Connection Method";
-"add_device.discover.placeholder" = "Browse for AirPort Bonjour services";
+"add_device.discover.placeholder" = "Browse for AirPort Bonjour services:";
 "add_device.discovered_devices" = "Discovered Devices";
 "add_device.entry.discover" = "Discover";
 "add_device.entry.manual" = "Manual Address";
@@ -115,7 +115,7 @@
 "dashboard.overview.password" = "Password";
 "dashboard.overview.payload" = "Payload";
 "dashboard.overview.status" = "Status";
-"dashboard.replacement_password" = "Replacement password";
+"dashboard.replacement_password" = "Update saved password";
 "dashboard.tab.advanced" = "Advanced";
 "dashboard.tab.checkup" = "Checkup";
 "dashboard.tab.install" = "Install / Update";
@@ -172,6 +172,7 @@
 "helper.error.missing_terminal_event" = "Helper exited without a result or error event.";
 "host_warning.time_machine.message" = "macOS %d.%d.%d has known Time Machine network backup issues. SMB may work, but backup reliability can be affected by the host OS.";
 "host_warning.time_machine.title" = "macOS Time Machine Warning";
+"activity.app_ready" = "App Ready";
 "activity.last_operation" = "Last operation";
 "activity.no_active_operation" = "No active operation";
 "maintenance.action.choose" = "Choose";
@@ -309,6 +310,7 @@
 "toolbar.add" = "Add";
 "toolbar.clear" = "Clear";
 "toolbar.diagnostics" = "Diagnostics";
+"toolbar.disabled" = "Disabled";
 "toolbar.forget" = "Forget";
 "value.auto" = "Auto";
 "value.never" = "Never";

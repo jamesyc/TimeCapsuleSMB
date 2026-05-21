@@ -49,8 +49,8 @@ struct DiscoveredDevice: Identifiable, Equatable {
         self.host = payload.host
         self.hostname = payload.hostname
         self.addresses = payload.addresses.isEmpty ? payload.ipv4 + payload.ipv6 : payload.addresses
-        self.syap = payload.syap
-        self.model = payload.model
+        self.syap = Self.nonEmpty(payload.syap)
+        self.model = Self.nonEmpty(payload.model) ?? Self.recordProperty(payload.selectedRecord, keys: ["model", "am"])
         self.rawRecord = payload.selectedRecord
     }
 
@@ -73,9 +73,13 @@ struct DiscoveredDevice: Identifiable, Equatable {
         self.hostname = record.hostname
         self.addresses = record.ipv4 + record.ipv6
         self.host = Self.displayHost(record)
-        self.syap = record.properties["syAP"] ?? record.properties["syap"]
-        self.model = record.properties["model"] ?? record.properties["am"]
+        self.syap = Self.nonEmpty(record.properties["syAP"] ?? record.properties["syap"])
+        self.model = Self.nonEmpty(record.properties["model"] ?? record.properties["am"])
         self.rawRecord = record.jsonValue
+    }
+
+    var discoveryModelText: String {
+        Self.nonEmpty(model) ?? ""
     }
 
     private static func displayHost(_ record: BonjourResolvedServicePayload) -> String {
@@ -83,6 +87,25 @@ struct DiscoveredDevice: Identifiable, Equatable {
             return address
         }
         return record.hostname
+    }
+
+    private static func recordProperty(_ record: JSONValue, keys: [String]) -> String? {
+        guard case .object(let values) = record, case .object(let properties)? = values["properties"] else {
+            return nil
+        }
+        for key in keys {
+            if case .string(let value)? = properties[key], let trimmed = nonEmpty(value) {
+                return trimmed
+            }
+        }
+        return nil
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
     }
 }
 

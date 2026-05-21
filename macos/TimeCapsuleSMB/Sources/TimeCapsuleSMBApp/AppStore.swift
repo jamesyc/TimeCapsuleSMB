@@ -92,9 +92,9 @@ final class AppStore: ObservableObject {
         operationCoordinator.backend
     }
 
-    func start() {
-        deviceRegistry.load()
-        refreshPasswordStates()
+    func start() async {
+        await deviceRegistry.load()
+        await refreshPasswordStates()
         appReadinessStore.start()
     }
 
@@ -136,49 +136,49 @@ final class AppStore: ObservableObject {
         do {
             return try passwordStore.password(for: profile.keychainAccount)
         } catch PasswordStoreError.missing {
-            deviceRegistry.updatePasswordState(.missing, for: profile.id)
+            Task { await deviceRegistry.updatePasswordState(.missing, for: profile.id) }
             return nil
         } catch {
-            deviceRegistry.updatePasswordState(.keychainUnavailable, for: profile.id)
+            Task { await deviceRegistry.updatePasswordState(.keychainUnavailable, for: profile.id) }
             return nil
         }
     }
 
-    func savePassword(_ password: String, for profile: DeviceProfile) throws {
+    func savePassword(_ password: String, for profile: DeviceProfile) async throws {
         try passwordStore.save(password, for: profile.keychainAccount)
-        deviceRegistry.updatePasswordState(.available, for: profile.id)
+        await deviceRegistry.updatePasswordState(.available, for: profile.id)
     }
 
-    func updateSettings(_ settings: DeviceProfileSettings, for profile: DeviceProfile) throws {
+    func updateSettings(_ settings: DeviceProfileSettings, for profile: DeviceProfile) async throws {
         var updated = profile
         updated.settings = settings
-        try deviceRegistry.updateProfile(updated)
+        try await deviceRegistry.updateProfile(updated)
     }
 
-    func rename(_ profile: DeviceProfile, displayName: String) throws {
+    func rename(_ profile: DeviceProfile, displayName: String) async throws {
         var updated = profile
         updated.displayName = displayName
-        try deviceRegistry.updateProfile(updated)
+        try await deviceRegistry.updateProfile(updated)
     }
 
-    func updateHost(_ profile: DeviceProfile, host: String) throws {
+    func updateHost(_ profile: DeviceProfile, host: String) async throws {
         var updated = profile
         updated.host = host
-        try deviceRegistry.updateProfile(updated)
+        try await deviceRegistry.updateProfile(updated)
     }
 
-    func forget(_ profile: DeviceProfile) throws {
+    func forget(_ profile: DeviceProfile) async throws {
         try passwordStore.deletePassword(for: profile.keychainAccount)
-        try deviceRegistry.delete(profile)
+        try await deviceRegistry.delete(profile)
         if selectedDeviceID == profile.id {
             selectedDeviceID = deviceRegistry.profiles.first?.id
             showingAddDevice = false
         }
     }
 
-    func refreshPasswordStates() {
+    func refreshPasswordStates() async {
         for profile in deviceRegistry.profiles {
-            deviceRegistry.updatePasswordState(effectivePasswordState(for: profile), for: profile.id)
+            await deviceRegistry.updatePasswordState(effectivePasswordState(for: profile), for: profile.id)
         }
     }
 

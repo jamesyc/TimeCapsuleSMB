@@ -152,8 +152,9 @@ final class DashboardStore: ObservableObject {
         doctorStore.$passwordInvalidProfileID
             .sink { [weak self] profileID in
                 guard let profileID else { return }
-                Task { @MainActor in
-                    self?.appStore.deviceRegistry.updatePasswordState(.invalid, for: profileID)
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    await self.appStore.deviceRegistry.updatePasswordState(.invalid, for: profileID)
                 }
             }
             .store(in: &cancellables)
@@ -167,16 +168,18 @@ final class DashboardStore: ObservableObject {
         deployStore.$passwordInvalidProfileID
             .sink { [weak self] profileID in
                 guard let profileID else { return }
-                Task { @MainActor in
-                    self?.appStore.deviceRegistry.updatePasswordState(.invalid, for: profileID)
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    await self.appStore.deviceRegistry.updatePasswordState(.invalid, for: profileID)
                 }
             }
             .store(in: &cancellables)
         maintenanceStore.$passwordInvalidProfileID
             .sink { [weak self] profileID in
                 guard let profileID else { return }
-                Task { @MainActor in
-                    self?.appStore.deviceRegistry.updatePasswordState(.invalid, for: profileID)
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    await self.appStore.deviceRegistry.updatePasswordState(.invalid, for: profileID)
                 }
             }
             .store(in: &cancellables)
@@ -253,14 +256,16 @@ final class DashboardStore: ObservableObject {
               let summary = doctorStore.summary else {
             return
         }
-        appStore.deviceRegistry.updateCheckup(DeviceCheckupSnapshot(
-            checkedAt: Date(),
-            state: state,
-            passCount: summary.passCount,
-            warnCount: summary.warnCount,
-            failCount: summary.failCount,
-            summary: L10n.format("summary.checkup_counts", summary.passCount, summary.warnCount, summary.failCount)
-        ), for: profileID)
+        Task {
+            await appStore.deviceRegistry.updateCheckup(DeviceCheckupSnapshot(
+                checkedAt: Date(),
+                state: state,
+                passCount: summary.passCount,
+                warnCount: summary.warnCount,
+                failCount: summary.failCount,
+                summary: L10n.format("summary.checkup_counts", summary.passCount, summary.warnCount, summary.failCount)
+            ), for: profileID)
+        }
     }
 
     private func updateDeploySnapshot(state: DeployWorkflowState) {
@@ -276,13 +281,15 @@ final class DashboardStore: ObservableObject {
               let result = deployStore.result else {
             return
         }
-        appStore.deviceRegistry.updateDeploy(DeviceDeploySnapshot(
-            deployedAt: Date(),
-            state: state,
-            payloadFamily: deployStore.plan?.payloadFamily ?? profile.payloadFamily,
-            rebootRequested: result.rebootRequested,
-            verified: result.verified,
-            summary: result.message ?? L10n.string("deploy.result.default_message")
-        ), for: profile.id)
+        Task {
+            await appStore.deviceRegistry.updateDeploy(DeviceDeploySnapshot(
+                deployedAt: Date(),
+                state: state,
+                payloadFamily: deployStore.plan?.payloadFamily ?? profile.payloadFamily,
+                rebootRequested: result.rebootRequested,
+                verified: result.verified,
+                summary: result.message ?? L10n.string("deploy.result.default_message")
+            ), for: profile.id)
+        }
     }
 }

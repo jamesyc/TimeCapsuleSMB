@@ -4,6 +4,7 @@ import ipaddress
 from dataclasses import dataclass
 from typing import Iterable
 
+from timecapsulesmb.core.config import AIRPORT_SYAP_TO_MODEL
 from timecapsulesmb.core.net import is_link_local_ipv4
 from timecapsulesmb.discovery.bonjour import (
     AIRPORT_SERVICE,
@@ -12,6 +13,8 @@ from timecapsulesmb.discovery.bonjour import (
     discovery_record_to_jsonable,
     record_has_service,
 )
+
+_GENERIC_MDNS_MODELS = frozenset({"AirPort", "TimeCapsule", "Time Capsule"})
 
 
 @dataclass(frozen=True)
@@ -81,6 +84,8 @@ def _candidate_from_record(record: BonjourResolvedService, index: int) -> Discov
     host = _host_from_ssh_host(ssh_host) or record.hostname or _first_value(record.ipv6) or ""
     name = record.name or record.hostname or host or "AirPort Device"
     fullname = record.fullname or ""
+    syap = _non_empty(record.properties.get("syAP") or record.properties.get("syap"))
+    model = _candidate_model(_non_empty(record.properties.get("model") or record.properties.get("am")), syap)
     return DiscoveredDeviceCandidate(
         id=_candidate_id(record, host=host, index=index),
         name=name,
@@ -92,12 +97,19 @@ def _candidate_from_record(record: BonjourResolvedService, index: int) -> Discov
         ipv6=tuple(record.ipv6),
         preferred_ipv4=preferred_ipv4,
         link_local_only=bool(record.ipv4) and preferred_ipv4 is None,
-        syap=_non_empty(record.properties.get("syAP") or record.properties.get("syap")),
-        model=_non_empty(record.properties.get("model") or record.properties.get("am")),
+        syap=syap,
+        model=model,
         service_type=record.service_type or "",
         fullname=fullname,
         selected_record=record,
     )
+
+
+def _candidate_model(model: str | None, syap: str | None) -> str | None:
+    inferred = AIRPORT_SYAP_TO_MODEL.get(syap or "")
+    if inferred is not None and (model is None or model in _GENERIC_MDNS_MODELS):
+        return inferred
+    return model
 
 
 def _candidate_score(candidate: DiscoveredDeviceCandidate) -> tuple[int, int, int, int]:

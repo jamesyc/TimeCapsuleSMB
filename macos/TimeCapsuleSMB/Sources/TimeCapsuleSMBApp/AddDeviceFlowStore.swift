@@ -381,20 +381,24 @@ final class AddDeviceFlowStore: ObservableObject {
             return
         }
 
-        do {
-            state = .savingProfile
-            let profileID = pendingProfileID ?? UUID().uuidString.lowercased()
-            savedProfile = try profileSaver.saveConfiguredDevice(
-                configuredDevice: configured,
-                discoveredDevice: pendingDiscoveredDevice,
-                password: password,
-                preferredID: profileID
-            )
-            error = nil
-            state = .saved
-            activeOperation = nil
-        } catch {
-            failProfileSave(error)
+        state = .savingProfile
+        let profileID = pendingProfileID ?? UUID().uuidString.lowercased()
+        let pendingDiscoveredDevice = pendingDiscoveredDevice
+        let password = password
+        Task { @MainActor in
+            do {
+                savedProfile = try await profileSaver.saveConfiguredDevice(
+                    configuredDevice: configured,
+                    discoveredDevice: pendingDiscoveredDevice,
+                    password: password,
+                    preferredID: profileID
+                )
+                error = nil
+                state = .saved
+                activeOperation = nil
+            } catch {
+                failProfileSave(error)
+            }
         }
     }
 

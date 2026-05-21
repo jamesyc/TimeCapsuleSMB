@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#endif
 
 public protocol HelperRequestWriting: Sendable {
     func write(_ data: Data, to handle: FileHandle) async throws
@@ -16,6 +19,10 @@ public final class PipeRequestWriter: HelperRequestWriting, @unchecked Sendable 
         guard !data.isEmpty else {
             return
         }
+        #if canImport(Darwin)
+        var noSigpipe: CInt = 1
+        _ = fcntl(handle.fileDescriptor, F_SETNOSIGPIPE, &noSigpipe)
+        #endif
 
         let state = PipeRequestWriteState(data: data, handle: handle, chunkSize: chunkSize)
         try await withTaskCancellationHandler {

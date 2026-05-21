@@ -45,38 +45,41 @@ public struct ContentView: View {
             }
             .toolbar {
                 ToolbarItemGroup {
-                    Button {
+                    ToolbarIconButton(
+                        title: L10n.string("toolbar.add"),
+                        systemImage: "plus"
+                    ) {
                         appStore.showAddDevice()
-                    } label: {
-                        Label(L10n.string("toolbar.add"), systemImage: "plus")
                     }
-                    Button {
+                    ToolbarIconButton(
+                        title: L10n.string("toolbar.diagnostics"),
+                        systemImage: "wrench.and.screwdriver"
+                    ) {
                         diagnosticsPresented = true
-                    } label: {
-                        Label(L10n.string("toolbar.diagnostics"), systemImage: "wrench.and.screwdriver")
                     }
-                    Button {
-                        if let profile = appStore.selectedProfile {
-                            profilePendingDeletion = profile
-                        } else {
-                            appStore.operationCoordinator.clear()
+                    ToolbarIconButton(
+                        title: L10n.string("toolbar.forget"),
+                        systemImage: "trash",
+                        disabled: appStore.selectedProfile == nil || appStore.backend.isRunning
+                    ) {
+                        guard let profile = appStore.selectedProfile else {
+                            return
                         }
-                    } label: {
-                        Label(appStore.selectedProfile == nil ? L10n.string("toolbar.clear") : L10n.string("toolbar.forget"), systemImage: "trash")
+                        profilePendingDeletion = profile
                     }
-                    .disabled(appStore.backend.isRunning)
-                    Button {
+                    ToolbarIconButton(
+                        title: L10n.string("toolbar.cancel"),
+                        systemImage: "xmark.circle",
+                        disabled: !appStore.backend.canCancel
+                    ) {
                         appStore.operationCoordinator.cancel()
-                    } label: {
-                        Label(L10n.string("toolbar.cancel"), systemImage: "xmark.circle")
                     }
-                    .disabled(!appStore.backend.canCancel)
                 }
             }
         }
         .frame(minWidth: 1080, minHeight: 720)
         .task {
-            appStore.start()
+            await appStore.start()
         }
         .onChange(of: addDeviceStore.savedProfile) { profile in
             guard let profile else { return }
@@ -98,11 +101,13 @@ public struct ContentView: View {
             presenting: profilePendingDeletion
         ) { profile in
             Button(L10n.format("dialog.forget.action", profile.title), role: .destructive) {
-                do {
-                    try appStore.forget(profile)
-                    profilePendingDeletion = nil
-                } catch {
-                    deleteErrorMessage = error.localizedDescription
+                Task { @MainActor in
+                    do {
+                        try await appStore.forget(profile)
+                        profilePendingDeletion = nil
+                    } catch {
+                        deleteErrorMessage = error.localizedDescription
+                    }
                 }
             }
             Button(L10n.string("action.cancel"), role: .cancel) {
@@ -239,6 +244,41 @@ public struct ContentView: View {
     }
 }
 
+private struct ToolbarIconButton: View {
+    let title: String
+    let systemImage: String
+    var disabled = false
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button {
+            guard !disabled else {
+                return
+            }
+            action()
+        } label: {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(disabled ? Color.secondary.opacity(0.5) : Color.primary)
+                .frame(width: 28, height: 28)
+                .background {
+                    Circle()
+                        .fill(isHovered && !disabled ? Color.primary.opacity(0.10) : Color.clear)
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(title)
+        .accessibilityLabel(title)
+        .accessibilityValue(disabled ? L10n.string("toolbar.disabled") : "")
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+}
+
 private struct DeviceListOverviewView: View {
     @ObservedObject var appStore: AppStore
 
@@ -289,6 +329,21 @@ private struct AddDeviceView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            topSection
+            if store.entryMode == .manual {
+                connectionControls
+                Spacer(minLength: 0)
+            } else {
+                deviceResultsSection
+                connectionControls
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var topSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline) {
                 Text(L10n.string("add_device.title"))
                     .font(.title2.weight(.semibold))
@@ -321,21 +376,41 @@ private struct AddDeviceView: View {
             }
             .frame(minHeight: 28, alignment: .center)
 
+        }
+    }
+
+    private var deviceResultsSection: some View {
+        Group {
             if store.entryMode == .discover && !store.devices.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(L10n.string("add_device.discovered_devices"))
                         .font(.headline)
-                    ForEach(store.devices) { device in
-                        Button {
-                            store.select(device)
-                        } label: {
-                            DeviceCandidateRow(device: device, selected: store.selectedDeviceID == device.id)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
 
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(store.devices) { device in
+                                Button {
+                                    store.select(device)
+                                } label: {
+                                    DeviceCandidateRow(device: device, selected: store.selectedDeviceID == device.id)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .scrollIndicators(.visible)
+                    .frame(maxWidth: .infinity)
+                }
+            } else {
+                Spacer(minLength: 24)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var connectionControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
                 TextField(L10n.string("add_device.host_or_ip"), text: Binding(
                     get: { store.hostFieldText },
@@ -343,6 +418,12 @@ private struct AddDeviceView: View {
                 ))
                 .disabled(!store.isHostFieldEditable)
                 SecureField(L10n.string("add_device.password"), text: $store.password)
+                    .onSubmit {
+                        guard store.canConfigure else {
+                            return
+                        }
+                        store.runConfigure()
+                    }
             }
 
             HStack {
@@ -370,8 +451,6 @@ private struct AddDeviceView: View {
                 ErrorBlock(error: error)
             }
         }
-        .padding()
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var statusIcon: String {
@@ -416,9 +495,12 @@ private struct DeviceCandidateRow: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Text(device.model ?? device.syap ?? "")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if !device.discoveryModelText.isEmpty {
+                Text(device.discoveryModelText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         }
         .padding(.vertical, 6)
     }
@@ -508,8 +590,10 @@ private struct OverviewTab: View {
             HStack {
                 SecureField(L10n.string("dashboard.replacement_password"), text: $replacementPassword)
                 Button {
-                    try? appStore.savePassword(replacementPassword, for: profile)
-                    replacementPassword = ""
+                    Task { @MainActor in
+                        try? await appStore.savePassword(replacementPassword, for: profile)
+                        replacementPassword = ""
+                    }
                 } label: {
                     Label(L10n.string("dashboard.action.save_password"), systemImage: "key")
                 }

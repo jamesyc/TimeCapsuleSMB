@@ -42,10 +42,7 @@ final class DeviceRegistryStore: ObservableObject {
     let registryURL: URL
     let devicesDirectoryURL: URL
 
-    private let fileManager: FileManager
-    private let encoder: JSONEncoder
-    private let decoder: JSONDecoder
-    private let now: () -> Date
+    private let repository: DeviceRegistryRepository
 
     convenience init() {
         let appSupport = BundleLayout.applicationSupportDirectory() ?? FileManager.default.homeDirectoryForCurrentUser
@@ -57,6 +54,206 @@ final class DeviceRegistryStore: ObservableObject {
         applicationSupportURL: URL,
         fileManager: FileManager = .default,
         now: @escaping () -> Date = Date.init
+    ) {
+        self.applicationSupportURL = applicationSupportURL
+        self.registryURL = applicationSupportURL.appendingPathComponent("devices.json")
+        self.devicesDirectoryURL = applicationSupportURL.appendingPathComponent("Devices", isDirectory: true)
+        self.repository = DeviceRegistryRepository(
+            applicationSupportURL: applicationSupportURL,
+            fileManager: fileManager,
+            now: now
+        )
+    }
+
+    var isEmpty: Bool {
+        profiles.isEmpty
+    }
+
+    func load() async {
+        state = .loading
+        error = nil
+        do {
+            profiles = try await repository.load()
+            state = profiles.isEmpty ? .empty : .loaded
+        } catch {
+            fail(error, clearProfiles: true)
+        }
+    }
+
+    @discardableResult
+    func saveConfiguredDevice(
+        configuredDevice: ConfiguredDeviceState,
+        discoveredDevice: DiscoveredDevice?,
+        passwordState: DevicePasswordState,
+        preferredID: DeviceProfile.ID = UUID().uuidString.lowercased()
+    ) async throws -> DeviceProfile {
+        state = .saving
+        error = nil
+        do {
+            let result = try await repository.saveConfiguredDevice(
+                configuredDevice: configuredDevice,
+                discoveredDevice: discoveredDevice,
+                passwordState: passwordState,
+                preferredID: preferredID
+            )
+            await refreshProfilesFromRepository()
+            return result.profile
+        } catch {
+            fail(error, clearProfiles: false)
+            throw error
+        }
+    }
+
+    func makeConfiguredDeviceProfile(
+        configuredDevice: ConfiguredDeviceState,
+        discoveredDevice: DiscoveredDevice?,
+        passwordState: DevicePasswordState,
+        preferredID: DeviceProfile.ID = UUID().uuidString.lowercased()
+    ) async -> DeviceProfile {
+        await repository.makeConfiguredDeviceProfile(
+            configuredDevice: configuredDevice,
+            discoveredDevice: discoveredDevice,
+            passwordState: passwordState,
+            preferredID: preferredID
+        )
+    }
+
+    @discardableResult
+    func saveProfileMergingDuplicates(_ profile: DeviceProfile) async throws -> DeviceProfile {
+        state = .saving
+        error = nil
+        do {
+            let result = try await repository.saveProfileMergingDuplicates(profile)
+            await refreshProfilesFromRepository()
+            return result.profile
+        } catch {
+            fail(error, clearProfiles: false)
+            throw error
+        }
+    }
+
+    func discardArtifacts(for profile: DeviceProfile) async {
+        await repository.discardArtifacts(for: profile)
+    }
+
+    @discardableResult
+    func updateProfile(_ profile: DeviceProfile) async throws -> DeviceProfile {
+        state = .saving
+        error = nil
+        do {
+            let result = try await repository.updateProfile(profile)
+            await refreshProfilesFromRepository()
+            return result.profile
+        } catch {
+            fail(error, clearProfiles: false)
+            throw error
+        }
+    }
+
+    func delete(_ profile: DeviceProfile) async throws {
+        state = .saving
+        error = nil
+        do {
+            _ = try await repository.delete(profile)
+            await refreshProfilesFromRepository()
+        } catch {
+            fail(error, clearProfiles: false)
+            throw error
+        }
+    }
+
+    func updatePasswordState(_ state: DevicePasswordState, for profileID: DeviceProfile.ID) async {
+        await applyBackgroundMutation {
+            try await repository.updatePasswordState(state, for: profileID)
+        }
+    }
+
+    func updateCheckup(_ snapshot: DeviceCheckupSnapshot, for profileID: DeviceProfile.ID) async {
+        await applyBackgroundMutation {
+            try await repository.updateCheckup(snapshot, for: profileID)
+        }
+    }
+
+    func updateDeploy(_ snapshot: DeviceDeploySnapshot, for profileID: DeviceProfile.ID) async {
+        await applyBackgroundMutation {
+            try await repository.updateDeploy(snapshot, for: profileID)
+        }
+    }
+
+    func profile(id: DeviceProfile.ID?) -> DeviceProfile? {
+        guard let id else {
+            return nil
+        }
+        return profiles.first { $0.id == id }
+    }
+
+    func matchingProfile(host: String, bonjourFullname: String?) -> DeviceProfile? {
+        let normalizedFullname = bonjourFullname?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let normalizedFullname, !normalizedFullname.isEmpty,
+           let profile = profiles.first(where: { $0.bonjourFullname?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedFullname }) {
+            return profile
+        }
+        let normalizedHost = DeviceProfile.normalizedHost(host)
+        guard !normalizedHost.isEmpty else {
+            return nil
+        }
+        return profiles.first { $0.normalizedHost == normalizedHost }
+    }
+
+    private func applyBackgroundMutation(_ mutate: () async throws -> [DeviceProfile]?) async {
+        do {
+            guard try await mutate() != nil else {
+                return
+            }
+            await refreshProfilesFromRepository()
+        } catch {
+            fail(error, clearProfiles: false)
+        }
+    }
+
+    private func refreshProfilesFromRepository() async {
+        profiles = await repository.profilesSnapshot()
+        state = profiles.isEmpty ? .empty : .loaded
+    }
+
+    private func fail(_ error: Error, clearProfiles: Bool) {
+        if clearProfiles {
+            profiles = []
+        }
+        if let registryError = error as? DeviceRegistryError {
+            self.error = registryError
+            switch registryError {
+            case .profileNotFound, .duplicateProfile:
+                state = profiles.isEmpty ? .empty : .loaded
+                return
+            case .applicationSupportUnavailable, .corruptRegistry, .io:
+                break
+            }
+        } else {
+            self.error = .io(error.localizedDescription)
+        }
+        state = .failed
+    }
+}
+
+private struct DeviceRegistryMutationResult: Sendable {
+    let profile: DeviceProfile
+}
+
+private actor DeviceRegistryRepository {
+    private let applicationSupportURL: URL
+    private let registryURL: URL
+    private let devicesDirectoryURL: URL
+    private let fileManager: FileManager
+    private let encoder: JSONEncoder
+    private let decoder: JSONDecoder
+    private let now: () -> Date
+    private var profiles: [DeviceProfile] = []
+
+    init(
+        applicationSupportURL: URL,
+        fileManager: FileManager,
+        now: @escaping () -> Date
     ) {
         self.applicationSupportURL = applicationSupportURL
         self.registryURL = applicationSupportURL.appendingPathComponent("devices.json")
@@ -74,56 +271,38 @@ final class DeviceRegistryStore: ObservableObject {
         self.decoder = decoder
     }
 
-    var isEmpty: Bool {
-        profiles.isEmpty
-    }
-
-    func load() {
-        state = .loading
-        error = nil
+    func load() throws -> [DeviceProfile] {
         do {
             try fileManager.createDirectory(at: devicesDirectoryURL, withIntermediateDirectories: true)
             guard fileManager.fileExists(atPath: registryURL.path) else {
                 profiles = []
-                state = .empty
-                return
+                return profiles
             }
             let data = try Data(contentsOf: registryURL)
             profiles = try decoder.decode([DeviceProfile].self, from: data)
                 .sorted { $0.updatedAt > $1.updatedAt }
-            state = profiles.isEmpty ? .empty : .loaded
+            return profiles
         } catch let decoding as DecodingError {
             profiles = []
-            error = .corruptRegistry(String(describing: decoding))
-            state = .failed
+            throw DeviceRegistryError.corruptRegistry(String(describing: decoding))
+        } catch let registryError as DeviceRegistryError {
+            profiles = []
+            throw registryError
         } catch {
             profiles = []
-            self.error = .io(error.localizedDescription)
-            state = .failed
+            throw DeviceRegistryError.io(error.localizedDescription)
         }
     }
 
-    @discardableResult
-    func saveConfiguredDevice(
-        configuredDevice: ConfiguredDeviceState,
-        discoveredDevice: DiscoveredDevice?,
-        passwordState: DevicePasswordState,
-        preferredID: DeviceProfile.ID = UUID().uuidString.lowercased()
-    ) throws -> DeviceProfile {
-        let profile = makeConfiguredDeviceProfile(
-            configuredDevice: configuredDevice,
-            discoveredDevice: discoveredDevice,
-            passwordState: passwordState,
-            preferredID: preferredID
-        )
-        return try saveProfileMergingDuplicates(profile)
+    func profilesSnapshot() -> [DeviceProfile] {
+        profiles
     }
 
     func makeConfiguredDeviceProfile(
         configuredDevice: ConfiguredDeviceState,
         discoveredDevice: DiscoveredDevice?,
         passwordState: DevicePasswordState,
-        preferredID: DeviceProfile.ID = UUID().uuidString.lowercased()
+        preferredID: DeviceProfile.ID
     ) -> DeviceProfile {
         let existing = matchingProfile(host: configuredDevice.host, bonjourFullname: discoveredDevice?.fullname)
         var profile = DeviceProfile.make(
@@ -138,28 +317,33 @@ final class DeviceRegistryStore: ObservableObject {
         return profile
     }
 
-    @discardableResult
-    func saveProfileMergingDuplicates(_ profile: DeviceProfile) throws -> DeviceProfile {
-        state = .saving
-        error = nil
-        do {
-            try fileManager.createDirectory(at: devicesDirectoryURL, withIntermediateDirectories: true)
-            try fileManager.createDirectory(
-                at: URL(fileURLWithPath: profile.configPath).deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            var updated = profiles.filter { !DeviceProfile.matches($0, profile) && $0.id != profile.id }
-            updated.append(profile)
-            updated = updated.sorted { $0.updatedAt > $1.updatedAt }
-            try persist(updated)
-            profiles = updated
-            state = profiles.isEmpty ? .empty : .loaded
-            return profile
-        } catch {
-            self.error = .io(error.localizedDescription)
-            state = .failed
-            throw error
-        }
+    func saveConfiguredDevice(
+        configuredDevice: ConfiguredDeviceState,
+        discoveredDevice: DiscoveredDevice?,
+        passwordState: DevicePasswordState,
+        preferredID: DeviceProfile.ID
+    ) throws -> DeviceRegistryMutationResult {
+        let profile = makeConfiguredDeviceProfile(
+            configuredDevice: configuredDevice,
+            discoveredDevice: discoveredDevice,
+            passwordState: passwordState,
+            preferredID: preferredID
+        )
+        return try saveProfileMergingDuplicates(profile)
+    }
+
+    func saveProfileMergingDuplicates(_ profile: DeviceProfile) throws -> DeviceRegistryMutationResult {
+        try fileManager.createDirectory(at: devicesDirectoryURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(
+            at: URL(fileURLWithPath: profile.configPath).deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        var updated = profiles.filter { !DeviceProfile.matches($0, profile) && $0.id != profile.id }
+        updated.append(profile)
+        updated = sorted(updated)
+        try persist(updated)
+        profiles = updated
+        return DeviceRegistryMutationResult(profile: profile)
     }
 
     func discardArtifacts(for profile: DeviceProfile) {
@@ -172,110 +356,83 @@ final class DeviceRegistryStore: ObservableObject {
         try? fileManager.removeItem(at: configDirectory)
     }
 
-    @discardableResult
-    func updateProfile(_ profile: DeviceProfile) throws -> DeviceProfile {
+    func updateProfile(_ profile: DeviceProfile) throws -> DeviceRegistryMutationResult {
         guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else {
-            let error = DeviceRegistryError.profileNotFound(profile.id)
-            self.error = error
-            throw error
+            throw DeviceRegistryError.profileNotFound(profile.id)
         }
         if let conflict = duplicateConflict(for: profile, excluding: profile.id) {
-            self.error = conflict
             throw conflict
         }
-        state = .saving
-        error = nil
+
         var updated = profile
         updated.updatedAt = now()
-        do {
-            try fileManager.createDirectory(at: devicesDirectoryURL, withIntermediateDirectories: true)
-            try fileManager.createDirectory(
-                at: URL(fileURLWithPath: updated.configPath).deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            var updatedProfiles = profiles
-            updatedProfiles[index] = updated
-            updatedProfiles = updatedProfiles.sorted { $0.updatedAt > $1.updatedAt }
-            try persist(updatedProfiles)
-            profiles = updatedProfiles
-            state = profiles.isEmpty ? .empty : .loaded
-            return updated
-        } catch {
-            self.error = .io(error.localizedDescription)
-            state = .failed
-            throw error
-        }
+        try fileManager.createDirectory(at: devicesDirectoryURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(
+            at: URL(fileURLWithPath: updated.configPath).deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        var updatedProfiles = profiles
+        updatedProfiles[index] = updated
+        updatedProfiles = sorted(updatedProfiles)
+        try persist(updatedProfiles)
+        profiles = updatedProfiles
+        return DeviceRegistryMutationResult(profile: updated)
     }
 
-    func delete(_ profile: DeviceProfile) throws {
-        state = .saving
-        error = nil
-        do {
-            let updatedProfiles = profiles.filter { $0.id != profile.id }
-            let configDirectory = URL(fileURLWithPath: profile.configPath).deletingLastPathComponent()
-            try persist(updatedProfiles)
-            profiles = updatedProfiles
-            if fileManager.fileExists(atPath: configDirectory.path) {
-                try fileManager.removeItem(at: configDirectory)
-            }
-            state = profiles.isEmpty ? .empty : .loaded
-        } catch {
-            self.error = .io(error.localizedDescription)
-            state = .failed
-            throw error
+    func delete(_ profile: DeviceProfile) throws -> [DeviceProfile] {
+        let updatedProfiles = profiles.filter { $0.id != profile.id }
+        let configDirectory = URL(fileURLWithPath: profile.configPath).deletingLastPathComponent()
+        try persist(updatedProfiles)
+        profiles = updatedProfiles
+        if fileManager.fileExists(atPath: configDirectory.path) {
+            try fileManager.removeItem(at: configDirectory)
         }
+        return updatedProfiles
     }
 
-    func updatePasswordState(_ state: DevicePasswordState, for profileID: DeviceProfile.ID) {
+    func updatePasswordState(_ state: DevicePasswordState, for profileID: DeviceProfile.ID) throws -> [DeviceProfile]? {
         guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
-            return
+            return nil
         }
         guard profiles[index].passwordState != state else {
-            return
+            return nil
         }
         var updatedProfiles = profiles
         updatedProfiles[index].passwordState = state
         updatedProfiles[index].updatedAt = now()
-        if (try? persist(updatedProfiles)) != nil {
-            profiles = updatedProfiles
-        }
+        try persist(updatedProfiles)
+        profiles = updatedProfiles
+        return updatedProfiles
     }
 
-    func updateCheckup(_ snapshot: DeviceCheckupSnapshot, for profileID: DeviceProfile.ID) {
+    func updateCheckup(_ snapshot: DeviceCheckupSnapshot, for profileID: DeviceProfile.ID) throws -> [DeviceProfile]? {
         guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
-            return
+            return nil
         }
         var updatedProfiles = profiles
         updatedProfiles[index].lastCheckup = snapshot
         updatedProfiles[index].updatedAt = now()
-        if (try? persist(updatedProfiles)) != nil {
-            profiles = updatedProfiles
-        }
+        try persist(updatedProfiles)
+        profiles = updatedProfiles
+        return updatedProfiles
     }
 
-    func updateDeploy(_ snapshot: DeviceDeploySnapshot, for profileID: DeviceProfile.ID) {
+    func updateDeploy(_ snapshot: DeviceDeploySnapshot, for profileID: DeviceProfile.ID) throws -> [DeviceProfile]? {
         guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
-            return
+            return nil
         }
         var updatedProfiles = profiles
         updatedProfiles[index].lastDeploy = snapshot
         updatedProfiles[index].updatedAt = now()
-        if (try? persist(updatedProfiles)) != nil {
-            profiles = updatedProfiles
-        }
+        try persist(updatedProfiles)
+        profiles = updatedProfiles
+        return updatedProfiles
     }
 
-    func profile(id: DeviceProfile.ID?) -> DeviceProfile? {
-        guard let id else {
-            return nil
-        }
-        return profiles.first { $0.id == id }
-    }
-
-    func matchingProfile(host: String, bonjourFullname: String?) -> DeviceProfile? {
-        let normalizedFullname = bonjourFullname?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if let normalizedFullname, !normalizedFullname.isEmpty,
-           let profile = profiles.first(where: { $0.bonjourFullname?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedFullname }) {
+    private func matchingProfile(host: String, bonjourFullname: String?) -> DeviceProfile? {
+        let normalizedFullname = normalizedBonjourFullname(bonjourFullname)
+        if let normalizedFullname,
+           let profile = profiles.first(where: { normalizedBonjourFullname($0.bonjourFullname) == normalizedFullname }) {
             return profile
         }
         let normalizedHost = DeviceProfile.normalizedHost(host)
@@ -321,5 +478,9 @@ final class DeviceRegistryStore: ObservableObject {
         try fileManager.createDirectory(at: applicationSupportURL, withIntermediateDirectories: true)
         let data = try encoder.encode(profiles)
         try data.write(to: registryURL, options: [.atomic])
+    }
+
+    private func sorted(_ profiles: [DeviceProfile]) -> [DeviceProfile] {
+        profiles.sorted { $0.updatedAt > $1.updatedAt }
     }
 }

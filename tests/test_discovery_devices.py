@@ -83,6 +83,29 @@ class DiscoveryDeviceCandidateTests(unittest.TestCase):
         self.assertEqual(payload["selected_record"]["fullname"], "Office._airport._tcp.local.")
         self.assertEqual(payload["selected_record"]["ipv4"], ["10.0.0.2"])
 
+    def test_derives_full_model_identifier_from_syap_when_model_is_missing(self) -> None:
+        record = self.record("Office", "_airport._tcp.local.", ["10.0.0.2"], syap="116", model="")
+
+        device = device_candidates_from_records([record])[0]
+
+        self.assertEqual(device.syap, "116")
+        self.assertEqual(device.model, "TimeCapsule6,116")
+
+    def test_derives_full_model_identifier_from_syap_when_model_is_generic(self) -> None:
+        record = self.record("Office", "_airport._tcp.local.", ["10.0.0.2"], syap="119", model="TimeCapsule")
+
+        device = device_candidates_from_records([record])[0]
+
+        self.assertEqual(device.model, "TimeCapsule8,119")
+
+    def test_keeps_explicit_model_when_syap_is_unknown(self) -> None:
+        record = self.record("Office", "_airport._tcp.local.", ["10.0.0.2"], syap="999", model="MysteryModel")
+
+        device = device_candidates_from_records([record])[0]
+
+        self.assertEqual(device.syap, "999")
+        self.assertEqual(device.model, "MysteryModel")
+
     def record(
         self,
         name: str,

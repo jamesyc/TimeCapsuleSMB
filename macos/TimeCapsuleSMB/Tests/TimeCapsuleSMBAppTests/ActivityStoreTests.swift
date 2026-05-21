@@ -68,4 +68,36 @@ final class ActivityStoreTests: XCTestCase {
         XCTAssertEqual(activity.snapshot.scope, .app)
         XCTAssertEqual(activity.snapshot.operationTitle, "App Readiness")
     }
+
+    func testSuccessfulAppValidationPresentsAppReadyWithoutDetailMessage() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(
+                    type: "stage",
+                    operation: "validate-install",
+                    stage: "validate_install",
+                    description: "Validate local helper and artifact prerequisites."
+                ),
+                BackendEvent(
+                    type: "result",
+                    operation: "validate-install",
+                    ok: true,
+                    payload: .object(["summary": .string("install validation passed.")])
+                )
+            ], delayNanoseconds: 80_000_000)
+        ])
+        let backend = BackendClient(runner: runner)
+        let coordinator = OperationCoordinator(backend: backend)
+        let activity = ActivityStore(coordinator: coordinator)
+
+        backend.run(operation: "validate-install")
+
+        try await waitUntilStoreState { activity.snapshot.isRunning }
+        XCTAssertEqual(activity.snapshot.operationTitle, "App Readiness")
+        XCTAssertEqual(activity.snapshot.scope, .app)
+
+        try await waitUntilStoreState { !activity.snapshot.isRunning && activity.snapshot.operationTitle == "App Ready" }
+        XCTAssertEqual(activity.snapshot.scope, .app)
+        XCTAssertNil(activity.snapshot.latestMessage)
+    }
 }

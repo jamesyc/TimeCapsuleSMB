@@ -25,7 +25,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
     }
 
     func testDiscoverEmptyReadyAndFailureStates() async throws {
-        let empty = try makeStore(responses: [
+        let empty = try await makeStore(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))
             ])
@@ -34,7 +34,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         try await waitUntilStoreState { empty.store.state == .discoveryEmpty }
         XCTAssertEqual(empty.store.devices, [])
 
-        let ready = try makeStore(responses: [
+        let ready = try await makeStore(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [
                     testDeviceRecord(name: "A", hostname: "a.local.", ipv4: ["10.0.0.2"], fullname: "A._airport._tcp.local."),
@@ -47,7 +47,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(ready.store.devices.count, 2)
         XCTAssertNil(ready.store.selectedDeviceID)
 
-        let failed = try makeStore(responses: [
+        let failed = try await makeStore(responses: [
             .init(events: [
                 BackendEvent(type: "error", operation: "discover", code: "bonjour_failed", message: "mDNS failed")
             ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
@@ -127,7 +127,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
                 selectedRecord: records[0]
             )
         ]
-        let fixture = try makeStore(responses: [
+        let fixture = try await makeStore(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: records, devices: devices))
             ])
@@ -141,6 +141,59 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.store.devices[1].addresses, ["169.254.44.9", "10.0.0.2"])
     }
 
+    func testDiscoveredDeviceModelTextUsesFullModelIdentifier() throws {
+        let payload = try testDiscoveredDevice(
+            syap: "116",
+            model: "TimeCapsule6,116"
+        ).decode(DiscoveredDevicePayload.self)
+
+        let device = DiscoveredDevice(payload: payload, index: 0)
+
+        XCTAssertEqual(device.model, "TimeCapsule6,116")
+        XCTAssertEqual(device.discoveryModelText, "TimeCapsule6,116")
+    }
+
+    func testDiscoveredDeviceModelTextCanUseSelectedRecordModel() throws {
+        let selectedRecord = testDeviceRecord(
+            name: "Office Capsule",
+            hostname: "office-capsule.local.",
+            ipv4: ["10.0.0.2"],
+            syap: "116",
+            model: "TimeCapsule6,116"
+        )
+        let payload = try testDiscoveredDevice(
+            syap: "116",
+            model: nil,
+            selectedRecord: selectedRecord
+        ).decode(DiscoveredDevicePayload.self)
+
+        let device = DiscoveredDevice(payload: payload, index: 0)
+
+        XCTAssertEqual(device.model, "TimeCapsule6,116")
+        XCTAssertEqual(device.discoveryModelText, "TimeCapsule6,116")
+    }
+
+    func testDiscoveredDeviceModelTextDoesNotFallbackToSyAP() throws {
+        let selectedRecord = testDeviceRecord(
+            name: "Office Capsule",
+            hostname: "office-capsule.local.",
+            ipv4: ["10.0.0.2"],
+            syap: "116",
+            model: ""
+        )
+        let payload = try testDiscoveredDevice(
+            syap: "116",
+            model: nil,
+            selectedRecord: selectedRecord
+        ).decode(DiscoveredDevicePayload.self)
+
+        let device = DiscoveredDevice(payload: payload, index: 0)
+
+        XCTAssertEqual(device.syap, "116")
+        XCTAssertNil(device.model)
+        XCTAssertEqual(device.discoveryModelText, "")
+    }
+
     func testModeChoiceSeparatesDiscoverAndManualFlows() async throws {
         let record = testDeviceRecord(
             name: "Office Capsule",
@@ -148,7 +201,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             ipv4: ["10.0.0.2"],
             fullname: "Office Capsule._airport._tcp.local."
         )
-        let fixture = try makeStore(responses: [
+        let fixture = try await makeStore(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [record]))
             ])
@@ -171,8 +224,8 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertNil(fixture.store.selectedDeviceID)
     }
 
-    func testResetClearsPasswordAndSetupInputs() throws {
-        let fixture = try makeStore(responses: [])
+    func testResetClearsPasswordAndSetupInputs() async throws {
+        let fixture = try await makeStore(responses: [])
         fixture.store.startManualEntry()
         fixture.store.manualHost = "10.0.0.2"
         fixture.store.password = "secret"
@@ -188,7 +241,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
     }
 
     func testManualHostConfigureSuccessSavesProfileAndPassword() async throws {
-        let fixture = try makeStore(responses: [
+        let fixture = try await makeStore(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.2"))
             ])
@@ -216,7 +269,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
     }
 
     func testConfigureRejectedWhileAnotherOperationRunsSavesNothing() async throws {
-        let fixture = try makeStore(responses: [
+        let fixture = try await makeStore(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: .object(["ok": .bool(true)]))
             ], delayNanoseconds: 100_000_000)
@@ -244,7 +297,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             ipv4: ["10.0.0.5"],
             fullname: "Office Capsule._airport._tcp.local."
         )
-        let fixture = try makeStore(responses: [
+        let fixture = try await makeStore(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [record]))
             ]),
@@ -270,7 +323,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
     }
 
     func testAuthFailureAndUnsupportedDeviceSaveNothing() async throws {
-        let auth = try makeStore(responses: [
+        let auth = try await makeStore(responses: [
             .init(events: [
                 BackendEvent(type: "error", operation: "configure", code: "auth_failed", message: "bad password")
             ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
@@ -283,7 +336,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(auth.registry.profiles, [])
         XCTAssertNil(auth.store.savedProfile)
 
-        let unsupported = try makeStore(responses: [
+        let unsupported = try await makeStore(responses: [
             .init(events: [
                 BackendEvent(type: "error", operation: "configure", code: "unsupported_device", message: "unsupported")
             ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
@@ -298,7 +351,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
     }
 
     func testDuplicateHostUpdatesExistingProfileAfterConfigureSucceeds() async throws {
-        let fixture = try makeStore(responses: [
+        let fixture = try await makeStore(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(
                     host: "10.0.0.2",
@@ -306,7 +359,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
                 ))
             ])
         ])
-        let existing = try fixture.registry.saveConfiguredDevice(
+        let existing = try await fixture.registry.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2", model: "Original Capsule"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -326,7 +379,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
     }
 
     func testKeychainSaveFailureDoesNotSaveProfile() async throws {
-        let fixture = try makeStore(responses: [
+        let fixture = try await makeStore(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "10.0.0.2"))
             ])
@@ -350,12 +403,12 @@ final class AddDeviceFlowStoreTests: XCTestCase {
             ipv4: ["10.0.0.2"],
             fullname: "Office Capsule._airport._tcp.local."
         )
-        let fixture = try makeStore(responses: [
+        let fixture = try await makeStore(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: [record]))
             ])
         ])
-        let existing = try fixture.registry.saveConfiguredDevice(
+        let existing = try await fixture.registry.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: try DiscoveredDevice(record: record.decode(BonjourResolvedServicePayload.self), index: 0),
             passwordState: .available,
@@ -371,7 +424,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls.count, 1)
     }
 
-    private func makeStore(responses: [StoreTestRunner.Response]) throws -> (
+    private func makeStore(responses: [StoreTestRunner.Response]) async throws -> (
         store: AddDeviceFlowStore,
         runner: StoreTestRunner,
         registry: DeviceRegistryStore,
@@ -379,7 +432,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
     ) {
         let temp = try TemporaryDirectory()
         let registry = DeviceRegistryStore(applicationSupportURL: temp.url)
-        registry.load()
+        await registry.load()
         let runner = StoreTestRunner(responses: responses)
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
         let passwordStore = InMemoryPasswordStore()

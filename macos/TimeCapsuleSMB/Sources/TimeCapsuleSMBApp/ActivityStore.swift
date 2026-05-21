@@ -71,10 +71,16 @@ final class ActivityStore: ObservableObject {
     func refresh() {
         let events = coordinator.backend.events
         let timeline = OperationTimelineBuilder.timeline(from: events)
-        let latestMessage = timeline.last?.detail ?? events.last?.summary
         let operation = coordinator.activeOperation?.operation
             ?? coordinator.backend.activeOperationName
             ?? latestOperation(from: events)
+        let isRunning = coordinator.backend.isRunning
+        let presentation = presentation(
+            operation: operation,
+            events: events,
+            timeline: timeline,
+            isRunning: isRunning
+        )
         let scope: ActivityScope
         if let activeDeviceID = coordinator.activeDeviceID {
             scope = .device(activeDeviceID)
@@ -84,13 +90,42 @@ final class ActivityStore: ObservableObject {
             scope = .unknown
         }
         snapshot = ActivitySnapshot(
-            isRunning: coordinator.backend.isRunning,
+            isRunning: isRunning,
             scope: scope,
-            operationTitle: operation.map(OperationTimelineBuilder.operationTitle)
-                ?? (timeline.isEmpty ? L10n.string("activity.no_active_operation") : L10n.string("activity.last_operation")),
-            latestMessage: latestMessage,
+            operationTitle: presentation.title,
+            latestMessage: presentation.message,
             timeline: timeline
         )
+    }
+
+    private func presentation(
+        operation: String?,
+        events: [BackendEvent],
+        timeline: [OperationTimelineItem],
+        isRunning: Bool
+    ) -> (title: String, message: String?) {
+        if appReadinessPassed(operation: operation, events: events, isRunning: isRunning) {
+            return (L10n.string("activity.app_ready"), nil)
+        }
+
+        let title = operation.map(OperationTimelineBuilder.operationTitle)
+            ?? (timeline.isEmpty ? L10n.string("activity.no_active_operation") : L10n.string("activity.last_operation"))
+        let message = timeline.last?.detail ?? events.last?.summary
+        return (title, message)
+    }
+
+    private func appReadinessPassed(operation: String?, events: [BackendEvent], isRunning: Bool) -> Bool {
+        guard
+            !isRunning,
+            operation == "validate-install",
+            let latestEvent = events.last,
+            latestEvent.operation == "validate-install",
+            latestEvent.type == "result",
+            latestEvent.ok == true
+        else {
+            return false
+        }
+        return true
     }
 
     private func latestOperation(from events: [BackendEvent]) -> String? {

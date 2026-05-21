@@ -7,24 +7,24 @@ final class DeviceRegistryStoreTests: XCTestCase {
         XCTAssertEqual(DeviceRegistryState.allCases, [.idle, .loading, .empty, .loaded, .saving, .failed])
     }
 
-    func testMissingRegistryStartsEmpty() throws {
+    func testMissingRegistryStartsEmpty() async throws {
         let temp = try TemporaryDirectory()
         let store = DeviceRegistryStore(applicationSupportURL: temp.url)
 
-        store.load()
+        await store.load()
 
         XCTAssertEqual(store.state, .empty)
         XCTAssertEqual(store.profiles, [])
         XCTAssertTrue(FileManager.default.fileExists(atPath: store.devicesDirectoryURL.path))
     }
 
-    func testCorruptRegistryEntersFailedStateWithoutDeletingFile() throws {
+    func testCorruptRegistryEntersFailedStateWithoutDeletingFile() async throws {
         let temp = try TemporaryDirectory()
         let registryURL = temp.url.appendingPathComponent("devices.json")
         try "{ not json".write(to: registryURL, atomically: true, encoding: .utf8)
         let store = DeviceRegistryStore(applicationSupportURL: temp.url)
 
-        store.load()
+        await store.load()
 
         XCTAssertEqual(store.state, .failed)
         XCTAssertNotNil(store.error)
@@ -32,12 +32,12 @@ final class DeviceRegistryStoreTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: registryURL), "{ not json")
     }
 
-    func testCreateUpdateAndDeleteProfile() throws {
+    func testCreateUpdateAndDeleteProfile() async throws {
         let temp = try TemporaryDirectory()
         let store = DeviceRegistryStore(applicationSupportURL: temp.url)
-        store.load()
+        await store.load()
 
-        var profile = try store.saveConfiguredDevice(
+        var profile = try await store.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -50,28 +50,28 @@ final class DeviceRegistryStoreTests: XCTestCase {
 
         profile.displayName = "Renamed Capsule"
         profile.settings.debugLogging = true
-        let updated = try store.updateProfile(profile)
+        let updated = try await store.updateProfile(profile)
         XCTAssertEqual(updated.displayName, "Renamed Capsule")
         XCTAssertEqual(store.profiles.first?.settings.debugLogging, true)
 
-        try store.delete(updated)
+        try await store.delete(updated)
         XCTAssertEqual(store.state, .empty)
         XCTAssertEqual(store.profiles, [])
         XCTAssertFalse(FileManager.default.fileExists(atPath: URL(fileURLWithPath: updated.configPath).deletingLastPathComponent().path))
     }
 
-    func testDuplicateSaveUpdatesByHostAndBonjourFullnameButNotWeakMetadata() throws {
+    func testDuplicateSaveUpdatesByHostAndBonjourFullnameButNotWeakMetadata() async throws {
         let temp = try TemporaryDirectory()
         let store = DeviceRegistryStore(applicationSupportURL: temp.url)
-        store.load()
+        await store.load()
 
-        let first = try store.saveConfiguredDevice(
+        let first = try await store.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "tcapsule.local.", model: "Time Capsule"),
             discoveredDevice: try discovered(record: testDeviceRecord(fullname: "Office._airport._tcp.local.")),
             passwordState: .available,
             preferredID: "device-one"
         )
-        let hostDuplicate = try store.saveConfiguredDevice(
+        let hostDuplicate = try await store.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: " TCAPSULE.LOCAL. ", model: "Updated Model"),
             discoveredDevice: nil,
             passwordState: .missing,
@@ -81,7 +81,7 @@ final class DeviceRegistryStoreTests: XCTestCase {
         XCTAssertEqual(store.profiles.count, 1)
         XCTAssertEqual(store.profiles.first?.model, "Updated Model")
 
-        let fullnameDuplicate = try store.saveConfiguredDevice(
+        let fullnameDuplicate = try await store.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.9"),
             discoveredDevice: try discovered(record: testDeviceRecord(
                 hostname: "other.local.",
@@ -94,7 +94,7 @@ final class DeviceRegistryStoreTests: XCTestCase {
         XCTAssertEqual(fullnameDuplicate.id, first.id)
         XCTAssertEqual(store.profiles.count, 1)
 
-        _ = try store.saveConfiguredDevice(
+        _ = try await store.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.10", syap: "119", model: "Updated Model"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -103,17 +103,48 @@ final class DeviceRegistryStoreTests: XCTestCase {
         XCTAssertEqual(store.profiles.count, 2)
     }
 
-    func testUpdateProfileDoesNotMergeDuplicateHostIntoAnotherProfile() throws {
+    func testConcurrentDuplicateSavesAreSerializedThroughRepository() async throws {
         let temp = try TemporaryDirectory()
         let store = DeviceRegistryStore(applicationSupportURL: temp.url)
-        store.load()
-        let first = try store.saveConfiguredDevice(
+        await store.load()
+
+        async let first = store.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2", model: "Original Capsule"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        async let second = store.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: " 10.0.0.2 ", model: "Updated Capsule"),
+            discoveredDevice: nil,
+            passwordState: .missing,
+            preferredID: "device-two"
+        )
+
+        let saved = try await [first, second]
+
+        XCTAssertEqual(Set(saved.map(\.id)).count, 1)
+        XCTAssertEqual(store.profiles.count, 1)
+        XCTAssertEqual(store.profiles.first?.id, saved[0].id)
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let persisted = try decoder.decode([DeviceProfile].self, from: Data(contentsOf: store.registryURL))
+        XCTAssertEqual(persisted.count, 1)
+        XCTAssertEqual(persisted.first?.id, saved[0].id)
+    }
+
+    func testUpdateProfileDoesNotMergeDuplicateHostIntoAnotherProfile() async throws {
+        let temp = try TemporaryDirectory()
+        let store = DeviceRegistryStore(applicationSupportURL: temp.url)
+        await store.load()
+        let first = try await store.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
             preferredID: "device-one"
         )
-        let second = try store.saveConfiguredDevice(
+        let second = try await store.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -123,7 +154,10 @@ final class DeviceRegistryStoreTests: XCTestCase {
         var conflictingUpdate = second
         conflictingUpdate.host = " root@10.0.0.2. "
 
-        XCTAssertThrowsError(try store.updateProfile(conflictingUpdate)) { error in
+        do {
+            _ = try await store.updateProfile(conflictingUpdate)
+            XCTFail("Expected duplicate host update to fail.")
+        } catch {
             XCTAssertEqual(
                 error as? DeviceRegistryError,
                 .duplicateProfile(field: "host", value: "10.0.0.2", conflictingProfileID: first.id)
@@ -134,17 +168,17 @@ final class DeviceRegistryStoreTests: XCTestCase {
         XCTAssertEqual(store.profile(id: second.id)?.host, "10.0.0.3")
     }
 
-    func testUpdateProfileRejectsDuplicateBonjourFullname() throws {
+    func testUpdateProfileRejectsDuplicateBonjourFullname() async throws {
         let temp = try TemporaryDirectory()
         let store = DeviceRegistryStore(applicationSupportURL: temp.url)
-        store.load()
-        let first = try store.saveConfiguredDevice(
+        await store.load()
+        let first = try await store.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: try discovered(record: testDeviceRecord(fullname: "Office._airport._tcp.local.")),
             passwordState: .available,
             preferredID: "device-one"
         )
-        var second = try store.saveConfiguredDevice(
+        var second = try await store.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
             discoveredDevice: try discovered(record: testDeviceRecord(
                 hostname: "den.local.",
@@ -157,7 +191,10 @@ final class DeviceRegistryStoreTests: XCTestCase {
 
         second.bonjourFullname = " office._AIRPORT._tcp.local. "
 
-        XCTAssertThrowsError(try store.updateProfile(second)) { error in
+        do {
+            _ = try await store.updateProfile(second)
+            XCTFail("Expected duplicate Bonjour fullname update to fail.")
+        } catch {
             XCTAssertEqual(
                 error as? DeviceRegistryError,
                 .duplicateProfile(
@@ -171,10 +208,10 @@ final class DeviceRegistryStoreTests: XCTestCase {
         XCTAssertEqual(store.profile(id: second.id)?.bonjourFullname, "Den._airport._tcp.local.")
     }
 
-    func testUpdateProfileMissingIDFailsWithoutCreatingProfile() throws {
+    func testUpdateProfileMissingIDFailsWithoutCreatingProfile() async throws {
         let temp = try TemporaryDirectory()
         let store = DeviceRegistryStore(applicationSupportURL: temp.url)
-        store.load()
+        await store.load()
         var profile = DeviceProfile.make(
             id: "missing",
             configuredDevice: try testConfiguredDevice(host: "10.0.0.2"),
@@ -184,26 +221,29 @@ final class DeviceRegistryStoreTests: XCTestCase {
         )
         profile.displayName = "Unsaved"
 
-        XCTAssertThrowsError(try store.updateProfile(profile)) { error in
+        do {
+            _ = try await store.updateProfile(profile)
+            XCTFail("Expected missing profile update to fail.")
+        } catch {
             XCTAssertEqual(error as? DeviceRegistryError, .profileNotFound("missing"))
         }
         XCTAssertEqual(store.state, .empty)
         XCTAssertEqual(store.profiles, [])
     }
 
-    func testUpdateProfilePreservesOtherProfilesForLocalEdits() throws {
+    func testUpdateProfilePreservesOtherProfilesForLocalEdits() async throws {
         let temp = try TemporaryDirectory()
         let store = DeviceRegistryStore(applicationSupportURL: temp.url, now: {
             Date(timeIntervalSince1970: 100)
         })
-        store.load()
-        var first = try store.saveConfiguredDevice(
+        await store.load()
+        var first = try await store.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
             discoveredDevice: nil,
             passwordState: .available,
             preferredID: "device-one"
         )
-        let second = try store.saveConfiguredDevice(
+        let second = try await store.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
             discoveredDevice: nil,
             passwordState: .available,
@@ -212,7 +252,7 @@ final class DeviceRegistryStoreTests: XCTestCase {
 
         first.displayName = "Office"
         first.settings.mountWaitSeconds = 45
-        let updated = try store.updateProfile(first)
+        let updated = try await store.updateProfile(first)
 
         XCTAssertEqual(updated.displayName, "Office")
         XCTAssertEqual(updated.settings.mountWaitSeconds, 45)
