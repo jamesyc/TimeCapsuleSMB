@@ -20,7 +20,6 @@ import subprocess
 from timecapsulesmb.checks.bonjour import (
     build_bonjour_expected_identity,
     check_bonjour_host_ip,
-    check_bonjour_host_link_local_ips,
     check_smb_instance,
     check_smb_service_target,
     discover_smb_services_detailed,
@@ -707,7 +706,7 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(any(result.status == "WARN" and "runtime naming identity probe skipped: probe failed" in result.message for result in run.results))
         self.assertTrue(any(result.status == "PASS" and "discovered _smb._tcp service matching target IP 10.0.0.2" in result.message for result in run.results))
 
-    def test_run_doctor_checks_warns_when_bonjour_record_includes_link_local_ip(self) -> None:
+    def test_run_doctor_checks_accepts_bonjour_record_with_link_local_ip(self) -> None:
         instance = BonjourServiceInstance(
             service_type="_smb._tcp.local.",
             name="Time Capsule Samba 4",
@@ -734,8 +733,14 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(run.fatal)
         self.assertTrue(
             any(
-                result.status == "WARN"
-                and "Bonjour host timecapsulesamba4.local also advertised link-local IPv4 169.254.44.9" in result.message
+                result.status == "PASS"
+                and "resolved Bonjour host timecapsulesamba4.local to 10.0.0.2" in result.message
+                for result in run.results
+            )
+        )
+        self.assertFalse(
+            any(
+                "also advertised link-local IPv4" in result.message or "stale mDNS cache" in result.message
                 for result in run.results
             )
         )
@@ -1031,34 +1036,6 @@ class CheckTests(unittest.TestCase):
             result = check_bonjour_host_ip("home.local", expected_ip="10.0.1.1")
         self.assertEqual(result.status, "FAIL")
         self.assertIn("expected 10.0.1.1", result.message)
-
-    def test_check_bonjour_host_link_local_ips_returns_none_for_lan_only(self) -> None:
-        result = check_bonjour_host_link_local_ips(
-            "home.local",
-            expected_ip="10.0.1.1",
-            record_ips=["10.0.1.1"],
-        )
-        self.assertIsNone(result)
-
-    def test_check_bonjour_host_link_local_ips_warns_for_link_local_extra_ip(self) -> None:
-        result = check_bonjour_host_link_local_ips(
-            "home.local",
-            expected_ip="10.0.1.1",
-            record_ips=["10.0.1.1", "169.254.44.9"],
-        )
-        self.assertIsNotNone(result)
-        assert result is not None
-        self.assertEqual(result.status, "WARN")
-        self.assertIn("169.254.44.9", result.message)
-        self.assertIn("stale mDNS cache", result.message)
-
-    def test_check_bonjour_host_link_local_ips_ignores_non_link_local_extra_ip(self) -> None:
-        result = check_bonjour_host_link_local_ips(
-            "home.local",
-            expected_ip="10.0.1.1",
-            record_ips=["10.0.1.1", "10.0.1.2"],
-        )
-        self.assertIsNone(result)
 
     def test_try_authenticated_smb_listing_handles_timeout(self) -> None:
         with mock.patch("timecapsulesmb.checks.smb.command_exists", return_value=True):
