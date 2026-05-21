@@ -2,19 +2,20 @@ import SwiftUI
 
 public struct ContentView: View {
     @StateObject private var backend: BackendClient
-    @StateObject private var readinessStore: ReadinessStore
+    @StateObject private var appReadinessStore: AppReadinessStore
     @StateObject private var connectionStore: ConnectionWorkflowStore
     @StateObject private var deployStore: DeployWorkflowStore
     @StateObject private var doctorStore: DoctorStore
     @StateObject private var maintenanceStore: MaintenanceStore
-    @State private var selection: Screen = .readiness
+    @State private var selection: Screen = .connect
+    @State private var diagnosticsPresented = false
     @State private var password = ""
 
     @MainActor
     public init() {
         let backend = BackendClient()
         _backend = StateObject(wrappedValue: backend)
-        _readinessStore = StateObject(wrappedValue: ReadinessStore(backend: backend))
+        _appReadinessStore = StateObject(wrappedValue: AppReadinessStore(backend: backend))
         _connectionStore = StateObject(wrappedValue: ConnectionWorkflowStore(backend: backend))
         _deployStore = StateObject(wrappedValue: DeployWorkflowStore(backend: backend))
         _doctorStore = StateObject(wrappedValue: DoctorStore(backend: backend))
@@ -30,12 +31,26 @@ public struct ContentView: View {
             .navigationTitle("TimeCapsuleSMB")
         } detail: {
             VStack(spacing: 0) {
-                form
+                if case .blocked = appReadinessStore.state {
+                    AppReadinessBlockedView(store: appReadinessStore) {
+                        diagnosticsPresented = true
+                    }
+                } else {
+                    AppReadinessBannerView(store: appReadinessStore) {
+                        diagnosticsPresented = true
+                    }
+                    form
+                }
                 Divider()
-                EventList(events: backend.events)
+                EventList(events: visibleEvents)
             }
             .toolbar {
                 ToolbarItemGroup {
+                    Button {
+                        diagnosticsPresented = true
+                    } label: {
+                        Label("Diagnostics", systemImage: "wrench.and.screwdriver")
+                    }
                     Button {
                         clearActive()
                     } label: {
@@ -52,6 +67,16 @@ public struct ContentView: View {
             }
         }
         .frame(minWidth: 980, minHeight: 680)
+        .task {
+            appReadinessStore.start()
+        }
+        .sheet(isPresented: $diagnosticsPresented) {
+            AppDiagnosticsView(
+                store: appReadinessStore,
+                events: backend.events,
+                helperPath: $backend.helperPath
+            )
+        }
         .alert(
             backend.pendingConfirmation?.title ?? "",
             isPresented: confirmationPresented,
@@ -82,8 +107,6 @@ public struct ContentView: View {
     @ViewBuilder
     private var form: some View {
         switch selection {
-        case .readiness:
-            ReadinessView(store: readinessStore, helperPath: $backend.helperPath)
         case .connect:
             ConnectView(store: connectionStore, password: $password)
         case .deploy:
@@ -104,8 +127,6 @@ public struct ContentView: View {
 
     private func clearActive() {
         switch selection {
-        case .readiness:
-            readinessStore.clear()
         case .connect:
             connectionStore.clear()
         case .deploy:
@@ -119,10 +140,13 @@ public struct ContentView: View {
         }
     }
 
+    private var visibleEvents: [BackendEvent] {
+        backend.events.filter { !["capabilities", "validate-install"].contains($0.operation) }
+    }
+
 }
 
 private enum Screen: String, CaseIterable, Identifiable {
-    case readiness
     case connect
     case deploy
     case doctor
@@ -133,7 +157,6 @@ private enum Screen: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .readiness: return L10n.string("screen.readiness")
         case .connect: return L10n.string("screen.connect")
         case .deploy: return L10n.string("screen.deploy")
         case .doctor: return L10n.string("screen.doctor")
@@ -144,13 +167,171 @@ private enum Screen: String, CaseIterable, Identifiable {
 
     var icon: String {
         switch self {
-        case .readiness: return "checklist"
         case .connect: return "network"
         case .deploy: return "square.and.arrow.up"
         case .doctor: return "stethoscope"
         case .maintenance: return "wrench.and.screwdriver"
         case .advanced: return "exclamationmark.triangle"
         }
+    }
+}
+
+private struct AppReadinessBannerView: View {
+    @ObservedObject var store: AppReadinessStore
+    let showDiagnostics: () -> Void
+
+    var body: some View {
+        switch store.state {
+        case .idle, .ready:
+            EmptyView()
+        case .resolvingBundle, .checkingCapabilities, .validatingInstall:
+            HStack(spacing: 10) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(title)
+                    .font(.caption)
+                if let stage = store.currentStage?.description ?? store.currentStage?.stage {
+                    Text(stage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+            .background(Color.secondary.opacity(0.08))
+        case .degraded(_, let issues):
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(.yellow)
+                Text(issues.first?.message ?? "TimeCapsuleSMB is running with warnings.")
+                    .font(.caption)
+                Spacer()
+                Button("Diagnostics", action: showDiagnostics)
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+            .background(Color.yellow.opacity(0.12))
+        case .blocked:
+            EmptyView()
+        }
+    }
+
+    private var title: String {
+        switch store.state.kind {
+        case .resolvingBundle:
+            return "Preparing app runtime"
+        case .checkingCapabilities:
+            return "Checking helper"
+        case .validatingInstall:
+            return "Validating bundled files"
+        default:
+            return ""
+        }
+    }
+}
+
+private struct AppReadinessBlockedView: View {
+    @ObservedObject var store: AppReadinessStore
+    let showDiagnostics: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("TimeCapsuleSMB cannot start", systemImage: "exclamationmark.octagon")
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(.red)
+            if case .blocked(let issue) = store.state {
+                Text(issue.message)
+                Text(issue.recovery)
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                Button {
+                    store.start()
+                } label: {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                }
+                .disabled(!store.canRetry)
+
+                Button {
+                    showDiagnostics()
+                } label: {
+                    Label("Diagnostics", systemImage: "wrench.and.screwdriver")
+                }
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct AppDiagnosticsView: View {
+    @ObservedObject var store: AppReadinessStore
+    let events: [BackendEvent]
+    @Binding var helperPath: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Diagnostics")
+                    .font(.title2.weight(.semibold))
+                Spacer()
+                Button("Done") {
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+
+            TextField(L10n.string("field.helper"), text: $helperPath)
+
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+                GridRow {
+                    Text("State").foregroundStyle(.secondary)
+                    Text(store.state.kind.rawValue)
+                }
+                if let capabilities = store.capabilities {
+                    GridRow {
+                        Text("Helper").foregroundStyle(.secondary)
+                        Text(capabilities.helperVersion)
+                    }
+                    GridRow {
+                        Text("Distribution").foregroundStyle(.secondary)
+                        Text(capabilities.distributionRoot)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                if let validation = store.validation {
+                    GridRow {
+                        Text("Validation").foregroundStyle(.secondary)
+                        Text(validation.summary)
+                    }
+                }
+            }
+            .font(.caption)
+
+            if !store.issues.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Runtime Issues")
+                        .font(.headline)
+                    ForEach(store.issues) { issue in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(issue.message)
+                            Text(issue.recovery)
+                                .foregroundStyle(.secondary)
+                        }
+                        .font(.caption)
+                    }
+                }
+            }
+
+            Text("Backend Events")
+                .font(.headline)
+            EventList(events: events)
+        }
+        .padding()
+        .frame(minWidth: 720, minHeight: 520)
     }
 }
 

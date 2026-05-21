@@ -1,0 +1,292 @@
+import Combine
+import Foundation
+
+enum AppReadinessStateKind: String, CaseIterable, Equatable {
+    case idle
+    case resolvingBundle
+    case checkingCapabilities
+    case validatingInstall
+    case ready
+    case degraded
+    case blocked
+}
+
+struct AppReadinessSummary: Equatable {
+    let runtimeMode: BundleRuntimeMode
+    let helperVersion: String
+    let distributionRoot: String
+    let validationSummary: String
+    let validationCounts: [String: Int]
+}
+
+enum AppReadinessState: Equatable {
+    case idle
+    case resolvingBundle
+    case checkingCapabilities
+    case validatingInstall
+    case ready(AppReadinessSummary)
+    case degraded(AppReadinessSummary, [BundleRuntimeIssue])
+    case blocked(BundleRuntimeIssue)
+
+    var kind: AppReadinessStateKind {
+        switch self {
+        case .idle:
+            return .idle
+        case .resolvingBundle:
+            return .resolvingBundle
+        case .checkingCapabilities:
+            return .checkingCapabilities
+        case .validatingInstall:
+            return .validatingInstall
+        case .ready:
+            return .ready
+        case .degraded:
+            return .degraded
+        case .blocked:
+            return .blocked
+        }
+    }
+}
+
+protocol AppRuntimeResolving {
+    func resolve(helperPath: String?) throws -> HelperResolution
+    func runtimeIssues(for resolution: HelperResolution) -> [BundleRuntimeIssue]
+}
+
+extension HelperLocator: AppRuntimeResolving {}
+
+@MainActor
+final class AppReadinessStore: ObservableObject {
+    @Published private(set) var state: AppReadinessState = .idle
+    @Published private(set) var capabilities: CapabilitiesPayload?
+    @Published private(set) var validation: InstallValidationPayload?
+    @Published private(set) var issues: [BundleRuntimeIssue] = []
+    @Published private(set) var currentStage: OperationStageState?
+
+    let backend: BackendClient
+
+    private let runtimeResolver: any AppRuntimeResolving
+    private let helperPathProvider: () -> String
+    private var runtimeMode: BundleRuntimeMode = .developmentCheckout
+    private var pendingOperation: String?
+    private var lastProcessedEventCount = 0
+    private var cancellables: Set<AnyCancellable> = []
+
+    convenience init(backend: BackendClient) {
+        self.init(
+            backend: backend,
+            runtimeResolver: HelperLocator(),
+            helperPathProvider: { backend.helperPath }
+        )
+    }
+
+    init(
+        backend: BackendClient,
+        runtimeResolver: any AppRuntimeResolving,
+        helperPathProvider: @escaping () -> String
+    ) {
+        self.backend = backend
+        self.runtimeResolver = runtimeResolver
+        self.helperPathProvider = helperPathProvider
+        backend.$events
+            .sink { [weak self] events in
+                Task { @MainActor in
+                    self?.process(events)
+                }
+            }
+            .store(in: &cancellables)
+        backend.$isRunning
+            .sink { [weak self] isRunning in
+                guard !isRunning else { return }
+                Task { @MainActor in
+                    self?.runPendingOperation()
+                }
+            }
+            .store(in: &cancellables)
+    }
+
+    var canRetry: Bool {
+        !backend.isRunning
+    }
+
+    func start() {
+        guard !backend.isRunning else { return }
+        backend.clear()
+        capabilities = nil
+        validation = nil
+        issues = []
+        currentStage = nil
+        pendingOperation = nil
+        lastProcessedEventCount = 0
+        state = .resolvingBundle
+
+        let helperPath = normalized(helperPathProvider())
+        do {
+            let resolution = try runtimeResolver.resolve(helperPath: helperPath)
+            runtimeMode = resolution.mode
+            issues = runtimeResolver.runtimeIssues(for: resolution)
+            if let blockingIssue = issues.first(where: { $0.severity == .error }) {
+                state = .blocked(blockingIssue)
+                return
+            }
+        } catch {
+            state = .blocked(BundleRuntimeIssue(
+                code: .helperMissing,
+                severity: .error,
+                message: error.localizedDescription,
+                recovery: "Reinstall TimeCapsuleSMB or choose a valid helper in Diagnostics."
+            ))
+            return
+        }
+
+        state = .checkingCapabilities
+        backend.run(operation: "capabilities")
+    }
+
+    func clear() {
+        backend.clear()
+        capabilities = nil
+        validation = nil
+        issues = []
+        currentStage = nil
+        pendingOperation = nil
+        lastProcessedEventCount = 0
+        state = .idle
+    }
+
+    private func process(_ events: [BackendEvent]) {
+        if events.count < lastProcessedEventCount {
+            lastProcessedEventCount = 0
+        }
+        guard events.count > lastProcessedEventCount else {
+            return
+        }
+        for event in events.dropFirst(lastProcessedEventCount) {
+            handle(event)
+        }
+        lastProcessedEventCount = events.count
+    }
+
+    private func handle(_ event: BackendEvent) {
+        guard ["capabilities", "validate-install"].contains(event.operation) else {
+            return
+        }
+
+        if let stage = OperationStageState(event: event) {
+            currentStage = stage
+            return
+        }
+
+        if event.type == "error" {
+            state = .blocked(issue(from: event))
+            return
+        }
+
+        guard event.type == "result" else {
+            return
+        }
+
+        switch event.operation {
+        case "capabilities":
+            applyCapabilitiesResult(event)
+        case "validate-install":
+            applyValidationResult(event)
+        default:
+            break
+        }
+    }
+
+    private func applyCapabilitiesResult(_ event: BackendEvent) {
+        do {
+            let payload = try event.decodePayload(CapabilitiesPayload.self)
+            capabilities = payload
+            guard event.ok == true else {
+                state = .blocked(BundleRuntimeIssue(
+                    code: .operationFailed,
+                    severity: .error,
+                    message: payload.summary,
+                    recovery: "Open Diagnostics and retry app readiness."
+                ))
+                return
+            }
+            pendingOperation = "validate-install"
+            runPendingOperation()
+        } catch {
+            state = .blocked(contractIssue(operation: "capabilities", error: error))
+        }
+    }
+
+    private func applyValidationResult(_ event: BackendEvent) {
+        do {
+            let payload = try event.decodePayload(InstallValidationPayload.self)
+            validation = payload
+            guard payload.ok else {
+                state = .blocked(BundleRuntimeIssue(
+                    code: .installValidationFailed,
+                    severity: .error,
+                    message: payload.summary,
+                    recovery: "Reinstall TimeCapsuleSMB or open Diagnostics for the failed checks."
+                ))
+                return
+            }
+            finishReady(validation: payload)
+        } catch {
+            state = .blocked(contractIssue(operation: "validate-install", error: error))
+        }
+    }
+
+    private func finishReady(validation: InstallValidationPayload) {
+        let summary = AppReadinessSummary(
+            runtimeMode: runtimeMode,
+            helperVersion: capabilities?.helperVersion ?? "",
+            distributionRoot: capabilities?.distributionRoot ?? "",
+            validationSummary: validation.summary,
+            validationCounts: validation.counts
+        )
+        let warnings = issues.filter { $0.severity == .warning }
+        state = warnings.isEmpty ? .ready(summary) : .degraded(summary, warnings)
+    }
+
+    private func runPendingOperation() {
+        guard let operation = pendingOperation, !backend.isRunning else {
+            return
+        }
+        pendingOperation = nil
+        if operation == "validate-install" {
+            state = .validatingInstall
+        }
+        backend.run(operation: operation)
+    }
+
+    private func issue(from event: BackendEvent) -> BundleRuntimeIssue {
+        let code: BundleRuntimeIssueCode
+        switch event.code {
+        case "helper_not_found":
+            code = .helperMissing
+        case "helper_launch_failed":
+            code = .helperLaunchFailed
+        default:
+            code = .operationFailed
+        }
+        return BundleRuntimeIssue(
+            code: code,
+            severity: .error,
+            message: event.message ?? event.summary,
+            recovery: BackendErrorViewModel(event: event).recovery?.message ?? "Open Diagnostics and retry app readiness."
+        )
+    }
+
+    private func contractIssue(operation: String, error: Error) -> BundleRuntimeIssue {
+        BundleRuntimeIssue(
+            code: .contractDecodeFailed,
+            severity: .error,
+            message: "\(operation) returned an unexpected payload: \(error.localizedDescription)",
+            recovery: "Update or reinstall TimeCapsuleSMB so the app and helper use the same API contract."
+        )
+    }
+
+    private func normalized(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}

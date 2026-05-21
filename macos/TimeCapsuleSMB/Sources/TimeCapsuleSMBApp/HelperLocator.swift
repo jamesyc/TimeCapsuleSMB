@@ -3,6 +3,8 @@ import Foundation
 public struct HelperResolution: Equatable {
     public let executableURL: URL
     public let distributionRootURL: URL?
+    public let toolsBinURL: URL?
+    public let mode: BundleRuntimeMode
     public let attemptedPaths: [String]
 }
 
@@ -46,11 +48,13 @@ public struct HelperLocator {
         }
 
         for candidate in bundledHelperCandidates() + devHelperCandidates() {
-            attempts.append(candidate.path)
-            if isExecutable(candidate) {
+            attempts.append(candidate.url.path)
+            if isExecutable(candidate.url) {
                 return HelperResolution(
-                    executableURL: candidate,
-                    distributionRootURL: distributionRoot(for: candidate),
+                    executableURL: candidate.url,
+                    distributionRootURL: distributionRoot(for: candidate.url, mode: candidate.mode),
+                    toolsBinURL: toolsBinURL(for: candidate.mode),
+                    mode: candidate.mode,
                     attemptedPaths: attempts
                 )
             }
@@ -72,7 +76,20 @@ public struct HelperLocator {
         if output["TCAPSULE_DISTRIBUTION_ROOT"] == nil, let distributionRoot = resolution.distributionRootURL {
             output["TCAPSULE_DISTRIBUTION_ROOT"] = distributionRoot.path
         }
+        if let toolsBin = resolution.toolsBinURL, isDirectory(toolsBin) {
+            output["PATH"] = pathByPrepending(toolsBin.path, to: output["PATH"])
+        }
+        output["PYTHONNOUSERSITE"] = "1"
         return output
+    }
+
+    public func runtimeIssues(for resolution: HelperResolution) -> [BundleRuntimeIssue] {
+        guard resolution.mode == .productionBundle,
+              let layout = BundleLayout.productionCandidate(bundle: bundle, fileManager: fileManager)
+        else {
+            return []
+        }
+        return layout.validationIssues(fileManager: fileManager)
     }
 
     private func resolveExplicitPath(_ path: String, attempts: inout [String]) throws -> HelperResolution {
@@ -83,7 +100,9 @@ public struct HelperLocator {
         }
         return HelperResolution(
             executableURL: candidate,
-            distributionRootURL: distributionRoot(for: candidate),
+            distributionRootURL: distributionRoot(for: candidate, mode: .explicit),
+            toolsBinURL: toolsBinURL(for: .explicit),
+            mode: .explicit,
             attemptedPaths: attempts
         )
     }
@@ -101,29 +120,39 @@ public struct HelperLocator {
         return currentDirectory.appendingPathComponent(path)
     }
 
-    private func bundledHelperCandidates() -> [URL] {
-        var candidates: [URL] = []
+    private func bundledHelperCandidates() -> [HelperCandidate] {
+        var candidates: [HelperCandidate] = []
+        if let layout = BundleLayout.productionCandidate(bundle: bundle, fileManager: fileManager) {
+            candidates.append(HelperCandidate(url: layout.helperURL, mode: .productionBundle))
+        }
         if let helper = bundle.url(forResource: "tcapsule", withExtension: nil, subdirectory: "Helpers") {
-            candidates.append(helper)
+            candidates.append(HelperCandidate(url: helper, mode: .productionBundle))
         }
         if let helper = bundle.url(forResource: "tcapsule", withExtension: nil) {
-            candidates.append(helper)
+            candidates.append(HelperCandidate(url: helper, mode: .productionBundle))
         }
         return candidates
     }
 
-    private func devHelperCandidates() -> [URL] {
+    private func devHelperCandidates() -> [HelperCandidate] {
         var roots: [URL] = []
         if let explicitRoot = normalized(environment["TCAPSULE_SOURCE_ROOT"]) {
             roots.append(url(forPath: explicitRoot))
         }
         roots.append(contentsOf: ancestorDirectories(startingAt: currentDirectory))
-        return unique(roots).map { $0.appendingPathComponent(".venv/bin/tcapsule") }
+        return unique(roots).map {
+            HelperCandidate(url: $0.appendingPathComponent(".venv/bin/tcapsule"), mode: .developmentCheckout)
+        }
     }
 
-    private func distributionRoot(for helperURL: URL) -> URL? {
+    private func distributionRoot(for helperURL: URL, mode: BundleRuntimeMode) -> URL? {
         if let explicit = normalized(environment["TCAPSULE_DISTRIBUTION_ROOT"]) {
             return url(forPath: explicit)
+        }
+        if mode == .productionBundle,
+           let bundled = BundleLayout.productionCandidate(bundle: bundle, fileManager: fileManager)?.distributionRootURL,
+           isDirectory(bundled) {
+            return bundled
         }
         if let repo = repoRoot(containing: helperURL) {
             return repo
@@ -132,6 +161,13 @@ public struct HelperLocator {
             return bundled
         }
         return nil
+    }
+
+    private func toolsBinURL(for mode: BundleRuntimeMode) -> URL? {
+        guard mode == .productionBundle else {
+            return nil
+        }
+        return BundleLayout.productionCandidate(bundle: bundle, fileManager: fileManager)?.toolsBinURL
     }
 
     private func repoRoot(containing helperURL: URL) -> URL? {
@@ -188,8 +224,18 @@ public struct HelperLocator {
     }
 
     private func applicationSupportDirectory() -> URL? {
-        fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first?
-            .appendingPathComponent("TimeCapsuleSMB", isDirectory: true)
+        BundleLayout.applicationSupportDirectory(fileManager: fileManager)
     }
+
+    private func pathByPrepending(_ prefix: String, to path: String?) -> String {
+        guard let path, !path.isEmpty else {
+            return prefix
+        }
+        return "\(prefix):\(path)"
+    }
+}
+
+private struct HelperCandidate {
+    let url: URL
+    let mode: BundleRuntimeMode
 }
