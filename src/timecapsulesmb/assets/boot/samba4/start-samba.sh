@@ -47,7 +47,7 @@ else
 fi
 
 if ! tc_prepare_smb_bind_context; then
-    tc_log "aborting startup because IPv4 bind interface discovery failed"
+    tc_log "aborting startup because bind interface discovery failed"
     exit 1
 fi
 
@@ -76,10 +76,10 @@ if ! tc_stage_disk_runtime; then
 fi
 
 tc_start_smbd || {
-    tc_log "smbd startup failed: IPv4 TCP 445 listener was not observed"
+    tc_log "smbd startup failed: TCP 445 listener was not observed"
     exit 1
 }
-tc_log "smbd startup complete: IPv4 TCP 445 listener observed"
+tc_log "smbd startup complete: TCP 445 listener observed"
 
 tc_start_watchdog
 

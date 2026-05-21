@@ -4732,7 +4732,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("skip rc.local if NetBSD4 payload is already healthy", text)
         self.assertIn("managed runtime smb.conf is present", text)
         self.assertIn("managed smbd parent process is running", text)
-        self.assertIn("smbd is bound to IPv4 TCP 445", text)
+        self.assertIn("smbd is bound to required TCP 445 sockets", text)
         self.assertIn("mdns-advertiser is bound to UDP 5353", text)
         self.assertIn("This will start the deployed Samba payload on the AirPort storage device.", text)
         self.assertIn("NetBSD 4 devices cannot auto-run Samba after a reboot.", text)

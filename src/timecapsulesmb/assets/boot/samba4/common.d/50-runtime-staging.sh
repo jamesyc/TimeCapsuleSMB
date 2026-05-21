@@ -114,7 +114,7 @@ tc_stage_disk_runtime() {
     tc_stage_runtime "$TC_PAYLOAD_DIR" "$SMBD_SRC" "$NBNS_SRC"
     if [ -z "$TC_SMB_BIND_INTERFACES" ]; then
         tc_refresh_smb_bind_interfaces || {
-            tc_log "runtime staging failed: no usable IPv4 bind interface is available"
+            tc_log "runtime staging failed: no usable bind address is available"
             return 1
         }
     fi
@@ -293,7 +293,7 @@ tc_generate_smb_conf() {
     netbios name = $SMB_NETBIOS_NAME
     workgroup = WORKGROUP
     # Samba's interface enumeration can race boot networking on Time Capsule.
-    # Bind to the IPv4 CIDRs discovered immediately before rendering config.
+    # Bind to explicit IPv4/IPv6 CIDRs discovered immediately before rendering config.
     interfaces = $TC_SMB_BIND_INTERFACES
     bind interfaces only = yes
     server string = $SMB_SERVER_STRING

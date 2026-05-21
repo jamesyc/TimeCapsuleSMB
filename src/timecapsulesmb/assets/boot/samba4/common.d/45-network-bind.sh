@@ -28,15 +28,37 @@ tc_smb_bind_token_is_ipv4_cidr() {
     return 0
 }
 
-tc_normalize_smb_bind_cidrs() {
-    cidrs=$1
+tc_smb_bind_token_is_ipv6_cidr() {
+    token=$1
+
+    case "$token" in
+        ""|/*|*/|*/*/*|*[!0123456789abcdefABCDEF:./]*) return 1 ;;
+        *:*) ;;
+        *) return 1 ;;
+    esac
+
+    prefix_part=${token#*/}
+    case "$prefix_part" in
+        ""|*[!0123456789]*) return 1 ;;
+    esac
+    [ "$prefix_part" -le 128 ] 2>/dev/null || return 1
+
+    return 0
+}
+
+tc_smb_bind_token_is_cidr() {
+    tc_smb_bind_token_is_ipv4_cidr "$1" || tc_smb_bind_token_is_ipv6_cidr "$1"
+}
+
+tc_normalize_smb_bind_tokens() {
+    bind_tokens=$1
     normalized=
 
-    set -- $cidrs
+    set -- $bind_tokens
     [ "$#" -gt 0 ] || return 1
 
     for cidr_token in "$@"; do
-        tc_smb_bind_token_is_ipv4_cidr "$cidr_token" || return 1
+        tc_smb_bind_token_is_cidr "$cidr_token" || return 1
         if [ -n "$normalized" ]; then
             normalized="$normalized $cidr_token"
         else
@@ -47,15 +69,69 @@ tc_normalize_smb_bind_cidrs() {
     printf '%s\n' "$normalized"
 }
 
+tc_normalize_smb_bind_cidrs() {
+    tc_normalize_smb_bind_tokens "$1"
+}
+
+tc_normalize_mdns_socket_families() {
+    families=$1
+    saw_ipv4=0
+    saw_ipv6=0
+    normalized=
+
+    set -- $families
+    [ "$#" -gt 0 ] || return 1
+
+    for family_token in "$@"; do
+        case "$family_token" in
+            ipv4)
+                [ "$saw_ipv4" = "0" ] || return 1
+                saw_ipv4=1
+                ;;
+            ipv6)
+                [ "$saw_ipv6" = "0" ] || return 1
+                saw_ipv6=1
+                ;;
+            *) return 1 ;;
+        esac
+    done
+
+    if [ "$saw_ipv4" = "1" ]; then
+        normalized=ipv4
+    fi
+    if [ "$saw_ipv6" = "1" ]; then
+        if [ -n "$normalized" ]; then
+            normalized="$normalized ipv6"
+        else
+            normalized=ipv6
+        fi
+    fi
+
+    [ -n "$normalized" ] || return 1
+    printf '%s\n' "$normalized"
+}
+
 tc_probe_auto_ip_cidrs() {
     [ -x "$TC_MDNS_BIN" ] || return 1
     cidrs=$("$TC_MDNS_BIN" --print-auto-ip-cidrs 2>/dev/null) || return $?
     tc_normalize_smb_bind_cidrs "$cidrs" || return 1
 }
 
+tc_probe_smb_bind_tokens() {
+    [ -x "$TC_MDNS_BIN" ] || return 1
+    bind_tokens=$("$TC_MDNS_BIN" --print-smb-bind-interfaces 2>/dev/null) || return $?
+    tc_normalize_smb_bind_tokens "$bind_tokens" || return 1
+}
+
+tc_probe_mdns_socket_families() {
+    [ -x "$TC_MDNS_BIN" ] || return 1
+    families=$("$TC_MDNS_BIN" --print-mdns-socket-families 2>/dev/null) || return $?
+    tc_normalize_mdns_socket_families "$families" || return 1
+}
+
 tc_probe_smb_bind_interfaces() {
-    cidrs=$(tc_probe_auto_ip_cidrs) || return $?
-    printf '127.0.0.1/8 %s\n' "$cidrs"
+    bind_tokens=$(tc_probe_smb_bind_tokens) || return $?
+    printf '127.0.0.1/8 ::1/128 %s\n' "$bind_tokens"
 }
 
 tc_auto_ip_unavailable_status() {
@@ -65,27 +141,27 @@ tc_auto_ip_unavailable_status() {
 tc_mark_smb_deferred_no_ip() {
     TC_WATCHDOG_SMB_DEFERRED_NO_IP=1
     if [ "${TC_SMB_IPV4_WAIT_LOGGED:-0}" != "1" ]; then
-        tc_log "Samba IPv4 bind discovery deferred; no usable IPv4 has appeared yet"
+        tc_log "Samba bind discovery deferred; no usable address has appeared yet"
         TC_SMB_IPV4_WAIT_LOGGED=1
     fi
 }
 
 tc_wait_for_smb_ipv4() {
     if [ ! -x "$TC_MDNS_BIN" ]; then
-        tc_log "Samba IPv4 bind discovery failed; missing $TC_MDNS_BIN"
+        tc_log "Samba bind discovery failed; missing $TC_MDNS_BIN"
         return 1
     fi
 
     while :; do
-        if cidrs=$(tc_probe_auto_ip_cidrs); then
-            tc_log "Samba IPv4 bind discovery: first usable IPv4 observed: $cidrs"
+        if bind_tokens=$(tc_probe_smb_bind_tokens); then
+            tc_log "Samba bind discovery: first usable address observed: $bind_tokens"
             return 0
         else
             probe_status=$?
         fi
 
         if ! tc_auto_ip_unavailable_status "$probe_status"; then
-            tc_log "Samba IPv4 bind discovery failed with exit code $probe_status"
+            tc_log "Samba bind discovery failed with exit code $probe_status"
             return 1
         fi
 
@@ -98,7 +174,7 @@ tc_refresh_smb_bind_interfaces() {
     if bind_interfaces=$(tc_probe_smb_bind_interfaces); then
         TC_SMB_BIND_INTERFACES=$bind_interfaces
         TC_WATCHDOG_SMB_DEFERRED_NO_IP=0
-        tc_log "Samba IPv4 bind interfaces: $TC_SMB_BIND_INTERFACES"
+        tc_log "Samba bind interfaces: $TC_SMB_BIND_INTERFACES"
         return 0
     else
         probe_status=$?
@@ -107,14 +183,14 @@ tc_refresh_smb_bind_interfaces() {
     if tc_auto_ip_unavailable_status "$probe_status"; then
         tc_mark_smb_deferred_no_ip
     else
-        tc_log "Samba IPv4 bind interface probe failed with exit code $probe_status"
+        tc_log "Samba bind interface probe failed with exit code $probe_status"
     fi
     return 1
 }
 
 tc_prepare_smb_bind_context() {
     tc_wait_for_smb_ipv4 || return 1
-    tc_log "Samba IPv4 bind discovery: waiting ${TC_SMB_IPV4_SETTLE_SECONDS}s for network stabilization"
+    tc_log "Samba bind discovery: waiting ${TC_SMB_IPV4_SETTLE_SECONDS}s for network stabilization"
     sleep "$TC_SMB_IPV4_SETTLE_SECONDS"
     tc_refresh_smb_bind_interfaces
 }
