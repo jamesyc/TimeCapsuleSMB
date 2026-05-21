@@ -1220,7 +1220,7 @@ int main(void) {{
         self.assertNotIn("serving summary", run.stderr)
         self.assertNotIn("mDNS takeover", run.stderr)
 
-    def test_mdns_timestamped_logging_preserves_long_lines(self) -> None:
+    def test_mdns_timestamped_logging_truncates_long_lines_without_heap(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
         source = f'''
 #include <string.h>
@@ -1232,13 +1232,15 @@ int main(void) {{
     char message[5001];
     memset(message, 'A', sizeof(message) - 1);
     message[sizeof(message) - 1] = '\\0';
-    fprintf(stderr, "%s\\n", message);
+    timestamped_fprintf(stderr, "%s\\n", message);
     return 0;
 }}
 '''
         run = self._compile_and_run_c_helper(source, "mdns_long_timestamped_log")
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("A" * 5000, run.stderr)
+        self.assertNotIn("A" * 5000, run.stderr)
+        self.assertGreaterEqual(run.stderr.count("A"), 4000)
+        self.assertLess(run.stderr.count("A"), 5000)
         self.assertTrue(run.stderr.endswith("\n"))
 
     def test_mdns_ifreq_copy_handles_unaligned_source_buffer(self) -> None:
@@ -1532,14 +1534,7 @@ int main(void) {{
     struct iface_context_set b;
     struct ifreq sample_ifr;
     struct ifconf_entry_view view;
-    struct sockaddr_in6 raw_sin6;
-    struct sockaddr_in6 copied_sin6;
-    union {{
-        long align;
-        char bytes[IFNAMSIZ + sizeof(struct sockaddr_in6) + sizeof(long)];
-    }} raw_entry;
     size_t expected_variable_step;
-    size_t expected_raw_step;
 
     if (runtime_ipv4_is_usable(inet_addr("0.1.2.3")) ||
         runtime_ipv4_is_usable(inet_addr("127.0.0.1")) ||
@@ -1579,13 +1574,21 @@ int main(void) {{
     if (ifreq_entry_size(&sample_ifr, expected_variable_step, 0) != expected_variable_step) {{
         return 9;
     }}
+#if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
+    {{
+    struct sockaddr_in6 raw_sin6;
+    struct sockaddr_in6 copied_sin6;
+    union {{
+        long align;
+        char bytes[IFNAMSIZ + sizeof(struct sockaddr_in6) + sizeof(long)];
+    }} raw_entry;
+    size_t expected_raw_step;
+
     memset(&raw_entry, 0, sizeof(raw_entry));
     memcpy(raw_entry.bytes, "bridge0", 7);
     memset(&raw_sin6, 0, sizeof(raw_sin6));
     raw_sin6.sin6_family = AF_INET6;
-#if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
     raw_sin6.sin6_len = sizeof(raw_sin6);
-#endif
     if (inet_pton(AF_INET6, "fdbb:1111:2222:3333::40", &raw_sin6.sin6_addr) != 1) {{
         return 12;
     }}
@@ -1608,6 +1611,22 @@ int main(void) {{
     if (memcmp(&copied_sin6.sin6_addr, &raw_sin6.sin6_addr, sizeof(raw_sin6.sin6_addr)) != 0) {{
         return 14;
     }}
+    }}
+#else
+    {{
+        struct ifreq raw_ifr;
+        memset(&raw_ifr, 0, sizeof(raw_ifr));
+        memcpy(raw_ifr.ifr_name, "bridge0", 7);
+        raw_ifr.ifr_addr.sa_family = AF_INET;
+        if (ifconf_entry_view_from_cursor(&view, (const char *)(const void *)&raw_ifr, sizeof(raw_ifr), 1) != 0 ||
+            view.step != sizeof(raw_ifr) ||
+            view.addr_len != sizeof(struct sockaddr) ||
+            strcmp(view.name, "bridge0") != 0 ||
+            view.addr->sa_family != AF_INET) {{
+            return 13;
+        }}
+    }}
+#endif
 
     memset(&a, 0, sizeof(a));
     memset(&b, 0, sizeof(b));
@@ -1858,6 +1877,10 @@ static int fake_collect_contexts(struct iface_context_set *out, void *userdata) 
     if (plan->mode == 2) {{
         append_iface_context(out, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
     }}
+    if (plan->mode == 3) {{
+        append_iface_context(out, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+        out->truncated = 1;
+    }}
     return 0;
 }}
 
@@ -1879,6 +1902,10 @@ int main(void) {{
     }}
     if (print_auto_ip_cidrs_with_provider(stdout, NULL, &plan) != EXIT_AUTO_IP_PROBE_FAILED) {{
         return 4;
+    }}
+    plan.mode = 3;
+    if (print_auto_ip_cidrs_with_provider(stdout, fake_collect_contexts, &plan) != EXIT_AUTO_IP_PROBE_FAILED) {{
+        return 5;
     }}
     return 0;
 }}
@@ -1920,6 +1947,10 @@ static int fake_collect_links(struct link_context_set *out, void *userdata) {{
         inet_pton(AF_INET6, "fe80::40", &ll);
         append_link_ipv6(out, "bridge0", &ll, 64, 7, IFF_UP | IFF_RUNNING);
     }}
+    if (plan->mode == 4) {{
+        append_link_ipv4(out, "bridge0", inet_addr("169.254.1.9"), inet_addr("255.255.0.0"), IFF_UP | IFF_RUNNING);
+        out->truncated = 1;
+    }}
     return 0;
 }}
 
@@ -1945,6 +1976,10 @@ int main(void) {{
     }}
     if (print_smb_bind_interfaces_with_provider(stdout, NULL, &plan) != EXIT_AUTO_IP_PROBE_FAILED) {{
         return 5;
+    }}
+    plan.mode = 4;
+    if (print_smb_bind_interfaces_with_provider(stdout, fake_collect_links, &plan) != EXIT_AUTO_IP_PROBE_FAILED) {{
+        return 6;
     }}
     return 0;
 }}
@@ -1987,6 +2022,10 @@ static int fake_collect_advertise_links(struct link_context_set *out, void *user
     if (plan->mode == 4) {{
         append_link_ipv6(out, "bridge0", &ll, 64, 7, IFF_UP | IFF_RUNNING);
     }}
+    if (plan->mode == 5) {{
+        append_link_ipv4(out, "bridge0", inet_addr("192.168.1.40"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+        append_link_ipv6_with_transport(out, "bridge0", &ll, 64, 7, IFF_UP | IFF_RUNNING, 0);
+    }}
     return 0;
 }}
 
@@ -2010,6 +2049,10 @@ int main(void) {{
     if (print_mdns_socket_families_with_provider(stdout, fake_collect_advertise_links, &plan) != EXIT_AUTO_IP_UNAVAILABLE) {{
         return 5;
     }}
+    plan.mode = 5;
+    if (print_mdns_socket_families_with_provider(stdout, fake_collect_advertise_links, &plan) != EXIT_OK) {{
+        return 6;
+    }}
     plan.mode = 1;
     if (print_mdns_socket_families_with_provider(stdout, fake_collect_advertise_links, &plan) != EXIT_AUTO_IP_PROBE_FAILED) {{
         return 4;
@@ -2019,7 +2062,7 @@ int main(void) {{
 '''.format(mdns_source=mdns_source)
         run = self._compile_and_run_c_helper(source, "mdns_print_socket_families")
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(run.stdout, "ipv4 ipv6\nipv6\n")
+        self.assertEqual(run.stdout, "ipv4 ipv6\nipv6\nipv4\n")
 
     def test_mdns_scoped_ipv6_multicast_destination_uses_link_ifindex(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
@@ -2711,6 +2754,160 @@ int main(void) {{
             run = subprocess.run([str(bin_path)], capture_output=True, text=True, check=False)
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertEqual(run.stdout.strip(), "_example-service._udp.local.")
+
+    def test_mdns_runtime_socket_updates_roll_back_partial_memberships_and_fallback_to_ipv4(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = r'''
+#include <arpa/inet.h>
+#include <errno.h>
+#include <netinet/in.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+
+static int fake_socket(int domain, int type, int protocol);
+static int fake_setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen);
+static int fake_bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+static int fake_close(int fd);
+
+#define socket fake_socket
+#define setsockopt fake_setsockopt
+#define bind fake_bind
+#define close fake_close
+#define main mdns_advertiser_main
+#include "@MDNS_SOURCE@"
+#undef main
+#undef close
+#undef bind
+#undef setsockopt
+#undef socket
+
+static int socket_calls;
+static int bind_calls;
+static int close_calls;
+static int membership_sets;
+static int drop_membership_sets;
+static int outbound_sets;
+static int fail_ipv6_socket;
+static int fail_second_membership;
+static int next_fd = 100;
+
+static void reset_fakes(void) {
+    socket_calls = 0;
+    bind_calls = 0;
+    close_calls = 0;
+    membership_sets = 0;
+    drop_membership_sets = 0;
+    outbound_sets = 0;
+    fail_ipv6_socket = 0;
+    fail_second_membership = 0;
+    next_fd = 100;
+}
+
+static int fake_socket(int domain, int type, int protocol) {
+    (void)type;
+    (void)protocol;
+    socket_calls++;
+    if (fail_ipv6_socket && domain == AF_INET6) {
+        errno = EAFNOSUPPORT;
+        return -1;
+    }
+    return next_fd++;
+}
+
+static int fake_setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen) {
+    (void)sockfd;
+    (void)optval;
+    (void)optlen;
+    if (level == IPPROTO_IP && optname == IP_ADD_MEMBERSHIP) {
+        membership_sets++;
+        if (fail_second_membership && membership_sets >= 2) {
+            errno = EADDRINUSE;
+            return -1;
+        }
+    }
+#ifdef IP_DROP_MEMBERSHIP
+    if (level == IPPROTO_IP && optname == IP_DROP_MEMBERSHIP) {
+        drop_membership_sets++;
+    }
+#endif
+    if (level == IPPROTO_IP && optname == IP_MULTICAST_IF) {
+        outbound_sets++;
+    }
+    return 0;
+}
+
+static int fake_bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+    (void)sockfd;
+    (void)addr;
+    (void)addrlen;
+    bind_calls++;
+    return 0;
+}
+
+static int fake_close(int fd) {
+    (void)fd;
+    close_calls++;
+    return 0;
+}
+
+static void add_ipv4_link(struct link_context_set *set, const char *name, const char *addr) {
+    append_link_ipv4(set, name, inet_addr(addr), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+}
+
+int main(void) {
+    struct link_context_set old_links;
+    struct link_context_set new_links;
+    struct mdns_socket_pair sockets;
+    struct in6_addr ula;
+
+    reset_fakes();
+    memset(&old_links, 0, sizeof(old_links));
+    memset(&new_links, 0, sizeof(new_links));
+    add_ipv4_link(&old_links, "bridge0", "10.0.1.1");
+    add_ipv4_link(&new_links, "bridge0", "10.0.1.1");
+    add_ipv4_link(&new_links, "en1", "192.168.50.2");
+    add_ipv4_link(&new_links, "en2", "192.168.60.2");
+    sockets.ipv4_fd = 55;
+    sockets.ipv6_fd = -1;
+    fail_second_membership = 1;
+    if (prepare_runtime_mdns_sockets_for_links(0, &sockets, &old_links, &new_links) == 0) {
+        return 1;
+    }
+#ifdef IP_DROP_MEMBERSHIP
+    if (drop_membership_sets != 1) {
+        return 2;
+    }
+#endif
+    if (sockets.ipv4_fd != 55 || close_calls != 0) {
+        return 3;
+    }
+
+    reset_fakes();
+    memset(&new_links, 0, sizeof(new_links));
+    add_ipv4_link(&new_links, "bridge0", "10.0.1.1");
+    if (inet_pton(AF_INET6, "fdbb:1111:2222:3333::40", &ula) != 1) {
+        return 4;
+    }
+    append_link_ipv6(&new_links, "bridge0", &ula, 64, 7, IFF_UP | IFF_RUNNING);
+    fail_ipv6_socket = 1;
+    sockets.ipv4_fd = -1;
+    sockets.ipv6_fd = -1;
+    if (open_dualstack_mdns_sockets(0, &new_links, 0, &sockets) != 0) {
+        return 5;
+    }
+    if (sockets.ipv4_fd < 0 || sockets.ipv6_fd >= 0 || link_contexts_need_ipv6_socket(&new_links)) {
+        return 6;
+    }
+    close_mdns_socket_pair(&sockets);
+    printf("ok\n");
+    return 0;
+}
+'''.replace("@MDNS_SOURCE@", mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_runtime_membership_rollback")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.strip(), "ok")
 
     def test_mdns_advertiser_load_snapshot_accepts_host_hex_and_smb_adisk_records(self) -> None:
         if shutil.which("cc") is None:
@@ -3404,6 +3601,217 @@ int main(void) {
 }
 '''.replace("@MDNS_SOURCE@", mdns_source)
         run = self._compile_and_run_c_helper(source, "mdns_diskless_host_a_no_smb")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.strip(), "ok")
+
+    def test_mdns_advertiser_suppresses_fresh_known_answer_a_records(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = r'''
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+
+ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
+                    const struct sockaddr *dest, socklen_t dest_len);
+
+#define sendto fake_sendto
+#define main mdns_advertiser_main
+#include "@MDNS_SOURCE@"
+#undef main
+#undef sendto
+
+static unsigned char captured_packet[BUF_SIZE];
+static size_t captured_len = 0;
+static size_t captured_count = 0;
+
+ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
+                    const struct sockaddr *dest, socklen_t dest_len) {
+    (void)sockfd;
+    (void)flags;
+    (void)dest;
+    (void)dest_len;
+    memcpy(captured_packet, buf, len);
+    captured_len = len;
+    captured_count++;
+    return (ssize_t)len;
+}
+
+static void reset_captures(void) {
+    memset(captured_packet, 0, sizeof(captured_packet));
+    captured_len = 0;
+    captured_count = 0;
+}
+
+static void configure_base(struct config *cfg) {
+    memset(cfg, 0, sizeof(*cfg));
+    snprintf(cfg->instance_name, sizeof(cfg->instance_name), "%s", "Alton Time Capsule");
+    snprintf(cfg->host_label, sizeof(cfg->host_label), "%s", "alton-time-capsule");
+    snprintf(cfg->host_fqdn, sizeof(cfg->host_fqdn), "%s", "alton-time-capsule.local.");
+    snprintf(cfg->service_type, sizeof(cfg->service_type), "%s", "_smb._tcp.local.");
+    snprintf(cfg->adisk_service_type, sizeof(cfg->adisk_service_type), "%s", "_adisk._tcp.local.");
+    snprintf(cfg->device_info_service_type, sizeof(cfg->device_info_service_type), "%s", "_device-info._tcp.local.");
+    snprintf(cfg->airport_service_type, sizeof(cfg->airport_service_type), "%s", "_airport._tcp.local.");
+    cfg->port = 445;
+    cfg->ttl = 120;
+    cfg->ipv4_addr = inet_addr("10.0.1.77");
+}
+
+static size_t make_query_with_known_a_pair(unsigned char *packet, const struct config *cfg,
+                                           uint32_t ttl, uint32_t first_addr, int include_second,
+                                           uint32_t second_addr) {
+    struct dns_header hdr;
+    size_t off = sizeof(hdr);
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.qdcount = htons(1);
+    hdr.ancount = htons(include_second ? 2 : 1);
+    memcpy(packet, &hdr, sizeof(hdr));
+    if (encode_name(packet, &off, BUF_SIZE, cfg->host_fqdn) != 0 ||
+        append_u16(packet, &off, BUF_SIZE, DNS_TYPE_A) != 0 ||
+        append_u16(packet, &off, BUF_SIZE, DNS_CLASS_IN) != 0 ||
+        encode_name(packet, &off, BUF_SIZE, cfg->host_fqdn) != 0 ||
+        append_u16(packet, &off, BUF_SIZE, DNS_TYPE_A) != 0 ||
+        append_u16(packet, &off, BUF_SIZE, DNS_CLASS_IN_UNIQUE) != 0 ||
+        append_u32(packet, &off, BUF_SIZE, ttl) != 0 ||
+        append_u16(packet, &off, BUF_SIZE, 4) != 0 ||
+        append_bytes(packet, &off, BUF_SIZE, &first_addr, 4) != 0) {
+        return 0;
+    }
+    if (include_second &&
+        (encode_name(packet, &off, BUF_SIZE, cfg->host_fqdn) != 0 ||
+         append_u16(packet, &off, BUF_SIZE, DNS_TYPE_A) != 0 ||
+         append_u16(packet, &off, BUF_SIZE, DNS_CLASS_IN_UNIQUE) != 0 ||
+         append_u32(packet, &off, BUF_SIZE, ttl) != 0 ||
+         append_u16(packet, &off, BUF_SIZE, 4) != 0 ||
+         append_bytes(packet, &off, BUF_SIZE, &second_addr, 4) != 0)) {
+        return 0;
+    }
+    return off;
+}
+
+static size_t make_query_with_known_a(unsigned char *packet, const struct config *cfg,
+                                      uint32_t ttl, uint32_t known_addr) {
+    return make_query_with_known_a_pair(packet, cfg, ttl, known_addr, 0, 0);
+}
+
+static int count_rr_type(const unsigned char *packet, size_t packet_len, unsigned short want_type) {
+    struct dns_header hdr;
+    size_t cursor = sizeof(hdr);
+    unsigned short total_answers;
+    int matches = 0;
+    unsigned short i;
+
+    memcpy(&hdr, packet, sizeof(hdr));
+    total_answers = ntohs(hdr.ancount);
+    for (i = 0; i < total_answers; i++) {
+        char name[MAX_NAME];
+        unsigned short rrtype;
+        unsigned short rdlength;
+
+        if (decode_name(packet, packet_len, &cursor, name, sizeof(name)) != 0 || cursor + 10 > packet_len) {
+            return -1;
+        }
+        memcpy(&rrtype, packet + cursor, 2);
+        memcpy(&rdlength, packet + cursor + 8, 2);
+        cursor += 10;
+        rrtype = ntohs(rrtype);
+        rdlength = ntohs(rdlength);
+        if (cursor + rdlength > packet_len) {
+            return -1;
+        }
+        if (rrtype == want_type) {
+            matches++;
+        }
+        cursor += rdlength;
+    }
+    return matches;
+}
+
+int main(void) {
+    struct config cfg;
+    struct iface_context response_ctx;
+    struct link_context response_link;
+    struct service_record_set snapshot;
+    struct sockaddr_in mdns_dest;
+    struct sockaddr_in source;
+    unsigned char query[BUF_SIZE];
+    size_t query_len;
+    uint32_t link_local_addr;
+
+    configure_base(&cfg);
+    memset(&response_ctx, 0, sizeof(response_ctx));
+    snprintf(response_ctx.name, sizeof(response_ctx.name), "%s", "bridge0");
+    response_ctx.ipv4_addr = cfg.ipv4_addr;
+    response_ctx.netmask = inet_addr("255.255.255.0");
+    link_context_from_iface_context(&response_link, &response_ctx);
+    memset(&snapshot, 0, sizeof(snapshot));
+    memset(&mdns_dest, 0, sizeof(mdns_dest));
+    mdns_dest.sin_family = AF_INET;
+    mdns_dest.sin_port = htons(MDNS_PORT);
+    mdns_dest.sin_addr.s_addr = inet_addr(MDNS_GROUP);
+    memset(&source, 0, sizeof(source));
+    source.sin_family = AF_INET;
+    source.sin_port = htons(62001);
+    source.sin_addr.s_addr = inet_addr("10.0.1.42");
+
+    reset_captures();
+    query_len = make_query_with_known_a(query, &cfg, 100, cfg.ipv4_addr);
+    if (query_len == 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0 ||
+        captured_count != 0) {
+        return 1;
+    }
+
+    link_local_addr = inet_addr("169.254.44.55");
+    if (response_link.ipv4_count >= MAX_LINK_IPV4_ADDRS) {
+        return 2;
+    }
+    response_link.ipv4[response_link.ipv4_count].addr = link_local_addr;
+    response_link.ipv4[response_link.ipv4_count].netmask = ipv4_link_local_netmask();
+    response_link.ipv4_count++;
+
+    reset_captures();
+    query_len = make_query_with_known_a(query, &cfg, 100, cfg.ipv4_addr);
+    if (query_len == 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0 ||
+        captured_count != 1 ||
+        count_rr_type(captured_packet, captured_len, DNS_TYPE_A) != 2) {
+        return 3;
+    }
+
+    reset_captures();
+    query_len = make_query_with_known_a_pair(query, &cfg, 100, cfg.ipv4_addr, 1, link_local_addr);
+    if (query_len == 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0 ||
+        captured_count != 0) {
+        return 4;
+    }
+
+    reset_captures();
+    query_len = make_query_with_known_a(query, &cfg, 10, cfg.ipv4_addr);
+    if (query_len == 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0 ||
+        captured_count != 1 ||
+        count_rr_type(captured_packet, captured_len, DNS_TYPE_A) != 2) {
+        return 5;
+    }
+
+    reset_captures();
+    query_len = make_query_with_known_a(query, &cfg, 100, inet_addr("10.0.1.88"));
+    if (query_len == 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0 ||
+        captured_count != 1 ||
+        count_rr_type(captured_packet, captured_len, DNS_TYPE_A) != 2) {
+        return 6;
+    }
+
+    printf("ok\n");
+    return 0;
+}
+'''.replace("@MDNS_SOURCE@", mdns_source)
+        run = self._compile_and_run_c_helper(source, "mdns_known_answer_suppression")
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(run.stdout.strip(), "ok")
 

@@ -75,6 +75,7 @@
 #define DNS_TYPE_ANY 255
 #define DNS_CLASS_IN 1
 #define DNS_CLASS_CACHE_FLUSH 0x8000
+#define DNS_CLASS_QU 0x8000
 #define DNS_CLASS_IN_UNIQUE (DNS_CLASS_IN | DNS_CLASS_CACHE_FLUSH)
 #define MDNS_REPLY_UNICAST 1
 #define MDNS_REPLY_MULTICAST 2
@@ -140,50 +141,25 @@ static int timestamped_write_message(FILE *stream, const char *message) {
 
 static int timestamped_vfprintf(FILE *stream, const char *format, va_list ap) {
     char stack_message[4096];
-    char *message = stack_message;
-    va_list sizing_ap;
-    va_list format_ap;
     int result;
 
     if (stream != stderr && stream != stdout) {
         return vfprintf(stream, format, ap);
     }
 
-    TC_VA_COPY(sizing_ap, ap);
-    result = vsnprintf(stack_message, sizeof(stack_message), format, sizing_ap);
-    va_end(sizing_ap);
+    result = vsnprintf(stack_message, sizeof(stack_message), format, ap);
     if (result < 0) {
         return result;
     }
-
     if ((size_t)result >= sizeof(stack_message)) {
-        size_t message_size = (size_t)result + 1;
-        message = malloc(message_size);
-        if (message == NULL) {
-            (void)timestamped_write_message(stream, stack_message);
-            (void)timestamped_write_message(stream, "\n[log message truncated: allocation failed]\n");
-            fflush(stream);
-            return result;
-        }
-        TC_VA_COPY(format_ap, ap);
-        result = vsnprintf(message, message_size, format, format_ap);
-        va_end(format_ap);
-        if (result < 0) {
-            free(message);
-            return result;
-        }
+        stack_message[sizeof(stack_message) - 2] = '\n';
+        stack_message[sizeof(stack_message) - 1] = '\0';
     }
 
-    if (timestamped_write_message(stream, message) != 0) {
-        if (message != stack_message) {
-            free(message);
-        }
+    if (timestamped_write_message(stream, stack_message) != 0) {
         return -1;
     }
     fflush(stream);
-    if (message != stack_message) {
-        free(message);
-    }
     return result;
 }
 
@@ -304,6 +280,7 @@ struct service_record {
 struct service_record_set {
     struct service_record records[SNAPSHOT_MAX_RECORDS];
     size_t count;
+    int truncated;
 };
 
 struct service_type_set {
@@ -314,6 +291,14 @@ struct service_type_set {
 struct mdns_socket_pair {
     int ipv4_fd;
     int ipv6_fd;
+};
+
+struct mdns_membership_delta {
+    uint32_t ipv4[MAX_IFACE_CONTEXTS];
+    size_t ipv4_count;
+    unsigned int ipv6_ifindex[MAX_IFACE_CONTEXTS];
+    char ipv6_name[MAX_IFACE_CONTEXTS][IFNAMSIZ];
+    size_t ipv6_count;
 };
 
 struct query_answer_routes {
@@ -386,9 +371,36 @@ typedef int (*mdns_collect_iface_contexts_fn)(struct iface_context_set *out, voi
 typedef int (*mdns_collect_link_contexts_fn)(struct link_context_set *out, void *userdata);
 typedef void (*mdns_sleep_fn)(unsigned int seconds, void *userdata);
 
+static void derive_usable_iface_contexts_from_links(struct iface_context_set *out,
+                                                    const struct link_context_set *links) {
+    size_t i;
+
+    memset(out, 0, sizeof(*out));
+    out->truncated = links->truncated;
+    for (i = 0; i < links->count; i++) {
+        size_t j;
+        const struct link_context *link = &links->links[i];
+        for (j = 0; j < link->ipv4_count; j++) {
+            (void)append_iface_context(out,
+                                       link->name,
+                                       link->ipv4[j].addr,
+                                       link->ipv4[j].netmask,
+                                       link->flags);
+        }
+    }
+    sort_iface_contexts(out);
+}
+
 static int collect_usable_iface_contexts_provider(struct iface_context_set *out, void *userdata) {
+    struct link_context_set links;
+
     (void)userdata;
-    return collect_usable_iface_contexts(out);
+    memset(&links, 0, sizeof(links));
+    if (collect_usable_link_contexts(&links) != 0) {
+        return -1;
+    }
+    derive_usable_iface_contexts_from_links(out, &links);
+    return 0;
 }
 
 static int collect_usable_link_contexts_provider(struct link_context_set *out, void *userdata) {
@@ -511,6 +523,10 @@ static int print_auto_ip_cidrs_with_provider(FILE *stream,
     if (contexts.count == 0) {
         return EXIT_AUTO_IP_UNAVAILABLE;
     }
+    if (contexts.truncated) {
+        fprintf(stderr, "auto-ip: usable IPv4 context list exceeded static capacity\n");
+        return EXIT_AUTO_IP_PROBE_FAILED;
+    }
     sort_iface_contexts(&contexts);
     if (print_iface_context_cidrs(stream, &contexts) != 0) {
         return EXIT_AUTO_IP_PROBE_FAILED;
@@ -549,6 +565,10 @@ static int print_smb_bind_interfaces_with_provider(FILE *stream,
     if (!has_samba_address) {
         return EXIT_AUTO_IP_UNAVAILABLE;
     }
+    if (links.truncated) {
+        fprintf(stderr, "auto-ip: Samba bind interface list exceeded static capacity\n");
+        return EXIT_AUTO_IP_PROBE_FAILED;
+    }
     if (print_smb_link_bind_tokens(stream, &links) != 0) {
         return EXIT_AUTO_IP_PROBE_FAILED;
     }
@@ -576,6 +596,10 @@ static int print_mdns_socket_families_with_provider(FILE *stream,
         return EXIT_AUTO_IP_UNAVAILABLE;
     }
     filter_advertise_link_contexts(&links, &all_links);
+    if (all_links.truncated || links.truncated) {
+        fprintf(stderr, "auto-ip: mDNS socket family link list exceeded static capacity\n");
+        return EXIT_AUTO_IP_PROBE_FAILED;
+    }
     if (links.count == 0) {
         return EXIT_AUTO_IP_UNAVAILABLE;
     }
@@ -603,7 +627,7 @@ static int print_mdns_socket_families_with_provider(FILE *stream,
 }
 
 static int open_dualstack_mdns_sockets(int shared_bind,
-                                       const struct link_context_set *links,
+                                       struct link_context_set *links,
                                        int log_bind_errors,
                                        struct mdns_socket_pair *out);
 static void close_mdns_socket_pair(struct mdns_socket_pair *sockets);
@@ -611,6 +635,9 @@ static int set_outbound_multicast_interface(int sockfd, uint32_t ipv4_addr, cons
                                             int log_success, int log_errors);
 static int set_outbound_multicast_interface6(int sockfd, unsigned int ifindex, const char *socket_role,
                                              int log_success, int log_errors);
+static void drop_mdns_multicast_group_best_effort(int sockfd, uint32_t ipv4_addr, const char *socket_role);
+static void drop_mdns_multicast_group6_best_effort(int sockfd, unsigned int ifindex, const char *ifname,
+                                                   const char *socket_role);
 
 static void log_startup_config(const struct config *cfg, int shared_bind, int auto_ip) {
     char ipv4_buf[INET_ADDRSTRLEN];
@@ -774,6 +801,7 @@ static struct service_record *find_or_add_record(struct service_record_set *set,
         return record;
     }
     if (set->count >= SNAPSHOT_MAX_RECORDS) {
+        set->truncated = 1;
         return NULL;
     }
     record = &set->records[set->count++];
@@ -1965,8 +1993,12 @@ static int load_snapshot_file(const char *path, struct service_record_set *out) 
                 fclose(fp);
                 return -1;
             }
-            if (out->count >= SNAPSHOT_MAX_RECORDS ||
-                build_instance_fqdn(current.instance_fqdn, sizeof(current.instance_fqdn), current.instance_name, current.service_type) != 0 ||
+            if (out->count >= SNAPSHOT_MAX_RECORDS) {
+                out->truncated = 1;
+                fclose(fp);
+                return -1;
+            }
+            if (build_instance_fqdn(current.instance_fqdn, sizeof(current.instance_fqdn), current.instance_name, current.service_type) != 0 ||
                 build_host_label_from_fqdn(current.host_label, sizeof(current.host_label), current.host_fqdn) != 0) {
                 fclose(fp);
                 return -1;
@@ -2384,6 +2416,7 @@ static int filter_records_by_host(struct service_record_set *out, const struct s
             continue;
         }
         if (out->count >= SNAPSHOT_MAX_RECORDS) {
+            out->truncated = 1;
             break;
         }
         out->records[out->count++] = *record;
@@ -2470,6 +2503,7 @@ static void send_capture_query_to_all_links(const struct mdns_socket_pair *socke
 static int capture_mdns_snapshot_links_raw(struct service_record_set *out,
                                            const struct link_context_set *links) {
     struct mdns_socket_pair sockets;
+    struct link_context_set socket_links;
     struct sockaddr_in mdns_dest4;
     struct sockaddr_in6 mdns_dest6;
     size_t i;
@@ -2477,9 +2511,10 @@ static int capture_mdns_snapshot_links_raw(struct service_record_set *out,
 
     memset(out, 0, sizeof(*out));
     memset(&service_types, 0, sizeof(service_types));
+    socket_links = *links;
     sockets.ipv4_fd = -1;
     sockets.ipv6_fd = -1;
-    if (open_dualstack_mdns_sockets(1, links, 1, &sockets) != 0) {
+    if (open_dualstack_mdns_sockets(1, &socket_links, 1, &sockets) != 0) {
         return -1;
     }
 
@@ -2493,17 +2528,17 @@ static int capture_mdns_snapshot_links_raw(struct service_record_set *out,
     mdns_dest6.sin6_port = htons(MDNS_PORT);
     (void)inet_pton(AF_INET6, MDNS_GROUP_V6, &mdns_dest6.sin6_addr);
 
-    send_capture_query_to_all_links(&sockets, links, &mdns_dest4, &mdns_dest6, "_services._dns-sd._udp.local.", DNS_TYPE_PTR);
+    send_capture_query_to_all_links(&sockets, &socket_links, &mdns_dest4, &mdns_dest6, "_services._dns-sd._udp.local.", DNS_TYPE_PTR);
     (void)collect_mdns_responses_pair(&sockets, SNAPSHOT_CAPTURE_STEP_SECONDS, out, &service_types);
 
     for (i = 0; i < service_types.count; i++) {
-        send_capture_query_to_all_links(&sockets, links, &mdns_dest4, &mdns_dest6, service_types.types[i], DNS_TYPE_PTR);
+        send_capture_query_to_all_links(&sockets, &socket_links, &mdns_dest4, &mdns_dest6, service_types.types[i], DNS_TYPE_PTR);
     }
     (void)collect_mdns_responses_pair(&sockets, SNAPSHOT_CAPTURE_STEP_SECONDS, out, &service_types);
 
     for (i = 0; i < out->count; i++) {
-        send_capture_query_to_all_links(&sockets, links, &mdns_dest4, &mdns_dest6, out->records[i].instance_fqdn, DNS_TYPE_SRV);
-        send_capture_query_to_all_links(&sockets, links, &mdns_dest4, &mdns_dest6, out->records[i].instance_fqdn, DNS_TYPE_TXT);
+        send_capture_query_to_all_links(&sockets, &socket_links, &mdns_dest4, &mdns_dest6, out->records[i].instance_fqdn, DNS_TYPE_SRV);
+        send_capture_query_to_all_links(&sockets, &socket_links, &mdns_dest4, &mdns_dest6, out->records[i].instance_fqdn, DNS_TYPE_TXT);
     }
     (void)collect_mdns_responses_pair(&sockets, SNAPSHOT_CAPTURE_STEP_SECONDS, out, &service_types);
     close_mdns_socket_pair(&sockets);
@@ -2577,8 +2612,12 @@ static void append_snapshot_records_unique(struct service_record_set *dst, const
                 break;
             }
         }
-        if (!exists && dst->count < SNAPSHOT_MAX_RECORDS) {
-            dst->records[dst->count++] = src->records[i];
+        if (!exists) {
+            if (dst->count < SNAPSHOT_MAX_RECORDS) {
+                dst->records[dst->count++] = src->records[i];
+            } else {
+                dst->truncated = 1;
+            }
         }
     }
 }
@@ -3129,6 +3168,58 @@ static void close_mdns_socket_pair(struct mdns_socket_pair *sockets) {
     }
 }
 
+static void init_mdns_membership_delta(struct mdns_membership_delta *delta) {
+    memset(delta, 0, sizeof(*delta));
+}
+
+static int record_mdns_membership_ipv4(struct mdns_membership_delta *delta, uint32_t ipv4_addr) {
+    if (delta == NULL) {
+        return 0;
+    }
+    if (delta->ipv4_count >= MAX_IFACE_CONTEXTS) {
+        return -1;
+    }
+    delta->ipv4[delta->ipv4_count++] = ipv4_addr;
+    return 0;
+}
+
+static int record_mdns_membership_ipv6(struct mdns_membership_delta *delta, unsigned int ifindex, const char *ifname) {
+    if (delta == NULL) {
+        return 0;
+    }
+    if (delta->ipv6_count >= MAX_IFACE_CONTEXTS) {
+        return -1;
+    }
+    delta->ipv6_ifindex[delta->ipv6_count] = ifindex;
+    if (ifname != NULL) {
+        strncpy(delta->ipv6_name[delta->ipv6_count], ifname, sizeof(delta->ipv6_name[delta->ipv6_count]) - 1);
+    }
+    delta->ipv6_count++;
+    return 0;
+}
+
+static void rollback_mdns_membership_delta(struct mdns_socket_pair *sockets,
+                                           const struct mdns_membership_delta *delta) {
+    size_t i;
+
+    if (delta == NULL) {
+        return;
+    }
+    if (sockets->ipv4_fd >= 0) {
+        for (i = delta->ipv4_count; i > 0; i--) {
+            drop_mdns_multicast_group_best_effort(sockets->ipv4_fd, delta->ipv4[i - 1], "runtime");
+        }
+    }
+    if (sockets->ipv6_fd >= 0) {
+        for (i = delta->ipv6_count; i > 0; i--) {
+            drop_mdns_multicast_group6_best_effort(sockets->ipv6_fd,
+                                                   delta->ipv6_ifindex[i - 1],
+                                                   delta->ipv6_name[i - 1],
+                                                   "runtime");
+        }
+    }
+}
+
 static int open_bound_mdns_socket6(int shared_bind, int log_bind_errors) {
     int sockfd;
     int yes = 1;
@@ -3336,7 +3427,8 @@ static int link_set_has_ipv6_membership(const struct link_context_set *set, unsi
 static int prepare_mdns_socket4_memberships(int sockfd,
                                             const struct link_context_set *old_links,
                                             const struct link_context_set *new_links,
-                                            const char *socket_role) {
+                                            const char *socket_role,
+                                            struct mdns_membership_delta *delta) {
     size_t i;
     uint32_t first_ipv4 = 0;
 
@@ -3353,6 +3445,11 @@ static int prepare_mdns_socket4_memberships(int sockfd,
         if (join_mdns_multicast_group(sockfd, new_links->links[i].ipv4[0].addr, socket_role) != 0) {
             return -1;
         }
+        if (record_mdns_membership_ipv4(delta, new_links->links[i].ipv4[0].addr) != 0) {
+            drop_mdns_multicast_group_best_effort(sockfd, new_links->links[i].ipv4[0].addr, socket_role);
+            errno = ENOMEM;
+            return -1;
+        }
     }
     if (first_ipv4 == 0) {
         errno = EADDRNOTAVAIL;
@@ -3364,7 +3461,8 @@ static int prepare_mdns_socket4_memberships(int sockfd,
 static int prepare_mdns_socket6_memberships(int sockfd,
                                             const struct link_context_set *old_links,
                                             const struct link_context_set *new_links,
-                                            const char *socket_role) {
+                                            const char *socket_role,
+                                            struct mdns_membership_delta *delta) {
     size_t i;
     unsigned int first_ifindex = 0;
 
@@ -3381,6 +3479,14 @@ static int prepare_mdns_socket6_memberships(int sockfd,
         if (join_mdns_multicast_group6(sockfd, new_links->links[i].ifindex, new_links->links[i].name, socket_role) != 0) {
             return -1;
         }
+        if (record_mdns_membership_ipv6(delta, new_links->links[i].ifindex, new_links->links[i].name) != 0) {
+            drop_mdns_multicast_group6_best_effort(sockfd,
+                                                   new_links->links[i].ifindex,
+                                                   new_links->links[i].name,
+                                                   socket_role);
+            errno = ENOMEM;
+            return -1;
+        }
     }
     if (first_ifindex == 0) {
         errno = EADDRNOTAVAIL;
@@ -3390,11 +3496,12 @@ static int prepare_mdns_socket6_memberships(int sockfd,
 }
 
 static int open_dualstack_mdns_sockets(int shared_bind,
-                                       const struct link_context_set *links,
+                                       struct link_context_set *links,
                                        int log_bind_errors,
                                        struct mdns_socket_pair *out) {
     int need_ipv4 = link_contexts_need_ipv4_socket(links);
     int need_ipv6 = link_contexts_need_ipv6_socket(links);
+    int ipv6_errno = 0;
 
     out->ipv4_fd = -1;
     out->ipv6_fd = -1;
@@ -3414,7 +3521,20 @@ static int open_dualstack_mdns_sockets(int shared_bind,
         out->ipv6_fd = open_bound_mdns_socket6(shared_bind, log_bind_errors);
         if (out->ipv6_fd < 0 ||
             configure_mdns_socket6_for_links(out->ipv6_fd, links, "runtime") != 0) {
+            ipv6_errno = errno;
+            if (out->ipv6_fd >= 0) {
+                close(out->ipv6_fd);
+                out->ipv6_fd = -1;
+            }
+            if (need_ipv4 && out->ipv4_fd >= 0) {
+                fprintf(stderr,
+                        "warning: mdns runtime socket: IPv6 setup failed (%s); continuing with IPv4 mDNS\n",
+                        strerror(ipv6_errno));
+                disable_link_contexts_mdns_ipv6_transport(links);
+                return 0;
+            }
             close_mdns_socket_pair(out);
+            errno = ipv6_errno;
             return -1;
         }
     }
@@ -3422,7 +3542,7 @@ static int open_dualstack_mdns_sockets(int shared_bind,
 }
 
 static int acquire_dualstack_mdns_sockets(int shared_bind,
-                                          const struct link_context_set *links,
+                                          struct link_context_set *links,
                                           struct mdns_socket_pair *out) {
     static const unsigned int retry_delays_ms[TAKEOVER_RETRY_COUNT] = {0, 100, 200, 300, 400, 500};
     size_t i;
@@ -3767,24 +3887,27 @@ static int append_generated_base_records(uint8_t *buf, size_t *off, size_t cap, 
     return 0;
 }
 
-static int host_already_announced(char announced_hosts[][MAX_NAME], size_t announced_count, const char *host_fqdn) {
+struct announced_host_set {
+    const char *hosts[SNAPSHOT_MAX_RECORDS];
+    size_t count;
+};
+
+static int host_already_announced(const struct announced_host_set *set, const char *host_fqdn) {
     size_t i;
 
-    for (i = 0; i < announced_count; i++) {
-        if (name_equals(announced_hosts[i], host_fqdn)) {
+    for (i = 0; i < set->count; i++) {
+        if (name_equals(set->hosts[i], host_fqdn)) {
             return 1;
         }
     }
     return 0;
 }
 
-static int remember_announced_host(char announced_hosts[][MAX_NAME], size_t *announced_count, const char *host_fqdn) {
-    if (*announced_count >= SNAPSHOT_MAX_RECORDS) {
+static int remember_announced_host(struct announced_host_set *set, const char *host_fqdn) {
+    if (set->count >= SNAPSHOT_MAX_RECORDS) {
         return -1;
     }
-    strncpy(announced_hosts[*announced_count], host_fqdn, MAX_NAME - 1);
-    announced_hosts[*announced_count][MAX_NAME - 1] = '\0';
-    (*announced_count)++;
+    set->hosts[set->count++] = host_fqdn;
     return 0;
 }
 
@@ -3800,10 +3923,10 @@ static int send_announcement_any(int sockfd,
     size_t off;
     int answers;
     size_t i;
-    char announced_hosts[SNAPSHOT_MAX_RECORDS][MAX_NAME];
-    size_t announced_host_count = 0;
+    struct announced_host_set announced_hosts;
     static int logged_duplicate_host_suppression = 0;
 
+    memset(&announced_hosts, 0, sizeof(announced_hosts));
     init_announcement_packet(&off, &answers);
     if (append_generated_base_records(buf, &off, sizeof(buf), cfg, response_link, 1, 1, ttl, &answers) != 0) {
         log_packet_build_failure("announcement", "add_core_records", off, answers, use_snapshot_records);
@@ -3829,8 +3952,7 @@ static int send_announcement_any(int sockfd,
                 return -1;
             }
             include_host_a = snapshot_records->records[i].host_fqdn[0] != '\0' &&
-                             !host_already_announced(announced_hosts, announced_host_count,
-                                                     snapshot_records->records[i].host_fqdn);
+                             !host_already_announced(&announced_hosts, snapshot_records->records[i].host_fqdn);
             if (include_host_a) {
                 before_host_a_off = off;
                 before_host_a_answers = answers;
@@ -3848,8 +3970,7 @@ static int send_announcement_any(int sockfd,
                         return -1;
                     }
                 }
-                if (remember_announced_host(announced_hosts, &announced_host_count,
-                                            snapshot_records->records[i].host_fqdn) != 0) {
+                if (remember_announced_host(&announced_hosts, snapshot_records->records[i].host_fqdn) != 0) {
                     log_packet_build_failure("announcement", "remember_announced_host", off, answers, use_snapshot_records);
                     return -1;
                 }
@@ -3922,6 +4043,331 @@ static int query_routes_have_destination(const struct query_answer_routes *route
         }
     }
     return 0;
+}
+
+static int known_answer_ttl_is_fresh(uint32_t known_ttl, uint32_t advertised_ttl) {
+    return known_ttl > advertised_ttl / 2;
+}
+
+static int known_answer_rdata_matches_name(const uint8_t *packet,
+                                           size_t packet_len,
+                                           size_t rdata_cursor,
+                                           const char *expected_name) {
+    char name[MAX_NAME];
+
+    if (decode_name(packet, packet_len, &rdata_cursor, name, sizeof(name)) != 0) {
+        return 0;
+    }
+    return name_equals(name, expected_name);
+}
+
+static int known_answer_rdata_matches_srv(const uint8_t *packet,
+                                          size_t packet_len,
+                                          size_t rdata_cursor,
+                                          uint16_t rdlength,
+                                          const char *expected_target,
+                                          uint16_t expected_port) {
+    uint16_t port;
+    char target[MAX_NAME];
+    size_t target_cursor;
+
+    if (rdlength < 6 || rdata_cursor + rdlength > packet_len) {
+        return 0;
+    }
+    memcpy(&port, packet + rdata_cursor + 4, 2);
+    if (ntohs(port) != expected_port) {
+        return 0;
+    }
+    target_cursor = rdata_cursor + 6;
+    if (decode_name(packet, packet_len, &target_cursor, target, sizeof(target)) != 0) {
+        return 0;
+    }
+    return name_equals(target, expected_target);
+}
+
+struct known_answer_address_coverage {
+    uint32_t host_a;
+    uint32_t host_aaaa;
+    uint32_t snapshot_a[SNAPSHOT_MAX_RECORDS];
+    uint32_t snapshot_aaaa[SNAPSHOT_MAX_RECORDS];
+};
+
+static uint32_t link_ipv4_advertise_mask(const struct link_context *link) {
+    uint32_t mask = 0;
+    size_t i;
+
+    if (link == NULL) {
+        return 0;
+    }
+    for (i = 0; i < link->ipv4_count && i < 32; i++) {
+        mask |= (uint32_t)1 << i;
+    }
+    return mask;
+}
+
+static uint32_t link_ipv6_advertise_mask(const struct link_context *link) {
+    uint32_t mask = 0;
+    size_t i;
+
+    if (link == NULL) {
+        return 0;
+    }
+    for (i = 0; i < link->ipv6_count && i < 32; i++) {
+        if (!link_ipv6_addr_is_samba_bindable(&link->ipv6[i])) {
+            continue;
+        }
+        mask |= (uint32_t)1 << i;
+    }
+    return mask;
+}
+
+static int known_answer_mask_covers_all(uint32_t known_mask, uint32_t advertised_mask) {
+    return advertised_mask != 0 && (known_mask & advertised_mask) == advertised_mask;
+}
+
+static uint32_t known_answer_rdata_link_ipv4_mask(const uint8_t *packet,
+                                                  size_t packet_len,
+                                                  size_t rdata_cursor,
+                                                  uint16_t rdlength,
+                                                  const struct link_context *link) {
+    uint32_t ipv4_addr;
+    size_t i;
+
+    if (link == NULL || rdlength != 4 || rdata_cursor + 4 > packet_len) {
+        return 0;
+    }
+    memcpy(&ipv4_addr, packet + rdata_cursor, sizeof(ipv4_addr));
+    for (i = 0; i < link->ipv4_count && i < 32; i++) {
+        if (link->ipv4[i].addr == ipv4_addr) {
+            return (uint32_t)1 << i;
+        }
+    }
+    return 0;
+}
+
+static uint32_t known_answer_rdata_link_ipv6_mask(const uint8_t *packet,
+                                                  size_t packet_len,
+                                                  size_t rdata_cursor,
+                                                  uint16_t rdlength,
+                                                  const struct link_context *link) {
+    size_t i;
+
+    if (link == NULL || rdlength != 16 || rdata_cursor + 16 > packet_len) {
+        return 0;
+    }
+    for (i = 0; i < link->ipv6_count && i < 32; i++) {
+        if (!link_ipv6_addr_is_samba_bindable(&link->ipv6[i])) {
+            continue;
+        }
+        if (memcmp(packet + rdata_cursor, link->ipv6[i].addr.s6_addr, 16) == 0) {
+            return (uint32_t)1 << i;
+        }
+    }
+    return 0;
+}
+
+static void suppress_known_answer_generated_routes(struct query_answer_routes *routes,
+                                                   const char *owner,
+                                                   uint16_t type,
+                                                   const uint8_t *packet,
+                                                   size_t packet_len,
+                                                   size_t rdata_cursor,
+                                                   uint16_t rdlength,
+                                                   const char *instance_fqdn,
+                                                   const char *adisk_instance_fqdn,
+                                                   const char *device_info_instance_fqdn,
+                                                   const char *airport_instance_fqdn,
+                                                   const struct config *cfg,
+                                                   const struct link_context *response_link,
+                                                   struct known_answer_address_coverage *coverage,
+                                                   int use_snapshot_records) {
+    uint32_t known_mask;
+
+    if (smb_enabled(cfg)) {
+        if (type == DNS_TYPE_PTR && name_equals(owner, cfg->service_type) &&
+            known_answer_rdata_matches_name(packet, packet_len, rdata_cursor, instance_fqdn)) {
+            routes->smb_ptr = 0;
+        } else if (type == DNS_TYPE_SRV && name_equals(owner, instance_fqdn) &&
+                   known_answer_rdata_matches_srv(packet, packet_len, rdata_cursor, rdlength, cfg->host_fqdn, cfg->port)) {
+            routes->smb_srv = 0;
+        } else if (type == DNS_TYPE_TXT && name_equals(owner, instance_fqdn)) {
+            routes->smb_txt = 0;
+        }
+    }
+    if (adisk_enabled(cfg)) {
+        if (type == DNS_TYPE_PTR && name_equals(owner, cfg->adisk_service_type) &&
+            known_answer_rdata_matches_name(packet, packet_len, rdata_cursor, adisk_instance_fqdn)) {
+            routes->adisk_ptr = 0;
+        } else if (type == DNS_TYPE_SRV && name_equals(owner, adisk_instance_fqdn) &&
+                   known_answer_rdata_matches_srv(packet, packet_len, rdata_cursor, rdlength, cfg->host_fqdn, cfg->adisk_port)) {
+            routes->adisk_srv = 0;
+        } else if (type == DNS_TYPE_TXT && name_equals(owner, adisk_instance_fqdn)) {
+            routes->adisk_txt = 0;
+        }
+    }
+    if (cfg->device_model[0] != '\0') {
+        if (type == DNS_TYPE_PTR && name_equals(owner, cfg->device_info_service_type) &&
+            known_answer_rdata_matches_name(packet, packet_len, rdata_cursor, device_info_instance_fqdn)) {
+            routes->device_info_ptr = 0;
+        } else if (type == DNS_TYPE_SRV && name_equals(owner, device_info_instance_fqdn) &&
+                   known_answer_rdata_matches_srv(packet, packet_len, rdata_cursor, rdlength, cfg->host_fqdn, 0)) {
+            routes->device_info_srv = 0;
+        } else if (type == DNS_TYPE_TXT && name_equals(owner, device_info_instance_fqdn)) {
+            routes->device_info_txt = 0;
+        }
+    }
+    if (!use_snapshot_records && is_airport_enabled(cfg)) {
+        if (type == DNS_TYPE_PTR && name_equals(owner, cfg->airport_service_type) &&
+            known_answer_rdata_matches_name(packet, packet_len, rdata_cursor, airport_instance_fqdn)) {
+            routes->airport_ptr = 0;
+        } else if (type == DNS_TYPE_SRV && name_equals(owner, airport_instance_fqdn) &&
+                   known_answer_rdata_matches_srv(packet, packet_len, rdata_cursor, rdlength, cfg->host_fqdn, cfg->airport_port)) {
+            routes->airport_srv = 0;
+        } else if (type == DNS_TYPE_TXT && name_equals(owner, airport_instance_fqdn)) {
+            routes->airport_txt = 0;
+        }
+    }
+    if (type == DNS_TYPE_A && name_equals(owner, cfg->host_fqdn)) {
+        known_mask = known_answer_rdata_link_ipv4_mask(packet, packet_len, rdata_cursor, rdlength, response_link);
+        if (known_mask != 0) {
+            coverage->host_a |= known_mask;
+            if (known_answer_mask_covers_all(coverage->host_a, link_ipv4_advertise_mask(response_link))) {
+                routes->host_a = 0;
+            }
+        }
+    } else if (type == DNS_TYPE_AAAA && name_equals(owner, cfg->host_fqdn)) {
+        known_mask = known_answer_rdata_link_ipv6_mask(packet, packet_len, rdata_cursor, rdlength, response_link);
+        if (known_mask != 0) {
+            coverage->host_aaaa |= known_mask;
+            if (known_answer_mask_covers_all(coverage->host_aaaa, link_ipv6_advertise_mask(response_link))) {
+                routes->host_aaaa = 0;
+            }
+        }
+    }
+}
+
+static void suppress_known_answer_snapshot_routes(struct query_answer_routes *routes,
+                                                  const char *owner,
+                                                  uint16_t type,
+                                                  const uint8_t *packet,
+                                                  size_t packet_len,
+                                                  size_t rdata_cursor,
+                                                  uint16_t rdlength,
+                                                  const struct link_context *response_link,
+                                                  const struct service_record_set *snapshot_records,
+                                                  struct known_answer_address_coverage *coverage,
+                                                  int use_snapshot_records) {
+    size_t j;
+    uint32_t known_mask;
+
+    if (!use_snapshot_records) {
+        return;
+    }
+    for (j = 0; j < snapshot_records->count; j++) {
+        const struct service_record *record = &snapshot_records->records[j];
+        if (is_suppressed_snapshot_service_type(record->service_type)) {
+            continue;
+        }
+        if (type == DNS_TYPE_PTR && name_equals(owner, record->service_type) &&
+            known_answer_rdata_matches_name(packet, packet_len, rdata_cursor, record->instance_fqdn)) {
+            routes->snapshot_ptr[j] = 0;
+        } else if (type == DNS_TYPE_SRV && name_equals(owner, record->instance_fqdn) &&
+                   known_answer_rdata_matches_srv(packet, packet_len, rdata_cursor, rdlength, record->host_fqdn, record->port)) {
+            routes->snapshot_srv[j] = 0;
+        } else if (type == DNS_TYPE_TXT && name_equals(owner, record->instance_fqdn)) {
+            routes->snapshot_txt[j] = 0;
+        } else if (type == DNS_TYPE_A && name_equals(owner, record->host_fqdn)) {
+            known_mask = known_answer_rdata_link_ipv4_mask(packet, packet_len, rdata_cursor, rdlength, response_link);
+            if (known_mask != 0) {
+                coverage->snapshot_a[j] |= known_mask;
+                if (known_answer_mask_covers_all(coverage->snapshot_a[j], link_ipv4_advertise_mask(response_link))) {
+                    routes->snapshot_a[j] = 0;
+                }
+            }
+        } else if (type == DNS_TYPE_AAAA && name_equals(owner, record->host_fqdn)) {
+            known_mask = known_answer_rdata_link_ipv6_mask(packet, packet_len, rdata_cursor, rdlength, response_link);
+            if (known_mask != 0) {
+                coverage->snapshot_aaaa[j] |= known_mask;
+                if (known_answer_mask_covers_all(coverage->snapshot_aaaa[j], link_ipv6_advertise_mask(response_link))) {
+                    routes->snapshot_aaaa[j] = 0;
+                }
+            }
+        }
+    }
+}
+
+static void suppress_known_answer_routes(const uint8_t *packet,
+                                         size_t packet_len,
+                                         size_t cursor,
+                                         uint16_t answer_count,
+                                         struct query_answer_routes *routes,
+                                         const char *instance_fqdn,
+                                         const char *adisk_instance_fqdn,
+                                         const char *device_info_instance_fqdn,
+                                         const char *airport_instance_fqdn,
+                                         const struct config *cfg,
+                                         const struct link_context *response_link,
+                                         const struct service_record_set *snapshot_records,
+                                         int use_snapshot_records) {
+    uint16_t i;
+    struct known_answer_address_coverage coverage;
+
+    memset(&coverage, 0, sizeof(coverage));
+    for (i = 0; i < answer_count; i++) {
+        char owner[MAX_NAME];
+        uint16_t type;
+        uint16_t rrclass;
+        uint32_t ttl;
+        uint16_t rdlength;
+        size_t rdata_cursor;
+
+        if (decode_name(packet, packet_len, &cursor, owner, sizeof(owner)) != 0 || cursor + 10 > packet_len) {
+            return;
+        }
+        memcpy(&type, packet + cursor, 2);
+        memcpy(&rrclass, packet + cursor + 2, 2);
+        memcpy(&ttl, packet + cursor + 4, 4);
+        memcpy(&rdlength, packet + cursor + 8, 2);
+        cursor += 10;
+        type = ntohs(type);
+        rrclass = ntohs(rrclass);
+        ttl = ntohl(ttl);
+        rdlength = ntohs(rdlength);
+        if (cursor + rdlength > packet_len) {
+            return;
+        }
+        rdata_cursor = cursor;
+        cursor += rdlength;
+        if ((rrclass & 0x7FFF) != DNS_CLASS_IN || !known_answer_ttl_is_fresh(ttl, cfg->ttl)) {
+            continue;
+        }
+        suppress_known_answer_generated_routes(routes,
+                                               owner,
+                                               type,
+                                               packet,
+                                               packet_len,
+                                               rdata_cursor,
+                                               rdlength,
+                                               instance_fqdn,
+                                               adisk_instance_fqdn,
+                                               device_info_instance_fqdn,
+                                               airport_instance_fqdn,
+                                               cfg,
+                                               response_link,
+                                               &coverage,
+                                               use_snapshot_records);
+        suppress_known_answer_snapshot_routes(routes,
+                                              owner,
+                                              type,
+                                              packet,
+                                              packet_len,
+                                              rdata_cursor,
+                                              rdlength,
+                                              response_link,
+                                              snapshot_records,
+                                              &coverage,
+                                              use_snapshot_records);
+    }
 }
 
 static int build_query_response_packet(uint8_t *reply, size_t reply_cap, size_t *reply_len, int *answer_count,
@@ -4085,8 +4531,9 @@ static int build_query_response_packet(uint8_t *reply, size_t reply_cap, size_t 
 
     if (use_snapshot_records) {
         size_t j;
-        char announced_hosts[SNAPSHOT_MAX_RECORDS][MAX_NAME];
-        size_t announced_host_count = 0;
+        struct announced_host_set announced_hosts;
+
+        memset(&announced_hosts, 0, sizeof(announced_hosts));
 
         for (j = 0; j < snapshot_records->count; j++) {
             const struct service_record *record = &snapshot_records->records[j];
@@ -4134,7 +4581,7 @@ static int build_query_response_packet(uint8_t *reply, size_t reply_cap, size_t 
                 answers++;
             }
             if (((routes->snapshot_a[j] | routes->snapshot_aaaa[j]) & route) && record->host_fqdn[0] != '\0' &&
-                !host_already_announced(announced_hosts, announced_host_count, record->host_fqdn)) {
+                !host_already_announced(&announced_hosts, record->host_fqdn)) {
                 int include_a = (routes->snapshot_a[j] & route) != 0;
                 int include_aaaa = (routes->snapshot_aaaa[j] & route) != 0;
                 if (add_snapshot_host_address_records(reply, &off, reply_cap, record, response_link, include_a, include_aaaa, cfg->ttl, &answers) != 0) {
@@ -4142,7 +4589,7 @@ static int build_query_response_packet(uint8_t *reply, size_t reply_cap, size_t 
                     log_packet_build_failure("query_response", "add_snapshot_a", off, answers, use_snapshot_records);
                     return -1;
                 }
-                if (remember_announced_host(announced_hosts, &announced_host_count, record->host_fqdn) != 0) {
+                if (remember_announced_host(&announced_hosts, record->host_fqdn) != 0) {
                     log_packet_build_failure("query_response", "remember_snapshot_a_host", off, answers, use_snapshot_records);
                     return -1;
                 }
@@ -4171,6 +4618,7 @@ static int handle_query_any(int sockfd,
     struct dns_header hdr;
     size_t cursor = sizeof(struct dns_header);
     uint16_t qdcount;
+    uint16_t ancount;
     uint16_t query_id;
     uint8_t reply[BUF_SIZE];
     char instance_fqdn[MAX_NAME];
@@ -4196,6 +4644,7 @@ static int handle_query_any(int sockfd,
     }
 
     qdcount = ntohs(hdr.qdcount);
+    ancount = ntohs(hdr.ancount);
     query_id = hdr.id;
     if (smb_enabled(cfg) &&
         build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg->instance_name, cfg->service_type) != 0) {
@@ -4239,7 +4688,7 @@ static int handle_query_any(int sockfd,
         if (qclass_base != DNS_CLASS_IN) {
             continue;
         }
-        reply_route = (qclass_raw & DNS_CLASS_CACHE_FLUSH) ? MDNS_REPLY_UNICAST : MDNS_REPLY_MULTICAST;
+        reply_route = (qclass_raw & DNS_CLASS_QU) ? MDNS_REPLY_UNICAST : MDNS_REPLY_MULTICAST;
 
         if (smb_enabled(cfg) &&
             name_equals(qname, cfg->service_type) &&
@@ -4352,6 +4801,20 @@ static int handle_query_any(int sockfd,
             }
         }
     }
+
+    suppress_known_answer_routes(packet,
+                                 packet_len,
+                                 cursor,
+                                 ancount,
+                                 &routes,
+                                 instance_fqdn,
+                                 adisk_instance_fqdn,
+                                 device_info_instance_fqdn,
+                                 airport_instance_fqdn,
+                                 cfg,
+                                 response_link,
+                                 snapshot_records,
+                                 use_snapshot_records);
 
     if (query_routes_have_destination(&routes, snapshot_records, use_snapshot_records, MDNS_REPLY_UNICAST)) {
         size_t reply_len;
@@ -4696,11 +5159,14 @@ static void send_link_goodbyes_for_missing(const struct mdns_socket_pair *socket
 static int prepare_runtime_mdns_sockets_for_links(int shared_bind,
                                                   struct mdns_socket_pair *sockets,
                                                   const struct link_context_set *old_links,
-                                                  const struct link_context_set *new_links) {
+                                                  struct link_context_set *new_links) {
     int need_ipv4 = link_contexts_need_ipv4_socket(new_links);
     int need_ipv6 = link_contexts_need_ipv6_socket(new_links);
     int opened_ipv4 = 0;
     int opened_ipv6 = 0;
+    struct mdns_membership_delta delta;
+
+    init_mdns_membership_delta(&delta);
 
     if (!need_ipv4 && !need_ipv6) {
         errno = EADDRNOTAVAIL;
@@ -4717,28 +5183,52 @@ static int prepare_runtime_mdns_sockets_for_links(int shared_bind,
     if (need_ipv6 && sockets->ipv6_fd < 0) {
         sockets->ipv6_fd = open_bound_mdns_socket6(shared_bind, 1);
         if (sockets->ipv6_fd < 0) {
-            goto fail;
+            if (need_ipv4 && sockets->ipv4_fd >= 0) {
+                fprintf(stderr,
+                        "warning: mdns runtime socket: IPv6 socket open failed (%s); continuing with IPv4 mDNS\n",
+                        strerror(errno));
+                disable_link_contexts_mdns_ipv6_transport(new_links);
+                need_ipv6 = 0;
+            } else {
+                goto fail;
+            }
         }
-        opened_ipv6 = 1;
+        if (sockets->ipv6_fd >= 0) {
+            opened_ipv6 = 1;
+        }
     }
 
     if (need_ipv4 &&
         prepare_mdns_socket4_memberships(sockets->ipv4_fd,
                                          opened_ipv4 ? NULL : old_links,
                                          new_links,
-                                         "runtime") != 0) {
+                                         "runtime",
+                                         &delta) != 0) {
         goto fail;
     }
     if (need_ipv6 &&
         prepare_mdns_socket6_memberships(sockets->ipv6_fd,
                                          opened_ipv6 ? NULL : old_links,
                                          new_links,
-                                         "runtime") != 0) {
+                                         "runtime",
+                                         &delta) != 0) {
+        if (need_ipv4 && sockets->ipv4_fd >= 0) {
+            fprintf(stderr,
+                    "warning: mdns runtime socket: IPv6 membership update failed (%s); continuing with IPv4 mDNS\n",
+                    strerror(errno));
+            disable_link_contexts_mdns_ipv6_transport(new_links);
+            if (opened_ipv6 && sockets->ipv6_fd >= 0) {
+                close(sockets->ipv6_fd);
+                sockets->ipv6_fd = -1;
+            }
+            return 0;
+        }
         goto fail;
     }
     return 0;
 
 fail:
+    rollback_mdns_membership_delta(sockets, &delta);
     if (opened_ipv4 && sockets->ipv4_fd >= 0) {
         close(sockets->ipv4_fd);
         sockets->ipv4_fd = -1;
@@ -4799,20 +5289,23 @@ static int apply_runtime_link_change(int shared_bind,
                                      const struct config *cfg,
                                      const struct service_record_set *snapshot_records,
                                      int use_snapshot_records) {
-    if (prepare_runtime_mdns_sockets_for_links(shared_bind, sockets, active_links, new_links) != 0) {
+    struct link_context_set applied_links;
+
+    applied_links = *new_links;
+    if (prepare_runtime_mdns_sockets_for_links(shared_bind, sockets, active_links, &applied_links) != 0) {
         return -1;
     }
     send_link_goodbyes_for_missing(sockets,
                                    active_links,
-                                   new_links,
+                                   &applied_links,
                                    dest4,
                                    dest6,
                                    cfg,
                                    snapshot_records,
                                    use_snapshot_records);
-    retire_runtime_mdns_memberships_for_missing(sockets, active_links, new_links);
-    close_unused_runtime_mdns_socket_families(sockets, new_links);
-    *active_links = *new_links;
+    retire_runtime_mdns_memberships_for_missing(sockets, active_links, &applied_links);
+    close_unused_runtime_mdns_socket_families(sockets, &applied_links);
+    *active_links = applied_links;
     return 0;
 }
 

@@ -29,6 +29,7 @@ struct iface_context {
 struct iface_context_set {
     struct iface_context contexts[MAX_IFACE_CONTEXTS];
     size_t count;
+    int truncated;
 };
 
 struct link_ipv4_addr {
@@ -47,6 +48,7 @@ struct link_context {
     char name[IFNAMSIZ];
     int flags;
     unsigned int ifindex;
+    int mdns_ipv6_transport;
     struct link_ipv4_addr ipv4[MAX_LINK_IPV4_ADDRS];
     size_t ipv4_count;
     struct link_ipv6_addr ipv6[MAX_LINK_IPV6_ADDRS];
@@ -56,6 +58,7 @@ struct link_context {
 struct link_context_set {
     struct link_context links[MAX_IFACE_CONTEXTS];
     size_t count;
+    int truncated;
 };
 
 struct ifconf_entry_view {
@@ -127,6 +130,7 @@ static int TC_AUTO_IP_UNUSED ifreq_table_uses_fixed_entries(size_t ifc_len) {
 static size_t TC_AUTO_IP_UNUSED ifreq_sockaddr_len(const struct ifreq *ifr, size_t remaining) {
     size_t sockaddr_len = sizeof(struct sockaddr);
 
+    (void)ifr;
     if (remaining < IFNAMSIZ + sizeof(struct sockaddr)) {
         return 0;
     }
@@ -517,6 +521,7 @@ static int TC_AUTO_IP_UNUSED append_iface_context(struct iface_context_set *out,
         }
     }
     if (out->count >= MAX_IFACE_CONTEXTS) {
+        out->truncated = 1;
         return 0;
     }
 
@@ -733,6 +738,7 @@ static struct link_context TC_AUTO_IP_UNUSED *find_or_add_link_context(struct li
         }
     }
     if (out->count >= MAX_IFACE_CONTEXTS) {
+        out->truncated = 1;
         return NULL;
     }
     ctx = &out->links[out->count++];
@@ -780,6 +786,7 @@ static int TC_AUTO_IP_UNUSED append_link_ipv4(struct link_context_set *out,
         return 0;
     }
     if (ctx->ipv4_count >= MAX_LINK_IPV4_ADDRS) {
+        out->truncated = 1;
         return 0;
     }
     pos = ctx->ipv4_count++;
@@ -791,12 +798,13 @@ static int TC_AUTO_IP_UNUSED append_link_ipv4(struct link_context_set *out,
     return 1;
 }
 
-static int TC_AUTO_IP_UNUSED append_link_ipv6(struct link_context_set *out,
-                                             const char *name,
-                                             const struct in6_addr *addr,
-                                             int prefix_len,
-                                             unsigned int scope_id,
-                                             int flags) {
+static int TC_AUTO_IP_UNUSED append_link_ipv6_with_transport(struct link_context_set *out,
+                                                            const char *name,
+                                                            const struct in6_addr *addr,
+                                                            int prefix_len,
+                                                            unsigned int scope_id,
+                                                            int flags,
+                                                            int mdns_ipv6_transport) {
     struct link_context *ctx;
     size_t pos;
 
@@ -808,10 +816,14 @@ static int TC_AUTO_IP_UNUSED append_link_ipv6(struct link_context_set *out,
         return 0;
     }
     if (ctx->ipv6_count >= MAX_LINK_IPV6_ADDRS) {
+        out->truncated = 1;
         return 0;
     }
     if (ctx->ifindex == 0 && scope_id != 0) {
         ctx->ifindex = scope_id;
+    }
+    if (mdns_ipv6_transport) {
+        ctx->mdns_ipv6_transport = 1;
     }
     pos = ctx->ipv6_count++;
     ctx->ipv6[pos].addr = *addr;
@@ -819,6 +831,15 @@ static int TC_AUTO_IP_UNUSED append_link_ipv6(struct link_context_set *out,
     ctx->ipv6[pos].prefix_len = prefix_len >= 0 && prefix_len <= 128 ? prefix_len : -1;
     ctx->ipv6[pos].link_local = ipv6_is_link_local_addr(addr);
     return 1;
+}
+
+static int TC_AUTO_IP_UNUSED append_link_ipv6(struct link_context_set *out,
+                                             const char *name,
+                                             const struct in6_addr *addr,
+                                             int prefix_len,
+                                             unsigned int scope_id,
+                                             int flags) {
+    return append_link_ipv6_with_transport(out, name, addr, prefix_len, scope_id, flags, 1);
 }
 
 static int TC_AUTO_IP_UNUSED link_ipv6_addr_is_samba_bindable(const struct link_ipv6_addr *addr) {
@@ -860,7 +881,15 @@ static int TC_AUTO_IP_UNUSED link_context_has_advertisable_address(const struct 
 }
 
 static int TC_AUTO_IP_UNUSED link_context_has_mdns_ipv6_transport(const struct link_context *ctx) {
-    return ctx->ifindex != 0 && ctx->ipv6_count > 0;
+    return ctx->mdns_ipv6_transport && ctx->ifindex != 0 && ctx->ipv6_count > 0;
+}
+
+static void TC_AUTO_IP_UNUSED disable_link_contexts_mdns_ipv6_transport(struct link_context_set *set) {
+    size_t i;
+
+    for (i = 0; i < set->count; i++) {
+        set->links[i].mdns_ipv6_transport = 0;
+    }
 }
 
 static int TC_AUTO_IP_UNUSED link_context_is_advertise_eligible(const struct link_context *ctx) {
@@ -877,6 +906,7 @@ static void TC_AUTO_IP_UNUSED filter_advertise_link_contexts(struct link_context
             continue;
         }
         if (out->count >= MAX_IFACE_CONTEXTS) {
+            out->truncated = 1;
             break;
         }
         out->links[out->count++] = in->links[i];
@@ -891,6 +921,7 @@ static int TC_AUTO_IP_UNUSED link_context_identity_equal(const struct link_conte
     if (strcmp(a->name, b->name) != 0 ||
         a->flags != b->flags ||
         a->ifindex != b->ifindex ||
+        a->mdns_ipv6_transport != b->mdns_ipv6_transport ||
         a->ipv4_count != b->ipv4_count ||
         a->ipv6_count != b->ipv6_count) {
         return 0;
@@ -1112,12 +1143,13 @@ static int TC_AUTO_IP_UNUSED collect_link_contexts_with_policy(struct link_conte
             memset(&sin6, 0, sizeof(sin6));
             memcpy(&sin6, entry.addr, sizeof(sin6));
             prefix_len = get_ipv6_prefix_len(sockfd6, entry.name, &sin6);
-            append_link_ipv6(out,
-                             entry.name,
-                             &sin6.sin6_addr,
-                             prefix_len,
-                             (unsigned int)sin6.sin6_scope_id,
-                             flags);
+            append_link_ipv6_with_transport(out,
+                                            entry.name,
+                                            &sin6.sin6_addr,
+                                            prefix_len,
+                                            (unsigned int)sin6.sin6_scope_id,
+                                            flags,
+                                            sockfd6 >= 0);
 #if defined(AF_LINK) && (defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__))
         } else if (entry.addr->sa_family == AF_LINK && entry.addr_len >= sizeof(struct sockaddr_dl)) {
             const struct sockaddr_dl *sdl = (const struct sockaddr_dl *)entry.addr;
@@ -1178,12 +1210,13 @@ static void TC_AUTO_IP_UNUSED log_link_contexts(const char *prefix, const struct
     for (i = 0; i < set->count; i++) {
         size_t j;
         const struct link_context *ctx = &set->links[i];
-        fprintf(stderr, "%s: link[%lu] iface=%s flags=0x%x ifindex=%u score=%d ipv4=%lu ipv6=%lu\n",
+        fprintf(stderr, "%s: link[%lu] iface=%s flags=0x%x ifindex=%u mdns_ipv6=%d score=%d ipv4=%lu ipv6=%lu\n",
                 prefix,
                 (unsigned long)i,
                 ctx->name,
                 (unsigned int)ctx->flags,
                 ctx->ifindex,
+                ctx->mdns_ipv6_transport,
                 link_context_priority_score(ctx),
                 (unsigned long)ctx->ipv4_count,
                 (unsigned long)ctx->ipv6_count);
