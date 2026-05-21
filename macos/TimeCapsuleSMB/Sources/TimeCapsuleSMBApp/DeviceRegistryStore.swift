@@ -108,13 +108,15 @@ final class DeviceRegistryStore: ObservableObject {
         configuredDevice: ConfiguredDeviceState,
         discoveredDevice: DiscoveredDevice?,
         passwordState: DevicePasswordState,
-        preferredID: DeviceProfile.ID = UUID().uuidString.lowercased()
+        preferredID: DeviceProfile.ID = UUID().uuidString.lowercased(),
+        existingProfileID: DeviceProfile.ID? = nil
     ) async -> DeviceProfile {
         await repository.makeConfiguredDeviceProfile(
             configuredDevice: configuredDevice,
             discoveredDevice: discoveredDevice,
             passwordState: passwordState,
-            preferredID: preferredID
+            preferredID: preferredID,
+            existingProfileID: existingProfileID
         )
     }
 
@@ -302,9 +304,11 @@ private actor DeviceRegistryRepository {
         configuredDevice: ConfiguredDeviceState,
         discoveredDevice: DiscoveredDevice?,
         passwordState: DevicePasswordState,
-        preferredID: DeviceProfile.ID
+        preferredID: DeviceProfile.ID,
+        existingProfileID: DeviceProfile.ID? = nil
     ) -> DeviceProfile {
-        let existing = matchingProfile(host: configuredDevice.host, bonjourFullname: discoveredDevice?.fullname)
+        let existing = existingProfileID.flatMap { id in profiles.first { $0.id == id } }
+            ?? matchingProfile(host: configuredDevice.host, bonjourFullname: discoveredDevice?.fullname)
         var profile = DeviceProfile.make(
             id: preferredID,
             configuredDevice: configuredDevice,
@@ -327,7 +331,8 @@ private actor DeviceRegistryRepository {
             configuredDevice: configuredDevice,
             discoveredDevice: discoveredDevice,
             passwordState: passwordState,
-            preferredID: preferredID
+            preferredID: preferredID,
+            existingProfileID: nil
         )
         return try saveProfileMergingDuplicates(profile)
     }

@@ -560,7 +560,8 @@ CONFIG_PROFILES: dict[str, ConfigProfile] = {
         validated_keys=MANAGED_VALIDATED_KEYS,
     ),
     "doctor": ConfigProfile(
-        required_file_values=(*MANAGED_REQUIRED_FILE_KEYS, "TC_PASSWORD"),
+        required_file_values=MANAGED_REQUIRED_FILE_KEYS,
+        required_values=("TC_PASSWORD",),
         validated_keys=MANAGED_VALIDATED_KEYS,
     ),
     "uninstall": ConfigProfile(

@@ -6,7 +6,6 @@ public struct ContentView: View {
     @StateObject private var addDeviceStore: AddDeviceFlowStore
     @StateObject private var dashboardStore: DashboardStore
     @State private var diagnosticsPresented = false
-    @State private var replacementPassword = ""
     @State private var profilePendingDeletion: DeviceProfile?
     @State private var deleteErrorMessage: String?
 
@@ -231,9 +230,8 @@ public struct ContentView: View {
         } else if let profile = appStore.selectedProfile {
             DeviceDashboardView(
                 profile: profile,
-                dashboardStore: dashboardStore,
+                session: dashboardStore.session(for: profile),
                 appStore: appStore,
-                replacementPassword: $replacementPassword,
                 showDiagnostics: {
                     diagnosticsPresented = true
                 }
@@ -508,14 +506,13 @@ private struct DeviceCandidateRow: View {
 
 private struct DeviceDashboardView: View {
     let profile: DeviceProfile
-    @ObservedObject var dashboardStore: DashboardStore
+    @ObservedObject var session: DeviceDashboardSession
     @ObservedObject var appStore: AppStore
-    @Binding var replacementPassword: String
     let showDiagnostics: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Picker("", selection: $dashboardStore.selectedTab) {
+            Picker("", selection: $session.selectedTab) {
                 ForEach(DeviceDashboardTab.allCases) { tab in
                     Text(tab.title).tag(tab)
                 }
@@ -527,17 +524,17 @@ private struct DeviceDashboardView: View {
 
             ScrollView {
                 Group {
-                    switch dashboardStore.selectedTab {
+                    switch session.selectedTab {
                     case .overview:
-                        OverviewTab(profile: profile, dashboardStore: dashboardStore, appStore: appStore, replacementPassword: $replacementPassword)
+                        OverviewTab(profile: profile, session: session, appStore: appStore)
                     case .install:
-                        InstallTab(profile: profile, dashboardStore: dashboardStore, showDiagnostics: showDiagnostics)
+                        InstallTab(profile: profile, session: session, showDiagnostics: showDiagnostics)
                     case .checkup:
-                        CheckupTab(profile: profile, dashboardStore: dashboardStore, showDiagnostics: showDiagnostics)
+                        CheckupTab(profile: profile, session: session, showDiagnostics: showDiagnostics)
                     case .maintenance:
-                        MaintenanceTab(profile: profile, dashboardStore: dashboardStore, showDiagnostics: showDiagnostics)
+                        MaintenanceTab(profile: profile, session: session, showDiagnostics: showDiagnostics)
                     case .advanced:
-                        AdvancedTab(profile: profile, appStore: appStore)
+                        AdvancedTab(profile: profile, session: session, appStore: appStore)
                     }
                 }
                 .padding()
@@ -549,12 +546,11 @@ private struct DeviceDashboardView: View {
 
 private struct OverviewTab: View {
     let profile: DeviceProfile
-    @ObservedObject var dashboardStore: DashboardStore
+    @ObservedObject var session: DeviceDashboardSession
     @ObservedObject var appStore: AppStore
-    @Binding var replacementPassword: String
 
     var body: some View {
-        let summary = dashboardStore.summary(for: profile)
+        let summary = session.summary(for: profile)
         VStack(alignment: .leading, spacing: 16) {
             if let warning = summary.hostWarning {
                 WarningBanner(warning: warning)
@@ -581,26 +577,26 @@ private struct OverviewTab: View {
                 .buttonStyle(.borderedProminent)
 
                 Button {
-                    dashboardStore.runCheckup(profile: profile)
+                    session.runCheckup(profile: profile)
                 } label: {
                     Label(L10n.string("dashboard.action.run_checkup"), systemImage: "stethoscope")
                 }
             }
 
             HStack {
-                SecureField(L10n.string("dashboard.replacement_password"), text: $replacementPassword)
+                SecureField(L10n.string("dashboard.replacement_password"), text: $session.replacementPassword)
                 Button {
                     Task { @MainActor in
-                        try? await appStore.savePassword(replacementPassword, for: profile)
-                        replacementPassword = ""
+                        try? await appStore.savePassword(session.replacementPassword, for: profile)
+                        session.replacementPassword = ""
                     }
                 } label: {
                     Label(L10n.string("dashboard.action.save_password"), systemImage: "key")
                 }
-                .disabled(replacementPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(session.replacementPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
-            if let passwordError = dashboardStore.passwordError {
+            if let passwordError = session.passwordError {
                 Text(passwordError)
                     .foregroundStyle(.red)
             }
@@ -627,15 +623,15 @@ private struct OverviewTab: View {
     private func runPrimary(_ action: DashboardPrimaryAction) {
         switch action {
         case .replacePassword:
-            replacementPassword = ""
+            session.replacementPassword = ""
         case .runCheckup:
-            dashboardStore.runCheckup(profile: profile)
+            session.runCheckup(profile: profile)
         case .viewCheckup:
-            dashboardStore.selectedTab = .checkup
+            session.selectedTab = .checkup
         case .openSMB:
             openSMBAddress()
         case .installSMB:
-            dashboardStore.runInstallPlan(profile: profile)
+            session.runInstallPlan(profile: profile)
         case .addDevice:
             appStore.showAddDevice()
         }
@@ -654,31 +650,31 @@ private struct OverviewTab: View {
 
 private struct InstallTab: View {
     let profile: DeviceProfile
-    @ObservedObject var dashboardStore: DashboardStore
+    @ObservedObject var session: DeviceDashboardSession
     let showDiagnostics: () -> Void
 
     var body: some View {
-        let store = dashboardStore.deployStore
+        let store = session.deployStore
         VStack(alignment: .leading, spacing: 12) {
             Text(L10n.string("dashboard.tab.install"))
                 .font(.title2.weight(.semibold))
             HStack {
-                Toggle(L10n.string("toggle.enable_nbns"), isOn: $dashboardStore.deployStore.nbnsEnabled)
-                Toggle(L10n.string("toggle.no_reboot"), isOn: $dashboardStore.deployStore.noReboot)
-                Toggle(L10n.string("toggle.no_wait"), isOn: $dashboardStore.deployStore.noWait)
-                Toggle(L10n.string("toggle.force_debug_logging"), isOn: $dashboardStore.deployStore.debugLogging)
-                TextField(L10n.string("field.mount_wait"), text: $dashboardStore.deployStore.mountWait)
+                Toggle(L10n.string("toggle.enable_nbns"), isOn: $session.deployStore.nbnsEnabled)
+                Toggle(L10n.string("toggle.no_reboot"), isOn: $session.deployStore.noReboot)
+                Toggle(L10n.string("toggle.no_wait"), isOn: $session.deployStore.noWait)
+                Toggle(L10n.string("toggle.force_debug_logging"), isOn: $session.deployStore.debugLogging)
+                TextField(L10n.string("field.mount_wait"), text: $session.deployStore.mountWait)
                     .frame(width: 150)
             }
             HStack {
                 Button {
-                    dashboardStore.runInstallPlan(profile: profile)
+                    session.runInstallPlan(profile: profile)
                 } label: {
                     Label(L10n.string("deploy.action.plan_install"), systemImage: "doc.text.magnifyingglass")
                 }
                 .disabled(store.isRunning || store.mountWaitValue == nil)
                 Button {
-                    dashboardStore.runInstall(profile: profile)
+                    session.runInstall(profile: profile)
                 } label: {
                     Label(L10n.string("dashboard.action.install_smb"), systemImage: "square.and.arrow.up")
                 }
@@ -727,25 +723,25 @@ private struct InstallTab: View {
             showDiagnostics()
             return
         }
-        _ = dashboardStore.handleRecoveryAction(action, error: error, profile: profile)
+        _ = session.handleRecoveryAction(action, error: error, profile: profile)
     }
 }
 
 private struct CheckupTab: View {
     let profile: DeviceProfile
-    @ObservedObject var dashboardStore: DashboardStore
+    @ObservedObject var session: DeviceDashboardSession
     let showDiagnostics: () -> Void
 
     var body: some View {
-        let store = dashboardStore.doctorStore
+        let store = session.doctorStore
         VStack(alignment: .leading, spacing: 12) {
             Text(L10n.string("dashboard.tab.checkup"))
                 .font(.title2.weight(.semibold))
             HStack {
-                TextField(L10n.string("field.bonjour_timeout"), text: $dashboardStore.doctorStore.bonjourTimeout)
+                TextField(L10n.string("field.bonjour_timeout"), text: $session.doctorStore.bonjourTimeout)
                     .frame(width: 180)
                 Button {
-                    dashboardStore.runCheckup(profile: profile)
+                    session.runCheckup(profile: profile)
                 } label: {
                     Label(L10n.string("dashboard.action.run_checkup"), systemImage: "stethoscope")
                 }
@@ -788,22 +784,22 @@ private struct CheckupTab: View {
             showDiagnostics()
             return
         }
-        _ = dashboardStore.handleRecoveryAction(action, error: error, profile: profile)
+        _ = session.handleRecoveryAction(action, error: error, profile: profile)
     }
 }
 
 private struct MaintenanceTab: View {
     let profile: DeviceProfile
-    @ObservedObject var dashboardStore: DashboardStore
+    @ObservedObject var session: DeviceDashboardSession
     let showDiagnostics: () -> Void
 
     var body: some View {
-        let store = dashboardStore.maintenanceStore
+        let store = session.maintenanceStore
         let presentation = MaintenanceWorkflowPresentation.presentation(for: store.selectedWorkflow)
         VStack(alignment: .leading, spacing: 12) {
             Text(L10n.string("dashboard.tab.maintenance"))
                 .font(.title2.weight(.semibold))
-            Picker(L10n.string("dashboard.tab.maintenance"), selection: $dashboardStore.maintenanceStore.selectedWorkflow) {
+            Picker(L10n.string("dashboard.tab.maintenance"), selection: $session.maintenanceStore.selectedWorkflow) {
                 Text(L10n.string("maintenance.workflow.activate")).tag(MaintenanceWorkflow.activate)
                 Text(L10n.string("maintenance.workflow.uninstall")).tag(MaintenanceWorkflow.uninstall)
                 Text(L10n.string("maintenance.workflow.fsck")).tag(MaintenanceWorkflow.fsck)
@@ -823,10 +819,10 @@ private struct MaintenanceTab: View {
             }
 
             HStack {
-                TextField(L10n.string("field.mount_wait"), text: $dashboardStore.maintenanceStore.mountWait)
+                TextField(L10n.string("field.mount_wait"), text: $session.maintenanceStore.mountWait)
                     .frame(width: 150)
-                Toggle(L10n.string("toggle.no_reboot"), isOn: $dashboardStore.maintenanceStore.noReboot)
-                Toggle(L10n.string("toggle.no_wait"), isOn: $dashboardStore.maintenanceStore.noWait)
+                Toggle(L10n.string("toggle.no_reboot"), isOn: $session.maintenanceStore.noReboot)
+                Toggle(L10n.string("toggle.no_wait"), isOn: $session.maintenanceStore.noWait)
             }
 
             maintenanceControls(store: store)
@@ -848,7 +844,7 @@ private struct MaintenanceTab: View {
             showDiagnostics()
             return
         }
-        _ = dashboardStore.handleRecoveryAction(action, error: error, profile: profile)
+        _ = session.handleRecoveryAction(action, error: error, profile: profile)
     }
 
     @ViewBuilder
@@ -857,12 +853,12 @@ private struct MaintenanceTab: View {
         case .activate:
             HStack {
                 Button(L10n.string("maintenance.action.plan_start_smb")) {
-                    if let password = dashboardStore.maintenancePassword(for: profile) {
+                    if let password = session.maintenancePassword(for: profile) {
                         store.planActivation(password: password, profile: profile)
                     }
                 }
                 Button(L10n.string("maintenance.action.start_smb")) {
-                    if let password = dashboardStore.maintenancePassword(for: profile) {
+                    if let password = session.maintenancePassword(for: profile) {
                         store.runActivation(password: password, profile: profile)
                     }
                 }
@@ -872,12 +868,12 @@ private struct MaintenanceTab: View {
         case .uninstall:
             HStack {
                 Button(L10n.string("maintenance.action.plan_uninstall")) {
-                    if let password = dashboardStore.maintenancePassword(for: profile) {
+                    if let password = session.maintenancePassword(for: profile) {
                         store.planUninstall(password: password, profile: profile)
                     }
                 }
                 Button(L10n.string("maintenance.action.uninstall")) {
-                    if let password = dashboardStore.maintenancePassword(for: profile) {
+                    if let password = session.maintenancePassword(for: profile) {
                         store.runUninstall(password: password, profile: profile)
                     }
                 }
@@ -888,18 +884,18 @@ private struct MaintenanceTab: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Button(L10n.string("maintenance.action.find_volumes")) {
-                        if let password = dashboardStore.maintenancePassword(for: profile) {
+                        if let password = session.maintenancePassword(for: profile) {
                             store.refreshFsckTargets(password: password, profile: profile)
                         }
                     }
                     Button(L10n.string("maintenance.action.plan_disk_repair")) {
-                        if let password = dashboardStore.maintenancePassword(for: profile) {
+                        if let password = session.maintenancePassword(for: profile) {
                             store.planFsck(password: password, profile: profile)
                         }
                     }
                     .disabled(!store.canPlanFsck)
                     Button(L10n.string("maintenance.action.run_disk_repair")) {
-                        if let password = dashboardStore.maintenancePassword(for: profile) {
+                        if let password = session.maintenancePassword(for: profile) {
                             store.runFsck(password: password, profile: profile)
                         }
                     }
@@ -922,7 +918,7 @@ private struct MaintenanceTab: View {
         case .repairXattrs:
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    TextField(L10n.string("field.repair_xattrs_path"), text: $dashboardStore.maintenanceStore.repairPath)
+                    TextField(L10n.string("field.repair_xattrs_path"), text: $session.maintenanceStore.repairPath)
                     Button {
                         chooseRepairPath(store: store)
                     } label: {
@@ -961,12 +957,14 @@ private struct MaintenanceTab: View {
 
 private struct AdvancedTab: View {
     let profile: DeviceProfile
+    @ObservedObject var session: DeviceDashboardSession
     @ObservedObject var appStore: AppStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(L10n.string("dashboard.tab.advanced"))
                 .font(.title2.weight(.semibold))
+            DeviceProfileEditorView(profile: profile, store: session.profileEditorStore)
             SummaryGrid(rows: [
                 (L10n.string("advanced.profile_id"), profile.id),
                 (L10n.string("advanced.config"), profile.configPath),
@@ -974,6 +972,79 @@ private struct AdvancedTab: View {
             ])
             EventList(events: appStore.backend.events)
         }
+    }
+}
+
+private struct DeviceProfileEditorView: View {
+    let profile: DeviceProfile
+    @ObservedObject var store: DeviceProfileEditorStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(L10n.string("profile_editor.title"))
+                .font(.headline)
+
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                GridRow {
+                    Text(L10n.string("profile_editor.display_name"))
+                        .foregroundStyle(.secondary)
+                    TextField(L10n.string("profile_editor.display_name"), text: $store.draft.displayName)
+                        .frame(maxWidth: 360)
+                }
+                GridRow {
+                    Text(L10n.string("dashboard.overview.host"))
+                        .foregroundStyle(.secondary)
+                    TextField(L10n.string("dashboard.overview.host"), text: $store.draft.host)
+                        .frame(maxWidth: 360)
+                }
+                GridRow {
+                    Text(L10n.string("field.mount_wait"))
+                        .foregroundStyle(.secondary)
+                    TextField(L10n.string("field.mount_wait"), text: $store.draft.mountWaitSeconds)
+                        .frame(width: 160)
+                }
+            }
+
+            HStack {
+                Toggle(L10n.string("toggle.enable_nbns"), isOn: $store.draft.nbnsEnabled)
+                Toggle(L10n.string("toggle.force_debug_logging"), isOn: $store.draft.debugLogging)
+            }
+
+            HStack {
+                Button {
+                    Task { @MainActor in
+                        await store.save(profile: profile)
+                    }
+                } label: {
+                    Label(L10n.string("profile_editor.save"), systemImage: "square.and.arrow.down")
+                }
+                .disabled(!store.canSave(profile: profile))
+
+                Button {
+                    store.reset(to: profile)
+                } label: {
+                    Label(L10n.string("profile_editor.reset"), systemImage: "arrow.counterclockwise")
+                }
+                .disabled(store.isRunning)
+
+                Label(store.state.title, systemImage: "circle")
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(store.validationErrors, id: \.self) { validationError in
+                Text(validationError.localizedDescription)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            if let stage = store.currentStage {
+                StageLine(stage: stage)
+            }
+            if let error = store.error {
+                ErrorRecoveryView(error: error) { _ in }
+            }
+        }
+        .padding(.bottom, 8)
     }
 }
 

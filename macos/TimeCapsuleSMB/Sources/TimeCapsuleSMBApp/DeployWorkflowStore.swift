@@ -116,7 +116,7 @@ final class DeployWorkflowStore: ObservableObject {
     }
 
     var mountWaitValue: Int? {
-        nonNegativeInteger(mountWait)
+        ValueParsers.nonNegativeInteger(mountWait)
     }
 
     var canDeploy: Bool {
@@ -373,14 +373,6 @@ final class DeployWorkflowStore: ObservableObject {
         currentStage = nil
         self.state = state
         activeOperation = nil
-    }
-
-    private func nonNegativeInteger(_ text: String) -> Int? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let value = Int(trimmed), value >= 0 else {
-            return nil
-        }
-        return value
     }
 
     private func run(operation: String, params: [String: JSONValue], profile: DeviceProfile?) -> OperationStartResult {

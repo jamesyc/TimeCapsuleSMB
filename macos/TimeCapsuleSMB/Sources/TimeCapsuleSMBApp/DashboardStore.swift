@@ -30,26 +30,33 @@ enum DeviceDashboardTab: String, CaseIterable, Equatable, Identifiable {
 }
 
 @MainActor
-final class DashboardStore: ObservableObject {
+final class DeviceDashboardSession: ObservableObject, Identifiable {
+    let id: DeviceProfile.ID
     @Published var selectedTab: DeviceDashboardTab = .overview
+    @Published var replacementPassword = ""
     @Published private(set) var passwordError: String?
 
     let appStore: AppStore
     var deployStore: DeployWorkflowStore
     var doctorStore: DoctorStore
     var maintenanceStore: MaintenanceStore
+    let profileEditorStore: DeviceProfileEditorStore
 
     private var activeCheckupOperation: ActiveOperation?
     private var activeDeployOperation: ActiveOperation?
     private var cancellables: Set<AnyCancellable> = []
 
-    init(appStore: AppStore) {
+    init(profile: DeviceProfile, appStore: AppStore) {
+        self.id = profile.id
         self.appStore = appStore
         self.deployStore = DeployWorkflowStore(coordinator: appStore.operationCoordinator)
         self.doctorStore = DoctorStore(coordinator: appStore.operationCoordinator)
         self.maintenanceStore = MaintenanceStore(coordinator: appStore.operationCoordinator)
+        self.profileEditorStore = DeviceProfileEditorStore(profile: profile, appStore: appStore)
+        applyProfileSettings(profile.settings)
         forwardChildChanges()
         observeSnapshots()
+        observeProfileEditor()
     }
 
     func summary(for profile: DeviceProfile) -> DeviceDashboardSummary {
@@ -75,9 +82,6 @@ final class DashboardStore: ObservableObject {
         }
         passwordError = nil
         selectedTab = .install
-        deployStore.nbnsEnabled = profile.settings.nbnsEnabled
-        deployStore.debugLogging = profile.settings.debugLogging
-        deployStore.mountWait = String(profile.settings.mountWaitSeconds)
         _ = deployStore.runPlan(password: password, profile: profile)
     }
 
@@ -141,6 +145,13 @@ final class DashboardStore: ObservableObject {
         }
     }
 
+    func applyProfileSettings(_ settings: DeviceProfileSettings) {
+        deployStore.nbnsEnabled = settings.nbnsEnabled
+        deployStore.debugLogging = settings.debugLogging
+        deployStore.mountWait = String(settings.mountWaitSeconds)
+        maintenanceStore.mountWait = String(settings.mountWaitSeconds)
+    }
+
     private func observeSnapshots() {
         doctorStore.$state
             .sink { [weak self] state in
@@ -181,6 +192,15 @@ final class DashboardStore: ObservableObject {
                     guard let self else { return }
                     await self.appStore.deviceRegistry.updatePasswordState(.invalid, for: profileID)
                 }
+            }
+            .store(in: &cancellables)
+    }
+
+    private func observeProfileEditor() {
+        profileEditorStore.$savedProfile
+            .compactMap { $0 }
+            .sink { [weak self] profile in
+                self?.applyProfileSettings(profile.settings)
             }
             .store(in: &cancellables)
     }
@@ -242,6 +262,11 @@ final class DashboardStore: ObservableObject {
                 self?.objectWillChange.send()
             }
             .store(in: &cancellables)
+        profileEditorStore.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
     }
 
     private func updateCheckupSnapshot(state: DoctorWorkflowState) {
@@ -290,6 +315,55 @@ final class DashboardStore: ObservableObject {
                 verified: result.verified,
                 summary: result.message ?? L10n.string("deploy.result.default_message")
             ), for: profile.id)
+        }
+    }
+}
+
+@MainActor
+final class DashboardStore: ObservableObject {
+    let appStore: AppStore
+
+    private var sessions: [DeviceProfile.ID: DeviceDashboardSession] = [:]
+    private var cancellables: Set<AnyCancellable> = []
+
+    init(appStore: AppStore) {
+        self.appStore = appStore
+        appStore.deviceRegistry.$profiles
+            .sink { [weak self] profiles in
+                Task { @MainActor in
+                    self?.pruneSessions(profiles: profiles)
+                }
+            }
+            .store(in: &cancellables)
+        appStore.operationCoordinator.$activeOperation
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.pruneSessions(profiles: self.appStore.deviceRegistry.profiles)
+                }
+            }
+            .store(in: &cancellables)
+    }
+
+    func session(for profile: DeviceProfile) -> DeviceDashboardSession {
+        if let session = sessions[profile.id] {
+            return session
+        }
+        let session = DeviceDashboardSession(profile: profile, appStore: appStore)
+        sessions[profile.id] = session
+        objectWillChange.send()
+        return session
+    }
+
+    func hasSession(for profileID: DeviceProfile.ID) -> Bool {
+        sessions[profileID] != nil
+    }
+
+    private func pruneSessions(profiles: [DeviceProfile]) {
+        let existingIDs = Set(profiles.map(\.id))
+        let activeProfileID = appStore.operationCoordinator.activeOperation?.profileID
+        sessions = sessions.filter { id, _ in
+            existingIDs.contains(id) || id == activeProfileID
         }
     }
 }

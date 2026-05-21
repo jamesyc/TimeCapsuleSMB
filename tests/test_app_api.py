@@ -681,6 +681,43 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(checks.call_args.kwargs["bonjour_timeout"], 2.75)
 
+    def test_doctor_uses_request_credentials_without_requiring_saved_password(self) -> None:
+        collector = CollectingSink()
+        config = AppConfig.from_values(
+            {
+                "TC_HOST": "root@10.0.0.2",
+                "TC_SSH_OPTS": "-o foo",
+            },
+            file_values={
+                "TC_HOST": "root@10.0.0.2",
+                "TC_SSH_OPTS": "-o foo",
+            },
+        )
+
+        def fake_run_doctor_checks(config_arg, **_kwargs):
+            self.assertEqual(config_arg.get("TC_PASSWORD"), "keychain-pw")
+            self.assertFalse(config_arg.has_file_value("TC_PASSWORD"))
+            return [], False
+
+        with mock.patch("timecapsulesmb.app.ops.doctor.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.doctor.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
+                with mock.patch("timecapsulesmb.app.ops.doctor.run_doctor_checks", side_effect=fake_run_doctor_checks):
+                    rc = service.run_api_request(
+                        {
+                            "operation": "doctor",
+                            "params": {
+                                "skip_ssh": True,
+                                "credentials": {"password": "keychain-pw"},
+                            },
+                        },
+                        collector.sink,
+                    )
+
+        self.assertEqual(rc, 0)
+        result = self.assert_single_terminal_event(collector, "result")
+        self.assertTrue(result["ok"])
+        self.assertNotIn("keychain-pw", json.dumps(collector.events))
+
     def test_doctor_fatal_returns_nonzero_result_without_error_event(self) -> None:
         collector = CollectingSink()
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})

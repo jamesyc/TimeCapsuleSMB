@@ -155,6 +155,15 @@ final class AppStore: ObservableObject {
         try await deviceRegistry.updateProfile(updated)
     }
 
+    @discardableResult
+    func saveProfileEdits(profile: DeviceProfile, draft: DeviceProfileEditorDraft) async throws -> DeviceProfile {
+        var updated = profile
+        updated.displayName = draft.displayName
+        updated.host = draft.trimmedHost
+        updated.settings = try draft.validatedSettings()
+        return try await deviceRegistry.updateProfile(updated)
+    }
+
     func rename(_ profile: DeviceProfile, displayName: String) async throws {
         var updated = profile
         updated.displayName = displayName

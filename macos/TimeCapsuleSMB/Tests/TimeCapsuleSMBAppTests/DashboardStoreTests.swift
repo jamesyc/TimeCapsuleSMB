@@ -58,6 +58,171 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(fixture.appStore.dashboardSummary(for: warning).primaryAction, .viewCheckup)
     }
 
+    func testDashboardSessionsAreIsolatedByProfile() async throws {
+        let fixture = try await makeFixture(responses: [])
+        let first = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let second = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-two"
+        )
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+
+        let firstSession = dashboard.session(for: first)
+        firstSession.selectedTab = .maintenance
+        firstSession.replacementPassword = "draft"
+        firstSession.deployStore.mountWait = "77"
+        firstSession.maintenanceStore.selectedWorkflow = .fsck
+
+        let secondSession = dashboard.session(for: second)
+
+        XCTAssertFalse(firstSession === secondSession)
+        XCTAssertEqual(secondSession.selectedTab, .overview)
+        XCTAssertEqual(secondSession.replacementPassword, "")
+        XCTAssertEqual(secondSession.deployStore.mountWait, "30")
+        XCTAssertEqual(secondSession.maintenanceStore.selectedWorkflow, .activate)
+    }
+
+    func testSessionDefaultsComeFromProfileSettingsAndDoNotResetOnSnapshotUpdates() async throws {
+        let fixture = try await makeFixture(responses: [])
+        var profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        profile.settings = DeviceProfileSettings(nbnsEnabled: false, debugLogging: true, mountWaitSeconds: 45)
+        profile = try await fixture.registry.updateProfile(profile)
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+        let session = dashboard.session(for: profile)
+
+        XCTAssertEqual(session.deployStore.nbnsEnabled, false)
+        XCTAssertEqual(session.deployStore.debugLogging, true)
+        XCTAssertEqual(session.deployStore.mountWait, "45")
+        XCTAssertEqual(session.maintenanceStore.mountWait, "45")
+
+        session.deployStore.mountWait = "12"
+        await fixture.registry.updateCheckup(DeviceCheckupSnapshot(
+            checkedAt: Date(timeIntervalSince1970: 100),
+            state: .passed,
+            passCount: 1,
+            warnCount: 0,
+            failCount: 0,
+            summary: "healthy"
+        ), for: profile.id)
+
+        XCTAssertEqual(session.deployStore.mountWait, "12")
+    }
+
+    func testProfileEditorSaveAppliesSettingsBackToSessionDefaults() async throws {
+        let fixture = try await makeFixture(responses: [])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+        let session = dashboard.session(for: profile)
+
+        session.profileEditorStore.draft.nbnsEnabled = false
+        session.profileEditorStore.draft.debugLogging = true
+        session.profileEditorStore.draft.mountWaitSeconds = "64"
+
+        await session.profileEditorStore.save(profile: profile)
+
+        XCTAssertEqual(session.profileEditorStore.state, .saved)
+        XCTAssertEqual(session.deployStore.nbnsEnabled, false)
+        XCTAssertEqual(session.deployStore.debugLogging, true)
+        XCTAssertEqual(session.deployStore.mountWait, "64")
+        XCTAssertEqual(session.maintenanceStore.mountWait, "64")
+    }
+
+    func testDeletingProfilePrunesInactiveSession() async throws {
+        let fixture = try await makeFixture(responses: [])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+        _ = dashboard.session(for: profile)
+        XCTAssertTrue(dashboard.hasSession(for: profile.id))
+
+        try await fixture.registry.delete(profile)
+
+        try await waitUntilStoreState { !dashboard.hasSession(for: profile.id) }
+    }
+
+    func testDeletedProfileSessionStaysUntilStartedOperationFinishes() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+                ]))
+            ], delayNanoseconds: 150_000_000)
+        ])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        try fixture.passwordStore.save("pw", for: profile.keychainAccount)
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+        let session = dashboard.session(for: profile)
+
+        session.runCheckup(profile: profile)
+        try await waitUntilStoreState { fixture.appStore.backend.isRunning }
+        try await fixture.registry.delete(profile)
+
+        XCTAssertTrue(dashboard.hasSession(for: profile.id))
+        try await waitUntilStoreState { !fixture.appStore.backend.isRunning }
+        try await waitUntilStoreState { !dashboard.hasSession(for: profile.id) }
+    }
+
+    func testOperationRunningOnAnotherDeviceRejectsNewSessionOperation() async throws {
+        let fixture = try await makeFixture(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+                ]))
+            ], delayNanoseconds: 200_000_000)
+        ])
+        let first = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let second = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.3"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-two"
+        )
+        try fixture.passwordStore.save("pw1", for: first.keychainAccount)
+        try fixture.passwordStore.save("pw2", for: second.keychainAccount)
+        let dashboard = DashboardStore(appStore: fixture.appStore)
+        let firstSession = dashboard.session(for: first)
+        let secondSession = dashboard.session(for: second)
+
+        firstSession.runCheckup(profile: first)
+        try await waitUntilStoreState { fixture.appStore.backend.isRunning }
+        secondSession.runCheckup(profile: second)
+
+        XCTAssertEqual(secondSession.doctorStore.state, .runFailed)
+        XCTAssertEqual(secondSession.doctorStore.error?.code, "operation_rejected")
+        XCTAssertEqual(fixture.runner.calls.count, 1)
+    }
+
     func testDashboardOperationsUpdateLastCheckupAndDeploySnapshots() async throws {
         let fixture = try await makeFixture(responses: [
             .init(events: [
@@ -82,21 +247,22 @@ final class DashboardStoreTests: XCTestCase {
         try fixture.passwordStore.save("pw", for: profile.keychainAccount)
         fixture.appStore.select(profile)
         let dashboard = DashboardStore(appStore: fixture.appStore)
+        let session = dashboard.session(for: profile)
 
-        dashboard.runCheckup(profile: profile)
+        session.runCheckup(profile: profile)
 
-        try await waitUntilStoreState { dashboard.doctorStore.state == .warning }
+        try await waitUntilStoreState { session.doctorStore.state == .warning }
         let checked = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         XCTAssertEqual(checked.lastCheckup?.state, .warning)
         XCTAssertEqual(checked.lastCheckup?.warnCount, 1)
         XCTAssertEqual(fixture.runner.calls[0].params["credentials"], .object(["password": .string("pw")]))
         XCTAssertEqual(fixture.runner.calls[0].context?.profileID, profile.id)
 
-        dashboard.runInstallPlan(profile: checked)
-        try await waitUntilStoreState { dashboard.deployStore.state == .planReady }
-        dashboard.runInstall(profile: checked)
+        session.runInstallPlan(profile: checked)
+        try await waitUntilStoreState { session.deployStore.state == .planReady }
+        session.runInstall(profile: checked)
 
-        try await waitUntilStoreState { dashboard.deployStore.state == .deployed }
+        try await waitUntilStoreState { session.deployStore.state == .deployed }
         let installed = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         XCTAssertEqual(installed.lastDeploy?.state, .deployed)
         XCTAssertEqual(installed.lastDeploy?.payloadFamily, "netbsd6_samba4")
@@ -129,12 +295,13 @@ final class DashboardStoreTests: XCTestCase {
         try fixture.passwordStore.save("pw", for: first.keychainAccount)
         fixture.appStore.select(first)
         let dashboard = DashboardStore(appStore: fixture.appStore)
+        let session = dashboard.session(for: first)
 
-        dashboard.runCheckup(profile: first)
+        session.runCheckup(profile: first)
         fixture.appStore.select(second)
 
         try await waitUntilStoreState {
-            dashboard.doctorStore.state == .passed
+            session.doctorStore.state == .passed
                 && fixture.registry.profile(id: first.id)?.lastCheckup?.state == .passed
         }
         XCTAssertEqual(fixture.registry.profile(id: first.id)?.lastCheckup?.state, .passed)
@@ -165,13 +332,14 @@ final class DashboardStoreTests: XCTestCase {
         try fixture.passwordStore.save("pw", for: first.keychainAccount)
         fixture.appStore.select(first)
         let dashboard = DashboardStore(appStore: fixture.appStore)
+        let session = dashboard.session(for: first)
 
-        dashboard.runInstallPlan(profile: first)
-        try await waitUntilStoreState { dashboard.deployStore.state == .planReady }
-        dashboard.runInstall(profile: first)
+        session.runInstallPlan(profile: first)
+        try await waitUntilStoreState { session.deployStore.state == .planReady }
+        session.runInstall(profile: first)
         fixture.appStore.select(second)
 
-        try await waitUntilStoreState { dashboard.deployStore.state == .deployed }
+        try await waitUntilStoreState { session.deployStore.state == .deployed }
         XCTAssertEqual(fixture.registry.profile(id: first.id)?.lastDeploy?.state, .deployed)
         XCTAssertNil(fixture.registry.profile(id: second.id)?.lastDeploy)
     }
@@ -185,10 +353,11 @@ final class DashboardStoreTests: XCTestCase {
             preferredID: "device-one"
         )
         let dashboard = DashboardStore(appStore: fixture.appStore)
+        let session = dashboard.session(for: profile)
 
-        dashboard.runCheckup(profile: profile)
+        session.runCheckup(profile: profile)
 
-        XCTAssertEqual(dashboard.passwordError, "Password is required.")
+        XCTAssertEqual(session.passwordError, "Password is required.")
         try await waitUntilStoreState {
             fixture.registry.profile(id: profile.id)?.passwordState == .missing
         }
@@ -208,10 +377,11 @@ final class DashboardStoreTests: XCTestCase {
         )
         try fixture.passwordStore.save("bad-password", for: profile.keychainAccount)
         let dashboard = DashboardStore(appStore: fixture.appStore)
+        let session = dashboard.session(for: profile)
 
-        dashboard.runCheckup(profile: profile)
+        session.runCheckup(profile: profile)
 
-        try await waitUntilStoreState { dashboard.doctorStore.state == .runFailed }
+        try await waitUntilStoreState { session.doctorStore.state == .runFailed }
         XCTAssertEqual(fixture.registry.profile(id: profile.id)?.passwordState, .invalid)
         XCTAssertEqual(fixture.appStore.dashboardSummary(for: fixture.registry.profile(id: profile.id)!).primaryAction, .replacePassword)
     }
@@ -225,36 +395,37 @@ final class DashboardStoreTests: XCTestCase {
             preferredID: "device-one"
         )
         let dashboard = DashboardStore(appStore: fixture.appStore)
+        let session = dashboard.session(for: profile)
         let error = BackendErrorViewModel(operation: "doctor", code: "operation_failed", message: "Needs recovery.")
 
-        XCTAssertTrue(dashboard.handleRecoveryAction(
+        XCTAssertTrue(session.handleRecoveryAction(
             RecoveryAction(title: "Run Disk Repair", kind: .diskRepair),
             error: error,
             profile: profile
         ))
-        XCTAssertEqual(dashboard.selectedTab, .maintenance)
-        XCTAssertEqual(dashboard.maintenanceStore.selectedWorkflow, .fsck)
+        XCTAssertEqual(session.selectedTab, .maintenance)
+        XCTAssertEqual(session.maintenanceStore.selectedWorkflow, .fsck)
 
-        XCTAssertTrue(dashboard.handleRecoveryAction(
+        XCTAssertTrue(session.handleRecoveryAction(
             RecoveryAction(title: "Repair File Metadata", kind: .metadataRepair),
             error: error,
             profile: profile
         ))
-        XCTAssertEqual(dashboard.maintenanceStore.selectedWorkflow, .repairXattrs)
+        XCTAssertEqual(session.maintenanceStore.selectedWorkflow, .repairXattrs)
 
-        XCTAssertTrue(dashboard.handleRecoveryAction(
+        XCTAssertTrue(session.handleRecoveryAction(
             RecoveryAction(title: "Start SMB", kind: .startSMB),
             error: error,
             profile: profile
         ))
-        XCTAssertEqual(dashboard.maintenanceStore.selectedWorkflow, .activate)
+        XCTAssertEqual(session.maintenanceStore.selectedWorkflow, .activate)
 
-        XCTAssertTrue(dashboard.handleRecoveryAction(
+        XCTAssertTrue(session.handleRecoveryAction(
             RecoveryAction(title: "Replace Password", kind: .replacePassword),
             error: error,
             profile: profile
         ))
-        XCTAssertEqual(dashboard.selectedTab, .overview)
+        XCTAssertEqual(session.selectedTab, .overview)
     }
 
     func testRecoveryRunCheckupAndInstallActionsStartBackendOperations() async throws {
@@ -276,9 +447,10 @@ final class DashboardStoreTests: XCTestCase {
         )
         try fixture.passwordStore.save("pw", for: profile.keychainAccount)
         let dashboard = DashboardStore(appStore: fixture.appStore)
+        let session = dashboard.session(for: profile)
         let error = BackendErrorViewModel(operation: "deploy", code: "operation_failed", message: "Needs recovery.")
 
-        XCTAssertTrue(dashboard.handleRecoveryAction(
+        XCTAssertTrue(session.handleRecoveryAction(
             RecoveryAction(title: "Run Checkup", kind: .runCheckup),
             error: error,
             profile: profile
@@ -286,9 +458,9 @@ final class DashboardStoreTests: XCTestCase {
         try await waitUntilStoreState { fixture.runner.calls.count == 1 && !fixture.appStore.backend.isRunning }
         XCTAssertEqual(fixture.runner.calls[0].operation, "doctor")
         XCTAssertEqual(fixture.runner.calls[0].params["credentials"], .object(["password": .string("pw")]))
-        XCTAssertEqual(dashboard.selectedTab, .checkup)
+        XCTAssertEqual(session.selectedTab, .checkup)
 
-        XCTAssertTrue(dashboard.handleRecoveryAction(
+        XCTAssertTrue(session.handleRecoveryAction(
             RecoveryAction(title: "Install SMB", kind: .installSMB),
             error: error,
             profile: profile
@@ -297,7 +469,7 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls[1].operation, "deploy")
         XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[1].params["credentials"], .object(["password": .string("pw")]))
-        XCTAssertEqual(dashboard.selectedTab, .install)
+        XCTAssertEqual(session.selectedTab, .install)
     }
 
     func testRecoveryRetryUsesFailedOperation() async throws {
@@ -316,9 +488,10 @@ final class DashboardStoreTests: XCTestCase {
         )
         try fixture.passwordStore.save("pw", for: profile.keychainAccount)
         let dashboard = DashboardStore(appStore: fixture.appStore)
+        let session = dashboard.session(for: profile)
         let doctorError = BackendErrorViewModel(operation: "doctor", code: "operation_failed", message: "Doctor failed.")
 
-        XCTAssertTrue(dashboard.handleRecoveryAction(
+        XCTAssertTrue(session.handleRecoveryAction(
             RecoveryAction(title: "Retry", kind: .retry),
             error: doctorError,
             profile: profile
@@ -326,7 +499,7 @@ final class DashboardStoreTests: XCTestCase {
 
         try await waitUntilStoreState { fixture.runner.calls.count == 1 && !fixture.appStore.backend.isRunning }
         XCTAssertEqual(fixture.runner.calls[0].operation, "doctor")
-        XCTAssertEqual(dashboard.selectedTab, .checkup)
+        XCTAssertEqual(session.selectedTab, .checkup)
     }
 
     func testNonActionableRecoveryKindsReturnFalse() async throws {
@@ -338,14 +511,15 @@ final class DashboardStoreTests: XCTestCase {
             preferredID: "device-one"
         )
         let dashboard = DashboardStore(appStore: fixture.appStore)
+        let session = dashboard.session(for: profile)
         let error = BackendErrorViewModel(operation: "validate-install", code: "operation_failed", message: "Needs diagnostics.")
 
-        XCTAssertFalse(dashboard.handleRecoveryAction(
+        XCTAssertFalse(session.handleRecoveryAction(
             RecoveryAction(title: "Open Diagnostics", kind: .diagnostics),
             error: error,
             profile: profile
         ))
-        XCTAssertFalse(dashboard.handleRecoveryAction(
+        XCTAssertFalse(session.handleRecoveryAction(
             RecoveryAction(title: "Unknown", kind: .generic),
             error: error,
             profile: profile

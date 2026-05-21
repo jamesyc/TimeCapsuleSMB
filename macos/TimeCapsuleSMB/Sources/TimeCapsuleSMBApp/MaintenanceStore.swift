@@ -189,7 +189,7 @@ final class MaintenanceStore: ObservableObject {
     }
 
     var mountWaitValue: Int? {
-        nonNegativeInteger(mountWait)
+        ValueParsers.nonNegativeInteger(mountWait)
     }
 
     var selectedFsckTarget: FsckTargetViewModel? {
@@ -825,14 +825,6 @@ final class MaintenanceStore: ObservableObject {
         if repairState == .scanReady, scannedRepairPath != trimmedRepairPath {
             repairState = .scanStale
         }
-    }
-
-    private func nonNegativeInteger(_ text: String) -> Int? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let value = Int(trimmed), value >= 0 else {
-            return nil
-        }
-        return value
     }
 
     private func startRun(

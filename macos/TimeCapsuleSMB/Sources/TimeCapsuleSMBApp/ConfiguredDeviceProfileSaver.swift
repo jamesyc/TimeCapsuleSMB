@@ -1,13 +1,40 @@
 import Foundation
 
+struct ConfiguredDeviceProfileOverrides: Equatable {
+    var displayName: String?
+    var settings: DeviceProfileSettings?
+
+    static let empty = ConfiguredDeviceProfileOverrides()
+}
+
 @MainActor
 protocol ConfiguredDeviceProfileSaving: AnyObject {
     func saveConfiguredDevice(
         configuredDevice: ConfiguredDeviceState,
         discoveredDevice: DiscoveredDevice?,
         password: String,
-        preferredID: DeviceProfile.ID
+        preferredID: DeviceProfile.ID,
+        existingProfileID: DeviceProfile.ID?,
+        overrides: ConfiguredDeviceProfileOverrides
     ) async throws -> DeviceProfile
+}
+
+extension ConfiguredDeviceProfileSaving {
+    func saveConfiguredDevice(
+        configuredDevice: ConfiguredDeviceState,
+        discoveredDevice: DiscoveredDevice?,
+        password: String,
+        preferredID: DeviceProfile.ID
+    ) async throws -> DeviceProfile {
+        try await saveConfiguredDevice(
+            configuredDevice: configuredDevice,
+            discoveredDevice: discoveredDevice,
+            password: password,
+            preferredID: preferredID,
+            existingProfileID: nil,
+            overrides: .empty
+        )
+    }
 }
 
 @MainActor
@@ -29,14 +56,23 @@ final class ConfiguredDeviceProfileSaver: ConfiguredDeviceProfileSaving {
         configuredDevice: ConfiguredDeviceState,
         discoveredDevice: DiscoveredDevice?,
         password: String,
-        preferredID: DeviceProfile.ID
+        preferredID: DeviceProfile.ID,
+        existingProfileID: DeviceProfile.ID? = nil,
+        overrides: ConfiguredDeviceProfileOverrides = .empty
     ) async throws -> DeviceProfile {
-        let profile = await registry.makeConfiguredDeviceProfile(
+        var profile = await registry.makeConfiguredDeviceProfile(
             configuredDevice: configuredDevice,
             discoveredDevice: discoveredDevice,
             passwordState: .available,
-            preferredID: preferredID
+            preferredID: preferredID,
+            existingProfileID: existingProfileID
         )
+        if let displayName = overrides.displayName {
+            profile.displayName = displayName
+        }
+        if let settings = overrides.settings {
+            profile.settings = settings
+        }
         let wasSavedProfile = registry.profile(id: profile.id) != nil
         let rollback = try passwordRollback(for: profile.keychainAccount)
 

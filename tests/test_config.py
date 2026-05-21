@@ -545,6 +545,28 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(errors[0].kind, "missing_key")
         self.assertEqual(errors[0].key, "TC_PASSWORD")
 
+    def test_doctor_profile_accepts_request_scoped_password(self) -> None:
+        values = dict(DEFAULTS)
+        values["TC_HOST"] = "root@10.0.0.2"
+        values["TC_PASSWORD"] = "pw"
+        file_values = dict(values)
+        file_values.pop("TC_PASSWORD", None)
+        config = AppConfig.from_values(values, file_values=file_values)
+
+        self.assertEqual(validate_app_config(config, profile="doctor"), [])
+
+    def test_doctor_profile_still_requires_effective_password(self) -> None:
+        values = dict(DEFAULTS)
+        values["TC_HOST"] = "root@10.0.0.2"
+        file_values = dict(values)
+        file_values.pop("TC_PASSWORD", None)
+        config = AppConfig.from_values(values, file_values=file_values)
+
+        errors = validate_app_config(config, profile="doctor")
+
+        self.assertEqual(errors[0].kind, "missing_key")
+        self.assertEqual(errors[0].key, "TC_PASSWORD")
+
     def test_validate_app_config_ignores_stale_device_model_syap_pair(self) -> None:
         values = dict(DEFAULTS)
         values["TC_HOST"] = "root@10.0.0.2"
