@@ -108,6 +108,7 @@ class StorageRuntimeTests(unittest.TestCase):
                 ANY_PROTOCOL=0
                 DISKD_USE_VOLUME_ATTEMPTS=2
                 ATA_IDLE_SECONDS=300
+                ATA_STANDBY=''
                 NBNS_ENABLED=0
                 SMBD_DEBUG_LOGGING=0
                 MDNS_DEBUG_LOGGING=0
@@ -889,6 +890,7 @@ MaSt = (
         self.assertIn("ANY_PROTOCOL=1\n", rendered)
         self.assertIn("DISKD_USE_VOLUME_ATTEMPTS=2\n", rendered)
         self.assertIn("ATA_IDLE_SECONDS=300\n", rendered)
+        self.assertIn("ATA_STANDBY=''\n", rendered)
         self.assertIn("NBNS_ENABLED=1\n", rendered)
         self.assertIn("SMBD_DEBUG_LOGGING=1\n", rendered)
         self.assertNotIn("SMB_NETBIOS_NAME", rendered)
@@ -961,6 +963,24 @@ MaSt = (
 
         self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=0\n", rendered)
         self.assertIn("ANY_PROTOCOL=0\n", rendered)
+
+    def test_flash_runtime_config_uses_drive_settings_from_config(self) -> None:
+        config = AppConfig.from_values(
+            {
+                "TC_ATA_IDLE_SECONDS": "0",
+                "TC_ATA_STANDBY": "0",
+            }
+        )
+
+        rendered = render_flash_runtime_config(
+            config,
+            PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+            nbns_enabled=False,
+            debug_logging=False,
+        )
+
+        self.assertIn("ATA_IDLE_SECONDS=0\n", rendered)
+        self.assertIn("ATA_STANDBY=0\n", rendered)
 
     def test_common_runtime_identity_normalizers_match_python(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2018,7 +2038,7 @@ MaSt = (
         self.assertIn("payload=old-payload\n", proc.stdout)
         self.assertIn("MaSt discovery failed", proc.stdout)
 
-    def test_common_refresh_disk_state_sets_ata_idle_after_share_state(self) -> None:
+    def test_common_refresh_disk_state_sets_ata_drive_settings_after_share_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
@@ -2050,7 +2070,7 @@ MaSt = (
                         : >"$3"
                         return 0
                     }}
-                    tc_configure_ata_idle_for_mast_disks() {{ echo ata >>{events}; }}
+                    tc_configure_ata_drive_settings_for_mast_disks() {{ echo ata >>{events}; }}
                     tc_resolve_payload() {{
                         echo payload >>{events}
                         TC_RESOLVED_PAYLOAD_DIR={payload}
@@ -4439,9 +4459,9 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "wd0 setidle 300\n")
-        self.assertIn("ATA idle tuning: set wd0 idle timer to 300s", log_text)
-        self.assertIn("ATA idle tuning: skipping sd0 for /dev/dk4; MaSt marks disk as external", log_text)
-        self.assertIn("ATA idle tuning: skipping sd1 for /dev/dk5; not a wd ATA disk", log_text)
+        self.assertIn("ATA drive settings: set wd0 idle timer to 300s", log_text)
+        self.assertIn("ATA drive settings: skipping sd0 for /dev/dk4; MaSt marks disk as external", log_text)
+        self.assertIn("ATA drive settings: skipping sd1 for /dev/dk5; not a wd ATA disk", log_text)
 
     def test_common_ata_idle_zero_disables_tuning(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4470,7 +4490,7 @@ MaSt = (
                     wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     EOF
                     tc_configure_ata_idle_for_mast_disks "$RAM_VAR/test-volumes.tsv"
-                    [ ! -f {atactl_log} ]
+                    cat {atactl_log}
                     """
                 )
             )
@@ -4480,7 +4500,48 @@ MaSt = (
             log_text = (memory / "samba4/var/test.log").read_text()
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("ATA idle tuning disabled", log_text)
+        self.assertEqual(proc.stdout, "wd0 setidle 0\n")
+        self.assertIn("ATA drive settings: disabled wd0 idle timer", log_text)
+
+    def test_common_ata_standby_applies_when_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            atactl_log = tmp_path / "atactl.log"
+            atactl = tmp_path / "atactl"
+            atactl.write_text(f"#!/bin/sh\necho \"$@\" >>{shlex.quote(str(atactl_log))}\n")
+            atactl.chmod(0o755)
+            common_path = flash / "common.sh"
+            common_path.write_text(common_path.read_text().replace("/sbin/atactl", str(atactl)))
+            script = tmp_path / "ata-standby.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    ATA_STANDBY=0
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    is_volume_root_mounted() {{ return 0; }}
+                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
+                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+                    EOF
+                    tc_configure_ata_drive_settings_for_mast_disks "$RAM_VAR/test-volumes.tsv"
+                    cat {atactl_log}
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "wd0 setidle 300\nwd0 setstandby 0\n")
+        self.assertIn("ATA drive settings: disabled wd0 standby timer", log_text)
 
     def test_common_ata_idle_failure_logs_and_continues(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4518,7 +4579,7 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "continued\n")
-        self.assertIn("ATA idle tuning: failed to set wd0 idle timer to 300s", log_text)
+        self.assertIn("ATA drive settings: failed to set wd0 idle timer to 300s", log_text)
 
     def test_common_wake_or_mount_uses_diskd_without_mount_hfs_fallback_when_it_mounts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

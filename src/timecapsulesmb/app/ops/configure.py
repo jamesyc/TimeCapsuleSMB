@@ -55,28 +55,33 @@ def configure_operation(params: dict[str, object], sink: EventSink) -> Operation
     if resolution_error is not None:
         raise AppOperationError(resolution_error, code="config_error")
 
-    values = build_configure_env_values(
-        existing,
-        host=host,
-        password=password,
-        ssh_opts=ssh_opts,
-        configure_id=configure_id,
-        internal_share_use_disk_root=bool_param(
-            params,
-            "internal_share_use_disk_root",
-            parse_bool(existing.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])),
-        ),
-        any_protocol=bool_param(
-            params,
-            "any_protocol",
-            parse_bool(existing.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])),
-        ),
-        debug_logging=bool_param(
-            params,
-            "debug_logging",
-            parse_bool(existing.get("TC_DEBUG_LOGGING", DEFAULTS["TC_DEBUG_LOGGING"])),
-        ),
-    )
+    try:
+        values = build_configure_env_values(
+            existing,
+            host=host,
+            password=password,
+            ssh_opts=ssh_opts,
+            configure_id=configure_id,
+            internal_share_use_disk_root=bool_param(
+                params,
+                "internal_share_use_disk_root",
+                parse_bool(existing.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])),
+            ),
+            any_protocol=bool_param(
+                params,
+                "any_protocol",
+                parse_bool(existing.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])),
+            ),
+            debug_logging=bool_param(
+                params,
+                "debug_logging",
+                parse_bool(existing.get("TC_DEBUG_LOGGING", DEFAULTS["TC_DEBUG_LOGGING"])),
+            ),
+            ata_idle_seconds=string_param(params, "ata_idle_seconds") if "ata_idle_seconds" in params else None,
+            ata_standby=string_param(params, "ata_standby") if "ata_standby" in params else None,
+        )
+    except ValueError as exc:
+        raise AppOperationError(str(exc), code="validation_failed") from exc
 
     sink.stage(operation, "ssh_probe")
     connection = SshConnection(host, password, ssh_opts)

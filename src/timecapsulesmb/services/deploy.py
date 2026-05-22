@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from timecapsulesmb.core.config import DEFAULTS, AppConfig, parse_bool, shell_quote
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
-from timecapsulesmb.deploy.planner import DEFAULT_ATA_IDLE_SECONDS, DEFAULT_DISKD_USE_VOLUME_ATTEMPTS
+from timecapsulesmb.deploy.planner import DEFAULT_DISKD_USE_VOLUME_ATTEMPTS
 from timecapsulesmb.device.storage import PayloadHome, PayloadVerificationResult
 
 
@@ -34,6 +34,30 @@ def _render_flash_config_assignment(key: str, value: str | int) -> str:
     return f"{key}={shell_quote(value)}"
 
 
+def _runtime_unsigned_config_value(config: AppConfig, key: str, default: str) -> str:
+    raw_value = config.get(key, default).strip()
+    if raw_value == "":
+        raw_value = default
+    if raw_value == "":
+        return ""
+    if not raw_value.isdigit():
+        raise ValueError(f"{key} must be a non-negative integer")
+    return str(int(raw_value))
+
+
+def _runtime_unsigned_override_value(value: str | int) -> str | int:
+    if isinstance(value, int):
+        if value < 0:
+            raise ValueError("runtime setting override must be a non-negative integer")
+        return value
+    raw_value = value.strip()
+    if raw_value == "":
+        return ""
+    if not raw_value.isdigit():
+        raise ValueError("runtime setting override must be a non-negative integer")
+    return str(int(raw_value))
+
+
 def render_flash_runtime_config(
     config: AppConfig,
     payload_home: PayloadHome,
@@ -42,12 +66,23 @@ def render_flash_runtime_config(
     debug_logging: bool | None = None,
     internal_share_use_disk_root: bool | None = None,
     any_protocol: bool | None = None,
-    ata_idle_seconds: int = DEFAULT_ATA_IDLE_SECONDS,
+    ata_idle_seconds: str | int | None = None,
+    ata_standby: str | int | None = None,
     diskd_use_volume_attempts: int = DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
 ) -> str:
     internal_root_default = config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])
     any_protocol_default = config.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])
     configured_debug_logging = config.get("TC_DEBUG_LOGGING", DEFAULTS["TC_DEBUG_LOGGING"])
+    runtime_ata_idle_seconds = (
+        _runtime_unsigned_config_value(config, "TC_ATA_IDLE_SECONDS", DEFAULTS["TC_ATA_IDLE_SECONDS"])
+        if ata_idle_seconds is None
+        else _runtime_unsigned_override_value(ata_idle_seconds)
+    )
+    runtime_ata_standby = (
+        _runtime_unsigned_config_value(config, "TC_ATA_STANDBY", DEFAULTS["TC_ATA_STANDBY"])
+        if ata_standby is None
+        else _runtime_unsigned_override_value(ata_standby)
+    )
     effective_internal_root = (
         parse_bool(internal_root_default)
         if internal_share_use_disk_root is None
@@ -67,7 +102,8 @@ def render_flash_runtime_config(
         ("INTERNAL_SHARE_USE_DISK_ROOT", 1 if effective_internal_root else 0),
         ("ANY_PROTOCOL", 1 if effective_any_protocol else 0),
         ("DISKD_USE_VOLUME_ATTEMPTS", diskd_use_volume_attempts),
-        ("ATA_IDLE_SECONDS", ata_idle_seconds),
+        ("ATA_IDLE_SECONDS", runtime_ata_idle_seconds),
+        ("ATA_STANDBY", runtime_ata_standby),
         ("NBNS_ENABLED", 1 if nbns_enabled else 0),
         ("SMBD_DEBUG_LOGGING", 1 if effective_debug_logging else 0),
         ("MDNS_DEBUG_LOGGING", 1 if effective_debug_logging else 0),

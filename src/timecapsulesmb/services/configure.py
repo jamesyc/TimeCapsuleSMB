@@ -1,6 +1,20 @@
 from __future__ import annotations
 
+from timecapsulesmb.configure_defaults import valid_existing_config_value
 from timecapsulesmb.core.config import DEFAULTS, parse_bool, preserved_env_file_values
+
+
+def _optional_unsigned_config_value(value: str, key: str) -> str:
+    raw_value = value.strip()
+    if raw_value == "":
+        return ""
+    if not raw_value.isdigit():
+        raise ValueError(f"{key} must be a non-negative integer")
+    return str(int(raw_value))
+
+
+def _existing_unsigned_config_value_or_default(existing: dict[str, str], key: str, label: str) -> str:
+    return valid_existing_config_value(existing, key, label) or DEFAULTS[key]
 
 
 def build_configure_env_values(
@@ -13,6 +27,8 @@ def build_configure_env_values(
     internal_share_use_disk_root: bool | None = None,
     any_protocol: bool | None = None,
     debug_logging: bool | None = None,
+    ata_idle_seconds: str | None = None,
+    ata_standby: str | None = None,
 ) -> dict[str, str]:
     values = preserved_env_file_values(existing)
     values.update({
@@ -34,6 +50,16 @@ def build_configure_env_values(
             if debug_logging is None
             else debug_logging
         ) else "false",
+        "TC_ATA_IDLE_SECONDS": (
+            _existing_unsigned_config_value_or_default(existing, "TC_ATA_IDLE_SECONDS", "ATA idle seconds")
+            if ata_idle_seconds is None
+            else _optional_unsigned_config_value(ata_idle_seconds, "TC_ATA_IDLE_SECONDS")
+        ),
+        "TC_ATA_STANDBY": (
+            _existing_unsigned_config_value_or_default(existing, "TC_ATA_STANDBY", "ATA standby timer")
+            if ata_standby is None
+            else _optional_unsigned_config_value(ata_standby, "TC_ATA_STANDBY")
+        ),
         "TC_CONFIGURE_ID": configure_id,
     })
     return values

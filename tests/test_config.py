@@ -149,6 +149,8 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("TC_INTERNAL_SHARE_USE_DISK_ROOT=false", rendered)
         self.assertIn("TC_ANY_PROTOCOL=false", rendered)
         self.assertIn("TC_DEBUG_LOGGING=false", rendered)
+        self.assertIn("TC_ATA_IDLE_SECONDS=300", rendered)
+        self.assertIn("TC_ATA_STANDBY=''", rendered)
         self.assertIn("TC_CONFIGURE_ID=12345678-1234-1234-1234-123456789012", rendered)
 
     def test_render_env_text_preserves_custom_settings_but_omits_deprecated_keys(self) -> None:
@@ -530,6 +532,12 @@ class ConfigTests(unittest.TestCase):
         errors = validate_app_config(config, profile="deploy")
         self.assertEqual(errors[0].kind, "invalid_value")
         self.assertEqual(errors[0].key, "TC_DEBUG_LOGGING")
+        values["TC_DEBUG_LOGGING"] = "false"
+        values["TC_ATA_IDLE_SECONDS"] = "-1"
+        config = AppConfig.from_values(values, file_values=values)
+        errors = validate_app_config(config, profile="deploy")
+        self.assertEqual(errors[0].kind, "invalid_value")
+        self.assertEqual(errors[0].key, "TC_ATA_IDLE_SECONDS")
 
     def test_flash_profile_ignores_deploy_only_settings(self) -> None:
         values = dict(DEFAULTS)
@@ -543,6 +551,8 @@ class ConfigTests(unittest.TestCase):
         values["TC_INTERNAL_SHARE_USE_DISK_ROOT"] = "not-bool"
         values["TC_ANY_PROTOCOL"] = "not-bool"
         values["TC_DEBUG_LOGGING"] = "not-bool"
+        values["TC_ATA_IDLE_SECONDS"] = "bad"
+        values["TC_ATA_STANDBY"] = "bad"
         config = AppConfig.from_values(values, file_values=values)
 
         self.assertEqual(validate_app_config(config, profile="flash"), [])

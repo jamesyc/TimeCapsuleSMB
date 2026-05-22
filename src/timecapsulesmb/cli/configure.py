@@ -61,6 +61,16 @@ CONFIGURE_DETAIL_FIELDS = [
 ]
 
 
+def non_negative_integer_arg(value: str) -> str:
+    if not value.isdigit():
+        raise argparse.ArgumentTypeError("must be a non-negative integer")
+    return str(int(value))
+
+
+def existing_config_value_or_default(existing: dict[str, str], key: str, label: str) -> str:
+    return valid_existing_config_value(existing, key, label) or DEFAULTS[key]
+
+
 def prompt(label: str, default: str, secret: bool) -> str:
     suffix = f" [{color_cyan(default)}]" if default and not secret else ""
     text = f"{label}{suffix}: "
@@ -298,6 +308,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--internal-share-use-disk-root", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--any-protocol", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--debug-logging", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--ata-idle-seconds", type=non_negative_integer_arg, metavar="SECONDS", help=argparse.SUPPRESS)
+    parser.add_argument("--ata-standby", type=non_negative_integer_arg, metavar="SECONDS", help=argparse.SUPPRESS)
     add_bonjour_timeout_argument(parser)
     args = parser.parse_args(argv)
 
@@ -365,6 +377,20 @@ def main(argv: Optional[list[str]] = None) -> int:
         values["TC_DEBUG_LOGGING"] = (
             "true" if args.debug_logging or existing_debug_logging else "false"
         )
+        existing_ata_idle_seconds = existing_config_value_or_default(
+            existing,
+            "TC_ATA_IDLE_SECONDS",
+            "ATA idle seconds",
+        )
+        values["TC_ATA_IDLE_SECONDS"] = (
+            args.ata_idle_seconds if args.ata_idle_seconds is not None else existing_ata_idle_seconds
+        )
+        existing_ata_standby = existing_config_value_or_default(
+            existing,
+            "TC_ATA_STANDBY",
+            "ATA standby timer",
+        )
+        values["TC_ATA_STANDBY"] = args.ata_standby if args.ata_standby is not None else existing_ata_standby
         command_context.set_stage("bonjour_discovery")
         try:
             discovered_record = discover_default_record(existing, timeout=args.bonjour_timeout)

@@ -82,6 +82,7 @@ from timecapsulesmb.services.app import (
     config_path,
     int_param,
     optional_bool_param,
+    string_param,
 )
 from timecapsulesmb.services.credentials import overlay_request_credentials
 from timecapsulesmb.services.deploy import (
@@ -362,14 +363,19 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
     sink.stage(operation, "pre_upload_actions")
     run_remote_actions(connection, plan.pre_upload_actions)
     sink.stage(operation, "prepare_deployment_files")
-    flash_config_text = render_flash_runtime_config(
-        config,
-        payload_home,
-        nbns_enabled=nbns_enabled,
-        debug_logging=debug_logging,
-        internal_share_use_disk_root=internal_share_use_disk_root,
-        any_protocol=any_protocol,
-    )
+    try:
+        flash_config_text = render_flash_runtime_config(
+            config,
+            payload_home,
+            nbns_enabled=nbns_enabled,
+            debug_logging=debug_logging,
+            internal_share_use_disk_root=internal_share_use_disk_root,
+            any_protocol=any_protocol,
+            ata_idle_seconds=string_param(params, "ata_idle_seconds") if "ata_idle_seconds" in params else None,
+            ata_standby=string_param(params, "ata_standby") if "ata_standby" in params else None,
+        )
+    except ValueError as exc:
+        raise AppOperationError(str(exc), code="validation_failed") from exc
     with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp, ExitStack() as boot_assets:
         tmpdir = Path(tmp)
         generated_flash_config = tmpdir / "tcapsulesmb.conf"

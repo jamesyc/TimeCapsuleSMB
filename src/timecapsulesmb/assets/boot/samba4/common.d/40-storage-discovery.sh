@@ -152,16 +152,51 @@ tc_mount_mast_volumes_for_boot() {
     tc_log "boot disk load: diskd activation complete: total=$volume_count mounted=$mounted_count failed=$failed_count"
 }
 
-tc_configure_ata_idle_for_mast_disks() {
-    volumes_file=$1
+tc_apply_ata_drive_setting() {
+    disk_device=$1
+    atactl_command=$2
+    timer_name=$3
+    timer_value=$4
+    volume_root=$5
 
-    tc_log "ATA idle tuning: scanning built-in ATA disks after share-state build"
-    if ! tc_is_unsigned_integer "$ATA_IDLE_SECONDS"; then
-        tc_log "ATA idle tuning skipped; invalid ATA_IDLE_SECONDS=$ATA_IDLE_SECONDS"
-        return 0
+    if [ "$timer_value" = "0" ]; then
+        tc_log "ATA drive settings: disabling $disk_device $timer_name timer after mounted volume $volume_root"
+    else
+        tc_log "ATA drive settings: setting $disk_device $timer_name timer to ${timer_value}s after mounted volume $volume_root"
     fi
-    if [ "$ATA_IDLE_SECONDS" -eq 0 ]; then
-        tc_log "ATA idle tuning disabled"
+    if /sbin/atactl "$disk_device" "$atactl_command" "$timer_value" >/dev/null 2>&1; then
+        if [ "$timer_value" = "0" ]; then
+            tc_log "ATA drive settings: disabled $disk_device $timer_name timer"
+        else
+            tc_log "ATA drive settings: set $disk_device $timer_name timer to ${timer_value}s"
+        fi
+    else
+        tc_log "ATA drive settings: failed to set $disk_device $timer_name timer to ${timer_value}s"
+    fi
+}
+
+tc_configure_ata_drive_settings_for_mast_disks() {
+    volumes_file=$1
+    tc_ata_idle_value=${ATA_IDLE_SECONDS:-300}
+    tc_ata_standby_value=${ATA_STANDBY:-}
+    tc_ata_apply_idle=0
+    tc_ata_apply_standby=0
+
+    tc_log "ATA drive settings: scanning built-in ATA disks after share-state build"
+    if tc_is_unsigned_integer "$tc_ata_idle_value"; then
+        tc_ata_apply_idle=1
+    else
+        tc_log "ATA drive settings: idle tuning skipped; invalid ATA_IDLE_SECONDS=$tc_ata_idle_value"
+    fi
+    if [ -n "$tc_ata_standby_value" ]; then
+        if tc_is_unsigned_integer "$tc_ata_standby_value"; then
+            tc_ata_apply_standby=1
+        else
+            tc_log "ATA drive settings: standby tuning skipped; invalid ATA_STANDBY=$tc_ata_standby_value"
+        fi
+    fi
+    if [ "$tc_ata_apply_idle" != "1" ] && [ "$tc_ata_apply_standby" != "1" ]; then
+        tc_log "ATA drive settings: no valid drive settings configured"
         return 0
     fi
 
@@ -170,18 +205,18 @@ tc_configure_ata_idle_for_mast_disks() {
         [ -n "$disk_device$builtin$part_device$volume_root$part_name$part_uuid" ]; do
         [ -n "$disk_device" ] || continue
         if [ "$builtin" != "1" ]; then
-            tc_log "ATA idle tuning: skipping $disk_device for /dev/$part_device; MaSt marks disk as external"
+            tc_log "ATA drive settings: skipping $disk_device for /dev/$part_device; MaSt marks disk as external"
             continue
         fi
         case "$disk_device" in
             wd[0-9]*) ;;
             *)
-                tc_log "ATA idle tuning: skipping $disk_device for /dev/$part_device; not a wd ATA disk"
+                tc_log "ATA drive settings: skipping $disk_device for /dev/$part_device; not a wd ATA disk"
                 continue
                 ;;
         esac
         if ! is_volume_root_mounted "$volume_root"; then
-            tc_log "ATA idle tuning: skipping $disk_device for /dev/$part_device; $volume_root is not mounted"
+            tc_log "ATA drive settings: skipping $disk_device for /dev/$part_device; $volume_root is not mounted"
             continue
         fi
         case "$configured_disks" in
@@ -189,13 +224,17 @@ tc_configure_ata_idle_for_mast_disks() {
         esac
         configured_disks="$configured_disks$disk_device "
 
-        tc_log "ATA idle tuning: setting $disk_device idle timer to ${ATA_IDLE_SECONDS}s after mounted volume $volume_root"
-        if /sbin/atactl "$disk_device" setidle "$ATA_IDLE_SECONDS" >/dev/null 2>&1; then
-            tc_log "ATA idle tuning: set $disk_device idle timer to ${ATA_IDLE_SECONDS}s"
-        else
-            tc_log "ATA idle tuning: failed to set $disk_device idle timer to ${ATA_IDLE_SECONDS}s"
+        if [ "$tc_ata_apply_idle" = "1" ]; then
+            tc_apply_ata_drive_setting "$disk_device" setidle idle "$tc_ata_idle_value" "$volume_root"
+        fi
+        if [ "$tc_ata_apply_standby" = "1" ]; then
+            tc_apply_ata_drive_setting "$disk_device" setstandby standby "$tc_ata_standby_value" "$volume_root"
         fi
     done <"$volumes_file"
+}
+
+tc_configure_ata_idle_for_mast_disks() {
+    tc_configure_ata_drive_settings_for_mast_disks "$1"
 }
 
 tc_plist_key() {

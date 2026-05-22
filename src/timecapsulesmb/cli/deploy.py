@@ -217,6 +217,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("Deleting old deployed files...")
         command_context.set_stage("pre_upload_actions")
         run_remote_actions(connection, plan.pre_upload_actions)
+        print("Deploying runtime files...")
         command_context.set_stage("prepare_deployment_files")
         flash_config_text = render_flash_runtime_config(
             config,
