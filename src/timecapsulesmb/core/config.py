@@ -75,6 +75,8 @@ DEFAULTS = {
     "TC_SSH_OPTS": "-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o KexAlgorithms=+diffie-hellman-group14-sha1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT": "false",
     "TC_ANY_PROTOCOL": "false",
+    "TC_ATA_IDLE_SECONDS": "300",
+    "TC_ATA_STANDBY": "",
 }
 
 ENV_FILE_KEYS = [
@@ -83,6 +85,8 @@ ENV_FILE_KEYS = [
     "TC_SSH_OPTS",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT",
     "TC_ANY_PROTOCOL",
+    "TC_ATA_IDLE_SECONDS",
+    "TC_ATA_STANDBY",
     "TC_CONFIGURE_ID",
 ]
 
@@ -464,6 +468,14 @@ def validate_bool(value: str, field_name: str) -> Optional[str]:
     return None
 
 
+def validate_optional_unsigned_integer(value: str, field_name: str) -> Optional[str]:
+    if value == "":
+        return None
+    if not value.isdigit():
+        return f"{field_name} must be a non-negative integer."
+    return None
+
+
 def validate_airport_syap(value: str, field_name: str) -> Optional[str]:
     if not value:
         return f"{field_name} cannot be blank."
@@ -496,6 +508,8 @@ CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
     "TC_MDNS_DEVICE_MODEL": validate_mdns_device_model,
     "TC_INTERNAL_SHARE_USE_DISK_ROOT": validate_bool,
     "TC_ANY_PROTOCOL": validate_bool,
+    "TC_ATA_IDLE_SECONDS": validate_optional_unsigned_integer,
+    "TC_ATA_STANDBY": validate_optional_unsigned_integer,
 }
 
 
@@ -511,11 +525,15 @@ class ConfigProfile:
 CONFIGURE_VALIDATED_KEYS = (
     "TC_INTERNAL_SHARE_USE_DISK_ROOT",
     "TC_ANY_PROTOCOL",
+    "TC_ATA_IDLE_SECONDS",
+    "TC_ATA_STANDBY",
 )
 MANAGED_VALIDATED_KEYS = (
     "TC_HOST",
     "TC_INTERNAL_SHARE_USE_DISK_ROOT",
     "TC_ANY_PROTOCOL",
+    "TC_ATA_IDLE_SECONDS",
+    "TC_ATA_STANDBY",
 )
 MANAGED_REQUIRED_FILE_KEYS = (
     "TC_HOST",

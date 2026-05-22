@@ -36,7 +36,6 @@ from timecapsulesmb.deploy.planner import (
     BINARY_NBNS_SOURCE,
     BINARY_SMBD_SOURCE,
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
-    DEFAULT_ATA_IDLE_SECONDS,
     DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
     DEPLOY_STARTUP_ACTIVATE_NOW,
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
@@ -91,17 +90,52 @@ def _render_flash_config_assignment(key: str, value: str | int) -> str:
     return f"{key}={shell_quote(value)}"
 
 
+def _runtime_unsigned_config_value(config: AppConfig, key: str, default: str) -> str:
+    raw_value = config.get(key, default).strip()
+    if raw_value == "":
+        raw_value = default
+    if raw_value == "":
+        return ""
+    if not raw_value.isdigit():
+        raise ValueError(f"{key} must be a non-negative integer")
+    return str(int(raw_value))
+
+
+def _runtime_unsigned_override_value(value: str | int) -> str | int:
+    if isinstance(value, int):
+        if value < 0:
+            raise ValueError("runtime setting override must be a non-negative integer")
+        return value
+    raw_value = value.strip()
+    if raw_value == "":
+        return ""
+    if not raw_value.isdigit():
+        raise ValueError("runtime setting override must be a non-negative integer")
+    return str(int(raw_value))
+
+
 def render_flash_runtime_config(
     config: AppConfig,
     payload_home: PayloadHome,
     *,
     nbns_enabled: bool,
     debug_logging: bool,
-    ata_idle_seconds: int = DEFAULT_ATA_IDLE_SECONDS,
+    ata_idle_seconds: str | int | None = None,
+    ata_standby: str | int | None = None,
     diskd_use_volume_attempts: int = DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
 ) -> str:
     internal_root_default = config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])
     any_protocol_default = config.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])
+    runtime_ata_idle_seconds = (
+        _runtime_unsigned_config_value(config, "TC_ATA_IDLE_SECONDS", DEFAULTS["TC_ATA_IDLE_SECONDS"])
+        if ata_idle_seconds is None
+        else _runtime_unsigned_override_value(ata_idle_seconds)
+    )
+    runtime_ata_standby = (
+        _runtime_unsigned_config_value(config, "TC_ATA_STANDBY", DEFAULTS["TC_ATA_STANDBY"])
+        if ata_standby is None
+        else _runtime_unsigned_override_value(ata_standby)
+    )
 
     values: list[tuple[str, str | int]] = [
         ("TC_CONFIG_VERSION", 2),
@@ -110,7 +144,8 @@ def render_flash_runtime_config(
         ("INTERNAL_SHARE_USE_DISK_ROOT", 1 if parse_bool(internal_root_default) else 0),
         ("ANY_PROTOCOL", 1 if parse_bool(any_protocol_default) else 0),
         ("DISKD_USE_VOLUME_ATTEMPTS", diskd_use_volume_attempts),
-        ("ATA_IDLE_SECONDS", ata_idle_seconds),
+        ("ATA_IDLE_SECONDS", runtime_ata_idle_seconds),
+        ("ATA_STANDBY", runtime_ata_standby),
         ("NBNS_ENABLED", 1 if nbns_enabled else 0),
         ("SMBD_DEBUG_LOGGING", 1 if debug_logging else 0),
         ("MDNS_DEBUG_LOGGING", 1 if debug_logging else 0),
@@ -272,6 +307,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("Deleting old deployed files...")
         command_context.set_stage("pre_upload_actions")
         run_remote_actions(connection, plan.pre_upload_actions)
+        print("Deploying runtime files...")
         command_context.set_stage("prepare_deployment_files")
         flash_config_text = render_flash_runtime_config(
             config,

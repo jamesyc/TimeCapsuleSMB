@@ -630,6 +630,8 @@ Current important `.env` values include:
 - `TC_PASSWORD`
 - `TC_SSH_OPTS`
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT`
+- `TC_ATA_IDLE_SECONDS`
+- `TC_ATA_STANDBY`
 - `TC_CONFIGURE_ID`
 
 Current `.bootstrap` values include:
@@ -651,6 +653,8 @@ Optional deploy flag:
 
 Current defaults:
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT=false`
+- `TC_ATA_IDLE_SECONDS=300`
+- `TC_ATA_STANDBY=` leaves the standby timer unchanged; set `0` to disable standby
 - `TC_SSH_OPTS` includes the legacy SSH algorithms required by AirPort firmware
 - docs and examples use SMB username `admin`
 - the managed payload directory is fixed at `.samba4`
@@ -662,6 +666,8 @@ Current validation behavior:
 - `TC_PASSWORD`: must be present for commands that authenticate to the device or generate Samba auth.
 - `TC_SSH_OPTS`: is written by `configure` with the legacy SSH options needed for AirPort firmware.
 - `TC_INTERNAL_SHARE_USE_DISK_ROOT`: hidden boolean; internal disks use `ShareRoot` by default, and external disks always use the disk root.
+- `TC_ATA_IDLE_SECONDS`: optional non-negative integer; default `300`, and `0` disables the ATA idle timer through `atactl setidle 0`.
+- `TC_ATA_STANDBY`: optional non-negative integer; blank leaves standby unchanged, and `0` disables standby through `atactl setstandby 0`.
 - `TC_CONFIGURE_ID`: is a local configuration revision ID and is not user-validated.
 
 Workflow details:

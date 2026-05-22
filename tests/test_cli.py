@@ -1486,6 +1486,8 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("TC_NET_IFACE", fake_values)
         self.assertEqual(fake_values["TC_INTERNAL_SHARE_USE_DISK_ROOT"], "false")
         self.assertEqual(fake_values["TC_ANY_PROTOCOL"], "false")
+        self.assertEqual(fake_values["TC_ATA_IDLE_SECONDS"], "300")
+        self.assertEqual(fake_values["TC_ATA_STANDBY"], "")
         uuid.UUID(fake_values["TC_CONFIGURE_ID"])
         telemetry_values = result.mocks.telemetry_factory.call_args.args[0].values
         self.assertEqual(telemetry_values["TC_CONFIGURE_ID"], fake_values["TC_CONFIGURE_ID"])
@@ -1563,6 +1565,54 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(result.rc, 0)
         self.assertEqual(result.values["TC_ANY_PROTOCOL"], "true")
+
+    def test_configure_hidden_ata_args_write_drive_settings(self) -> None:
+        result = self.run_configure_cli(
+            ["--ata-idle-seconds", "0", "--ata-standby", "0"],
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            confirm=True,
+            command_context=FakeCommandContext(),
+        )
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_ATA_IDLE_SECONDS"], "0")
+        self.assertEqual(result.values["TC_ATA_STANDBY"], "0")
+
+    def test_configure_preserves_existing_ata_settings(self) -> None:
+        result = self.run_configure_cli(
+            [],
+            existing_values={
+                "TC_ATA_IDLE_SECONDS": "42",
+                "TC_ATA_STANDBY": "0",
+            },
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            confirm=True,
+            command_context=FakeCommandContext(),
+        )
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_ATA_IDLE_SECONDS"], "42")
+        self.assertEqual(result.values["TC_ATA_STANDBY"], "0")
+
+    def test_configure_saves_default_ata_settings_when_existing_env_lacks_them(self) -> None:
+        result = self.run_configure_cli(
+            [],
+            existing_values={
+                "TC_HOST": "root@10.0.0.2",
+                "TC_PASSWORD": "pw",
+            },
+            prompt_side_effect=self.configure_prompt_defaults(),
+            probe_state=self.make_probe_state(self.make_probe_result_unreachable()),
+            confirm=True,
+            command_context=FakeCommandContext(),
+        )
+        rendered = render_env_text(result.values)
+
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(result.values["TC_ATA_IDLE_SECONDS"], DEFAULTS["TC_ATA_IDLE_SECONDS"])
+        self.assertEqual(result.values["TC_ATA_STANDBY"], DEFAULTS["TC_ATA_STANDBY"])
+        self.assertIn("TC_ATA_IDLE_SECONDS=300", rendered)
+        self.assertIn("TC_ATA_STANDBY=''", rendered)
 
     def test_configure_airport_extreme_keeps_hidden_internal_share_root_default(self) -> None:
         def fake_prompt(label, default, _secret):

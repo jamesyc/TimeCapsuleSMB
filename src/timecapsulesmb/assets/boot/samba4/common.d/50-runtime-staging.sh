@@ -68,8 +68,8 @@ tc_refresh_disk_state() {
     fi
     tc_log "disk-state refresh: share state ready"
 
-    tc_log "disk-state refresh: applying ATA idle settings after payload and share-state build"
-    tc_configure_ata_idle_for_mast_disks "$volumes_file" || true
+    tc_log "disk-state refresh: applying ATA drive settings after payload and share-state build"
+    tc_configure_ata_drive_settings_for_mast_disks "$volumes_file" || true
 
     tc_write_payload_state "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME" "$TC_RESOLVED_PAYLOAD_DEVICE" "$payload_file"
     mv -f "$volumes_file" "$TC_TOPOLOGY_SIGNATURE"
