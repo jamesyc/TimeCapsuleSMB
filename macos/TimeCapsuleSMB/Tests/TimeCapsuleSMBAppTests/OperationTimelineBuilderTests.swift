@@ -76,4 +76,14 @@ final class OperationTimelineBuilderTests: XCTestCase {
         XCTAssertEqual(OperationTimelineBuilder.operationTitle("paths"), "App Readiness")
         XCTAssertEqual(OperationTimelineBuilder.operationTitle("flash"), "Persistent NetBSD4 Boot Hook")
     }
+
+    func testDeployStartupStagesAreUserFacing() {
+        let timeline = OperationTimelineBuilder.timeline(from: [
+            BackendEvent(type: "stage", operation: "deploy", stage: "probe_runtime"),
+            BackendEvent(type: "stage", operation: "deploy", stage: "post_reboot_activation"),
+            BackendEvent(type: "stage", operation: "deploy", stage: "verify_runtime_activation")
+        ])
+
+        XCTAssertEqual(timeline.map(\.title), ["Checking SMB", "Starting SMB", "Verifying SMB"])
+    }
 }

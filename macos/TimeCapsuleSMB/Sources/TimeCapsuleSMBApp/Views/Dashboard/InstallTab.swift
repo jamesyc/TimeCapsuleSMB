@@ -15,6 +15,7 @@ struct InstallTab: View {
             error: store.error,
             events: store.events,
             currentStage: store.currentStage,
+            plannedOptions: store.plannedOptions,
             profile: profile,
             hostWarning: HostCompatibilityPolicy.warning(),
             isCheckupRunning: summary.displayStatus == .checking
@@ -215,7 +216,16 @@ private struct InstallExecutionOptionsView: View {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                 GridRow {
                     Toggle(L10n.string("toggle.no_reboot"), isOn: $store.noReboot)
-                    Toggle(L10n.string("toggle.no_wait"), isOn: $store.noWait)
+                        .disabled(!allowsNoReboot)
+                    Toggle(L10n.string("toggle.no_wait"), isOn: noWaitBinding)
+                        .disabled(!allowsNoWait)
+                }
+                GridRow {
+                    Text(L10n.string("install.advanced_options.no_wait_note"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .gridCellColumns(2)
                 }
                 GridRow {
                     Text(L10n.string("field.mount_wait"))
@@ -226,5 +236,25 @@ private struct InstallExecutionOptionsView: View {
             }
         }
         .disabled(store.isBusy)
+    }
+
+    private var allowsNoReboot: Bool {
+        DeployExecutionOptionPolicy.allowsNoReboot(noWait: store.noWait)
+    }
+
+    private var allowsNoWait: Bool {
+        DeployExecutionOptionPolicy.allowsNoWait(noReboot: store.noReboot)
+    }
+
+    private var noWaitBinding: Binding<Bool> {
+        Binding {
+            allowsNoWait ? store.noWait : false
+        } set: { value in
+            if allowsNoWait {
+                store.noWait = value
+            } else {
+                store.noWait = false
+            }
+        }
     }
 }

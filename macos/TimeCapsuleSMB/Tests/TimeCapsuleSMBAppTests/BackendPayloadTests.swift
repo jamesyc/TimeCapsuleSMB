@@ -155,6 +155,7 @@ final class BackendPayloadTests: XCTestCase {
           "netbsd4": false,
           "requires_reboot": true,
           "reboot_required": true,
+          "startup_mode": "reboot_then_verify",
           "uploads": [{"description": "smbd"}],
           "pre_upload_actions": [{"type": "stop_process"}],
           "post_upload_actions": [],
@@ -166,6 +167,7 @@ final class BackendPayloadTests: XCTestCase {
 
         XCTAssertEqual(deployPlan.payloadFamily, "netbsd6_samba4")
         XCTAssertTrue(deployPlan.requiresReboot)
+        XCTAssertEqual(deployPlan.startupMode, .rebootThenVerify)
         XCTAssertEqual(deployPlan.uploads.count, 1)
 
         let deployResult = try jsonValue("""

@@ -332,6 +332,19 @@ struct DeviceCompatibilityPayload: Decodable, Equatable {
     }
 }
 
+enum DeployStartupMode: String, Decodable, Equatable {
+    case rebootThenVerify = "reboot_then_verify"
+    case rebootThenActivate = "reboot_then_activate"
+    case activateNow = "activate_now"
+
+    static func fallback(netbsd4: Bool, requiresReboot: Bool) -> DeployStartupMode {
+        if !requiresReboot {
+            return .activateNow
+        }
+        return netbsd4 ? .rebootThenActivate : .rebootThenVerify
+    }
+}
+
 struct DeployPlanPayload: Decodable, Equatable {
     let schemaVersion: Int
     let host: String
@@ -341,6 +354,7 @@ struct DeployPlanPayload: Decodable, Equatable {
     let netbsd4: Bool
     let requiresReboot: Bool
     let rebootRequired: Bool?
+    let startupMode: DeployStartupMode
     let uploads: [JSONValue]
     let preUploadActions: [JSONValue]
     let postUploadActions: [JSONValue]
@@ -357,6 +371,7 @@ struct DeployPlanPayload: Decodable, Equatable {
         case netbsd4
         case requiresReboot = "requires_reboot"
         case rebootRequired = "reboot_required"
+        case startupMode = "startup_mode"
         case uploads
         case preUploadActions = "pre_upload_actions"
         case postUploadActions = "post_upload_actions"
@@ -375,6 +390,8 @@ struct DeployPlanPayload: Decodable, Equatable {
         self.netbsd4 = try container.decode(Bool.self, forKey: .netbsd4)
         self.requiresReboot = try container.decode(Bool.self, forKey: .requiresReboot)
         self.rebootRequired = try container.decodeIfPresent(Bool.self, forKey: .rebootRequired)
+        self.startupMode = try container.decodeIfPresent(DeployStartupMode.self, forKey: .startupMode)
+            ?? DeployStartupMode.fallback(netbsd4: netbsd4, requiresReboot: requiresReboot)
         self.uploads = try container.decodeIfPresent([JSONValue].self, forKey: .uploads) ?? []
         self.preUploadActions = try container.decodeIfPresent([JSONValue].self, forKey: .preUploadActions) ?? []
         self.postUploadActions = try container.decodeIfPresent([JSONValue].self, forKey: .postUploadActions) ?? []

@@ -14,10 +14,14 @@ struct InstallPlanPresentation: Equatable {
     let sections: [InstallPlanSection]
     let warnings: [String]
 
-    init(plan: DeployPlanPayload, profile: DeviceProfile, hostWarning: HostCompatibilityWarning? = nil) {
-        self.title = plan.netbsd4
-            ? L10n.string("install.plan.title.netbsd4")
-            : L10n.string("install.plan.title.standard")
+    init(
+        plan: DeployPlanPayload,
+        profile: DeviceProfile,
+        options: DeployOptions? = nil,
+        hostWarning: HostCompatibilityWarning? = nil
+    ) {
+        let returnsAfterRebootRequest = Self.returnsAfterRebootRequest(plan: plan, options: options)
+        self.title = Self.title(for: plan, returnsAfterRebootRequest: returnsAfterRebootRequest)
         self.sections = [
             InstallPlanSection(title: L10n.string("install.plan.section.target"), rows: [
                 InstallPlanRow(label: L10n.string("deploy.presentation.row.target"), value: profile.title),
@@ -31,14 +35,17 @@ struct InstallPlanPresentation: Equatable {
             ]),
             InstallPlanSection(title: L10n.string("install.plan.section.device_actions"), rows: [
                 InstallPlanRow(label: L10n.string("deploy.presentation.row.reboot"), value: plan.requiresReboot ? L10n.string("value.required") : L10n.string("value.not_required")),
-                InstallPlanRow(label: L10n.string("install.plan.row.expected_downtime"), value: Self.expectedDowntime(plan: plan)),
+                InstallPlanRow(label: L10n.string("install.plan.row.expected_downtime"), value: Self.expectedDowntime(plan: plan, returnsAfterRebootRequest: returnsAfterRebootRequest)),
                 InstallPlanRow(label: L10n.string("install.plan.row.remote_actions"), value: "\(plan.preUploadActions.count + plan.postUploadActions.count + plan.activationActions.count)"),
                 InstallPlanRow(label: L10n.string("deploy.presentation.row.post_install_checks"), value: "\(plan.postDeployChecks.count)")
             ])
         ]
         var warnings: [String] = []
-        if plan.netbsd4 {
-            warnings.append(L10n.string("deploy.presentation.warning.netbsd4_activation"))
+        if returnsAfterRebootRequest {
+            warnings.append(Self.noWaitWarning(for: plan))
+        }
+        if plan.netbsd4 && !returnsAfterRebootRequest {
+            warnings.append(Self.netbsd4Warning(for: plan))
         }
         if let hostWarning {
             warnings.append(hostWarning.message)
@@ -46,14 +53,52 @@ struct InstallPlanPresentation: Equatable {
         self.warnings = warnings
     }
 
-    private static func expectedDowntime(plan: DeployPlanPayload) -> String {
-        if plan.requiresReboot {
+    private static func returnsAfterRebootRequest(plan: DeployPlanPayload, options: DeployOptions?) -> Bool {
+        plan.requiresReboot && options?.noWait == true
+    }
+
+    private static func expectedDowntime(plan: DeployPlanPayload, returnsAfterRebootRequest: Bool) -> String {
+        if returnsAfterRebootRequest {
+            return L10n.string("install.plan.downtime.no_wait")
+        }
+        switch plan.startupMode {
+        case .rebootThenVerify, .rebootThenActivate:
             return L10n.string("install.plan.downtime.reboot")
+        case .activateNow:
+            return L10n.string("install.plan.downtime.activate_now")
         }
-        if plan.netbsd4 {
-            return L10n.string("install.plan.downtime.netbsd4")
+    }
+
+    private static func title(for plan: DeployPlanPayload, returnsAfterRebootRequest: Bool) -> String {
+        if returnsAfterRebootRequest {
+            return L10n.string("install.plan.title.reboot_no_wait")
         }
-        return L10n.string("install.plan.downtime.none")
+        switch plan.startupMode {
+        case .rebootThenActivate:
+            return L10n.string("install.plan.title.reboot_then_activate")
+        case .activateNow:
+            return L10n.string("install.plan.title.activate_now")
+        case .rebootThenVerify:
+            return L10n.string("install.plan.title.standard")
+        }
+    }
+
+    private static func noWaitWarning(for plan: DeployPlanPayload) -> String {
+        if plan.startupMode == .rebootThenActivate {
+            return L10n.string("deploy.presentation.warning.no_wait_post_reboot_activation")
+        }
+        return L10n.string("deploy.presentation.warning.no_wait_post_reboot_verification")
+    }
+
+    private static func netbsd4Warning(for plan: DeployPlanPayload) -> String {
+        switch plan.startupMode {
+        case .rebootThenActivate:
+            return L10n.string("deploy.presentation.warning.netbsd4_reboot_then_activate")
+        case .activateNow:
+            return L10n.string("deploy.presentation.warning.netbsd4_activate_now")
+        case .rebootThenVerify:
+            return L10n.string("deploy.presentation.warning.netbsd4_activation")
+        }
     }
 }
 
@@ -244,12 +289,15 @@ struct InstallWorkflowPresentation: Equatable {
         error: BackendErrorViewModel?,
         events: [BackendEvent],
         currentStage: OperationStageState?,
+        plannedOptions: DeployOptions? = nil,
         profile: DeviceProfile,
         hostWarning: HostCompatibilityWarning? = nil,
         isCheckupRunning: Bool = false
     ) {
         self.title = L10n.string("dashboard.tab.install")
-        self.plan = plan.map { InstallPlanPresentation(plan: $0, profile: profile, hostWarning: hostWarning) }
+        self.plan = plan.map {
+            InstallPlanPresentation(plan: $0, profile: profile, options: plannedOptions, hostWarning: hostWarning)
+        }
         self.timeline = Self.timeline(for: state, events: events, currentStage: currentStage)
         let persistedCompletion = Self.persistedCompletion(
             state: state,

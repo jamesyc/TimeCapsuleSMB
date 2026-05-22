@@ -77,7 +77,12 @@ private struct ConfirmationPresentation {
         }
         let values = detailObject(details, "presentation_values")
         switch presentationKey {
-        case "deploy.netbsd4", "deploy.no_reboot", "deploy.reboot":
+        case "deploy.activate_now",
+             "deploy.netbsd4",
+             "deploy.netbsd4_no_wait",
+             "deploy.no_reboot",
+             "deploy.reboot",
+             "deploy.reboot_no_wait":
             guard let deviceName = stringValue(values, "device_name") else {
                 return nil
             }

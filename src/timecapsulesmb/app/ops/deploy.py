@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+from dataclasses import dataclass
 from pathlib import Path
 import tempfile
 
@@ -98,6 +99,17 @@ from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshEr
 ACP_REBOOT_REQUEST_TIMEOUT_SECONDS = 10
 
 
+@dataclass(frozen=True)
+class DeployConfirmationPresentation:
+    title: str
+    message: str
+    action_title: str
+    risk: str
+    summary: str
+    presentation_id: str
+    legacy_names: tuple[str, ...]
+
+
 def startup_mode_for_deploy(*, no_reboot: bool, is_netbsd4: bool) -> DeploymentStartupMode:
     if no_reboot:
         return DEPLOY_STARTUP_ACTIVATE_NOW
@@ -106,10 +118,74 @@ def startup_mode_for_deploy(*, no_reboot: bool, is_netbsd4: bool) -> DeploymentS
     return DEPLOY_STARTUP_REBOOT_THEN_VERIFY
 
 
+def effective_no_wait_for_deploy(*, requested: bool, no_reboot: bool) -> bool:
+    return False if no_reboot else requested
+
+
 def activation_complete_message(*, is_netbsd4: bool) -> str:
     if is_netbsd4:
         return f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}"
     return "Runtime activation complete."
+
+
+def confirmation_presentation_for_startup_mode(
+    *,
+    startup_mode: DeploymentStartupMode,
+    no_wait: bool,
+    device_name: str,
+) -> DeployConfirmationPresentation:
+    if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
+        if no_wait:
+            return DeployConfirmationPresentation(
+                title="Confirm NetBSD4 deployment and reboot request",
+                message=(
+                    f"Deploy TimeCapsuleSMB to this {device_name}, request reboot, and return immediately "
+                    "without running Samba activation after SSH returns?"
+                ),
+                action_title="Deploy and request reboot",
+                risk="reboot",
+                summary="NetBSD4 deployment with reboot request and no post-reboot activation wait",
+                presentation_id="deploy.netbsd4_no_wait",
+                legacy_names=("confirm_deploy",),
+            )
+        return DeployConfirmationPresentation(
+            title="Confirm NetBSD4 deployment",
+            message=f"Deploy TimeCapsuleSMB to this {device_name}, reboot it, then activate Samba after SSH returns?",
+            action_title="Deploy, reboot, and activate",
+            risk="reboot",
+            summary="NetBSD4 deployment with reboot and service activation",
+            presentation_id="deploy.netbsd4",
+            legacy_names=("confirm_deploy", "confirm_netbsd4_activation"),
+        )
+    if startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
+        return DeployConfirmationPresentation(
+            title="Confirm deployment and runtime start",
+            message=f"Deploy TimeCapsuleSMB to this {device_name} and start Samba without rebooting it?",
+            action_title="Deploy and start SMB",
+            risk="remote_write",
+            summary="Deployment without reboot and runtime start",
+            presentation_id="deploy.activate_now",
+            legacy_names=("confirm_deploy",),
+        )
+    if no_wait:
+        return DeployConfirmationPresentation(
+            title="Confirm deployment and reboot request",
+            message=f"Deploy TimeCapsuleSMB to this {device_name}, request reboot, and return immediately?",
+            action_title="Deploy and request reboot",
+            risk="reboot",
+            summary="Deployment with reboot request and no post-reboot verification wait",
+            presentation_id="deploy.reboot_no_wait",
+            legacy_names=("confirm_deploy",),
+        )
+    return DeployConfirmationPresentation(
+        title="Confirm deployment and reboot",
+        message=f"Deploy TimeCapsuleSMB and reboot this {device_name}?",
+        action_title="Deploy and reboot",
+        risk="reboot",
+        summary="Deployment with reboot request",
+        presentation_id="deploy.reboot",
+        legacy_names=("confirm_deploy", "confirm_reboot"),
+    )
 
 
 def require_supported_payload(target: ManagedTargetState, *, allow_unsupported: bool) -> DeviceCompatibility:
@@ -181,6 +257,7 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
     payload_family = compatibility.payload_family
     is_netbsd4 = is_netbsd4_payload_family(payload_family)
     startup_mode = startup_mode_for_deploy(no_reboot=no_reboot, is_netbsd4=is_netbsd4)
+    no_wait = effective_no_wait_for_deploy(requested=no_wait, no_reboot=no_reboot)
     sink.log(operation, f"Using {payload_family_description(payload_family)} payload.")
     resolved_artifacts = resolve_payload_artifacts(app_paths.distribution_root, payload_family)
     if not dry_run:
@@ -197,27 +274,11 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
             model=target.probe_state.probe_result.airport_model if target.probe_state else None,
             syap=target.probe_state.probe_result.airport_syap if target.probe_state else None,
         )
-        if is_netbsd4:
-            title = "Confirm NetBSD4 deployment"
-            message = f"Deploy TimeCapsuleSMB to this {device_name}, reboot it, then activate Samba after SSH returns?"
-            action_title = "Deploy, reboot, and activate"
-            risk = "reboot"
-            summary = "NetBSD4 deployment with reboot and service activation"
-            presentation_id = "deploy.netbsd4"
-        elif no_reboot:
-            title = "Confirm deployment"
-            message = f"Deploy TimeCapsuleSMB to this {device_name} without rebooting it?"
-            action_title = "Deploy"
-            risk = "remote_write"
-            summary = "Deployment without reboot"
-            presentation_id = "deploy.no_reboot"
-        else:
-            title = "Confirm deployment and reboot"
-            message = f"Deploy TimeCapsuleSMB and reboot this {device_name}?"
-            action_title = "Deploy and reboot"
-            risk = "reboot"
-            summary = "Deployment with reboot request"
-            presentation_id = "deploy.reboot"
+        presentation = confirmation_presentation_for_startup_mode(
+            startup_mode=startup_mode,
+            no_wait=no_wait,
+            device_name=device_name,
+        )
         presentation_values = {
             "device_name": device_name,
             "netbsd4": is_netbsd4,
@@ -231,11 +292,11 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
             build_confirmation(
                 operation=operation,
                 params=params,
-                title=title,
-                message=message,
-                action_title=action_title,
-                risk=risk,
-                summary=summary,
+                title=presentation.title,
+                message=presentation.message,
+                action_title=presentation.action_title,
+                risk=presentation.risk,
+                summary=presentation.summary,
                 context={
                     "host": connection.host,
                     "payload_family": payload_family,
@@ -245,14 +306,10 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
                     "no_wait": no_wait,
                     "startup_mode": startup_mode,
                 },
-                presentation_id=presentation_id,
+                presentation_id=presentation.presentation_id,
                 presentation_values=presentation_values,
             ),
-            legacy_names=(
-                ("confirm_deploy", "confirm_netbsd4_activation")
-                if is_netbsd4
-                else ("confirm_deploy",) if no_reboot else ("confirm_deploy", "confirm_reboot")
-            ),
+            legacy_names=presentation.legacy_names,
         )
     if dry_run:
         payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)

@@ -38,7 +38,6 @@ final class DeployWorkflowStoreTests: XCTestCase {
         ])
         let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
         store.mountWait = "45"
-        store.noReboot = true
         store.noWait = true
         store.nbnsEnabled = false
         store.internalShareUseDiskRoot = true
@@ -54,7 +53,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls.count, 1)
         XCTAssertEqual(runner.calls[0].operation, "deploy")
         XCTAssertEqual(runner.calls[0].params["dry_run"], .bool(true))
-        XCTAssertEqual(runner.calls[0].params["no_reboot"], .bool(true))
+        XCTAssertEqual(runner.calls[0].params["no_reboot"], .bool(false))
         XCTAssertEqual(runner.calls[0].params["no_wait"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["nbns_enabled"], .bool(false))
         XCTAssertEqual(runner.calls[0].params["internal_share_use_disk_root"], .bool(true))
@@ -62,6 +61,43 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[0].params["debug_logging"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["mount_wait"], .number(45))
         XCTAssertEqual(runner.calls[0].params["credentials"], .object(["password": .string("pw")]))
+    }
+
+    func testNoRebootAndNoWaitAreMutuallyExclusive() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
+            ]),
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
+            ])
+        ])
+        let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
+        store.noWait = true
+
+        XCTAssertTrue(store.noWait)
+        XCTAssertFalse(store.noReboot)
+        XCTAssertFalse(DeployExecutionOptionPolicy.allowsNoReboot(noWait: store.noWait))
+        XCTAssertTrue(DeployExecutionOptionPolicy.allowsNoWait(noReboot: store.noReboot))
+
+        store.runPlan(password: "pw")
+        try await waitUntilStoreState { store.state == .planReady }
+
+        XCTAssertEqual(runner.calls[0].params["no_reboot"], .bool(false))
+        XCTAssertEqual(runner.calls[0].params["no_wait"], .bool(true))
+
+        store.noReboot = true
+
+        XCTAssertTrue(store.noReboot)
+        XCTAssertFalse(store.noWait)
+        XCTAssertTrue(DeployExecutionOptionPolicy.allowsNoReboot(noWait: store.noWait))
+        XCTAssertFalse(DeployExecutionOptionPolicy.allowsNoWait(noReboot: store.noReboot))
+
+        store.runPlan(password: "pw")
+        try await waitUntilStoreState { runner.calls.count == 2 && store.state == .planReady }
+
+        XCTAssertEqual(runner.calls[1].params["no_reboot"], .bool(true))
+        XCTAssertEqual(runner.calls[1].params["no_wait"], .bool(false))
     }
 
     func testRejectedPlanDoesNotEnterPlanning() async throws {
@@ -441,6 +477,7 @@ final class DeployWorkflowStoreTests: XCTestCase {
             "netbsd4": .bool(false),
             "requires_reboot": .bool(true),
             "reboot_required": .bool(true),
+            "startup_mode": .string("reboot_then_verify"),
             "uploads": .array([.object(["description": .string("smbd")])]),
             "pre_upload_actions": .array([.object(["type": .string("stop_process")])]),
             "post_upload_actions": .array([]),

@@ -361,16 +361,27 @@ func testDoctorCheck(status: String, message: String, domain: String) -> JSONVal
     ])
 }
 
-func testDeployPlanPayload(payloadFamily: String = "netbsd6_samba4") -> JSONValue {
-    .object([
+func testDeployPlanPayload(
+    payloadFamily: String = "netbsd6_samba4",
+    netbsd4: Bool? = nil,
+    requiresReboot: Bool = true,
+    startupMode: DeployStartupMode? = nil
+) -> JSONValue {
+    let isNetBSD4 = netbsd4 ?? payloadFamily.localizedCaseInsensitiveContains("netbsd4")
+    let resolvedStartupMode = startupMode ?? DeployStartupMode.fallback(
+        netbsd4: isNetBSD4,
+        requiresReboot: requiresReboot
+    )
+    return .object([
         "schema_version": .number(1),
         "host": .string("root@10.0.0.2"),
         "volume_root": .string("/Volumes/dk2"),
         "payload_dir": .string("/Volumes/dk2/.samba4"),
         "payload_family": .string(payloadFamily),
-        "netbsd4": .bool(false),
-        "requires_reboot": .bool(true),
-        "reboot_required": .bool(true),
+        "netbsd4": .bool(isNetBSD4),
+        "requires_reboot": .bool(requiresReboot),
+        "reboot_required": .bool(requiresReboot),
+        "startup_mode": .string(resolvedStartupMode.rawValue),
         "uploads": .array([.object(["description": .string("smbd")])]),
         "pre_upload_actions": .array([]),
         "post_upload_actions": .array([]),

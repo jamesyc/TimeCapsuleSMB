@@ -304,14 +304,60 @@ final class DashboardPresentationTests: XCTestCase {
 
         let presentation = InstallPlanPresentation(plan: plan, profile: profile, hostWarning: warning)
 
-        XCTAssertEqual(presentation.title, "Install / Update SMB and Start Runtime")
+        XCTAssertEqual(presentation.title, "Install / Update SMB, Reboot, and Start Runtime")
         XCTAssertTrue(presentation.sections.contains { section in
             section.rows.contains(InstallPlanRow(label: "Remote Actions", value: "1"))
         })
         XCTAssertTrue(presentation.sections.contains { section in
-            section.rows.contains(InstallPlanRow(label: "Expected Downtime", value: "Usually under a minute; the runtime may start without reboot."))
+            section.rows.contains(InstallPlanRow(label: "Expected Downtime", value: "Several minutes while the Time Capsule reboots."))
         })
         XCTAssertEqual(presentation.warnings.count, 2)
+    }
+
+    func testInstallPlanPresentationUsesActivateNowMode() throws {
+        let plan = try testDeployPlanPayload(
+            requiresReboot: false,
+            startupMode: .activateNow
+        ).decode(DeployPlanPayload.self)
+        let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
+
+        let presentation = InstallPlanPresentation(plan: plan, profile: profile)
+
+        XCTAssertEqual(presentation.title, "Install / Update SMB and Start Runtime")
+        XCTAssertTrue(presentation.sections.contains { section in
+            section.rows.contains(InstallPlanRow(
+                label: "Expected Downtime",
+                value: "Usually under a minute while Samba starts without rebooting."
+            ))
+        })
+        XCTAssertEqual(presentation.warnings, [])
+    }
+
+    func testInstallPlanPresentationShowsNoWaitPostRebootImpact() throws {
+        let plan = try netbsd4DeployPlan().decode(DeployPlanPayload.self)
+        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+        let options = DeployOptions(
+            nbnsEnabled: true,
+            noReboot: false,
+            noWait: true,
+            internalShareUseDiskRoot: false,
+            anyProtocol: false,
+            debugLogging: false,
+            mountWait: 30
+        )
+
+        let presentation = InstallPlanPresentation(plan: plan, profile: profile, options: options)
+
+        XCTAssertEqual(presentation.title, "Install / Update SMB and Request Reboot")
+        XCTAssertTrue(presentation.sections.contains { section in
+            section.rows.contains(InstallPlanRow(
+                label: "Expected Downtime",
+                value: "The app will request reboot and return immediately."
+            ))
+        })
+        XCTAssertEqual(presentation.warnings, [
+            "No Wait will return after requesting reboot. Samba activation will not run automatically after SSH returns."
+        ])
     }
 
     func testInstallWorkflowPresentationCoversAllDeployStates() throws {
@@ -681,8 +727,9 @@ final class DashboardPresentationTests: XCTestCase {
             "payload_dir": .string("/Volumes/dk2/.samba4"),
             "payload_family": .string("netbsd4_samba4"),
             "netbsd4": .bool(true),
-            "requires_reboot": .bool(false),
-            "reboot_required": .bool(false),
+            "requires_reboot": .bool(true),
+            "reboot_required": .bool(true),
+            "startup_mode": .string("reboot_then_activate"),
             "uploads": .array([.object(["description": .string("smbd")])]),
             "pre_upload_actions": .array([]),
             "post_upload_actions": .array([]),

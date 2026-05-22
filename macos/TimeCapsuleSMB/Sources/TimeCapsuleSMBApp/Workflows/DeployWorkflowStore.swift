@@ -11,6 +11,23 @@ struct DeployOptions: Equatable {
     let mountWait: Int
 }
 
+enum DeployExecutionOptionPolicy {
+    static func allowsNoReboot(noWait: Bool) -> Bool {
+        !noWait
+    }
+
+    static func allowsNoWait(noReboot: Bool) -> Bool {
+        !noReboot
+    }
+
+    static func effectiveRebootOptions(noReboot: Bool, noWait: Bool) -> (noReboot: Bool, noWait: Bool) {
+        if noReboot {
+            return (true, false)
+        }
+        return (false, noWait)
+    }
+}
+
 enum DeployWorkflowState: String, CaseIterable, Equatable, Codable {
     case idle
     case planning
@@ -52,10 +69,20 @@ final class DeployWorkflowStore: ObservableObject {
         didSet { reconcilePlanFreshness() }
     }
     @Published var noReboot = false {
-        didSet { reconcilePlanFreshness() }
+        didSet {
+            if noReboot && noWait {
+                noWait = false
+            }
+            reconcilePlanFreshness()
+        }
     }
     @Published var noWait = false {
-        didSet { reconcilePlanFreshness() }
+        didSet {
+            if noWait && noReboot {
+                noReboot = false
+            }
+            reconcilePlanFreshness()
+        }
     }
     @Published var internalShareUseDiskRoot = false {
         didSet { reconcilePlanFreshness() }
@@ -252,10 +279,11 @@ final class DeployWorkflowStore: ObservableObject {
         guard let mountWaitValue else {
             return nil
         }
+        let rebootOptions = DeployExecutionOptionPolicy.effectiveRebootOptions(noReboot: noReboot, noWait: noWait)
         return DeployOptions(
             nbnsEnabled: nbnsEnabled,
-            noReboot: noReboot,
-            noWait: noWait,
+            noReboot: rebootOptions.noReboot,
+            noWait: rebootOptions.noWait,
             internalShareUseDiskRoot: internalShareUseDiskRoot,
             anyProtocol: anyProtocol,
             debugLogging: debugLogging,

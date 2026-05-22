@@ -123,7 +123,9 @@ enum OperationTimelineBuilder {
             return L10n.string("timeline.stage.syncing_to_disk")
         case ("deploy", "reboot"), ("deploy", "wait_for_reboot_down"), ("deploy", "wait_for_reboot_up"):
             return L10n.string("timeline.stage.rebooting")
-        case ("deploy", "netbsd4_activation"):
+        case ("deploy", "probe_runtime"):
+            return L10n.string("timeline.stage.checking_runtime")
+        case ("deploy", "activate_runtime"), ("deploy", "post_reboot_activation"), ("deploy", "netbsd4_activation"):
             return L10n.string("timeline.stage.starting_smb")
         case ("deploy", "verify_runtime_activation"), ("deploy", "verify_runtime_reboot"):
             return L10n.string("timeline.stage.verifying_smb")

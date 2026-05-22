@@ -155,6 +155,55 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(confirmation.actionTitle, "Deploy and Reboot")
     }
 
+    func testPendingConfirmationUsesLocalizedActivationCopy() throws {
+        let event = BackendEvent(
+            type: "error",
+            operation: "deploy",
+            code: "confirmation_required",
+            message: "Backend fallback.",
+            details: .object([
+                "title": .string("Backend title"),
+                "message": .string("Backend message."),
+                "action_title": .string("Backend action"),
+                "confirmation_id": .string("abc123"),
+                "presentation_id": .string("deploy.activate_now"),
+                "presentation_values": .object(["device_name": .string("Time Capsule")])
+            ])
+        )
+
+        let confirmation = try XCTUnwrap(PendingConfirmation(confirmationEvent: event, originalParams: [:]))
+
+        XCTAssertEqual(confirmation.title, "Deploy And Start SMB?")
+        XCTAssertEqual(confirmation.message, "Deploy TimeCapsuleSMB to this Time Capsule and start SMB without rebooting it?")
+        XCTAssertEqual(confirmation.actionTitle, "Deploy and Start SMB")
+    }
+
+    func testPendingConfirmationUsesLocalizedNoWaitDeployCopy() throws {
+        let event = BackendEvent(
+            type: "error",
+            operation: "deploy",
+            code: "confirmation_required",
+            message: "Backend fallback.",
+            details: .object([
+                "title": .string("Backend title"),
+                "message": .string("Backend message."),
+                "action_title": .string("Backend action"),
+                "confirmation_id": .string("abc123"),
+                "presentation_id": .string("deploy.netbsd4_no_wait"),
+                "presentation_values": .object(["device_name": .string("Time Capsule")])
+            ])
+        )
+
+        let confirmation = try XCTUnwrap(PendingConfirmation(confirmationEvent: event, originalParams: [:]))
+
+        XCTAssertEqual(confirmation.title, "Deploy And Request NetBSD4 Reboot?")
+        XCTAssertEqual(
+            confirmation.message,
+            "Deploy TimeCapsuleSMB to this Time Capsule, request reboot, and return immediately without running Samba activation after SSH returns?"
+        )
+        XCTAssertEqual(confirmation.actionTitle, "Deploy and Request Reboot")
+    }
+
     func testPendingConfirmationUsesLocalizedQuestionForUninstallWithoutReboot() throws {
         let event = BackendEvent(
             type: "error",
