@@ -39,7 +39,28 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["debug_logging"], .bool(true))
         XCTAssertEqual(params["mount_wait"], .number(45))
         XCTAssertEqual(params["no_wait"], .bool(true))
+        XCTAssertNil(params["internal_share_use_disk_root"])
+        XCTAssertNil(params["any_protocol"])
         XCTAssertNil(params["credentials"])
+    }
+
+    func testDeployPlanParamsCarryAdvancedRuntimeOverridesWhenEnabled() {
+        let params = OperationParams.deployPlan(
+            noReboot: false,
+            noWait: false,
+            nbnsEnabled: true,
+            internalShareUseDiskRoot: true,
+            anyProtocol: true,
+            debugLogging: false,
+            mountWait: 30,
+            password: "pw"
+        )
+
+        XCTAssertEqual(params["dry_run"], .bool(true))
+        XCTAssertEqual(params["internal_share_use_disk_root"], .bool(true))
+        XCTAssertEqual(params["any_protocol"], .bool(true))
+        XCTAssertEqual(params["debug_logging"], .bool(false))
+        XCTAssertEqual(params["credentials"], .object(["password": .string("pw")]))
     }
 
     func testConfigureParamsUseSelectedRecordInsteadOfManualHostWhenProvided() {

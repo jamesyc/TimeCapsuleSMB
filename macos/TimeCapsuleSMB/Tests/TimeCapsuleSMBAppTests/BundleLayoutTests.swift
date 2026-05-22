@@ -10,7 +10,10 @@ final class BundleLayoutTests: XCTestCase {
             [
                 .helperMissing,
                 .helperNotExecutable,
+                .pythonRuntimeMissing,
+                .pythonExecutableMissing,
                 .distributionRootMissing,
+                .distributionArtifactsMissing,
                 .toolsDirectoryMissing,
                 .installValidationFailed,
                 .helperLaunchFailed,
@@ -50,6 +53,30 @@ final class BundleLayoutTests: XCTestCase {
         XCTAssertTrue(issues.contains(where: { $0.code == .distributionRootMissing && $0.severity == .error }))
     }
 
+    func testMissingDistributionArtifactsIsBlockingIssue() throws {
+        let layout = try makeLayout(createDistributionBin: false)
+
+        let issues = layout.validationIssues()
+
+        XCTAssertTrue(issues.contains(where: { $0.code == .distributionArtifactsMissing && $0.severity == .error }))
+    }
+
+    func testMissingPythonRuntimeIsBlockingIssue() throws {
+        let layout = try makeLayout(createPythonRuntime: false)
+
+        let issues = layout.validationIssues()
+
+        XCTAssertTrue(issues.contains(where: { $0.code == .pythonRuntimeMissing && $0.severity == .error }))
+    }
+
+    func testMissingPythonExecutableIsBlockingIssue() throws {
+        let layout = try makeLayout(createPythonExecutable: false)
+
+        let issues = layout.validationIssues()
+
+        XCTAssertTrue(issues.contains(where: { $0.code == .pythonExecutableMissing && $0.severity == .error }))
+    }
+
     func testMissingToolsDirectoryIsWarningIssue() throws {
         let layout = try makeLayout(createTools: false)
 
@@ -62,6 +89,9 @@ final class BundleLayoutTests: XCTestCase {
         createHelper: Bool = true,
         helperPermissions: Int = 0o755,
         createDistribution: Bool = true,
+        createDistributionBin: Bool = true,
+        createPythonRuntime: Bool = true,
+        createPythonExecutable: Bool = true,
         createTools: Bool = true
     ) throws -> BundleLayout {
         let temp = try TemporaryDirectory()
@@ -79,10 +109,25 @@ final class BundleLayoutTests: XCTestCase {
             try FileManager.default.setAttributes([.posixPermissions: helperPermissions], ofItemAtPath: helper.path)
         }
         if createDistribution {
-            try FileManager.default.createDirectory(
-                at: resources.appendingPathComponent("Distribution", isDirectory: true),
-                withIntermediateDirectories: true
-            )
+            let distribution = resources.appendingPathComponent("Distribution", isDirectory: true)
+            try FileManager.default.createDirectory(at: distribution, withIntermediateDirectories: true)
+            if createDistributionBin {
+                try FileManager.default.createDirectory(
+                    at: distribution.appendingPathComponent("bin", isDirectory: true),
+                    withIntermediateDirectories: true
+                )
+            }
+        }
+        if createPythonRuntime {
+            let pythonBin = resources
+                .appendingPathComponent("Python", isDirectory: true)
+                .appendingPathComponent("bin", isDirectory: true)
+            try FileManager.default.createDirectory(at: pythonBin, withIntermediateDirectories: true)
+            if createPythonExecutable {
+                let python = pythonBin.appendingPathComponent("python")
+                try "#!/bin/sh\nexit 0\n".write(to: python, atomically: true, encoding: .utf8)
+                try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: python.path)
+            }
         }
         if createTools {
             try FileManager.default.createDirectory(

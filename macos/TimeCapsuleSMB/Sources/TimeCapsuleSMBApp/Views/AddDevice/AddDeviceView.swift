@@ -4,6 +4,15 @@ struct AddDeviceView: View {
     @ObservedObject var store: AddDeviceFlowStore
 
     var body: some View {
+        ZStack {
+            content
+            if let progress = AddDeviceProgressPresentation(state: store.state, currentStage: store.currentStage) {
+                BlockingProgressOverlay(progress: progress)
+            }
+        }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 14) {
             topSection
             if store.entryMode == .manual {
@@ -16,6 +25,7 @@ struct AddDeviceView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .disabled(AddDeviceProgressPresentation(state: store.state, currentStage: store.currentStage) != nil)
     }
 
     private var topSection: some View {

@@ -136,6 +136,6 @@ final class ActivityStore: ObservableObject {
         guard let operation else {
             return false
         }
-        return ["capabilities", "validate-install", "paths"].contains(operation)
+        return ["capabilities", "validate-install", "paths", "discover"].contains(operation)
     }
 }

@@ -5,12 +5,14 @@ import Foundation
 final class AppStore: ObservableObject {
     @Published var selectedDeviceID: DeviceProfile.ID?
     @Published var showingAddDevice = false
+    @Published var showingActivity = false
 
     let appReadinessStore: AppReadinessStore
     let deviceRegistry: DeviceRegistryStore
     let operationCoordinator: OperationCoordinator
     let passwordStore: PasswordStore
     let activityStore: ActivityStore
+    let discoveryMonitor: DeviceDiscoveryMonitorStore
 
     private var cancellables: Set<AnyCancellable> = []
 
@@ -30,13 +32,19 @@ final class AppStore: ObservableObject {
         deviceRegistry: DeviceRegistryStore,
         operationCoordinator: OperationCoordinator,
         passwordStore: PasswordStore,
-        activityStore: ActivityStore? = nil
+        activityStore: ActivityStore? = nil,
+        discoveryMonitor: DeviceDiscoveryMonitorStore? = nil
     ) {
         self.appReadinessStore = appReadinessStore
         self.deviceRegistry = deviceRegistry
         self.operationCoordinator = operationCoordinator
         self.passwordStore = passwordStore
         self.activityStore = activityStore ?? ActivityStore(coordinator: operationCoordinator)
+        self.discoveryMonitor = discoveryMonitor ?? DeviceDiscoveryMonitorStore(
+            coordinator: operationCoordinator,
+            readinessStore: appReadinessStore,
+            registry: deviceRegistry
+        )
 
         appReadinessStore.objectWillChange
             .sink { [weak self] _ in
@@ -54,6 +62,11 @@ final class AppStore: ObservableObject {
             }
             .store(in: &cancellables)
         self.activityStore.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+        self.discoveryMonitor.objectWillChange
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
             }
@@ -79,16 +92,25 @@ final class AppStore: ObservableObject {
         await deviceRegistry.load()
         await refreshPasswordStates()
         appReadinessStore.start()
+        discoveryMonitor.startMonitoring()
     }
 
     func select(_ profile: DeviceProfile) {
         selectedDeviceID = profile.id
         showingAddDevice = false
+        showingActivity = false
     }
 
     func showAddDevice() {
         selectedDeviceID = nil
         showingAddDevice = true
+        showingActivity = false
+    }
+
+    func showActivity() {
+        selectedDeviceID = nil
+        showingAddDevice = false
+        showingActivity = true
     }
 
     func dashboardSummary(for profile: DeviceProfile) -> DeviceDashboardSummary {
@@ -146,6 +168,7 @@ final class AppStore: ObservableObject {
         if selectedDeviceID == profile.id {
             selectedDeviceID = deviceRegistry.profiles.first?.id
             showingAddDevice = false
+            showingActivity = false
         }
     }
 
@@ -169,6 +192,7 @@ final class AppStore: ObservableObject {
         selectedDeviceID = profiles.first?.id
         if !profiles.isEmpty {
             showingAddDevice = false
+            showingActivity = false
         }
     }
 }

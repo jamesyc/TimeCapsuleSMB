@@ -5,6 +5,8 @@ struct DeployOptions: Equatable {
     let nbnsEnabled: Bool
     let noReboot: Bool
     let noWait: Bool
+    let internalShareUseDiskRoot: Bool
+    let anyProtocol: Bool
     let debugLogging: Bool
     let mountWait: Int
 }
@@ -47,19 +49,25 @@ enum DeployWorkflowState: String, CaseIterable, Equatable, Codable {
 @MainActor
 final class DeployWorkflowStore: ObservableObject {
     @Published var nbnsEnabled = true {
-        didSet { markPlanStaleIfNeeded() }
+        didSet { reconcilePlanFreshness() }
     }
     @Published var noReboot = false {
-        didSet { markPlanStaleIfNeeded() }
+        didSet { reconcilePlanFreshness() }
     }
     @Published var noWait = false {
-        didSet { markPlanStaleIfNeeded() }
+        didSet { reconcilePlanFreshness() }
+    }
+    @Published var internalShareUseDiskRoot = false {
+        didSet { reconcilePlanFreshness() }
+    }
+    @Published var anyProtocol = false {
+        didSet { reconcilePlanFreshness() }
     }
     @Published var debugLogging = false {
-        didSet { markPlanStaleIfNeeded() }
+        didSet { reconcilePlanFreshness() }
     }
     @Published var mountWait = "30" {
-        didSet { markPlanStaleIfNeeded() }
+        didSet { reconcilePlanFreshness() }
     }
 
     @Published private(set) var state: DeployWorkflowState = .idle
@@ -140,6 +148,8 @@ final class DeployWorkflowStore: ObservableObject {
                 noReboot: options.noReboot,
                 noWait: options.noWait,
                 nbnsEnabled: options.nbnsEnabled,
+                internalShareUseDiskRoot: options.internalShareUseDiskRoot,
+                anyProtocol: options.anyProtocol,
                 debugLogging: options.debugLogging,
                 mountWait: Double(options.mountWait),
                 password: password
@@ -187,6 +197,8 @@ final class DeployWorkflowStore: ObservableObject {
                 noReboot: options.noReboot,
                 noWait: options.noWait,
                 nbnsEnabled: options.nbnsEnabled,
+                internalShareUseDiskRoot: options.internalShareUseDiskRoot,
+                anyProtocol: options.anyProtocol,
                 debugLogging: options.debugLogging,
                 mountWait: Double(options.mountWait),
                 password: password
@@ -232,16 +244,25 @@ final class DeployWorkflowStore: ObservableObject {
             nbnsEnabled: nbnsEnabled,
             noReboot: noReboot,
             noWait: noWait,
+            internalShareUseDiskRoot: internalShareUseDiskRoot,
+            anyProtocol: anyProtocol,
             debugLogging: debugLogging,
             mountWait: mountWaitValue
         )
     }
 
-    private func markPlanStaleIfNeeded() {
-        guard state == .planReady, currentOptions != plannedOptions else {
+    private func reconcilePlanFreshness() {
+        guard plan != nil, state == .planReady || state == .planStale else {
             return
         }
-        state = .planStale
+        if currentOptions == plannedOptions {
+            state = .planReady
+            if error?.code == "plan_stale" {
+                error = nil
+            }
+        } else {
+            state = .planStale
+        }
     }
 
     private func process(_ events: [BackendEvent]) {
@@ -301,8 +322,9 @@ final class DeployWorkflowStore: ObservableObject {
             plan = try event.decodePayload(DeployPlanPayload.self)
             result = nil
             error = nil
-            state = .planReady
             activeOperation = nil
+            state = .planReady
+            reconcilePlanFreshness()
         } catch {
             failContract(state: .planFailed, error: error)
         }

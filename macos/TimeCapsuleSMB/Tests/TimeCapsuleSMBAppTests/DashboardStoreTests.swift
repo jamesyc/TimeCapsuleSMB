@@ -103,6 +103,35 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(opener.openedURLs.map(\.absoluteString), ["smb://10.0.0.2"])
     }
 
+    func testOpenSMBPrimaryActionUsesBonjourHostnameWhenAvailable() async throws {
+        let fixture = try await makeFixture(responses: [])
+        let discovered = DiscoveredDevice(
+            payload: try testDiscoveredDevice(
+                host: "10.0.0.2",
+                hostname: "office-capsule.local.",
+                fullname: "Office Capsule._airport._tcp.local."
+            ).decode(DiscoveredDevicePayload.self),
+            index: 0
+        )
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
+            discoveredDevice: discovered,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let opener = RecordingURLOpener()
+        let session = DeviceDashboardSession(
+            profile: profile,
+            appStore: fixture.appStore,
+            urlOpener: opener,
+            smbAccountResolver: StaticSMBAccountResolver(accounts: [profile.id: "jameschang"])
+        )
+
+        session.performPrimaryAction(.openSMB, profile: profile)
+
+        XCTAssertEqual(opener.openedURLs.map(\.absoluteString), ["smb://jameschang@Office%20Capsule._smb._tcp.local"])
+    }
+
     func testPasswordReplacementSaveUpdatesPasswordStateAndHidesEditor() async throws {
         let fixture = try await makeFixture(responses: [])
         let profile = try await fixture.registry.saveConfiguredDevice(
@@ -499,7 +528,7 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(session.maintenanceStore.selectedWorkflow, .repairXattrs)
 
         XCTAssertTrue(session.handleRecoveryAction(
-            RecoveryAction(title: "Start SMB", kind: .startSMB),
+            RecoveryAction(title: "Activate", kind: .startSMB),
             error: error,
             profile: profile
         ))
@@ -699,5 +728,13 @@ private final class RecordingURLOpener: URLOpening {
 
     func open(_ url: URL) {
         openedURLs.append(url)
+    }
+}
+
+private struct StaticSMBAccountResolver: SMBAccountResolving {
+    let accounts: [DeviceProfile.ID: String]
+
+    func account(for profile: DeviceProfile) -> String? {
+        accounts[profile.id]
     }
 }

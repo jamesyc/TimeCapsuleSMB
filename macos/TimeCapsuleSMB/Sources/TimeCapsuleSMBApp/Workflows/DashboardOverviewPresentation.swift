@@ -82,9 +82,7 @@ struct DeviceDashboardHeaderPresentation: Equatable {
 enum DashboardHealthDomain: String, CaseIterable, Equatable, Identifiable {
     case connection
     case runtime
-    case finderBonjour
-    case smbAuth
-    case timeMachine
+    case checkup
 
     var id: String { rawValue }
 
@@ -94,27 +92,8 @@ enum DashboardHealthDomain: String, CaseIterable, Equatable, Identifiable {
             return L10n.string("dashboard.health.connection")
         case .runtime:
             return L10n.string("dashboard.health.runtime")
-        case .finderBonjour:
-            return L10n.string("dashboard.health.finder_bonjour")
-        case .smbAuth:
-            return L10n.string("dashboard.health.smb_auth")
-        case .timeMachine:
-            return L10n.string("dashboard.health.time_machine")
-        }
-    }
-
-    fileprivate var doctorDomain: DoctorCheckDomain {
-        switch self {
-        case .connection:
-            return .connection
-        case .runtime:
-            return .runtime
-        case .finderBonjour:
-            return .finderBonjour
-        case .smbAuth:
-            return .smbAuth
-        case .timeMachine:
-            return .timeMachine
+        case .checkup:
+            return L10n.string("dashboard.health.checkup")
         }
     }
 }
@@ -244,14 +223,8 @@ struct DeviceDashboardOverviewPresentation: Equatable {
         [
             DashboardHealthSection(domain: .connection, rows: [connectionRow(for: summary)]),
             DashboardHealthSection(domain: .runtime, rows: [runtimeRow(for: summary, currentCheckupSummary: currentCheckupSummary)]),
-            DashboardHealthSection(domain: .finderBonjour, rows: [
-                domainRow(domain: .finderBonjour, summary: summary, currentCheckupSummary: currentCheckupSummary)
-            ]),
-            DashboardHealthSection(domain: .smbAuth, rows: [
-                domainRow(domain: .smbAuth, summary: summary, currentCheckupSummary: currentCheckupSummary)
-            ]),
-            DashboardHealthSection(domain: .timeMachine, rows: [
-                timeMachineRow(for: summary, currentCheckupSummary: currentCheckupSummary)
+            DashboardHealthSection(domain: .checkup, rows: [
+                checkupRow(summary: summary, currentCheckupSummary: currentCheckupSummary)
             ])
         ]
     }
@@ -362,59 +335,67 @@ struct DeviceDashboardOverviewPresentation: Equatable {
         )
     }
 
-    private static func domainRow(
-        domain: DashboardHealthDomain,
+    private static func checkupRow(
         summary: DeviceDashboardSummary,
         currentCheckupSummary: DoctorSummary?
     ) -> DashboardHealthRow {
-        if let signal = checkupSignal(for: domain, summary: currentCheckupSummary) {
+        if let signal = serviceCheckupSignal(summary: currentCheckupSummary) {
             let status = dashboardStatus(signal.severity)
             return DashboardHealthRow(
-                id: "\(domain.rawValue)-current-checkup",
-                title: domain.title,
+                id: "checkup-current",
+                title: DashboardHealthDomain.checkup.title,
                 detail: signal.countSummary,
                 status: status,
                 action: status == .good ? nil : .viewCheckup
             )
         }
+        if let hostWarning = summary.hostWarning {
+            return DashboardHealthRow(
+                id: "checkup-host-warning",
+                title: DashboardHealthDomain.checkup.title,
+                detail: hostWarning.message,
+                status: .warning
+            )
+        }
         guard let lastCheckup = summary.profile.lastCheckup else {
             return DashboardHealthRow(
-                id: "\(domain.rawValue)-unchecked",
-                title: domain.title,
+                id: "checkup-unchecked",
+                title: DashboardHealthDomain.checkup.title,
                 detail: L10n.string("dashboard.health.unchecked"),
                 status: .unknown,
                 action: .runCheckup
             )
         }
         return DashboardHealthRow(
-            id: "\(domain.rawValue)-snapshot",
-            title: domain.title,
+            id: "checkup-snapshot",
+            title: DashboardHealthDomain.checkup.title,
             detail: lastCheckup.summary,
             status: snapshotStatus(lastCheckup),
             action: snapshotStatus(lastCheckup) == .good ? nil : .viewCheckup
         )
     }
 
-    private static func timeMachineRow(
-        for summary: DeviceDashboardSummary,
-        currentCheckupSummary: DoctorSummary?
-    ) -> DashboardHealthRow {
-        if let hostWarning = summary.hostWarning {
-            return DashboardHealthRow(
-                id: "time-machine-host-warning",
-                title: DashboardHealthDomain.timeMachine.title,
-                detail: hostWarning.message,
-                status: .warning
-            )
-        }
-        return domainRow(domain: .timeMachine, summary: summary, currentCheckupSummary: currentCheckupSummary)
-    }
-
     private static func checkupSignal(
-        for domain: DashboardHealthDomain,
+        for domain: DoctorCheckDomain,
         summary: DoctorSummary?
     ) -> DoctorDomainSignal? {
-        DoctorCheckDomainPolicy.signal(for: domain.doctorDomain, summary: summary)
+        DoctorCheckDomainPolicy.signal(for: domain, summary: summary)
+    }
+
+    private static func serviceCheckupSignal(summary: DoctorSummary?) -> DoctorDomainSignal? {
+        let domains: [DoctorCheckDomain] = [.finderBonjour, .smbAuth, .timeMachine]
+        let signals = domains.compactMap { checkupSignal(for: $0, summary: summary) }
+        guard !signals.isEmpty else {
+            return nil
+        }
+        return DoctorDomainSignal(
+            domain: .general,
+            checks: signals.flatMap(\.checks),
+            passCount: signals.map(\.passCount).reduce(0, +),
+            warnCount: signals.map(\.warnCount).reduce(0, +),
+            failCount: signals.map(\.failCount).reduce(0, +),
+            infoCount: signals.map(\.infoCount).reduce(0, +)
+        )
     }
 
     private static func dashboardStatus(_ severity: DoctorCheckSeverity) -> DashboardHealthStatus {

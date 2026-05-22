@@ -7,7 +7,13 @@ import tempfile
 from timecapsulesmb.app.contracts import deploy_plan_payload, deploy_result_payload
 from timecapsulesmb.app.confirmations import build_confirmation, require_confirmation
 from timecapsulesmb.app.events import EventSink
-from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME, AppConfig, airport_family_display_name_from_identity
+from timecapsulesmb.core.config import (
+    DEFAULTS,
+    MANAGED_PAYLOAD_DIR_NAME,
+    AppConfig,
+    airport_family_display_name_from_identity,
+    parse_bool,
+)
 from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP
 from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.core.paths import resolve_app_paths
@@ -130,6 +136,16 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
     config, target = load_config_and_target(operation, params, sink, profile="deploy", include_probe=True)
     connection = target.connection
     app_paths = resolve_app_paths(config_path=config_path(params))
+    internal_share_use_disk_root = bool_param(
+        params,
+        "internal_share_use_disk_root",
+        parse_bool(config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])),
+    )
+    any_protocol = bool_param(
+        params,
+        "any_protocol",
+        parse_bool(config.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])),
+    )
 
     sink.stage(operation, "validate_artifacts")
     failures = [message for _, ok, message in validate_artifacts(app_paths.distribution_root) if not ok]
@@ -257,6 +273,8 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
         payload_home,
         nbns_enabled=nbns_enabled,
         debug_logging=debug_logging,
+        internal_share_use_disk_root=internal_share_use_disk_root,
+        any_protocol=any_protocol,
     )
     with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp, ExitStack() as boot_assets:
         tmpdir = Path(tmp)

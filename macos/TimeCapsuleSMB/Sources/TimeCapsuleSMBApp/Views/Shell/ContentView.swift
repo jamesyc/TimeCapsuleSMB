@@ -173,6 +173,9 @@ public struct ContentView: View {
     private var sidebarSelection: Binding<String?> {
         Binding(
             get: {
+                if appStore.showingActivity {
+                    return "activity"
+                }
                 if appStore.showingAddDevice {
                     return "add"
                 }
@@ -185,9 +188,12 @@ public struct ContentView: View {
                 guard let value else { return }
                 if value == "add" {
                     appStore.showAddDevice()
+                } else if value == "activity" {
+                    appStore.showActivity()
                 } else if value == "all" {
                     appStore.selectedDeviceID = nil
                     appStore.showingAddDevice = false
+                    appStore.showingActivity = false
                 } else if value.hasPrefix("device:") {
                     let id = String(value.dropFirst("device:".count))
                     if let profile = appStore.deviceRegistry.profile(id: id) {
@@ -202,12 +208,15 @@ public struct ContentView: View {
         List(selection: sidebarSelection) {
             Label(L10n.string("sidebar.all_time_capsules"), systemImage: "externaldrive.connected.to.line.below")
                 .tag("all")
+            Label(L10n.string("sidebar.activity"), systemImage: appStore.activityStore.snapshot.isRunning ? "hourglass" : "clock")
+                .tag("activity")
 
             Section(L10n.string("sidebar.devices")) {
                 ForEach(appStore.deviceRegistry.profiles) { profile in
                     DeviceSidebarRow(
                         profile: profile,
-                        summary: appStore.dashboardSummary(for: profile)
+                        summary: appStore.dashboardSummary(for: profile),
+                        lastSeenText: appStore.discoveryMonitor.lastSeenText(for: profile)
                     )
                         .tag("device:\(profile.id)")
                 }
@@ -224,7 +233,12 @@ public struct ContentView: View {
 
     @ViewBuilder
     private var detail: some View {
-        if appStore.showingAddDevice {
+        if appStore.showingActivity {
+            ActivityDetailView(
+                activityStore: appStore.activityStore,
+                registry: appStore.deviceRegistry
+            )
+        } else if appStore.showingAddDevice {
             AddDeviceView(store: addDeviceStore)
         } else if let profile = appStore.selectedProfile {
             DeviceDashboardView(
@@ -236,7 +250,13 @@ public struct ContentView: View {
                 }
             )
         } else {
-            DeviceListOverviewView(appStore: appStore)
+            DeviceListOverviewView(
+                appStore: appStore,
+                addDiscoveredDevice: { device in
+                    addDeviceStore.stageDiscoveredDevices(appStore.discoveryMonitor.devices, selected: device)
+                    appStore.showAddDevice()
+                }
+            )
         }
     }
 }

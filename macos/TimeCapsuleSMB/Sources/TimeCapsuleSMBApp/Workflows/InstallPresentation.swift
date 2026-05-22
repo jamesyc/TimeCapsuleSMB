@@ -147,6 +147,30 @@ struct InstallCompletionPresentation: Equatable {
     }
 }
 
+struct InstallProgressPresentation: Equatable, BlockingProgressPresenting {
+    let title: String
+    let message: String
+    let detail: String?
+
+    init?(state: DeployWorkflowState, currentStage: OperationStageState?) {
+        switch state {
+        case .deploying:
+            self.title = L10n.string("install.progress.deploying.title")
+            self.message = L10n.string("install.progress.deploying.message")
+        case .idle,
+             .planning,
+             .planReady,
+             .planStale,
+             .planFailed,
+             .awaitingConfirmation,
+             .deployed,
+             .deployFailed:
+            return nil
+        }
+        self.detail = currentStage?.description ?? currentStage?.stage
+    }
+}
+
 struct InstallWorkflowPresentation: Equatable {
     let title: String
     let stateTitle: String

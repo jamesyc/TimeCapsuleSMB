@@ -16,6 +16,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     let profileEditorStore: DeviceProfileEditorStore
 
     private let urlOpener: URLOpening
+    private let smbAccountResolver: SMBAccountResolving
     private var activeCheckupOperation: ActiveOperation?
     private var activeDeployOperation: ActiveOperation?
     private var cancellables: Set<AnyCancellable> = []
@@ -23,11 +24,13 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     init(
         profile: DeviceProfile,
         appStore: AppStore,
-        urlOpener: URLOpening = WorkspaceURLOpener()
+        urlOpener: URLOpening = WorkspaceURLOpener(),
+        smbAccountResolver: SMBAccountResolving = KeychainSMBAccountResolver()
     ) {
         self.id = profile.id
         self.appStore = appStore
         self.urlOpener = urlOpener
+        self.smbAccountResolver = smbAccountResolver
         self.deployStore = DeployWorkflowStore(coordinator: appStore.operationCoordinator)
         self.doctorStore = DoctorStore(coordinator: appStore.operationCoordinator)
         self.maintenanceStore = MaintenanceStore(coordinator: appStore.operationCoordinator)
@@ -352,10 +355,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     }
 
     private func openSMBAddress(for profile: DeviceProfile) {
-        let host = profile.host
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: #"^.*@"#, with: "", options: .regularExpression)
-        guard !host.isEmpty, let url = URL(string: "smb://\(host)") else {
+        guard let url = SMBAddressPolicy.url(for: profile, account: smbAccountResolver.account(for: profile)) else {
             return
         }
         urlOpener.open(url)

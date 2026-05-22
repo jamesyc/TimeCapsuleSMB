@@ -40,20 +40,32 @@ def render_flash_runtime_config(
     *,
     nbns_enabled: bool,
     debug_logging: bool,
+    internal_share_use_disk_root: bool | None = None,
+    any_protocol: bool | None = None,
     ata_idle_seconds: int = DEFAULT_ATA_IDLE_SECONDS,
     diskd_use_volume_attempts: int = DEFAULT_DISKD_USE_VOLUME_ATTEMPTS,
 ) -> str:
     internal_root_default = config.get("TC_INTERNAL_SHARE_USE_DISK_ROOT", DEFAULTS["TC_INTERNAL_SHARE_USE_DISK_ROOT"])
     any_protocol_default = config.get("TC_ANY_PROTOCOL", DEFAULTS["TC_ANY_PROTOCOL"])
     configured_debug_logging = config.get("TC_DEBUG_LOGGING", DEFAULTS["TC_DEBUG_LOGGING"])
+    effective_internal_root = (
+        parse_bool(internal_root_default)
+        if internal_share_use_disk_root is None
+        else internal_share_use_disk_root
+    )
+    effective_any_protocol = (
+        parse_bool(any_protocol_default)
+        if any_protocol is None
+        else any_protocol
+    )
     effective_debug_logging = debug_logging or parse_bool(configured_debug_logging)
 
     values: list[tuple[str, str | int]] = [
         ("TC_CONFIG_VERSION", 2),
         ("TC_DEPLOY_RELEASE_TAG", RELEASE_TAG),
         ("TC_DEPLOY_CLI_VERSION_CODE", CLI_VERSION_CODE),
-        ("INTERNAL_SHARE_USE_DISK_ROOT", 1 if parse_bool(internal_root_default) else 0),
-        ("ANY_PROTOCOL", 1 if parse_bool(any_protocol_default) else 0),
+        ("INTERNAL_SHARE_USE_DISK_ROOT", 1 if effective_internal_root else 0),
+        ("ANY_PROTOCOL", 1 if effective_any_protocol else 0),
         ("DISKD_USE_VOLUME_ATTEMPTS", diskd_use_volume_attempts),
         ("ATA_IDLE_SECONDS", ata_idle_seconds),
         ("NBNS_ENABLED", 1 if nbns_enabled else 0),

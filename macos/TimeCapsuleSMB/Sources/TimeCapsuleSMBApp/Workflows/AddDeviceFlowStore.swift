@@ -274,6 +274,31 @@ final class AddDeviceFlowStore: ObservableObject {
         state = .passwordEntry
     }
 
+    func stageDiscoveredDevice(_ device: DiscoveredDevice) {
+        stageDiscoveredDevices([device], selected: device)
+    }
+
+    func stageDiscoveredDevices(_ discoveredDevices: [DiscoveredDevice], selected device: DiscoveredDevice) {
+        if !coordinator.backend.isRunning {
+            coordinator.backend.clear()
+        }
+        entryMode = .discover
+        var stagedDevices = discoveredDevices
+        if !stagedDevices.contains(where: { $0.id == device.id }) {
+            stagedDevices.append(device)
+        }
+        devices = stagedDevices
+        password = ""
+        savedProfile = nil
+        error = nil
+        currentStage = nil
+        pendingProfileID = nil
+        pendingDiscoveredDevice = nil
+        activeOperation = nil
+        lastProcessedEventCount = 0
+        select(device)
+    }
+
     func reset() {
         coordinator.backend.clear()
         devices = []

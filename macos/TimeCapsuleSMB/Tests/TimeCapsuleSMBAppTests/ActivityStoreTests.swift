@@ -69,6 +69,34 @@ final class ActivityStoreTests: XCTestCase {
         XCTAssertEqual(activity.snapshot.operationTitle, "App Readiness")
     }
 
+    func testActivitySnapshotTracksDiscoveryAsAppScoped() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(
+                    type: "stage",
+                    operation: "discover",
+                    stage: "bonjour_discovery",
+                    description: "Browse for AirPort Bonjour services."
+                ),
+                BackendEvent(
+                    type: "result",
+                    operation: "discover",
+                    ok: true,
+                    payload: testDiscoverPayload(records: [])
+                )
+            ], delayNanoseconds: 80_000_000)
+        ])
+        let backend = BackendClient(runner: runner)
+        let coordinator = OperationCoordinator(backend: backend)
+        let activity = ActivityStore(coordinator: coordinator)
+
+        backend.run(operation: "discover")
+
+        try await waitUntilStoreState { activity.snapshot.isRunning }
+        XCTAssertEqual(activity.snapshot.operationTitle, "Discovery")
+        XCTAssertEqual(activity.snapshot.scope, .app)
+    }
+
     func testSuccessfulAppValidationPresentsAppReadyWithoutDetailMessage() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [

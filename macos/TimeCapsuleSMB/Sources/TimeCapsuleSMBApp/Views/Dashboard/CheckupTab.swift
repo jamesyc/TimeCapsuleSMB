@@ -14,47 +14,56 @@ struct CheckupTab: View {
             currentStage: store.currentStage,
             hostWarning: HostCompatibilityPolicy.warning()
         )
+        let progress = CheckupProgressPresentation(state: store.state, currentStage: store.currentStage)
 
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                CheckupHeaderView(presentation: presentation)
+        ZStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    CheckupHeaderView(presentation: presentation)
 
-                if let warning = presentation.hostWarning {
-                    WarningBanner(warning: warning)
-                }
-
-                if let action = presentation.primaryAction {
-                    Button {
-                        session.performCheckupAction(action, profile: profile, showDiagnostics: showDiagnostics)
-                    } label: {
-                        Label(action.title, systemImage: action.systemImage)
+                    if let warning = presentation.hostWarning {
+                        WarningBanner(warning: warning)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(store.isRunning || store.bonjourTimeoutValue == nil)
-                }
 
-                if !presentation.timeline.isEmpty {
-                    CheckupTimelineView(items: presentation.timeline)
-                }
+                    if let action = presentation.primaryAction {
+                        Button {
+                            session.performCheckupAction(action, profile: profile, showDiagnostics: showDiagnostics)
+                        } label: {
+                            Label(action.title, systemImage: action.systemImage)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(store.isRunning || store.bonjourTimeoutValue == nil)
+                    }
 
-                if !presentation.summaryRows.isEmpty {
-                    SummaryGrid(rows: presentation.summaryRows.map { ($0.label, $0.value) })
-                }
+                    if !presentation.timeline.isEmpty {
+                        CheckupTimelineView(items: presentation.timeline)
+                    }
 
-                ForEach(presentation.domains) { domain in
-                    CheckupDomainView(domain: domain)
-                }
+                    if !presentation.summaryRows.isEmpty {
+                        SummaryGrid(rows: presentation.summaryRows.map { ($0.label, $0.value) })
+                    }
 
-                CheckupAdvancedOptionsView(store: store)
+                    ForEach(presentation.domains) { domain in
+                        CheckupDomainView(domain: domain)
+                    }
 
-                if let error = store.error {
-                    ErrorRecoveryView(error: error) { action in
-                        handleRecovery(action: action, error: error)
+                    CheckupAdvancedOptionsView(store: store)
+
+                    if let error = store.error {
+                        ErrorRecoveryView(error: error) { action in
+                            handleRecovery(action: action, error: error)
+                        }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .disabled(progress != nil)
+
+            if let progress {
+                BlockingProgressOverlay(progress: progress)
+            }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private func handleRecovery(action: RecoveryAction, error: BackendErrorViewModel) {

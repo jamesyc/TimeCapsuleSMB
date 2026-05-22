@@ -103,7 +103,7 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(connection.action, .replacePassword)
     }
 
-    func testOverviewPresentationUsesTypedCheckupDomainsForHealthRows() throws {
+    func testOverviewPresentationAggregatesServiceCheckupDomainsForHealthRow() throws {
         var profile = try makeProfile()
         profile.lastDeploy = DeviceDeploySnapshot(
             deployedAt: Date(timeIntervalSince1970: 100),
@@ -130,9 +130,10 @@ final class DashboardPresentationTests: XCTestCase {
         let presentation = DeviceDashboardOverviewPresentation(summary: summary, currentCheckupSummary: checkup)
 
         XCTAssertEqual(try row(.runtime, in: presentation).status, .good)
-        XCTAssertEqual(try row(.finderBonjour, in: presentation).status, .warning)
-        XCTAssertEqual(try row(.smbAuth, in: presentation).status, .failed)
-        XCTAssertEqual(try row(.timeMachine, in: presentation).status, .good)
+        XCTAssertEqual(presentation.healthSections.map(\.domain), [.connection, .runtime, .checkup])
+        XCTAssertEqual(try row(.checkup, in: presentation).status, .failed)
+        XCTAssertEqual(try row(.checkup, in: presentation).detail, "PASS 1, WARN 1, FAIL 1")
+        XCTAssertEqual(try row(.checkup, in: presentation).action, .viewCheckup)
     }
 
     func testOverviewPresentationCoversInstallHealthyActivationAndHostWarningStates() throws {
@@ -194,8 +195,8 @@ final class DashboardPresentationTests: XCTestCase {
             primaryAction: .openSMB,
             hostWarning: warning
         ))
-        XCTAssertEqual(try row(.timeMachine, in: hostWarning).status, .warning)
-        XCTAssertEqual(try row(.timeMachine, in: hostWarning).detail, "Time Machine warning.")
+        XCTAssertEqual(try row(.checkup, in: hostWarning).status, .warning)
+        XCTAssertEqual(try row(.checkup, in: hostWarning).detail, "Time Machine warning.")
     }
 
     func testInstallPlanPresentationShowsDeviceImpactAndWarnings() throws {
@@ -256,7 +257,7 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.title, "Install / Update Verified")
         XCTAssertTrue(presentation.rows.contains(PresentationRow(label: "Verified", value: "yes")))
         XCTAssertEqual(presentation.warnings, [
-            "NetBSD4 devices may need Start SMB after a later reboot unless the boot hook is patched."
+            "NetBSD4 devices may need Activate after a later reboot unless the boot hook is patched."
         ])
         XCTAssertEqual(presentation.actions, [.openFinder, .runCheckup, .viewDiagnostics])
     }
@@ -269,6 +270,42 @@ final class DashboardPresentationTests: XCTestCase {
 
         XCTAssertEqual(presentation.items.count, 1)
         XCTAssertEqual(presentation.items.first?.title, "Uploading")
+    }
+
+    func testInstallProgressPresentationAppearsOnlyWhileDeploying() {
+        let stage = OperationStageState(event: BackendEvent(
+            type: "stage",
+            operation: "deploy",
+            stage: "upload_payload",
+            description: "Uploading files."
+        ))
+
+        let deploying = InstallProgressPresentation(state: .deploying, currentStage: stage)
+
+        XCTAssertEqual(deploying?.title, "Installing / Updating SMB")
+        XCTAssertEqual(deploying?.message, "Uploading and applying the managed SMB runtime. This can take a few seconds.")
+        XCTAssertEqual(deploying?.detail, "Uploading files.")
+        for state in DeployWorkflowState.allCases where state != .deploying {
+            XCTAssertNil(InstallProgressPresentation(state: state, currentStage: stage), "\(state) should not show a blocking progress modal.")
+        }
+    }
+
+    func testCheckupProgressPresentationAppearsOnlyWhileRunning() {
+        let stage = OperationStageState(event: BackendEvent(
+            type: "stage",
+            operation: "doctor",
+            stage: "run_checks",
+            description: "Run local and remote diagnostic checks."
+        ))
+
+        let running = CheckupProgressPresentation(state: .running, currentStage: stage)
+
+        XCTAssertEqual(running?.title, "Running Checkup")
+        XCTAssertEqual(running?.message, "Running local and remote diagnostic checks.\nThis can take a few minutes...")
+        XCTAssertNil(running?.detail)
+        for state in DoctorWorkflowState.allCases where state != .running {
+            XCTAssertNil(CheckupProgressPresentation(state: state, currentStage: stage), "\(state) should not show a blocking progress modal.")
+        }
     }
 
     func testMaintenanceActionPolicyCoversAllStates() {
@@ -312,6 +349,8 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(primaryAction(.repairXattrs, state: .scanReady, canRepairXattrs: false), .scanMetadata)
         XCTAssertEqual(MaintenanceActionPolicy.secondaryActions(workflow: .fsck, state: .planReady), [.planFsck, .findVolumes])
         XCTAssertEqual(MaintenanceActionPolicy.secondaryActions(workflow: .repairXattrs, state: .scanReady), [.scanMetadata])
+        XCTAssertEqual(MaintenanceUserAction.planActivation.title, "Plan Activate")
+        XCTAssertEqual(MaintenanceUserAction.runActivation.title, "Activate")
     }
 
     func testMaintenanceStatusMessagesCoverAllStates() {
@@ -354,13 +393,13 @@ final class DashboardPresentationTests: XCTestCase {
         var presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
         XCTAssertEqual(presentation.detail.workflow, .activate)
         XCTAssertEqual(presentation.detail.primaryAction, .runActivation)
-        XCTAssertEqual(presentation.detail.plan?.title, "Start SMB Plan")
+        XCTAssertEqual(presentation.detail.plan?.title, "Activation Plan")
         XCTAssertEqual(presentation.detail.plan?.rows.first, PresentationRow(label: "Device", value: profile.title))
 
         store.runActivation(password: "pw")
         try await waitUntilStoreState { store.activateState == .succeeded && !store.isRunning }
         presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
-        XCTAssertEqual(presentation.detail.completion?.title, "Start SMB Complete")
+        XCTAssertEqual(presentation.detail.completion?.title, "Activation Complete")
         XCTAssertTrue(presentation.detail.completion?.rows.contains(PresentationRow(label: "Already Active", value: "yes")) == true)
 
         store.planUninstall(password: "pw")

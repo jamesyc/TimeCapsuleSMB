@@ -14,7 +14,10 @@ public enum BundleRuntimeIssueSeverity: String, CaseIterable, Equatable, Sendabl
 public enum BundleRuntimeIssueCode: String, CaseIterable, Equatable, Sendable {
     case helperMissing
     case helperNotExecutable
+    case pythonRuntimeMissing
+    case pythonExecutableMissing
     case distributionRootMissing
+    case distributionArtifactsMissing
     case toolsDirectoryMissing
     case installValidationFailed
     case helperLaunchFailed
@@ -75,7 +78,7 @@ public struct BundleLayout: Equatable, Sendable {
         self.helperURL = helperURL
         self.distributionRootURL = distributionRootURL ?? resourceURL.appendingPathComponent("Distribution", isDirectory: true)
         self.toolsBinURL = toolsBinURL ?? resourceURL.appendingPathComponent("Tools/bin", isDirectory: true)
-        self.pythonRuntimeURL = pythonRuntimeURL
+        self.pythonRuntimeURL = pythonRuntimeURL ?? resourceURL.appendingPathComponent("Python", isDirectory: true)
         self.applicationSupportURL = applicationSupportURL
         self.configURL = configURL ?? applicationSupportURL.appendingPathComponent(".env")
         self.stateDirectoryURL = stateDirectoryURL ?? applicationSupportURL
@@ -126,11 +129,38 @@ public struct BundleLayout: Equatable, Sendable {
                 recovery: "Reinstall TimeCapsuleSMB."
             ))
         }
+        if let pythonRuntimeURL {
+            if !isDirectory(pythonRuntimeURL, fileManager: fileManager) {
+                issues.append(BundleRuntimeIssue(
+                    code: .pythonRuntimeMissing,
+                    severity: .error,
+                    message: "The bundled Python runtime is missing.",
+                    recovery: "Reinstall TimeCapsuleSMB."
+                ))
+            } else {
+                let python = pythonRuntimeURL.appendingPathComponent("bin/python")
+                if !fileManager.isExecutableFile(atPath: python.path) {
+                    issues.append(BundleRuntimeIssue(
+                        code: .pythonExecutableMissing,
+                        severity: .error,
+                        message: "The bundled Python executable is missing or not executable.",
+                        recovery: "Reinstall TimeCapsuleSMB."
+                    ))
+                }
+            }
+        }
         if !isDirectory(distributionRootURL, fileManager: fileManager) {
             issues.append(BundleRuntimeIssue(
                 code: .distributionRootMissing,
                 severity: .error,
                 message: "The bundled TimeCapsuleSMB distribution is missing.",
+                recovery: "Reinstall TimeCapsuleSMB."
+            ))
+        } else if !isDirectory(distributionRootURL.appendingPathComponent("bin", isDirectory: true), fileManager: fileManager) {
+            issues.append(BundleRuntimeIssue(
+                code: .distributionArtifactsMissing,
+                severity: .error,
+                message: "The bundled TimeCapsuleSMB payload artifacts are missing.",
                 recovery: "Reinstall TimeCapsuleSMB."
             ))
         }

@@ -63,36 +63,54 @@ enum OperationParams {
         noReboot: Bool,
         noWait: Bool,
         nbnsEnabled: Bool,
+        internalShareUseDiskRoot: Bool = false,
+        anyProtocol: Bool = false,
         debugLogging: Bool,
         mountWait: Double,
         password: String
     ) -> [String: JSONValue] {
-        withCredentials([
+        var params: [String: JSONValue] = [
             "dry_run": .bool(true),
             "no_reboot": .bool(noReboot),
             "no_wait": .bool(noWait),
             "nbns_enabled": .bool(nbnsEnabled),
             "debug_logging": .bool(debugLogging),
             "mount_wait": .number(mountWait)
-        ], password: password)
+        ]
+        if internalShareUseDiskRoot {
+            params["internal_share_use_disk_root"] = .bool(true)
+        }
+        if anyProtocol {
+            params["any_protocol"] = .bool(true)
+        }
+        return withCredentials(params, password: password)
     }
 
     static func deployRun(
         noReboot: Bool,
         noWait: Bool,
         nbnsEnabled: Bool,
+        internalShareUseDiskRoot: Bool = false,
+        anyProtocol: Bool = false,
         debugLogging: Bool,
         mountWait: Double,
         password: String
     ) -> [String: JSONValue] {
-        withCredentials([
+        var params: [String: JSONValue] = [
             "dry_run": .bool(false),
             "no_reboot": .bool(noReboot),
             "no_wait": .bool(noWait),
             "nbns_enabled": .bool(nbnsEnabled),
             "debug_logging": .bool(debugLogging),
             "mount_wait": .number(mountWait)
-        ], password: password)
+        ]
+        if internalShareUseDiskRoot {
+            params["internal_share_use_disk_root"] = .bool(true)
+        }
+        if anyProtocol {
+            params["any_protocol"] = .bool(true)
+        }
+        return withCredentials(params, password: password)
     }
 
     static func uninstallPlan(noReboot: Bool, noWait: Bool, mountWait: Double, password: String) -> [String: JSONValue] {

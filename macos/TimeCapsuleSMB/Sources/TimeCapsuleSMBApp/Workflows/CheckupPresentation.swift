@@ -221,3 +221,18 @@ struct CheckupPresentation: Equatable {
         return items
     }
 }
+
+struct CheckupProgressPresentation: Equatable, BlockingProgressPresenting {
+    let title: String
+    let message: String
+    let detail: String?
+
+    init?(state: DoctorWorkflowState, currentStage: OperationStageState?) {
+        guard state == .running else {
+            return nil
+        }
+        self.title = L10n.string("checkup.progress.running.title")
+        self.message = L10n.string("checkup.progress.running.message")
+        self.detail = nil
+    }
+}

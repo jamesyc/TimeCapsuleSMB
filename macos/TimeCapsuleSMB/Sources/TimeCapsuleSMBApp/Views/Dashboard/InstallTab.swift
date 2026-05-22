@@ -17,48 +17,57 @@ struct InstallTab: View {
             profile: profile,
             hostWarning: HostCompatibilityPolicy.warning()
         )
+        let progress = InstallProgressPresentation(state: store.state, currentStage: store.currentStage)
 
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                InstallHeaderView(presentation: presentation)
+        ZStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    InstallHeaderView(presentation: presentation)
 
-                ForEach(presentation.notices, id: \.self) { notice in
-                    Label(notice, systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.yellow)
-                }
-
-                if let action = presentation.primaryAction {
-                    InstallActionButton(action: action) {
-                        session.performInstallAction(action, profile: profile, showDiagnostics: showDiagnostics)
+                    ForEach(presentation.notices, id: \.self) { notice in
+                        Label(notice, systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.yellow)
                     }
-                    .disabled(isDisabled(action, store: store))
-                }
 
-                if let timeline = presentation.timeline {
-                    InstallTimelineView(presentation: timeline)
-                }
+                    if let action = presentation.primaryAction {
+                        InstallActionButton(action: action) {
+                            session.performInstallAction(action, profile: profile, showDiagnostics: showDiagnostics)
+                        }
+                        .disabled(isDisabled(action, store: store))
+                    }
 
-                if let plan = presentation.plan {
-                    InstallPlanView(presentation: plan)
-                }
+                    if let timeline = presentation.timeline {
+                        InstallTimelineView(presentation: timeline)
+                    }
 
-                if let completion = presentation.completion {
-                    InstallCompletionView(presentation: completion) { action in
-                        session.performInstallAction(action, profile: profile, showDiagnostics: showDiagnostics)
+                    if let plan = presentation.plan {
+                        InstallPlanView(presentation: plan)
+                    }
+
+                    if let completion = presentation.completion {
+                        InstallCompletionView(presentation: completion) { action in
+                            session.performInstallAction(action, profile: profile, showDiagnostics: showDiagnostics)
+                        }
+                    }
+
+                    InstallAdvancedOptionsView(store: store)
+
+                    if let error = store.error {
+                        ErrorRecoveryView(error: error) { action in
+                            handleRecovery(action: action, error: error)
+                        }
                     }
                 }
-
-                InstallAdvancedOptionsView(store: store)
-
-                if let error = store.error {
-                    ErrorRecoveryView(error: error) { action in
-                        handleRecovery(action: action, error: error)
-                    }
-                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .disabled(progress != nil)
+
+            if let progress {
+                BlockingProgressOverlay(progress: progress)
+            }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private func handleRecovery(action: RecoveryAction, error: BackendErrorViewModel) {
@@ -223,6 +232,10 @@ private struct InstallAdvancedOptionsView: View {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                 GridRow {
                     Toggle(L10n.string("toggle.enable_nbns"), isOn: $store.nbnsEnabled)
+                    Toggle(L10n.string("toggle.internal_share_use_disk_root"), isOn: $store.internalShareUseDiskRoot)
+                }
+                GridRow {
+                    Toggle(L10n.string("toggle.any_protocol"), isOn: $store.anyProtocol)
                     Toggle(L10n.string("toggle.force_debug_logging"), isOn: $store.debugLogging)
                 }
                 GridRow {

@@ -16,6 +16,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PACKAGE_ROOT.parents[1]
 APP_NAME = "TimeCapsuleSMB"
 PRODUCT_NAME = "TimeCapsuleSMB"
+ARTIFACT_MANIFEST = REPO_ROOT / "src" / "timecapsulesmb" / "assets" / "artifact-manifest.json"
 
 
 def run(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -118,6 +119,24 @@ def copy_distribution(resources_dir: Path) -> None:
         shutil.rmtree(distribution)
     distribution.mkdir(parents=True)
     shutil.copytree(REPO_ROOT / "bin", distribution / "bin")
+    assert_distribution_artifacts(distribution)
+
+
+def artifact_paths() -> list[str]:
+    data = json.loads(ARTIFACT_MANIFEST.read_text(encoding="utf-8"))
+    artifacts = data.get("artifacts", {})
+    paths: list[str] = []
+    for record in artifacts.values():
+        if isinstance(record, dict) and isinstance(record.get("path"), str):
+            paths.append(record["path"])
+    return sorted(paths)
+
+
+def assert_distribution_artifacts(distribution: Path) -> None:
+    missing = [path for path in artifact_paths() if not (distribution / path).is_file()]
+    if missing:
+        joined = "\n  - ".join(missing)
+        raise RuntimeError(f"Bundled distribution is missing payload artifact(s):\n  - {joined}")
 
 
 def copy_tool(name: str, tools_bin: Path) -> bool:
@@ -141,16 +160,56 @@ def copy_tools(resources_dir: Path, require_tools: bool) -> None:
         print(f"warning: missing optional bundled tool(s): {', '.join(missing)}", file=sys.stderr)
 
 
+def parse_helper_events(stdout: str) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for line in stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            value = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            events.append(value)
+    return events
+
+
 def smoke_request(helper: Path, operation: str, state_dir: Path) -> None:
     env = os.environ.copy()
     env["TCAPSULE_STATE_DIR"] = str(state_dir)
     env["TCAPSULE_CONFIG"] = str(state_dir / ".env")
     request = json.dumps({"operation": operation, "params": {}})
     completed = run([str(helper), "api"], input_text=request, env=env)
-    if '"type":"result"' not in completed.stdout and '"type": "result"' not in completed.stdout:
+    result_event = next(
+        (
+            event
+            for event in parse_helper_events(completed.stdout)
+            if event.get("operation") == operation and event.get("type") == "result"
+        ),
+        None,
+    )
+    if result_event is None:
         raise RuntimeError(f"{operation} smoke test did not emit a result event:\n{completed.stdout}\n{completed.stderr}")
-    if '"ok":false' in completed.stdout or '"ok": false' in completed.stdout:
+    if result_event.get("ok") is not True:
         raise RuntimeError(f"{operation} smoke test failed:\n{completed.stdout}\n{completed.stderr}")
+
+
+def assert_bundle_layout(app: Path) -> None:
+    helper = app / "Contents" / "Helpers" / "tcapsule"
+    python = app / "Contents" / "Resources" / "Python" / "bin" / "python"
+    distribution = app / "Contents" / "Resources" / "Distribution"
+    tools_bin = app / "Contents" / "Resources" / "Tools" / "bin"
+    required_executables = [helper, python]
+    missing_executables = [path for path in required_executables if not path.is_file() or not os.access(path, os.X_OK)]
+    if missing_executables:
+        joined = "\n  - ".join(str(path) for path in missing_executables)
+        raise RuntimeError(f"App bundle is missing required executable(s):\n  - {joined}")
+    if not (distribution / "bin").is_dir():
+        raise RuntimeError(f"App bundle is missing bundled payload directory: {distribution / 'bin'}")
+    if not tools_bin.is_dir():
+        raise RuntimeError(f"App bundle is missing bundled tools directory: {tools_bin}")
+    assert_distribution_artifacts(distribution)
 
 
 def smoke_test(app: Path) -> None:
@@ -183,6 +242,7 @@ def package_app(args: argparse.Namespace) -> Path:
     create_python_runtime(args.python, resources)
     copy_distribution(resources)
     copy_tools(resources, args.require_tools)
+    assert_bundle_layout(app)
 
     if not args.skip_smoke:
         smoke_test(app)

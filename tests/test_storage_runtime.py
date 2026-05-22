@@ -909,6 +909,46 @@ MaSt = (
         self.assertIn("SMBD_DEBUG_LOGGING=1\n", rendered)
         self.assertIn("MDNS_DEBUG_LOGGING=1\n", rendered)
 
+    def test_flash_runtime_config_accepts_deploy_time_advanced_overrides(self) -> None:
+        config = AppConfig.from_values(
+            {
+                "TC_INTERNAL_SHARE_USE_DISK_ROOT": "false",
+                "TC_ANY_PROTOCOL": "false",
+            }
+        )
+
+        rendered = render_flash_runtime_config(
+            config,
+            PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+            nbns_enabled=True,
+            debug_logging=False,
+            internal_share_use_disk_root=True,
+            any_protocol=True,
+        )
+
+        self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=1\n", rendered)
+        self.assertIn("ANY_PROTOCOL=1\n", rendered)
+
+    def test_flash_runtime_config_deploy_time_overrides_can_disable_saved_values(self) -> None:
+        config = AppConfig.from_values(
+            {
+                "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
+                "TC_ANY_PROTOCOL": "true",
+            }
+        )
+
+        rendered = render_flash_runtime_config(
+            config,
+            PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+            nbns_enabled=True,
+            debug_logging=False,
+            internal_share_use_disk_root=False,
+            any_protocol=False,
+        )
+
+        self.assertIn("INTERNAL_SHARE_USE_DISK_ROOT=0\n", rendered)
+        self.assertIn("ANY_PROTOCOL=0\n", rendered)
+
     def test_common_runtime_identity_normalizers_match_python(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

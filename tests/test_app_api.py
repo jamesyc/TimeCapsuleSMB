@@ -940,21 +940,29 @@ class AppApiTests(unittest.TestCase):
                                             with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions"):
                                                 with mock.patch("timecapsulesmb.app.ops.deploy.flush_remote_filesystem_writes"):
                                                     with mock.patch("timecapsulesmb.app.ops.deploy.wait_for_ssh_state_conn") as wait:
-                                                        rc = service.run_api_request(
-                                                            {
-                                                                "operation": "deploy",
-                                                                "params": {
-                                                                    "dry_run": False,
-                                                                    "no_reboot": True,
-                                                                    "confirm_deploy": True,
+                                                        with mock.patch("timecapsulesmb.app.ops.deploy.render_flash_runtime_config", return_value="runtime\n") as render_runtime:
+                                                            rc = service.run_api_request(
+                                                                {
+                                                                    "operation": "deploy",
+                                                                    "params": {
+                                                                        "dry_run": False,
+                                                                        "no_reboot": True,
+                                                                        "confirm_deploy": True,
+                                                                        "internal_share_use_disk_root": True,
+                                                                        "any_protocol": True,
+                                                                        "debug_logging": True,
+                                                                    },
                                                                 },
-                                                            },
-                                                            collector.sink,
-                                                        )
+                                                                collector.sink,
+                                                            )
 
         self.assertEqual(rc, 0)
         upload.assert_called_once()
         wait.assert_not_called()
+        render_runtime.assert_called_once()
+        self.assertEqual(render_runtime.call_args.kwargs["internal_share_use_disk_root"], True)
+        self.assertEqual(render_runtime.call_args.kwargs["any_protocol"], True)
+        self.assertEqual(render_runtime.call_args.kwargs["debug_logging"], True)
         self.assertEqual(collector.events_of_type("result")[0]["payload"]["rebooted"], False)
 
     def test_deploy_no_wait_requests_reboot_without_wait_or_runtime_verify(self) -> None:

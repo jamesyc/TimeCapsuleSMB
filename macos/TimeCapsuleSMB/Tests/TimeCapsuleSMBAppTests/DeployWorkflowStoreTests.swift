@@ -41,6 +41,8 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.noReboot = true
         store.noWait = true
         store.nbnsEnabled = false
+        store.internalShareUseDiskRoot = true
+        store.anyProtocol = true
         store.debugLogging = true
 
         store.runPlan(password: "pw")
@@ -55,6 +57,8 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[0].params["no_reboot"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["no_wait"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["nbns_enabled"], .bool(false))
+        XCTAssertEqual(runner.calls[0].params["internal_share_use_disk_root"], .bool(true))
+        XCTAssertEqual(runner.calls[0].params["any_protocol"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["debug_logging"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["mount_wait"], .number(45))
         XCTAssertEqual(runner.calls[0].params["credentials"], .object(["password": .string("pw")]))
@@ -117,10 +121,59 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.runPlan(password: "pw")
         try await waitUntilStoreState { store.state == .planReady }
 
-        store.noWait = true
+        store.internalShareUseDiskRoot = true
 
         XCTAssertEqual(store.state, .planStale)
         XCTAssertFalse(store.canDeploy)
+
+        store.internalShareUseDiskRoot = false
+
+        XCTAssertEqual(store.state, .planReady)
+        XCTAssertTrue(store.canDeploy)
+    }
+
+    func testOptionChangeWhilePlanningMakesReturnedPlanStaleAndAllowsRegeneration() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
+            ], delayNanoseconds: 50_000_000),
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
+            ])
+        ])
+        let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
+
+        store.runPlan(password: "pw")
+        try await waitUntilStoreState { runner.calls.count == 1 }
+        XCTAssertEqual(store.state, .planning)
+
+        store.noWait = true
+
+        try await waitUntilStoreState { store.state == .planStale }
+        XCTAssertFalse(store.canDeploy)
+        XCTAssertNotNil(store.plan)
+        XCTAssertEqual(runner.calls[0].params["no_wait"], .bool(false))
+
+        store.runPlan(password: "pw")
+
+        try await waitUntilStoreState { store.state == .planReady && runner.calls.count == 2 }
+        XCTAssertTrue(store.canDeploy)
+        XCTAssertEqual(runner.calls[1].params["no_wait"], .bool(true))
+    }
+
+    func testDefaultRuntimeOverridesAreOmittedFromPlanParams() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "deploy", ok: true, payload: deployPlanPayload())
+            ])
+        ])
+        let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
+
+        store.runPlan(password: "pw")
+        try await waitUntilStoreState { store.state == .planReady }
+
+        XCTAssertNil(runner.calls[0].params["internal_share_use_disk_root"])
+        XCTAssertNil(runner.calls[0].params["any_protocol"])
     }
 
     func testDeploySendsRunParamsFromPlanOptionsAndStoresResult() async throws {
@@ -135,6 +188,8 @@ final class DeployWorkflowStoreTests: XCTestCase {
         ])
         let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
         store.mountWait = "30"
+        store.internalShareUseDiskRoot = true
+        store.anyProtocol = true
 
         store.runPlan(password: "pw")
         try await waitUntilStoreState { store.state == .planReady }
@@ -147,6 +202,8 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls.count, 2)
         XCTAssertEqual(runner.calls[1].params["dry_run"], .bool(false))
         XCTAssertEqual(runner.calls[1].params["mount_wait"], .number(30))
+        XCTAssertEqual(runner.calls[1].params["internal_share_use_disk_root"], .bool(true))
+        XCTAssertEqual(runner.calls[1].params["any_protocol"], .bool(true))
         XCTAssertEqual(runner.calls[1].params["credentials"], .object(["password": .string("pw2")]))
     }
 
