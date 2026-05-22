@@ -4412,6 +4412,7 @@ class CliTests(unittest.TestCase):
         result.mocks.flush_remote_filesystem_writes.assert_called_once_with(
             result.mocks.wait_for_mast_volumes_conn.call_args.args[0]
         )
+        self.assertIn("Deleting old deployed files...", result.text)
         self.assertIn("Flushing deployed payload to disk...", result.text)
         self.assertIn("Deployed Samba payload to /Volumes/dk2/.samba4", result.text)
         self.assertIn("Updated /mnt/Flash boot files.", result.text)
