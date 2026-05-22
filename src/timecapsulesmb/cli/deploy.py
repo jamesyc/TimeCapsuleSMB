@@ -214,6 +214,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.succeed()
             return 0
 
+        print("Deleting old deployed files...")
         command_context.set_stage("pre_upload_actions")
         run_remote_actions(connection, plan.pre_upload_actions)
         command_context.set_stage("prepare_deployment_files")
