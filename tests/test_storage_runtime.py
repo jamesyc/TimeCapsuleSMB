@@ -903,11 +903,24 @@ MaSt = (
             config,
             PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
             nbns_enabled=True,
-            debug_logging=False,
+            debug_logging=None,
         )
 
         self.assertIn("SMBD_DEBUG_LOGGING=1\n", rendered)
         self.assertIn("MDNS_DEBUG_LOGGING=1\n", rendered)
+
+    def test_flash_runtime_config_deploy_time_debug_override_can_disable_saved_value(self) -> None:
+        config = AppConfig.from_values({"TC_DEBUG_LOGGING": "true"})
+
+        rendered = render_flash_runtime_config(
+            config,
+            PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"),
+            nbns_enabled=True,
+            debug_logging=False,
+        )
+
+        self.assertIn("SMBD_DEBUG_LOGGING=0\n", rendered)
+        self.assertIn("MDNS_DEBUG_LOGGING=0\n", rendered)
 
     def test_flash_runtime_config_accepts_deploy_time_advanced_overrides(self) -> None:
         config = AppConfig.from_values(

@@ -37,6 +37,8 @@ class ConfirmationRequest:
     confirmation_id: str
     summary: str
     context: Mapping[str, object]
+    presentation_id: str
+    presentation_values: Mapping[str, object]
 
     def to_jsonable(self) -> dict[str, object]:
         return {
@@ -49,6 +51,8 @@ class ConfirmationRequest:
             "confirmation_id": self.confirmation_id,
             "summary": self.summary,
             "context": jsonable(dict(self.context)),
+            "presentation_id": self.presentation_id,
+            "presentation_values": jsonable(dict(self.presentation_values)),
         }
 
 
@@ -87,6 +91,8 @@ def build_confirmation(
     risk: str,
     summary: str,
     context: Mapping[str, object],
+    presentation_id: str,
+    presentation_values: Mapping[str, object] | None = None,
 ) -> ConfirmationRequest:
     return ConfirmationRequest(
         operation=operation,
@@ -97,6 +103,8 @@ def build_confirmation(
         confirmation_id=_confirmation_id(operation, params, context),
         summary=summary,
         context=context,
+        presentation_id=presentation_id,
+        presentation_values=presentation_values or {},
     )
 
 

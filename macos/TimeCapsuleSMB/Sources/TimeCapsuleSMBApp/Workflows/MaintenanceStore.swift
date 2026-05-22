@@ -115,7 +115,25 @@ final class MaintenanceStore: ObservableObject {
         didSet { markPlansStaleForOptionChange() }
     }
     @Published var repairPath = "" {
-        didSet { markRepairStaleForPathChange() }
+        didSet { markRepairScanStaleIfNeeded() }
+    }
+    @Published var repairRecursive = true {
+        didSet { markRepairScanStaleIfNeeded() }
+    }
+    @Published var repairMaxDepth = "" {
+        didSet { markRepairScanStaleIfNeeded() }
+    }
+    @Published var repairIncludeHidden = false {
+        didSet { markRepairScanStaleIfNeeded() }
+    }
+    @Published var repairIncludeTimeMachine = false {
+        didSet { markRepairScanStaleIfNeeded() }
+    }
+    @Published var repairFixPermissions = false {
+        didSet { markRepairScanStaleIfNeeded() }
+    }
+    @Published var repairVerbose = false {
+        didSet { markRepairScanStaleIfNeeded() }
     }
     @Published var selectedFsckTargetID: FsckTargetViewModel.ID? {
         didSet { markFsckPlanStaleIfNeeded() }
@@ -147,6 +165,7 @@ final class MaintenanceStore: ObservableObject {
     private var plannedFsckOptions: MaintenanceOptions?
     private var plannedFsckTargetID: FsckTargetViewModel.ID?
     private var scannedRepairPath: String?
+    private var scannedRepairOptions: RepairXattrsOptions?
     private var activeOperation: ActiveOperation?
     private var lastProcessedEventCount = 0
     private var cancellables: Set<AnyCancellable> = []
@@ -236,6 +255,13 @@ final class MaintenanceStore: ObservableObject {
             && repairState == .scanReady
             && repairScan?.repairableCount ?? 0 > 0
             && scannedRepairPath == trimmedRepairPath
+            && scannedRepairOptions == currentRepairOptions
+    }
+
+    var canScanRepairXattrs: Bool {
+        !isBusy
+            && !trimmedRepairPath.isEmpty
+            && currentRepairOptions != nil
     }
 
     @discardableResult
@@ -450,6 +476,10 @@ final class MaintenanceStore: ObservableObject {
 
     @discardableResult
     func scanRepairXattrs() -> OperationStartResult {
+        guard let options = currentRepairOptions else {
+            failLocally(workflow: .repairXattrs, message: "Max depth must be empty or a non-negative integer.")
+            return .rejected("Max depth must be empty or a non-negative integer.")
+        }
         guard !trimmedRepairPath.isEmpty else {
             failLocally(workflow: .repairXattrs, message: "Choose a mounted SMB share path before scanning.")
             return .rejected("Choose a mounted SMB share path before scanning.")
@@ -457,7 +487,7 @@ final class MaintenanceStore: ObservableObject {
         let path = trimmedRepairPath
         let start = startRun(
             operation: "repair-xattrs",
-            params: OperationParams.repairXattrsScan(path: path),
+            params: OperationParams.repairXattrsScan(path: path, options: options),
             profile: nil,
             workflow: .repairXattrs
         )
@@ -469,6 +499,7 @@ final class MaintenanceStore: ObservableObject {
         repairScan = nil
         repairResult = nil
         scannedRepairPath = path
+        scannedRepairOptions = options
         return start
     }
 
@@ -487,9 +518,18 @@ final class MaintenanceStore: ObservableObject {
             )
             return .rejected("Run a fresh xattr scan before repairing.")
         }
+        guard let options = scannedRepairOptions else {
+            repairState = .scanStale
+            error = BackendErrorViewModel(
+                operation: "repair-xattrs",
+                code: "scan_stale",
+                message: "Run a fresh xattr scan before repairing."
+            )
+            return .rejected("Run a fresh xattr scan before repairing.")
+        }
         let start = startRun(
             operation: "repair-xattrs",
-            params: OperationParams.repairXattrsRun(path: trimmedRepairPath),
+            params: OperationParams.repairXattrsRun(path: trimmedRepairPath, options: options),
             profile: nil,
             workflow: .repairXattrs
         )
@@ -526,6 +566,7 @@ final class MaintenanceStore: ObservableObject {
         plannedFsckOptions = nil
         plannedFsckTargetID = nil
         scannedRepairPath = nil
+        scannedRepairOptions = nil
         activeOperation = nil
     }
 
@@ -542,6 +583,29 @@ final class MaintenanceStore: ObservableObject {
 
     private var trimmedRepairPath: String {
         repairPath.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var repairMaxDepthValue: Int? {
+        let trimmed = repairMaxDepth.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+        return ValueParsers.nonNegativeInteger(trimmed)
+    }
+
+    private var currentRepairOptions: RepairXattrsOptions? {
+        let trimmed = repairMaxDepth.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, repairMaxDepthValue == nil {
+            return nil
+        }
+        return RepairXattrsOptions(
+            recursive: repairRecursive,
+            maxDepth: repairMaxDepthValue,
+            includeHidden: repairIncludeHidden,
+            includeTimeMachine: repairIncludeTimeMachine,
+            fixPermissions: repairFixPermissions,
+            verbose: repairVerbose
+        )
     }
 
     private func resetRunState() {
@@ -727,11 +791,61 @@ final class MaintenanceStore: ObservableObject {
             }
             return
         }
+        if event.code == "confirmation_cancelled" {
+            applyConfirmationCancelled(operation: event.operation)
+            return
+        }
         if event.code == "auth_failed" {
             passwordInvalidProfileID = activeOperation?.profileID
         }
         error = BackendErrorViewModel(event: event)
         failState(for: event.operation)
+    }
+
+    private func applyConfirmationCancelled(operation: String) {
+        error = nil
+        currentStage = nil
+        activeOperation = nil
+        switch operation {
+        case "activate":
+            activateState = activationPlan == nil ? .idle : .planReady
+        case "uninstall":
+            restoreUninstallStateAfterCancellation()
+        case "fsck":
+            restoreFsckStateAfterCancellation()
+        case "repair-xattrs":
+            restoreRepairStateAfterCancellation()
+        default:
+            break
+        }
+    }
+
+    private func restoreUninstallStateAfterCancellation() {
+        guard uninstallPlan != nil else {
+            uninstallState = .idle
+            return
+        }
+        uninstallState = currentOptions == plannedUninstallOptions ? .planReady : .planStale
+    }
+
+    private func restoreFsckStateAfterCancellation() {
+        guard fsckPlan != nil else {
+            fsckState = fsckTargets.isEmpty ? .idle : .listReady
+            return
+        }
+        fsckState = currentOptions == plannedFsckOptions && selectedFsckTargetID == plannedFsckTargetID
+            ? .planReady
+            : .planStale
+    }
+
+    private func restoreRepairStateAfterCancellation() {
+        guard repairScan != nil else {
+            repairState = .idle
+            return
+        }
+        repairState = scannedRepairPath == trimmedRepairPath && scannedRepairOptions == currentRepairOptions
+            ? .scanReady
+            : .scanStale
     }
 
     private func applyFalseResult(_ event: BackendEvent) {
@@ -833,8 +947,9 @@ final class MaintenanceStore: ObservableObject {
         }
     }
 
-    private func markRepairStaleForPathChange() {
-        if repairState == .scanReady, scannedRepairPath != trimmedRepairPath {
+    private func markRepairScanStaleIfNeeded() {
+        if repairState == .scanReady,
+           scannedRepairPath != trimmedRepairPath || scannedRepairOptions != currentRepairOptions {
             repairState = .scanStale
         }
     }

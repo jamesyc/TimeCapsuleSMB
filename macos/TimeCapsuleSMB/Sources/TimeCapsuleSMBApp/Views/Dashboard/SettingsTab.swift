@@ -1,13 +1,13 @@
 import SwiftUI
 
-struct AdvancedTab: View {
+struct SettingsTab: View {
     let profile: DeviceProfile
     @ObservedObject var session: DeviceDashboardSession
     @ObservedObject var appStore: AppStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(L10n.string("dashboard.tab.advanced"))
+            Text(L10n.string("dashboard.tab.settings"))
                 .font(.title2.weight(.semibold))
             DeviceProfileEditorView(profile: profile, store: session.profileEditorStore)
             SummaryGrid(rows: [
@@ -48,11 +48,14 @@ private struct DeviceProfileEditorView: View {
                     TextField(L10n.string("field.mount_wait"), text: $store.draft.mountWaitSeconds)
                         .frame(width: 160)
                 }
-            }
-
-            HStack {
-                Toggle(L10n.string("toggle.enable_nbns"), isOn: $store.draft.nbnsEnabled)
-                Toggle(L10n.string("toggle.force_debug_logging"), isOn: $store.draft.debugLogging)
+                GridRow {
+                    Toggle(L10n.string("toggle.enable_nbns"), isOn: $store.draft.nbnsEnabled)
+                    Toggle(L10n.string("toggle.internal_share_use_disk_root"), isOn: $store.draft.internalShareUseDiskRoot)
+                }
+                GridRow {
+                    Toggle(L10n.string("toggle.any_protocol"), isOn: $store.draft.anyProtocol)
+                    Toggle(L10n.string("toggle.force_debug_logging"), isOn: $store.draft.debugLogging)
+                }
             }
 
             HStack {
@@ -63,7 +66,7 @@ private struct DeviceProfileEditorView: View {
                 } label: {
                     Label(L10n.string("profile_editor.save"), systemImage: "square.and.arrow.down")
                 }
-                .disabled(!store.canSave(profile: profile))
+                .disabled(!store.canSave)
 
                 Button {
                     store.reset(to: profile)
@@ -88,6 +91,12 @@ private struct DeviceProfileEditorView: View {
             if let error = store.error {
                 ErrorRecoveryView(error: error) { _ in }
             }
+        }
+        .onAppear {
+            store.sync(to: profile)
+        }
+        .onChange(of: profile) { _, profile in
+            store.sync(to: profile)
         }
         .padding(.bottom, 8)
     }

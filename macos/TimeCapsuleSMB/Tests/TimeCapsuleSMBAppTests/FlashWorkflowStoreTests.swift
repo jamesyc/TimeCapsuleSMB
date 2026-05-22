@@ -53,6 +53,14 @@ final class FlashWorkflowStoreTests: XCTestCase {
         XCTAssertFalse(eligibility.writeAllowed)
     }
 
+    func testBootHookSectionVisibilityIsLimitedToNetBSD4Profiles() throws {
+        let netbsd4 = try makeProfile(payloadFamily: "netbsd4_samba4")
+        let netbsd6 = try makeProfile(payloadFamily: "netbsd6_samba4")
+
+        XCTAssertTrue(FlashBootHookVisibilityPolicy.isVisible(for: netbsd4))
+        XCTAssertFalse(FlashBootHookVisibilityPolicy.isVisible(for: netbsd6))
+    }
+
     func testFlashPresentationExposesAllActionsButEnablesOnlyReadOnlyEntryPoint() {
         let readOnlyStates: Set<FlashWorkflowState> = [
             .eligibleForReadOnlyAnalysis,

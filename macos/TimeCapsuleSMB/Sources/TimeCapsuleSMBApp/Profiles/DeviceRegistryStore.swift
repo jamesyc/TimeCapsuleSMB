@@ -182,6 +182,12 @@ final class DeviceRegistryStore: ObservableObject {
         }
     }
 
+    func clearDeploy(for profileID: DeviceProfile.ID) async {
+        await applyBackgroundMutation {
+            try await repository.clearDeploy(for: profileID)
+        }
+    }
+
     func profile(id: DeviceProfile.ID?) -> DeviceProfile? {
         guard let id else {
             return nil
@@ -428,6 +434,21 @@ private actor DeviceRegistryRepository {
         }
         var updatedProfiles = profiles
         updatedProfiles[index].lastDeploy = snapshot
+        updatedProfiles[index].updatedAt = now()
+        try persist(updatedProfiles)
+        profiles = updatedProfiles
+        return updatedProfiles
+    }
+
+    func clearDeploy(for profileID: DeviceProfile.ID) throws -> [DeviceProfile]? {
+        guard let index = profiles.firstIndex(where: { $0.id == profileID }) else {
+            return nil
+        }
+        guard profiles[index].lastDeploy != nil else {
+            return nil
+        }
+        var updatedProfiles = profiles
+        updatedProfiles[index].lastDeploy = nil
         updatedProfiles[index].updatedAt = now()
         try persist(updatedProfiles)
         profiles = updatedProfiles

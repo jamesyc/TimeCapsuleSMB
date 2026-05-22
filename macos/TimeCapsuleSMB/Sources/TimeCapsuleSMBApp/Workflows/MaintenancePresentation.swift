@@ -222,8 +222,8 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
     let timeline: MaintenanceTimelinePresentation?
 
     @MainActor
-    init(store: MaintenanceStore, profile: DeviceProfile) {
-        let workflow = store.selectedWorkflow
+    init(store: MaintenanceStore, profile: DeviceProfile, workflow selectedWorkflow: MaintenanceWorkflow? = nil) {
+        let workflow = selectedWorkflow ?? store.selectedWorkflow
         let legacy = MaintenanceWorkflowPresentation.presentation(for: workflow)
         let state = store.state(for: workflow)
         self.workflow = workflow
@@ -369,23 +369,35 @@ struct MaintenanceWorkflowDetailPresentation: Equatable {
     }
 }
 
+enum MaintenanceWorkflowAvailability {
+    static func workflows(for profile: DeviceProfile) -> [MaintenanceWorkflow] {
+        MaintenanceWorkflow.allCases.filter { workflow in
+            workflow != .activate || profile.traits.needsActivationAfterReboot
+        }
+    }
+}
+
 struct MaintenanceDashboardPresentation: Equatable {
     let cards: [MaintenanceWorkflowCardPresentation]
     let detail: MaintenanceWorkflowDetailPresentation
 
     @MainActor
     init(store: MaintenanceStore, profile: DeviceProfile) {
-        self.cards = MaintenanceWorkflow.allCases.map { workflow in
+        let workflows = MaintenanceWorkflowAvailability.workflows(for: profile)
+        let selectedWorkflow = workflows.contains(store.selectedWorkflow)
+            ? store.selectedWorkflow
+            : workflows.first ?? store.selectedWorkflow
+        self.cards = workflows.map { workflow in
             let legacy = MaintenanceWorkflowPresentation.presentation(for: workflow)
             return MaintenanceWorkflowCardPresentation(
                 workflow: workflow,
                 title: legacy.title,
                 subtitle: legacy.subtitle,
                 stateTitle: store.state(for: workflow).title,
-                isSelected: workflow == store.selectedWorkflow
+                isSelected: workflow == selectedWorkflow
             )
         }
-        self.detail = MaintenanceWorkflowDetailPresentation(store: store, profile: profile)
+        self.detail = MaintenanceWorkflowDetailPresentation(store: store, profile: profile, workflow: selectedWorkflow)
     }
 }
 

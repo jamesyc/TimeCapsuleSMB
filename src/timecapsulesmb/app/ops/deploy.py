@@ -71,6 +71,7 @@ from timecapsulesmb.services.app import (
     bool_param,
     config_path,
     int_param,
+    optional_bool_param,
 )
 from timecapsulesmb.services.credentials import overlay_request_credentials
 from timecapsulesmb.services.deploy import (
@@ -131,7 +132,7 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
     no_wait = bool_param(params, "no_wait")
     mount_wait = int_param(params, "mount_wait", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
     allow_unsupported = bool_param(params, "allow_unsupported")
-    debug_logging = bool_param(params, "debug_logging")
+    debug_logging = optional_bool_param(params, "debug_logging")
 
     config, target = load_config_and_target(operation, params, sink, profile="deploy", include_probe=True)
     connection = target.connection
@@ -175,22 +176,32 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
         )
         if is_netbsd4:
             title = "Confirm NetBSD4 deployment"
-            message = f"Deploy and activate the NetBSD4 payload on this {device_name}. Remote services will be changed."
+            message = f"Deploy and activate the NetBSD4 payload on this {device_name} and change remote services?"
             action_title = "Deploy and activate"
             risk = "destructive"
             summary = "NetBSD4 deployment with service activation"
+            presentation_id = "deploy.netbsd4"
         elif no_reboot:
             title = "Confirm deployment"
-            message = f"Deploy TimeCapsuleSMB to this {device_name} without rebooting it."
+            message = f"Deploy TimeCapsuleSMB to this {device_name} without rebooting it?"
             action_title = "Deploy"
             risk = "remote_write"
             summary = "Deployment without reboot"
+            presentation_id = "deploy.no_reboot"
         else:
             title = "Confirm deployment and reboot"
-            message = f"Deploy TimeCapsuleSMB and reboot this {device_name}."
+            message = f"Deploy TimeCapsuleSMB and reboot this {device_name}?"
             action_title = "Deploy and reboot"
             risk = "reboot"
             summary = "Deployment with reboot request"
+            presentation_id = "deploy.reboot"
+        presentation_values = {
+            "device_name": device_name,
+            "netbsd4": is_netbsd4,
+            "requires_reboot": bool(confirmation_plan.reboot_required),
+            "no_reboot": no_reboot,
+            "no_wait": no_wait,
+        }
         require_confirmation(
             params,
             build_confirmation(
@@ -209,6 +220,8 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
                     "no_reboot": no_reboot,
                     "no_wait": no_wait,
                 },
+                presentation_id=presentation_id,
+                presentation_values=presentation_values,
             ),
             legacy_names=(
                 ("confirm_deploy", "confirm_netbsd4_activation")

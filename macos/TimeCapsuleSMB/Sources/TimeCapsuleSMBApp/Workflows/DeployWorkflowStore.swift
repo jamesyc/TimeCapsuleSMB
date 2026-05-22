@@ -359,12 +359,28 @@ final class DeployWorkflowStore: ObservableObject {
             state = .awaitingConfirmation
             return
         }
+        if event.code == "confirmation_cancelled" {
+            applyConfirmationCancelled()
+            return
+        }
         if event.code == "auth_failed" {
             passwordInvalidProfileID = activeOperation?.profileID
         }
         error = BackendErrorViewModel(event: event)
         state = state == .planning ? .planFailed : .deployFailed
         activeOperation = nil
+    }
+
+    private func applyConfirmationCancelled() {
+        error = nil
+        currentStage = nil
+        activeOperation = nil
+        guard plan != nil else {
+            state = .idle
+            return
+        }
+        state = .planReady
+        reconcilePlanFreshness()
     }
 
     private func applyFailureResult(_ event: BackendEvent) {

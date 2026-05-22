@@ -18,6 +18,38 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.domains.first?.status, .warning)
     }
 
+    func testInstallActionsUseDownloadBoxIconExceptReinstall() {
+        XCTAssertEqual(DashboardPrimaryAction.installSMB.systemImage, "square.and.arrow.down.on.square")
+        XCTAssertEqual(DashboardSecondaryAction.installUpdate.systemImage, "square.and.arrow.down.on.square")
+        XCTAssertEqual(CheckupUserAction.installUpdate.systemImage, "square.and.arrow.down.on.square")
+        XCTAssertEqual(InstallUserAction.installUpdate.systemImage, "square.and.arrow.down.on.square")
+        XCTAssertEqual(InstallUserAction.reinstall.systemImage, "arrow.clockwise")
+    }
+
+    func testInstallActionAvailabilityBlocksMutatingActionsWhileDeviceIsBusy() async throws {
+        let runner = StoreTestRunner(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: []))
+            ], delayNanoseconds: 100_000_000)
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let laneKey = OperationLaneKey.device("device-one")
+        let store = DeployWorkflowStore(coordinator: coordinator, laneKey: laneKey)
+
+        XCTAssertTrue(InstallActionAvailabilityPolicy.isEnabled(.reinstall, store: store))
+        XCTAssertTrue(InstallActionAvailabilityPolicy.isEnabled(.runCheckup, store: store))
+
+        _ = coordinator.run(operation: "doctor", context: nil, activeDeviceID: "device-one", laneKey: laneKey)
+        try await waitUntilStoreState { store.isBusy }
+
+        XCTAssertFalse(InstallActionAvailabilityPolicy.isEnabled(.createPlan, store: store))
+        XCTAssertFalse(InstallActionAvailabilityPolicy.isEnabled(.reinstall, store: store))
+        XCTAssertFalse(InstallActionAvailabilityPolicy.isEnabled(.runCheckup, store: store))
+        XCTAssertTrue(InstallActionAvailabilityPolicy.isEnabled(.openFinder, store: store))
+        XCTAssertTrue(InstallActionAvailabilityPolicy.isEnabled(.viewCheckup, store: store))
+        XCTAssertTrue(InstallActionAvailabilityPolicy.isEnabled(.viewDiagnostics, store: store))
+    }
+
     func testDoctorDomainPolicyUsesTypedDetailsDomainAndSeverity() throws {
         let payload = try testDoctorPayload(checks: [
             testDoctorCheck(status: "PASS", message: "ssh ok", domain: "Device"),
@@ -199,6 +231,72 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(try row(.checkup, in: hostWarning).detail, "Time Machine warning.")
     }
 
+    func testOverviewActionsUseFinderLabelAndSuppressRunCheckupWhileChecking() throws {
+        var profile = try makeProfile()
+        profile.lastDeploy = DeviceDeploySnapshot(
+            deployedAt: Date(timeIntervalSince1970: 120),
+            state: .deployed,
+            payloadFamily: "netbsd6_samba4",
+            rebootRequested: true,
+            verified: true,
+            summary: "installed"
+        )
+
+        let healthy = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: profile,
+            passwordState: .available,
+            displayStatus: .healthy,
+            primaryAction: .openSMB,
+            hostWarning: nil
+        ))
+        XCTAssertEqual(DashboardPrimaryAction.openSMB.title, "Open Finder")
+        XCTAssertEqual(healthy.primaryAction, .openSMB)
+        XCTAssertEqual(healthy.secondaryActions, [.runCheckup, .replacePassword, .settings])
+
+        let checking = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: profile,
+            passwordState: .available,
+            displayStatus: .checking,
+            primaryAction: .viewCheckup,
+            hostWarning: nil
+        ))
+        XCTAssertEqual(checking.primaryAction, .viewCheckup)
+        XCTAssertEqual(checking.secondaryActions, [.openFinder, .replacePassword, .settings])
+        XCTAssertFalse(checking.secondaryActions.contains(.runCheckup))
+        XCTAssertEqual(try row(.checkup, in: checking).action, .viewCheckup)
+
+        let warning = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: profile,
+            passwordState: .available,
+            displayStatus: .warning,
+            primaryAction: .viewCheckup,
+            hostWarning: nil
+        ))
+        XCTAssertEqual(warning.secondaryActions, [.runCheckup, .openFinder, .replacePassword, .settings])
+    }
+
+    func testOverviewDisablesMutatingActionsWhileOperationIsActive() throws {
+        let profile = try makeProfile()
+        let installing = DeviceDashboardOverviewPresentation(summary: DeviceDashboardSummary(
+            profile: profile,
+            passwordState: .available,
+            displayStatus: .installing,
+            primaryAction: .installSMB,
+            hostWarning: nil
+        ))
+
+        XCTAssertFalse(installing.isPrimaryActionEnabled)
+        XCTAssertEqual(installing.secondaryActions, [.runCheckup, .replacePassword, .settings])
+        XCTAssertFalse(installing.isEnabled(.runCheckup))
+        XCTAssertFalse(installing.isEnabled(.installUpdate))
+        XCTAssertTrue(installing.isEnabled(.replacePassword))
+        XCTAssertTrue(installing.isEnabled(.settings))
+
+        let checkup = try row(.checkup, in: installing)
+        XCTAssertEqual(checkup.action, .runCheckup)
+        XCTAssertFalse(installing.isEnabled(try XCTUnwrap(checkup.action)))
+    }
+
     func testInstallPlanPresentationShowsDeviceImpactAndWarnings() throws {
         let plan = try netbsd4DeployPlan().decode(DeployPlanPayload.self)
         let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
@@ -248,6 +346,103 @@ final class DashboardPresentationTests: XCTestCase {
         }
     }
 
+    func testInstallWorkflowPresentationRestoresPostInstallViewFromSavedDeploySnapshot() throws {
+        var profile = try makeProfile()
+        profile.lastDeploy = DeviceDeploySnapshot(
+            deployedAt: Date(timeIntervalSince1970: 200),
+            state: .deployed,
+            payloadFamily: "netbsd6_samba4",
+            rebootRequested: false,
+            verified: true,
+            summary: "Installed from previous app session."
+        )
+
+        let presentation = InstallWorkflowPresentation(
+            state: .idle,
+            plan: nil,
+            result: nil,
+            error: nil,
+            events: [],
+            currentStage: nil,
+            profile: profile
+        )
+
+        let completion = try XCTUnwrap(presentation.completion)
+        XCTAssertEqual(presentation.stateTitle, "Deployed")
+        XCTAssertEqual(presentation.statusMessage, "Install / Update completed.")
+        XCTAssertNil(presentation.primaryAction)
+        XCTAssertEqual(completion.title, "Install / Update Verified")
+        XCTAssertTrue(completion.rows.contains(PresentationRow(label: "Reboot Requested", value: "no")))
+        XCTAssertTrue(completion.rows.contains(PresentationRow(label: "Message", value: "Installed from previous app session.")))
+        XCTAssertEqual(completion.actions, [.reinstall, .openFinder, .runCheckup, .viewDiagnostics])
+    }
+
+    func testInstallWorkflowPresentationShowsViewCheckupWhenCheckupIsRunning() throws {
+        var profile = try makeProfile()
+        profile.lastDeploy = DeviceDeploySnapshot(
+            deployedAt: Date(timeIntervalSince1970: 200),
+            state: .deployed,
+            payloadFamily: "netbsd6_samba4",
+            rebootRequested: false,
+            verified: true,
+            summary: "Installed from previous app session."
+        )
+
+        let presentation = InstallWorkflowPresentation(
+            state: .idle,
+            plan: nil,
+            result: nil,
+            error: nil,
+            events: [],
+            currentStage: nil,
+            profile: profile,
+            isCheckupRunning: true
+        )
+
+        XCTAssertEqual(presentation.completion?.actions, [.reinstall, .openFinder, .viewCheckup, .viewDiagnostics])
+        XCTAssertFalse(presentation.completion?.actions.contains(.runCheckup) == true)
+    }
+
+    func testInstallWorkflowPresentationPrefersCurrentWorkflowOverSavedDeploySnapshot() throws {
+        var profile = try makeProfile()
+        profile.lastDeploy = DeviceDeploySnapshot(
+            deployedAt: Date(timeIntervalSince1970: 200),
+            state: .deployed,
+            payloadFamily: "netbsd6_samba4",
+            rebootRequested: true,
+            verified: true,
+            summary: "Installed from previous app session."
+        )
+        let plan = try testDeployPlanPayload().decode(DeployPlanPayload.self)
+        let error = BackendErrorViewModel(operation: "deploy", code: "operation_failed", message: "failed")
+
+        let planReady = InstallWorkflowPresentation(
+            state: .planReady,
+            plan: plan,
+            result: nil,
+            error: nil,
+            events: [],
+            currentStage: nil,
+            profile: profile
+        )
+        XCTAssertEqual(planReady.stateTitle, "Plan Ready")
+        XCTAssertEqual(planReady.primaryAction, .installUpdate)
+        XCTAssertNil(planReady.completion)
+
+        let deployFailed = InstallWorkflowPresentation(
+            state: .deployFailed,
+            plan: plan,
+            result: nil,
+            error: error,
+            events: [],
+            currentStage: nil,
+            profile: profile
+        )
+        XCTAssertEqual(deployFailed.stateTitle, "Deploy Failed")
+        XCTAssertEqual(deployFailed.primaryAction, .regeneratePlan)
+        XCTAssertNil(deployFailed.completion)
+    }
+
     func testInstallCompletionPresentationShowsVerificationAndNextActions() throws {
         let result = try testDeployResultPayload(payloadFamily: "netbsd4_samba4", verified: true, netbsd4: true)
             .decode(DeployResultPayload.self)
@@ -259,7 +454,21 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.warnings, [
             "NetBSD4 devices may need Activate after a later reboot unless the boot hook is patched."
         ])
-        XCTAssertEqual(presentation.actions, [.openFinder, .runCheckup, .viewDiagnostics])
+        XCTAssertEqual(presentation.actions, [.reinstall, .openFinder, .runCheckup, .viewDiagnostics])
+        XCTAssertEqual(InstallUserAction.installUpdate.systemImage, "square.and.arrow.down.on.square")
+        XCTAssertEqual(InstallUserAction.reinstall.systemImage, "arrow.clockwise")
+        XCTAssertEqual(InstallUserAction.reinstall.title, "Reinstall")
+    }
+
+    func testInstallCompletionPresentationReplacesRunCheckupWithViewCheckupWhileChecking() throws {
+        let result = try testDeployResultPayload(payloadFamily: "netbsd6_samba4", verified: true, netbsd4: false)
+            .decode(DeployResultPayload.self)
+
+        let presentation = InstallCompletionPresentation(result: result, isCheckupRunning: true)
+
+        XCTAssertEqual(presentation.actions, [.reinstall, .openFinder, .viewCheckup, .viewDiagnostics])
+        XCTAssertEqual(InstallUserAction.viewCheckup.title, "View Checkup")
+        XCTAssertEqual(InstallUserAction.viewCheckup.systemImage, "list.bullet.clipboard")
     }
 
     func testInstallTimelinePresentationUsesDeployEventsOnly() {
@@ -283,7 +492,7 @@ final class DashboardPresentationTests: XCTestCase {
         let deploying = InstallProgressPresentation(state: .deploying, currentStage: stage)
 
         XCTAssertEqual(deploying?.title, "Installing / Updating SMB")
-        XCTAssertEqual(deploying?.message, "Uploading and applying the managed SMB runtime. This can take a few seconds.")
+        XCTAssertEqual(deploying?.message, "Uploading and applying the managed SMB runtime. This can take a few minutes...")
         XCTAssertEqual(deploying?.detail, "Uploading files.")
         for state in DeployWorkflowState.allCases where state != .deploying {
             XCTAssertNil(InstallProgressPresentation(state: state, currentStage: stage), "\(state) should not show a blocking progress modal.")
@@ -364,6 +573,29 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(MaintenanceOperationState.scanReady.maintenanceStatusMessage(for: .activate), "Scan Ready")
     }
 
+    func testMaintenancePresentationHidesActivationForDevicesThatDoNotNeedIt() throws {
+        let store = MaintenanceStore(backend: BackendClient(runner: StoreTestRunner(responses: [])))
+        let profile = try makeProfile(payloadFamily: "netbsd6_samba4")
+
+        let presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
+
+        XCTAssertEqual(presentation.cards.map { $0.workflow }, [MaintenanceWorkflow.uninstall, .fsck, .repairXattrs])
+        XCTAssertEqual(presentation.cards.first?.isSelected, true)
+        XCTAssertEqual(presentation.detail.workflow, .uninstall)
+        XCTAssertEqual(presentation.detail.title, "Uninstall")
+    }
+
+    func testMaintenancePresentationKeepsActivationForNetBSD4Devices() throws {
+        let store = MaintenanceStore(backend: BackendClient(runner: StoreTestRunner(responses: [])))
+        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
+
+        let presentation = MaintenanceDashboardPresentation(store: store, profile: profile)
+
+        XCTAssertEqual(presentation.cards.map { $0.workflow }, [MaintenanceWorkflow.activate, .uninstall, .fsck, .repairXattrs])
+        XCTAssertEqual(presentation.cards.first?.isSelected, true)
+        XCTAssertEqual(presentation.detail.workflow, .activate)
+    }
+
     func testMaintenancePresentationBuildsWorkflowPlansAndCompletions() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
@@ -386,7 +618,7 @@ final class DashboardPresentationTests: XCTestCase {
             ])
         ])
         let store = MaintenanceStore(backend: BackendClient(runner: runner))
-        let profile = try makeProfile()
+        let profile = try makeProfile(payloadFamily: "netbsd4_samba4")
 
         store.planActivation(password: "pw")
         try await waitUntilStoreState { store.activateState == .planReady && !store.isRunning }

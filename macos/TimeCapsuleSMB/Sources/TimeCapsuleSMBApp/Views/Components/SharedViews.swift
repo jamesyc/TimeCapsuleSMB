@@ -54,3 +54,37 @@ struct StageLine: View {
         }
     }
 }
+
+struct DashboardDisclosureSection<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: () -> Content
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                isExpanded.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .frame(width: 12)
+                    Text(title)
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                content()
+                    .padding(.top, 8)
+                    .padding(.leading, 18)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}

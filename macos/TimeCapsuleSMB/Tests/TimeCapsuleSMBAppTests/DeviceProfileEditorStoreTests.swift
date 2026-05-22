@@ -44,6 +44,49 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         }
     }
 
+    func testUndoingDraftChangeReturnsEditorToCleanState() async throws {
+        let fixture = try await makeFixture(responses: [])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let store = DeviceProfileEditorStore(profile: profile, appStore: fixture.appStore)
+
+        XCTAssertEqual(store.state, .clean)
+        XCTAssertFalse(store.canSave)
+
+        store.draft.nbnsEnabled.toggle()
+
+        XCTAssertEqual(store.state, .dirty)
+        XCTAssertTrue(store.canSave)
+
+        store.draft.nbnsEnabled.toggle()
+
+        XCTAssertEqual(store.state, .clean)
+        XCTAssertFalse(store.canSave)
+    }
+
+    func testCleanEditorSyncsToUpdatedProfileBaseline() async throws {
+        let fixture = try await makeFixture(responses: [])
+        let profile = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "root@10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        let store = DeviceProfileEditorStore(profile: profile, appStore: fixture.appStore)
+        var updatedProfile = profile
+        updatedProfile.displayName = "Renamed Capsule"
+
+        store.sync(to: updatedProfile)
+
+        XCTAssertEqual(store.draft.displayName, "Renamed Capsule")
+        XCTAssertEqual(store.state, .clean)
+        XCTAssertFalse(store.canSave)
+    }
+
     func testUnchangedHostSaveUpdatesProfileSettingsWithoutBackendConfigure() async throws {
         let fixture = try await makeFixture(responses: [])
         let profile = try await fixture.registry.saveConfiguredDevice(
@@ -56,6 +99,8 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
 
         store.draft.displayName = "Media Capsule"
         store.draft.nbnsEnabled = false
+        store.draft.internalShareUseDiskRoot = true
+        store.draft.anyProtocol = true
         store.draft.debugLogging = true
         store.draft.mountWaitSeconds = "45"
 
@@ -65,7 +110,13 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(store.state, .saved)
         XCTAssertEqual(saved.displayName, "Media Capsule")
         XCTAssertEqual(saved.host, "root@10.0.0.2")
-        XCTAssertEqual(saved.settings, DeviceProfileSettings(nbnsEnabled: false, debugLogging: true, mountWaitSeconds: 45))
+        XCTAssertEqual(saved.settings, DeviceProfileSettings(
+            nbnsEnabled: false,
+            internalShareUseDiskRoot: true,
+            anyProtocol: true,
+            debugLogging: true,
+            mountWaitSeconds: 45
+        ))
         XCTAssertEqual(fixture.runner.calls, [])
     }
 
@@ -182,6 +233,8 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         store.draft.displayName = "Updated Capsule"
         store.draft.host = "10.0.0.9"
         store.draft.nbnsEnabled = false
+        store.draft.internalShareUseDiskRoot = true
+        store.draft.anyProtocol = true
         store.draft.debugLogging = true
         store.draft.mountWaitSeconds = "60"
 
@@ -195,6 +248,9 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(call.params["host"], .string("root@10.0.0.9"))
         XCTAssertEqual(call.params["password"], .string("pw"))
         XCTAssertEqual(call.params["persist_password"], .bool(false))
+        XCTAssertEqual(call.params["internal_share_use_disk_root"], .bool(true))
+        XCTAssertEqual(call.params["any_protocol"], .bool(true))
+        XCTAssertEqual(call.params["debug_logging"], .bool(true))
 
         let saved = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         XCTAssertEqual(saved.id, profile.id)
@@ -203,7 +259,13 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(saved.host, "root@10.0.0.9")
         XCTAssertEqual(saved.lastCheckup?.state, .passed)
         XCTAssertEqual(saved.lastDeploy?.state, .deployed)
-        XCTAssertEqual(saved.settings, DeviceProfileSettings(nbnsEnabled: false, debugLogging: true, mountWaitSeconds: 60))
+        XCTAssertEqual(saved.settings, DeviceProfileSettings(
+            nbnsEnabled: false,
+            internalShareUseDiskRoot: true,
+            anyProtocol: true,
+            debugLogging: true,
+            mountWaitSeconds: 60
+        ))
     }
 
     func testAuthFailureAndUnsupportedDeviceSaveNothing() async throws {

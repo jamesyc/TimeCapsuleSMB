@@ -7,6 +7,7 @@ struct InstallTab: View {
 
     var body: some View {
         let store = session.deployStore
+        let summary = session.summary(for: profile)
         let presentation = InstallWorkflowPresentation(
             state: store.state,
             plan: store.plan,
@@ -15,7 +16,8 @@ struct InstallTab: View {
             events: store.events,
             currentStage: store.currentStage,
             profile: profile,
-            hostWarning: HostCompatibilityPolicy.warning()
+            hostWarning: HostCompatibilityPolicy.warning(),
+            isCheckupRunning: summary.displayStatus == .checking
         )
         let progress = InstallProgressPresentation(state: store.state, currentStage: store.currentStage)
 
@@ -46,12 +48,15 @@ struct InstallTab: View {
                     }
 
                     if let completion = presentation.completion {
-                        InstallCompletionView(presentation: completion) { action in
+                        InstallCompletionView(
+                            presentation: completion,
+                            isDisabled: { isDisabled($0, store: store) }
+                        ) { action in
                             session.performInstallAction(action, profile: profile, showDiagnostics: showDiagnostics)
                         }
                     }
 
-                    InstallAdvancedOptionsView(store: store)
+                    InstallExecutionOptionsView(store: store)
 
                     if let error = store.error {
                         ErrorRecoveryView(error: error) { action in
@@ -61,10 +66,9 @@ struct InstallTab: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .disabled(progress != nil)
 
             if let progress {
-                BlockingProgressOverlay(progress: progress)
+                BlockingProgressOverlay(progress: progress, allowsBackgroundInteraction: true)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -79,14 +83,7 @@ struct InstallTab: View {
     }
 
     private func isDisabled(_ action: InstallUserAction, store: DeployWorkflowStore) -> Bool {
-        switch action {
-        case .createPlan, .regeneratePlan:
-            return store.isRunning || store.mountWaitValue == nil
-        case .installUpdate:
-            return !store.canDeploy
-        case .openFinder, .runCheckup, .viewDiagnostics:
-            return false
-        }
+        !InstallActionAvailabilityPolicy.isEnabled(action, store: store)
     }
 }
 
@@ -164,8 +161,7 @@ private struct InstallTimelineView: View {
             } else {
                 ForEach(presentation.items) { item in
                     HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: icon(for: item.state))
-                            .frame(width: 16)
+                        OperationTimelineStateIcon(state: item.state)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(item.title)
                                 .font(.body.weight(.medium))
@@ -180,25 +176,11 @@ private struct InstallTimelineView: View {
             }
         }
     }
-
-    private func icon(for state: OperationTimelineItem.State) -> String {
-        switch state {
-        case .pending:
-            return "circle"
-        case .running:
-            return "progress.indicator"
-        case .succeeded:
-            return "checkmark.circle"
-        case .warning:
-            return "exclamationmark.triangle"
-        case .failed:
-            return "xmark.octagon"
-        }
-    }
 }
 
 private struct InstallCompletionView: View {
     let presentation: InstallCompletionPresentation
+    let isDisabled: (InstallUserAction) -> Bool
     let performAction: (InstallUserAction) -> Void
 
     var body: some View {
@@ -218,26 +200,19 @@ private struct InstallCompletionView: View {
                     } label: {
                         Label(action.title, systemImage: action.systemImage)
                     }
+                    .disabled(isDisabled(action))
                 }
             }
         }
     }
 }
 
-private struct InstallAdvancedOptionsView: View {
+private struct InstallExecutionOptionsView: View {
     @ObservedObject var store: DeployWorkflowStore
 
     var body: some View {
-        DisclosureGroup(L10n.string("install.advanced_options")) {
+        DashboardDisclosureSection(title: L10n.string("install.advanced_options")) {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-                GridRow {
-                    Toggle(L10n.string("toggle.enable_nbns"), isOn: $store.nbnsEnabled)
-                    Toggle(L10n.string("toggle.internal_share_use_disk_root"), isOn: $store.internalShareUseDiskRoot)
-                }
-                GridRow {
-                    Toggle(L10n.string("toggle.any_protocol"), isOn: $store.anyProtocol)
-                    Toggle(L10n.string("toggle.force_debug_logging"), isOn: $store.debugLogging)
-                }
                 GridRow {
                     Toggle(L10n.string("toggle.no_reboot"), isOn: $store.noReboot)
                     Toggle(L10n.string("toggle.no_wait"), isOn: $store.noWait)
@@ -249,7 +224,7 @@ private struct InstallAdvancedOptionsView: View {
                         .frame(width: 150)
                 }
             }
-            .padding(.top, 8)
         }
+        .disabled(store.isBusy)
     }
 }

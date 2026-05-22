@@ -57,10 +57,9 @@ struct CheckupTab: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .disabled(progress != nil)
 
             if let progress {
-                BlockingProgressOverlay(progress: progress)
+                BlockingProgressOverlay(progress: progress, allowsBackgroundInteraction: true)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -107,8 +106,7 @@ private struct CheckupTimelineView: View {
                 .font(.headline)
             ForEach(items) { item in
                 HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: icon(for: item.state))
-                        .frame(width: 16)
+                    OperationTimelineStateIcon(state: item.state)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(item.title)
                             .font(.body.weight(.medium))
@@ -122,21 +120,6 @@ private struct CheckupTimelineView: View {
             }
         }
     }
-
-    private func icon(for state: OperationTimelineItem.State) -> String {
-        switch state {
-        case .pending:
-            return "circle"
-        case .running:
-            return "progress.indicator"
-        case .succeeded:
-            return "checkmark.circle"
-        case .warning:
-            return "exclamationmark.triangle"
-        case .failed:
-            return "xmark.octagon"
-        }
-    }
 }
 
 private struct CheckupDomainView: View {
@@ -145,8 +128,13 @@ private struct CheckupDomainView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Label(domain.title, systemImage: domain.status.systemImage)
-                    .font(.headline)
+                HStack(spacing: 6) {
+                    Image(systemName: domain.status.systemImage)
+                        .foregroundStyle(iconColor(for: domain.status))
+                        .accessibilityLabel(domain.status.title)
+                    Text(domain.title)
+                }
+                .font(.headline)
                 Spacer()
                 Text(domain.countSummary)
                     .font(.caption)
@@ -154,8 +142,9 @@ private struct CheckupDomainView: View {
             }
             ForEach(domain.rows) { row in
                 HStack(alignment: .top, spacing: 8) {
-                    Label(row.status.title, systemImage: row.status.systemImage)
-                        .labelStyle(.iconOnly)
+                    Image(systemName: row.status.systemImage)
+                        .foregroundStyle(iconColor(for: row.status))
+                        .accessibilityLabel(row.status.title)
                         .frame(width: 16)
                     Text(row.statusText)
                         .font(.system(.caption, design: .monospaced))
@@ -169,13 +158,17 @@ private struct CheckupDomainView: View {
         .background(Color.secondary.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
+
+    private func iconColor(for status: CheckupStatusPresentation) -> Color {
+        status == .passed ? .green : .primary
+    }
 }
 
 private struct CheckupAdvancedOptionsView: View {
     @ObservedObject var store: DoctorStore
 
     var body: some View {
-        DisclosureGroup(L10n.string("checkup.advanced_options")) {
+        DashboardDisclosureSection(title: L10n.string("checkup.advanced_options")) {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                 GridRow {
                     Text(L10n.string("field.bonjour_timeout"))
@@ -192,7 +185,7 @@ private struct CheckupAdvancedOptionsView: View {
                     EmptyView()
                 }
             }
-            .padding(.top, 8)
         }
+        .disabled(store.isRunning)
     }
 }

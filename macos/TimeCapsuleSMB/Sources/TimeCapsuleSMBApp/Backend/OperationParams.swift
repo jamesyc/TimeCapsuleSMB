@@ -1,5 +1,14 @@
 import Foundation
 
+struct RepairXattrsOptions: Equatable {
+    var recursive: Bool = true
+    var maxDepth: Int?
+    var includeHidden: Bool = false
+    var includeTimeMachine: Bool = false
+    var fixPermissions: Bool = false
+    var verbose: Bool = false
+}
+
 enum OperationParams {
     private static func rootSSHTarget(_ host: String) -> String {
         let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -27,19 +36,25 @@ enum OperationParams {
         host: String = "",
         selectedRecord: JSONValue? = nil,
         password: String,
-        debugLogging: Bool
+        debugLogging: Bool,
+        internalShareUseDiskRoot: Bool? = nil,
+        anyProtocol: Bool? = nil
     ) -> [String: JSONValue] {
         var params: [String: JSONValue] = [
             "password": .string(password),
-            "persist_password": .bool(false)
+            "persist_password": .bool(false),
+            "debug_logging": .bool(debugLogging)
         ]
         if let selectedRecord {
             params["selected_record"] = selectedRecord
         } else {
             params["host"] = .string(rootSSHTarget(host))
         }
-        if debugLogging {
-            params["debug_logging"] = .bool(true)
+        if let internalShareUseDiskRoot {
+            params["internal_share_use_disk_root"] = .bool(internalShareUseDiskRoot)
+        }
+        if let anyProtocol {
+            params["any_protocol"] = .bool(anyProtocol)
         }
         return params
     }
@@ -69,20 +84,16 @@ enum OperationParams {
         mountWait: Double,
         password: String
     ) -> [String: JSONValue] {
-        var params: [String: JSONValue] = [
+        let params: [String: JSONValue] = [
             "dry_run": .bool(true),
             "no_reboot": .bool(noReboot),
             "no_wait": .bool(noWait),
             "nbns_enabled": .bool(nbnsEnabled),
+            "internal_share_use_disk_root": .bool(internalShareUseDiskRoot),
+            "any_protocol": .bool(anyProtocol),
             "debug_logging": .bool(debugLogging),
             "mount_wait": .number(mountWait)
         ]
-        if internalShareUseDiskRoot {
-            params["internal_share_use_disk_root"] = .bool(true)
-        }
-        if anyProtocol {
-            params["any_protocol"] = .bool(true)
-        }
         return withCredentials(params, password: password)
     }
 
@@ -96,20 +107,16 @@ enum OperationParams {
         mountWait: Double,
         password: String
     ) -> [String: JSONValue] {
-        var params: [String: JSONValue] = [
+        let params: [String: JSONValue] = [
             "dry_run": .bool(false),
             "no_reboot": .bool(noReboot),
             "no_wait": .bool(noWait),
             "nbns_enabled": .bool(nbnsEnabled),
+            "internal_share_use_disk_root": .bool(internalShareUseDiskRoot),
+            "any_protocol": .bool(anyProtocol),
             "debug_logging": .bool(debugLogging),
             "mount_wait": .number(mountWait)
         ]
-        if internalShareUseDiskRoot {
-            params["internal_share_use_disk_root"] = .bool(true)
-        }
-        if anyProtocol {
-            params["any_protocol"] = .bool(true)
-        }
         return withCredentials(params, password: password)
     }
 
@@ -165,17 +172,27 @@ enum OperationParams {
         ], password: password)
     }
 
-    static func repairXattrsScan(path: String) -> [String: JSONValue] {
-        [
-            "path": .string(path),
-            "dry_run": .bool(true)
-        ]
+    static func repairXattrsScan(path: String, options: RepairXattrsOptions = RepairXattrsOptions()) -> [String: JSONValue] {
+        repairXattrsParams(path: path, dryRun: true, options: options)
     }
 
-    static func repairXattrsRun(path: String) -> [String: JSONValue] {
-        [
+    static func repairXattrsRun(path: String, options: RepairXattrsOptions = RepairXattrsOptions()) -> [String: JSONValue] {
+        repairXattrsParams(path: path, dryRun: false, options: options)
+    }
+
+    private static func repairXattrsParams(path: String, dryRun: Bool, options: RepairXattrsOptions) -> [String: JSONValue] {
+        var params: [String: JSONValue] = [
             "path": .string(path),
-            "dry_run": .bool(false)
+            "dry_run": .bool(dryRun),
+            "recursive": .bool(options.recursive),
+            "include_hidden": .bool(options.includeHidden),
+            "include_time_machine": .bool(options.includeTimeMachine),
+            "fix_permissions": .bool(options.fixPermissions),
+            "verbose": .bool(options.verbose)
         ]
+        if let maxDepth = options.maxDepth {
+            params["max_depth"] = .number(Double(maxDepth))
+        }
+        return params
     }
 }

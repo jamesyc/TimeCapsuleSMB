@@ -59,7 +59,7 @@ def write_info_plist(contents_dir: Path) -> None:
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": "0.1.0",
         "CFBundleVersion": "1",
-        "LSMinimumSystemVersion": "13.0",
+        "LSMinimumSystemVersion": "14.0",
         "NSHighResolutionCapable": True,
     }
     with (contents_dir / "Info.plist").open("wb") as handle:

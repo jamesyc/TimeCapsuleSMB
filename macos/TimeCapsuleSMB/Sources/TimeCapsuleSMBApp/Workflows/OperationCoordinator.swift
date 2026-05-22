@@ -145,7 +145,7 @@ final class OperationLane: ObservableObject {
     }
 
     func cancelPendingConfirmation() {
-        backend.pendingConfirmation = nil
+        backend.cancelPendingConfirmation()
         onStateChanged?()
     }
 
@@ -230,6 +230,10 @@ final class OperationCoordinator: ObservableObject {
 
     var canCancel: Bool {
         primaryLane()?.canCancel ?? false
+    }
+
+    var hasActiveWork: Bool {
+        allLanes.contains { $0.isBusy }
     }
 
     func activeOperation(for key: OperationLaneKey) -> ActiveOperation? {

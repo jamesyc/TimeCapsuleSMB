@@ -5,7 +5,7 @@ enum DeviceDashboardTab: String, CaseIterable, Equatable, Identifiable {
     case install
     case checkup
     case maintenance
-    case advanced
+    case settings
 
     var id: String { rawValue }
 
@@ -19,8 +19,8 @@ enum DeviceDashboardTab: String, CaseIterable, Equatable, Identifiable {
             return L10n.string("dashboard.tab.checkup")
         case .maintenance:
             return L10n.string("dashboard.tab.maintenance")
-        case .advanced:
-            return L10n.string("dashboard.tab.advanced")
+        case .settings:
+            return L10n.string("dashboard.tab.settings")
         }
     }
 }

@@ -28,7 +28,7 @@ enum OperationTimelineBuilder {
                     operation: event.operation,
                     title: title(for: event.operation, stage: event.stage),
                     detail: event.description,
-                    state: .running,
+                    state: stageState(forEventAt: index, in: events),
                     risk: event.risk,
                     cancellable: event.cancellable
                 )
@@ -58,6 +58,15 @@ enum OperationTimelineBuilder {
                 return nil
             }
         }
+    }
+
+    private static func stageState(forEventAt index: Int, in events: [BackendEvent]) -> OperationTimelineItem.State {
+        let event = events[index]
+        let laterEvents = events.dropFirst(index + 1).filter { $0.operation == event.operation }
+        if laterEvents.contains(where: { $0.type == "stage" || ($0.type == "result" && $0.ok == true) }) {
+            return .succeeded
+        }
+        return .running
     }
 
     static func operationTitle(_ operation: String) -> String {

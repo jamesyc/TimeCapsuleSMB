@@ -59,7 +59,7 @@ struct ErrorRecoveryView: View {
         case .runCheckup:
             return "stethoscope"
         case .installSMB:
-            return "square.and.arrow.up"
+            return "square.and.arrow.down.on.square"
         case .startSMB:
             return "play.circle"
         case .uninstall:

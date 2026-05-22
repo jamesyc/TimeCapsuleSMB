@@ -20,6 +20,7 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
     private let lane: OperationLane
     private var activeCheckupOperation: ActiveOperation?
     private var activeDeployOperation: ActiveOperation?
+    private var activeUninstallOperation: ActiveOperation?
     private var cancellables: Set<AnyCancellable> = []
 
     var events: [BackendEvent] {
@@ -84,14 +85,14 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         case .startSMB:
             selectedTab = .maintenance
             maintenanceStore.selectedWorkflow = .activate
-        case .advanced:
-            selectedTab = .advanced
+        case .settings:
+            selectedTab = .settings
         }
     }
 
     func performInstallAction(_ action: InstallUserAction, profile: DeviceProfile, showDiagnostics: () -> Void) {
         switch action {
-        case .createPlan, .regeneratePlan:
+        case .createPlan, .regeneratePlan, .reinstall:
             runInstallPlan(profile: profile)
         case .installUpdate:
             runInstall(profile: profile)
@@ -99,6 +100,8 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             openSMBAddress(for: profile)
         case .runCheckup:
             runCheckup(profile: profile)
+        case .viewCheckup:
+            selectedTab = .checkup
         case .viewDiagnostics:
             showDiagnostics()
         }
@@ -138,7 +141,9 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             }
         case .runUninstall:
             if let password = maintenancePassword(for: profile) {
-                maintenanceStore.runUninstall(password: password, profile: profile)
+                if case .started(let operation) = maintenanceStore.runUninstall(password: password, profile: profile) {
+                    activeUninstallOperation = operation
+                }
             }
         case .findVolumes:
             if let password = maintenancePassword(for: profile) {
@@ -276,6 +281,8 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
 
     func applyProfileSettings(_ settings: DeviceProfileSettings) {
         deployStore.nbnsEnabled = settings.nbnsEnabled
+        deployStore.internalShareUseDiskRoot = settings.internalShareUseDiskRoot
+        deployStore.anyProtocol = settings.anyProtocol
         deployStore.debugLogging = settings.debugLogging
         deployStore.mountWait = String(settings.mountWaitSeconds)
         maintenanceStore.mountWait = String(settings.mountWaitSeconds)
@@ -320,6 +327,13 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     await self.appStore.deviceRegistry.updatePasswordState(.invalid, for: profileID)
+                }
+            }
+            .store(in: &cancellables)
+        maintenanceStore.$uninstallState
+            .sink { [weak self] state in
+                Task { @MainActor in
+                    self?.updateUninstallSnapshot(state: state)
                 }
             }
             .store(in: &cancellables)
@@ -447,6 +461,22 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
                 verified: result.verified,
                 summary: result.message ?? L10n.string("deploy.result.default_message")
             ), for: profile.id)
+        }
+    }
+
+    private func updateUninstallSnapshot(state: MaintenanceOperationState) {
+        guard [.succeeded, .failed].contains(state) else {
+            return
+        }
+        defer {
+            activeUninstallOperation = nil
+        }
+        guard state == .succeeded,
+              let profileID = activeUninstallOperation?.profileID else {
+            return
+        }
+        Task {
+            await appStore.deviceRegistry.clearDeploy(for: profileID)
         }
     }
 }

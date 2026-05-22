@@ -108,7 +108,7 @@ final class OperationCoordinatorLaneTests: XCTestCase {
         let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
 
         XCTAssertStarted(coordinator.run(operation: "discover", laneKey: .app))
-        try await waitUntilStoreState { coordinator.appLane.backend.isRunning }
+        try await waitUntilStoreState { coordinator.appLane.backend.isRunning && runner.calls.count == 1 }
         let second = coordinator.run(operation: "capabilities", laneKey: .app)
 
         XCTAssertEqual(second.rejectionMessage, "Another operation is already running.")
@@ -168,6 +168,71 @@ final class OperationCoordinatorLaneTests: XCTestCase {
         XCTAssertEqual(runner.calls[2].operation, "deploy")
         XCTAssertEqual(runner.calls[2].context, context("device-one"))
         XCTAssertEqual(runner.calls[2].params["confirmation_id"], .string("deploy-confirm"))
+    }
+
+    func testCancelPendingConfirmationClearsTargetLaneAndPublishesCancellationEvent() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("deploy", profileID: "device-one"): [
+                .init(events: [
+                    confirmationRequiredEvent(operation: "deploy", id: "deploy-confirm")
+                ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""))
+            ]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let laneKey = OperationLaneKey.device("device-one")
+
+        XCTAssertStarted(coordinator.run(
+            operation: "deploy",
+            params: ["dry_run": .bool(false)],
+            context: context("device-one"),
+            activeDeviceID: "device-one",
+            laneKey: laneKey
+        ))
+        try await waitUntilStoreState {
+            coordinator.lane(for: laneKey).backend.pendingConfirmation != nil
+                && !coordinator.lane(for: laneKey).backend.isRunning
+        }
+
+        coordinator.cancelPendingConfirmation()
+
+        try await waitUntilStoreState {
+            coordinator.pendingConfirmation == nil && coordinator.activeOperations[laneKey] == nil
+        }
+        let events = coordinator.lane(for: laneKey).backend.events
+        XCTAssertEqual(events.last?.code, "confirmation_cancelled")
+        XCTAssertEqual(runner.calls.count, 1)
+    }
+
+    func testHasActiveWorkTracksRunningAndPendingConfirmation() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("deploy", profileID: "device-one"): [
+                .init(events: [
+                    confirmationRequiredEvent(operation: "deploy", id: "deploy-confirm")
+                ], result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: ""), delayNanoseconds: 100_000_000)
+            ]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let laneKey = OperationLaneKey.device("device-one")
+
+        XCTAssertFalse(coordinator.hasActiveWork)
+        XCTAssertStarted(coordinator.run(
+            operation: "deploy",
+            params: ["dry_run": JSONValue.bool(false)],
+            context: context("device-one"),
+            activeDeviceID: "device-one",
+            laneKey: laneKey
+        ))
+        XCTAssertTrue(coordinator.hasActiveWork)
+
+        try await waitUntilStoreState {
+            coordinator.lane(for: laneKey).backend.pendingConfirmation != nil
+                && !coordinator.lane(for: laneKey).backend.isRunning
+        }
+        XCTAssertTrue(coordinator.hasActiveWork)
+
+        coordinator.cancelPendingConfirmation()
+
+        try await waitUntilStoreState { !coordinator.hasActiveWork }
     }
 
     func testCancelOnlyCancelsTargetLane() async throws {

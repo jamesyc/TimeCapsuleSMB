@@ -63,7 +63,7 @@ enum DeviceDisplayStatus: String, CaseIterable, Equatable, Identifiable {
         case .checking:
             return "stethoscope"
         case .installing:
-            return "square.and.arrow.up"
+            return "square.and.arrow.down.on.square"
         case .maintaining:
             return "wrench.and.screwdriver"
         case .readyToInstall:

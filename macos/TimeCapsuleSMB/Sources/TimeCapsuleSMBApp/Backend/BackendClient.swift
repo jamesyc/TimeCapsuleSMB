@@ -97,6 +97,16 @@ final class BackendClient: ObservableObject {
         run(operation: confirmation.operation, params: confirmation.params, context: confirmation.context)
     }
 
+    func cancelPendingConfirmation() {
+        guard let confirmation = pendingConfirmation, !isRunning else { return }
+        pendingConfirmation = nil
+        events.append(BackendEvent.error(
+            operation: confirmation.operation,
+            code: "confirmation_cancelled",
+            message: L10n.string("helper.error.cancelled")
+        ))
+    }
+
     fileprivate func appendEvent(_ event: BackendEvent) {
         if event.type == "stage" {
             currentStage = event.stage

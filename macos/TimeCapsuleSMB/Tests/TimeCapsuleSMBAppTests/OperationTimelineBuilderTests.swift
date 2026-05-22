@@ -31,8 +31,42 @@ final class OperationTimelineBuilderTests: XCTestCase {
         XCTAssertEqual(timeline.map(\.title), ["Uploading", "Needs Confirmation", "Done"])
         XCTAssertEqual(timeline[0].risk, "remote_write")
         XCTAssertEqual(timeline[0].cancellable, false)
+        XCTAssertEqual(timeline[0].state, .succeeded)
         XCTAssertEqual(timeline[1].state, .warning)
+        XCTAssertEqual(timeline[2].state, .succeeded)
         XCTAssertEqual(timeline[2].detail, "deployment completed.")
+    }
+
+    func testStageBecomesSucceededWhenLaterStageForSameOperationAppears() {
+        let timeline = OperationTimelineBuilder.timeline(from: [
+            BackendEvent(type: "stage", operation: "deploy", stage: "validate_artifacts"),
+            BackendEvent(type: "stage", operation: "doctor", stage: "run_checks"),
+            BackendEvent(type: "stage", operation: "deploy", stage: "upload_payload")
+        ])
+
+        XCTAssertEqual(timeline.map(\.title), ["Checking Bundled Files", "Running Checkup", "Uploading"])
+        XCTAssertEqual(timeline.map(\.state), [.succeeded, .running, .running])
+    }
+
+    func testSuccessfulResultCompletesLastStage() {
+        let timeline = OperationTimelineBuilder.timeline(from: [
+            BackendEvent(type: "stage", operation: "uninstall", stage: "build_uninstall_plan"),
+            BackendEvent(type: "stage", operation: "uninstall", stage: "uninstall_payload"),
+            BackendEvent(type: "result", operation: "uninstall", ok: true, payload: .object(["summary": .string("removed")]))
+        ])
+
+        XCTAssertEqual(timeline.map(\.title), ["Planning Uninstall", "Removing Managed Files", "Done"])
+        XCTAssertEqual(timeline.map(\.state), [.succeeded, .succeeded, .succeeded])
+    }
+
+    func testFailureDoesNotMarkCurrentStageSucceeded() {
+        let timeline = OperationTimelineBuilder.timeline(from: [
+            BackendEvent(type: "stage", operation: "deploy", stage: "upload_payload"),
+            BackendEvent(type: "result", operation: "deploy", ok: false, payload: .object(["summary": .string("upload failed")]))
+        ])
+
+        XCTAssertEqual(timeline.map(\.title), ["Uploading", "Failed"])
+        XCTAssertEqual(timeline.map(\.state), [.running, .failed])
     }
 
     func testOperationTitlesAreUserFacing() {

@@ -39,7 +39,7 @@ def render_flash_runtime_config(
     payload_home: PayloadHome,
     *,
     nbns_enabled: bool,
-    debug_logging: bool,
+    debug_logging: bool | None = None,
     internal_share_use_disk_root: bool | None = None,
     any_protocol: bool | None = None,
     ata_idle_seconds: int = DEFAULT_ATA_IDLE_SECONDS,
@@ -58,7 +58,7 @@ def render_flash_runtime_config(
         if any_protocol is None
         else any_protocol
     )
-    effective_debug_logging = debug_logging or parse_bool(configured_debug_logging)
+    effective_debug_logging = parse_bool(configured_debug_logging) if debug_logging is None else debug_logging
 
     values: list[tuple[str, str | int]] = [
         ("TC_CONFIG_VERSION", 2),

@@ -32,7 +32,7 @@ enum CheckupUserAction: String, Equatable, Identifiable {
         case .runCheckup:
             return "stethoscope"
         case .installUpdate:
-            return "square.and.arrow.up"
+            return "square.and.arrow.down.on.square"
         case .startSMB:
             return "play.circle"
         case .replacePassword:

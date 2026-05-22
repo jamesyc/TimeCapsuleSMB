@@ -42,6 +42,10 @@ final class DeviceStatusPolicyTests: XCTestCase {
         ])
     }
 
+    func testInstallingStatusUsesInstallIcon() {
+        XCTAssertEqual(DeviceDisplayStatus.installing.systemImage, "square.and.arrow.down.on.square")
+    }
+
     func testPasswordStateTitlesAreLocalized() {
         XCTAssertEqual(DevicePasswordState.allCases.map(\.title), [
             "Unknown",
@@ -58,7 +62,7 @@ final class DeviceStatusPolicyTests: XCTestCase {
             "Install / Update",
             "Checkup",
             "Maintenance",
-            "Advanced"
+            "Settings"
         ])
     }
 

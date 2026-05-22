@@ -204,7 +204,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             config,
             payload_home,
             nbns_enabled=nbns_enabled,
-            debug_logging=args.debug_logging,
+            debug_logging=True if args.debug_logging else None,
         )
 
         with tempfile.TemporaryDirectory(prefix="tc-deploy-") as tmp, ExitStack() as boot_assets:

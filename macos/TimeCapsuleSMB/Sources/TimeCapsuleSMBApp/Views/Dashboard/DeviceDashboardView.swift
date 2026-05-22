@@ -18,24 +18,25 @@ struct DeviceDashboardView: View {
 
             Divider()
 
-            ScrollView {
-                Group {
-                    switch session.selectedTab {
-                    case .overview:
-                        OverviewTab(profile: profile, session: session, appStore: appStore)
-                    case .install:
-                        InstallTab(profile: profile, session: session, showDiagnostics: showDiagnostics)
-                    case .checkup:
-                        CheckupTab(profile: profile, session: session, showDiagnostics: showDiagnostics)
-                    case .maintenance:
-                        MaintenanceTab(profile: profile, session: session, showDiagnostics: showDiagnostics)
-                    case .advanced:
-                        AdvancedTab(profile: profile, session: session, appStore: appStore)
+            Group {
+                switch session.selectedTab {
+                case .overview:
+                    OverviewTab(profile: profile, session: session, appStore: appStore)
+                case .install:
+                    InstallTab(profile: profile, session: session, showDiagnostics: showDiagnostics)
+                case .checkup:
+                    CheckupTab(profile: profile, session: session, showDiagnostics: showDiagnostics)
+                case .maintenance:
+                    MaintenanceTab(profile: profile, session: session, showDiagnostics: showDiagnostics)
+                case .settings:
+                    ScrollView {
+                        SettingsTab(profile: profile, session: session, appStore: appStore)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .padding()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
 }

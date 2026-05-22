@@ -290,7 +290,7 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls[0].params["host"], .string("root@10.0.0.2"))
         XCTAssertEqual(fixture.runner.calls[0].params["persist_password"], .bool(false))
         XCTAssertEqual(fixture.runner.calls[0].params["password"], .string("secret"))
-        XCTAssertNil(fixture.runner.calls[0].params["debug_logging"])
+        XCTAssertEqual(fixture.runner.calls[0].params["debug_logging"], .bool(false))
     }
 
     func testConfigureRejectedWhileAnotherOperationRunsSavesNothing() async throws {

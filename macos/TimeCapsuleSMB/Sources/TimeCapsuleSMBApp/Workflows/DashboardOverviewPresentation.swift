@@ -1,13 +1,13 @@
 import Foundation
 
-enum DashboardSecondaryAction: String, Equatable, Hashable, Identifiable {
+enum DashboardSecondaryAction: String, CaseIterable, Equatable, Hashable, Identifiable {
     case runCheckup
     case installUpdate
     case openFinder
     case replacePassword
     case viewCheckup
     case startSMB
-    case advanced
+    case settings
 
     var id: String { rawValue }
 
@@ -25,8 +25,8 @@ enum DashboardSecondaryAction: String, Equatable, Hashable, Identifiable {
             return L10n.string("dashboard.action.view_checkup")
         case .startSMB:
             return L10n.string("dashboard.action.start_smb")
-        case .advanced:
-            return L10n.string("dashboard.action.advanced")
+        case .settings:
+            return L10n.string("dashboard.action.settings")
         }
     }
 
@@ -35,7 +35,7 @@ enum DashboardSecondaryAction: String, Equatable, Hashable, Identifiable {
         case .runCheckup:
             return "stethoscope"
         case .installUpdate:
-            return "square.and.arrow.up"
+            return "square.and.arrow.down.on.square"
         case .openFinder:
             return "folder"
         case .replacePassword:
@@ -44,7 +44,7 @@ enum DashboardSecondaryAction: String, Equatable, Hashable, Identifiable {
             return "list.bullet.clipboard"
         case .startSMB:
             return "play.circle"
-        case .advanced:
+        case .settings:
             return "gearshape"
         }
     }
@@ -169,51 +169,29 @@ struct DashboardHealthSection: Equatable, Identifiable {
 struct DeviceDashboardOverviewPresentation: Equatable {
     let header: DeviceDashboardHeaderPresentation
     let primaryAction: DashboardPrimaryAction
+    let isPrimaryActionEnabled: Bool
     let secondaryActions: [DashboardSecondaryAction]
+    let disabledSecondaryActions: Set<DashboardSecondaryAction>
     let healthSections: [DashboardHealthSection]
     let hostWarning: HostCompatibilityWarning?
     let requiresPasswordReplacement: Bool
 
     init(summary: DeviceDashboardSummary, currentCheckupSummary: DoctorSummary? = nil) {
+        let secondaryActions = DashboardActionPolicy.secondaryActions(for: summary)
         self.header = DeviceDashboardHeaderPresentation(summary: summary)
         self.primaryAction = summary.primaryAction
-        self.secondaryActions = Self.secondaryActions(for: summary)
+        self.isPrimaryActionEnabled = DashboardActionPolicy.isEnabled(summary.primaryAction, for: summary)
+        self.secondaryActions = secondaryActions
+        self.disabledSecondaryActions = Set(DashboardSecondaryAction.allCases.filter {
+            !DashboardActionPolicy.isEnabled($0, for: summary)
+        })
         self.healthSections = Self.healthSections(for: summary, currentCheckupSummary: currentCheckupSummary)
         self.hostWarning = summary.hostWarning
-        self.requiresPasswordReplacement = Self.requiresPasswordReplacement(summary.passwordState)
+        self.requiresPasswordReplacement = DashboardActionPolicy.requiresPasswordReplacement(summary.passwordState)
     }
 
-    private static func secondaryActions(for summary: DeviceDashboardSummary) -> [DashboardSecondaryAction] {
-        var actions: [DashboardSecondaryAction] = []
-        switch summary.primaryAction {
-        case .replacePassword:
-            actions.append(.runCheckup)
-        case .runCheckup:
-            actions.append(.installUpdate)
-        case .installSMB:
-            actions.append(.runCheckup)
-        case .viewCheckup:
-            actions.append(.runCheckup)
-        case .openSMB:
-            actions.append(.runCheckup)
-        }
-        if summary.profile.lastDeploy != nil && summary.primaryAction != .openSMB {
-            actions.append(.openFinder)
-        }
-        if !requiresPasswordReplacement(summary.passwordState) {
-            actions.append(.replacePassword)
-        }
-        actions.append(.advanced)
-        return actions.removingDuplicates()
-    }
-
-    private static func requiresPasswordReplacement(_ passwordState: DevicePasswordState) -> Bool {
-        switch passwordState {
-        case .unknown, .missing, .invalid, .keychainUnavailable:
-            return true
-        case .available:
-            return false
-        }
+    func isEnabled(_ action: DashboardSecondaryAction) -> Bool {
+        !disabledSecondaryActions.contains(action)
     }
 
     private static func healthSections(
@@ -363,7 +341,7 @@ struct DeviceDashboardOverviewPresentation: Equatable {
                 title: DashboardHealthDomain.checkup.title,
                 detail: L10n.string("dashboard.health.unchecked"),
                 status: .unknown,
-                action: .runCheckup
+                action: DashboardActionPolicy.checkupAction(for: summary)
             )
         }
         return DashboardHealthRow(

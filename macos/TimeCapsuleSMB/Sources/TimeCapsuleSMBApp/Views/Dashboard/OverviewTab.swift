@@ -1,5 +1,11 @@
 import SwiftUI
 
+private enum OverviewLayout {
+    static let actionIconSize: CGFloat = 16
+    static let healthRowMinHeight: CGFloat = 64
+    static let healthStatusIconSize: CGFloat = 18
+}
+
 struct OverviewTab: View {
     let profile: DeviceProfile
     @ObservedObject var session: DeviceDashboardSession
@@ -22,7 +28,9 @@ struct OverviewTab: View {
 
                 DashboardPrimaryActionStrip(
                     primaryAction: presentation.primaryAction,
+                    isPrimaryActionEnabled: presentation.isPrimaryActionEnabled,
                     secondaryActions: presentation.secondaryActions,
+                    isSecondaryActionEnabled: presentation.isEnabled,
                     performPrimary: {
                         session.performPrimaryAction(presentation.primaryAction, profile: profile)
                     },
@@ -42,7 +50,7 @@ struct OverviewTab: View {
 
                 VStack(alignment: .leading, spacing: 10) {
                     ForEach(presentation.healthSections) { section in
-                        DashboardHealthSectionView(section: section) { action in
+                        DashboardHealthSectionView(section: section, isActionEnabled: presentation.isEnabled) { action in
                             session.performSecondaryAction(action, profile: profile)
                         }
                     }
@@ -88,7 +96,12 @@ private struct StatusBadge: View {
     let status: DeviceDisplayStatus
 
     var body: some View {
-        Label(status.title, systemImage: status.systemImage)
+        Label {
+            Text(status.title)
+        } icon: {
+            Image(systemName: status.systemImage)
+                .frame(width: OverviewLayout.actionIconSize, height: OverviewLayout.actionIconSize)
+        }
             .font(.caption.weight(.medium))
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
@@ -99,20 +112,24 @@ private struct StatusBadge: View {
 
 private struct DashboardPrimaryActionStrip: View {
     let primaryAction: DashboardPrimaryAction
+    let isPrimaryActionEnabled: Bool
     let secondaryActions: [DashboardSecondaryAction]
+    let isSecondaryActionEnabled: (DashboardSecondaryAction) -> Bool
     let performPrimary: () -> Void
     let performSecondary: (DashboardSecondaryAction) -> Void
 
     var body: some View {
         HStack(spacing: 8) {
             DashboardPrimaryActionButton(action: primaryAction, perform: performPrimary)
+                .disabled(!isPrimaryActionEnabled)
 
             ForEach(secondaryActions) { action in
                 Button {
                     performSecondary(action)
                 } label: {
-                    Label(action.title, systemImage: action.systemImage)
+                    DashboardActionLabel(title: action.title, systemImage: action.systemImage)
                 }
+                .disabled(!isSecondaryActionEnabled(action))
             }
         }
     }
@@ -124,9 +141,24 @@ private struct DashboardPrimaryActionButton: View {
 
     var body: some View {
         Button(action: perform) {
-            Label(action.title, systemImage: action.systemImage)
+            DashboardActionLabel(title: action.title, systemImage: action.systemImage)
         }
         .buttonStyle(.borderedProminent)
+    }
+}
+
+private struct DashboardActionLabel: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        Label {
+            Text(title)
+                .lineLimit(1)
+        } icon: {
+            Image(systemName: systemImage)
+                .frame(width: OverviewLayout.actionIconSize, height: OverviewLayout.actionIconSize)
+        }
     }
 }
 
@@ -160,6 +192,7 @@ private struct PasswordReplacementView: View {
 
 private struct DashboardHealthSectionView: View {
     let section: DashboardHealthSection
+    let isActionEnabled: (DashboardSecondaryAction) -> Bool
     let performAction: (DashboardSecondaryAction) -> Void
 
     var body: some View {
@@ -168,10 +201,10 @@ private struct DashboardHealthSectionView: View {
                 .font(.headline)
             ForEach(section.rows) { row in
                 HStack(alignment: .top, spacing: 10) {
-                    Label(row.status.title, systemImage: row.status.systemImage)
+                    Image(systemName: row.status.systemImage)
                         .font(.caption.weight(.medium))
-                        .labelStyle(.iconOnly)
-                        .frame(width: 18)
+                        .accessibilityLabel(row.status.title)
+                        .frame(width: OverviewLayout.healthStatusIconSize, height: OverviewLayout.healthStatusIconSize)
                     VStack(alignment: .leading, spacing: 3) {
                         HStack {
                             Text(row.title)
@@ -181,9 +214,10 @@ private struct DashboardHealthSectionView: View {
                                 Button {
                                     performAction(action)
                                 } label: {
-                                    Label(action.title, systemImage: action.systemImage)
+                                    DashboardActionLabel(title: action.title, systemImage: action.systemImage)
                                 }
                                 .controlSize(.small)
+                                .disabled(!isActionEnabled(action))
                             }
                         }
                         Text(row.detail)
@@ -192,6 +226,7 @@ private struct DashboardHealthSectionView: View {
                     }
                 }
                 .padding(10)
+                .frame(maxWidth: .infinity, minHeight: OverviewLayout.healthRowMinHeight, alignment: .topLeading)
                 .background(Color.secondary.opacity(0.08))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             }

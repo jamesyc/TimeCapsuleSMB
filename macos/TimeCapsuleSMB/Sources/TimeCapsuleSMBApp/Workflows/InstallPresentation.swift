@@ -61,8 +61,10 @@ enum InstallUserAction: String, Equatable, Identifiable {
     case createPlan
     case regeneratePlan
     case installUpdate
+    case reinstall
     case openFinder
     case runCheckup
+    case viewCheckup
     case viewDiagnostics
 
     var id: String { rawValue }
@@ -75,10 +77,14 @@ enum InstallUserAction: String, Equatable, Identifiable {
             return L10n.string("install.action.regenerate_plan")
         case .installUpdate:
             return L10n.string("install.action.install_update")
+        case .reinstall:
+            return L10n.string("install.action.reinstall")
         case .openFinder:
             return L10n.string("dashboard.action.open_finder")
         case .runCheckup:
             return L10n.string("dashboard.action.run_checkup")
+        case .viewCheckup:
+            return L10n.string("dashboard.action.view_checkup")
         case .viewDiagnostics:
             return L10n.string("recovery.action.open_diagnostics")
         }
@@ -89,13 +95,39 @@ enum InstallUserAction: String, Equatable, Identifiable {
         case .createPlan, .regeneratePlan:
             return "doc.text.magnifyingglass"
         case .installUpdate:
-            return "square.and.arrow.up"
+            return "square.and.arrow.down.on.square"
+        case .reinstall:
+            return "arrow.clockwise"
         case .openFinder:
             return "folder"
         case .runCheckup:
             return "stethoscope"
+        case .viewCheckup:
+            return "list.bullet.clipboard"
         case .viewDiagnostics:
             return "wrench.and.screwdriver"
+        }
+    }
+}
+
+enum InstallCompletionActionPolicy {
+    static func actions(isCheckupRunning: Bool) -> [InstallUserAction] {
+        [.reinstall, .openFinder, isCheckupRunning ? .viewCheckup : .runCheckup, .viewDiagnostics]
+    }
+}
+
+enum InstallActionAvailabilityPolicy {
+    @MainActor
+    static func isEnabled(_ action: InstallUserAction, store: DeployWorkflowStore) -> Bool {
+        switch action {
+        case .createPlan, .regeneratePlan, .reinstall:
+            return !store.isBusy && store.mountWaitValue != nil
+        case .installUpdate:
+            return store.canDeploy
+        case .runCheckup:
+            return !store.isBusy
+        case .openFinder, .viewCheckup, .viewDiagnostics:
+            return true
         }
     }
 }
@@ -129,21 +161,45 @@ struct InstallCompletionPresentation: Equatable {
     let warnings: [String]
     let actions: [InstallUserAction]
 
-    init(result: DeployResultPayload) {
-        self.title = result.verified == true
+    init(result: DeployResultPayload, isCheckupRunning: Bool = false) {
+        self.init(
+            verified: result.verified,
+            rebootRequested: result.rebootRequested,
+            message: result.message ?? result.summary,
+            netbsd4: result.netbsd4,
+            isCheckupRunning: isCheckupRunning
+        )
+    }
+
+    init(snapshot: DeviceDeploySnapshot, profile: DeviceProfile, isCheckupRunning: Bool = false) {
+        self.init(
+            verified: snapshot.verified,
+            rebootRequested: snapshot.rebootRequested,
+            message: snapshot.summary,
+            netbsd4: Self.isNetBSD4(snapshot: snapshot, profile: profile),
+            isCheckupRunning: isCheckupRunning
+        )
+    }
+
+    private init(verified: Bool?, rebootRequested: Bool?, message: String, netbsd4: Bool, isCheckupRunning: Bool) {
+        self.title = verified == true
             ? L10n.string("install.completion.title.verified")
             : L10n.string("install.completion.title.finished")
         self.rows = [
-            PresentationRow(label: L10n.string("deploy.result.verified"), value: result.verified == true ? L10n.string("value.yes") : L10n.string("value.no")),
-            PresentationRow(label: L10n.string("deploy.result.reboot_requested"), value: result.rebootRequested == true ? L10n.string("value.yes") : L10n.string("value.no")),
-            PresentationRow(label: L10n.string("deploy.result.message"), value: result.message ?? result.summary)
+            PresentationRow(label: L10n.string("deploy.result.verified"), value: verified == true ? L10n.string("value.yes") : L10n.string("value.no")),
+            PresentationRow(label: L10n.string("deploy.result.reboot_requested"), value: rebootRequested == true ? L10n.string("value.yes") : L10n.string("value.no")),
+            PresentationRow(label: L10n.string("deploy.result.message"), value: message)
         ]
         var warnings: [String] = []
-        if result.netbsd4 {
+        if netbsd4 {
             warnings.append(L10n.string("install.completion.warning.netbsd4"))
         }
         self.warnings = warnings
-        self.actions = [.openFinder, .runCheckup, .viewDiagnostics]
+        self.actions = InstallCompletionActionPolicy.actions(isCheckupRunning: isCheckupRunning)
+    }
+
+    private static func isNetBSD4(snapshot: DeviceDeploySnapshot, profile: DeviceProfile) -> Bool {
+        snapshot.payloadFamily?.localizedCaseInsensitiveContains("netbsd4") == true || profile.traits.isNetBSD4
     }
 }
 
@@ -189,18 +245,31 @@ struct InstallWorkflowPresentation: Equatable {
         events: [BackendEvent],
         currentStage: OperationStageState?,
         profile: DeviceProfile,
-        hostWarning: HostCompatibilityWarning? = nil
+        hostWarning: HostCompatibilityWarning? = nil,
+        isCheckupRunning: Bool = false
     ) {
         self.title = L10n.string("dashboard.tab.install")
-        self.stateTitle = state.title
         self.plan = plan.map { InstallPlanPresentation(plan: $0, profile: profile, hostWarning: hostWarning) }
         self.timeline = Self.timeline(for: state, events: events, currentStage: currentStage)
-        self.completion = result.map(InstallCompletionPresentation.init)
+        let persistedCompletion = Self.persistedCompletion(
+            state: state,
+            result: result,
+            profile: profile,
+            isCheckupRunning: isCheckupRunning
+        )
+        self.completion = result.map { InstallCompletionPresentation(result: $0, isCheckupRunning: isCheckupRunning) }
+            ?? persistedCompletion
+        self.stateTitle = persistedCompletion == nil ? state.title : DeployWorkflowState.deployed.title
 
         switch state {
         case .idle:
-            self.statusMessage = L10n.string("install.state.idle")
-            self.primaryAction = .createPlan
+            if persistedCompletion == nil {
+                self.statusMessage = L10n.string("install.state.idle")
+                self.primaryAction = .createPlan
+            } else {
+                self.statusMessage = L10n.string("install.state.deployed")
+                self.primaryAction = nil
+            }
             self.notices = []
         case .planning:
             self.statusMessage = L10n.string("install.state.planning")
@@ -235,6 +304,21 @@ struct InstallWorkflowPresentation: Equatable {
             self.primaryAction = .regeneratePlan
             self.notices = []
         }
+    }
+
+    private static func persistedCompletion(
+        state: DeployWorkflowState,
+        result: DeployResultPayload?,
+        profile: DeviceProfile,
+        isCheckupRunning: Bool
+    ) -> InstallCompletionPresentation? {
+        guard state == .idle,
+              result == nil,
+              let snapshot = profile.lastDeploy,
+              snapshot.state == .deployed else {
+            return nil
+        }
+        return InstallCompletionPresentation(snapshot: snapshot, profile: profile, isCheckupRunning: isCheckupRunning)
     }
 
     private static func timeline(

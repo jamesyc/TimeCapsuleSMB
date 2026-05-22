@@ -60,6 +60,8 @@ struct DeviceProfileEditorDraft: Equatable {
     var displayName: String
     var host: String
     var nbnsEnabled: Bool
+    var internalShareUseDiskRoot: Bool
+    var anyProtocol: Bool
     var debugLogging: Bool
     var mountWaitSeconds: String
 
@@ -67,12 +69,16 @@ struct DeviceProfileEditorDraft: Equatable {
         displayName: String,
         host: String,
         nbnsEnabled: Bool,
+        internalShareUseDiskRoot: Bool = false,
+        anyProtocol: Bool = false,
         debugLogging: Bool,
         mountWaitSeconds: String
     ) {
         self.displayName = displayName
         self.host = host
         self.nbnsEnabled = nbnsEnabled
+        self.internalShareUseDiskRoot = internalShareUseDiskRoot
+        self.anyProtocol = anyProtocol
         self.debugLogging = debugLogging
         self.mountWaitSeconds = mountWaitSeconds
     }
@@ -82,6 +88,8 @@ struct DeviceProfileEditorDraft: Equatable {
             displayName: profile.displayName,
             host: profile.host,
             nbnsEnabled: profile.settings.nbnsEnabled,
+            internalShareUseDiskRoot: profile.settings.internalShareUseDiskRoot,
+            anyProtocol: profile.settings.anyProtocol,
             debugLogging: profile.settings.debugLogging,
             mountWaitSeconds: String(profile.settings.mountWaitSeconds)
         )
@@ -101,6 +109,8 @@ struct DeviceProfileEditorDraft: Equatable {
         }
         return DeviceProfileSettings(
             nbnsEnabled: nbnsEnabled,
+            internalShareUseDiskRoot: internalShareUseDiskRoot,
+            anyProtocol: anyProtocol,
             debugLogging: debugLogging,
             mountWaitSeconds: mountWait
         )
@@ -126,6 +136,7 @@ final class DeviceProfileEditorStore: ObservableObject {
     private let coordinator: OperationCoordinator
     private let lane: OperationLane
     private let profileSaver: ConfiguredDeviceProfileSaving
+    private var baselineDraft: DeviceProfileEditorDraft
     private var activeOperation: ActiveOperation?
     private var pendingProfile: DeviceProfile?
     private var pendingDraft: DeviceProfileEditorDraft?
@@ -139,7 +150,9 @@ final class DeviceProfileEditorStore: ObservableObject {
         appStore: AppStore,
         profileSaver: ConfiguredDeviceProfileSaving? = nil
     ) {
-        self.draft = DeviceProfileEditorDraft(profile: profile)
+        let initialDraft = DeviceProfileEditorDraft(profile: profile)
+        self.draft = initialDraft
+        self.baselineDraft = initialDraft
         self.appStore = appStore
         self.coordinator = appStore.operationCoordinator
         self.lane = appStore.operationCoordinator.lane(for: profile)
@@ -154,12 +167,38 @@ final class DeviceProfileEditorStore: ObservableObject {
         state == .saving || state == .reconfiguring
     }
 
-    func canSave(profile: DeviceProfile) -> Bool {
-        !isRunning && draft != DeviceProfileEditorDraft(profile: profile)
+    var canSave: Bool {
+        !isRunning && draft != baselineDraft
+    }
+
+    func sync(to profile: DeviceProfile) {
+        let profileDraft = DeviceProfileEditorDraft(profile: profile)
+        guard profileDraft != baselineDraft else {
+            return
+        }
+
+        let wasClean = draft == baselineDraft
+        baselineDraft = profileDraft
+        guard !isRunning else {
+            return
+        }
+
+        if wasClean {
+            applyDraft(profileDraft)
+            validationErrors = []
+            error = nil
+            currentStage = nil
+            savedProfile = nil
+            state = .clean
+        } else {
+            updateDraftChangeState()
+        }
     }
 
     func reset(to profile: DeviceProfile) {
-        applyDraft(DeviceProfileEditorDraft(profile: profile))
+        let profileDraft = DeviceProfileEditorDraft(profile: profile)
+        baselineDraft = profileDraft
+        applyDraft(profileDraft)
         validationErrors = []
         error = nil
         currentStage = nil
@@ -222,7 +261,9 @@ final class DeviceProfileEditorStore: ObservableObject {
         do {
             let saved = try await appStore.saveProfileEdits(profile: profile, fields: draft.editableFields())
             savedProfile = saved
-            applyDraft(DeviceProfileEditorDraft(profile: saved))
+            let savedDraft = DeviceProfileEditorDraft(profile: saved)
+            baselineDraft = savedDraft
+            applyDraft(savedDraft)
             state = .saved
         } catch {
             failSave(error)
@@ -233,7 +274,9 @@ final class DeviceProfileEditorStore: ObservableObject {
         let params = OperationParams.configure(
             host: draft.trimmedHost,
             password: password,
-            debugLogging: draft.debugLogging
+            debugLogging: draft.debugLogging,
+            internalShareUseDiskRoot: draft.internalShareUseDiskRoot,
+            anyProtocol: draft.anyProtocol
         )
         let start = coordinator.run(
             operation: "configure",
@@ -328,7 +371,9 @@ final class DeviceProfileEditorStore: ObservableObject {
                     )
                 )
                 savedProfile = saved
-                applyDraft(DeviceProfileEditorDraft(profile: saved))
+                let savedDraft = DeviceProfileEditorDraft(profile: saved)
+                baselineDraft = savedDraft
+                applyDraft(savedDraft)
                 error = nil
                 validationErrors = []
                 currentStage = nil
@@ -403,9 +448,13 @@ final class DeviceProfileEditorStore: ObservableObject {
         guard !isApplyingDraft, !isRunning else {
             return
         }
+        updateDraftChangeState()
+    }
+
+    private func updateDraftChangeState() {
         error = nil
         validationErrors = []
         savedProfile = nil
-        state = .dirty
+        state = draft == baselineDraft ? .clean : .dirty
     }
 }

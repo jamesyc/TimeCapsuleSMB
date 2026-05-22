@@ -55,6 +55,24 @@ final class DeviceProfileTests: XCTestCase {
         XCTAssertEqual(profile.runtimeContext.configURL.path, "/tmp/devices/abc/.env")
     }
 
+    func testProfileSettingsDecodeMissingNewKeysWithDefaults() throws {
+        let data = Data("""
+        {
+          "nbnsEnabled": false,
+          "debugLogging": true,
+          "mountWaitSeconds": 45
+        }
+        """.utf8)
+
+        let settings = try JSONDecoder().decode(DeviceProfileSettings.self, from: data)
+
+        XCTAssertEqual(settings.nbnsEnabled, false)
+        XCTAssertEqual(settings.internalShareUseDiskRoot, false)
+        XCTAssertEqual(settings.anyProtocol, false)
+        XCTAssertEqual(settings.debugLogging, true)
+        XCTAssertEqual(settings.mountWaitSeconds, 45)
+    }
+
     func testTraitsClassifyNetBSD4NetBSD6AndUnsupportedDevices() {
         let netbsd4 = makeProfile(payloadFamily: "netbsd4_samba4")
         XCTAssertTrue(netbsd4.traits.isNetBSD4)

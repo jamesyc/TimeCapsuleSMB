@@ -31,7 +31,7 @@ struct FlashBootHookSection: View {
         .onAppear {
             store.refresh(profile: profile)
         }
-        .onChange(of: profile.id) { _ in
+        .onChange(of: profile.id) { _, _ in
             store.refresh(profile: profile)
         }
     }

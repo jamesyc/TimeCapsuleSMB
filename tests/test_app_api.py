@@ -137,6 +137,22 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual([event["type"] for event in terminals], [event_type])
         return terminals[0]
 
+    def assert_confirmation(
+        self,
+        collector: CollectingSink,
+        presentation_id: str,
+        presentation_values: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "confirmation_required")
+        details = error["details"]
+        self.assertEqual(details["presentation_id"], presentation_id)
+        self.assertTrue(details["message"].endswith("?"), details["message"])
+        self.assertIn("confirmation_id", details)
+        for key, value in (presentation_values or {}).items():
+            self.assertEqual(details["presentation_values"][key], value)
+        return details
+
     def test_event_redacts_sensitive_fields(self) -> None:
         event = AppEvent("result", "configure", {
             "ok": True,
@@ -749,7 +765,13 @@ class AppApiTests(unittest.TestCase):
             "nbns-advertiser": SimpleNamespace(absolute_path=REPO_ROOT / "bin/nbns/nbns-advertiser"),
         }
 
-        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})):
+        with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config", return_value=AppConfig.from_values({
+            "TC_HOST": "root@10.0.0.2",
+            "TC_PASSWORD": "pw",
+            "TC_INTERNAL_SHARE_USE_DISK_ROOT": "true",
+            "TC_ANY_PROTOCOL": "true",
+            "TC_DEBUG_LOGGING": "true",
+        })):
             with mock.patch("timecapsulesmb.app.ops.deploy.resolve_validated_managed_target", return_value=target):
                 with mock.patch("timecapsulesmb.app.ops.deploy.resolve_app_paths", return_value=SimpleNamespace(distribution_root=REPO_ROOT)):
                     with mock.patch("timecapsulesmb.app.ops.deploy.validate_artifacts", return_value=[("smbd", True, "ok")]):
@@ -790,7 +812,11 @@ class AppApiTests(unittest.TestCase):
                                 )
 
         self.assertEqual(rc, 1)
-        self.assertEqual(collector.events_of_type("error")[0]["code"], "confirmation_required")
+        self.assert_confirmation(
+            collector,
+            "deploy.reboot",
+            {"device_name": "Time Capsule", "requires_reboot": True, "no_reboot": False, "no_wait": False},
+        )
         remote_actions.assert_not_called()
 
     def test_deploy_requires_netbsd4_activation_confirmation_before_remote_actions(self) -> None:
@@ -816,7 +842,11 @@ class AppApiTests(unittest.TestCase):
                                     )
 
         self.assertEqual(rc, 1)
-        self.assertEqual(collector.events_of_type("error")[0]["code"], "confirmation_required")
+        self.assert_confirmation(
+            collector,
+            "deploy.netbsd4",
+            {"device_name": "Time Capsule", "netbsd4": True, "no_reboot": False, "no_wait": False},
+        )
         read_mast.assert_not_called()
         remote_actions.assert_not_called()
 
@@ -842,10 +872,12 @@ class AppApiTests(unittest.TestCase):
                                 )
 
         self.assertEqual(rc, 1)
-        error = self.assert_single_terminal_event(collector, "error")
-        self.assertEqual(error["code"], "confirmation_required")
-        self.assertEqual(error["details"]["action_title"], "Deploy")
-        self.assertIn("confirmation_id", error["details"])
+        error = self.assert_confirmation(
+            collector,
+            "deploy.no_reboot",
+            {"device_name": "Time Capsule", "netbsd4": False, "no_reboot": True, "no_wait": False},
+        )
+        self.assertEqual(error["action_title"], "Deploy")
         read_mast.assert_not_called()
 
     def test_deploy_accepts_backend_confirmation_id_before_remote_writes(self) -> None:
@@ -948,9 +980,9 @@ class AppApiTests(unittest.TestCase):
                                                                         "dry_run": False,
                                                                         "no_reboot": True,
                                                                         "confirm_deploy": True,
-                                                                        "internal_share_use_disk_root": True,
-                                                                        "any_protocol": True,
-                                                                        "debug_logging": True,
+                                                                        "internal_share_use_disk_root": False,
+                                                                        "any_protocol": False,
+                                                                        "debug_logging": False,
                                                                     },
                                                                 },
                                                                 collector.sink,
@@ -960,9 +992,9 @@ class AppApiTests(unittest.TestCase):
         upload.assert_called_once()
         wait.assert_not_called()
         render_runtime.assert_called_once()
-        self.assertEqual(render_runtime.call_args.kwargs["internal_share_use_disk_root"], True)
-        self.assertEqual(render_runtime.call_args.kwargs["any_protocol"], True)
-        self.assertEqual(render_runtime.call_args.kwargs["debug_logging"], True)
+        self.assertEqual(render_runtime.call_args.kwargs["internal_share_use_disk_root"], False)
+        self.assertEqual(render_runtime.call_args.kwargs["any_protocol"], False)
+        self.assertEqual(render_runtime.call_args.kwargs["debug_logging"], False)
         self.assertEqual(collector.events_of_type("result")[0]["payload"]["rebooted"], False)
 
     def test_deploy_no_wait_requests_reboot_without_wait_or_runtime_verify(self) -> None:
@@ -1118,7 +1150,7 @@ class AppApiTests(unittest.TestCase):
                         rc = service.run_api_request({"operation": "activate", "params": {}}, collector.sink)
 
         self.assertEqual(rc, 1)
-        self.assertEqual(collector.events_of_type("error")[0]["code"], "confirmation_required")
+        self.assert_confirmation(collector, "activate.netbsd4", {"netbsd4": True})
         resolve_target.assert_not_called()
         runtime_probe.assert_not_called()
         remote_actions.assert_not_called()
@@ -1154,7 +1186,37 @@ class AppApiTests(unittest.TestCase):
                     rc = service.run_api_request({"operation": "uninstall", "params": {}}, collector.sink)
 
         self.assertEqual(rc, 1)
-        self.assertEqual(collector.events_of_type("error")[0]["code"], "confirmation_required")
+        error = self.assert_confirmation(
+            collector,
+            "uninstall.reboot",
+            {"requires_reboot": True, "no_reboot": False, "no_wait": False},
+        )
+        self.assertEqual(
+            error["message"],
+            "Remove managed TimeCapsuleSMB files from the device and reboot it?",
+        )
+        resolve_connection.assert_called_once()
+        uninstall.assert_not_called()
+
+    def test_uninstall_without_reboot_requires_question_form_confirmation(self) -> None:
+        collector = CollectingSink()
+        config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
+
+        with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config", return_value=config):
+            with mock.patch("timecapsulesmb.app.ops.maintenance.resolve_env_connection") as resolve_connection:
+                with mock.patch("timecapsulesmb.app.ops.maintenance.remote_uninstall_payload") as uninstall:
+                    rc = service.run_api_request(
+                        {"operation": "uninstall", "params": {"no_reboot": True}},
+                        collector.sink,
+                    )
+
+        self.assertEqual(rc, 1)
+        error = self.assert_confirmation(
+            collector,
+            "uninstall.no_reboot",
+            {"requires_reboot": False, "no_reboot": True, "no_wait": False},
+        )
+        self.assertEqual(error["message"], "Remove managed TimeCapsuleSMB files from the device?")
         resolve_connection.assert_called_once()
         uninstall.assert_not_called()
 
@@ -1242,8 +1304,21 @@ class AppApiTests(unittest.TestCase):
                 rc = service.run_api_request({"operation": "fsck", "params": {}}, collector.sink)
 
         self.assertEqual(rc, 1)
-        self.assertEqual(collector.events_of_type("error")[0]["code"], "confirmation_required")
+        self.assert_confirmation(collector, "fsck.reboot", {"requires_reboot": True, "no_reboot": False})
         resolve_connection.assert_not_called()
+
+    def test_fsck_without_reboot_requires_question_form_confirmation(self) -> None:
+        collector = CollectingSink()
+
+        with mock.patch("timecapsulesmb.app.ops.maintenance.load_env_config") as load_config:
+            rc = service.run_api_request(
+                {"operation": "fsck", "params": {"no_reboot": True}},
+                collector.sink,
+            )
+
+        self.assertEqual(rc, 1)
+        self.assert_confirmation(collector, "fsck.no_reboot", {"requires_reboot": False, "no_reboot": True})
+        load_config.assert_not_called()
 
     def test_fsck_rejects_non_integer_mount_wait_before_remote_connection(self) -> None:
         for value in (12.5, True):
@@ -1481,9 +1556,8 @@ class AppApiTests(unittest.TestCase):
                 )
 
         self.assertEqual(rc, 1)
-        error = self.assert_single_terminal_event(collector, "error")
-        self.assertEqual(error["code"], "confirmation_required")
-        self.assertEqual(error["recovery"]["title"], "Repair confirmation required")
+        error = self.assert_confirmation(collector, "repair_xattrs", {"path": "/Volumes/Data"})
+        self.assertEqual(collector.events_of_type("error")[0]["recovery"]["title"], "Repair confirmation required")
         runner.assert_not_called()
 
     def test_repair_xattrs_checks_platform_after_confirmation(self) -> None:

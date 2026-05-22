@@ -35,14 +35,49 @@ enum DevicePasswordState: String, Codable, CaseIterable, Equatable {
 
 struct DeviceProfileSettings: Codable, Equatable {
     var nbnsEnabled: Bool
+    var internalShareUseDiskRoot: Bool
+    var anyProtocol: Bool
     var debugLogging: Bool
     var mountWaitSeconds: Int
 
     static let `default` = DeviceProfileSettings(
         nbnsEnabled: true,
+        internalShareUseDiskRoot: false,
+        anyProtocol: false,
         debugLogging: false,
         mountWaitSeconds: 30
     )
+
+    init(
+        nbnsEnabled: Bool,
+        internalShareUseDiskRoot: Bool = false,
+        anyProtocol: Bool = false,
+        debugLogging: Bool,
+        mountWaitSeconds: Int
+    ) {
+        self.nbnsEnabled = nbnsEnabled
+        self.internalShareUseDiskRoot = internalShareUseDiskRoot
+        self.anyProtocol = anyProtocol
+        self.debugLogging = debugLogging
+        self.mountWaitSeconds = mountWaitSeconds
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case nbnsEnabled
+        case internalShareUseDiskRoot
+        case anyProtocol
+        case debugLogging
+        case mountWaitSeconds
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        nbnsEnabled = try container.decodeIfPresent(Bool.self, forKey: .nbnsEnabled) ?? Self.default.nbnsEnabled
+        internalShareUseDiskRoot = try container.decodeIfPresent(Bool.self, forKey: .internalShareUseDiskRoot) ?? Self.default.internalShareUseDiskRoot
+        anyProtocol = try container.decodeIfPresent(Bool.self, forKey: .anyProtocol) ?? Self.default.anyProtocol
+        debugLogging = try container.decodeIfPresent(Bool.self, forKey: .debugLogging) ?? Self.default.debugLogging
+        mountWaitSeconds = try container.decodeIfPresent(Int.self, forKey: .mountWaitSeconds) ?? Self.default.mountWaitSeconds
+    }
 }
 
 struct DeviceCheckupSnapshot: Codable, Equatable {

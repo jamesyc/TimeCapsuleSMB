@@ -61,6 +61,12 @@ def bool_param(params: dict[str, object], name: str, default: bool = False) -> b
     raise AppOperationError(f"{name} must be a boolean", code="validation_failed")
 
 
+def optional_bool_param(params: dict[str, object], name: str) -> bool | None:
+    if name not in params or params.get(name) in (None, ""):
+        return None
+    return bool_param(params, name)
+
+
 def confirm_param(params: dict[str, object], name: str) -> bool:
     if name in params:
         return bool_param(params, name)

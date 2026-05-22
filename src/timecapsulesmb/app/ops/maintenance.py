@@ -95,7 +95,7 @@ def activate_operation(params: dict[str, object], sink: EventSink) -> OperationR
             operation=operation,
             params=params,
             title="Confirm NetBSD4 activation",
-            message="Activate the deployed NetBSD4 payload and restart managed services.",
+            message="Activate the deployed NetBSD4 payload and restart managed services?",
             action_title="Activate",
             risk="destructive",
             summary="NetBSD4 service activation",
@@ -103,6 +103,8 @@ def activate_operation(params: dict[str, object], sink: EventSink) -> OperationR
                 "host": confirmation_connection.host,
                 "netbsd4": True,
             },
+            presentation_id="activate.netbsd4",
+            presentation_values={"netbsd4": True},
         ),
         legacy_names=("confirm_netbsd4_activation",),
     )
@@ -145,6 +147,12 @@ def uninstall_operation(params: dict[str, object], sink: EventSink) -> Operation
     sink.stage(operation, "resolve_connection")
     connection = resolve_env_connection(config, allow_empty_password=True)
     if not dry_run:
+        presentation_id = "uninstall.no_reboot" if no_reboot else "uninstall.reboot"
+        presentation_values = {
+            "requires_reboot": not no_reboot,
+            "no_reboot": no_reboot,
+            "no_wait": no_wait,
+        }
         require_confirmation(
             params,
             build_confirmation(
@@ -153,7 +161,7 @@ def uninstall_operation(params: dict[str, object], sink: EventSink) -> Operation
                 title="Confirm uninstall",
                 message=(
                     "Remove managed TimeCapsuleSMB files from the device"
-                    + (" and reboot it." if not no_reboot else ".")
+                    + (" and reboot it?" if not no_reboot else "?")
                 ),
                 action_title="Uninstall",
                 risk="destructive" if not no_reboot else "remote_write",
@@ -164,6 +172,8 @@ def uninstall_operation(params: dict[str, object], sink: EventSink) -> Operation
                     "no_reboot": no_reboot,
                     "no_wait": no_wait,
                 },
+                presentation_id=presentation_id,
+                presentation_values=presentation_values,
             ),
             legacy_names=("confirm_uninstall",) if no_reboot else ("confirm_uninstall", "confirm_reboot"),
         )
@@ -239,18 +249,30 @@ def fsck_operation(params: dict[str, object], sink: EventSink) -> OperationResul
     if dry_run and list_volumes:
         raise AppOperationError("dry_run and list_volumes are mutually exclusive.", code="validation_failed")
     if not dry_run and not list_volumes:
+        presentation_id = "fsck.no_reboot" if no_reboot else "fsck.reboot"
+        volume = string_param(params, "volume")
         require_confirmation(
             params,
             build_confirmation(
                 operation=operation,
                 params=params,
                 title="Confirm fsck",
-                message="Run fsck on the selected HFS volume" + (" and reboot the device." if not no_reboot else "."),
+                message=(
+                    "Run fsck on the selected HFS volume"
+                    + (" and reboot the device?" if not no_reboot else "?")
+                ),
                 action_title="Run fsck",
                 risk="destructive" if not no_reboot else "remote_write",
                 summary="Filesystem check and repair",
                 context={
-                    "volume": string_param(params, "volume"),
+                    "volume": volume,
+                    "requires_reboot": not no_reboot,
+                    "no_reboot": no_reboot,
+                    "no_wait": no_wait,
+                },
+                presentation_id=presentation_id,
+                presentation_values={
+                    "volume": volume,
                     "requires_reboot": not no_reboot,
                     "no_reboot": no_reboot,
                     "no_wait": no_wait,
@@ -375,11 +397,13 @@ def repair_xattrs_operation(params: dict[str, object], sink: EventSink) -> Opera
                 operation=operation,
                 params=params,
                 title="Confirm xattr repair",
-                message=f"Repair known-safe macOS metadata issues under {path}.",
+                message=f"Repair known-safe macOS metadata issues under {path}?",
                 action_title="Repair xattrs",
                 risk="local_write",
                 summary="Repair local mounted-share metadata",
                 context={"path": str(path)},
+                presentation_id="repair_xattrs",
+                presentation_values={"path": str(path)},
             ),
             legacy_names=("confirm_repair",),
         )

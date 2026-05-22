@@ -30,7 +30,9 @@ struct MaintenanceTab: View {
                     }
                 )
 
-                FlashBootHookSection(profile: profile)
+                if FlashBootHookVisibilityPolicy.isVisible(for: profile) {
+                    FlashBootHookSection(profile: profile)
+                }
 
                 if let error = store.error {
                     ErrorRecoveryView(error: error) { action in
@@ -170,7 +172,7 @@ private struct MaintenanceDetailView: View {
                 MaintenanceCompletionView(presentation: completion)
             }
 
-            MaintenanceAdvancedOptionsView(store: store)
+            MaintenanceAdvancedOptionsView(workflow: presentation.workflow, store: store)
         }
         .padding(10)
         .background(Color.secondary.opacity(0.06))
@@ -192,7 +194,9 @@ private struct MaintenanceDetailView: View {
             return !store.canRunFsck
         case .repairMetadata:
             return !store.canRepairXattrs
-        case .planActivation, .planUninstall, .findVolumes, .scanMetadata, .viewDiagnostics:
+        case .scanMetadata:
+            return !store.canScanRepairXattrs
+        case .planActivation, .planUninstall, .findVolumes, .viewDiagnostics:
             return false
         }
     }
@@ -279,8 +283,7 @@ private struct MaintenanceTimelineView: View {
                 .font(.headline)
             ForEach(presentation.items) { item in
                 HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: icon(for: item.state))
-                        .frame(width: 16)
+                    OperationTimelineStateIcon(state: item.state)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(item.title)
                             .font(.body.weight(.medium))
@@ -294,41 +297,64 @@ private struct MaintenanceTimelineView: View {
             }
         }
     }
+}
 
-    private func icon(for state: OperationTimelineItem.State) -> String {
-        switch state {
-        case .pending:
-            return "circle"
-        case .running:
-            return "progress.indicator"
-        case .succeeded:
-            return "checkmark.circle"
-        case .warning:
-            return "exclamationmark.triangle"
-        case .failed:
-            return "xmark.octagon"
+private struct MaintenanceAdvancedOptionsView: View {
+    let workflow: MaintenanceWorkflow
+    @ObservedObject var store: MaintenanceStore
+
+    var body: some View {
+        DashboardDisclosureSection(title: L10n.string("maintenance.advanced_options")) {
+            if workflow == .repairXattrs {
+                RepairXattrsAdvancedOptionsView(store: store)
+            } else {
+                RemoteMaintenanceAdvancedOptionsView(store: store)
+            }
         }
     }
 }
 
-private struct MaintenanceAdvancedOptionsView: View {
+private struct RemoteMaintenanceAdvancedOptionsView: View {
     @ObservedObject var store: MaintenanceStore
 
     var body: some View {
-        DisclosureGroup(L10n.string("maintenance.advanced_options")) {
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-                GridRow {
-                    Text(L10n.string("field.mount_wait"))
+        Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+            GridRow {
+                Text(L10n.string("field.mount_wait"))
+                    .foregroundStyle(.secondary)
+                TextField(L10n.string("field.mount_wait"), text: $store.mountWait)
+                    .frame(width: 150)
+            }
+            GridRow {
+                Toggle(L10n.string("toggle.no_reboot"), isOn: $store.noReboot)
+                Toggle(L10n.string("toggle.no_wait"), isOn: $store.noWait)
+            }
+        }
+    }
+}
+
+private struct RepairXattrsAdvancedOptionsView: View {
+    @ObservedObject var store: MaintenanceStore
+
+    var body: some View {
+        Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+            GridRow {
+                Toggle(L10n.string("toggle.repair_xattrs_recursive"), isOn: $store.repairRecursive)
+                Toggle(L10n.string("toggle.repair_xattrs_include_hidden"), isOn: $store.repairIncludeHidden)
+            }
+            GridRow {
+                Toggle(L10n.string("toggle.repair_xattrs_include_time_machine"), isOn: $store.repairIncludeTimeMachine)
+                Toggle(L10n.string("toggle.repair_xattrs_fix_permissions"), isOn: $store.repairFixPermissions)
+            }
+            GridRow {
+                Toggle(L10n.string("toggle.repair_xattrs_verbose"), isOn: $store.repairVerbose)
+                HStack {
+                    Text(L10n.string("field.repair_xattrs_max_depth"))
                         .foregroundStyle(.secondary)
-                    TextField(L10n.string("field.mount_wait"), text: $store.mountWait)
-                        .frame(width: 150)
-                }
-                GridRow {
-                    Toggle(L10n.string("toggle.no_reboot"), isOn: $store.noReboot)
-                    Toggle(L10n.string("toggle.no_wait"), isOn: $store.noWait)
+                    TextField(L10n.string("field.repair_xattrs_max_depth"), text: $store.repairMaxDepth)
+                        .frame(width: 80)
                 }
             }
-            .padding(.top, 8)
         }
     }
 }

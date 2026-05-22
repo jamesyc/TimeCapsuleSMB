@@ -29,7 +29,7 @@ struct ActivityCompactView: View {
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(Color.secondary.opacity(0.06))
-        .onChange(of: ActivityProgressTextAnimator.animationIdentity(for: status)) { _ in
+        .onChange(of: ActivityProgressTextAnimator.animationIdentity(for: status)) { _, _ in
             messageAnimationPhase = 0
         }
         .onReceive(messageAnimationTimer) { _ in

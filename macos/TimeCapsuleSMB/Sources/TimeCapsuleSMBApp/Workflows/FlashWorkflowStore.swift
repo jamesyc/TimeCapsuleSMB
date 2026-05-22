@@ -103,6 +103,12 @@ enum FlashEligibilityPolicy {
     }
 }
 
+enum FlashBootHookVisibilityPolicy {
+    static func isVisible(for profile: DeviceProfile) -> Bool {
+        profile.traits.supportsFlashBootHook
+    }
+}
+
 @MainActor
 final class FlashWorkflowStore: ObservableObject {
     @Published private(set) var state: FlashWorkflowState = .disabledInThisBuild

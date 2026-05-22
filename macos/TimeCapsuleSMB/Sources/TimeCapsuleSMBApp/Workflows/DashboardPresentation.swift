@@ -29,7 +29,7 @@ enum DashboardPrimaryAction: String, Equatable {
         case .runCheckup:
             return "stethoscope"
         case .installSMB:
-            return "square.and.arrow.up"
+            return "square.and.arrow.down.on.square"
         case .viewCheckup:
             return "list.bullet.clipboard"
         case .openSMB:

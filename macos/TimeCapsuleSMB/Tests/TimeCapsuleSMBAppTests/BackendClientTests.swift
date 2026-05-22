@@ -128,6 +128,35 @@ final class BackendClientTests: XCTestCase {
         XCTAssertEqual(client.pendingConfirmation?.params["dry_run"], .bool(false))
     }
 
+    func testCancelPendingConfirmationClearsPendingStateAndPublishesCancellationEvent() async throws {
+        let runner = RecordingHelperRunner(
+            events: [
+                BackendEvent(
+                    type: "error",
+                    operation: "deploy",
+                    code: "confirmation_required",
+                    message: "Confirm deploy.",
+                    details: .object(["confirmation_id": .string("confirm-1")])
+                )
+            ],
+            result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")
+        )
+        let client = BackendClient(runner: runner)
+
+        client.run(operation: "deploy", params: ["dry_run": .bool(false)])
+        try await waitUntil {
+            client.pendingConfirmation != nil && !client.isRunning
+        }
+
+        client.cancelPendingConfirmation()
+
+        XCTAssertNil(client.pendingConfirmation)
+        XCTAssertEqual(client.events.last?.type, "error")
+        XCTAssertEqual(client.events.last?.operation, "deploy")
+        XCTAssertEqual(client.events.last?.code, "confirmation_cancelled")
+        XCTAssertEqual(client.events.last?.message, "Operation cancelled.")
+    }
+
     func testProfileContextInjectsConfigAndPreservesExplicitConfig() async throws {
         let runner = RecordingHelperRunner(
             events: [

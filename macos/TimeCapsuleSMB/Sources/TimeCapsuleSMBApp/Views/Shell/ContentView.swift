@@ -77,10 +77,14 @@ public struct ContentView: View {
             }
         }
         .frame(minWidth: 1080, minHeight: 720)
+        .background(WindowCloseGuardInstaller())
+        .onAppear {
+            configureCloseGuard()
+        }
         .task {
             await appStore.start()
         }
-        .onChange(of: addDeviceStore.savedProfile) { profile in
+        .onChange(of: addDeviceStore.savedProfile) { _, profile in
             guard let profile else { return }
             appStore.select(profile)
         }
@@ -176,6 +180,12 @@ public struct ContentView: View {
             return true
         }
         return appStore.operationCoordinator.lane(for: profile).isBusy
+    }
+
+    private func configureCloseGuard() {
+        AppCloseGuard.shared.configure { [weak appStore] in
+            appStore?.operationCoordinator.hasActiveWork ?? false
+        }
     }
 
     private var sidebarSelection: Binding<String?> {
