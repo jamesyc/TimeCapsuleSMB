@@ -64,6 +64,7 @@
 #define AUTO_IP_STABILIZE_SECONDS 3
 #define AUTO_IP_STARTUP_POLL_SECONDS 2
 #define AUTO_IP_STABLE_POLL_SECONDS 30
+#define MDNS_DEGRADED_RETRY_SECONDS 5
 #define ADVERTISER_VERSION_CODE 2104
 #define DNS_SD_SERVICE_ENUMERATION_NAME "_services._dns-sd._udp.local."
 
@@ -353,7 +354,35 @@ struct deferred_response {
     struct planned_rr_set planned;
 };
 
+struct mdns_transport_requirements {
+    int ipv4_required;
+    int ipv6_required;
+};
+
+struct mdns_transport_status {
+    int required_ipv4;
+    int required_ipv6;
+    int active_ipv4;
+    int active_ipv6;
+    int missing_required_ipv4;
+    int missing_required_ipv6;
+    int last_ipv4_errno;
+    int last_ipv6_errno;
+};
+
+struct mdns_runtime_counters {
+    unsigned long ipv4_packets_received;
+    unsigned long ipv6_packets_received;
+    unsigned long query_packets_matched;
+    unsigned long responses_sent;
+    unsigned long send_failures;
+    char last_send_failure[160];
+};
+
 static struct deferred_response g_deferred_response;
+static struct mdns_runtime_counters g_mdns_counters;
+static int g_last_ipv4_socket_errno = 0;
+static int g_last_ipv6_socket_errno = 0;
 static const unsigned int g_startup_burst_offsets_ms[STARTUP_BURST_COUNT] = {0, 1000, 3000, 7000};
 
 static int name_equals(const char *a, const char *b);
@@ -708,6 +737,191 @@ static void log_send_failure(const char *stage, const struct sockaddr_in *dest, 
             detail);
     fprintf(stderr,
             "mdns send failure: listener remains active; discovery may still work via received queries even though unsolicited announcements failed\n");
+}
+
+static void remember_last_send_failure(const char *stage, int saved_errno) {
+    int written;
+
+    g_mdns_counters.send_failures++;
+    written = snprintf(g_mdns_counters.last_send_failure,
+                       sizeof(g_mdns_counters.last_send_failure),
+                       "%s errno=%d (%s)",
+                       stage,
+                       saved_errno,
+                       strerror(saved_errno));
+    if (written < 0 || (size_t)written >= sizeof(g_mdns_counters.last_send_failure)) {
+        g_mdns_counters.last_send_failure[sizeof(g_mdns_counters.last_send_failure) - 1] = '\0';
+    }
+}
+
+static void log_mdns_counters(const char *reason) {
+    fprintf(stderr,
+            "mdns counters: reason=%s ipv4_rx=%lu ipv6_rx=%lu query_matches=%lu responses_sent=%lu send_failures=%lu last_send_failure=%s\n",
+            reason,
+            g_mdns_counters.ipv4_packets_received,
+            g_mdns_counters.ipv6_packets_received,
+            g_mdns_counters.query_packets_matched,
+            g_mdns_counters.responses_sent,
+            g_mdns_counters.send_failures,
+            g_mdns_counters.last_send_failure[0] != '\0' ? g_mdns_counters.last_send_failure : "(none)");
+}
+
+static void mdns_transport_requirements_from_links(const struct link_context_set *desired_links,
+                                                   struct mdns_transport_requirements *requirements) {
+    int wants_ipv4 = link_contexts_need_ipv4_socket(desired_links);
+    int wants_ipv6 = link_contexts_need_ipv6_socket(desired_links);
+
+    memset(requirements, 0, sizeof(*requirements));
+    requirements->ipv4_required = wants_ipv4;
+    requirements->ipv6_required = !wants_ipv4 && wants_ipv6;
+}
+
+static void mdns_transport_status_from_links(const struct link_context_set *desired_links,
+                                             const struct link_context_set *active_links,
+                                             const struct mdns_socket_pair *sockets,
+                                             struct mdns_transport_status *status) {
+    struct mdns_transport_requirements requirements;
+
+    mdns_transport_requirements_from_links(desired_links, &requirements);
+    memset(status, 0, sizeof(*status));
+    status->required_ipv4 = requirements.ipv4_required;
+    status->required_ipv6 = requirements.ipv6_required;
+    status->active_ipv4 = sockets->ipv4_fd >= 0 && link_contexts_need_ipv4_socket(active_links);
+    status->active_ipv6 = sockets->ipv6_fd >= 0 && link_contexts_need_ipv6_socket(active_links);
+    status->missing_required_ipv4 = status->required_ipv4 && !status->active_ipv4;
+    status->missing_required_ipv6 = status->required_ipv6 && !status->active_ipv6;
+    status->last_ipv4_errno = g_last_ipv4_socket_errno;
+    status->last_ipv6_errno = g_last_ipv6_socket_errno;
+}
+
+static int mdns_transport_has_active_socket(const struct mdns_transport_status *status) {
+    return status->active_ipv4 || status->active_ipv6;
+}
+
+static int mdns_transport_missing_required(const struct mdns_transport_status *status) {
+    return status->missing_required_ipv4 || status->missing_required_ipv6;
+}
+
+static int mdns_transport_is_healthy(const struct mdns_transport_status *status) {
+    return mdns_transport_has_active_socket(status) && !mdns_transport_missing_required(status);
+}
+
+static const char *mdns_transport_health_label(const struct mdns_transport_status *status) {
+    if (mdns_transport_is_healthy(status)) {
+        return "healthy";
+    }
+    if (mdns_transport_has_active_socket(status)) {
+        return "degraded";
+    }
+    return "down";
+}
+
+static void mdns_first_active_ipv4(char *out, size_t out_len, const struct link_context_set *active_links) {
+    size_t i;
+
+    for (i = 0; i < active_links->count; i++) {
+        uint32_t ipv4_addr;
+        if (!link_context_has_mdns_ipv4_transport(&active_links->links[i])) {
+            continue;
+        }
+        ipv4_addr = link_preferred_ipv4_source(&active_links->links[i]);
+        if (ipv4_addr != 0) {
+            (void)ipv4_to_string(ipv4_addr, out, out_len);
+            return;
+        }
+    }
+    strncpy(out, "off", out_len - 1);
+    out[out_len - 1] = '\0';
+}
+
+static void mdns_first_active_ipv6(char *out, size_t out_len, const struct link_context_set *active_links) {
+    size_t i;
+
+    for (i = 0; i < active_links->count; i++) {
+        if (!link_context_has_mdns_ipv6_transport(&active_links->links[i])) {
+            continue;
+        }
+        snprintf(out, out_len, "%s", active_links->links[i].name);
+        return;
+    }
+    strncpy(out, "off", out_len - 1);
+    out[out_len - 1] = '\0';
+}
+
+static void log_mdns_transport_status(const char *reason,
+                                      const struct link_context_set *active_links,
+                                      const struct mdns_transport_status *status) {
+    char ipv4_buf[INET_ADDRSTRLEN];
+    char ipv6_buf[IFNAMSIZ + 1];
+
+    mdns_first_active_ipv4(ipv4_buf, sizeof(ipv4_buf), active_links);
+    mdns_first_active_ipv6(ipv6_buf, sizeof(ipv6_buf), active_links);
+    fprintf(stderr,
+            "mdns transport active: reason=%s status=%s ipv4=%s ipv6=%s required_ipv4=%d required_ipv6=%d missing_required_ipv4=%d missing_required_ipv6=%d last_ipv4_errno=%d last_ipv6_errno=%d\n",
+            reason,
+            mdns_transport_health_label(status),
+            status->active_ipv4 ? ipv4_buf : "off",
+            status->active_ipv6 ? ipv6_buf : "off",
+            status->required_ipv4,
+            status->required_ipv6,
+            status->missing_required_ipv4,
+            status->missing_required_ipv6,
+            status->last_ipv4_errno,
+            status->last_ipv6_errno);
+}
+
+static int link_context_topology_equal(const struct link_context *a, const struct link_context *b) {
+    size_t i;
+
+    if (strcmp(a->name, b->name) != 0 ||
+        a->flags != b->flags ||
+        a->ifindex != b->ifindex ||
+        a->ipv4_count != b->ipv4_count ||
+        a->ipv6_count != b->ipv6_count) {
+        return 0;
+    }
+    for (i = 0; i < a->ipv4_count; i++) {
+        if (a->ipv4[i].addr != b->ipv4[i].addr ||
+            a->ipv4[i].netmask != b->ipv4[i].netmask) {
+            return 0;
+        }
+    }
+    for (i = 0; i < a->ipv6_count; i++) {
+        if (memcmp(&a->ipv6[i].addr, &b->ipv6[i].addr, sizeof(a->ipv6[i].addr)) != 0 ||
+            a->ipv6[i].scope_id != b->ipv6[i].scope_id ||
+            a->ipv6[i].prefix_len != b->ipv6[i].prefix_len ||
+            a->ipv6[i].link_local != b->ipv6[i].link_local) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int link_context_set_contains_topology(const struct link_context_set *set,
+                                              const struct link_context *ctx) {
+    size_t i;
+
+    for (i = 0; i < set->count; i++) {
+        if (link_context_topology_equal(&set->links[i], ctx)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int link_context_topology_sets_equal(const struct link_context_set *a,
+                                            const struct link_context_set *b) {
+    size_t i;
+
+    if (a->count != b->count) {
+        return 0;
+    }
+    for (i = 0; i < a->count; i++) {
+        if (!link_context_set_contains_topology(b, &a->links[i])) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static void log_served_records(const struct config *cfg, const struct service_record_set *snapshot_records,
@@ -3741,9 +3955,24 @@ static int open_dualstack_mdns_sockets(int shared_bind,
     }
     if (need_ipv4) {
         out->ipv4_fd = open_bound_mdns_socket(shared_bind, log_bind_errors);
-        if (out->ipv4_fd < 0 ||
-            configure_mdns_socket4_for_links(out->ipv4_fd, links, "runtime") != 0) {
+        if (out->ipv4_fd < 0) {
             ipv4_errno = errno;
+            g_last_ipv4_socket_errno = ipv4_errno;
+            fprintf(stderr,
+                    "warning: mdns runtime socket: IPv4 bind 0.0.0.0:%d failed: %s\n",
+                    MDNS_PORT,
+                    strerror(ipv4_errno));
+            disable_link_contexts_mdns_ipv4_transport(links);
+            compact_link_contexts_for_mdns_transport(links);
+            need_ipv4 = 0;
+            if (!need_ipv6) {
+                errno = ipv4_errno;
+                close_mdns_socket_pair(out);
+                return -1;
+            }
+        } else if (configure_mdns_socket4_for_links(out->ipv4_fd, links, "runtime") != 0) {
+            ipv4_errno = errno;
+            g_last_ipv4_socket_errno = ipv4_errno;
             if (out->ipv4_fd >= 0) {
                 clear_deferred_response_for_sockfd(out->ipv4_fd);
                 close(out->ipv4_fd);
@@ -3758,8 +3987,10 @@ static int open_dualstack_mdns_sockets(int shared_bind,
                 return -1;
             }
             fprintf(stderr,
-                    "warning: mdns runtime socket: IPv4 setup failed (%s); continuing with remaining mDNS transports\n",
+                    "warning: mdns runtime socket: IPv4 multicast setup failed after bind: %s; continuing with remaining mDNS transports\n",
                     strerror(ipv4_errno));
+        } else {
+            g_last_ipv4_socket_errno = 0;
         }
     }
     if (need_ipv6) {
@@ -3767,6 +3998,7 @@ static int open_dualstack_mdns_sockets(int shared_bind,
         if (out->ipv6_fd < 0 ||
             configure_mdns_socket6_for_links(out->ipv6_fd, links, "runtime") != 0) {
             ipv6_errno = errno;
+            g_last_ipv6_socket_errno = ipv6_errno;
             if (out->ipv6_fd >= 0) {
                 clear_deferred_response_for_sockfd(out->ipv6_fd);
                 close(out->ipv6_fd);
@@ -3783,6 +4015,8 @@ static int open_dualstack_mdns_sockets(int shared_bind,
             close_mdns_socket_pair(out);
             errno = ipv6_errno;
             return -1;
+        } else {
+            g_last_ipv6_socket_errno = 0;
         }
     }
     compact_link_contexts_for_mdns_transport(links);
@@ -3794,53 +4028,105 @@ static int open_dualstack_mdns_sockets(int shared_bind,
     return 0;
 }
 
+static int open_dualstack_mdns_sockets_for_desired(int shared_bind,
+                                                   const struct link_context_set *desired_links,
+                                                   struct link_context_set *active_links,
+                                                   int log_bind_errors,
+                                                   struct mdns_socket_pair *out,
+                                                   struct mdns_transport_status *status) {
+    int open_status;
+    struct link_context_set candidate_links;
+
+    candidate_links = *desired_links;
+    open_status = open_dualstack_mdns_sockets(shared_bind, &candidate_links, log_bind_errors, out);
+    if (open_status != 0) {
+        memset(active_links, 0, sizeof(*active_links));
+        mdns_transport_status_from_links(desired_links, active_links, out, status);
+        return -1;
+    }
+    *active_links = candidate_links;
+    mdns_transport_status_from_links(desired_links, active_links, out, status);
+    return mdns_transport_is_healthy(status) ? 0 : 1;
+}
+
 static int acquire_dualstack_mdns_sockets(int shared_bind,
-                                          struct link_context_set *links,
-                                          struct mdns_socket_pair *out) {
+                                          const struct link_context_set *desired_links,
+                                          struct link_context_set *active_links,
+                                          struct mdns_socket_pair *out,
+                                          struct mdns_transport_status *status) {
     static const unsigned int retry_delays_ms[TAKEOVER_RETRY_COUNT] = {0, 100, 200, 300, 400, 500};
     size_t i;
+    int acquire_status;
 
     for (i = 0; i < TAKEOVER_RETRY_COUNT; i++) {
         kill_mdnsresponder(SIGTERM);
         sleep_millis(retry_delays_ms[i]);
-        if (open_dualstack_mdns_sockets(shared_bind, links, 0, out) == 0) {
+        acquire_status = open_dualstack_mdns_sockets_for_desired(shared_bind, desired_links, active_links, 0, out, status);
+        if (acquire_status >= 0) {
             if (mdns_takeover_confirmed(shared_bind)) {
+                if (mdns_transport_is_healthy(status)) {
+                    fprintf(stderr,
+                            shared_bind
+                                ? "mDNS required transport shared bind established after SIGTERM + %ums\n"
+                                : "mDNS required transport takeover established after SIGTERM + %ums\n",
+                            retry_delays_ms[i]);
+                    return 0;
+                }
                 fprintf(stderr,
-                        shared_bind
-                            ? "mDNS dual-stack shared bind established after SIGTERM + %ums\n"
-                            : "mDNS dual-stack takeover established after SIGTERM + %ums\n",
+                        "mDNS transport degraded after SIGTERM + %ums; missing required ipv4=%d ipv6=%d, retrying takeover\n",
+                        retry_delays_ms[i],
+                        status->missing_required_ipv4,
+                        status->missing_required_ipv6);
+            } else {
+                fprintf(stderr, "mDNS sockets acquired after SIGTERM + %ums but Apple mDNSResponder is still alive; retrying\n",
                         retry_delays_ms[i]);
-                return 0;
             }
-            fprintf(stderr, "mDNS dual-stack sockets acquired after SIGTERM + %ums but Apple mDNSResponder is still alive; retrying\n",
-                    retry_delays_ms[i]);
             close_mdns_socket_pair(out);
+            memset(active_links, 0, sizeof(*active_links));
         }
     }
 
     for (i = 0; i < TAKEOVER_RETRY_COUNT; i++) {
         kill_mdnsresponder(SIGKILL);
         sleep_millis(retry_delays_ms[i]);
-        if (open_dualstack_mdns_sockets(shared_bind, links, 0, out) == 0) {
+        acquire_status = open_dualstack_mdns_sockets_for_desired(shared_bind, desired_links, active_links, 0, out, status);
+        if (acquire_status >= 0) {
             if (mdns_takeover_confirmed(shared_bind)) {
+                if (mdns_transport_is_healthy(status)) {
+                    fprintf(stderr,
+                            shared_bind
+                                ? "mDNS required transport shared bind established after SIGKILL + %ums\n"
+                                : "mDNS required transport takeover established after SIGKILL + %ums\n",
+                            retry_delays_ms[i]);
+                    return 0;
+                }
                 fprintf(stderr,
-                        shared_bind
-                            ? "mDNS dual-stack shared bind established after SIGKILL + %ums\n"
-                            : "mDNS dual-stack takeover established after SIGKILL + %ums\n",
+                        "mDNS transport degraded after SIGKILL + %ums; missing required ipv4=%d ipv6=%d, retrying takeover\n",
+                        retry_delays_ms[i],
+                        status->missing_required_ipv4,
+                        status->missing_required_ipv6);
+            } else {
+                fprintf(stderr, "mDNS sockets acquired after SIGKILL + %ums but Apple mDNSResponder is still alive; retrying\n",
                         retry_delays_ms[i]);
-                return 0;
             }
-            fprintf(stderr, "mDNS dual-stack sockets acquired after SIGKILL + %ums but Apple mDNSResponder is still alive; retrying\n",
-                    retry_delays_ms[i]);
             close_mdns_socket_pair(out);
+            memset(active_links, 0, sizeof(*active_links));
         }
     }
 
-    if (!shared_bind && mdnsresponder_is_alive()) {
-        fprintf(stderr, "mDNS dual-stack takeover failed: Apple mDNSResponder is still alive after retry ladder\n");
-    } else {
-        fprintf(stderr, "mDNS dual-stack takeover failed: could not acquire required UDP %d sockets\n", MDNS_PORT);
+    acquire_status = open_dualstack_mdns_sockets_for_desired(shared_bind, desired_links, active_links, 0, out, status);
+    if (acquire_status >= 0) {
+        if (mdns_transport_is_healthy(status)) {
+            fprintf(stderr, "mDNS required transport acquired after bounded takeover retry\n");
+            return 0;
+        }
+        fprintf(stderr,
+                "mDNS transport degraded after bounded takeover retry; serving remaining transports with missing required ipv4=%d ipv6=%d\n",
+                status->missing_required_ipv4,
+                status->missing_required_ipv6);
+        return 1;
     }
+    fprintf(stderr, "mDNS required transport takeover failed: could not acquire any usable UDP %d transport\n", MDNS_PORT);
     errno = EADDRINUSE;
     return -1;
 }
@@ -3917,6 +4203,7 @@ static void log_packet_send_failure_detail_any(const char *stage, const struct s
                                                int answers, int use_snapshot_records, int saved_errno) {
     char destbuf[96];
 
+    remember_last_send_failure(stage, saved_errno);
     format_sockaddr_addr(dest, destbuf, sizeof(destbuf));
     fprintf(stderr,
             "mdns packet send failure: stage=%s dest=%s packet_len=%lu answers=%d records=%s errno=%d (%s)\n",
@@ -3947,6 +4234,7 @@ static int send_dns_packet_any(const char *stage, int sockfd, const uint8_t *buf
         return -1;
     }
 
+    g_mdns_counters.responses_sent++;
     if (strcmp(stage, "query_response") == 0) {
         if (!logged_success_reply) {
             char destbuf[96];
@@ -5383,6 +5671,9 @@ static int handle_query_any(int sockfd,
     questions.count = qdcount;
 
     suppress_planned_known_answers(packet, packet_len, cursor, ancount, &planned);
+    if (planned.count > 0) {
+        g_mdns_counters.query_packets_matched++;
+    }
 
     if (flags & DNS_FLAG_TC) {
         if (defer_planned_response(sockfd,
@@ -5694,6 +5985,14 @@ static void send_link_announcement_pair(const struct mdns_socket_pair *sockets,
                                         int use_snapshot_records,
                                         const char *stage) {
     if (sockets->ipv4_fd >= 0 && link_context_has_mdns_ipv4_transport(link)) {
+        char sourcebuf[INET_ADDRSTRLEN];
+        uint32_t source_ipv4 = link_preferred_ipv4_source(link);
+        fprintf(stderr,
+                "mdns announce: stage=%s family=ipv4 iface=%s source=%s records=%s\n",
+                stage,
+                link->name,
+                source_ipv4 != 0 ? ipv4_to_string(source_ipv4, sourcebuf, sizeof(sourcebuf)) : "unknown",
+                use_snapshot_records ? "snapshot" : "generated");
         if (set_link_outbound_interface4(sockets->ipv4_fd, link) != 0 ||
             send_announcement(sockets->ipv4_fd, dest4, cfg, link, ttl, snapshot_records, use_snapshot_records) != 0) {
             char detail[160];
@@ -5703,6 +6002,12 @@ static void send_link_announcement_pair(const struct mdns_socket_pair *sockets,
     }
     if (sockets->ipv6_fd >= 0 && link_context_has_mdns_ipv6_transport(link)) {
         struct sockaddr_in6 scoped_dest6;
+        fprintf(stderr,
+                "mdns announce: stage=%s family=ipv6 iface=%s source_ifindex=%u records=%s\n",
+                stage,
+                link->name,
+                link->ifindex,
+                use_snapshot_records ? "snapshot" : "generated");
         scoped_mdns_dest6_for_link(&scoped_dest6, dest6, link);
         if (set_link_outbound_interface6(sockets->ipv6_fd, link) != 0 ||
             send_announcement_any(sockets->ipv6_fd,
@@ -5819,16 +6124,22 @@ static int prepare_runtime_mdns_sockets_for_links(int shared_bind,
         sockets->ipv4_fd = open_bound_mdns_socket(shared_bind, 1);
         if (sockets->ipv4_fd < 0) {
             ipv4_errno = errno;
+            g_last_ipv4_socket_errno = ipv4_errno;
+            fprintf(stderr,
+                    "warning: mdns runtime socket: IPv4 bind 0.0.0.0:%d failed: %s\n",
+                    MDNS_PORT,
+                    strerror(ipv4_errno));
             if (need_ipv6) {
                 fprintf(stderr,
-                        "warning: mdns runtime socket: IPv4 socket open failed (%s); continuing with remaining mDNS transports\n",
-                        strerror(ipv4_errno));
+                        "warning: mdns runtime socket: IPv4 transport unavailable after bind failure; continuing with remaining mDNS transports\n");
                 disable_link_contexts_mdns_ipv4_transport(new_links);
                 compact_link_contexts_for_mdns_transport(new_links);
                 need_ipv4 = 0;
             } else {
                 goto fail;
             }
+        } else {
+            g_last_ipv4_socket_errno = 0;
         }
         if (sockets->ipv4_fd >= 0) {
             opened_ipv4 = 1;
@@ -5838,6 +6149,7 @@ static int prepare_runtime_mdns_sockets_for_links(int shared_bind,
         sockets->ipv6_fd = open_bound_mdns_socket6(shared_bind, 1);
         if (sockets->ipv6_fd < 0) {
             ipv6_errno = errno;
+            g_last_ipv6_socket_errno = ipv6_errno;
             if (need_ipv4 && sockets->ipv4_fd >= 0) {
                 fprintf(stderr,
                         "warning: mdns runtime socket: IPv6 socket open failed (%s); continuing with remaining mDNS transports\n",
@@ -5848,6 +6160,8 @@ static int prepare_runtime_mdns_sockets_for_links(int shared_bind,
             } else {
                 goto fail;
             }
+        } else {
+            g_last_ipv6_socket_errno = 0;
         }
         if (sockets->ipv6_fd >= 0) {
             opened_ipv6 = 1;
@@ -5861,6 +6175,7 @@ static int prepare_runtime_mdns_sockets_for_links(int shared_bind,
                                          "runtime",
                                          &delta) != 0) {
         ipv4_errno = errno;
+        g_last_ipv4_socket_errno = ipv4_errno;
         if (ipv4_errno == EADDRNOTAVAIL && need_ipv6 && sockets->ipv6_fd >= 0) {
             fprintf(stderr,
                     "warning: mdns runtime socket: IPv4 membership update found no usable links; continuing with remaining mDNS transports\n");
@@ -5875,6 +6190,9 @@ static int prepare_runtime_mdns_sockets_for_links(int shared_bind,
             goto fail;
         }
     }
+    if (need_ipv4) {
+        g_last_ipv4_socket_errno = 0;
+    }
     if (need_ipv6 &&
         prepare_mdns_socket6_memberships(sockets->ipv6_fd,
                                          opened_ipv6 ? NULL : old_links,
@@ -5882,6 +6200,7 @@ static int prepare_runtime_mdns_sockets_for_links(int shared_bind,
                                          "runtime",
                                          &delta) != 0) {
         ipv6_errno = errno;
+        g_last_ipv6_socket_errno = ipv6_errno;
         if (need_ipv4 && sockets->ipv4_fd >= 0) {
             fprintf(stderr,
                     "warning: mdns runtime socket: IPv6 membership update failed (%s); continuing with remaining mDNS transports\n",
@@ -5896,6 +6215,9 @@ static int prepare_runtime_mdns_sockets_for_links(int shared_bind,
             return 0;
         }
         goto fail;
+    }
+    if (need_ipv6) {
+        g_last_ipv6_socket_errno = 0;
     }
     compact_link_contexts_for_mdns_transport(new_links);
     if (new_links->count == 0) {
@@ -5992,6 +6314,86 @@ static int apply_runtime_link_change(int shared_bind,
     return 0;
 }
 
+static int recover_runtime_link_change_with_takeover(int shared_bind,
+                                                     struct mdns_socket_pair *sockets,
+                                                     struct link_context_set *active_links,
+                                                     const struct link_context_set *desired_links,
+                                                     const struct sockaddr_in *dest4,
+                                                     const struct sockaddr_in6 *dest6,
+                                                     const struct config *cfg,
+                                                     const struct service_record_set *snapshot_records,
+                                                     int use_snapshot_records,
+                                                     struct mdns_transport_status *status) {
+    static const unsigned int retry_delays_ms[TAKEOVER_RETRY_COUNT] = {0, 100, 200, 300, 400, 500};
+    size_t i;
+
+    if (apply_runtime_link_change(shared_bind,
+                                  sockets,
+                                  active_links,
+                                  desired_links,
+                                  dest4,
+                                  dest6,
+                                  cfg,
+                                  snapshot_records,
+                                  use_snapshot_records) == 0) {
+        mdns_transport_status_from_links(desired_links, active_links, sockets, status);
+        if (mdns_transport_is_healthy(status)) {
+            return 0;
+        }
+    } else {
+        mdns_transport_status_from_links(desired_links, active_links, sockets, status);
+    }
+
+    for (i = 0; i < TAKEOVER_RETRY_COUNT; i++) {
+        kill_mdnsresponder(SIGTERM);
+        sleep_millis(retry_delays_ms[i]);
+        if (apply_runtime_link_change(shared_bind,
+                                      sockets,
+                                      active_links,
+                                      desired_links,
+                                      dest4,
+                                      dest6,
+                                      cfg,
+                                      snapshot_records,
+                                      use_snapshot_records) == 0) {
+            mdns_transport_status_from_links(desired_links, active_links, sockets, status);
+            if (mdns_transport_is_healthy(status)) {
+                fprintf(stderr, "mDNS runtime required transport recovered after SIGTERM + %ums\n",
+                        retry_delays_ms[i]);
+                return 0;
+            }
+        } else {
+            mdns_transport_status_from_links(desired_links, active_links, sockets, status);
+        }
+    }
+
+    for (i = 0; i < TAKEOVER_RETRY_COUNT; i++) {
+        kill_mdnsresponder(SIGKILL);
+        sleep_millis(retry_delays_ms[i]);
+        if (apply_runtime_link_change(shared_bind,
+                                      sockets,
+                                      active_links,
+                                      desired_links,
+                                      dest4,
+                                      dest6,
+                                      cfg,
+                                      snapshot_records,
+                                      use_snapshot_records) == 0) {
+            mdns_transport_status_from_links(desired_links, active_links, sockets, status);
+            if (mdns_transport_is_healthy(status)) {
+                fprintf(stderr, "mDNS runtime required transport recovered after SIGKILL + %ums\n",
+                        retry_delays_ms[i]);
+                return 0;
+            }
+        } else {
+            mdns_transport_status_from_links(desired_links, active_links, sockets, status);
+        }
+    }
+
+    mdns_transport_status_from_links(desired_links, active_links, sockets, status);
+    return mdns_transport_has_active_socket(status) ? 1 : -1;
+}
+
 static int open_mdns_socket(int shared_bind, int log_bind_errors, uint32_t ipv4_addr, const char *socket_role) {
     int sockfd;
 
@@ -6022,7 +6424,8 @@ int main(int argc, char **argv) {
     int print_smb_bind_interfaces = 0;
     int print_mdns_socket_families = 0;
     int auto_contexts_ready = 0;
-    struct link_context_set auto_links;
+    struct link_context_set desired_links;
+    struct link_context_set active_links;
     int capture_only = 0;
     int snapshot_capture_failed = 0;
     int snapshot_capture_skipped = 0;
@@ -6032,7 +6435,8 @@ int main(int argc, char **argv) {
 
     memset(&cfg, 0, sizeof(cfg));
     memset(&snapshot_records, 0, sizeof(snapshot_records));
-    memset(&auto_links, 0, sizeof(auto_links));
+    memset(&desired_links, 0, sizeof(desired_links));
+    memset(&active_links, 0, sizeof(active_links));
     strcpy(cfg.service_type, "_smb._tcp.local.");
     strcpy(cfg.adisk_service_type, "_adisk._tcp.local.");
     strcpy(cfg.adisk_disk_key, ADISK_DEFAULT_DISK_KEY);
@@ -6347,23 +6751,28 @@ int main(int argc, char **argv) {
 
     if (auto_ip) {
         time_t last_iface_poll;
+        time_t last_degraded_retry;
         struct mdns_socket_pair sockets;
+        struct mdns_transport_status transport_status;
 
         if (!auto_contexts_ready) {
-            if (wait_for_auto_advertise_link_contexts(&auto_links, "mdns runtime") != 0) {
+            if (wait_for_auto_advertise_link_contexts(&desired_links, "mdns runtime") != 0) {
                 return EXIT_AUTO_IP_UNAVAILABLE;
             }
             auto_contexts_ready = 1;
         }
-        log_link_contexts("mdns runtime auto-ip", &auto_links);
+        log_link_contexts("mdns runtime desired", &desired_links);
         sockets.ipv4_fd = -1;
         sockets.ipv6_fd = -1;
-        if (acquire_dualstack_mdns_sockets(shared_bind, &auto_links, &sockets) != 0) {
+        if (acquire_dualstack_mdns_sockets(shared_bind, &desired_links, &active_links, &sockets, &transport_status) < 0) {
             return EXIT_SOCKET_ACQUIRE_FAILED;
         }
+        log_link_contexts("mdns runtime active", &active_links);
+        log_mdns_transport_status("startup", &active_links, &transport_status);
 
         startup_burst_start_ms = monotonic_millis();
         last_iface_poll = time(NULL);
+        last_degraded_retry = time(NULL);
 
         while (!g_stop) {
             fd_set rfds;
@@ -6378,62 +6787,98 @@ int main(int argc, char **argv) {
                 struct link_context_set next_links;
                 memset(&next_links, 0, sizeof(next_links));
                 if (collect_usable_advertise_link_contexts_provider(&next_links, NULL) == 0 &&
-                    !link_context_sets_equal(&auto_links, &next_links)) {
+                    !link_context_sets_equal(&desired_links, &next_links)) {
                     struct link_context_set stabilized_links;
-                    fprintf(stderr, "mdns auto-ip: interface table changed; confirming after %ds stabilization\n",
+                    fprintf(stderr,
+                            link_context_topology_sets_equal(&desired_links, &next_links)
+                                ? "mdns desired transport state changed; confirming after %ds stabilization\n"
+                                : "mdns desired link topology changed; confirming after %ds stabilization\n",
                             AUTO_IP_STABILIZE_SECONDS);
-                    log_link_contexts("mdns auto-ip old", &auto_links);
-                    log_link_contexts("mdns auto-ip observed", &next_links);
+                    log_link_contexts("mdns desired old", &desired_links);
+                    log_link_contexts("mdns desired observed", &next_links);
                     sleep(AUTO_IP_STABILIZE_SECONDS);
                     memset(&stabilized_links, 0, sizeof(stabilized_links));
                     if (collect_usable_advertise_link_contexts_provider(&stabilized_links, NULL) == 0) {
-                        if (link_context_sets_equal(&auto_links, &stabilized_links)) {
-                            fprintf(stderr, "mdns auto-ip: observed interface change did not persist after stabilization\n");
+                        if (link_context_sets_equal(&desired_links, &stabilized_links)) {
+                            fprintf(stderr, "mdns desired link change did not persist after stabilization\n");
                         } else {
+                            desired_links = stabilized_links;
                             if (stabilized_links.count > 0) {
-                                log_link_contexts("mdns auto-ip stabilized", &stabilized_links);
-                                if (apply_runtime_link_change(shared_bind,
-                                                              &sockets,
-                                                              &auto_links,
-                                                              &stabilized_links,
-                                                              &mdns_dest,
-                                                              &mdns_dest6,
-                                                              &cfg,
-                                                              &snapshot_records,
-                                                              use_snapshot_records) != 0) {
-                                    fprintf(stderr, "mdns auto-ip: could not apply stabilized address links; keeping previous links until next poll\n");
+                                log_link_contexts("mdns desired stabilized", &desired_links);
+                                if (recover_runtime_link_change_with_takeover(shared_bind,
+                                                                              &sockets,
+                                                                              &active_links,
+                                                                              &desired_links,
+                                                                              &mdns_dest,
+                                                                              &mdns_dest6,
+                                                                              &cfg,
+                                                                              &snapshot_records,
+                                                                              use_snapshot_records,
+                                                                              &transport_status) < 0) {
+                                    fprintf(stderr, "mdns auto-ip: could not apply stabilized desired links; keeping existing active transport until next retry\n");
                                     last_iface_poll = time(NULL);
                                     continue;
                                 }
                             } else {
                                 fprintf(stderr, "mdns auto-ip: no usable address links after stabilization; sending goodbyes and waiting\n");
-                                send_link_goodbyes(&sockets, &auto_links, &mdns_dest, &mdns_dest6, &cfg, &snapshot_records, use_snapshot_records);
+                                send_link_goodbyes(&sockets, &active_links, &mdns_dest, &mdns_dest6, &cfg, &snapshot_records, use_snapshot_records);
                                 close_mdns_socket_pair(&sockets);
-                                memset(&auto_links, 0, sizeof(auto_links));
-                                if (wait_for_auto_advertise_link_contexts(&stabilized_links, "mdns runtime") != 0) {
+                                memset(&active_links, 0, sizeof(active_links));
+                                memset(&desired_links, 0, sizeof(desired_links));
+                                if (wait_for_auto_advertise_link_contexts(&desired_links, "mdns runtime") != 0) {
                                     break;
                                 }
-                                if (acquire_dualstack_mdns_sockets(shared_bind, &stabilized_links, &sockets) != 0) {
+                                if (acquire_dualstack_mdns_sockets(shared_bind, &desired_links, &active_links, &sockets, &transport_status) < 0) {
                                     fprintf(stderr, "mdns auto-ip: usable address links returned but sockets could not be acquired\n");
                                     last_iface_poll = time(NULL);
                                     continue;
                                 }
-                                auto_links = stabilized_links;
                             }
-                            log_link_contexts("mdns auto-ip active", &auto_links);
+                            log_link_contexts("mdns auto-ip active", &active_links);
+                            log_mdns_transport_status("link_change", &active_links, &transport_status);
+                            fprintf(stderr, "mdns auto-ip: re-announcing after link change\n");
                             startup_burst_start_ms = monotonic_millis();
                             startup_burst_index = 0;
+                            last_degraded_retry = time(NULL);
                         }
                     }
                 }
                 last_iface_poll = time(NULL);
             }
 
+            mdns_transport_status_from_links(&desired_links, &active_links, &sockets, &transport_status);
+            if (mdns_transport_missing_required(&transport_status) &&
+                time(NULL) - last_degraded_retry >= MDNS_DEGRADED_RETRY_SECONDS) {
+                fprintf(stderr,
+                        "mdns desired transport state changed: retrying missing required transports ipv4=%d ipv6=%d\n",
+                        transport_status.missing_required_ipv4,
+                        transport_status.missing_required_ipv6);
+                if (recover_runtime_link_change_with_takeover(shared_bind,
+                                                              &sockets,
+                                                              &active_links,
+                                                              &desired_links,
+                                                              &mdns_dest,
+                                                              &mdns_dest6,
+                                                              &cfg,
+                                                              &snapshot_records,
+                                                              use_snapshot_records,
+                                                              &transport_status) >= 0) {
+                    log_link_contexts("mdns auto-ip active", &active_links);
+                    log_mdns_transport_status("degraded_retry", &active_links, &transport_status);
+                    fprintf(stderr, "mdns auto-ip: re-announcing after degraded transport retry\n");
+                    startup_burst_start_ms = monotonic_millis();
+                    startup_burst_index = 0;
+                } else {
+                    log_mdns_transport_status("degraded_retry_failed", &active_links, &transport_status);
+                }
+                last_degraded_retry = time(NULL);
+            }
+
             now_ms = monotonic_millis();
             (void)flush_deferred_response_if_due(now_ms);
             while (startup_burst_index < STARTUP_BURST_COUNT &&
                    now_ms - startup_burst_start_ms >= (long long)g_startup_burst_offsets_ms[startup_burst_index]) {
-                announce_all_links(&sockets, &auto_links, &mdns_dest, &mdns_dest6, &cfg, &snapshot_records, use_snapshot_records, "startup_announce");
+                announce_all_links(&sockets, &active_links, &mdns_dest, &mdns_dest6, &cfg, &snapshot_records, use_snapshot_records, "startup_announce");
                 startup_burst_index++;
                 now_ms = monotonic_millis();
             }
@@ -6465,7 +6910,12 @@ int main(int argc, char **argv) {
             tv.tv_usec = (suseconds_t)((wait_ms % 1000) * 1000);
 
             {
-                int selected = maxfd >= 0 ? select(maxfd + 1, &rfds, NULL, NULL, &tv) : -1;
+                int selected;
+                if (maxfd < 0) {
+                    sleep_millis(1000);
+                    continue;
+                }
+                selected = select(maxfd + 1, &rfds, NULL, NULL, &tv);
                 if (selected < 0) {
                     if (errno == EINTR) {
                         continue;
@@ -6478,7 +6928,8 @@ int main(int argc, char **argv) {
                     socklen_t src_len = sizeof(src);
                     ssize_t nread = recvfrom(sockets.ipv4_fd, packet, sizeof(packet), 0, (struct sockaddr *)&src, &src_len);
                     if (nread > 0) {
-                        const struct link_context *link = select_response_link_ipv4(&auto_links, &src);
+                        const struct link_context *link = select_response_link_ipv4(&active_links, &src);
+                        g_mdns_counters.ipv4_packets_received++;
                         if (link != NULL &&
                             (set_link_outbound_interface4_for_peer(sockets.ipv4_fd, link, src.sin_addr.s_addr) != 0 ||
                              handle_query(sockets.ipv4_fd, packet, (size_t)nread, &mdns_dest, &src, &cfg, link, &snapshot_records, use_snapshot_records) != 0)) {
@@ -6488,6 +6939,7 @@ int main(int argc, char **argv) {
                                      (long)nread, inet_ntoa(src.sin_addr), (unsigned int)ntohs(src.sin_port));
                             log_send_failure("query_response", &mdns_dest, use_snapshot_records, detail);
                         }
+                        log_mdns_counters("ipv4_packet");
                     }
                 }
                 if (selected > 0 && sockets.ipv6_fd >= 0 && FD_ISSET(sockets.ipv6_fd, &rfds)) {
@@ -6495,7 +6947,8 @@ int main(int argc, char **argv) {
                     socklen_t src6_len = sizeof(src6);
                     ssize_t nread = recvfrom(sockets.ipv6_fd, packet, sizeof(packet), 0, (struct sockaddr *)&src6, &src6_len);
                     if (nread > 0) {
-                        const struct link_context *link = select_response_link_ipv6(&auto_links, &src6);
+                        const struct link_context *link = select_response_link_ipv6(&active_links, &src6);
+                        g_mdns_counters.ipv6_packets_received++;
                         if (link != NULL) {
                             struct sockaddr_in6 scoped_dest6;
                             int query_status;
@@ -6525,13 +6978,14 @@ int main(int argc, char **argv) {
                                         srcbuf);
                             }
                         }
+                        log_mdns_counters("ipv6_packet");
                     }
                 }
             }
 
         }
 
-        send_link_goodbyes(&sockets, &auto_links, &mdns_dest, &mdns_dest6, &cfg, &snapshot_records, use_snapshot_records);
+        send_link_goodbyes(&sockets, &active_links, &mdns_dest, &mdns_dest6, &cfg, &snapshot_records, use_snapshot_records);
         close_mdns_socket_pair(&sockets);
         return 0;
     }

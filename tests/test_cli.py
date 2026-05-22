@@ -3928,7 +3928,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("<truncated", telemetry_error)
         self.assertNotIn(raw_stdout, telemetry_error)
 
-    def test_doctor_failure_telemetry_identifies_zeroconf_native_dns_sd_false_negative(self) -> None:
+    def test_doctor_failure_telemetry_reports_empty_zeroconf_without_dns_sd_diagnosis(self) -> None:
         output = io.StringIO()
         results = [doctor.CheckResult("FAIL", "no discovered _smb._tcp instance matched expected device instance 'Home'")]
 
@@ -3941,6 +3941,8 @@ class CliTests(unittest.TestCase):
             kwargs["debug_fields"]["bonjour_zeroconf"] = {"instance_count": 0, "service_event_count": 0, "ptr_record_count": 0}
             kwargs["debug_fields"]["bonjour_native_dns_sd"] = {
                 "status": "ok",
+                "timeout_sec": 6.0,
+                "elapsed_sec": 6.125,
                 "browses": [
                     {
                         "service_type": "_smb._tcp",
@@ -3959,11 +3961,26 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         telemetry_error = self._telemetry_client.emit.call_args_list[-1].kwargs["error"]
         self.assertIn("Discovery context:", telemetry_error)
-        self.assertIn("INFO Python zeroconf discovered 0 Bonjour instances during doctor", telemetry_error)
-        self.assertIn("INFO native dns-sd discovered expected _smb._tcp instance 'Home'", telemetry_error)
-        self.assertIn("INFO likely doctor false negative", telemetry_error)
+        self.assertIn(
+            "INFO expected Bonjour identity: instance_name='Home' host_label='home' target_ip='10.0.0.2'",
+            telemetry_error,
+        )
+        self.assertIn(
+            "INFO Python zeroconf discovered 0 Bonjour instances during doctor; "
+            "mDNS advertiser/discovery path needs investigation",
+            telemetry_error,
+        )
+        self.assertIn(
+            "INFO Python zeroconf diagnostics: instance_count=0 service_event_count=0 ptr_record_count=0",
+            telemetry_error,
+        )
+        self.assertIn("INFO native dns-sd diagnostics: status=ok timeout_sec=6.0 elapsed_sec=6.125", telemetry_error)
+        self.assertIn("INFO native dns-sd observed _smb._tcp instances: 'Home'", telemetry_error)
+        self.assertIn("INFO native dns-sd observed expected _smb._tcp instance: yes", telemetry_error)
+        self.assertNotIn("INFO native dns-sd discovered expected _smb._tcp instance", telemetry_error)
+        self.assertNotIn("likely doctor false negative", telemetry_error)
 
-    def test_doctor_error_does_not_report_false_negative_when_native_dns_sd_only_saw_other_instances(self) -> None:
+    def test_doctor_error_reports_native_dns_sd_as_telemetry_only(self) -> None:
         results = [
             doctor.CheckResult(
                 "FAIL",
@@ -3976,6 +3993,7 @@ class CliTests(unittest.TestCase):
                 "bonjour_expected": {"instance_name": "Home"},
                 "bonjour_zeroconf": {"instance_count": 0},
                 "bonjour_native_dns_sd": {
+                    "status": "ok",
                     "browses": [
                         {
                             "service_type": "_smb._tcp",
@@ -3989,8 +4007,137 @@ class CliTests(unittest.TestCase):
         )
         self.assertIsNotNone(error)
         assert error is not None
-        self.assertNotIn("Discovery context:", error)
+        self.assertIn("Discovery context:", error)
+        self.assertIn("INFO expected Bonjour identity: instance_name='Home'", error)
+        self.assertIn("INFO Python zeroconf discovered 0 Bonjour instances during doctor", error)
+        self.assertIn("INFO native dns-sd diagnostics: status=ok", error)
+        self.assertIn("INFO native dns-sd observed _smb._tcp instances: 'Kitchen'", error)
+        self.assertIn("INFO native dns-sd observed expected _smb._tcp instance: no", error)
+        self.assertNotIn("INFO native dns-sd discovered expected _smb._tcp instance", error)
         self.assertNotIn("likely doctor false negative", error)
+
+    def test_doctor_error_preserves_expected_instance_from_failure_message_for_telemetry(self) -> None:
+        results = [
+            doctor.CheckResult(
+                "FAIL",
+                "no discovered _smb._tcp instance matched expected device instance 'Home'",
+            )
+        ]
+        error = doctor.build_doctor_error(
+            results,
+            {
+                "bonjour_zeroconf": {"instance_count": 0},
+                "bonjour_native_dns_sd": {
+                    "status": "ok",
+                    "browses": [
+                        {
+                            "service_type": "_smb._tcp",
+                            "events": [
+                                {"service_type": "_smb._tcp", "action": "Add", "name": "Home"},
+                            ],
+                        }
+                    ],
+                },
+            },
+        )
+        self.assertIsNotNone(error)
+        assert error is not None
+        self.assertIn("INFO expected Bonjour identity: instance_name='Home'", error)
+        self.assertIn("INFO native dns-sd observed expected _smb._tcp instance: yes", error)
+        self.assertNotIn("likely doctor false negative", error)
+
+    def test_doctor_error_reports_native_dns_sd_diagnostic_errors_as_telemetry(self) -> None:
+        results = [
+            doctor.CheckResult(
+                "FAIL",
+                "no discovered _smb._tcp instance matched expected device instance 'Home'",
+            )
+        ]
+        error = doctor.build_doctor_error(
+            results,
+            {
+                "bonjour_zeroconf": {"instance_count": 0},
+                "bonjour_native_dns_sd_error": "RuntimeError: dns-sd broke",
+            },
+        )
+        self.assertIsNotNone(error)
+        assert error is not None
+        self.assertIn("INFO native dns-sd diagnostic error: RuntimeError: dns-sd broke", error)
+        self.assertNotIn("likely doctor false negative", error)
+
+    def test_doctor_error_reports_unicast_smb_when_bonjour_is_empty(self) -> None:
+        results = [
+            doctor.CheckResult(
+                "FAIL",
+                "no discovered _smb._tcp instance matched expected device instance 'Home'",
+            )
+        ]
+        error = doctor.build_doctor_error(
+            results,
+            {
+                "bonjour_zeroconf": {"instance_count": 0},
+                "authenticated_smb_listing_attempts": [
+                    {
+                        "server": "home.local",
+                        "outcome": "error",
+                        "expected_share_found": False,
+                    },
+                    {
+                        "server": "Home.IoT",
+                        "outcome": "pass",
+                        "expected_share_found": True,
+                    },
+                ],
+                "remote_mdns_log_tail": (
+                    "mdns transport active: reason=startup status=degraded ipv4=off ipv6=bridge0 "
+                    "required_ipv4=1 required_ipv6=0 missing_required_ipv4=1 missing_required_ipv6=0 "
+                    "last_ipv4_errno=48 last_ipv6_errno=0\n"
+                    "mdns counters: reason=ipv6_packet ipv4_rx=0 ipv6_rx=3 query_matches=2 "
+                    "responses_sent=2 send_failures=1 last_send_failure=query_response errno=65 (No route to host)\n"
+                ),
+            },
+        )
+        self.assertIsNotNone(error)
+        assert error is not None
+        self.assertIn("Discovery context:", error)
+        self.assertIn("INFO SMB works over unicast, but Bonjour discovered no matching _smb._tcp records", error)
+        self.assertIn(
+            "INFO mdns-advertiser transport state: reason=startup status=degraded ipv4=off ipv6=bridge0 "
+            "required_ipv4=1 required_ipv6=0 missing_required_ipv4=1 missing_required_ipv6=0 "
+            "last_ipv4_errno=48 last_ipv6_errno=0",
+            error,
+        )
+        self.assertIn(
+            "INFO mdns-advertiser counters: reason=ipv6_packet ipv4_rx=0 ipv6_rx=3 query_matches=2 "
+            "responses_sent=2 send_failures=1 last_send_failure=query_response errno=65 (No route to host)",
+            error,
+        )
+        self.assertNotIn("INFO mdns-advertiser IPv4 transport active:", error)
+
+    def test_doctor_error_ignores_legacy_mdns_transport_logs(self) -> None:
+        results = [
+            doctor.CheckResult(
+                "FAIL",
+                "no discovered _smb._tcp instance matched expected device instance 'Home'",
+            )
+        ]
+        error = doctor.build_doctor_error(
+            results,
+            {
+                "bonjour_zeroconf": {"instance_count": 0},
+                "authenticated_smb_listing_attempts": [
+                    {"outcome": "pass", "expected_share_found": True},
+                ],
+                "remote_mdns_log_tail": (
+                    "mdns auto-ip active: link[0] iface=bridge0 mdns_ipv4=1 mdns_ipv6=1\n"
+                ),
+            },
+        )
+        self.assertIsNotNone(error)
+        assert error is not None
+        self.assertIn("INFO SMB works over unicast, but Bonjour discovered no matching _smb._tcp records", error)
+        self.assertNotIn("INFO mdns-advertiser transport state:", error)
+        self.assertNotIn("INFO mdns-advertiser IPv4 transport active:", error)
 
     def test_doctor_failure_telemetry_includes_derived_mdns_boot_context(self) -> None:
         output = io.StringIO()

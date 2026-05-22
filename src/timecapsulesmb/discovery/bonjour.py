@@ -551,17 +551,87 @@ def resolved_service_from_info(stype: str, info: Any) -> BonjourResolvedService:
     )
 
 
-def _open_zeroconf(interface_ip: str | None = None) -> Any:
+def _ip_text(value: object) -> str | None:
+    if isinstance(value, tuple):
+        value = value[0] if value else ""
+    if not isinstance(value, str):
+        return None
+    try:
+        return str(ipaddress.ip_address(value))
+    except Exception:
+        return None
+
+
+def _adapter_ipv6_addresses_for_ipv4(source_ipv4: str) -> list[str]:
+    try:
+        import ifaddr
+    except Exception:
+        return []
+
+    try:
+        adapters = ifaddr.get_adapters()
+    except Exception:
+        return []
+
+    for adapter in adapters:
+        adapter_has_source_ipv4 = False
+        ipv6_addresses: list[str] = []
+        for adapter_ip in getattr(adapter, "ips", []):
+            ip_text = _ip_text(getattr(adapter_ip, "ip", None))
+            if not ip_text:
+                continue
+            try:
+                ip_obj = ipaddress.ip_address(ip_text)
+            except Exception:
+                continue
+            if ip_obj.version == 4 and ip_text == source_ipv4:
+                adapter_has_source_ipv4 = True
+            elif ip_obj.version == 6 and not ip_obj.is_loopback and ip_text not in ipv6_addresses:
+                ipv6_addresses.append(ip_text)
+        if adapter_has_source_ipv4:
+            return ipv6_addresses
+    return []
+
+
+def _zeroconf_interfaces_for_target(target_ip: str | None) -> list[str] | None:
+    source_ipv4 = _source_ipv4_for_target(target_ip)
+    if not source_ipv4:
+        return None
+    return [source_ipv4, *_adapter_ipv6_addresses_for_ipv4(source_ipv4)]
+
+
+def _zeroconf_ip_version(IPVersion: Any) -> tuple[Any, str]:
+    try:
+        return IPVersion.All, "All"
+    except AttributeError:
+        return IPVersion.V4Only, "V4Only"
+
+
+def _zeroconf_ip_version_name() -> str:
+    try:
+        from zeroconf import IPVersion
+    except Exception:
+        return "All"
+    _ip_version, ip_version_name = _zeroconf_ip_version(IPVersion)
+    return ip_version_name
+
+
+def _format_zeroconf_interfaces(interfaces: Sequence[str] | None) -> str:
+    if not interfaces:
+        return "All"
+    return ",".join(interfaces)
+
+
+def _open_zeroconf(interfaces: Sequence[str] | None = None) -> Any:
     try:
         from zeroconf import IPVersion, Zeroconf
     except Exception as e:
         raise RuntimeError(missing_dependency_message("zeroconf", e)) from e
 
-    # Our Time Capsule targets advertise over IPv4, and zeroconf 0.147.x can
-    # miss _smb._tcp browse results on macOS when run in dual-stack mode.
-    if interface_ip:
-        return Zeroconf(interfaces=[interface_ip], ip_version=IPVersion.V4Only)
-    return Zeroconf(ip_version=IPVersion.V4Only)
+    ip_version, _ip_version_name = _zeroconf_ip_version(IPVersion)
+    if interfaces:
+        return Zeroconf(interfaces=list(interfaces), ip_version=ip_version)
+    return Zeroconf(ip_version=ip_version)
 
 
 def resolve_service_instance(
@@ -575,8 +645,8 @@ def resolve_service_instance(
     except Exception as e:
         raise RuntimeError(missing_dependency_message("zeroconf", e)) from e
 
-    interface_ip = _source_ipv4_for_target(target_ip)
-    zc = _open_zeroconf(interface_ip)
+    interfaces = _zeroconf_interfaces_for_target(target_ip)
+    zc = _open_zeroconf(interfaces)
     try:
         info = zc.get_service_info(instance.service_type, instance.fullname, timeout_ms, question_type=DNSQuestionType.QM)
     finally:
@@ -605,8 +675,8 @@ def discover_snapshot_detailed(
 ) -> tuple[BonjourDiscoverySnapshot, BonjourDiscoveryDiagnostics]:
     service_types = _matching_service_types(service)
     start = time.monotonic()
-    zeroconf_interface = _source_ipv4_for_target(target_ip)
-    zc = _open_zeroconf(zeroconf_interface)
+    zeroconf_interfaces = _zeroconf_interfaces_for_target(target_ip)
+    zc = _open_zeroconf(zeroconf_interfaces)
     ptr_observer: PtrRecordObserver | None = None
     ptr_records: list[BonjourPtrRecordObservation] = []
     ptr_record_error: str | None = None
@@ -647,7 +717,7 @@ def discover_snapshot_detailed(
         service_types=list(service_types),
         timeout_sec=timeout,
         elapsed_sec=round(time.monotonic() - start, 3),
-        ip_version="V4Only",
+        ip_version=_zeroconf_ip_version_name(),
         instance_count=len(sorted_instances),
         resolved_count=len(sorted_records),
         pending_count=collector.pending_count(),
@@ -657,7 +727,7 @@ def discover_snapshot_detailed(
         resolve_success_count=collector.resolve_success_count,
         resolve_error_count=collector.resolve_error_count,
         zeroconf_version=_installed_zeroconf_version(),
-        zeroconf_interfaces=zeroconf_interface or "All",
+        zeroconf_interfaces=_format_zeroconf_interfaces(zeroconf_interfaces),
         zeroconf_apple_p2p=False,
         instances=sorted_instances,
         resolved=sorted_records,

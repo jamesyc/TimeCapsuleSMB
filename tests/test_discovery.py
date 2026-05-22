@@ -35,9 +35,14 @@ from timecapsulesmb.discovery.bonjour import (
     record_has_service,
     _open_zeroconf,
     _source_ipv4_for_target,
+    _zeroconf_interfaces_for_target,
     resolve_service_instance,
 )
 from timecapsulesmb.cli.discover import run_cli  # noqa: E402
+
+
+def make_fake_ip_version() -> types.SimpleNamespace:
+    return types.SimpleNamespace(V4Only=object(), All=object())
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -61,13 +66,12 @@ class DiscoveryTests(unittest.TestCase):
         record = Discovered(name="TC", hostname="", ipv4=[], ipv6=[])
         self.assertIsNone(discovered_record_root_host(record))
 
-    def test_discover_uses_ipv4_only_zeroconf(self) -> None:
+    def test_discover_uses_dual_stack_zeroconf(self) -> None:
         fake_zc = mock.Mock()
         fake_collector = mock.Mock()
         fake_collector.results.return_value = []
         fake_collector.service_instances.return_value = []
-        fake_ip_version = mock.Mock()
-        fake_ip_version.V4Only = object()
+        fake_ip_version = make_fake_ip_version()
         fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
 
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
@@ -75,7 +79,7 @@ class DiscoveryTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.discovery.bonjour.time.sleep"):
                     discover_resolved_records(timeout=0)
 
-        fake_zeroconf_module.Zeroconf.assert_called_once_with(ip_version=fake_ip_version.V4Only)
+        fake_zeroconf_module.Zeroconf.assert_called_once_with(ip_version=fake_ip_version.All)
         fake_collector.start.assert_called_once()
         fake_collector.resolve_pending.assert_called_once_with(timeout_ms=3000)
         fake_zc.close.assert_called_once()
@@ -95,8 +99,7 @@ class DiscoveryTests(unittest.TestCase):
         fake_ptr_observer = mock.Mock()
         fake_ptr_observer.observations.return_value = []
         fake_ptr_observer.error = None
-        fake_ip_version = mock.Mock()
-        fake_ip_version.V4Only = object()
+        fake_ip_version = make_fake_ip_version()
         fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
 
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
@@ -107,7 +110,7 @@ class DiscoveryTests(unittest.TestCase):
                             _snapshot, diagnostics = discover_snapshot_detailed(SMB_SERVICE, timeout=0, target_ip="10.0.1.77")
 
         source_mock.assert_called_once_with("10.0.1.77")
-        fake_zeroconf_module.Zeroconf.assert_called_once_with(interfaces=["10.0.1.42"], ip_version=fake_ip_version.V4Only)
+        fake_zeroconf_module.Zeroconf.assert_called_once_with(interfaces=["10.0.1.42"], ip_version=fake_ip_version.All)
         self.assertEqual(diagnostics.zeroconf_interfaces, "10.0.1.42")
 
     def test_discover_falls_back_to_all_interfaces_when_target_interface_is_unknown(self) -> None:
@@ -125,8 +128,7 @@ class DiscoveryTests(unittest.TestCase):
         fake_ptr_observer = mock.Mock()
         fake_ptr_observer.observations.return_value = []
         fake_ptr_observer.error = None
-        fake_ip_version = mock.Mock()
-        fake_ip_version.V4Only = object()
+        fake_ip_version = make_fake_ip_version()
         fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
 
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
@@ -136,8 +138,28 @@ class DiscoveryTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.discovery.bonjour.time.sleep"):
                             _snapshot, diagnostics = discover_snapshot_detailed(SMB_SERVICE, timeout=0, target_ip="10.0.1.77")
 
-        fake_zeroconf_module.Zeroconf.assert_called_once_with(ip_version=fake_ip_version.V4Only)
+        fake_zeroconf_module.Zeroconf.assert_called_once_with(ip_version=fake_ip_version.All)
         self.assertEqual(diagnostics.zeroconf_interfaces, "All")
+
+    def test_target_interfaces_include_ipv6_addresses_from_selected_adapter(self) -> None:
+        class FakeAdapterIP:
+            def __init__(self, ip: object) -> None:
+                self.ip = ip
+
+        class FakeAdapter:
+            ips = [
+                FakeAdapterIP("192.168.50.9"),
+                FakeAdapterIP(("fe80::1234", 0, 4)),
+                FakeAdapterIP(("fd00::1234", 0, 4)),
+            ]
+
+        fake_ifaddr = types.SimpleNamespace(get_adapters=mock.Mock(return_value=[FakeAdapter()]))
+
+        with mock.patch.dict(sys.modules, {"ifaddr": fake_ifaddr}):
+            with mock.patch("timecapsulesmb.discovery.bonjour._source_ipv4_for_target", return_value="192.168.50.9"):
+                interfaces = _zeroconf_interfaces_for_target("192.168.50.77")
+
+        self.assertEqual(interfaces, ["192.168.50.9", "fe80::1234", "fd00::1234"])
 
     def test_source_ipv4_for_target_uses_udp_route_selection(self) -> None:
         fake_sock = mock.Mock()
@@ -180,8 +202,7 @@ class DiscoveryTests(unittest.TestCase):
         fake_collector = mock.Mock()
         fake_collector.results.return_value = []
         fake_collector.service_instances.return_value = []
-        fake_ip_version = mock.Mock()
-        fake_ip_version.V4Only = object()
+        fake_ip_version = make_fake_ip_version()
         fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
 
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
@@ -227,8 +248,7 @@ class DiscoveryTests(unittest.TestCase):
         ptr_observer_calls = mock.Mock()
         ptr_observer_calls.attach_mock(fake_ptr_observer.stop, "stop")
         ptr_observer_calls.attach_mock(fake_ptr_observer.observations, "observations")
-        fake_ip_version = mock.Mock()
-        fake_ip_version.V4Only = object()
+        fake_ip_version = make_fake_ip_version()
         fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
 
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
@@ -249,7 +269,7 @@ class DiscoveryTests(unittest.TestCase):
         ])
         self.assertEqual(diagnostics.service, "_smb")
         self.assertEqual(diagnostics.service_types, ["_smb._tcp.local."])
-        self.assertEqual(diagnostics.ip_version, "V4Only")
+        self.assertEqual(diagnostics.ip_version, "All")
         self.assertEqual(diagnostics.elapsed_sec, 6.125)
         self.assertEqual(diagnostics.instance_count, 1)
         self.assertEqual(diagnostics.resolved_count, 1)
@@ -268,8 +288,7 @@ class DiscoveryTests(unittest.TestCase):
         instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
         fake_collector.results.return_value = []
         fake_collector.service_instances.return_value = [instance]
-        fake_ip_version = mock.Mock()
-        fake_ip_version.V4Only = object()
+        fake_ip_version = make_fake_ip_version()
         fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
 
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
@@ -296,8 +315,7 @@ class DiscoveryTests(unittest.TestCase):
 
         fake_zc = mock.Mock()
         fake_zc.get_service_info.return_value = FakeInfo()
-        fake_ip_version = mock.Mock()
-        fake_ip_version.V4Only = object()
+        fake_ip_version = make_fake_ip_version()
         fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version, DNSQuestionType=FakeQuestionType)
         instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
 
@@ -323,8 +341,7 @@ class DiscoveryTests(unittest.TestCase):
 
         fake_zc = mock.Mock()
         fake_zc.get_service_info.return_value = None
-        fake_ip_version = mock.Mock()
-        fake_ip_version.V4Only = object()
+        fake_ip_version = make_fake_ip_version()
         fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version, DNSQuestionType=FakeQuestionType)
         instance = BonjourServiceInstance("_smb._tcp.local.", "Home", "Home._smb._tcp.local.")
 
@@ -333,7 +350,7 @@ class DiscoveryTests(unittest.TestCase):
                 record = resolve_service_instance(instance, timeout_ms=750, target_ip="10.0.1.77")
 
         self.assertIsNone(record)
-        fake_zeroconf_module.Zeroconf.assert_called_once_with(interfaces=["10.0.1.42"], ip_version=fake_ip_version.V4Only)
+        fake_zeroconf_module.Zeroconf.assert_called_once_with(interfaces=["10.0.1.42"], ip_version=fake_ip_version.All)
         fake_zc.get_service_info.assert_called_once_with(
             "_smb._tcp.local.",
             "Home._smb._tcp.local.",
@@ -680,8 +697,7 @@ class DiscoveryTests(unittest.TestCase):
         ]
         fake_collector.service_instances.return_value = []
         fake_zc = mock.Mock()
-        fake_ip_version = mock.Mock()
-        fake_ip_version.V4Only = object()
+        fake_ip_version = make_fake_ip_version()
         fake_zeroconf_module = mock.Mock(Zeroconf=mock.Mock(return_value=fake_zc), IPVersion=fake_ip_version)
 
         with mock.patch.dict(sys.modules, {"zeroconf": fake_zeroconf_module}):
