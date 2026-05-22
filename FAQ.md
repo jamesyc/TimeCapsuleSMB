@@ -81,7 +81,7 @@ Time Machine network backups have known macOS-side regressions on macOS 26.4.x a
 
 See this [Cult of Mac report](https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups) and this later [MacObserver report about a 26.5 fix](https://www.macobserver.com/news/macos-tahoe-26-4-breaks-time-machine-users-report-widespread-failures/) for context.  Either update to macOS 26.5 or newer, or try the plist fix here: https://www.cultofmac.com/news/macos-tahoe-26-4-breaks-time-machine-network-backups
 
-**Workaround:** Macs running these versions can still use the device as a standard Samba network share in Finder, but Time Machine backups will not work properly. You can also try the workaround mentioned in the article. See also: https://community.qnap.com/t/time-machine-backup-fails-with-authentication-error-80-on-tbs-h574tx/5613/9
+**Workaround:** Macs running these versions can still use the device as a standard Samba network share in Finder, but Time Machine backups will not work properly. You can also try the workaround mentioned in the article. See also this [community discussion regarding Error 80](https://community.qnap.com/t/time-machine-backup-fails-with-authentication-error-80-on-tbs-h574tx/5613/9).
 
 #### If you have the OSStatus Error 80
 
