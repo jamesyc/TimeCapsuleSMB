@@ -275,6 +275,27 @@ EOF
     return 1
 }
 
+runtime_startup_script_present() {
+    ps_out=$1
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        set -- $line
+        [ "$#" -ge 6 ] || continue
+        case "$3" in
+            Z*) continue ;;
+        esac
+        shift 5
+        for arg do
+            case "$arg" in
+                /mnt/Flash/rc.local|/mnt/Flash/start-samba.sh) return 0 ;;
+            esac
+        done
+    done <<EOF
+$ps_out
+EOF
+    return 1
+}
+
 capture_fstat_for_ucomm() {
     ps_out=$1
     ucomm=$2

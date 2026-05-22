@@ -25,7 +25,13 @@ from timecapsulesmb.cli import main as cli_main
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME, AppConfig, ConfigError, parse_env_file
 from timecapsulesmb.device.compat import DeviceCompatibility
-from timecapsulesmb.device.probe import ProbeResult, ProbedDeviceState
+from timecapsulesmb.device.probe import (
+    ManagedMdnsTakeoverProbeResult,
+    ManagedRuntimeProbeResult,
+    ManagedSmbdProbeResult,
+    ProbeResult,
+    ProbedDeviceState,
+)
 from timecapsulesmb.device.storage import MaStVolume, build_dry_run_payload_home
 from timecapsulesmb.discovery.bonjour import BonjourDiscoverySnapshot, BonjourResolvedService, BonjourServiceInstance
 from timecapsulesmb.integrations.acp import ACPAuthError
@@ -128,6 +134,20 @@ def unreachable_probed_state() -> ProbedDeviceState:
             elf_endianness="",
         ),
         compatibility=None,
+    )
+
+
+def managed_runtime_probe(ready: bool = True) -> ManagedRuntimeProbeResult:
+    status = "PASS" if ready else "FAIL"
+    detail = "managed runtime is ready" if ready else "managed runtime is not ready"
+    smbd = ManagedSmbdProbeResult(ready, detail, (f"{status}:managed smbd ready",))
+    mdns = ManagedMdnsTakeoverProbeResult(ready, detail, (f"{status}:managed mDNS takeover active",))
+    return ManagedRuntimeProbeResult(
+        ready=ready,
+        detail=detail,
+        smbd=smbd,
+        mdns=mdns,
+        lines=smbd.lines + mdns.lines,
     )
 
 
@@ -917,12 +937,13 @@ class AppApiTests(unittest.TestCase):
                                         with mock.patch("timecapsulesmb.app.ops.deploy.upload_deployment_payload") as upload:
                                             with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions"):
                                                 with mock.patch("timecapsulesmb.app.ops.deploy.flush_remote_filesystem_writes"):
-                                                    confirmed = dict(base_params)
-                                                    confirmed["confirmation_id"] = confirmation_id
-                                                    rc = service.run_api_request(
-                                                        {"operation": "deploy", "params": confirmed},
-                                                        second.sink,
-                                                    )
+                                                    with mock.patch("timecapsulesmb.app.ops.deploy.verify_managed_runtime", return_value=managed_runtime_probe()):
+                                                        confirmed = dict(base_params)
+                                                        confirmed["confirmation_id"] = confirmation_id
+                                                        rc = service.run_api_request(
+                                                            {"operation": "deploy", "params": confirmed},
+                                                            second.sink,
+                                                        )
 
         self.assertEqual(rc, 0)
         upload.assert_called_once()
@@ -949,7 +970,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(error["code"], "validation_failed")
         self.assertIn("mount_wait must be an integer", error["message"])
 
-    def test_deploy_no_reboot_uploads_and_skips_reboot_wait(self) -> None:
+    def test_deploy_no_reboot_uploads_and_activates_without_reboot_wait(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
         target = SimpleNamespace(connection=connection, probe_state=probed_state())
@@ -969,33 +990,37 @@ class AppApiTests(unittest.TestCase):
                                 with mock.patch("timecapsulesmb.app.ops.deploy.select_payload_home_with_diagnostics_conn", return_value=SimpleNamespace(payload_home=payload_home)):
                                     with mock.patch("timecapsulesmb.app.ops.deploy.verify_payload_home_conn", return_value=SimpleNamespace(ok=True, detail="ok")):
                                         with mock.patch("timecapsulesmb.app.ops.deploy.upload_deployment_payload") as upload:
-                                            with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions"):
+                                            with mock.patch("timecapsulesmb.app.ops.deploy.run_remote_actions") as remote_actions:
                                                 with mock.patch("timecapsulesmb.app.ops.deploy.flush_remote_filesystem_writes"):
                                                     with mock.patch("timecapsulesmb.app.ops.deploy.wait_for_ssh_state_conn") as wait:
-                                                        with mock.patch("timecapsulesmb.app.ops.deploy.render_flash_runtime_config", return_value="runtime\n") as render_runtime:
-                                                            rc = service.run_api_request(
-                                                                {
-                                                                    "operation": "deploy",
-                                                                    "params": {
-                                                                        "dry_run": False,
-                                                                        "no_reboot": True,
-                                                                        "confirm_deploy": True,
-                                                                        "internal_share_use_disk_root": False,
-                                                                        "any_protocol": False,
-                                                                        "debug_logging": False,
+                                                        with mock.patch("timecapsulesmb.app.ops.deploy.verify_managed_runtime", return_value=managed_runtime_probe()) as verify_runtime:
+                                                            with mock.patch("timecapsulesmb.app.ops.deploy.render_flash_runtime_config", return_value="runtime\n") as render_runtime:
+                                                                rc = service.run_api_request(
+                                                                    {
+                                                                        "operation": "deploy",
+                                                                        "params": {
+                                                                            "dry_run": False,
+                                                                            "no_reboot": True,
+                                                                            "confirm_deploy": True,
+                                                                            "internal_share_use_disk_root": False,
+                                                                            "any_protocol": False,
+                                                                            "debug_logging": False,
+                                                                        },
                                                                     },
-                                                                },
-                                                                collector.sink,
-                                                            )
+                                                                    collector.sink,
+                                                                )
 
         self.assertEqual(rc, 0)
         upload.assert_called_once()
+        self.assertEqual(remote_actions.call_count, 3)
         wait.assert_not_called()
+        verify_runtime.assert_called_once()
         render_runtime.assert_called_once()
         self.assertEqual(render_runtime.call_args.kwargs["internal_share_use_disk_root"], False)
         self.assertEqual(render_runtime.call_args.kwargs["any_protocol"], False)
         self.assertEqual(render_runtime.call_args.kwargs["debug_logging"], False)
         self.assertEqual(collector.events_of_type("result")[0]["payload"]["rebooted"], False)
+        self.assertEqual(collector.events_of_type("result")[0]["payload"]["verified"], True)
 
     def test_deploy_no_wait_requests_reboot_without_wait_or_runtime_verify(self) -> None:
         collector = CollectingSink()

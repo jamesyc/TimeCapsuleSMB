@@ -136,7 +136,7 @@ def deploy_result_payload(
         "payload_dir": payload_dir,
         "netbsd4": netbsd4,
         "payload_family": payload_family,
-        "requires_reboot": False if netbsd4 else bool(rebooted or reboot_requested),
+        "requires_reboot": bool(rebooted or reboot_requested),
         "summary": "deployment completed.",
     }
     if rebooted is not None:

@@ -33,6 +33,10 @@ from timecapsulesmb.deploy.planner import (
     BINARY_NBNS_SOURCE,
     BINARY_SMBD_SOURCE,
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
+    DEPLOY_STARTUP_ACTIVATE_NOW,
+    DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
+    DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
+    DeploymentStartupMode,
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_SMBPASSWD_SOURCE,
     GENERATED_USERNAME_MAP_SOURCE,
@@ -55,7 +59,12 @@ from timecapsulesmb.device.compat import (
     render_compatibility_message,
     require_compatibility,
 )
-from timecapsulesmb.device.probe import wait_for_ssh_state_conn
+from timecapsulesmb.device.probe import (
+    RUNTIME_ACTIVATION_STATE_READY,
+    RUNTIME_ACTIVATION_STATE_STARTUP_RUNNING,
+    probe_runtime_activation_state_conn,
+    wait_for_ssh_state_conn,
+)
 from timecapsulesmb.device.storage import (
     MAST_DISCOVERY_ATTEMPTS,
     MAST_DISCOVERY_DELAY_SECONDS,
@@ -87,6 +96,20 @@ from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshEr
 
 
 ACP_REBOOT_REQUEST_TIMEOUT_SECONDS = 10
+
+
+def startup_mode_for_deploy(*, no_reboot: bool, is_netbsd4: bool) -> DeploymentStartupMode:
+    if no_reboot:
+        return DEPLOY_STARTUP_ACTIVATE_NOW
+    if is_netbsd4:
+        return DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE
+    return DEPLOY_STARTUP_REBOOT_THEN_VERIFY
+
+
+def activation_complete_message(*, is_netbsd4: bool) -> str:
+    if is_netbsd4:
+        return f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}"
+    return "Runtime activation complete."
 
 
 def require_supported_payload(target: ManagedTargetState, *, allow_unsupported: bool) -> DeviceCompatibility:
@@ -157,6 +180,7 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
     compatibility = require_supported_payload(target, allow_unsupported=allow_unsupported)
     payload_family = compatibility.payload_family
     is_netbsd4 = is_netbsd4_payload_family(payload_family)
+    startup_mode = startup_mode_for_deploy(no_reboot=no_reboot, is_netbsd4=is_netbsd4)
     sink.log(operation, f"Using {payload_family_description(payload_family)} payload.")
     resolved_artifacts = resolve_payload_artifacts(app_paths.distribution_root, payload_family)
     if not dry_run:
@@ -166,8 +190,7 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
             resolved_artifacts["smbd"].absolute_path,
             resolved_artifacts["mdns-advertiser"].absolute_path,
             resolved_artifacts["nbns-advertiser"].absolute_path,
-            activate_netbsd4=is_netbsd4,
-            reboot_after_deploy=not no_reboot,
+            startup_mode=startup_mode,
             apple_mount_wait_seconds=mount_wait,
         )
         device_name = airport_family_display_name_from_identity(
@@ -176,10 +199,10 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
         )
         if is_netbsd4:
             title = "Confirm NetBSD4 deployment"
-            message = f"Deploy and activate the NetBSD4 payload on this {device_name} and change remote services?"
-            action_title = "Deploy and activate"
-            risk = "destructive"
-            summary = "NetBSD4 deployment with service activation"
+            message = f"Deploy TimeCapsuleSMB to this {device_name}, reboot it, then activate Samba after SSH returns?"
+            action_title = "Deploy, reboot, and activate"
+            risk = "reboot"
+            summary = "NetBSD4 deployment with reboot and service activation"
             presentation_id = "deploy.netbsd4"
         elif no_reboot:
             title = "Confirm deployment"
@@ -201,6 +224,7 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
             "requires_reboot": bool(confirmation_plan.reboot_required),
             "no_reboot": no_reboot,
             "no_wait": no_wait,
+            "startup_mode": startup_mode,
         }
         require_confirmation(
             params,
@@ -219,6 +243,7 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
                     "requires_reboot": bool(confirmation_plan.reboot_required),
                     "no_reboot": no_reboot,
                     "no_wait": no_wait,
+                    "startup_mode": startup_mode,
                 },
                 presentation_id=presentation_id,
                 presentation_values=presentation_values,
@@ -267,8 +292,7 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
         resolved_artifacts["smbd"].absolute_path,
         resolved_artifacts["mdns-advertiser"].absolute_path,
         resolved_artifacts["nbns-advertiser"].absolute_path,
-        activate_netbsd4=is_netbsd4,
-        reboot_after_deploy=not no_reboot,
+        startup_mode=startup_mode,
         apple_mount_wait_seconds=mount_wait,
     )
     if dry_run:
@@ -322,27 +346,29 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
     flush_remote_filesystem_writes(connection)
     verify_payload_upload(operation, sink, connection, payload_home, wait_seconds=mount_wait, post_sync=True)
 
-    if is_netbsd4:
-        sink.stage(operation, "netbsd4_activation")
-        run_remote_actions(connection, plan.activation_actions)
-        verify_runtime(operation, sink, connection, stage="verify_runtime_activation", timeout_seconds=180)
+    if startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
+        activate_deployed_runtime(
+            operation,
+            sink,
+            connection,
+            plan.activation_actions,
+            skip_if_ready=False,
+            already_active_message="Managed runtime already active; skipping rc.local.",
+            startup_in_progress_message="Managed runtime startup is already in progress; waiting for it to finish.",
+            activation_message="Starting deployed runtime without reboot.",
+            activation_stage="activate_runtime",
+            verification_stage="verify_runtime_activation",
+            verification_timeout_seconds=180,
+            failure_message="Managed runtime activation failed.",
+        )
         return OperationResult(True, deploy_result_payload(
             payload_dir=plan.payload_dir,
-            netbsd4=True,
-            reboot_requested=False,
-            waited=False,
-            verified=True,
-            message=f"NetBSD4 activation complete. {NETBSD4_REBOOT_FOLLOWUP}",
-            payload_family=payload_family,
-        ))
-
-    if no_reboot:
-        return OperationResult(True, deploy_result_payload(
-            payload_dir=plan.payload_dir,
+            netbsd4=is_netbsd4,
             rebooted=False,
             reboot_requested=False,
             waited=False,
-            verified=False,
+            verified=True,
+            message=activation_complete_message(is_netbsd4=is_netbsd4),
             payload_family=payload_family,
         ))
 
@@ -369,6 +395,33 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
         strategy="ssh_shutdown_then_reboot",
         reboot_no_down_message=DEPLOY_REBOOT_NO_DOWN_MESSAGE,
     )
+
+    if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
+        activate_deployed_runtime(
+            operation,
+            sink,
+            connection,
+            plan.activation_actions,
+            skip_if_ready=True,
+            already_active_message="Managed runtime already active after reboot; skipping rc.local.",
+            startup_in_progress_message="Managed runtime startup is already in progress after reboot; waiting for it to finish.",
+            activation_message="Activating deployed runtime after reboot.",
+            activation_stage="post_reboot_activation",
+            verification_stage="verify_runtime_activation",
+            verification_timeout_seconds=180,
+            failure_message="NetBSD4 activation failed.",
+        )
+        return OperationResult(True, deploy_result_payload(
+            payload_dir=plan.payload_dir,
+            netbsd4=True,
+            rebooted=True,
+            reboot_requested=True,
+            waited=True,
+            verified=True,
+            message=activation_complete_message(is_netbsd4=is_netbsd4),
+            payload_family=payload_family,
+        ))
+
     verify_runtime(operation, sink, connection, stage="verify_runtime_reboot", timeout_seconds=240)
     return OperationResult(True, deploy_result_payload(
         payload_dir=plan.payload_dir,
@@ -378,6 +431,54 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
         verified=True,
         payload_family=payload_family,
     ))
+
+
+def activate_deployed_runtime(
+    operation: str,
+    sink: EventSink,
+    connection: SshConnection,
+    activation_actions,
+    *,
+    skip_if_ready: bool,
+    already_active_message: str,
+    startup_in_progress_message: str,
+    activation_message: str,
+    activation_stage: str,
+    verification_stage: str,
+    probe_timeout_seconds: int = 20,
+    verification_timeout_seconds: int = 180,
+    failure_message: str = "Managed runtime activation failed.",
+) -> None:
+    if skip_if_ready:
+        sink.stage(operation, "probe_runtime")
+        preflight = probe_runtime_activation_state_conn(connection, timeout_seconds=probe_timeout_seconds)
+        sink.log(operation, preflight.detail)
+        if preflight.state == RUNTIME_ACTIVATION_STATE_READY:
+            sink.log(operation, already_active_message)
+            return
+        if preflight.state == RUNTIME_ACTIVATION_STATE_STARTUP_RUNNING:
+            sink.log(operation, startup_in_progress_message)
+            verify_runtime(
+                operation,
+                sink,
+                connection,
+                stage=verification_stage,
+                timeout_seconds=verification_timeout_seconds,
+                failure_message=failure_message,
+            )
+            return
+
+    sink.stage(operation, activation_stage)
+    sink.log(operation, activation_message)
+    run_remote_actions(connection, activation_actions)
+    verify_runtime(
+        operation,
+        sink,
+        connection,
+        stage=verification_stage,
+        timeout_seconds=verification_timeout_seconds,
+        failure_message=failure_message,
+    )
 
 
 def verify_payload_upload(
@@ -403,6 +504,7 @@ def verify_runtime(
     *,
     stage: str,
     timeout_seconds: int,
+    failure_message: str = "Managed runtime did not become ready.",
 ) -> None:
     sink.stage(operation, stage)
     verification = verify_managed_runtime(connection, timeout_seconds=timeout_seconds)
@@ -413,7 +515,7 @@ def verify_runtime(
         sink.log(operation, line)
     if not managed_runtime_ready(verification):
         raise AppOperationError(
-            f"Managed runtime did not become ready. {verification.detail.strip()}".strip(),
+            f"{failure_message.rstrip()} {verification.detail.strip()}".strip(),
             code="remote_error",
         )
 

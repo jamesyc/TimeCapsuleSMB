@@ -849,10 +849,11 @@ Current deploy flow:
   - `NBNS_ENABLED=1` in flash config unless `--no-nbns` is used
 - applies the required permissions on files and directories
 - reboots by default
+- if the reboot confirmation is rejected, deploy intentionally stops after upload without activating the runtime so the device can be inspected before a later manual reboot
 - verifies managed runtime readiness after reboot:
   - managed `smbd` on TCP `445`
   - managed mDNS takeover on UDP `5353`
-- on NetBSD 4, deploy uploads the NetBSD 4 artifact set and immediately runs the activation sequence instead of rebooting
+- on NetBSD 4, deploy uploads the NetBSD 4 artifact set, reboots to clear RAM runtime state, waits for SSH to return, and then runs `/mnt/Flash/rc.local`
 
 Full Bonjour browse/resolve checks, authenticated SMB listings, SMB CRUD checks, share checks, NBNS checks, xattr persistence checks, and deployed-version checks are handled by `doctor`.
 
@@ -862,12 +863,13 @@ Current compatibility behavior:
 - `configure` reuses the same classification logic for compatibility and displayed device identity
 
 NetBSD 4 activation behavior:
-- `tcapsule deploy` uploads the NetBSD 4 payload, stops the old watchdog plus `wcifsfs`, runs `/mnt/Flash/rc.local`, and verifies `smbd` on TCP `445` plus `mdns-advertiser` on UDP `5353`
-- `tcapsule activate` repeats that activation sequence without re-uploading files
+- `tcapsule deploy` uploads the NetBSD 4 payload, reboots, waits for SSH, watches for an already-running `/mnt/Flash/rc.local` or `/mnt/Flash/start-samba.sh` for up to 20 seconds, runs `/mnt/Flash/rc.local` only if startup is not already in progress, and verifies managed `smbd` plus mDNS takeover
+- `tcapsule deploy --no-reboot` uploads the payload, stops the old watchdog plus `wcifsfs`, runs `/mnt/Flash/rc.local`, and verifies managed `smbd` plus mDNS takeover on both NetBSD 4 and NetBSD 6 devices
+- `tcapsule activate` repeats the no-reboot activation sequence without re-uploading files
 - Apple `mDNSResponder` takeover is now handled inside `mdns-advertiser` when `--load-snapshot` is used
 - tested 1st-generation NetBSD 4 hardware does not persist an `/etc` boot hook and therefore needs manual activation after reboot
 - other NetBSD 4 generations may auto-start if their firmware runs `/mnt/Flash/rc.local` early in boot, but that is not yet proven
-- `activate` is intentionally conservative: if `smbd` already owns TCP `445` and `mdns-advertiser` already owns UDP `5353`, it skips running `/mnt/Flash/rc.local`
+- `activate` is intentionally conservative: if `smbd` already owns TCP `445` and `mdns-advertiser` already owns UDP `5353`, or if `/mnt/Flash/rc.local` or `/mnt/Flash/start-samba.sh` is already running, it skips running `/mnt/Flash/rc.local`
 
 The current password flow is:
 - `TC_PASSWORD` is also used as the Samba password

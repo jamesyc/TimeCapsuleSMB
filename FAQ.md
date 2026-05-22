@@ -149,7 +149,7 @@ To fix this:
 
 This is normal for **NetBSD 4 devices** (older Gen 1-4 Time Capsules). The firmware doesn't persist the `/etc` boot hook needed to auto-start Samba.
 
-**Solution:** Always run `tcapsule activate` after rebooting older stock devices.
+**Solution:** Run `tcapsule activate` after rebooting older stock devices. A normal `tcapsule deploy` handles this automatically by rebooting, waiting for SSH to return, and then activating the deployed runtime.
 
 ## Security and Privacy
 
