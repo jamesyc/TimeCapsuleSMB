@@ -597,7 +597,7 @@ def _doctor_check_deployed_version(target: DoctorTarget, remote: RemoteAccess, s
     try:
         deployed_version = read_deployed_version_conn(target.connection)
     except Exception as e:
-        sink.add(CheckResult("FAIL", f"deployed payload version probe failed: {e}"))
+        sink.add(CheckResult("FAIL", f"deployed payload version probe failed; reboot the device and rerun doctor: {e}"))
         return StepDecision(stop=True)
 
     if sink.debug_fields is not None:
