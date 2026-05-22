@@ -8,7 +8,31 @@ struct DeployOptions: Equatable {
     let internalShareUseDiskRoot: Bool
     let anyProtocol: Bool
     let debugLogging: Bool
+    let ataIdleSeconds: Int
+    let ataStandby: Int?
     let mountWait: Int
+
+    init(
+        nbnsEnabled: Bool,
+        noReboot: Bool,
+        noWait: Bool,
+        internalShareUseDiskRoot: Bool,
+        anyProtocol: Bool,
+        debugLogging: Bool,
+        ataIdleSeconds: Int = DeviceProfileSettings.default.ataIdleSeconds,
+        ataStandby: Int? = DeviceProfileSettings.default.ataStandby,
+        mountWait: Int
+    ) {
+        self.nbnsEnabled = nbnsEnabled
+        self.noReboot = noReboot
+        self.noWait = noWait
+        self.internalShareUseDiskRoot = internalShareUseDiskRoot
+        self.anyProtocol = anyProtocol
+        self.debugLogging = debugLogging
+        self.ataIdleSeconds = ataIdleSeconds
+        self.ataStandby = ataStandby
+        self.mountWait = mountWait
+    }
 }
 
 enum DeployExecutionOptionPolicy {
@@ -93,6 +117,12 @@ final class DeployWorkflowStore: ObservableObject {
     @Published var debugLogging = false {
         didSet { reconcilePlanFreshness() }
     }
+    @Published var ataIdleSeconds = String(DeviceProfileSettings.default.ataIdleSeconds) {
+        didSet { reconcilePlanFreshness() }
+    }
+    @Published var ataStandby = DeviceProfileSettings.default.ataStandby.map { String($0) } ?? "" {
+        didSet { reconcilePlanFreshness() }
+    }
     @Published var mountWait = "30" {
         didSet { reconcilePlanFreshness() }
     }
@@ -166,6 +196,10 @@ final class DeployWorkflowStore: ObservableObject {
         ValueParsers.nonNegativeInteger(mountWait)
     }
 
+    var hasValidOptions: Bool {
+        deployOptionsValidationMessage == nil
+    }
+
     var canDeploy: Bool {
         !isBusy && state == .planReady && plan != nil && currentOptions == plannedOptions
     }
@@ -173,8 +207,9 @@ final class DeployWorkflowStore: ObservableObject {
     @discardableResult
     func runPlan(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
         guard let options = currentOptions else {
-            failLocally(state: .planFailed, message: "Mount wait must be a non-negative integer.")
-            return .rejected("Mount wait must be a non-negative integer.")
+            let message = deployOptionsValidationMessage ?? "Deploy options are invalid."
+            failLocally(state: .planFailed, message: message)
+            return .rejected(message)
         }
         guard !isBusy else {
             rejectRun(state: .planFailed, message: "Another operation is already running.")
@@ -190,6 +225,8 @@ final class DeployWorkflowStore: ObservableObject {
                 internalShareUseDiskRoot: options.internalShareUseDiskRoot,
                 anyProtocol: options.anyProtocol,
                 debugLogging: options.debugLogging,
+                ataIdleSeconds: options.ataIdleSeconds,
+                ataStandby: options.ataStandby,
                 mountWait: Double(options.mountWait),
                 password: password
             ),
@@ -239,6 +276,8 @@ final class DeployWorkflowStore: ObservableObject {
                 internalShareUseDiskRoot: options.internalShareUseDiskRoot,
                 anyProtocol: options.anyProtocol,
                 debugLogging: options.debugLogging,
+                ataIdleSeconds: options.ataIdleSeconds,
+                ataStandby: options.ataStandby,
                 mountWait: Double(options.mountWait),
                 password: password
             ),
@@ -276,7 +315,7 @@ final class DeployWorkflowStore: ObservableObject {
     }
 
     private var currentOptions: DeployOptions? {
-        guard let mountWaitValue else {
+        guard let mountWaitValue, let ataIdleSecondsValue, hasValidAtaStandby else {
             return nil
         }
         let rebootOptions = DeployExecutionOptionPolicy.effectiveRebootOptions(noReboot: noReboot, noWait: noWait)
@@ -287,8 +326,39 @@ final class DeployWorkflowStore: ObservableObject {
             internalShareUseDiskRoot: internalShareUseDiskRoot,
             anyProtocol: anyProtocol,
             debugLogging: debugLogging,
+            ataIdleSeconds: ataIdleSecondsValue,
+            ataStandby: ataStandbyValue,
             mountWait: mountWaitValue
         )
+    }
+
+    private var ataIdleSecondsValue: Int? {
+        ValueParsers.nonNegativeInteger(ataIdleSeconds)
+    }
+
+    private var ataStandbyValue: Int? {
+        let trimmed = ataStandby.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+        return ValueParsers.nonNegativeInteger(trimmed)
+    }
+
+    private var hasValidAtaStandby: Bool {
+        ataStandby.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || ataStandbyValue != nil
+    }
+
+    private var deployOptionsValidationMessage: String? {
+        if mountWaitValue == nil {
+            return "Mount wait must be a non-negative integer."
+        }
+        if ataIdleSecondsValue == nil {
+            return L10n.string("profile_editor.error.ata_idle_seconds_invalid")
+        }
+        if !hasValidAtaStandby {
+            return L10n.string("profile_editor.error.ata_standby_invalid")
+        }
+        return nil
     }
 
     private func reconcilePlanFreshness() {

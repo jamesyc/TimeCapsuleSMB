@@ -82,7 +82,6 @@ from timecapsulesmb.services.app import (
     config_path,
     int_param,
     optional_bool_param,
-    string_param,
 )
 from timecapsulesmb.services.credentials import overlay_request_credentials
 from timecapsulesmb.services.deploy import (
@@ -121,6 +120,15 @@ def startup_mode_for_deploy(*, no_reboot: bool, is_netbsd4: bool) -> DeploymentS
 
 def effective_no_wait_for_deploy(*, requested: bool, no_reboot: bool) -> bool:
     return False if no_reboot else requested
+
+
+def optional_unsigned_int_override_param(params: dict[str, object], name: str) -> int | str | None:
+    if name not in params or params.get(name) is None:
+        return None
+    value = params.get(name)
+    if isinstance(value, str) and value.strip() == "":
+        return ""
+    return int_param(params, name, 0)
 
 
 def activation_complete_message(*, is_netbsd4: bool) -> str:
@@ -233,6 +241,12 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
     mount_wait = int_param(params, "mount_wait", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
     allow_unsupported = bool_param(params, "allow_unsupported")
     debug_logging = optional_bool_param(params, "debug_logging")
+    ata_idle_seconds = (
+        int_param(params, "ata_idle_seconds", int(DEFAULTS["TC_ATA_IDLE_SECONDS"]))
+        if "ata_idle_seconds" in params and params.get("ata_idle_seconds") is not None
+        else None
+    )
+    ata_standby = optional_unsigned_int_override_param(params, "ata_standby")
 
     config, target = load_config_and_target(operation, params, sink, profile="deploy", include_probe=True)
     connection = target.connection
@@ -371,8 +385,8 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
             debug_logging=debug_logging,
             internal_share_use_disk_root=internal_share_use_disk_root,
             any_protocol=any_protocol,
-            ata_idle_seconds=string_param(params, "ata_idle_seconds") if "ata_idle_seconds" in params else None,
-            ata_standby=string_param(params, "ata_standby") if "ata_standby" in params else None,
+            ata_idle_seconds=ata_idle_seconds,
+            ata_standby=ata_standby,
         )
     except ValueError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc

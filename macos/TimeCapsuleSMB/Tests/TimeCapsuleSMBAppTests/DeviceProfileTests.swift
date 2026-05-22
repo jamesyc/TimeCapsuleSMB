@@ -71,6 +71,42 @@ final class DeviceProfileTests: XCTestCase {
         XCTAssertEqual(settings.anyProtocol, false)
         XCTAssertEqual(settings.debugLogging, true)
         XCTAssertEqual(settings.mountWaitSeconds, 45)
+        XCTAssertEqual(settings.ataIdleSeconds, 300)
+        XCTAssertNil(settings.ataStandby)
+    }
+
+    func testProfileSettingsDecodeLegacyStringAtaValues() throws {
+        let data = Data("""
+        {
+          "nbnsEnabled": true,
+          "debugLogging": false,
+          "mountWaitSeconds": 45,
+          "ataIdleSeconds": "0",
+          "ataStandby": "120"
+        }
+        """.utf8)
+
+        let settings = try JSONDecoder().decode(DeviceProfileSettings.self, from: data)
+
+        XCTAssertEqual(settings.ataIdleSeconds, 0)
+        XCTAssertEqual(settings.ataStandby, 120)
+    }
+
+    func testProfileSettingsInvalidLegacyAtaValuesFallbackSafely() throws {
+        let data = Data("""
+        {
+          "nbnsEnabled": true,
+          "debugLogging": false,
+          "mountWaitSeconds": 45,
+          "ataIdleSeconds": "bad",
+          "ataStandby": "bad"
+        }
+        """.utf8)
+
+        let settings = try JSONDecoder().decode(DeviceProfileSettings.self, from: data)
+
+        XCTAssertEqual(settings.ataIdleSeconds, 300)
+        XCTAssertNil(settings.ataStandby)
     }
 
     func testTraitsClassifyNetBSD4NetBSD6AndUnsupportedDevices() {

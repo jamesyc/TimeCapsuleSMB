@@ -86,4 +86,12 @@ final class OperationTimelineBuilderTests: XCTestCase {
 
         XCTAssertEqual(timeline.map(\.title), ["Checking SMB", "Starting SMB", "Verifying SMB"])
     }
+
+    func testDeployCleanupStageWarnsAboutOldFileDeletion() {
+        let timeline = OperationTimelineBuilder.timeline(from: [
+            BackendEvent(type: "stage", operation: "deploy", stage: "pre_upload_actions")
+        ])
+
+        XCTAssertEqual(timeline.map(\.title), ["Deleting Old Deployed Files"])
+    }
 }

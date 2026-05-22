@@ -216,7 +216,9 @@ final class DashboardStoreTests: XCTestCase {
             internalShareUseDiskRoot: true,
             anyProtocol: true,
             debugLogging: true,
-            mountWaitSeconds: 45
+            mountWaitSeconds: 45,
+            ataIdleSeconds: 0,
+            ataStandby: 0
         )
         profile = try await fixture.registry.updateProfile(profile)
         let dashboard = DashboardStore(appStore: fixture.appStore)
@@ -226,6 +228,8 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(session.deployStore.internalShareUseDiskRoot, true)
         XCTAssertEqual(session.deployStore.anyProtocol, true)
         XCTAssertEqual(session.deployStore.debugLogging, true)
+        XCTAssertEqual(session.deployStore.ataIdleSeconds, "0")
+        XCTAssertEqual(session.deployStore.ataStandby, "0")
         XCTAssertEqual(session.deployStore.mountWait, "45")
         XCTAssertEqual(session.maintenanceStore.mountWait, "45")
 
@@ -258,6 +262,8 @@ final class DashboardStoreTests: XCTestCase {
         session.profileEditorStore.draft.anyProtocol = true
         session.profileEditorStore.draft.debugLogging = true
         session.profileEditorStore.draft.mountWaitSeconds = "64"
+        session.profileEditorStore.draft.ataIdleSeconds = "0"
+        session.profileEditorStore.draft.ataStandby = "0"
 
         await session.profileEditorStore.save(profile: profile)
 
@@ -266,6 +272,8 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertEqual(session.deployStore.internalShareUseDiskRoot, true)
         XCTAssertEqual(session.deployStore.anyProtocol, true)
         XCTAssertEqual(session.deployStore.debugLogging, true)
+        XCTAssertEqual(session.deployStore.ataIdleSeconds, "0")
+        XCTAssertEqual(session.deployStore.ataStandby, "0")
         XCTAssertEqual(session.deployStore.mountWait, "64")
         XCTAssertEqual(session.maintenanceStore.mountWait, "64")
     }

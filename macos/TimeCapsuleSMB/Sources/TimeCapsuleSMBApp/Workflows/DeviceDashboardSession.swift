@@ -284,6 +284,8 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         deployStore.internalShareUseDiskRoot = settings.internalShareUseDiskRoot
         deployStore.anyProtocol = settings.anyProtocol
         deployStore.debugLogging = settings.debugLogging
+        deployStore.ataIdleSeconds = String(settings.ataIdleSeconds)
+        deployStore.ataStandby = settings.ataStandby.map { String($0) } ?? ""
         deployStore.mountWait = String(settings.mountWaitSeconds)
         maintenanceStore.mountWait = String(settings.mountWaitSeconds)
     }

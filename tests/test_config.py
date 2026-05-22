@@ -538,6 +538,11 @@ class ConfigTests(unittest.TestCase):
         errors = validate_app_config(config, profile="deploy")
         self.assertEqual(errors[0].kind, "invalid_value")
         self.assertEqual(errors[0].key, "TC_ATA_IDLE_SECONDS")
+        values["TC_ATA_IDLE_SECONDS"] = ""
+        config = AppConfig.from_values(values, file_values=values)
+        errors = validate_app_config(config, profile="deploy")
+        self.assertEqual(errors[0].kind, "invalid_value")
+        self.assertEqual(errors[0].key, "TC_ATA_IDLE_SECONDS")
 
     def test_flash_profile_ignores_deploy_only_settings(self) -> None:
         values = dict(DEFAULTS)

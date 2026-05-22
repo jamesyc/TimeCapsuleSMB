@@ -166,7 +166,7 @@ enum InstallActionAvailabilityPolicy {
     static func isEnabled(_ action: InstallUserAction, store: DeployWorkflowStore) -> Bool {
         switch action {
         case .createPlan, .regeneratePlan, .reinstall:
-            return !store.isBusy && store.mountWaitValue != nil
+            return !store.isBusy && store.hasValidOptions
         case .installUpdate:
             return store.canDeploy
         case .runCheckup:

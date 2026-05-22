@@ -493,6 +493,12 @@ def validate_optional_unsigned_integer(value: str, field_name: str) -> Optional[
     return None
 
 
+def validate_unsigned_integer(value: str, field_name: str) -> Optional[str]:
+    if not value.isdigit():
+        return f"{field_name} must be a non-negative integer."
+    return None
+
+
 def validate_airport_syap(value: str, field_name: str) -> Optional[str]:
     if not value:
         return f"{field_name} cannot be blank."
@@ -526,7 +532,7 @@ CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
     "TC_INTERNAL_SHARE_USE_DISK_ROOT": validate_bool,
     "TC_ANY_PROTOCOL": validate_bool,
     "TC_DEBUG_LOGGING": validate_bool,
-    "TC_ATA_IDLE_SECONDS": validate_optional_unsigned_integer,
+    "TC_ATA_IDLE_SECONDS": validate_unsigned_integer,
     "TC_ATA_STANDBY": validate_optional_unsigned_integer,
 }
 
@@ -649,7 +655,8 @@ def validate_app_config(config: AppConfig, *, profile: str) -> list[ConfigIssue]
         validator = CONFIG_VALIDATORS.get(key)
         if validator is None:
             continue
-        error = validator(config.get(key, ""), key)
+        value = config.values[key] if key in config.values else DEFAULTS.get(key, "")
+        error = validator(value, key)
         if error:
             errors.append(ConfigIssue(
                 kind="invalid_value",

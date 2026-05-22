@@ -39,13 +39,17 @@ struct DeviceProfileSettings: Codable, Equatable {
     var anyProtocol: Bool
     var debugLogging: Bool
     var mountWaitSeconds: Int
+    var ataIdleSeconds: Int
+    var ataStandby: Int?
 
     static let `default` = DeviceProfileSettings(
         nbnsEnabled: true,
         internalShareUseDiskRoot: false,
         anyProtocol: false,
         debugLogging: false,
-        mountWaitSeconds: 30
+        mountWaitSeconds: 30,
+        ataIdleSeconds: 300,
+        ataStandby: nil
     )
 
     init(
@@ -53,13 +57,17 @@ struct DeviceProfileSettings: Codable, Equatable {
         internalShareUseDiskRoot: Bool = false,
         anyProtocol: Bool = false,
         debugLogging: Bool,
-        mountWaitSeconds: Int
+        mountWaitSeconds: Int,
+        ataIdleSeconds: Int = 300,
+        ataStandby: Int? = nil
     ) {
         self.nbnsEnabled = nbnsEnabled
         self.internalShareUseDiskRoot = internalShareUseDiskRoot
         self.anyProtocol = anyProtocol
         self.debugLogging = debugLogging
         self.mountWaitSeconds = mountWaitSeconds
+        self.ataIdleSeconds = ataIdleSeconds
+        self.ataStandby = ataStandby
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -68,6 +76,8 @@ struct DeviceProfileSettings: Codable, Equatable {
         case anyProtocol
         case debugLogging
         case mountWaitSeconds
+        case ataIdleSeconds
+        case ataStandby
     }
 
     init(from decoder: Decoder) throws {
@@ -77,6 +87,44 @@ struct DeviceProfileSettings: Codable, Equatable {
         anyProtocol = try container.decodeIfPresent(Bool.self, forKey: .anyProtocol) ?? Self.default.anyProtocol
         debugLogging = try container.decodeIfPresent(Bool.self, forKey: .debugLogging) ?? Self.default.debugLogging
         mountWaitSeconds = try container.decodeIfPresent(Int.self, forKey: .mountWaitSeconds) ?? Self.default.mountWaitSeconds
+        ataIdleSeconds = Self.decodeNonNegativeInteger(
+            from: container,
+            forKey: .ataIdleSeconds,
+            defaultValue: Self.default.ataIdleSeconds
+        )
+        ataStandby = Self.decodeOptionalNonNegativeInteger(from: container, forKey: .ataStandby)
+    }
+
+    private static func decodeNonNegativeInteger(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        forKey key: CodingKeys,
+        defaultValue: Int
+    ) -> Int {
+        if let value = try? container.decodeIfPresent(Int.self, forKey: key), value >= 0 {
+            return value
+        }
+        if let text = try? container.decodeIfPresent(String.self, forKey: key),
+           let parsed = ValueParsers.nonNegativeInteger(text) {
+            return parsed
+        }
+        return defaultValue
+    }
+
+    private static func decodeOptionalNonNegativeInteger(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        forKey key: CodingKeys
+    ) -> Int? {
+        if let value = try? container.decodeIfPresent(Int.self, forKey: key), value >= 0 {
+            return value
+        }
+        if let text = try? container.decodeIfPresent(String.self, forKey: key) {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                return nil
+            }
+            return ValueParsers.nonNegativeInteger(trimmed)
+        }
+        return nil
     }
 }
 

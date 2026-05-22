@@ -40,6 +40,8 @@ enum DeviceProfileEditorValidationError: String, CaseIterable, Equatable, Locali
     case hostRequired
     case duplicateHost
     case mountWaitInvalid
+    case ataIdleSecondsInvalid
+    case ataStandbyInvalid
     case passwordRequired
 
     var errorDescription: String? {
@@ -50,6 +52,10 @@ enum DeviceProfileEditorValidationError: String, CaseIterable, Equatable, Locali
             return L10n.string("profile_editor.error.duplicate_host")
         case .mountWaitInvalid:
             return L10n.string("profile_editor.error.mount_wait_invalid")
+        case .ataIdleSecondsInvalid:
+            return L10n.string("profile_editor.error.ata_idle_seconds_invalid")
+        case .ataStandbyInvalid:
+            return L10n.string("profile_editor.error.ata_standby_invalid")
         case .passwordRequired:
             return L10n.string("profile_editor.error.password_required")
         }
@@ -64,6 +70,8 @@ struct DeviceProfileEditorDraft: Equatable {
     var anyProtocol: Bool
     var debugLogging: Bool
     var mountWaitSeconds: String
+    var ataIdleSeconds: String
+    var ataStandby: String
 
     init(
         displayName: String,
@@ -72,7 +80,9 @@ struct DeviceProfileEditorDraft: Equatable {
         internalShareUseDiskRoot: Bool = false,
         anyProtocol: Bool = false,
         debugLogging: Bool,
-        mountWaitSeconds: String
+        mountWaitSeconds: String,
+        ataIdleSeconds: String = String(DeviceProfileSettings.default.ataIdleSeconds),
+        ataStandby: String = DeviceProfileSettings.default.ataStandby.map { String($0) } ?? ""
     ) {
         self.displayName = displayName
         self.host = host
@@ -81,6 +91,8 @@ struct DeviceProfileEditorDraft: Equatable {
         self.anyProtocol = anyProtocol
         self.debugLogging = debugLogging
         self.mountWaitSeconds = mountWaitSeconds
+        self.ataIdleSeconds = ataIdleSeconds
+        self.ataStandby = ataStandby
     }
 
     init(profile: DeviceProfile) {
@@ -91,7 +103,9 @@ struct DeviceProfileEditorDraft: Equatable {
             internalShareUseDiskRoot: profile.settings.internalShareUseDiskRoot,
             anyProtocol: profile.settings.anyProtocol,
             debugLogging: profile.settings.debugLogging,
-            mountWaitSeconds: String(profile.settings.mountWaitSeconds)
+            mountWaitSeconds: String(profile.settings.mountWaitSeconds),
+            ataIdleSeconds: String(profile.settings.ataIdleSeconds),
+            ataStandby: profile.settings.ataStandby.map { String($0) } ?? ""
         )
     }
 
@@ -107,12 +121,26 @@ struct DeviceProfileEditorDraft: Equatable {
         guard let mountWait = ValueParsers.nonNegativeInteger(mountWaitSeconds) else {
             throw DeviceProfileEditorValidationError.mountWaitInvalid
         }
+        guard let ataIdle = ValueParsers.nonNegativeInteger(ataIdleSeconds) else {
+            throw DeviceProfileEditorValidationError.ataIdleSecondsInvalid
+        }
+        let trimmedAtaStandby = ataStandby.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedAtaStandby: String
+        if trimmedAtaStandby.isEmpty {
+            normalizedAtaStandby = ""
+        } else if let parsedAtaStandby = ValueParsers.nonNegativeInteger(trimmedAtaStandby) {
+            normalizedAtaStandby = String(parsedAtaStandby)
+        } else {
+            throw DeviceProfileEditorValidationError.ataStandbyInvalid
+        }
         return DeviceProfileSettings(
             nbnsEnabled: nbnsEnabled,
             internalShareUseDiskRoot: internalShareUseDiskRoot,
             anyProtocol: anyProtocol,
             debugLogging: debugLogging,
-            mountWaitSeconds: mountWait
+            mountWaitSeconds: mountWait,
+            ataIdleSeconds: ataIdle,
+            ataStandby: normalizedAtaStandby.isEmpty ? nil : ValueParsers.nonNegativeInteger(normalizedAtaStandby)
         )
     }
 
@@ -216,6 +244,16 @@ final class DeviceProfileEditorStore: ObservableObject {
             return
         }
 
+        let settings: DeviceProfileSettings
+        do {
+            settings = try draft.validatedSettings()
+        } catch {
+            self.validationErrors = validationErrors
+            self.error = nil
+            self.state = .invalid
+            return
+        }
+
         if draft.hostChanged(from: profile) {
             guard let password = appStore.password(for: profile) else {
                 self.validationErrors = [.passwordRequired]
@@ -223,7 +261,7 @@ final class DeviceProfileEditorStore: ObservableObject {
                 state = .invalid
                 return
             }
-            startReconfigure(profile: profile, password: password)
+            startReconfigure(profile: profile, password: password, settings: settings)
         } else {
             await saveRegistryOnly(profile: profile)
         }
@@ -250,6 +288,13 @@ final class DeviceProfileEditorStore: ObservableObject {
         if ValueParsers.nonNegativeInteger(draft.mountWaitSeconds) == nil {
             errors.append(.mountWaitInvalid)
         }
+        if ValueParsers.nonNegativeInteger(draft.ataIdleSeconds) == nil {
+            errors.append(.ataIdleSecondsInvalid)
+        }
+        let trimmedAtaStandby = draft.ataStandby.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedAtaStandby.isEmpty && ValueParsers.nonNegativeInteger(trimmedAtaStandby) == nil {
+            errors.append(.ataStandbyInvalid)
+        }
         return errors
     }
 
@@ -270,13 +315,16 @@ final class DeviceProfileEditorStore: ObservableObject {
         }
     }
 
-    private func startReconfigure(profile: DeviceProfile, password: String) {
+    private func startReconfigure(profile: DeviceProfile, password: String, settings: DeviceProfileSettings) {
         let params = OperationParams.configure(
             host: draft.trimmedHost,
             password: password,
             debugLogging: draft.debugLogging,
             internalShareUseDiskRoot: draft.internalShareUseDiskRoot,
-            anyProtocol: draft.anyProtocol
+            anyProtocol: draft.anyProtocol,
+            ataIdleSeconds: settings.ataIdleSeconds,
+            ataStandby: settings.ataStandby,
+            includeAtaStandby: true
         )
         let start = coordinator.run(
             operation: "configure",

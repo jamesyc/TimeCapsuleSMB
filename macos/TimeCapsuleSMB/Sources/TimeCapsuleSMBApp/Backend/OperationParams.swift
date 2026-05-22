@@ -38,7 +38,10 @@ enum OperationParams {
         password: String,
         debugLogging: Bool,
         internalShareUseDiskRoot: Bool? = nil,
-        anyProtocol: Bool? = nil
+        anyProtocol: Bool? = nil,
+        ataIdleSeconds: Int? = nil,
+        ataStandby: Int? = nil,
+        includeAtaStandby: Bool = false
     ) -> [String: JSONValue] {
         var params: [String: JSONValue] = [
             "password": .string(password),
@@ -55,6 +58,14 @@ enum OperationParams {
         }
         if let anyProtocol {
             params["any_protocol"] = .bool(anyProtocol)
+        }
+        if let ataIdleSeconds {
+            params["ata_idle_seconds"] = .number(Double(ataIdleSeconds))
+        }
+        if let ataStandby {
+            params["ata_standby"] = .number(Double(ataStandby))
+        } else if includeAtaStandby {
+            params["ata_standby"] = .string("")
         }
         return params
     }
@@ -81,10 +92,12 @@ enum OperationParams {
         internalShareUseDiskRoot: Bool = false,
         anyProtocol: Bool = false,
         debugLogging: Bool,
+        ataIdleSeconds: Int,
+        ataStandby: Int?,
         mountWait: Double,
         password: String
     ) -> [String: JSONValue] {
-        let params: [String: JSONValue] = [
+        var params: [String: JSONValue] = [
             "dry_run": .bool(true),
             "no_reboot": .bool(noReboot),
             "no_wait": .bool(noWait),
@@ -94,6 +107,12 @@ enum OperationParams {
             "debug_logging": .bool(debugLogging),
             "mount_wait": .number(mountWait)
         ]
+        params["ata_idle_seconds"] = .number(Double(ataIdleSeconds))
+        if let ataStandby {
+            params["ata_standby"] = .number(Double(ataStandby))
+        } else {
+            params["ata_standby"] = .string("")
+        }
         return withCredentials(params, password: password)
     }
 
@@ -104,10 +123,12 @@ enum OperationParams {
         internalShareUseDiskRoot: Bool = false,
         anyProtocol: Bool = false,
         debugLogging: Bool,
+        ataIdleSeconds: Int,
+        ataStandby: Int?,
         mountWait: Double,
         password: String
     ) -> [String: JSONValue] {
-        let params: [String: JSONValue] = [
+        var params: [String: JSONValue] = [
             "dry_run": .bool(false),
             "no_reboot": .bool(noReboot),
             "no_wait": .bool(noWait),
@@ -117,6 +138,12 @@ enum OperationParams {
             "debug_logging": .bool(debugLogging),
             "mount_wait": .number(mountWait)
         ]
+        params["ata_idle_seconds"] = .number(Double(ataIdleSeconds))
+        if let ataStandby {
+            params["ata_standby"] = .number(Double(ataStandby))
+        } else {
+            params["ata_standby"] = .string("")
+        }
         return withCredentials(params, password: password)
     }
 

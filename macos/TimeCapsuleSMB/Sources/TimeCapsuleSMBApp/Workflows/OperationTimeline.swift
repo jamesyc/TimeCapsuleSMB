@@ -117,6 +117,8 @@ enum OperationTimelineBuilder {
             return L10n.string("timeline.stage.checking_bundled_files")
         case ("deploy", "read_mast"), ("deploy", "select_payload_home"):
             return L10n.string("timeline.stage.finding_disk")
+        case ("deploy", "pre_upload_actions"):
+            return L10n.string("timeline.stage.deleting_old_deployed_files")
         case ("deploy", "upload_payload"):
             return L10n.string("timeline.stage.uploading")
         case ("deploy", "flush_payload_upload"):

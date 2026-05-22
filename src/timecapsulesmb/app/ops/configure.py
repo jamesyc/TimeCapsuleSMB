@@ -77,8 +77,8 @@ def configure_operation(params: dict[str, object], sink: EventSink) -> Operation
                 "debug_logging",
                 parse_bool(existing.get("TC_DEBUG_LOGGING", DEFAULTS["TC_DEBUG_LOGGING"])),
             ),
-            ata_idle_seconds=string_param(params, "ata_idle_seconds") if "ata_idle_seconds" in params else None,
-            ata_standby=string_param(params, "ata_standby") if "ata_standby" in params else None,
+            ata_idle_seconds=params.get("ata_idle_seconds") if "ata_idle_seconds" in params else None,
+            ata_standby=params.get("ata_standby") if "ata_standby" in params else None,
         )
     except ValueError as exc:
         raise AppOperationError(str(exc), code="validation_failed") from exc

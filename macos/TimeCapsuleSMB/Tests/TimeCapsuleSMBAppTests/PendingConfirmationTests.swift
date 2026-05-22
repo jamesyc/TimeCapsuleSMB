@@ -27,6 +27,8 @@ final class PendingConfirmationTests: XCTestCase {
             noWait: true,
             nbnsEnabled: true,
             debugLogging: true,
+            ataIdleSeconds: 0,
+            ataStandby: 0,
             mountWait: 45,
             password: ""
         )
@@ -38,6 +40,8 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["no_reboot"], .bool(false))
         XCTAssertEqual(params["nbns_enabled"], .bool(true))
         XCTAssertEqual(params["debug_logging"], .bool(true))
+        XCTAssertEqual(params["ata_idle_seconds"], .number(0))
+        XCTAssertEqual(params["ata_standby"], .number(0))
         XCTAssertEqual(params["mount_wait"], .number(45))
         XCTAssertEqual(params["no_wait"], .bool(true))
         XCTAssertEqual(params["internal_share_use_disk_root"], .bool(false))
@@ -53,6 +57,8 @@ final class PendingConfirmationTests: XCTestCase {
             internalShareUseDiskRoot: true,
             anyProtocol: true,
             debugLogging: false,
+            ataIdleSeconds: 0,
+            ataStandby: nil,
             mountWait: 30,
             password: "pw"
         )
@@ -61,6 +67,8 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["internal_share_use_disk_root"], .bool(true))
         XCTAssertEqual(params["any_protocol"], .bool(true))
         XCTAssertEqual(params["debug_logging"], .bool(false))
+        XCTAssertEqual(params["ata_idle_seconds"], .number(0))
+        XCTAssertEqual(params["ata_standby"], .string(""))
         XCTAssertEqual(params["credentials"], .object(["password": .string("pw")]))
     }
 
@@ -78,7 +86,10 @@ final class PendingConfirmationTests: XCTestCase {
             password: "pw",
             debugLogging: true,
             internalShareUseDiskRoot: false,
-            anyProtocol: true
+            anyProtocol: true,
+            ataIdleSeconds: 0,
+            ataStandby: nil,
+            includeAtaStandby: true
         )
 
         XCTAssertNil(params["host"])
@@ -87,6 +98,8 @@ final class PendingConfirmationTests: XCTestCase {
         XCTAssertEqual(params["debug_logging"], .bool(true))
         XCTAssertEqual(params["internal_share_use_disk_root"], .bool(false))
         XCTAssertEqual(params["any_protocol"], .bool(true))
+        XCTAssertEqual(params["ata_idle_seconds"], .number(0))
+        XCTAssertEqual(params["ata_standby"], .string(""))
     }
 
     func testConfigureParamsDefaultBareManualHostToRootUser() {

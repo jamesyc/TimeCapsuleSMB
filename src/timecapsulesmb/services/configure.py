@@ -1,11 +1,25 @@
 from __future__ import annotations
 
+import math
+
 from timecapsulesmb.configure_defaults import valid_existing_config_value
 from timecapsulesmb.core.config import DEFAULTS, parse_bool, preserved_env_file_values
 
 
-def _optional_unsigned_config_value(value: str, key: str) -> str:
-    raw_value = value.strip()
+def _optional_unsigned_config_value(value: object, key: str) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        raise ValueError(f"{key} must be a non-negative integer")
+    if isinstance(value, int):
+        if value < 0:
+            raise ValueError(f"{key} must be a non-negative integer")
+        return str(value)
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer() or value < 0:
+            raise ValueError(f"{key} must be a non-negative integer")
+        return str(int(value))
+    raw_value = str(value).strip()
     if raw_value == "":
         return ""
     if not raw_value.isdigit():
@@ -27,8 +41,8 @@ def build_configure_env_values(
     internal_share_use_disk_root: bool | None = None,
     any_protocol: bool | None = None,
     debug_logging: bool | None = None,
-    ata_idle_seconds: str | None = None,
-    ata_standby: str | None = None,
+    ata_idle_seconds: object | None = None,
+    ata_standby: object | None = None,
 ) -> dict[str, str]:
     values = preserved_env_file_values(existing)
     values.update({

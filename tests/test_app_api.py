@@ -556,6 +556,8 @@ class AppApiTests(unittest.TestCase):
                 "TC_PASSWORD=oldpw\n"
                 "TC_CUSTOM_SETTING='keep me'\n"
                 "TC_DEBUG_LOGGING=true\n"
+                "TC_ATA_IDLE_SECONDS=42\n"
+                "TC_ATA_STANDBY=0\n"
                 "TC_SAMBA_USER=old-admin\n"
                 "TC_PAYLOAD_DIR_NAME=old-payload\n"
             )
@@ -579,6 +581,8 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(values["TC_PASSWORD"], "")
         self.assertEqual(values["TC_CUSTOM_SETTING"], "keep me")
         self.assertEqual(values["TC_DEBUG_LOGGING"], "true")
+        self.assertEqual(values["TC_ATA_IDLE_SECONDS"], "42")
+        self.assertEqual(values["TC_ATA_STANDBY"], "0")
         self.assertNotIn("TC_SAMBA_USER", values)
         self.assertNotIn("TC_PAYLOAD_DIR_NAME", values)
 
@@ -604,6 +608,56 @@ class AppApiTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertEqual(values["TC_DEBUG_LOGGING"], "true")
+
+    def test_configure_ata_params_write_drive_timer_settings(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=probed_state()):
+                rc = service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {
+                            "config": str(config_path),
+                            "host": "root@10.0.0.2",
+                            "password": "goodpw",
+                            "ata_idle_seconds": 0,
+                            "ata_standby": 0,
+                        },
+                    },
+                    collector.sink,
+                )
+
+            values = parse_env_file(config_path)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(values["TC_ATA_IDLE_SECONDS"], "0")
+        self.assertEqual(values["TC_ATA_STANDBY"], "0")
+
+    def test_configure_blank_ata_standby_clears_existing_timer_setting(self) -> None:
+        collector = CollectingSink()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".env"
+            config_path.write_text("TC_HOST=root@10.0.0.2\nTC_ATA_IDLE_SECONDS=300\nTC_ATA_STANDBY=120\n")
+            with mock.patch("timecapsulesmb.app.ops.configure.probe_connection_state", return_value=probed_state()):
+                rc = service.run_api_request(
+                    {
+                        "operation": "configure",
+                        "params": {
+                            "config": str(config_path),
+                            "host": "root@10.0.0.2",
+                            "password": "goodpw",
+                            "ata_standby": "",
+                        },
+                    },
+                    collector.sink,
+                )
+
+            values = parse_env_file(config_path)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(values["TC_ATA_IDLE_SECONDS"], "300")
+        self.assertEqual(values["TC_ATA_STANDBY"], "")
 
     def test_configure_reports_acp_auth_failure_without_writing_env(self) -> None:
         collector = CollectingSink()
@@ -1141,6 +1195,31 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(error["code"], "validation_failed")
         self.assertIn("mount_wait must be an integer", error["message"])
 
+    def test_deploy_rejects_invalid_ata_overrides_before_remote_connection(self) -> None:
+        for field, value, expected in (
+            ("ata_idle_seconds", "bad", "ata_idle_seconds must be an integer"),
+            ("ata_standby", "bad", "ata_standby must be an integer"),
+        ):
+            with self.subTest(field=field):
+                collector = CollectingSink()
+                with mock.patch("timecapsulesmb.app.ops.deploy.load_env_config") as load_config:
+                    rc = service.run_api_request(
+                        {
+                            "operation": "deploy",
+                            "params": {
+                                "dry_run": True,
+                                field: value,
+                            },
+                        },
+                        collector.sink,
+                    )
+
+                self.assertEqual(rc, 1)
+                load_config.assert_not_called()
+                error = self.assert_single_terminal_event(collector, "error")
+                self.assertEqual(error["code"], "validation_failed")
+                self.assertIn(expected, error["message"])
+
     def test_deploy_no_reboot_uploads_and_activates_without_reboot_wait(self) -> None:
         collector = CollectingSink()
         connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
@@ -1176,6 +1255,8 @@ class AppApiTests(unittest.TestCase):
                                                                             "internal_share_use_disk_root": False,
                                                                             "any_protocol": False,
                                                                             "debug_logging": False,
+                                                                            "ata_idle_seconds": 0,
+                                                                            "ata_standby": 0,
                                                                         },
                                                                     },
                                                                     collector.sink,
@@ -1190,6 +1271,8 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(render_runtime.call_args.kwargs["internal_share_use_disk_root"], False)
         self.assertEqual(render_runtime.call_args.kwargs["any_protocol"], False)
         self.assertEqual(render_runtime.call_args.kwargs["debug_logging"], False)
+        self.assertEqual(render_runtime.call_args.kwargs["ata_idle_seconds"], 0)
+        self.assertEqual(render_runtime.call_args.kwargs["ata_standby"], 0)
         self.assertEqual(collector.events_of_type("result")[0]["payload"]["rebooted"], False)
         self.assertEqual(collector.events_of_type("result")[0]["payload"]["verified"], True)
 

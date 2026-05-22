@@ -43,6 +43,8 @@ final class DeployWorkflowStoreTests: XCTestCase {
         store.internalShareUseDiskRoot = true
         store.anyProtocol = true
         store.debugLogging = true
+        store.ataIdleSeconds = "0"
+        store.ataStandby = "0"
 
         store.runPlan(password: "pw")
 
@@ -59,8 +61,32 @@ final class DeployWorkflowStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[0].params["internal_share_use_disk_root"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["any_protocol"], .bool(true))
         XCTAssertEqual(runner.calls[0].params["debug_logging"], .bool(true))
+        XCTAssertEqual(runner.calls[0].params["ata_idle_seconds"], .number(0))
+        XCTAssertEqual(runner.calls[0].params["ata_standby"], .number(0))
         XCTAssertEqual(runner.calls[0].params["mount_wait"], .number(45))
         XCTAssertEqual(runner.calls[0].params["credentials"], .object(["password": .string("pw")]))
+    }
+
+    func testInvalidAtaOptionsMoveToPlanFailedWithoutRunningHelper() {
+        let runner = StoreTestRunner(responses: [])
+        let store = DeployWorkflowStore(backend: BackendClient(runner: runner))
+
+        store.ataIdleSeconds = "bad"
+        store.runPlan(password: "pw")
+
+        XCTAssertEqual(store.state, .planFailed)
+        XCTAssertEqual(store.error?.code, "validation_failed")
+        XCTAssertEqual(store.error?.message, "ATA idle seconds must be a non-negative integer.")
+        XCTAssertEqual(runner.calls, [])
+
+        store.ataIdleSeconds = "300"
+        store.ataStandby = "bad"
+        store.runPlan(password: "pw")
+
+        XCTAssertEqual(store.state, .planFailed)
+        XCTAssertEqual(store.error?.code, "validation_failed")
+        XCTAssertEqual(store.error?.message, "ATA standby seconds must be blank or a non-negative integer.")
+        XCTAssertEqual(runner.calls, [])
     }
 
     func testNoRebootAndNoWaitAreMutuallyExclusive() async throws {

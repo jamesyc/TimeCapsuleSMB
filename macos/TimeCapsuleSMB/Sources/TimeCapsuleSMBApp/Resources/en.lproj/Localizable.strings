@@ -267,6 +267,8 @@
 "event.summary.result.failed" = "failed";
 "event.summary.result.finished" = "finished";
 "event.summary.stage" = "%@: %@";
+"field.ata_idle_seconds" = "ATA idle seconds";
+"field.ata_standby" = "ATA standby seconds";
 "field.bonjour_timeout" = "Bonjour timeout seconds";
 "field.fsck_volume" = "fsck volume, optional";
 "field.helper" = "Helper";
@@ -411,9 +413,12 @@
 "password.error.missing" = "Password is missing.";
 "password.error.required" = "Password is required.";
 "password.error.unreadable_keychain_item" = "Keychain returned an unreadable password.";
+"profile_editor.advanced" = "Advanced";
 "profile_editor.display_name" = "Display Name";
 "profile_editor.error.duplicate_host" = "Another saved Time Capsule already uses this host.";
 "profile_editor.error.host_required" = "Host is required.";
+"profile_editor.error.ata_idle_seconds_invalid" = "ATA idle seconds must be a non-negative integer.";
+"profile_editor.error.ata_standby_invalid" = "ATA standby seconds must be blank or a non-negative integer.";
 "profile_editor.error.mount_wait_invalid" = "Mount wait must be a non-negative integer.";
 "profile_editor.error.password_required" = "A saved password is required to change the host.";
 "profile_editor.reset" = "Reset";
@@ -488,6 +493,7 @@
 "timeline.stage.checking_bundled_files" = "Checking Bundled Files";
 "timeline.stage.checking_runtime" = "Checking SMB";
 "timeline.stage.checking_ssh" = "Checking SSH";
+"timeline.stage.deleting_old_deployed_files" = "Deleting Old Deployed Files";
 "timeline.stage.enabling_ssh" = "Enabling SSH";
 "timeline.stage.finding_disk" = "Finding Disk";
 "timeline.stage.finding_time_capsules" = "Finding Time Capsules";

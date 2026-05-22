@@ -19,11 +19,13 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             "hostRequired",
             "duplicateHost",
             "mountWaitInvalid",
+            "ataIdleSecondsInvalid",
+            "ataStandbyInvalid",
             "passwordRequired"
         ])
     }
 
-    func testMountWaitValidationAcceptsZeroAndPositiveIntegersOnly() throws {
+    func testIntegerSettingValidationAcceptsZeroAndPositiveIntegersOnly() throws {
         var draft = DeviceProfileEditorDraft(
             displayName: "Office",
             host: "10.0.0.2",
@@ -40,6 +42,30 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             draft.mountWaitSeconds = invalid
             XCTAssertThrowsError(try draft.validatedSettings()) { error in
                 XCTAssertEqual(error as? DeviceProfileEditorValidationError, .mountWaitInvalid)
+            }
+        }
+
+        draft.mountWaitSeconds = "45"
+        draft.ataIdleSeconds = "0"
+        XCTAssertEqual(try draft.validatedSettings().ataIdleSeconds, 0)
+        draft.ataIdleSeconds = "300"
+        XCTAssertEqual(try draft.validatedSettings().ataIdleSeconds, 300)
+        for invalid in ["", "-1", "1.5", "abc"] {
+            draft.ataIdleSeconds = invalid
+            XCTAssertThrowsError(try draft.validatedSettings()) { error in
+                XCTAssertEqual(error as? DeviceProfileEditorValidationError, .ataIdleSecondsInvalid)
+            }
+        }
+
+        draft.ataIdleSeconds = "300"
+        draft.ataStandby = ""
+        XCTAssertNil(try draft.validatedSettings().ataStandby)
+        draft.ataStandby = "0"
+        XCTAssertEqual(try draft.validatedSettings().ataStandby, 0)
+        for invalid in ["-1", "1.5", "abc"] {
+            draft.ataStandby = invalid
+            XCTAssertThrowsError(try draft.validatedSettings()) { error in
+                XCTAssertEqual(error as? DeviceProfileEditorValidationError, .ataStandbyInvalid)
             }
         }
     }
@@ -103,6 +129,8 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         store.draft.anyProtocol = true
         store.draft.debugLogging = true
         store.draft.mountWaitSeconds = "45"
+        store.draft.ataIdleSeconds = "0"
+        store.draft.ataStandby = "0"
 
         await store.save(profile: profile)
 
@@ -115,7 +143,9 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             internalShareUseDiskRoot: true,
             anyProtocol: true,
             debugLogging: true,
-            mountWaitSeconds: 45
+            mountWaitSeconds: 45,
+            ataIdleSeconds: 0,
+            ataStandby: 0
         ))
         XCTAssertEqual(fixture.runner.calls, [])
     }
@@ -237,6 +267,8 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         store.draft.anyProtocol = true
         store.draft.debugLogging = true
         store.draft.mountWaitSeconds = "60"
+        store.draft.ataIdleSeconds = "0"
+        store.draft.ataStandby = "0"
 
         await store.save(profile: profile)
 
@@ -251,6 +283,8 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
         XCTAssertEqual(call.params["internal_share_use_disk_root"], .bool(true))
         XCTAssertEqual(call.params["any_protocol"], .bool(true))
         XCTAssertEqual(call.params["debug_logging"], .bool(true))
+        XCTAssertEqual(call.params["ata_idle_seconds"], .number(0))
+        XCTAssertEqual(call.params["ata_standby"], .number(0))
 
         let saved = try XCTUnwrap(fixture.registry.profile(id: profile.id))
         XCTAssertEqual(saved.id, profile.id)
@@ -264,7 +298,9 @@ final class DeviceProfileEditorStoreTests: XCTestCase {
             internalShareUseDiskRoot: true,
             anyProtocol: true,
             debugLogging: true,
-            mountWaitSeconds: 60
+            mountWaitSeconds: 60,
+            ataIdleSeconds: 0,
+            ataStandby: 0
         ))
     }
 
