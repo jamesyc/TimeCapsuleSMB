@@ -65,6 +65,7 @@
 #define AUTO_IP_STARTUP_POLL_SECONDS 2
 #define AUTO_IP_STABLE_POLL_SECONDS 30
 #define MDNS_DEGRADED_RETRY_SECONDS 5
+#define MDNS_COUNTER_LOG_INTERVAL_MS 30000
 #define ADVERTISER_VERSION_CODE 2104
 #define DNS_SD_SERVICE_ENUMERATION_NAME "_services._dns-sd._udp.local."
 
@@ -379,12 +380,26 @@ struct mdns_runtime_counters {
     char last_send_failure[160];
 };
 
+struct mdns_counter_log_state {
+    unsigned long ipv4_packets_received;
+    unsigned long ipv6_packets_received;
+    unsigned long query_packets_matched;
+    unsigned long responses_sent;
+    unsigned long send_failures;
+    long long last_log_ms;
+    int logged_ipv4_packet;
+    int logged_ipv6_packet;
+    int logged_query_match;
+};
+
 static struct deferred_response g_deferred_response;
 static struct mdns_runtime_counters g_mdns_counters;
+static struct mdns_counter_log_state g_mdns_counter_log_state;
 static int g_last_ipv4_socket_errno = 0;
 static int g_last_ipv6_socket_errno = 0;
 static const unsigned int g_startup_burst_offsets_ms[STARTUP_BURST_COUNT] = {0, 1000, 3000, 7000};
 
+static long long monotonic_millis(void);
 static int name_equals(const char *a, const char *b);
 static int build_instance_fqdn(char *out, size_t out_len, const char *instance_name, const char *service_type);
 static int open_mdns_socket(int shared_bind, int log_bind_errors, uint32_t ipv4_addr, const char *socket_role);
@@ -764,6 +779,77 @@ static void log_mdns_counters(const char *reason) {
             g_mdns_counters.responses_sent,
             g_mdns_counters.send_failures,
             g_mdns_counters.last_send_failure[0] != '\0' ? g_mdns_counters.last_send_failure : "(none)");
+}
+
+static void remember_logged_mdns_counters(long long now_ms) {
+    g_mdns_counter_log_state.ipv4_packets_received = g_mdns_counters.ipv4_packets_received;
+    g_mdns_counter_log_state.ipv6_packets_received = g_mdns_counters.ipv6_packets_received;
+    g_mdns_counter_log_state.query_packets_matched = g_mdns_counters.query_packets_matched;
+    g_mdns_counter_log_state.responses_sent = g_mdns_counters.responses_sent;
+    g_mdns_counter_log_state.send_failures = g_mdns_counters.send_failures;
+    g_mdns_counter_log_state.last_log_ms = now_ms;
+}
+
+static int mdns_counters_changed_since_log(void) {
+    return g_mdns_counter_log_state.ipv4_packets_received != g_mdns_counters.ipv4_packets_received ||
+           g_mdns_counter_log_state.ipv6_packets_received != g_mdns_counters.ipv6_packets_received ||
+           g_mdns_counter_log_state.query_packets_matched != g_mdns_counters.query_packets_matched ||
+           g_mdns_counter_log_state.responses_sent != g_mdns_counters.responses_sent ||
+           g_mdns_counter_log_state.send_failures != g_mdns_counters.send_failures;
+}
+
+static void log_mdns_counters_force(const char *reason) {
+    long long now_ms = monotonic_millis();
+
+    log_mdns_counters(reason);
+    remember_logged_mdns_counters(now_ms);
+}
+
+static void maybe_log_mdns_counters(const char *reason, long long now_ms) {
+    if (!mdns_counters_changed_since_log()) {
+        return;
+    }
+    if (g_mdns_counter_log_state.last_log_ms > 0 &&
+        now_ms - g_mdns_counter_log_state.last_log_ms < MDNS_COUNTER_LOG_INTERVAL_MS) {
+        return;
+    }
+    log_mdns_counters(reason);
+    remember_logged_mdns_counters(now_ms);
+}
+
+static int note_mdns_ipv4_packet_received(void) {
+    g_mdns_counters.ipv4_packets_received++;
+    if (!g_mdns_counter_log_state.logged_ipv4_packet) {
+        g_mdns_counter_log_state.logged_ipv4_packet = 1;
+        return 1;
+    }
+    return 0;
+}
+
+static int note_mdns_ipv6_packet_received(void) {
+    g_mdns_counters.ipv6_packets_received++;
+    if (!g_mdns_counter_log_state.logged_ipv6_packet) {
+        g_mdns_counter_log_state.logged_ipv6_packet = 1;
+        return 1;
+    }
+    return 0;
+}
+
+static void log_mdns_receive_counters(const char *first_packet_reason,
+                                      int first_packet,
+                                      unsigned long query_matches_before,
+                                      long long now_ms) {
+    if (g_mdns_counters.query_packets_matched > query_matches_before &&
+        !g_mdns_counter_log_state.logged_query_match) {
+        g_mdns_counter_log_state.logged_query_match = 1;
+        log_mdns_counters_force("first_query_match");
+        return;
+    }
+    if (first_packet) {
+        log_mdns_counters_force(first_packet_reason);
+        return;
+    }
+    maybe_log_mdns_counters("traffic_summary", now_ms);
 }
 
 static void mdns_transport_requirements_from_links(const struct link_context_set *desired_links,
@@ -4214,6 +4300,7 @@ static void log_packet_send_failure_detail_any(const char *stage, const struct s
             use_snapshot_records ? "snapshot" : "generated",
             saved_errno,
             strerror(saved_errno));
+    log_mdns_counters_force("send_failure");
 }
 
 static int send_dns_packet_any(const char *stage, int sockfd, const uint8_t *buf, size_t packet_len,
@@ -6430,6 +6517,7 @@ int main(int argc, char **argv) {
     int snapshot_capture_failed = 0;
     int snapshot_capture_skipped = 0;
     int trusted_snapshot_written = 0;
+    int explicit_startup_counters_logged = 0;
     size_t startup_burst_index = 0;
     long long startup_burst_start_ms = 0;
 
@@ -6754,6 +6842,7 @@ int main(int argc, char **argv) {
         time_t last_degraded_retry;
         struct mdns_socket_pair sockets;
         struct mdns_transport_status transport_status;
+        int startup_counters_logged = 0;
 
         if (!auto_contexts_ready) {
             if (wait_for_auto_advertise_link_contexts(&desired_links, "mdns runtime") != 0) {
@@ -6769,6 +6858,7 @@ int main(int argc, char **argv) {
         }
         log_link_contexts("mdns runtime active", &active_links);
         log_mdns_transport_status("startup", &active_links, &transport_status);
+        log_mdns_counters_force("startup");
 
         startup_burst_start_ms = monotonic_millis();
         last_iface_poll = time(NULL);
@@ -6839,6 +6929,8 @@ int main(int argc, char **argv) {
                             fprintf(stderr, "mdns auto-ip: re-announcing after link change\n");
                             startup_burst_start_ms = monotonic_millis();
                             startup_burst_index = 0;
+                            startup_counters_logged = 0;
+                            log_mdns_counters_force("link_change");
                             last_degraded_retry = time(NULL);
                         }
                     }
@@ -6868,8 +6960,11 @@ int main(int argc, char **argv) {
                     fprintf(stderr, "mdns auto-ip: re-announcing after degraded transport retry\n");
                     startup_burst_start_ms = monotonic_millis();
                     startup_burst_index = 0;
+                    startup_counters_logged = 0;
+                    log_mdns_counters_force("degraded_retry");
                 } else {
                     log_mdns_transport_status("degraded_retry_failed", &active_links, &transport_status);
+                    log_mdns_counters_force("degraded_retry_failed");
                 }
                 last_degraded_retry = time(NULL);
             }
@@ -6882,6 +6977,11 @@ int main(int argc, char **argv) {
                 startup_burst_index++;
                 now_ms = monotonic_millis();
             }
+            if (startup_burst_index >= STARTUP_BURST_COUNT && !startup_counters_logged) {
+                log_mdns_counters_force("startup_announcements_complete");
+                startup_counters_logged = 1;
+            }
+            maybe_log_mdns_counters("traffic_summary", now_ms);
 
             FD_ZERO(&rfds);
             if (sockets.ipv4_fd >= 0) {
@@ -6929,7 +7029,8 @@ int main(int argc, char **argv) {
                     ssize_t nread = recvfrom(sockets.ipv4_fd, packet, sizeof(packet), 0, (struct sockaddr *)&src, &src_len);
                     if (nread > 0) {
                         const struct link_context *link = select_response_link_ipv4(&active_links, &src);
-                        g_mdns_counters.ipv4_packets_received++;
+                        int first_packet = note_mdns_ipv4_packet_received();
+                        unsigned long query_matches_before = g_mdns_counters.query_packets_matched;
                         if (link != NULL &&
                             (set_link_outbound_interface4_for_peer(sockets.ipv4_fd, link, src.sin_addr.s_addr) != 0 ||
                              handle_query(sockets.ipv4_fd, packet, (size_t)nread, &mdns_dest, &src, &cfg, link, &snapshot_records, use_snapshot_records) != 0)) {
@@ -6939,7 +7040,7 @@ int main(int argc, char **argv) {
                                      (long)nread, inet_ntoa(src.sin_addr), (unsigned int)ntohs(src.sin_port));
                             log_send_failure("query_response", &mdns_dest, use_snapshot_records, detail);
                         }
-                        log_mdns_counters("ipv4_packet");
+                        log_mdns_receive_counters("first_ipv4_packet", first_packet, query_matches_before, now_ms);
                     }
                 }
                 if (selected > 0 && sockets.ipv6_fd >= 0 && FD_ISSET(sockets.ipv6_fd, &rfds)) {
@@ -6948,7 +7049,8 @@ int main(int argc, char **argv) {
                     ssize_t nread = recvfrom(sockets.ipv6_fd, packet, sizeof(packet), 0, (struct sockaddr *)&src6, &src6_len);
                     if (nread > 0) {
                         const struct link_context *link = select_response_link_ipv6(&active_links, &src6);
-                        g_mdns_counters.ipv6_packets_received++;
+                        int first_packet = note_mdns_ipv6_packet_received();
+                        unsigned long query_matches_before = g_mdns_counters.query_packets_matched;
                         if (link != NULL) {
                             struct sockaddr_in6 scoped_dest6;
                             int query_status;
@@ -6978,7 +7080,7 @@ int main(int argc, char **argv) {
                                         srcbuf);
                             }
                         }
-                        log_mdns_counters("ipv6_packet");
+                        log_mdns_receive_counters("first_ipv6_packet", first_packet, query_matches_before, now_ms);
                     }
                 }
             }
@@ -6986,6 +7088,7 @@ int main(int argc, char **argv) {
         }
 
         send_link_goodbyes(&sockets, &active_links, &mdns_dest, &mdns_dest6, &cfg, &snapshot_records, use_snapshot_records);
+        log_mdns_counters_force("shutdown");
         close_mdns_socket_pair(&sockets);
         return 0;
     }
@@ -6996,6 +7099,7 @@ int main(int argc, char **argv) {
     }
 
     startup_burst_start_ms = monotonic_millis();
+    log_mdns_counters_force("startup");
 
     while (!g_stop) {
         fd_set rfds;
@@ -7021,6 +7125,11 @@ int main(int argc, char **argv) {
             startup_burst_index++;
             now_ms = monotonic_millis();
         }
+        if (startup_burst_index >= STARTUP_BURST_COUNT && !explicit_startup_counters_logged) {
+            log_mdns_counters_force("startup_announcements_complete");
+            explicit_startup_counters_logged = 1;
+        }
+        maybe_log_mdns_counters("traffic_summary", now_ms);
 
         FD_ZERO(&rfds);
         FD_SET(sockfd, &rfds);
@@ -7043,6 +7152,8 @@ int main(int argc, char **argv) {
             nread = recvfrom(sockfd, packet, sizeof(packet), 0, (struct sockaddr *)&src, &src_len);
             if (nread > 0) {
                 struct link_context link;
+                int first_packet = note_mdns_ipv4_packet_received();
+                unsigned long query_matches_before = g_mdns_counters.query_packets_matched;
                 init_explicit_link_context(&link, cfg.ipv4_addr);
                 if (handle_query(sockfd, packet, (size_t)nread, &mdns_dest, &src, &cfg, &link, &snapshot_records, use_snapshot_records) != 0) {
                     char detail[128];
@@ -7050,12 +7161,14 @@ int main(int argc, char **argv) {
                              (long)nread, inet_ntoa(src.sin_addr), (unsigned int)ntohs(src.sin_port));
                     log_send_failure("query_response", &mdns_dest, use_snapshot_records, detail);
                 }
+                log_mdns_receive_counters("first_ipv4_packet", first_packet, query_matches_before, now_ms);
             }
         }
 
     }
 
     clear_deferred_response_for_sockfd(sockfd);
+    log_mdns_counters_force("shutdown");
     close(sockfd);
     return 0;
 }
