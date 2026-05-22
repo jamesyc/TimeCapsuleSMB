@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 import threading
 import uuid
 from collections.abc import Mapping
@@ -21,6 +20,12 @@ from timecapsulesmb.device.storage import (
 )
 from timecapsulesmb.telemetry import build_device_os_version
 from timecapsulesmb.telemetry.debug import debug_summary, render_debug_mapping
+from timecapsulesmb.telemetry.operation import (
+    OperationTelemetrySession,
+    client_from_environment,
+    telemetry_details_from_payload,
+    telemetry_options_from_args,
+)
 from timecapsulesmb.transport.errors import TransportError
 
 if TYPE_CHECKING:
@@ -137,7 +142,6 @@ class CommandContext:
         self.config = config
         self.args = args
         self.finished_event = finished_event
-        self.start_time = time.monotonic()
         self.finished = False
         self.command_id = str(uuid.uuid4())
         self.result = "failure"
@@ -152,7 +156,17 @@ class CommandContext:
         self.compatibility: DeviceCompatibility | None = None
         self._optional_airport_identity_thread: threading.Thread | None = None
         self._optional_airport_identity: tuple[str | None, str | None] | None = None
-        self._emit_telemetry(started_event, command_id=self.command_id, **fields)
+        self.telemetry_session = OperationTelemetrySession(
+            telemetry,
+            command_name,
+            entrypoint="cli",
+            client=client_from_environment(entrypoint="cli"),
+            started_event=started_event,
+            finished_event=finished_event,
+            operation_id=self.command_id,
+            options=telemetry_options_from_args(args),
+        )
+        self.telemetry_session.start(**fields)
 
     def __enter__(self) -> "CommandContext":
         return self
@@ -284,12 +298,6 @@ class CommandContext:
                 config=self.config,
             ),
         ])
-
-    def _emit_telemetry(self, event: str, **fields: object) -> None:
-        try:
-            self.telemetry.emit(event, **fields)
-        except Exception:
-            pass
 
     def confirm_or_fail(
         self,
@@ -489,19 +497,26 @@ class CommandContext:
         self.harvest_optional_airport_identity_probe(timeout_seconds=OPTIONAL_IDENTITY_PROBE_FINISH_TIMEOUT_SECONDS)
         emit_fields = dict(self.finish_fields)
         emit_fields.update(fields)
-        duration_sec = round(time.monotonic() - self.start_time, 3)
         try:
             error = None if result == "success" else self.build_error()
         except Exception as exc:
             error = f"{self.command_name} failed, and debug context rendering also failed: {type(exc).__name__}: {exc}"
         if result != "success" and error is None:
             error = f"{self.command_name} failed without additional details."
-        self._emit_telemetry(
-            self.finished_event,
-            synchronous=True,
-            command_id=self.command_id,
+        if self.args is None:
+            params: Mapping[str, object] = {}
+        elif isinstance(self.args, Mapping):
+            params = self.args
+        else:
+            try:
+                params = vars(self.args)
+            except TypeError:
+                params = {}
+        details = telemetry_details_from_payload(self.command_name, params, emit_fields)
+        self.telemetry_session.finish(
             result=result,
-            duration_sec=duration_sec,
             error=error,
+            stage=self.debug_stage,
+            details=details,
             **emit_fields,
         )

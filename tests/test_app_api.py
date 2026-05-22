@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -19,6 +20,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from timecapsulesmb.app.events import AppEvent, EventSink
+from timecapsulesmb.app.confirmations import build_confirmation
 from timecapsulesmb import repair_xattrs as repair_xattrs_domain
 from timecapsulesmb.app import contracts, helper, service
 from timecapsulesmb.cli.version_check import VersionCheckResult
@@ -458,6 +460,117 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(error["code"], "operation_failed")
         self.assertIn("Traceback", error["debug"]["traceback"])
         self.assertIn("RuntimeError: boom", error["debug"]["traceback"])
+
+    def test_dispatcher_emits_api_operation_telemetry(self) -> None:
+        collector = CollectingSink()
+        telemetry = mock.Mock()
+
+        def run_fsck(params, sink):
+            sink.stage("fsck", "run_fsck")
+            return service.OperationResult(True, {
+                "device": "/dev/dk2",
+                "mountpoint": "/Volumes/Data",
+                "returncode": 0,
+                "reboot_requested": True,
+                "waited": True,
+                "verified": True,
+            })
+
+        with mock.patch.dict(service.OPERATIONS, {"fsck": run_fsck}):
+            with mock.patch.dict(os.environ, {"TCAPSULE_CLIENT": "macos_gui"}, clear=False):
+                with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
+                    with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
+                        with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
+                            with mock.patch("timecapsulesmb.app.service.TelemetryClient.from_config", return_value=telemetry):
+                                rc = service.run_api_request(
+                                    {
+                                        "operation": "fsck",
+                                        "params": {
+                                            "volume": "Data",
+                                            "dry_run": False,
+                                            "no_reboot": False,
+                                            "no_wait": False,
+                                            "mount_wait": 30,
+                                        },
+                                    },
+                                    collector.sink,
+                                )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(telemetry.emit.call_count, 2)
+        started = telemetry.emit.call_args_list[0]
+        finished = telemetry.emit.call_args_list[1]
+        self.assertEqual(started.args, ("fsck_started",))
+        self.assertEqual(started.kwargs["operation"], "fsck")
+        self.assertEqual(started.kwargs["phase"], "started")
+        self.assertEqual(started.kwargs["entrypoint"], "api")
+        self.assertEqual(started.kwargs["client"], "macos_gui")
+        self.assertEqual(started.kwargs["options"], {
+            "dry_run": False,
+            "mount_wait": 30,
+            "no_reboot": False,
+            "no_wait": False,
+        })
+        self.assertEqual(finished.args, ("fsck_finished",))
+        self.assertEqual(finished.kwargs["phase"], "finished")
+        self.assertEqual(finished.kwargs["operation_id"], started.kwargs["operation_id"])
+        self.assertEqual(finished.kwargs["result"], "success")
+        self.assertEqual(finished.kwargs["stage"], "run_fsck")
+        self.assertEqual(finished.kwargs["risk"], "destructive")
+        self.assertEqual(finished.kwargs["details"]["volume"], "Data")
+        self.assertEqual(finished.kwargs["details"]["fsck_device"], "/dev/dk2")
+        self.assertEqual(finished.kwargs["details"]["fsck_mountpoint"], "/Volumes/Data")
+        self.assertEqual(finished.kwargs["details"]["returncode"], 0)
+        self.assertTrue(finished.kwargs["details"]["reboot_requested"])
+        self.assertTrue(finished.kwargs["details"]["waited"])
+        self.assertTrue(finished.kwargs["details"]["verified"])
+
+    def test_dispatcher_emits_confirmation_required_telemetry(self) -> None:
+        collector = CollectingSink()
+        telemetry = mock.Mock()
+
+        def run_fsck(params, sink):
+            sink.stage("fsck", "select_fsck_volume")
+            raise service.AppConfirmationRequired(build_confirmation(
+                operation="fsck",
+                params=params,
+                title="Confirm fsck",
+                message="Run fsck on the selected HFS volume and reboot the device?",
+                action_title="Run fsck",
+                risk="destructive",
+                summary="Filesystem check and repair",
+                context={"volume": params.get("volume")},
+                presentation_id="fsck.reboot",
+                presentation_values={"volume": params.get("volume")},
+            ))
+
+        with mock.patch.dict(service.OPERATIONS, {"fsck": run_fsck}):
+            with mock.patch("timecapsulesmb.app.service.resolve_app_paths", return_value=SimpleNamespace(bootstrap_path=Path("/tmp/bootstrap"))):
+                with mock.patch("timecapsulesmb.app.service.ensure_install_id"):
+                    with mock.patch("timecapsulesmb.app.service.load_optional_env_config", return_value=AppConfig.from_values({})):
+                        with mock.patch("timecapsulesmb.app.service.TelemetryClient.from_config", return_value=telemetry):
+                            rc = service.run_api_request(
+                                {"operation": "fsck", "params": {"volume": "Data"}},
+                                collector.sink,
+                            )
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(telemetry.emit.call_count, 2)
+        finished_kwargs = telemetry.emit.call_args_list[1].kwargs
+        self.assertEqual(finished_kwargs["result"], "confirmation_required")
+        self.assertIsNone(finished_kwargs["error"])
+        self.assertEqual(finished_kwargs["risk"], "destructive")
+        self.assertEqual(finished_kwargs["details"]["presentation_id"], "fsck.reboot")
+        self.assertEqual(finished_kwargs["details"]["presentation_values"]["volume"], "Data")
+
+    def test_dispatcher_does_not_emit_readiness_operation_telemetry(self) -> None:
+        collector = CollectingSink()
+
+        with mock.patch("timecapsulesmb.app.service.TelemetryClient.from_config") as telemetry_factory:
+            rc = service.run_api_request({"operation": "paths", "params": {}}, collector.sink)
+
+        self.assertEqual(rc, 0)
+        telemetry_factory.assert_not_called()
 
     def test_discover_operation_returns_snapshot_payload(self) -> None:
         collector = CollectingSink()

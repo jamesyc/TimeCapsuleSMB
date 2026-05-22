@@ -24,7 +24,26 @@ final class HelperLocatorTests: XCTestCase {
         XCTAssertNil(resolution.toolsBinURL)
         XCTAssertNotNil(environment["TCAPSULE_CONFIG"])
         XCTAssertNotNil(environment["TCAPSULE_STATE_DIR"])
+        XCTAssertEqual(environment["TCAPSULE_CLIENT"], "macos_gui")
         XCTAssertEqual(environment["PYTHONNOUSERSITE"], "1")
+    }
+
+    func testLocatorPreservesExplicitTelemetryClientEnvironment() throws {
+        let temp = try TemporaryDirectory()
+        let helper = temp.url.appendingPathComponent("tcapsule")
+        try "#!/bin/sh\nexit 0\n".write(to: helper, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
+        let locator = HelperLocator(
+            environment: ["TCAPSULE_CLIENT": "integration_test"],
+            currentDirectory: temp.url,
+            bundle: .main,
+            fileManager: .default
+        )
+
+        let resolution = try locator.resolve(helperPath: helper.path)
+        let environment = locator.helperEnvironment(for: resolution)
+
+        XCTAssertEqual(environment["TCAPSULE_CLIENT"], "integration_test")
     }
 
     func testLocatorUsesDeviceContextConfigWithoutChangingAppStateDirectory() throws {

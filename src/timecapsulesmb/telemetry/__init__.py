@@ -17,7 +17,7 @@ from timecapsulesmb.core.release import CLI_VERSION, RELEASE_TAG, SAMBA_VERSION
 from timecapsulesmb.identity import load_install_identity
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DEFAULT_TELEMETRY_URL = "https://timecapsulesmb.jamesyc.com/v1/events"
 TELEMETRY_URL_ENV = "TCAPSULE_TELEMETRY_URL"
 TELEMETRY_TOKEN_ENV = "TCAPSULE_TELEMETRY_TOKEN"
@@ -75,10 +75,26 @@ class TelemetryClient:
         )
         return cls(endpoint=endpoint, token=token, context=context, enabled=identity.telemetry_enabled)
 
-    def emit(self, event: str, *, synchronous: bool = False, **fields: object) -> None:
+    def emit(
+        self,
+        event: str,
+        *,
+        synchronous: bool = False,
+        operation: str | None = None,
+        phase: str | None = None,
+        operation_id: str | None = None,
+        entrypoint: str | None = None,
+        client: str | None = None,
+        options: dict[str, object] | None = None,
+        details: dict[str, object] | None = None,
+        **fields: object,
+    ) -> None:
         if not self.enabled or self.context is None:
             return
         try:
+            inferred_operation, inferred_phase = infer_operation_phase(event)
+            operation = operation or inferred_operation
+            phase = phase or inferred_phase
             payload: dict[str, object] = {
                 "schema_version": SCHEMA_VERSION,
                 "event": event,
@@ -91,6 +107,16 @@ class TelemetryClient:
                 "host_os": self.context.host_os,
                 "host_os_version": self.context.host_os_version,
             }
+            if operation:
+                payload["operation"] = operation
+            if phase:
+                payload["phase"] = phase
+            if operation_id:
+                payload["operation_id"] = operation_id
+            if entrypoint:
+                payload["entrypoint"] = entrypoint
+            if client:
+                payload["client"] = client
             if self.context.configure_id:
                 payload["configure_id"] = self.context.configure_id
             if self.context.device_model:
@@ -99,6 +125,10 @@ class TelemetryClient:
                 payload["device_syap"] = self.context.device_syap
             if self.context.nbns_enabled is not None:
                 payload["nbns_enabled"] = self.context.nbns_enabled
+            if options is not None:
+                payload["options"] = options
+            if details is not None:
+                payload["details"] = details
             for key, value in fields.items():
                 if value is not None:
                     payload[key] = value
@@ -181,6 +211,14 @@ def run_text_command(command: list[str]) -> str | None:
         return None
     value = proc.stdout.strip()
     return value or None
+
+
+def infer_operation_phase(event: str) -> tuple[str | None, str | None]:
+    if event.endswith("_started"):
+        return event.removesuffix("_started").replace("_", "-"), "started"
+    if event.endswith("_finished"):
+        return event.removesuffix("_finished").replace("_", "-"), "finished"
+    return None, None
 
 
 def parse_os_release() -> dict[str, str]:

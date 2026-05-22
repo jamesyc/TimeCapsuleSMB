@@ -40,3 +40,14 @@ OPERATIONS: dict[str, Callable[[dict[str, object], EventSink], OperationResult]]
     "validate-install": validate_install_operation,
     "version-check": version_check_operation,
 }
+
+
+TELEMETRY_OPERATIONS = frozenset({
+    "activate",
+    "configure",
+    "deploy",
+    "doctor",
+    "fsck",
+    "repair-xattrs",
+    "uninstall",
+})

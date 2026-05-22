@@ -60,6 +60,7 @@ class EventSink:
         self.request_id = request_id or str(uuid.uuid4())
         self.schema_version = schema_version
         self._current_stage_by_operation: dict[str, str] = {}
+        self._current_risk_by_operation: dict[str, str] = {}
 
     def with_request_id(self, request_id: str) -> "EventSink":
         return EventSink(self._emit, request_id=request_id, schema_version=self.schema_version)
@@ -78,12 +79,18 @@ class EventSink:
     def current_stage(self, operation: str) -> str | None:
         return self._current_stage_by_operation.get(operation)
 
+    def current_risk(self, operation: str) -> str | None:
+        return self._current_risk_by_operation.get(operation)
+
     def stage(self, operation: str, stage: str) -> None:
         self._current_stage_by_operation[operation] = stage
         fields: dict[str, object] = {"stage": stage}
         policy = stage_policy(operation, stage)
         if policy is not None:
             fields.update(policy.to_jsonable())
+        risk = fields.get("risk")
+        if isinstance(risk, str):
+            self._current_risk_by_operation[operation] = risk
         self.emit(AppEvent("stage", operation, fields))
 
     def log(self, operation: str, message: str, *, level: str = "info") -> None:

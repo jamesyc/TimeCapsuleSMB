@@ -82,6 +82,9 @@ public struct HelperLocator {
         if let toolsBin = resolution.toolsBinURL, isDirectory(toolsBin) {
             output["PATH"] = pathByPrepending(toolsBin.path, to: output["PATH"])
         }
+        if output["TCAPSULE_CLIENT"] == nil {
+            output["TCAPSULE_CLIENT"] = "macos_gui"
+        }
         output["PYTHONNOUSERSITE"] = "1"
         return output
     }
