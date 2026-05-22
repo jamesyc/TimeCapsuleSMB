@@ -58,7 +58,7 @@ from timecapsulesmb.discovery.bonjour import (
     BonjourResolvedService,
     BonjourServiceInstance,
 )
-from timecapsulesmb.transport.ssh import SshConnection, SshError
+from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshError
 
 
 DEFAULT_SMB_PORT_CHECK = object()
@@ -465,6 +465,25 @@ class CheckTests(unittest.TestCase):
             run.results[-1].message,
             f"deployed payload has no version metadata; current version is {RELEASE_TAG}; please run deploy to update your device",
         )
+        managed_smbd.assert_not_called()
+
+    def test_run_doctor_checks_tells_user_to_reboot_when_deployed_version_probe_fails(self) -> None:
+        managed_smbd = mock.Mock()
+        error = SshCommandTimeout(
+            "Timed out waiting for ssh command to finish: /bin/sh -c 'config=/mnt/Flash/tcapsulesmb.conf; ...'"
+        )
+        run = self.run_doctor_with_mocks(
+            ssh_login=mock.Mock(status="PASS", message="ssh ok"),
+            extra_patches={
+                "timecapsulesmb.checks.doctor_steps.read_deployed_version_conn": mock.Mock(side_effect=error),
+                "timecapsulesmb.checks.doctor_steps.probe_managed_smbd_conn": managed_smbd,
+            },
+        )
+
+        self.assertTrue(run.fatal)
+        self.assertIn("deployed payload version probe failed", run.results[-1].message)
+        self.assertIn("reboot the device and rerun doctor", run.results[-1].message)
+        self.assertIn("/mnt/Flash/tcapsulesmb.conf", run.results[-1].message)
         managed_smbd.assert_not_called()
 
     def test_run_doctor_checks_stops_when_deployed_version_is_older(self) -> None:
