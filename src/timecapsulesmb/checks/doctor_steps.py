@@ -7,7 +7,6 @@ from timecapsulesmb.checks.bonjour import (
     BonjourServiceTarget,
     build_bonjour_expected_identity,
     check_bonjour_host_ip,
-    check_bonjour_host_link_local_ips,
     check_smb_instance,
     check_smb_service_target,
     discover_smb_services_detailed,
@@ -249,16 +248,6 @@ def _add_bonjour_host_ip_results(
         record_ips=record_ips,
     )
     add_result(host_ip_result)
-    if host_ip_result.status != "PASS":
-        return
-
-    link_local_result = check_bonjour_host_link_local_ips(
-        hostname,
-        expected_ip=expected_ip,
-        record_ips=record_ips,
-    )
-    if link_local_result is not None:
-        add_result(link_local_result)
 
 
 def _add_bonjour_results(

@@ -2102,7 +2102,7 @@ MaSt = (
                 textwrap.dedent(
                     f"""\
                     #!/bin/sh
-                    [ "$1" = "--print-auto-ip-cidrs" ] || exit 2
+                    [ "$1" = "--print-smb-bind-interfaces" ] || exit 2
                     if [ -f {probe_count} ]; then
                         echo 192.168.1.40/24
                     else
@@ -2136,9 +2136,9 @@ MaSt = (
             log_text = (memory / "samba4/var/test.log").read_text()
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "sleep 3\nbind=127.0.0.1/8 192.168.1.40/24\n")
-        self.assertIn("first usable IPv4 observed: 192.168.1.39/24", log_text)
-        self.assertIn("Samba IPv4 bind interfaces: 127.0.0.1/8 192.168.1.40/24", log_text)
+        self.assertEqual(proc.stdout, "sleep 3\nbind=127.0.0.1/8 ::1/128 192.168.1.40/24\n")
+        self.assertIn("first usable address observed: 192.168.1.39/24", log_text)
+        self.assertIn("Samba bind interfaces: 127.0.0.1/8 ::1/128 192.168.1.40/24", log_text)
 
     def test_common_smb_bind_probe_rejects_invalid_cidr_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2174,7 +2174,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("status=1\n", proc.stdout)
         self.assertIn("bind=\n", proc.stdout)
-        self.assertIn("Samba IPv4 bind interface probe failed with exit code 1", log_text)
+        self.assertIn("Samba bind interface probe failed with exit code 1", log_text)
 
     def test_common_smb_bind_context_fails_hard_on_probe_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2206,8 +2206,8 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("status=1\n", proc.stdout)
-        self.assertIn("Samba IPv4 bind discovery failed with exit code 13", proc.stdout)
-        self.assertNotIn("no usable IPv4 has appeared yet", proc.stdout)
+        self.assertIn("Samba bind discovery failed with exit code 13", proc.stdout)
+        self.assertNotIn("no usable address has appeared yet", proc.stdout)
         self.assertNotIn("unexpected sleep", proc.stdout)
 
     def test_payload_on_external_disk_is_also_served_as_share_and_hidden_in_smb_conf(self) -> None:
@@ -2674,7 +2674,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(
             proc.stdout,
-            f"mount /dev/dk2 {volumes}/dk2\nmount /dev/dk2 {volumes}/dk2\nmount /dev/dk3 {volumes}/dk3\ngenerate {payload} 127.0.0.1/8 192.168.1.41/24\nrestart IPv4 bind interfaces changed\nbind=127.0.0.1/8 192.168.1.41/24\n",
+            f"mount /dev/dk2 {volumes}/dk2\nmount /dev/dk2 {volumes}/dk2\nmount /dev/dk3 {volumes}/dk3\ngenerate {payload} 127.0.0.1/8 192.168.1.41/24\nrestart bind interfaces changed\nbind=127.0.0.1/8 192.168.1.41/24\n",
         )
 
     def test_common_watchdog_smb_bind_reconcile_restores_bind_when_disk_prepare_fails(self) -> None:
@@ -2806,7 +2806,7 @@ MaSt = (
         self.assertIn("status=1\n", proc.stdout)
         self.assertIn("deferred=0\n", proc.stdout)
         self.assertIn("bind=127.0.0.1/8 192.168.1.40/24\n", proc.stdout)
-        self.assertIn("watchdog pass: Samba IPv4 bind probe failed with exit code 13", proc.stdout)
+        self.assertIn("watchdog pass: Samba bind probe failed with exit code 13", proc.stdout)
         self.assertNotIn("generate\n", proc.stdout)
         self.assertNotIn("restart\n", proc.stdout)
 
@@ -2839,8 +2839,8 @@ MaSt = (
             log_text = (memory / "samba4/var/test.log").read_text()
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "bind=127.0.0.1/8 192.168.1.40/24\n")
-        self.assertIn("watchdog startup: initialized Samba IPv4 bind interfaces from live probe", log_text)
+        self.assertEqual(proc.stdout, "bind=127.0.0.1/8 ::1/128 192.168.1.40/24\n")
+        self.assertIn("watchdog startup: initialized Samba bind interfaces from live probe", log_text)
 
     def test_common_watchdog_defers_first_mdns_start_until_auto_ip_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2861,7 +2861,7 @@ MaSt = (
                     mkdir -p "$RAM_VAR"
                     runtime_process_present_by_ucomm() {{ return 1; }}
                     tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
-                    tc_mdns_auto_ip_available() {{ echo print-auto-ip-cidrs; return 11; }}
+                    tc_mdns_auto_ip_available() {{ echo print-mdns-socket-families; return 11; }}
                     tc_start_mdns_capture() {{ echo capture; }}
                     tc_start_mdns_advertiser() {{ echo advertise; }}
                     tc_watchdog_start_mdns_if_needed
@@ -2875,14 +2875,14 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("print-auto-ip-cidrs\n", proc.stdout)
+        self.assertIn("print-mdns-socket-families\n", proc.stdout)
         self.assertNotIn("capture\n", proc.stdout)
         self.assertNotIn("advertise\n", proc.stdout)
         self.assertIn("deferred=1\n", proc.stdout)
         self.assertIn("mDNS auto-ip check: running", proc.stdout)
-        self.assertIn("--print-auto-ip-cidrs", proc.stdout)
-        self.assertIn("mDNS auto-ip check: no usable IPv4 yet", proc.stdout)
-        self.assertIn("mDNS startup deferred; no usable IPv4 has appeared yet", proc.stdout)
+        self.assertIn("--print-mdns-socket-families", proc.stdout)
+        self.assertIn("mDNS auto-ip check: no usable address yet", proc.stdout)
+        self.assertIn("mDNS startup deferred; no usable address has appeared yet", proc.stdout)
 
     def test_common_watchdog_reports_mdns_auto_ip_probe_failure_without_deferral(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2903,7 +2903,7 @@ MaSt = (
                     mkdir -p "$RAM_VAR"
                     runtime_process_present_by_ucomm() {{ return 1; }}
                     tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
-                    tc_mdns_auto_ip_available() {{ echo print-auto-ip-cidrs; return 13; }}
+                    tc_mdns_auto_ip_available() {{ echo print-mdns-socket-families; return 13; }}
                     tc_start_mdns_capture() {{ echo capture; }}
                     tc_start_mdns_advertiser() {{ echo advertise; }}
                     tc_watchdog_start_mdns_if_needed
@@ -2918,13 +2918,13 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("print-auto-ip-cidrs\n", proc.stdout)
+        self.assertIn("print-mdns-socket-families\n", proc.stdout)
         self.assertNotIn("capture\n", proc.stdout)
         self.assertNotIn("advertise\n", proc.stdout)
         self.assertIn("deferred=0\n", proc.stdout)
         self.assertIn("unavailable=1\n", proc.stdout)
         self.assertIn("mDNS auto-ip check failed with exit code 13", proc.stdout)
-        self.assertNotIn("mDNS startup deferred; no usable IPv4 has appeared yet", proc.stdout)
+        self.assertNotIn("mDNS startup deferred; no usable address has appeared yet", proc.stdout)
 
     def test_common_watchdog_starts_first_mdns_capture_after_auto_ip_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2945,7 +2945,7 @@ MaSt = (
                     mkdir -p "$RAM_VAR"
                     runtime_process_present_by_ucomm() {{ return 1; }}
                     tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
-                    tc_mdns_auto_ip_available() {{ echo print-auto-ip-cidrs; return 0; }}
+                    tc_mdns_auto_ip_available() {{ echo print-mdns-socket-families; return 0; }}
                     tc_start_mdns_capture() {{ echo capture; }}
                     tc_start_mdns_advertiser() {{ echo advertise; }}
                     tc_watchdog_start_mdns_if_needed
@@ -2960,15 +2960,15 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("print-auto-ip-cidrs\n", proc.stdout)
+        self.assertIn("print-mdns-socket-families\n", proc.stdout)
         self.assertIn("capture\n", proc.stdout)
         self.assertIn("advertise\n", proc.stdout)
         self.assertLess(proc.stdout.index("capture\n"), proc.stdout.index("advertise\n"))
         self.assertIn("seen=1\n", proc.stdout)
         self.assertIn("capture_attempted=1\n", proc.stdout)
         self.assertIn("mDNS auto-ip check: running", proc.stdout)
-        self.assertIn("--print-auto-ip-cidrs", proc.stdout)
-        self.assertIn("mDNS auto-ip check: usable IPv4 is available", proc.stdout)
+        self.assertIn("--print-mdns-socket-families", proc.stdout)
+        self.assertIn("mDNS auto-ip check: usable address is available", proc.stdout)
         self.assertIn("mDNS auto-ip is available; starting capture and advertiser", proc.stdout)
 
     def test_common_watchdog_later_mdns_restart_skips_capture(self) -> None:
@@ -2991,7 +2991,7 @@ MaSt = (
                     TC_MDNS_CAPTURE_ATTEMPTED=1
                     runtime_process_present_by_ucomm() {{ return 1; }}
                     tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
-                    tc_mdns_auto_ip_available() {{ echo print-auto-ip-cidrs; return 0; }}
+                    tc_mdns_auto_ip_available() {{ echo print-mdns-socket-families; return 0; }}
                     tc_start_mdns_capture() {{ echo capture; }}
                     tc_start_mdns_advertiser() {{ echo advertise; }}
                     tc_restart_mdns() {{ echo restart; }}
@@ -3006,7 +3006,7 @@ MaSt = (
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("print-auto-ip-cidrs\n", proc.stdout)
+        self.assertIn("print-mdns-socket-families\n", proc.stdout)
         self.assertNotIn("capture\n", proc.stdout)
         self.assertNotIn("advertise\n", proc.stdout)
         self.assertIn("restart\n", proc.stdout)
@@ -3031,11 +3031,11 @@ MaSt = (
                     runtime_process_present_by_ucomm() {{
                         [ "$1" = "$MDNS_PROC_NAME" ] && [ "$mdns_present" = "1" ]
                     }}
-                    tc_mdns_bound_ipv4_udp_5353() {{ return 1; }}
+                    tc_mdns_bound_udp_5353() {{ return 1; }}
                     status=0
                     tc_all_managed_services_healthy || status=$?
                     echo "unbound=$status"
-                    tc_mdns_bound_ipv4_udp_5353() {{ return 0; }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
                     status=0
                     tc_all_managed_services_healthy || status=$?
                     echo "bound=$status"
@@ -3057,6 +3057,257 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "unbound=1\nbound=0\nmissing=1\ndeferred=0\n")
 
+    def test_common_smbd_bound_tcp_445_requires_configured_socket_families(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "smbd-bound-families.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    v4_status=1
+                    v6_status=1
+                    tc_smbd_bound_ipv4_445() {{ return "$v4_status"; }}
+                    tc_smbd_bound_ipv6_445() {{ return "$v6_status"; }}
+
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 ::1/128 192.168.1.40/24"
+                    v4_status=0
+                    v6_status=1
+                    status=0
+                    tc_smbd_bound_tcp_445 || status=$?
+                    echo "ipv4_only=$status"
+
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 ::1/128 fdbb:1111:2222:3333::40/64"
+                    v4_status=1
+                    v6_status=0
+                    status=0
+                    tc_smbd_bound_tcp_445 || status=$?
+                    echo "ipv6_only=$status"
+
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 ::1/128 192.168.1.40/24 fdbb:1111:2222:3333::40/64"
+                    v4_status=0
+                    v6_status=1
+                    status=0
+                    tc_smbd_bound_tcp_445 || status=$?
+                    echo "dual_missing_v6=$status"
+
+                    v6_status=0
+                    status=0
+                    tc_smbd_bound_tcp_445 || status=$?
+                    echo "dual_bound=$status"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "ipv4_only=0\nipv6_only=0\ndual_missing_v6=1\ndual_bound=0\n")
+
+    def test_common_fstat_socket_scanner_matches_process_family_and_port(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            calls = tmp_path / "fstat-calls"
+            script = tmp_path / "fstat-socket-scanner.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    : > {calls}
+                    tc_runtime_process_table() {{
+                        cat <<'EOF'
+                    100 Z smbd smbd
+                    101 S smbd smbd
+                    102 S mdns-advertiser mdns-advertiser
+                    103 S other other
+                    EOF
+                    }}
+                    tc_runtime_fstat_pid() {{
+                        echo "$1" >> {calls}
+                        case "$1" in
+                            100) echo "root smbd 100 10 internet stream tcp 0x0 *:445" ;;
+                            101)
+                                echo "root smbd 101 10 internet stream tcp 0x0 *:445"
+                                echo "root smbd 101 11 internet6 stream tcp 0x0 [*]:445"
+                                ;;
+                            102)
+                                echo "root mdns-advertiser 102 10 internet dgram udp 0x0 *:5353"
+                                echo "root mdns-advertiser 102 11 internet6 dgram udp 0x0 [*]:5353"
+                                ;;
+                            *) echo "root other $1 10 internet dgram udp 0x0 *:5353" ;;
+                        esac
+                    }}
+
+                    status=0
+                    tc_smbd_bound_ipv4_445 || status=$?
+                    echo "smbd4=$status"
+                    status=0
+                    tc_smbd_bound_ipv6_445 || status=$?
+                    echo "smbd6=$status"
+                    status=0
+                    tc_process_bound_ipv4_udp_port "$MDNS_PROC_NAME" 5353 || status=$?
+                    echo "mdns4=$status"
+                    status=0
+                    tc_process_bound_ipv6_udp_port "$MDNS_PROC_NAME" 5353 || status=$?
+                    echo "mdns6=$status"
+                    status=0
+                    tc_process_bound_ipv4_udp_port "$MDNS_PROC_NAME" 9999 || status=$?
+                    echo "mdns4_wrong_port=$status"
+                    echo "calls=$(cat {calls})"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            "smbd4=0\n"
+            "smbd6=0\n"
+            "mdns4=0\n"
+            "mdns6=0\n"
+            "mdns4_wrong_port=1\n"
+            "calls=101\n"
+            "101\n"
+            "102\n"
+            "102\n"
+            "102\n",
+        )
+
+    def test_common_mdns_bound_udp_5353_uses_ipv4_preferred_family_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            families_file = tmp_path / "families"
+            families_file.write_text("ipv4 ipv6\n", encoding="utf-8")
+            (flash / "mdns-advertiser").write_text(
+                f"#!/bin/sh\n[ \"$1\" = \"--print-mdns-socket-families\" ] || exit 2\ncat {families_file}\n",
+                encoding="utf-8",
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            script = tmp_path / "mdns-bound-families.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    mkdir -p "$RAM_VAR"
+                    v4_status=1
+                    v6_status=1
+                    tc_mdns_bound_ipv4_udp_5353() {{ return "$v4_status"; }}
+                    tc_mdns_bound_ipv6_udp_5353() {{ return "$v6_status"; }}
+
+                    v4_status=0
+                    v6_status=1
+                    status=0
+                    tc_mdns_bound_udp_5353 || status=$?
+                    echo "dual_prefers_ipv4=$status"
+
+                    v4_status=1
+                    v6_status=0
+                    status=0
+                    tc_mdns_bound_udp_5353 || status=$?
+                    echo "dual_missing_ipv4=$status"
+
+                    printf 'ipv4\\n' >{families_file}
+                    v4_status=0
+                    v6_status=1
+                    status=0
+                    tc_mdns_bound_udp_5353 || status=$?
+                    echo "ipv4_only=$status"
+
+                    printf 'ipv6\\n' >{families_file}
+                    v4_status=1
+                    v6_status=0
+                    status=0
+                    tc_mdns_bound_udp_5353 || status=$?
+                    echo "ipv6_only=$status"
+
+                    v4_status=0
+                    v6_status=1
+                    status=0
+                    tc_mdns_bound_udp_5353 || status=$?
+                    echo "ipv6_only_missing=$status"
+
+                    printf 'ethernet\\n' >{families_file}
+                    v4_status=0
+                    v6_status=0
+                    status=0
+                    tc_mdns_bound_udp_5353 || status=$?
+                    echo "unsupported_family=$status"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            "dual_prefers_ipv4=0\n"
+            "dual_missing_ipv4=1\n"
+            "ipv4_only=0\n"
+            "ipv6_only=0\n"
+            "ipv6_only_missing=1\n"
+            "unsupported_family=1\n",
+        )
+
+    def test_common_watchdog_accepts_ipv6_udp_5353_when_advertiser_is_ipv6_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "watchdog-mdns-ipv6-only-bound.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    runtime_process_present_by_ucomm() {{
+                        [ "$1" = "$MDNS_PROC_NAME" ]
+                    }}
+                    tc_probe_mdns_socket_families() {{ echo ipv6; }}
+                    tc_mdns_bound_ipv4_udp_5353() {{ echo unexpected-ipv4; return 1; }}
+                    tc_mdns_bound_ipv6_udp_5353() {{ echo ipv6-bound; return 0; }}
+                    tc_mdns_auto_ip_available() {{ echo unexpected-auto-ip; return 0; }}
+                    stop_runtime_process_by_ucomm() {{ echo "unexpected-stop $1"; return 1; }}
+                    tc_restart_mdns() {{ echo unexpected-restart; return 1; }}
+                    tc_watchdog_reconcile_mdns
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_path = memory / "samba4/var/test.log"
+            log_text = log_path.read_text() if log_path.exists() else ""
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "ipv6-bound\n")
+        self.assertNotIn("watchdog recovery: mdns advertiser is running without required UDP 5353 listeners", log_text)
+        self.assertNotIn("unexpected", proc.stdout)
+
     def test_common_watchdog_restarts_mdns_when_running_without_udp_5353_and_auto_ip_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -3077,7 +3328,7 @@ MaSt = (
                     runtime_process_present_by_ucomm() {{
                         [ "$1" = "$MDNS_PROC_NAME" ] && [ "$mdns_present" = "1" ]
                     }}
-                    tc_mdns_bound_ipv4_udp_5353() {{ return 1; }}
+                    tc_mdns_bound_udp_5353() {{ return 1; }}
                     tc_mdns_auto_ip_available() {{ echo auto-ip; return 0; }}
                     stop_runtime_process_by_ucomm() {{ echo "stop $1"; mdns_present=0; }}
                     tc_watchdog_refresh_runtime_identity_for_recovery() {{ echo identity; }}
@@ -3095,7 +3346,7 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "auto-ip\nstop mdns-advertiser\nidentity\nrestart\n")
-        self.assertIn("watchdog recovery: mdns advertiser is running without IPv4 UDP 5353", log_text)
+        self.assertIn("watchdog recovery: mdns advertiser is running without required UDP 5353 listeners", log_text)
         self.assertNotIn("unexpected", proc.stdout)
 
     def test_common_watchdog_defers_mdns_when_running_without_udp_5353_and_no_auto_ip(self) -> None:
@@ -3116,7 +3367,7 @@ MaSt = (
                     runtime_process_present_by_ucomm() {{
                         [ "$1" = "$MDNS_PROC_NAME" ]
                     }}
-                    tc_mdns_bound_ipv4_udp_5353() {{ return 1; }}
+                    tc_mdns_bound_udp_5353() {{ return 1; }}
                     tc_mdns_auto_ip_available() {{ echo auto-ip; return 11; }}
                     stop_runtime_process_by_ucomm() {{ echo "unexpected-stop $1"; return 1; }}
                     tc_restart_mdns() {{ echo unexpected-restart; return 1; }}
@@ -3136,8 +3387,8 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "auto-ip\ndeferred=1\nhealthy=0\n")
-        self.assertIn("watchdog recovery: mdns advertiser is running without IPv4 UDP 5353", log_text)
-        self.assertIn("mDNS startup deferred; no usable IPv4 has appeared yet", log_text)
+        self.assertIn("watchdog recovery: mdns advertiser is running without required UDP 5353 listeners", log_text)
+        self.assertIn("mDNS startup deferred; no usable address has appeared yet", log_text)
         self.assertNotIn("unexpected", proc.stdout)
 
     def test_common_watchdog_marks_mdns_unavailable_when_unbound_auto_ip_probe_fails(self) -> None:
@@ -3158,7 +3409,7 @@ MaSt = (
                     runtime_process_present_by_ucomm() {{
                         [ "$1" = "$MDNS_PROC_NAME" ]
                     }}
-                    tc_mdns_bound_ipv4_udp_5353() {{ return 1; }}
+                    tc_mdns_bound_udp_5353() {{ return 1; }}
                     tc_mdns_auto_ip_available() {{ echo auto-ip; return 13; }}
                     stop_runtime_process_by_ucomm() {{ echo "unexpected-stop $1"; return 1; }}
                     tc_restart_mdns() {{ echo unexpected-restart; return 1; }}
@@ -3175,7 +3426,7 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "auto-ip\ndeferred=0\nunavailable=1\n")
-        self.assertIn("watchdog recovery: mdns advertiser is running without IPv4 UDP 5353", log_text)
+        self.assertIn("watchdog recovery: mdns advertiser is running without required UDP 5353 listeners", log_text)
         self.assertIn("watchdog recovery: mDNS auto-ip check failed with exit code 13", log_text)
         self.assertNotIn("unexpected", proc.stdout)
 
@@ -3196,8 +3447,8 @@ MaSt = (
                     mkdir -p "$RAM_VAR"
                     tc_samba_runtime_expected() {{ return 0; }}
                     runtime_process_present_by_ucomm() {{ return 0; }}
-                    tc_smbd_bound_ipv4_445() {{ return 0; }}
-                    tc_mdns_bound_ipv4_udp_5353() {{ return 0; }}
+                    tc_smbd_bound_tcp_445() {{ return 0; }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
                     tc_nbns_bound_ipv4_udp_137() {{ return 1; }}
                     status=0
                     tc_all_managed_services_healthy || status=$?
@@ -3242,7 +3493,7 @@ MaSt = (
                         [ "$1" = "$NBNS_PROC_NAME" ] && [ "$nbns_present" = "1" ]
                     }}
                     tc_nbns_bound_ipv4_udp_137() {{ return 1; }}
-                    tc_mdns_auto_ip_available() {{ echo auto-ip; return 0; }}
+                    tc_nbns_auto_ip_available() {{ echo auto-ip; return 0; }}
                     stop_runtime_process_by_ucomm() {{ echo "stop $1"; nbns_present=0; }}
                     tc_watchdog_refresh_runtime_identity_for_recovery() {{ echo identity; }}
                     tc_restart_nbns() {{ echo restart; }}
@@ -3279,7 +3530,7 @@ MaSt = (
                         [ "$1" = "$NBNS_PROC_NAME" ]
                     }}
                     tc_nbns_bound_ipv4_udp_137() {{ return 1; }}
-                    tc_mdns_auto_ip_available() {{ echo auto-ip; return 11; }}
+                    tc_nbns_auto_ip_available() {{ echo auto-ip; return 11; }}
                     stop_runtime_process_by_ucomm() {{ echo "unexpected-stop $1"; return 1; }}
                     tc_restart_nbns() {{ echo unexpected-restart; return 1; }}
                     tc_watchdog_reconcile_nbns
@@ -3318,7 +3569,7 @@ MaSt = (
                         [ "$1" = "$NBNS_PROC_NAME" ]
                     }}
                     tc_nbns_bound_ipv4_udp_137() {{ return 1; }}
-                    tc_mdns_auto_ip_available() {{ echo auto-ip; return 13; }}
+                    tc_nbns_auto_ip_available() {{ echo auto-ip; return 13; }}
                     stop_runtime_process_by_ucomm() {{ echo "unexpected-stop $1"; return 1; }}
                     tc_restart_nbns() {{ echo unexpected-restart; return 1; }}
                     status=0
@@ -3375,7 +3626,7 @@ MaSt = (
                     tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
                     runtime_process_present_by_ucomm() {{ return 1; }}
                     wait_for_process() {{ return 0; }}
-                    tc_smbd_bound_ipv4_445() {{ return 0; }}
+                    tc_smbd_bound_tcp_445() {{ return 0; }}
                     tc_watchdog_wake_or_mount_volume() {{ echo "mount $1 $2"; return 0; }}
                     tc_start_smbd_if_needed
                     """
@@ -5112,6 +5363,7 @@ MaSt = (
                     tc_launch_mdns_advertiser() {{ echo "mdns-host=$MDNS_HOST_LABEL"; }}
                     tc_launch_nbns() {{ echo "nbns-name=$SMB_NETBIOS_NAME"; }}
                     tc_mdns_auto_ip_available() {{ return 0; }}
+                    tc_nbns_auto_ip_available() {{ return 0; }}
                     tc_all_managed_services_healthy() {{ return 1; }}
                     status=0
                     tc_watchdog_service_iteration || status=$?
@@ -5584,7 +5836,7 @@ MaSt = (
                         esac
                     }}
                     tc_nbns_bound_ipv4_udp_137() {{ return 1; }}
-                    tc_mdns_auto_ip_available() {{ echo nbns-auto-ip; return 0; }}
+                    tc_nbns_auto_ip_available() {{ echo nbns-auto-ip; return 0; }}
                     stop_runtime_process_by_ucomm() {{ echo "stop $1"; nbns_present=0; }}
                     tc_restart_nbns() {{ echo restart-nbns; }}
                     tc_exec_start_samba() {{ echo "exec $1"; exit 42; }}

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ipaddress
 from dataclasses import dataclass
 
 from timecapsulesmb.checks.models import CheckResult
@@ -224,30 +223,3 @@ def check_bonjour_host_ip(
     if known_ips:
         return CheckResult("PASS", f"resolved Bonjour host {hostname} to {', '.join(known_ips)}")
     return CheckResult("FAIL", f"could not resolve Bonjour host {hostname}")
-
-
-def check_bonjour_host_link_local_ips(
-    hostname: str,
-    *,
-    expected_ip: str | None = None,
-    record_ips: list[str] | None = None,
-) -> CheckResult | None:
-    if not expected_ip:
-        return None
-
-    link_local_ips: list[str] = []
-    for ip in record_ips or []:
-        try:
-            parsed_ip = ipaddress.ip_address(ip)
-        except ValueError:
-            continue
-        if parsed_ip.version == 4 and parsed_ip.is_link_local and ip not in link_local_ips:
-            link_local_ips.append(ip)
-
-    if not link_local_ips:
-        return None
-
-    return CheckResult(
-        "WARN",
-        f"Bonjour host {hostname} also advertised link-local IPv4 {', '.join(link_local_ips)}; clients may have stale mDNS cache",
-    )

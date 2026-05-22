@@ -180,15 +180,75 @@ runtime_share_volumes_mounted() {{
 {PROBE_PROCESS_HELPERS}
 
 smbd_bound_445() {{
-    case "$1" in
-        *smbd*" internet stream tcp "*":445"*) return 0 ;;
-        *) return 1 ;;
+    fstat_out=$1
+    bind_interfaces=$2
+    require_ipv4=0
+    require_ipv6=0
+    set -- $bind_interfaces
+    for token in "$@"; do
+        case "$token" in
+            127.*|::1/128) ;;
+            *:*) require_ipv6=1 ;;
+            *.*/*) require_ipv4=1 ;;
+        esac
+    done
+    if [ "$require_ipv4" -eq 0 ] && [ "$require_ipv6" -eq 0 ]; then
+        require_ipv4=1
+    fi
+
+    has_ipv4=0
+    has_ipv6=0
+    case "$fstat_out" in
+        *smbd*" internet stream tcp "*":445"*) has_ipv4=1 ;;
     esac
+    case "$fstat_out" in
+        *smbd*" internet6 stream tcp "*":445"*) has_ipv6=1 ;;
+    esac
+    if [ "$require_ipv4" -eq 1 ] && [ "$has_ipv4" -ne 1 ]; then
+        return 1
+    fi
+    if [ "$require_ipv6" -eq 1 ] && [ "$has_ipv6" -ne 1 ]; then
+        return 1
+    fi
+    return 0
+}}
+
+mdns_health_socket_family() {{
+    families=$1
+
+    set -- $families
+    for family in "$@"; do
+        if [ "$family" = "ipv4" ]; then
+            printf '%s\n' ipv4
+            return 0
+        fi
+    done
+    for family in "$@"; do
+        if [ "$family" = "ipv6" ]; then
+            printf '%s\n' ipv6
+            return 0
+        fi
+    done
+    return 1
 }}
 
 mdns_bound_5353() {{
-    case "$1" in
-        *mdns-advertiser*":5353"*) return 0 ;;
+    fstat_out=$1
+    family=$2
+
+    case "$family" in
+        ipv4)
+            case "$fstat_out" in
+                *mdns-advertiser*" internet dgram udp "*":5353"*) return 0 ;;
+                *) return 1 ;;
+            esac
+            ;;
+        ipv6)
+            case "$fstat_out" in
+                *mdns-advertiser*" internet6 dgram udp "*":5353"*) return 0 ;;
+                *) return 1 ;;
+            esac
+            ;;
         *) return 1 ;;
     esac
 }}
@@ -197,6 +257,7 @@ describe_managed_smbd_status() {{
     ps_out=$1
     fstat_out=$2
     status=0
+    bind_interfaces=$(read_smb_conf_value "interfaces" || true)
     if runtime_smbd_binary_present; then
         echo "PASS:managed runtime smbd binary present"
     else
@@ -257,10 +318,10 @@ describe_managed_smbd_status() {{
         echo "FAIL:managed smbd parent process is not running"
         status=1
     fi
-    if smbd_bound_445 "$fstat_out"; then
-        echo "PASS:smbd bound to IPv4 TCP 445"
+    if smbd_bound_445 "$fstat_out" "$bind_interfaces"; then
+        echo "PASS:smbd bound to required TCP 445 sockets"
     else
-        echo "FAIL:smbd is not bound to IPv4 TCP 445"
+        echo "FAIL:smbd is not bound to required TCP 445 sockets"
         status=1
     fi
     return "$status"
@@ -272,6 +333,9 @@ describe_managed_mdns_status() {{
     status=0
     mdns_auto_ip_state=waiting
     mdns_auto_ip_failure=
+    mdns_socket_families=
+    mdns_health_family=ipv4
+    mdns_health_family_supported=1
     if [ ! -e "$RUNTIME_MDNS_BIN" ]; then
         mdns_auto_ip_state=failed
         mdns_auto_ip_failure="mdns-advertiser binary missing at $RUNTIME_MDNS_BIN"
@@ -279,16 +343,23 @@ describe_managed_mdns_status() {{
         mdns_auto_ip_state=failed
         mdns_auto_ip_failure="mdns-advertiser binary is not executable at $RUNTIME_MDNS_BIN"
     else
-        "$RUNTIME_MDNS_BIN" --print-auto-ip-cidrs >/dev/null 2>&1
+        mdns_socket_families=$("$RUNTIME_MDNS_BIN" --print-mdns-socket-families 2>/dev/null)
         mdns_auto_ip_rc=$?
         case "$mdns_auto_ip_rc" in
             0) mdns_auto_ip_state=active ;;
             11) mdns_auto_ip_state=waiting ;;
             *)
                 mdns_auto_ip_state=failed
-                mdns_auto_ip_failure="mdns-advertiser auto-IP CIDR probe failed with exit code $mdns_auto_ip_rc"
+                mdns_auto_ip_failure="mdns-advertiser mDNS socket family probe failed with exit code $mdns_auto_ip_rc"
                 ;;
         esac
+    fi
+    if [ "$mdns_auto_ip_state" = "active" ]; then
+        if mdns_health_family=$(mdns_health_socket_family "$mdns_socket_families"); then
+            mdns_health_family_supported=1
+        else
+            mdns_health_family_supported=0
+        fi
     fi
 
     if [ "$mdns_auto_ip_state" = "failed" ]; then
@@ -300,26 +371,30 @@ describe_managed_mdns_status() {{
         echo "PASS:mdns-advertiser process is running"
     else
         if [ "$mdns_auto_ip_state" = "waiting" ]; then
-            echo "FAIL:mDNS startup deferred; no usable IPv4 has appeared yet"
+            echo "FAIL:mDNS startup deferred; no usable address has appeared yet"
         else
             echo "FAIL:mdns-advertiser process is not running"
         fi
         status=1
     fi
-    if mdns_bound_5353 "$fstat_out"; then
-        echo "PASS:mdns-advertiser bound to UDP 5353"
+    if [ "$mdns_health_family_supported" -eq 1 ] && mdns_bound_5353 "$fstat_out" "$mdns_health_family"; then
+        echo "PASS:mdns-advertiser bound to required $mdns_health_family UDP 5353 listener"
         if [ "$mdns_auto_ip_state" = "active" ]; then
-            echo "PASS:mdns-advertiser auto-IP active"
+            echo "PASS:mdns-advertiser bind address active"
         else
-            echo "FAIL:mdns-advertiser bound to UDP 5353 but auto-IP is not active"
+            echo "FAIL:mdns-advertiser bound to UDP 5353 but bind address is not active"
             status=1
         fi
     else
         if mdns_process_present "$ps_out" && [ "$mdns_auto_ip_state" = "waiting" ]; then
-            echo "FAIL:mdns-advertiser is waiting for auto-IP"
+            echo "FAIL:mdns-advertiser is waiting for a usable address"
             status=1
         else
-            echo "FAIL:mdns-advertiser is not bound to UDP 5353"
+            if [ "$mdns_health_family_supported" -eq 1 ]; then
+                echo "FAIL:mdns-advertiser is not bound to required UDP 5353 listener"
+            else
+                echo "FAIL:mdns-advertiser mDNS socket family probe returned no supported family"
+            fi
             status=1
         fi
     fi
@@ -1351,8 +1426,11 @@ def runtime_startup_failure_debug_fields(
         marker in combined
         for marker in (
             "mDNS startup deferred; no usable IPv4 has appeared yet",
+            "mDNS startup deferred; no usable address has appeared yet",
             "mdns-advertiser is waiting for auto-IP",
+            "mdns-advertiser is waiting for a usable address",
             "watchdog steady check: core services healthy; mDNS deferred waiting for usable IPv4",
+            "watchdog steady check: core services healthy; mDNS deferred waiting for usable address",
         )
     ):
         return {
