@@ -4,7 +4,7 @@ import argparse
 from typing import Optional
 
 from timecapsulesmb.cli.context import CommandContext
-from timecapsulesmb.cli.flows import verify_managed_runtime_flow
+from timecapsulesmb.cli.flows import activate_deployed_runtime_flow
 from timecapsulesmb.cli.runtime import (
     add_config_argument,
     load_env_config,
@@ -14,8 +14,7 @@ from timecapsulesmb.core.config import airport_exact_display_name_from_identity
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.dry_run import format_activation_plan
 from timecapsulesmb.deploy.executor import run_remote_actions
-from timecapsulesmb.deploy.planner import build_netbsd4_activation_plan
-from timecapsulesmb.device.probe import probe_managed_runtime_conn
+from timecapsulesmb.deploy.planner import build_runtime_activation_plan
 from timecapsulesmb.telemetry import TelemetryClient
 from timecapsulesmb.cli.util import color_red
 from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE
@@ -55,7 +54,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
 
         command_context.set_stage("build_activation_plan")
-        plan = build_netbsd4_activation_plan()
+        plan = build_runtime_activation_plan()
         device_name = _target_device_display_name(target)
         command_context.update_fields(activation_action_count=len(plan.actions))
 
@@ -80,22 +79,19 @@ def main(argv: Optional[list[str]] = None) -> int:
                 command_context.cancel_with_error("Cancelled by user at NetBSD4 activation confirmation prompt.")
                 return 0
 
-        command_context.set_stage("probe_runtime")
-        if probe_managed_runtime_conn(connection, timeout_seconds=20).ready:
-            print("NetBSD4 payload already active; skipping rc.local.")
-            command_context.update_fields(runtime_already_ready=True)
-            command_context.succeed()
-            return 0
-
-        command_context.set_stage("run_activation")
-        print("Activating NetBSD4 payload without file transfer.")
-        run_remote_actions(connection, plan.actions)
-        if not verify_managed_runtime_flow(
+        if not activate_deployed_runtime_flow(
             connection,
             command_context,
-            stage="verify_runtime_activation",
-            timeout_seconds=180,
-            heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up...",
+            plan.actions,
+            run_actions=run_remote_actions,
+            skip_if_ready=True,
+            already_active_message="NetBSD4 payload already active; skipping rc.local.",
+            startup_in_progress_message="NetBSD4 payload startup is already in progress; waiting for it to finish.",
+            activation_message="Activating NetBSD4 payload without file transfer.",
+            activation_stage="run_activation",
+            verification_stage="verify_runtime_activation",
+            verification_timeout_seconds=180,
+            verification_heading="Waiting for NetBSD 4 device activation, this can take a few minutes for Samba to start up...",
             failure_message="NetBSD4 activation failed.",
         ):
             return 1

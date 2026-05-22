@@ -2,9 +2,16 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from timecapsulesmb.core.messages import NETBSD4_REBOOT_FOLLOWUP, NETBSD4_REBOOT_GUIDANCE
+from timecapsulesmb.core.messages import NETBSD4_REBOOT_GUIDANCE
 from timecapsulesmb.deploy.commands import remote_actions_to_jsonable, render_remote_actions
-from timecapsulesmb.deploy.planner import ActivationPlan, DeploymentPlan, UninstallPlan
+from timecapsulesmb.deploy.planner import (
+    DEPLOY_STARTUP_ACTIVATE_NOW,
+    DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
+    DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
+    ActivationPlan,
+    DeploymentPlan,
+    UninstallPlan,
+)
 
 
 DEPLOY_REBOOT_STRATEGY = "ssh_shutdown_then_reboot"
@@ -27,6 +34,16 @@ def _add_reboot_request_json(data: dict[str, object], reboot_required: bool, *, 
         "strategy": strategy,
         "follow_up": ["wait_for_ssh_down", "wait_for_ssh_up"],
     }
+
+
+def _startup_description(plan: DeploymentPlan) -> str:
+    if plan.startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
+        return "stop old watchdog and wcifsfs, run /mnt/Flash/rc.local now, then verify managed runtime"
+    if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
+        return "reboot, wait for SSH, run /mnt/Flash/rc.local unless startup is already in progress, then verify managed runtime"
+    if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_VERIFY:
+        return "reboot, wait for SSH, then verify managed runtime"
+    return plan.startup_mode
 
 
 def format_deployment_plan(plan: DeploymentPlan) -> str:
@@ -55,17 +72,23 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
         lines.append(f"  {command}")
     lines.append("")
     if plan.activation_actions:
-        lines.append("Remote actions (NetBSD4 activation):")
+        lines.append("Remote actions (runtime activation):")
         for command in render_remote_actions(plan.activation_actions):
             lines.append(f"  {command}")
         lines.append("")
+    lines.append("Runtime startup:")
+    lines.append(f"  mode: {plan.startup_mode}")
+    lines.append(f"  action: {_startup_description(plan)}")
+    lines.append(f"  reboot: {'yes' if plan.reboot_required else 'no'}")
+    lines.append("")
     lines.append("Reboot:")
     lines.append(f"  {'yes' if plan.reboot_required else 'no'}")
     _append_reboot_request(lines, plan.reboot_required, strategy=DEPLOY_REBOOT_STRATEGY)
     if plan.activation_actions:
-        lines.append("  Deploy will activate Samba immediately without rebooting.")
-        lines.append(f"  {NETBSD4_REBOOT_GUIDANCE}")
-        lines.append(f"  {NETBSD4_REBOOT_FOLLOWUP}")
+        if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
+            lines.append("  follow-up: run /mnt/Flash/rc.local after SSH returns")
+        else:
+            lines.append("  follow-up: run /mnt/Flash/rc.local without rebooting")
     lines.append("")
     lines.append("Post-deploy checks:")
     if plan.post_deploy_checks:
@@ -97,7 +120,7 @@ def format_activation_plan(plan: ActivationPlan, *, device_name: str = "AirPort 
         lines.append(f"  {command}")
     lines.append("")
     lines.append("Pre-activation shortcut:")
-    lines.append("  skip rc.local if NetBSD4 payload is already healthy")
+    lines.append("  skip rc.local if NetBSD4 payload is already healthy or startup is already in progress")
     lines.append("")
     lines.append("Post-activation checks:")
     for check in plan.post_activation_checks:

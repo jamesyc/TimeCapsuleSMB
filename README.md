@@ -110,16 +110,16 @@ Run:
 
 This step installs (or updates) Samba onto the device. It validates the checked-in binaries, copies the payload and boot files to the Time Capsule, and sets up the Samba password files. You can run `deploy` for a new version to update.
 
-On Gen 5 NetBSD 6 devices, `deploy` then reboots the device so the new runtime comes up cleanly.
-On older Gen 1-4 NetBSD 4 devices, `deploy` instead activates the new runtime immediately without a reboot. The older devices still need `tcapsule activate` after later reboots.
+On Gen 5 NetBSD 6 devices, `deploy` reboots the device so the new runtime comes up cleanly.
+On older Gen 1-4 NetBSD 4 devices, `deploy` also reboots to clear the RAM disk, waits for SSH to return, and then runs `/mnt/Flash/rc.local`. The older devices still need `tcapsule activate` after later reboots that are not part of `deploy`.
 
-By default, `tcapsule deploy` reboots NetBSD 6 devices after deployment and then waits for them to come back. If you want to skip the reboot confirmation prompt, you can run:
+By default, `tcapsule deploy` reboots after deployment and then waits for the device to come back. If you want to skip the reboot confirmation prompt, you can run:
 
 ```bash
 .venv/bin/tcapsule deploy --yes
 ```
 
-There are also other flags such as `--no-nbns`, `--no-reboot` and `--dry-run`, but leave those alone unless you have a specific reason to use them.
+There are also other flags such as `--no-nbns`, `--no-reboot` and `--dry-run`, but leave those alone unless you have a specific reason to use them. `--no-reboot` uploads the files, stops the old watchdog plus `wcifsfs`, and starts the deployed runtime immediately by running `/mnt/Flash/rc.local`.
 
 If you want a machine-readable deployment plan without changing the device, use:
 

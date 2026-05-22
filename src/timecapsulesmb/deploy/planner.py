@@ -20,6 +20,7 @@ from timecapsulesmb.device.storage import PayloadHome
 
 
 TransferMode = Literal["scp", "flash_atomic", "generated"]
+DeploymentStartupMode = Literal["reboot_then_verify", "reboot_then_activate", "activate_now"]
 
 BINARY_SMBD_SOURCE = "binary:smbd"
 BINARY_MDNS_SOURCE = "binary:mdns-advertiser"
@@ -37,6 +38,9 @@ DEFAULT_ATA_IDLE_SECONDS = 300
 DEFAULT_DISKD_USE_VOLUME_ATTEMPTS = 2
 PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS = 180
 FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS = 120
+DEPLOY_STARTUP_REBOOT_THEN_VERIFY: DeploymentStartupMode = "reboot_then_verify"
+DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE: DeploymentStartupMode = "reboot_then_activate"
+DEPLOY_STARTUP_ACTIVATE_NOW: DeploymentStartupMode = "activate_now"
 
 
 @dataclass(frozen=True)
@@ -73,6 +77,7 @@ class DeploymentPlan:
     uploads: list[FileTransfer]
     pre_upload_actions: list[RemoteAction]
     post_upload_actions: list[RemoteAction]
+    startup_mode: DeploymentStartupMode
     activation_actions: list[RemoteAction]
     reboot_required: bool
     post_deploy_checks: list[PlannedCheck]
@@ -97,12 +102,13 @@ class UninstallPlan:
     post_uninstall_checks: list[PlannedCheck]
 
 
-NETBSD4_ACTIVATION_CHECKS = [
-    PlannedCheck("netbsd4_runtime_smb_conf_present", "managed runtime smb.conf is present"),
-    PlannedCheck("netbsd4_smbd_parent_process", "managed smbd parent process is running"),
-    PlannedCheck("netbsd4_smbd_bound_445", "smbd is bound to required TCP 445 sockets"),
-    PlannedCheck("netbsd4_mdns_bound_5353", "mdns-advertiser is bound to UDP 5353"),
+RUNTIME_ACTIVATION_CHECKS = [
+    PlannedCheck("managed_runtime_smb_conf_present", "managed runtime smb.conf is present"),
+    PlannedCheck("managed_smbd_parent_process", "managed smbd parent process is running"),
+    PlannedCheck("managed_smbd_bound_445", "smbd is bound to required TCP 445 sockets"),
+    PlannedCheck("managed_mdns_takeover_ready", "managed mDNS takeover becomes ready"),
 ]
+NETBSD4_ACTIVATION_CHECKS = RUNTIME_ACTIVATION_CHECKS
 
 NETBSD6_REBOOT_DEPLOY_CHECKS = [
     PlannedCheck("ssh_goes_down_after_reboot", "SSH goes down after reboot request"),
@@ -114,6 +120,12 @@ NETBSD6_REBOOT_DEPLOY_CHECKS = [
     PlannedCheck("authenticated_smb_listing", "authenticated SMB listing"),
 ]
 
+REBOOT_THEN_ACTIVATION_CHECKS = [
+    PlannedCheck("ssh_goes_down_after_reboot", "SSH goes down after reboot request"),
+    PlannedCheck("ssh_returns_after_reboot", "SSH returns after reboot"),
+    *RUNTIME_ACTIVATION_CHECKS,
+]
+
 UNINSTALL_REBOOT_CHECKS = [
     PlannedCheck("ssh_goes_down_after_reboot", "SSH goes down after reboot request"),
     PlannedCheck("ssh_returns_after_reboot", "SSH returns after reboot"),
@@ -121,24 +133,56 @@ UNINSTALL_REBOOT_CHECKS = [
 ]
 
 
-def build_netbsd4_activation_actions() -> list[RemoteAction]:
+def build_runtime_start_actions() -> list[RemoteAction]:
+    return [RunScriptAction("/mnt/Flash/rc.local")]
+
+
+def build_runtime_activation_actions() -> list[RemoteAction]:
     return [
-        # NetBSD4 activation is re-runnable after deploy or reboot. Stop the
-        # old watchdog first so it cannot race the fresh rc.local launch.
+        # No-reboot activation runs while the old OS runtime is still alive.
+        # rc.local/start-samba.sh owns managed daemon cleanup; stop only the
+        # supervisor and Apple's CIFS service that can race startup.
         StopWatchdogAction(),
-        StopProcessAction("smbd"),
-        StopProcessAction("mdns-advertiser"),
-        StopProcessAction("nbns-advertiser"),
         StopProcessAction("wcifsfs"),
-        RunScriptAction("/mnt/Flash/rc.local"),
+        *build_runtime_start_actions(),
     ]
 
 
-def build_netbsd4_activation_plan() -> ActivationPlan:
+def build_netbsd4_activation_actions() -> list[RemoteAction]:
+    return build_runtime_activation_actions()
+
+
+def build_runtime_activation_plan() -> ActivationPlan:
     return ActivationPlan(
-        actions=build_netbsd4_activation_actions(),
-        post_activation_checks=NETBSD4_ACTIVATION_CHECKS,
+        actions=build_runtime_activation_actions(),
+        post_activation_checks=RUNTIME_ACTIVATION_CHECKS,
     )
+
+
+def build_netbsd4_activation_plan() -> ActivationPlan:
+    return build_runtime_activation_plan()
+
+
+def _deploy_reboot_required(startup_mode: DeploymentStartupMode) -> bool:
+    return startup_mode in {DEPLOY_STARTUP_REBOOT_THEN_VERIFY, DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE}
+
+
+def _deploy_activation_actions(startup_mode: DeploymentStartupMode) -> list[RemoteAction]:
+    if startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
+        return build_runtime_activation_actions()
+    if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
+        return build_runtime_start_actions()
+    return []
+
+
+def _deploy_post_checks(startup_mode: DeploymentStartupMode) -> list[PlannedCheck]:
+    if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_VERIFY:
+        return NETBSD6_REBOOT_DEPLOY_CHECKS
+    if startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
+        return REBOOT_THEN_ACTIVATION_CHECKS
+    if startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
+        return RUNTIME_ACTIVATION_CHECKS
+    raise ValueError(f"Unsupported deployment startup mode: {startup_mode!r}")
 
 
 def build_deployment_plan(
@@ -148,8 +192,7 @@ def build_deployment_plan(
     mdns_path: Path,
     nbns_path: Path,
     *,
-    activate_netbsd4: bool = False,
-    reboot_after_deploy: bool = True,
+    startup_mode: DeploymentStartupMode = DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
     apple_mount_wait_seconds: int = DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
 ) -> DeploymentPlan:
     payload_dir = payload_home.payload_dir
@@ -174,7 +217,7 @@ def build_deployment_plan(
     }
     private_dir = f"{payload_dir}/private"
     cache_dir = f"{payload_dir}/cache"
-    reboot_required = (not activate_netbsd4) and reboot_after_deploy
+    reboot_required = _deploy_reboot_required(startup_mode)
     remote_directories = [
         payload_dir,
         private_dir,
@@ -255,9 +298,10 @@ def build_deployment_plan(
             prepare_dirs_action(remote_directories, legacy_symlinks),
         ],
         post_upload_actions=[ensure_payload_volume, install_permissions_action(permissions)],
-        activation_actions=build_netbsd4_activation_actions() if activate_netbsd4 else [],
+        startup_mode=startup_mode,
+        activation_actions=_deploy_activation_actions(startup_mode),
         reboot_required=reboot_required,
-        post_deploy_checks=NETBSD4_ACTIVATION_CHECKS if activate_netbsd4 else (NETBSD6_REBOOT_DEPLOY_CHECKS if reboot_required else []),
+        post_deploy_checks=_deploy_post_checks(startup_mode),
         apple_mount_wait_seconds=apple_mount_wait_seconds,
     )
 
