@@ -254,8 +254,13 @@
 "host_warning.time_machine.message" = "macOS %d.%d.%d has known Time Machine network backup issues. SMB may work, but backup reliability can be affected by the host OS.";
 "host_warning.time_machine.title" = "macOS Time Machine Warning";
 "activity.app_ready" = "App Ready";
+"activity.active" = "Active";
 "activity.last_operation" = "Last operation";
+"activity.multiple_active" = "%d active operations";
+"activity.multiple_active.message" = "Open Activity for details.";
 "activity.no_active_operation" = "No active operation";
+"activity.one_active" = "1 active operation";
+"activity.recent" = "Recent";
 "activity.timeline" = "Timeline";
 "activity.timeline.empty" = "No operation history yet.";
 "discovery_monitor.last_seen.now" = "Seen now";

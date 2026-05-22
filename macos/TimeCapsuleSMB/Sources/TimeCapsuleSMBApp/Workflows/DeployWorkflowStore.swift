@@ -80,6 +80,7 @@ final class DeployWorkflowStore: ObservableObject {
 
     let backend: BackendClient
     private let coordinator: OperationCoordinator?
+    private let laneKey: OperationLaneKey?
 
     private var activeOperation: ActiveOperation?
     private var lastProcessedEventCount = 0
@@ -92,13 +93,20 @@ final class DeployWorkflowStore: ObservableObject {
     init(backend: BackendClient) {
         self.backend = backend
         self.coordinator = nil
+        self.laneKey = nil
         observeBackend(backend)
     }
 
-    init(coordinator: OperationCoordinator) {
-        self.backend = coordinator.backend
+    convenience init(coordinator: OperationCoordinator) {
+        self.init(coordinator: coordinator, laneKey: .app)
+    }
+
+    init(coordinator: OperationCoordinator, laneKey: OperationLaneKey) {
+        let lane = coordinator.lane(for: laneKey)
+        self.backend = lane.backend
         self.coordinator = coordinator
-        observeBackend(coordinator.backend)
+        self.laneKey = laneKey
+        observeBackend(lane.backend)
     }
 
     private func observeBackend(_ backend: BackendClient) {
@@ -119,6 +127,10 @@ final class DeployWorkflowStore: ObservableObject {
         backend.isRunning
     }
 
+    var isBusy: Bool {
+        backend.isRunning || backend.pendingConfirmation != nil
+    }
+
     var canCancel: Bool {
         backend.canCancel
     }
@@ -128,7 +140,7 @@ final class DeployWorkflowStore: ObservableObject {
     }
 
     var canDeploy: Bool {
-        !backend.isRunning && state == .planReady && plan != nil && currentOptions == plannedOptions
+        !isBusy && state == .planReady && plan != nil && currentOptions == plannedOptions
     }
 
     @discardableResult
@@ -137,7 +149,7 @@ final class DeployWorkflowStore: ObservableObject {
             failLocally(state: .planFailed, message: "Mount wait must be a non-negative integer.")
             return .rejected("Mount wait must be a non-negative integer.")
         }
-        guard !backend.isRunning else {
+        guard !isBusy else {
             rejectRun(state: .planFailed, message: "Another operation is already running.")
             return .rejected("Another operation is already running.")
         }
@@ -186,7 +198,7 @@ final class DeployWorkflowStore: ObservableObject {
         guard state == .planReady else {
             return .rejected("Deploy plan is not ready.")
         }
-        guard !backend.isRunning else {
+        guard !isBusy else {
             rejectRun(state: .deployFailed, message: "Another operation is already running.")
             return .rejected("Another operation is already running.")
         }
@@ -399,9 +411,15 @@ final class DeployWorkflowStore: ObservableObject {
 
     private func run(operation: String, params: [String: JSONValue], profile: DeviceProfile?) -> OperationStartResult {
         if let coordinator {
-            return coordinator.run(operation: operation, params: params, profile: profile)
+            return coordinator.run(
+                operation: operation,
+                params: params,
+                context: profile?.runtimeContext,
+                activeDeviceID: profile?.id,
+                laneKey: laneKey ?? profile.map { .device($0.id) } ?? .app
+            )
         } else {
-            guard !backend.isRunning else {
+            guard !isBusy else {
                 return .rejected("Another operation is already running.")
             }
             let context = profile?.runtimeContext

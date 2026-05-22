@@ -5,7 +5,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 import ipaddress
+import os
 import re
+import tempfile
 
 from timecapsulesmb.core.net import extract_host, ipv4_literal, is_link_local_ipv4
 from timecapsulesmb.core.paths import package_project_root, resolve_app_paths
@@ -678,4 +680,25 @@ def preserved_env_file_values(values: dict[str, str]) -> dict[str, str]:
 
 
 def write_env_file(path: Path, values: dict[str, str]) -> None:
-    path.write_text(render_env_text(values))
+    text = render_env_text(values)
+    tmp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp_name = tmp.name
+            tmp.write(text)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_name, path)
+    finally:
+        if tmp_name is not None:
+            try:
+                os.unlink(tmp_name)
+            except FileNotFoundError:
+                pass

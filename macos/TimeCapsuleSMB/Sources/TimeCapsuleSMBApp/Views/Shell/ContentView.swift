@@ -37,7 +37,8 @@ public struct ContentView: View {
                     Divider()
                     ActivityCompactView(
                         activityStore: appStore.activityStore,
-                        registry: appStore.deviceRegistry
+                        registry: appStore.deviceRegistry,
+                        context: activityDisplayContext
                     )
                 }
             }
@@ -58,7 +59,7 @@ public struct ContentView: View {
                     ToolbarIconButton(
                         title: L10n.string("toolbar.forget"),
                         systemImage: "trash",
-                        disabled: appStore.selectedProfile == nil || appStore.backend.isRunning
+                        disabled: selectedProfileIsBusy
                     ) {
                         guard let profile = appStore.selectedProfile else {
                             return
@@ -68,7 +69,7 @@ public struct ContentView: View {
                     ToolbarIconButton(
                         title: L10n.string("toolbar.cancel"),
                         systemImage: "xmark.circle",
-                        disabled: !appStore.backend.canCancel
+                        disabled: !appStore.operationCoordinator.canCancel
                     ) {
                         appStore.operationCoordinator.cancel()
                     }
@@ -122,15 +123,15 @@ public struct ContentView: View {
             Text(deleteErrorMessage ?? "")
         }
         .alert(
-            appStore.backend.pendingConfirmation?.title ?? "",
+            appStore.operationCoordinator.pendingConfirmation?.title ?? "",
             isPresented: confirmationPresented,
-            presenting: appStore.backend.pendingConfirmation
+            presenting: appStore.operationCoordinator.pendingConfirmation
         ) { confirmation in
             Button(confirmation.actionTitle, role: .destructive) {
-                appStore.backend.confirmPending()
+                appStore.operationCoordinator.confirmPending()
             }
             Button(L10n.string("action.cancel"), role: .cancel) {
-                appStore.backend.pendingConfirmation = nil
+                appStore.operationCoordinator.cancelPendingConfirmation()
             }
         } message: { confirmation in
             Text(confirmation.message)
@@ -161,13 +162,20 @@ public struct ContentView: View {
 
     private var confirmationPresented: Binding<Bool> {
         Binding(
-            get: { appStore.backend.pendingConfirmation != nil },
+            get: { appStore.operationCoordinator.pendingConfirmation != nil },
             set: { isPresented in
                 if !isPresented {
-                    appStore.backend.pendingConfirmation = nil
+                    appStore.operationCoordinator.cancelPendingConfirmation()
                 }
             }
         )
+    }
+
+    private var selectedProfileIsBusy: Bool {
+        guard let profile = appStore.selectedProfile else {
+            return true
+        }
+        return appStore.operationCoordinator.lane(for: profile).isBusy
     }
 
     private var sidebarSelection: Binding<String?> {
@@ -208,7 +216,7 @@ public struct ContentView: View {
         List(selection: sidebarSelection) {
             Label(L10n.string("sidebar.all_time_capsules"), systemImage: "externaldrive.connected.to.line.below")
                 .tag("all")
-            Label(L10n.string("sidebar.activity"), systemImage: appStore.activityStore.snapshot.isRunning ? "hourglass" : "clock")
+            Label(L10n.string("sidebar.activity"), systemImage: appStore.activityStore.hasActiveActivity ? "hourglass" : "clock")
                 .tag("activity")
 
             Section(L10n.string("sidebar.devices")) {
@@ -229,6 +237,14 @@ public struct ContentView: View {
         }
         .navigationTitle("TimeCapsuleSMB")
         .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
+    }
+
+    private var activityDisplayContext: ActivityDisplayContext {
+        ActivityDisplayContext(
+            selectedDeviceID: appStore.selectedDeviceID,
+            showingAddDevice: appStore.showingAddDevice,
+            showingActivity: appStore.showingActivity
+        )
     }
 
     @ViewBuilder

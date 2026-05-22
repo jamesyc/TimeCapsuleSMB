@@ -19,7 +19,7 @@ final class AppStore: ObservableObject {
     convenience init() {
         let coordinator = OperationCoordinator()
         self.init(
-            appReadinessStore: AppReadinessStore(backend: coordinator.backend),
+            appReadinessStore: AppReadinessStore(backend: coordinator.appLane.backend),
             deviceRegistry: DeviceRegistryStore(),
             operationCoordinator: coordinator,
             passwordStore: KeychainPasswordStore(),
@@ -85,7 +85,7 @@ final class AppStore: ObservableObject {
     }
 
     var backend: BackendClient {
-        operationCoordinator.backend
+        operationCoordinator.appLane.backend
     }
 
     func start() async {
@@ -115,15 +115,16 @@ final class AppStore: ObservableObject {
 
     func dashboardSummary(for profile: DeviceProfile) -> DeviceDashboardSummary {
         let passwordState = effectivePasswordState(for: profile)
+        let activeOperation = operationCoordinator.activeOperation(for: profile)
         let displayStatus = DeviceStatusPolicy.status(
             for: profile,
             passwordState: passwordState,
-            activeOperation: operationCoordinator.activeOperation
+            activeOperation: activeOperation
         )
         let primaryAction = DashboardPrimaryActionPolicy.primaryAction(
             for: profile,
             passwordState: passwordState,
-            activeOperation: operationCoordinator.activeOperation
+            activeOperation: activeOperation
         )
         return DeviceDashboardSummary(
             profile: profile,

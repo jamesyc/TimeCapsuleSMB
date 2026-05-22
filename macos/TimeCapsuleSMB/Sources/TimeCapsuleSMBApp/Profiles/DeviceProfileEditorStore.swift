@@ -124,6 +124,7 @@ final class DeviceProfileEditorStore: ObservableObject {
 
     private let appStore: AppStore
     private let coordinator: OperationCoordinator
+    private let lane: OperationLane
     private let profileSaver: ConfiguredDeviceProfileSaving
     private var activeOperation: ActiveOperation?
     private var pendingProfile: DeviceProfile?
@@ -141,6 +142,7 @@ final class DeviceProfileEditorStore: ObservableObject {
         self.draft = DeviceProfileEditorDraft(profile: profile)
         self.appStore = appStore
         self.coordinator = appStore.operationCoordinator
+        self.lane = appStore.operationCoordinator.lane(for: profile)
         self.profileSaver = profileSaver ?? ConfiguredDeviceProfileSaver(
             registry: appStore.deviceRegistry,
             passwordStore: appStore.passwordStore
@@ -189,7 +191,7 @@ final class DeviceProfileEditorStore: ObservableObject {
     }
 
     private func observeBackend() {
-        coordinator.backend.$events
+        lane.backend.$events
             .sink { [weak self] events in
                 Task { @MainActor in
                     self?.process(events)
@@ -237,7 +239,8 @@ final class DeviceProfileEditorStore: ObservableObject {
             operation: "configure",
             params: params,
             context: profile.runtimeContext,
-            activeDeviceID: profile.id
+            activeDeviceID: profile.id,
+            laneKey: .device(profile.id)
         )
         guard case .started(let operation) = start else {
             error = BackendErrorViewModel(

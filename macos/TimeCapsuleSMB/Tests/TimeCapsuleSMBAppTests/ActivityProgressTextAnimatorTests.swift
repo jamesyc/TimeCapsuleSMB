@@ -50,6 +50,30 @@ final class ActivityProgressTextAnimatorTests: XCTestCase {
         XCTAssertNil(ActivityProgressTextAnimator.animationIdentity(for: completed))
     }
 
+    func testCompactStatusAnimationIdentityExistsOnlyForActiveMessages() {
+        let running = ActivityCompactStatus(
+            isRunning: true,
+            requiresAttention: false,
+            scope: .app,
+            operationTitle: "Checkup",
+            latestMessage: "Run local and remote diagnostic checks.",
+            latestTimelineTitle: "Running Checkup",
+            activeLaneCount: 1
+        )
+        let completed = ActivityCompactStatus(
+            isRunning: false,
+            requiresAttention: false,
+            scope: .app,
+            operationTitle: "Checkup",
+            latestMessage: "Run local and remote diagnostic checks.",
+            latestTimelineTitle: "Done",
+            activeLaneCount: 0
+        )
+
+        XCTAssertEqual(ActivityProgressTextAnimator.animationIdentity(for: running), "Run local and remote diagnostic checks.")
+        XCTAssertNil(ActivityProgressTextAnimator.animationIdentity(for: completed))
+    }
+
     func testFrameIntervalMatchesBottomBarAnimationCadence() {
         XCTAssertEqual(ActivityProgressTextAnimator.frameInterval, 0.3)
     }

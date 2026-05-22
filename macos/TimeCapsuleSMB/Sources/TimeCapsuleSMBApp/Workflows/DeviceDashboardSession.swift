@@ -17,9 +17,14 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
 
     private let urlOpener: URLOpening
     private let smbAccountResolver: SMBAccountResolving
+    private let lane: OperationLane
     private var activeCheckupOperation: ActiveOperation?
     private var activeDeployOperation: ActiveOperation?
     private var cancellables: Set<AnyCancellable> = []
+
+    var events: [BackendEvent] {
+        lane.backend.events
+    }
 
     init(
         profile: DeviceProfile,
@@ -31,12 +36,16 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         self.appStore = appStore
         self.urlOpener = urlOpener
         self.smbAccountResolver = smbAccountResolver
-        self.deployStore = DeployWorkflowStore(coordinator: appStore.operationCoordinator)
-        self.doctorStore = DoctorStore(coordinator: appStore.operationCoordinator)
-        self.maintenanceStore = MaintenanceStore(coordinator: appStore.operationCoordinator)
+        let laneKey = OperationLaneKey.device(profile.id)
+        let lane = appStore.operationCoordinator.lane(for: laneKey)
+        self.lane = lane
+        self.deployStore = DeployWorkflowStore(coordinator: appStore.operationCoordinator, laneKey: laneKey)
+        self.doctorStore = DoctorStore(coordinator: appStore.operationCoordinator, laneKey: laneKey)
+        self.maintenanceStore = MaintenanceStore(coordinator: appStore.operationCoordinator, laneKey: laneKey)
         self.profileEditorStore = DeviceProfileEditorStore(profile: profile, appStore: appStore)
         applyProfileSettings(profile.settings)
         forwardChildChanges()
+        forwardLaneEvents()
         observeSnapshots()
         observeProfileEditor()
     }
@@ -378,6 +387,14 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             }
             .store(in: &cancellables)
         profileEditorStore.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+    }
+
+    private func forwardLaneEvents() {
+        lane.backend.$events
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
             }

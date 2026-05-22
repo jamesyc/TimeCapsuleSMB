@@ -198,12 +198,24 @@ final class BackendClientTests: XCTestCase {
         let client = BackendClient(runner: runner)
         let coordinator = OperationCoordinator(backend: client)
         let context = DeviceRuntimeContext(profileID: "device-one", configURL: URL(fileURLWithPath: "/tmp/device-one/.env"))
+        let laneKey = OperationLaneKey.device("device-one")
+        let deviceLane = coordinator.lane(for: laneKey)
 
-        guard case .started(let activeOperation) = coordinator.run(operation: "doctor", context: context, activeDeviceID: "device-one") else {
+        guard case .started(let activeOperation) = coordinator.run(
+            operation: "doctor",
+            context: context,
+            activeDeviceID: "device-one",
+            laneKey: laneKey
+        ) else {
             XCTFail("Expected first operation to start.")
             return
         }
-        guard case .rejected(let rejectionMessage) = coordinator.run(operation: "deploy", context: context, activeDeviceID: "device-one") else {
+        guard case .rejected(let rejectionMessage) = coordinator.run(
+            operation: "deploy",
+            context: context,
+            activeDeviceID: "device-one",
+            laneKey: laneKey
+        ) else {
             XCTFail("Expected second operation to be rejected.")
             return
         }
@@ -214,7 +226,7 @@ final class BackendClientTests: XCTestCase {
         XCTAssertEqual(coordinator.activeOperation, activeOperation)
         XCTAssertEqual(coordinator.activeDeviceID, "device-one")
 
-        try await waitUntil { !client.isRunning }
+        try await waitUntil { !deviceLane.backend.isRunning }
         XCTAssertNil(coordinator.activeOperation)
         XCTAssertNil(coordinator.activeDeviceID)
     }

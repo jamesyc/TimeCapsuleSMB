@@ -28,6 +28,10 @@ final class BackendClient: ObservableObject {
         runTask?.cancel()
     }
 
+    func makeSibling() -> BackendClient {
+        BackendClient(runner: runner, helperPath: helperPath)
+    }
+
     func clear() {
         guard !isRunning else {
             return

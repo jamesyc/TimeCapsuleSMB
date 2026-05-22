@@ -70,6 +70,73 @@ final class StoreTestRunner: HelperRunning, @unchecked Sendable {
     }
 }
 
+final class OperationKeyedStoreTestRunner: HelperRunning, @unchecked Sendable {
+    struct Key: Hashable, Sendable {
+        let operation: String
+        let profileID: String?
+
+        init(_ operation: String, profileID: String? = nil) {
+            self.operation = operation
+            self.profileID = profileID
+        }
+    }
+
+    typealias Call = StoreTestRunner.Call
+    typealias Response = StoreTestRunner.Response
+
+    private let queue = DispatchQueue(label: "TimeCapsuleSMBAppTests.OperationKeyedStoreTestRunner")
+    private var storedResponses: [Key: [Response]]
+    private var storedCalls: [Call] = []
+
+    init(responses: [Key: [Response]]) {
+        self.storedResponses = responses
+    }
+
+    var calls: [Call] {
+        queue.sync { storedCalls }
+    }
+
+    func run(
+        helperPath: String?,
+        operation: String,
+        params: [String: JSONValue],
+        context: DeviceRuntimeContext?,
+        onEvent: @escaping @Sendable (BackendEvent) async -> Void
+    ) async -> HelperRunResult {
+        let response = queue.sync {
+            storedCalls.append(Call(helperPath: helperPath, operation: operation, params: params, context: context))
+            let key = Key(operation, profileID: context?.profileID)
+            if var responses = storedResponses[key], !responses.isEmpty {
+                let response = responses.removeFirst()
+                storedResponses[key] = responses
+                return response
+            }
+            let fallbackKey = Key(operation)
+            if var responses = storedResponses[fallbackKey], !responses.isEmpty {
+                let response = responses.removeFirst()
+                storedResponses[fallbackKey] = responses
+                return response
+            }
+            return Response(
+                events: [BackendEvent.error(operation: operation, code: "missing_test_response", message: "No keyed test response queued.")],
+                result: HelperRunResult(exitCode: 1, sawTerminalEvent: true, stderr: "")
+            )
+        }
+
+        if response.delayNanoseconds > 0 {
+            try? await Task.sleep(nanoseconds: response.delayNanoseconds)
+        }
+        if Task.isCancelled {
+            await onEvent(BackendEvent.error(operation: operation, code: "cancelled", message: L10n.string("helper.error.cancelled")))
+            return HelperRunResult(exitCode: 130, sawTerminalEvent: true, stderr: "")
+        }
+        for event in response.events {
+            await onEvent(event)
+        }
+        return response.result
+    }
+}
+
 @MainActor
 func waitUntilStoreState(
     timeoutNanoseconds: UInt64 = 2_000_000_000,

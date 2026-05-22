@@ -299,20 +299,55 @@ final class AddDeviceFlowStoreTests: XCTestCase {
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: .object(["ok": .bool(true)]))
             ], delayNanoseconds: 100_000_000)
         ])
+        let existing = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
         fixture.store.startManualEntry()
         fixture.store.manualHost = "10.0.0.2"
         fixture.store.password = "secret"
 
-        _ = fixture.store.coordinator.run(operation: "doctor", profile: nil)
+        _ = fixture.store.coordinator.run(
+            operation: "doctor",
+            context: existing.runtimeContext,
+            activeDeviceID: existing.id,
+            laneKey: .device(existing.id)
+        )
         try await waitUntilStoreState { fixture.runner.calls.count == 1 }
-        XCTAssertTrue(fixture.store.isRunning)
+        XCTAssertTrue(fixture.store.coordinator.lane(for: existing).backend.isRunning)
         fixture.store.runConfigure()
 
         XCTAssertEqual(fixture.store.state, .failed)
         XCTAssertEqual(fixture.store.error?.code, "operation_rejected")
-        XCTAssertEqual(fixture.registry.profiles, [])
+        XCTAssertEqual(fixture.registry.profiles, [existing])
         XCTAssertEqual(fixture.runner.calls.count, 1)
-        try await waitUntilStoreState { !fixture.store.isRunning }
+        try await waitUntilStoreState { !fixture.store.coordinator.lane(for: existing).backend.isRunning }
+    }
+
+    func testManualConfigureCanRunWhileAppDiscoveryLaneIsBusy() async throws {
+        let fixture = try await makeStore(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))
+            ], delayNanoseconds: 150_000_000),
+            .init(events: [
+                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.2"))
+            ])
+        ])
+        fixture.store.startManualEntry()
+        fixture.store.manualHost = "10.0.0.2"
+        fixture.store.password = "secret"
+
+        fixture.store.coordinator.run(operation: "discover", laneKey: .app)
+        try await waitUntilStoreState { fixture.store.coordinator.appLane.backend.isRunning }
+        fixture.store.runConfigure()
+
+        try await waitUntilStoreState { fixture.runner.calls.count == 2 }
+        XCTAssertEqual(fixture.runner.calls.map(\.operation), ["discover", "configure"])
+        XCTAssertTrue(fixture.store.coordinator.appLane.backend.isRunning)
+        try await waitUntilStoreState { fixture.store.state == .saved }
+        XCTAssertEqual(fixture.registry.profiles.count, 1)
     }
 
     func testSelectedBonjourConfigureSuccessSavesProfileMetadata() async throws {

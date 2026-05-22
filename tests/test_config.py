@@ -3,6 +3,7 @@ from __future__ import annotations
 import shlex
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 import sys
 
@@ -276,6 +277,19 @@ class ConfigTests(unittest.TestCase):
             write_env_file(path, values)
             reparsed = parse_env_file(path)
         self.assertEqual(reparsed["TC_CONFIGURE_ID"], "12345678-1234-1234-1234-123456789012")
+
+    def test_write_env_file_is_atomic_when_replace_fails(self) -> None:
+        values = dict(DEFAULTS)
+        values["TC_HOST"] = "root@10.0.0.5"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text("TC_HOST='root@10.0.0.2'\n")
+            with mock.patch("timecapsulesmb.core.config.os.replace", side_effect=OSError("replace failed")):
+                with self.assertRaisesRegex(OSError, "replace failed"):
+                    write_env_file(path, values)
+
+            self.assertEqual(parse_env_file(path)["TC_HOST"], "root@10.0.0.2")
+            self.assertEqual(list(Path(tmp).glob(".env.*.tmp")), [])
 
     def test_parse_env_value_falls_back_for_unbalanced_quotes(self) -> None:
         self.assertEqual(parse_env_value("'unterminated"), "unterminated")

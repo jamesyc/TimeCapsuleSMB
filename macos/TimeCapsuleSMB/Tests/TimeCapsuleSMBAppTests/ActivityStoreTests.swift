@@ -97,6 +97,331 @@ final class ActivityStoreTests: XCTestCase {
         XCTAssertEqual(activity.snapshot.scope, .app)
     }
 
+    func testActivityStoreTracksMultipleActiveLanesAndPrefersDeviceSnapshot() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("discover"): [
+                .init(events: [
+                    BackendEvent(
+                        type: "result",
+                        operation: "discover",
+                        ok: true,
+                        payload: testDiscoverPayload(records: [])
+                    )
+                ], delayNanoseconds: 200_000_000)
+            ],
+            .init("doctor", profileID: "device-one"): [
+                .init(events: [
+                    BackendEvent(
+                        type: "stage",
+                        operation: "doctor",
+                        stage: "run_checks",
+                        description: "Run local and remote diagnostic checks."
+                    ),
+                    BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
+                        testDoctorCheck(status: "PASS", message: "ok", domain: "Runtime")
+                    ]))
+                ], delayNanoseconds: 200_000_000)
+            ]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let activity = ActivityStore(coordinator: coordinator)
+        let context = DeviceRuntimeContext(profileID: "device-one", configURL: URL(fileURLWithPath: "/tmp/device-one/.env"))
+
+        coordinator.run(operation: "discover", laneKey: .app)
+        coordinator.run(operation: "doctor", context: context, activeDeviceID: "device-one", laneKey: .device("device-one"))
+
+        try await waitUntilStoreState {
+            activity.laneSnapshots.count == 2 && activity.laneSnapshots.allSatisfy { $0.snapshot.isRunning }
+        }
+        XCTAssertEqual(activity.snapshot.scope, .device("device-one"))
+        XCTAssertEqual(activity.snapshot.operationTitle, "Checkup")
+        XCTAssertEqual(Set(activity.laneSnapshots.map(\.laneKey)), [.app, .device("device-one")])
+    }
+
+    func testCompactStatusPrefersSelectedDeviceOverRunningStartupDiscovery() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("discover"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))
+                ], delayNanoseconds: 200_000_000)
+            ],
+            .init("doctor", profileID: "device-one"): [
+                .init(events: [
+                    BackendEvent(
+                        type: "stage",
+                        operation: "doctor",
+                        stage: "run_checks",
+                        description: "Run local and remote diagnostic checks."
+                    ),
+                    BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload())
+                ], delayNanoseconds: 200_000_000)
+            ]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let activity = ActivityStore(coordinator: coordinator)
+
+        coordinator.run(operation: "discover", laneKey: .app)
+        coordinator.run(
+            operation: "doctor",
+            context: context("device-one"),
+            activeDeviceID: "device-one",
+            laneKey: .device("device-one")
+        )
+
+        try await waitUntilStoreState {
+            activity.activeLaneSnapshots.count == 2
+        }
+
+        let status = activity.compactStatus(for: ActivityDisplayContext(
+            selectedDeviceID: "device-one",
+            showingAddDevice: false,
+            showingActivity: false
+        ))
+        XCTAssertEqual(status.scope, .device("device-one"))
+        XCTAssertEqual(status.operationTitle, "Checkup")
+        XCTAssertEqual(status.activeLaneCount, 2)
+    }
+
+    func testCompactStatusShowsMultipleActiveOperationsWhenNoSelectedLaneCanOwnTheBar() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("doctor", profileID: "device-one"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload())
+                ], delayNanoseconds: 200_000_000)
+            ],
+            .init("deploy", profileID: "device-two"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "deploy", ok: true, payload: .object(["summary": .string("done")]))
+                ], delayNanoseconds: 200_000_000)
+            ]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let activity = ActivityStore(coordinator: coordinator)
+
+        coordinator.run(
+            operation: "doctor",
+            context: context("device-one"),
+            activeDeviceID: "device-one",
+            laneKey: .device("device-one")
+        )
+        coordinator.run(
+            operation: "deploy",
+            context: context("device-two"),
+            activeDeviceID: "device-two",
+            laneKey: .device("device-two")
+        )
+
+        try await waitUntilStoreState {
+            activity.activeLaneSnapshots.count == 2
+        }
+
+        let status = activity.compactStatus(for: .none)
+        XCTAssertEqual(status.scope, .unknown)
+        XCTAssertEqual(status.operationTitle, "2 active operations")
+        XCTAssertEqual(status.latestMessage, "Open Activity for details.")
+        XCTAssertEqual(status.activeLaneCount, 2)
+    }
+
+    func testCompactStatusShowsMultipleActiveOperationsOnActivityScreenEvenWhenAppLaneRuns() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("discover"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))
+                ], delayNanoseconds: 200_000_000)
+            ],
+            .init("doctor", profileID: "device-one"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload())
+                ], delayNanoseconds: 200_000_000)
+            ]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let activity = ActivityStore(coordinator: coordinator)
+
+        coordinator.run(operation: "discover", laneKey: .app)
+        coordinator.run(
+            operation: "doctor",
+            context: context("device-one"),
+            activeDeviceID: "device-one",
+            laneKey: .device("device-one")
+        )
+
+        try await waitUntilStoreState {
+            activity.activeLaneSnapshots.count == 2
+        }
+
+        let status = activity.compactStatus(for: ActivityDisplayContext(
+            selectedDeviceID: nil,
+            showingAddDevice: false,
+            showingActivity: true
+        ))
+        XCTAssertEqual(status.scope, .unknown)
+        XCTAssertEqual(status.operationTitle, "2 active operations")
+    }
+
+    func testCompactStatusShowsSelectedPendingConfirmationBeforeRunningDiscovery() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("discover"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))
+                ], delayNanoseconds: 200_000_000)
+            ],
+            .init("deploy", profileID: "device-one"): [
+                .init(events: [
+                    confirmationRequiredEvent(operation: "deploy", id: "confirm-deploy")
+                ])
+            ]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let activity = ActivityStore(coordinator: coordinator)
+
+        coordinator.run(operation: "discover", laneKey: .app)
+        coordinator.run(
+            operation: "deploy",
+            context: context("device-one"),
+            activeDeviceID: "device-one",
+            laneKey: .device("device-one")
+        )
+
+        try await waitUntilStoreState {
+            activity.activeLaneSnapshots.contains { $0.laneKey == .app && $0.snapshot.isRunning }
+                && activity.activeLaneSnapshots.contains { $0.laneKey == .device("device-one") && $0.isPendingConfirmation }
+        }
+
+        let status = activity.compactStatus(for: ActivityDisplayContext(
+            selectedDeviceID: "device-one",
+            showingAddDevice: false,
+            showingActivity: false
+        ))
+        XCTAssertEqual(status.scope, .device("device-one"))
+        XCTAssertEqual(status.operationTitle, "Install / Update")
+        XCTAssertTrue(status.requiresAttention)
+        XCTAssertFalse(status.isRunning)
+    }
+
+    func testCompactStatusUsesAppLaneForAddDeviceDiscoveryUnlessConfigureIsActive() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("discover"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))
+                ], delayNanoseconds: 250_000_000)
+            ],
+            .init("doctor", profileID: "device-one"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload())
+                ], delayNanoseconds: 250_000_000)
+            ],
+            .init("configure", profileID: "device-two"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "configure", ok: true, payload: .object(["summary": .string("configured")]))
+                ], delayNanoseconds: 250_000_000)
+            ]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let activity = ActivityStore(coordinator: coordinator)
+        let addDeviceContext = ActivityDisplayContext(
+            selectedDeviceID: nil,
+            showingAddDevice: true,
+            showingActivity: false
+        )
+
+        coordinator.run(operation: "discover", laneKey: .app)
+        coordinator.run(
+            operation: "doctor",
+            context: context("device-one"),
+            activeDeviceID: "device-one",
+            laneKey: .device("device-one")
+        )
+
+        try await waitUntilStoreState {
+            activity.activeLaneSnapshots.count == 2
+        }
+        XCTAssertEqual(activity.compactStatus(for: addDeviceContext).scope, .app)
+        XCTAssertEqual(activity.compactStatus(for: addDeviceContext).operationTitle, "Discovery")
+
+        coordinator.run(
+            operation: "configure",
+            context: context("device-two"),
+            activeDeviceID: "device-two",
+            laneKey: .device("device-two")
+        )
+
+        try await waitUntilStoreState {
+            activity.activeLaneSnapshots.contains { $0.laneKey == .device("device-two") }
+        }
+        let status = activity.compactStatus(for: addDeviceContext)
+        XCTAssertEqual(status.scope, .device("device-two"))
+        XCTAssertEqual(status.operationTitle, "Add Time Capsule")
+    }
+
+    func testCompactStatusKeepsSelectedDeviceHistoryAfterStartupDiscoveryCompletes() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("discover"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))
+                ])
+            ],
+            .init("doctor", profileID: "device-one"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload())
+                ])
+            ]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let activity = ActivityStore(coordinator: coordinator)
+
+        coordinator.run(operation: "discover", laneKey: .app)
+        coordinator.run(
+            operation: "doctor",
+            context: context("device-one"),
+            activeDeviceID: "device-one",
+            laneKey: .device("device-one")
+        )
+
+        try await waitUntilStoreState {
+            activity.activeLaneSnapshots.isEmpty && activity.laneSnapshots.count == 2
+        }
+
+        let status = activity.compactStatus(for: ActivityDisplayContext(
+            selectedDeviceID: "device-one",
+            showingAddDevice: false,
+            showingActivity: false
+        ))
+        XCTAssertEqual(status.scope, .device("device-one"))
+        XCTAssertEqual(status.operationTitle, "Checkup")
+        XCTAssertEqual(status.latestTimelineTitle, "Done")
+    }
+
+    func testActivityStoreSeparatesActiveAndRecentLaneSnapshots() async throws {
+        let runner = OperationKeyedStoreTestRunner(responses: [
+            .init("discover"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "discover", ok: true, payload: testDiscoverPayload(records: []))
+                ])
+            ],
+            .init("doctor", profileID: "device-one"): [
+                .init(events: [
+                    BackendEvent(type: "result", operation: "doctor", ok: true, payload: doctorPayload())
+                ], delayNanoseconds: 200_000_000)
+            ]
+        ])
+        let coordinator = OperationCoordinator(backend: BackendClient(runner: runner))
+        let activity = ActivityStore(coordinator: coordinator)
+
+        coordinator.run(operation: "discover", laneKey: .app)
+        coordinator.run(
+            operation: "doctor",
+            context: context("device-one"),
+            activeDeviceID: "device-one",
+            laneKey: .device("device-one")
+        )
+
+        try await waitUntilStoreState {
+            activity.activeLaneSnapshots.map(\.laneKey) == [.device("device-one")]
+                && activity.recentLaneSnapshots.map(\.laneKey) == [.app]
+        }
+    }
+
     func testSuccessfulAppValidationPresentsAppReadyWithoutDetailMessage() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
@@ -127,5 +452,33 @@ final class ActivityStoreTests: XCTestCase {
         try await waitUntilStoreState { !activity.snapshot.isRunning && activity.snapshot.operationTitle == "App Ready" }
         XCTAssertEqual(activity.snapshot.scope, .app)
         XCTAssertNil(activity.snapshot.latestMessage)
+    }
+
+    private func context(_ profileID: String) -> DeviceRuntimeContext {
+        DeviceRuntimeContext(
+            profileID: profileID,
+            configURL: URL(fileURLWithPath: "/tmp/\(profileID)/.env")
+        )
+    }
+
+    private func doctorPayload() -> JSONValue {
+        testDoctorPayload(checks: [
+            testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+        ])
+    }
+
+    private func confirmationRequiredEvent(operation: String, id: String) -> BackendEvent {
+        BackendEvent(
+            type: "error",
+            operation: operation,
+            code: "confirmation_required",
+            message: "Confirm operation.",
+            details: .object([
+                "title": .string("Confirm operation"),
+                "message": .string("Continue."),
+                "action_title": .string("Continue"),
+                "confirmation_id": .string(id)
+            ])
+        )
     }
 }

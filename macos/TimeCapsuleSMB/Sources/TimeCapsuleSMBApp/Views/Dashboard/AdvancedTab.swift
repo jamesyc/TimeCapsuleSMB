@@ -15,7 +15,7 @@ struct AdvancedTab: View {
                 (L10n.string("advanced.config"), profile.configPath),
                 (L10n.string("advanced.helper"), appStore.backend.helperPath.isEmpty ? L10n.string("value.auto") : appStore.backend.helperPath)
             ])
-            EventList(events: appStore.backend.events)
+            EventList(events: session.events)
         }
     }
 }

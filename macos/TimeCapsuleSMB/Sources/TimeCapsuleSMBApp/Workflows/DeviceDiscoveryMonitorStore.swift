@@ -43,6 +43,7 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
     let coordinator: OperationCoordinator
     let readinessStore: AppReadinessStore
     let registry: DeviceRegistryStore
+    private let lane: OperationLane
 
     private let timeout: Double
     private var isMonitoring = false
@@ -61,6 +62,7 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
         self.readinessStore = readinessStore
         self.registry = registry
         self.timeout = timeout
+        self.lane = coordinator.appLane
 
         readinessStore.$state
             .sink { [weak self] _ in
@@ -69,7 +71,7 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
                 }
             }
             .store(in: &cancellables)
-        coordinator.backend.$isRunning
+        lane.backend.$isRunning
             .sink { [weak self] isRunning in
                 guard !isRunning else { return }
                 Task { @MainActor in
@@ -77,7 +79,7 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
                 }
             }
             .store(in: &cancellables)
-        coordinator.backend.$events
+        lane.backend.$events
             .sink { [weak self] events in
                 Task { @MainActor in
                     self?.process(events)
@@ -161,7 +163,7 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
             return
         }
 
-        guard !coordinator.backend.isRunning else {
+        guard !lane.isBusy else {
             if activeOperation == nil {
                 pendingRefresh = true
                 state = .paused
@@ -169,11 +171,17 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
             return
         }
 
-        coordinator.clear()
+        lane.clear()
         lastProcessedEventCount = 0
         error = nil
         currentStage = nil
-        switch coordinator.run(operation: "discover", params: OperationParams.discover(timeout: timeout), profile: nil) {
+        switch coordinator.run(
+            operation: "discover",
+            params: OperationParams.discover(timeout: timeout),
+            context: nil,
+            activeDeviceID: nil,
+            laneKey: .app
+        ) {
         case .started(let operation):
             activeOperation = operation
             state = .discovering

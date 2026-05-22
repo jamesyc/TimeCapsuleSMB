@@ -141,6 +141,7 @@ final class MaintenanceStore: ObservableObject {
 
     let backend: BackendClient
     private let coordinator: OperationCoordinator?
+    private let laneKey: OperationLaneKey?
 
     private var plannedUninstallOptions: MaintenanceOptions?
     private var plannedFsckOptions: MaintenanceOptions?
@@ -157,13 +158,20 @@ final class MaintenanceStore: ObservableObject {
     init(backend: BackendClient) {
         self.backend = backend
         self.coordinator = nil
+        self.laneKey = nil
         observeBackend(backend)
     }
 
-    init(coordinator: OperationCoordinator) {
-        self.backend = coordinator.backend
+    convenience init(coordinator: OperationCoordinator) {
+        self.init(coordinator: coordinator, laneKey: .app)
+    }
+
+    init(coordinator: OperationCoordinator, laneKey: OperationLaneKey) {
+        let lane = coordinator.lane(for: laneKey)
+        self.backend = lane.backend
         self.coordinator = coordinator
-        observeBackend(coordinator.backend)
+        self.laneKey = laneKey
+        observeBackend(lane.backend)
     }
 
     private func observeBackend(_ backend: BackendClient) {
@@ -184,6 +192,10 @@ final class MaintenanceStore: ObservableObject {
         backend.isRunning
     }
 
+    var isBusy: Bool {
+        backend.isRunning || backend.pendingConfirmation != nil
+    }
+
     var canCancel: Bool {
         backend.canCancel
     }
@@ -200,19 +212,19 @@ final class MaintenanceStore: ObservableObject {
     }
 
     var canRunActivation: Bool {
-        !backend.isRunning && activationPlan != nil && activateState == .planReady
+        !isBusy && activationPlan != nil && activateState == .planReady
     }
 
     var canRunUninstall: Bool {
-        !backend.isRunning && uninstallPlan != nil && uninstallState == .planReady && currentOptions == plannedUninstallOptions
+        !isBusy && uninstallPlan != nil && uninstallState == .planReady && currentOptions == plannedUninstallOptions
     }
 
     var canPlanFsck: Bool {
-        !backend.isRunning && selectedFsckTarget != nil && currentOptions != nil
+        !isBusy && selectedFsckTarget != nil && currentOptions != nil
     }
 
     var canRunFsck: Bool {
-        !backend.isRunning
+        !isBusy
             && fsckPlan != nil
             && fsckState == .planReady
             && currentOptions == plannedFsckOptions
@@ -220,7 +232,7 @@ final class MaintenanceStore: ObservableObject {
     }
 
     var canRepairXattrs: Bool {
-        !backend.isRunning
+        !isBusy
             && repairState == .scanReady
             && repairScan?.repairableCount ?? 0 > 0
             && scannedRepairPath == trimmedRepairPath
@@ -246,7 +258,7 @@ final class MaintenanceStore: ObservableObject {
 
     @discardableResult
     func runActivation(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard !backend.isRunning else {
+        guard !isBusy else {
             rejectRun(workflow: .activate, message: "Another operation is already running.")
             return .rejected("Another operation is already running.")
         }
@@ -299,7 +311,7 @@ final class MaintenanceStore: ObservableObject {
 
     @discardableResult
     func runUninstall(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard !backend.isRunning else {
+        guard !isBusy else {
             rejectRun(workflow: .uninstall, message: "Another operation is already running.")
             return .rejected("Another operation is already running.")
         }
@@ -395,7 +407,7 @@ final class MaintenanceStore: ObservableObject {
 
     @discardableResult
     func runFsck(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard !backend.isRunning else {
+        guard !isBusy else {
             rejectRun(workflow: .fsck, message: "Another operation is already running.")
             return .rejected("Another operation is already running.")
         }
@@ -462,7 +474,7 @@ final class MaintenanceStore: ObservableObject {
 
     @discardableResult
     func runRepairXattrs() -> OperationStartResult {
-        guard !backend.isRunning else {
+        guard !isBusy else {
             rejectRun(workflow: .repairXattrs, message: "Another operation is already running.")
             return .rejected("Another operation is already running.")
         }
@@ -833,7 +845,7 @@ final class MaintenanceStore: ObservableObject {
         profile: DeviceProfile?,
         workflow: MaintenanceWorkflow
     ) -> OperationStartResult {
-        guard !backend.isRunning else {
+        guard !isBusy else {
             let message = "Another operation is already running."
             rejectRun(workflow: workflow, message: message)
             return .rejected(message)
@@ -851,9 +863,15 @@ final class MaintenanceStore: ObservableObject {
 
     private func run(operation: String, params: [String: JSONValue], profile: DeviceProfile?) -> OperationStartResult {
         if let coordinator {
-            return coordinator.run(operation: operation, params: params, profile: profile)
+            return coordinator.run(
+                operation: operation,
+                params: params,
+                context: profile?.runtimeContext,
+                activeDeviceID: profile?.id,
+                laneKey: laneKey ?? profile.map { .device($0.id) } ?? .app
+            )
         } else {
-            guard !backend.isRunning else {
+            guard !isBusy else {
                 return .rejected("Another operation is already running.")
             }
             let context = profile?.runtimeContext

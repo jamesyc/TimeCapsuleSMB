@@ -17,7 +17,7 @@ final class DashboardStore: ObservableObject {
                 }
             }
             .store(in: &cancellables)
-        appStore.operationCoordinator.$activeOperation
+        appStore.operationCoordinator.$activeOperations
             .sink { [weak self] _ in
                 Task { @MainActor in
                     guard let self else { return }
@@ -43,9 +43,9 @@ final class DashboardStore: ObservableObject {
 
     private func pruneSessions(profiles: [DeviceProfile]) {
         let existingIDs = Set(profiles.map(\.id))
-        let activeProfileID = appStore.operationCoordinator.activeOperation?.profileID
+        let activeProfileIDs = Set(appStore.operationCoordinator.activeOperations.values.compactMap(\.profileID))
         sessions = sessions.filter { id, _ in
-            existingIDs.contains(id) || id == activeProfileID
+            existingIDs.contains(id) || activeProfileIDs.contains(id)
         }
     }
 }

@@ -80,12 +80,12 @@ final class DashboardStoreTests: XCTestCase {
         let session = DeviceDashboardSession(profile: profile, appStore: fixture.appStore, urlOpener: opener)
 
         session.performPrimaryAction(.runCheckup, profile: profile)
-        try await waitUntilStoreState { fixture.runner.calls.count == 1 && !fixture.appStore.backend.isRunning }
+        try await waitUntilStoreState { fixture.runner.calls.count == 1 && !self.deviceLaneIsRunning(profile, appStore: fixture.appStore) }
         XCTAssertEqual(fixture.runner.calls[0].operation, "doctor")
         XCTAssertEqual(session.selectedTab, .checkup)
 
         session.performPrimaryAction(.installSMB, profile: profile)
-        try await waitUntilStoreState { fixture.runner.calls.count == 2 && !fixture.appStore.backend.isRunning }
+        try await waitUntilStoreState { fixture.runner.calls.count == 2 && !self.deviceLaneIsRunning(profile, appStore: fixture.appStore) }
         XCTAssertEqual(fixture.runner.calls[1].operation, "deploy")
         XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(true))
         XCTAssertEqual(session.selectedTab, .install)
@@ -294,21 +294,26 @@ final class DashboardStoreTests: XCTestCase {
         let session = dashboard.session(for: profile)
 
         session.runCheckup(profile: profile)
-        try await waitUntilStoreState { fixture.appStore.backend.isRunning }
+        try await waitUntilStoreState { self.deviceLaneIsRunning(profile, appStore: fixture.appStore) }
         try await fixture.registry.delete(profile)
 
         XCTAssertTrue(dashboard.hasSession(for: profile.id))
-        try await waitUntilStoreState { !fixture.appStore.backend.isRunning }
+        try await waitUntilStoreState { !self.deviceLaneIsRunning(profile, appStore: fixture.appStore) }
         try await waitUntilStoreState { !dashboard.hasSession(for: profile.id) }
     }
 
-    func testOperationRunningOnAnotherDeviceRejectsNewSessionOperation() async throws {
+    func testOperationRunningOnAnotherDeviceAllowsNewSessionOperation() async throws {
         let fixture = try await makeFixture(responses: [
             .init(events: [
                 BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
                     testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
                 ]))
-            ], delayNanoseconds: 200_000_000)
+            ], delayNanoseconds: 200_000_000),
+            .init(events: [
+                BackendEvent(type: "result", operation: "doctor", ok: true, payload: testDoctorPayload(checks: [
+                    testDoctorCheck(status: "PASS", message: "smbd is running", domain: "Runtime")
+                ]))
+            ])
         ])
         let first = try await fixture.registry.saveConfiguredDevice(
             configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
@@ -329,12 +334,13 @@ final class DashboardStoreTests: XCTestCase {
         let secondSession = dashboard.session(for: second)
 
         firstSession.runCheckup(profile: first)
-        try await waitUntilStoreState { fixture.appStore.backend.isRunning }
+        try await waitUntilStoreState { self.deviceLaneIsRunning(first, appStore: fixture.appStore) }
         secondSession.runCheckup(profile: second)
 
-        XCTAssertEqual(secondSession.doctorStore.state, .runFailed)
-        XCTAssertEqual(secondSession.doctorStore.error?.code, "operation_rejected")
-        XCTAssertEqual(fixture.runner.calls.count, 1)
+        try await waitUntilStoreState { fixture.runner.calls.count == 2 }
+        XCTAssertEqual(secondSession.doctorStore.state, .running)
+        try await waitUntilStoreState { secondSession.doctorStore.state == .passed }
+        XCTAssertEqual(Set(fixture.runner.calls.map { $0.context?.profileID }), ["device-one", "device-two"])
     }
 
     func testDashboardOperationsUpdateLastCheckupAndDeploySnapshots() async throws {
@@ -570,7 +576,7 @@ final class DashboardStoreTests: XCTestCase {
             error: error,
             profile: profile
         ))
-        try await waitUntilStoreState { fixture.runner.calls.count == 1 && !fixture.appStore.backend.isRunning }
+        try await waitUntilStoreState { fixture.runner.calls.count == 1 && !self.deviceLaneIsRunning(profile, appStore: fixture.appStore) }
         XCTAssertEqual(fixture.runner.calls[0].operation, "doctor")
         XCTAssertEqual(fixture.runner.calls[0].params["credentials"], .object(["password": .string("pw")]))
         XCTAssertEqual(session.selectedTab, .checkup)
@@ -580,7 +586,7 @@ final class DashboardStoreTests: XCTestCase {
             error: error,
             profile: profile
         ))
-        try await waitUntilStoreState { fixture.runner.calls.count == 2 && !fixture.appStore.backend.isRunning }
+        try await waitUntilStoreState { fixture.runner.calls.count == 2 && !self.deviceLaneIsRunning(profile, appStore: fixture.appStore) }
         XCTAssertEqual(fixture.runner.calls[1].operation, "deploy")
         XCTAssertEqual(fixture.runner.calls[1].params["dry_run"], .bool(true))
         XCTAssertEqual(fixture.runner.calls[1].params["credentials"], .object(["password": .string("pw")]))
@@ -612,7 +618,7 @@ final class DashboardStoreTests: XCTestCase {
             profile: profile
         ))
 
-        try await waitUntilStoreState { fixture.runner.calls.count == 1 && !fixture.appStore.backend.isRunning }
+        try await waitUntilStoreState { fixture.runner.calls.count == 1 && !self.deviceLaneIsRunning(profile, appStore: fixture.appStore) }
         XCTAssertEqual(fixture.runner.calls[0].operation, "doctor")
         XCTAssertEqual(session.selectedTab, .checkup)
     }
@@ -669,7 +675,7 @@ final class DashboardStoreTests: XCTestCase {
         session.performInstallAction(.runCheckup, profile: profile) {
             diagnosticsShown = true
         }
-        try await waitUntilStoreState { fixture.runner.calls.count == 1 && !fixture.appStore.backend.isRunning }
+        try await waitUntilStoreState { fixture.runner.calls.count == 1 && !self.deviceLaneIsRunning(profile, appStore: fixture.appStore) }
         XCTAssertEqual(fixture.runner.calls[0].operation, "doctor")
         XCTAssertEqual(session.selectedTab, .checkup)
 
@@ -699,6 +705,10 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertNil(fixture.appStore.selectedDeviceID)
         XCTAssertFalse(FileManager.default.fileExists(atPath: configDirectory.path))
         XCTAssertEqual(fixture.passwordStore.state(for: profile.keychainAccount), .missing)
+    }
+
+    private func deviceLaneIsRunning(_ profile: DeviceProfile, appStore: AppStore) -> Bool {
+        appStore.operationCoordinator.lane(for: profile).backend.isRunning
     }
 
     private func makeFixture(responses: [StoreTestRunner.Response]) async throws -> (

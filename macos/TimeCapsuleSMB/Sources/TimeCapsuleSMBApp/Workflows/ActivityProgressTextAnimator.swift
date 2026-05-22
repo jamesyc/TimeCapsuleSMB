@@ -25,6 +25,10 @@ enum ActivityProgressTextAnimator {
         shouldAnimate(snapshot.latestMessage, isRunning: snapshot.isRunning) ? snapshot.latestMessage : nil
     }
 
+    static func animationIdentity(for status: ActivityCompactStatus) -> String? {
+        shouldAnimate(status.latestMessage, isRunning: status.isRunning) ? status.latestMessage : nil
+    }
+
     static func nextPhase(after phase: Int) -> Int {
         (frameIndex(phase) + 1) % frameCount
     }
