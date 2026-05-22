@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Mapping
 
 from timecapsulesmb.checks.models import CheckResult
+from timecapsulesmb.cli.version_check import VersionCheckResult
+from timecapsulesmb.identity import InstallIdentity
 from timecapsulesmb.services.app import jsonable
 from timecapsulesmb.services.doctor import doctor_status_counts
 
@@ -84,6 +86,33 @@ def install_validation_payload(*, ok: bool, checks: list[object]) -> dict[str, o
             "fail": fail_count,
         },
         "summary": "install validation passed." if ok else "install validation failed.",
+    })
+
+
+def telemetry_identity_payload(*, identity: InstallIdentity, bootstrap_path: str) -> dict[str, object]:
+    return _with_schema({
+        "install_id": identity.install_id,
+        "telemetry_enabled": identity.telemetry_enabled,
+        "bootstrap_path": bootstrap_path,
+        "summary": "telemetry is enabled." if identity.telemetry_enabled else "telemetry is disabled.",
+    })
+
+
+def version_check_payload(result: VersionCheckResult) -> dict[str, object]:
+    summary = "update required." if result.should_block else "TimeCapsuleSMB is up to date."
+    if result.source == "unavailable":
+        summary = "version metadata is unavailable."
+    return _with_schema({
+        "should_block": result.should_block,
+        "checked_url": result.checked_url,
+        "message": result.message,
+        "download_url": result.download_url,
+        "local_version_code": result.local_version_code,
+        "current_version": result.current_version,
+        "min_supported_version": result.min_supported_version,
+        "latest_tag": result.latest_tag,
+        "source": result.source,
+        "summary": summary,
     })
 
 

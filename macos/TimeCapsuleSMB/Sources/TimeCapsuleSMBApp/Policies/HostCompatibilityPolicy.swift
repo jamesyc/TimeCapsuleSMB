@@ -28,7 +28,13 @@ enum HostCompatibilityPolicy {
         KnownHostCompatibilityIssue(majorVersion: 26, minorVersion: 4, patchVersions: nil)
     ]
 
-    static func warning(for version: OperatingSystemVersion = ProcessInfo.processInfo.operatingSystemVersion) -> HostCompatibilityWarning? {
+    static func warning(
+        enabled: Bool = true,
+        for version: OperatingSystemVersion = ProcessInfo.processInfo.operatingSystemVersion
+    ) -> HostCompatibilityWarning? {
+        guard enabled else {
+            return nil
+        }
         guard knownTimeMachineIssues.contains(where: { $0.matches(version) }) else {
             return nil
         }

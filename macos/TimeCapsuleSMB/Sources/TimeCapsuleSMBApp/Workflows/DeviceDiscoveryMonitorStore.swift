@@ -45,7 +45,7 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
     let registry: DeviceRegistryStore
     private let lane: OperationLane
 
-    private let timeout: Double
+    private var timeout: Double
     private var isMonitoring = false
     private var pendingRefresh = false
     private var activeOperation: ActiveOperation?
@@ -56,7 +56,7 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
         coordinator: OperationCoordinator,
         readinessStore: AppReadinessStore,
         registry: DeviceRegistryStore,
-        timeout: Double = 4
+        timeout: Double = AppSettings.default.defaultBonjourTimeoutSeconds
     ) {
         self.coordinator = coordinator
         self.readinessStore = readinessStore
@@ -115,6 +115,10 @@ final class DeviceDiscoveryMonitorStore: ObservableObject {
             return handleReadinessChange()
         }
         runDiscoverWhenPossible()
+    }
+
+    func applyAppSettings(_ settings: AppSettings) {
+        timeout = settings.defaultBonjourTimeoutSeconds
     }
 
     func matchingProfile(for device: DiscoveredDevice) -> DeviceProfile? {

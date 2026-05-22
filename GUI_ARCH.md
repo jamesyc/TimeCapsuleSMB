@@ -31,8 +31,9 @@ and manifests needed by those checks.
 - Views are thin. They render state and send user intents to stores.
 - Stores own state machines. Each workflow has explicit states, terminal states,
   validation, and event-to-model parsing.
-- Backend execution is centralized. There is one global `OperationCoordinator`
-  and one active helper operation at a time.
+- Backend execution is coordinated through one global `OperationCoordinator`,
+  but work is separated into lanes. Each lane has one active helper operation at
+  a time, while unrelated lanes can run independently.
 - Backend contracts are typed at the GUI boundary. Swift decodes payloads into
   models and does not parse human log text for app behavior.
 - Credentials never persist to `.env`. GUI passwords live in Keychain and are
@@ -52,27 +53,39 @@ Target source organization:
 TimeCapsuleSMBApp/
   App/
     AppStore.swift
-    AppReadinessStore.swift
+    AppCloseGuard.swift
+    BundleLayout.swift
   Backend/
     BackendClient.swift
     BackendPayloads.swift
     HelperLocator.swift
     HelperRunner.swift
-    OperationCoordinator.swift
     OperationParams.swift
     PendingConfirmation.swift
   Profiles/
     DeviceProfile.swift
+    DeviceProfileEditorStore.swift
     DeviceRegistryStore.swift
     PasswordStore.swift
   Policies/
+    DashboardActionPolicy.swift
+    DeviceStatusPolicy.swift
+    DoctorCheckDomainPolicy.swift
     HostCompatibilityPolicy.swift
+    RecoveryActionMapper.swift
+    SMBAddressPolicy.swift
   Workflows/
+    ActivityStore.swift
     AddDeviceFlowStore.swift
+    AppReadinessStore.swift
     DashboardStore.swift
     DeployWorkflowStore.swift
+    DeviceDashboardSession.swift
+    DeviceDiscoveryMonitorStore.swift
     DoctorStore.swift
+    FlashWorkflowStore.swift
     MaintenanceStore.swift
+    OperationCoordinator.swift
   Views/
     Shell/
     AddDevice/
@@ -154,10 +167,20 @@ run(operation:params:profile:password:)
 run(operation:params:context:activeDeviceID:password:)
 ```
 
+The coordinator owns separate lanes:
+
+- `.app` for app readiness and global discovery
+- `.device(<profile-id>)` for profile-scoped operations
+- `.candidateHost(<host>)` for unsaved device setup work
+- `.localPath(<path>)` for local mounted-share maintenance
+
 Responsibilities:
 
-- reject a second operation while one is running
+- reject a second operation in the same lane while that lane is busy
+- allow unrelated lanes to run independently when their work cannot corrupt the
+  same profile or operation state
 - expose active operation and active profile ID
+- expose all active operations for Activity and close-guard behavior
 - inject password credentials when provided
 - delegate profile context to `BackendClient`
 - preserve context through confirmation replay
@@ -262,7 +285,7 @@ The dashboard has these user-facing tabs:
 - Install / Update
 - Checkup
 - Maintenance
-- Advanced
+- Settings
 
 Overview is decision-oriented. It shows device identity, password state, host
 macOS warnings, last checkup, last install/update, and one primary action.
@@ -278,10 +301,45 @@ Maintenance wraps:
 - uninstall
 - fsck
 - repair xattrs
-- future flash workflow
+- disabled NetBSD4 flash boot hook scaffold
 
-Advanced contains raw events, helper path, profile ID, config path, and other
-technical diagnostics.
+Settings contains device-level profile editing:
+
+- display name
+- host/IP
+- profile save/reset state
+- advanced runtime defaults for deploy/reconfigure:
+  - mount wait
+  - ATA idle seconds
+  - ATA standby seconds
+  - NBNS enabled
+  - internal share uses disk root
+  - allow any SMB protocol
+  - force debug logging
+
+Raw events, helper path, readiness validation, profile ID, config path, and other
+technical diagnostics belong in Diagnostics or compact Advanced disclosures, not
+in the primary workflow controls.
+
+App-level Settings are a top-level sidebar surface and stay separate from the
+device profile editor. They own:
+
+- defaults for newly added devices
+- global Bonjour/checkup discovery timeout defaults
+- telemetry preference
+- helper path override
+- Diagnostics raw-event display default
+- update/version check controls
+- Time Machine warning policy
+
+## Close Guard
+
+The app must route window close and Command-Q through shared close-guard
+behavior. If any operation lane has active work or a pending confirmation, the
+user gets a native confirmation before the app closes.
+
+This guard should be based on `OperationCoordinator.hasActiveWork`, not on a
+single backend client, because operations can run on multiple lanes.
 
 ## App Readiness And Bundling
 
@@ -348,12 +406,14 @@ Required coverage areas:
 - missing, corrupt, save, update, duplicate, and delete registry behavior
 - Keychain save/read/update/delete, missing item, and unavailable item
 - backend context injection and confirmation replay context preservation
-- operation rejection while another operation is active
+- operation rejection while another operation is active on the same lane
+- independent app, device, candidate, and local-path lane behavior
 - add-device discover/manual/auth/unsupported/duplicate/password-save failure
 - dashboard primary action derivation
 - operation snapshots attributed to active operation profile ID
 - host compatibility warning matrix
 - helper locator production and development environment behavior
+- close guard behavior for window close and Command-Q
 
 Regression runs:
 

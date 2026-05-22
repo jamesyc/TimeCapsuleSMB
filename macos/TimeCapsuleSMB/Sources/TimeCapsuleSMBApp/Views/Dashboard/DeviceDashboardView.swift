@@ -23,9 +23,19 @@ struct DeviceDashboardView: View {
                 case .overview:
                     OverviewTab(profile: profile, session: session, appStore: appStore)
                 case .install:
-                    InstallTab(profile: profile, session: session, showDiagnostics: showDiagnostics)
+                    InstallTab(
+                        profile: profile,
+                        session: session,
+                        appSettings: appStore.appSettingsStore.settings,
+                        showDiagnostics: showDiagnostics
+                    )
                 case .checkup:
-                    CheckupTab(profile: profile, session: session, showDiagnostics: showDiagnostics)
+                    CheckupTab(
+                        profile: profile,
+                        session: session,
+                        appSettings: appStore.appSettingsStore.settings,
+                        showDiagnostics: showDiagnostics
+                    )
                 case .maintenance:
                     MaintenanceTab(profile: profile, session: session, showDiagnostics: showDiagnostics)
                 case .settings:

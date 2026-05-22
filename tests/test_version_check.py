@@ -81,6 +81,10 @@ class VersionCheckTests(unittest.TestCase):
             )
 
             self.assertFalse(result.should_block)
+            self.assertEqual(result.source, "network")
+            self.assertEqual(result.current_version, 20004)
+            self.assertEqual(result.min_supported_version, 20004)
+            self.assertEqual(result.latest_tag, "v2.0.4")
             self.assertEqual(len(calls), 1)
             request, timeout = calls[0]
             self.assertEqual(request.full_url, VERSION_CHECK_URL)
@@ -114,6 +118,9 @@ class VersionCheckTests(unittest.TestCase):
             self.assertTrue(result.should_block)
             self.assertEqual(result.message, message)
             self.assertEqual(result.download_url, download_url)
+            self.assertEqual(result.source, "network")
+            self.assertEqual(result.current_version, 20005)
+            self.assertEqual(result.min_supported_version, 20005)
             self.assertEqual(len(calls), 1)
 
     def test_invalid_or_unreachable_version_metadata_fails_open(self) -> None:
@@ -198,6 +205,8 @@ class VersionCheckTests(unittest.TestCase):
             )
 
             self.assertFalse(result.should_block)
+            self.assertEqual(result.source, "cache")
+            self.assertEqual(result.current_version, 20004)
             self.assertEqual(calls, [])
 
     def test_stale_cache_fetches_remote_metadata(self) -> None:

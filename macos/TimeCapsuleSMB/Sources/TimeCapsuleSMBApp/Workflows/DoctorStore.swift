@@ -104,6 +104,7 @@ final class DoctorStore: ObservableObject {
     private let laneKey: OperationLaneKey?
 
     private var activeOperation: ActiveOperation?
+    private var appliedDefaultBonjourTimeout = AppSettings.default.defaultBonjourTimeoutSeconds
     private var lastProcessedEventCount = 0
     private var cancellables: Set<AnyCancellable> = []
 
@@ -157,7 +158,7 @@ final class DoctorStore: ObservableObject {
     }
 
     var bonjourTimeoutValue: Double? {
-        nonNegativeDouble(bonjourTimeout)
+        ValueParsers.nonNegativeDouble(bonjourTimeout)
     }
 
     @discardableResult
@@ -211,6 +212,14 @@ final class DoctorStore: ObservableObject {
 
     func cancel() {
         backend.cancel()
+    }
+
+    func applyAppSettings(_ settings: AppSettings) {
+        let previousDefaultTimeout = Self.timeoutText(appliedDefaultBonjourTimeout)
+        if bonjourTimeout == previousDefaultTimeout {
+            bonjourTimeout = Self.timeoutText(settings.defaultBonjourTimeoutSeconds)
+        }
+        appliedDefaultBonjourTimeout = settings.defaultBonjourTimeoutSeconds
     }
 
     private func process(_ events: [BackendEvent]) {
@@ -302,12 +311,11 @@ final class DoctorStore: ObservableObject {
         activeOperation = nil
     }
 
-    private func nonNegativeDouble(_ text: String) -> Double? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let value = Double(trimmed), value.isFinite, value >= 0 else {
-            return nil
+    private static func timeoutText(_ value: Double) -> String {
+        guard value.rounded() == value else {
+            return String(value)
         }
-        return value
+        return String(Int(value))
     }
 
     private func run(operation: String, params: [String: JSONValue], profile: DeviceProfile?) -> OperationStartResult {

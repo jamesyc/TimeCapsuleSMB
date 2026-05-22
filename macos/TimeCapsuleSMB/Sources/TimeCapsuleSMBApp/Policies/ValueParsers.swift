@@ -8,4 +8,12 @@ enum ValueParsers {
         }
         return value
     }
+
+    static func nonNegativeDouble(_ text: String) -> Double? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = Double(trimmed), value.isFinite, value >= 0 else {
+            return nil
+        }
+        return value
+    }
 }

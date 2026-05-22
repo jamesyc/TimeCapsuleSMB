@@ -15,7 +15,9 @@ struct WarningBanner: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(10)
+        .padding(.vertical, 10)
+        .padding(.leading, 14)
+        .padding(.trailing, 18)
         .background(Color.yellow.opacity(0.12))
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }

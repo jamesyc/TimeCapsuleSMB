@@ -51,16 +51,20 @@ Recommended top-level structure:
 
 - Sidebar
   - All Time Capsules
-  - Add Time Capsule
   - Activity
   - Settings
-  - Help
+  - saved device rows
+  - Add Time Capsule
+
+Future top-level surfaces:
+
+- Help
 
 - Device detail area
   - selected device summary
   - primary action
   - health and warnings
-  - workflow tabs or sections
+  - workflow tabs: Overview, Install / Update, Checkup, Maintenance, Settings
 
 - Bottom or collapsible activity drawer
   - latest operation progress
@@ -231,10 +235,16 @@ Suggested layout:
   - SMB auth
   - Time Machine
 
+Current implementation status:
+
+- Overview has Connection, Runtime, and Checkup sections.
+- Detailed Finder/Bonjour, SMB auth, Time Machine, disk, and metadata signals
+  are grouped in the Checkup tab.
+
 - Secondary actions
   - Maintenance
   - Uninstall
-  - Advanced
+  - Settings
 
 The dashboard should run a lightweight refresh when selected. Full doctor can be
 manual or automatically offered after deploy/update.
@@ -399,7 +409,20 @@ Recommended sections:
 - Disk Repair
 - File Metadata Repair
 - Uninstall
-- Firmware Flash, disabled or experimental
+- Persistent NetBSD4 Boot Hook, disabled in the current build
+
+Current implementation status:
+
+- NetBSD4 activation, disk repair, file metadata repair, and uninstall are
+  implemented as planned workflows with explicit state machines, dry-run plans
+  where applicable, confirmations, progress timelines, advanced options, and
+  typed backend payloads.
+- Activation is hidden for devices that do not need NetBSD4 post-reboot
+  activation.
+- Successful uninstall clears the saved deploy/install snapshot so the app no
+  longer presents the device as installed.
+- The persistent NetBSD4 boot hook has a NetBSD4-only GUI scaffold, but the
+  read-only and write workflows are still disabled.
 
 ### NetBSD4 Activation
 
@@ -509,8 +532,9 @@ Default should be reboot and verify. `No reboot` should be advanced.
 
 ## Flash UX
 
-Flash should be planned now, but disabled before release unless it has gone
-through separate acceptance testing.
+Flash should remain disabled before release unless it has gone through separate
+acceptance testing. The current GUI exposes a NetBSD4-only disabled scaffold for
+this area under Maintenance.
 
 Product label:
 
@@ -521,10 +545,10 @@ inside advanced details.
 
 Release gating:
 
-- hidden by default
-- visible only in an Advanced or Experimental section
-- write actions disabled in release builds until explicitly enabled
-- read-only backup/analyze may be available earlier, but only for NetBSD4
+- visible only for NetBSD4 devices
+- disabled in the current build
+- read-only backup/analyze should be the first enabled mode
+- write actions stay disabled in release builds until explicitly enabled
 
 Eligibility checks:
 
@@ -602,36 +626,53 @@ After restore write:
 
 ## Settings
 
-App-level settings:
+Settings are split by scope.
 
-- default Bonjour timeout
-- default mount wait
-- diagnostics sharing/telemetry preference
-- show advanced options
-- check for app updates
-- Time Machine warning policy version
+Device Settings are the fifth device dashboard tab and contain:
 
-Device-level settings:
-
-- nickname
+- display name
 - host/IP
+- profile save/reset state
+- runtime defaults under an Advanced disclosure:
+  - mount wait
+  - ATA idle seconds
+  - ATA standby seconds
+  - NBNS enabled
+  - internal share uses disk root
+  - allow any SMB protocol
+  - force debug logging
+
+App-level Settings are a separate top-level sidebar surface and contain:
+
+- new-device defaults for NBNS, SMB compatibility flags, debug logging, mount
+  wait, and ATA settings
+- default Bonjour/checkup timeout
+- telemetry preference
+- helper path override
+- Diagnostics raw-event display default
+- update check on launch, manual update check, and version metadata URL override
+- Time Machine warning policy
+
+Device-level settings still planned or only partially represented:
+
 - stored password status
-- NBNS enabled
-- debug logging for future deploys
-- advanced SSH options, hidden
+- replace stored password entry point
 - forget device
+- refresh identity
 
 ## Background Jobs
 
-The app should run these without presenting them as commands:
+The app already runs these without presenting them as commands:
 
 - app bundle validation
 - payload manifest validation
-- version support check
 - host macOS warning check
 - periodic Bonjour discovery
-- lightweight selected-device reachability refresh
 - Keychain availability check
+
+Still planned:
+
+- lightweight selected-device reachability refresh
 
 If background jobs fail:
 
@@ -669,11 +710,16 @@ All Time Capsules
       Disk Repair
       File Metadata Repair
       Uninstall
-      Firmware Boot Hook (experimental)
-    Advanced
-      logs
-      raw operation events
-      copy diagnostics
+      Persistent NetBSD4 Boot Hook (disabled)
+    Settings
+      device profile
+      advanced runtime defaults
+
+Diagnostics
+  app readiness
+  helper path
+  raw operation events
+  copy diagnostics
 
 Add Time Capsule
   Discover
@@ -688,7 +734,7 @@ Activity
   historical operations
   copied diagnostics
 
-Settings
+Future App Settings
   app defaults
   warning policy
   updates

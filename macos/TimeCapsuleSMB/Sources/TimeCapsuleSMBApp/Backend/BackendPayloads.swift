@@ -82,6 +82,50 @@ struct InstallValidationPayload: Decodable, Equatable {
     }
 }
 
+struct TelemetryIdentityPayload: Decodable, Equatable {
+    let schemaVersion: Int
+    let installId: String?
+    let telemetryEnabled: Bool
+    let bootstrapPath: String
+    let summary: String
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case installId = "install_id"
+        case telemetryEnabled = "telemetry_enabled"
+        case bootstrapPath = "bootstrap_path"
+        case summary
+    }
+}
+
+struct VersionCheckPayload: Decodable, Equatable {
+    let schemaVersion: Int
+    let shouldBlock: Bool
+    let checkedURL: String
+    let message: String
+    let downloadURL: String
+    let localVersionCode: Int
+    let currentVersion: Int?
+    let minSupportedVersion: Int?
+    let latestTag: String?
+    let source: String
+    let summary: String
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case shouldBlock = "should_block"
+        case checkedURL = "checked_url"
+        case message
+        case downloadURL = "download_url"
+        case localVersionCode = "local_version_code"
+        case currentVersion = "current_version"
+        case minSupportedVersion = "min_supported_version"
+        case latestTag = "latest_tag"
+        case source
+        case summary
+    }
+}
+
 struct InstallCheckPayload: Decodable, Equatable {
     let id: String
     let ok: Bool

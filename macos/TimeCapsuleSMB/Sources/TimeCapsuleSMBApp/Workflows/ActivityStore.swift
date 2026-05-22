@@ -298,7 +298,15 @@ final class ActivityStore: ObservableObject {
         guard let operation else {
             return false
         }
-        return ["capabilities", "validate-install", "paths", "discover"].contains(operation)
+        return [
+            "capabilities",
+            "discover",
+            "paths",
+            "set-telemetry",
+            "telemetry-identity",
+            "validate-install",
+            "version-check"
+        ].contains(operation)
     }
 
     private func updateSequence(

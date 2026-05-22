@@ -17,4 +17,11 @@ final class HostCompatibilityPolicyTests: XCTestCase {
         XCTAssertNil(HostCompatibilityPolicy.warning(for: OperatingSystemVersion(majorVersion: 26, minorVersion: 3, patchVersion: 9)))
         XCTAssertNil(HostCompatibilityPolicy.warning(for: OperatingSystemVersion(majorVersion: 26, minorVersion: 5, patchVersion: 0)))
     }
+
+    func testDisabledPolicyStillSuppressesWarnings() {
+        XCTAssertNil(HostCompatibilityPolicy.warning(
+            enabled: false,
+            for: OperatingSystemVersion(majorVersion: 15, minorVersion: 7, patchVersion: 5)
+        ))
+    }
 }

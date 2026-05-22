@@ -92,6 +92,7 @@ struct AppReadinessBlockedView: View {
 struct AppDiagnosticsView: View {
     @ObservedObject var store: AppReadinessStore
     let events: [BackendEvent]
+    @Binding var showBackendEvents: Bool
     @Binding var helperPath: String
     @Environment(\.dismiss) private var dismiss
 
@@ -150,9 +151,11 @@ struct AppDiagnosticsView: View {
                 }
             }
 
-            Text(L10n.string("diagnostics.backend_events"))
+            Toggle(L10n.string("diagnostics.backend_events"), isOn: $showBackendEvents)
                 .font(.headline)
-            EventList(events: events)
+            if showBackendEvents {
+                EventList(events: events)
+            }
         }
         .padding()
         .frame(minWidth: 720, minHeight: 520)

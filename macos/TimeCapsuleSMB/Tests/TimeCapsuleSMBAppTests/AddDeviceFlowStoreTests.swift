@@ -293,6 +293,88 @@ final class AddDeviceFlowStoreTests: XCTestCase {
         XCTAssertEqual(fixture.runner.calls[0].params["debug_logging"], .bool(false))
     }
 
+    func testNewManualProfileUsesAppDefaultDeviceSettings() async throws {
+        let fixture = try await makeStore(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "root@10.0.0.2"))
+            ])
+        ])
+        let defaultSettings = DeviceProfileSettings(
+            nbnsEnabled: false,
+            internalShareUseDiskRoot: true,
+            anyProtocol: true,
+            debugLogging: true,
+            mountWaitSeconds: 45,
+            ataIdleSeconds: 600,
+            ataStandby: 900
+        )
+        var appSettings = AppSettings.default
+        appSettings.defaultDeviceSettings = defaultSettings
+        fixture.store.applyAppSettings(appSettings)
+        fixture.store.startManualEntry()
+        fixture.store.manualHost = "10.0.0.2"
+        fixture.store.password = "secret"
+
+        fixture.store.runConfigure()
+
+        try await waitUntilStoreState { fixture.store.state == .saved }
+        XCTAssertEqual(fixture.store.savedProfile?.settings, defaultSettings)
+        XCTAssertEqual(fixture.runner.calls[0].params["debug_logging"], .bool(true))
+        XCTAssertEqual(fixture.runner.calls[0].params["internal_share_use_disk_root"], .bool(true))
+        XCTAssertEqual(fixture.runner.calls[0].params["any_protocol"], .bool(true))
+        XCTAssertEqual(fixture.runner.calls[0].params["ata_idle_seconds"], .number(600))
+        XCTAssertEqual(fixture.runner.calls[0].params["ata_standby"], .number(900))
+    }
+
+    func testExistingProfileSettingsAreNotClobberedByAppDefaults() async throws {
+        let fixture = try await makeStore(responses: [
+            .init(events: [
+                BackendEvent(type: "result", operation: "configure", ok: true, payload: testConfigurePayload(host: "10.0.0.2"))
+            ])
+        ])
+        let existing = try await fixture.registry.saveConfiguredDevice(
+            configuredDevice: testConfiguredDevice(host: "10.0.0.2"),
+            discoveredDevice: nil,
+            passwordState: .available,
+            preferredID: "device-one"
+        )
+        var editedExisting = existing
+        editedExisting.settings = DeviceProfileSettings(
+            nbnsEnabled: false,
+            internalShareUseDiskRoot: false,
+            anyProtocol: false,
+            debugLogging: false,
+            mountWaitSeconds: 99,
+            ataIdleSeconds: 111,
+            ataStandby: nil
+        )
+        _ = try await fixture.registry.updateProfile(editedExisting)
+        var appSettings = AppSettings.default
+        appSettings.defaultDeviceSettings = DeviceProfileSettings(
+            nbnsEnabled: true,
+            internalShareUseDiskRoot: true,
+            anyProtocol: true,
+            debugLogging: true,
+            mountWaitSeconds: 1,
+            ataIdleSeconds: 2,
+            ataStandby: 3
+        )
+        fixture.store.applyAppSettings(appSettings)
+        fixture.store.startManualEntry()
+        fixture.store.manualHost = "10.0.0.2"
+        fixture.store.password = "secret"
+
+        fixture.store.runConfigure()
+
+        try await waitUntilStoreState { fixture.store.state == .saved }
+        XCTAssertEqual(fixture.store.savedProfile?.settings, editedExisting.settings)
+        XCTAssertEqual(fixture.runner.calls[0].params["debug_logging"], .bool(false))
+        XCTAssertEqual(fixture.runner.calls[0].params["internal_share_use_disk_root"], .bool(false))
+        XCTAssertEqual(fixture.runner.calls[0].params["any_protocol"], .bool(false))
+        XCTAssertEqual(fixture.runner.calls[0].params["ata_idle_seconds"], .number(111))
+        XCTAssertEqual(fixture.runner.calls[0].params["ata_standby"], .string(""))
+    }
+
     func testConfigureRejectedWhileAnotherOperationRunsSavesNothing() async throws {
         let fixture = try await makeStore(responses: [
             .init(events: [

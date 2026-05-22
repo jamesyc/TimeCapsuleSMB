@@ -21,6 +21,7 @@ if str(SRC_ROOT) not in sys.path:
 from timecapsulesmb.app.events import AppEvent, EventSink
 from timecapsulesmb import repair_xattrs as repair_xattrs_domain
 from timecapsulesmb.app import contracts, helper, service
+from timecapsulesmb.cli.version_check import VersionCheckResult
 from timecapsulesmb.cli import main as cli_main
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import MANAGED_PAYLOAD_DIR_NAME, AppConfig, ConfigError, parse_env_file
@@ -293,8 +294,94 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(payload["api_schema_version"], 1)
         self.assertIn("deploy", payload["operations"])
         self.assertIn("capabilities", payload["operations"])
+        self.assertIn("set-telemetry", payload["operations"])
+        self.assertIn("version-check", payload["operations"])
         self.assertIn("helper_version", payload)
         self.assertIn("artifact_manifest_sha256", payload)
+
+    def test_set_telemetry_operation_updates_bootstrap_preference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            app_paths = SimpleNamespace(bootstrap_path=bootstrap_path)
+            collector = CollectingSink()
+
+            with mock.patch("timecapsulesmb.app.ops.readiness.resolve_app_paths", return_value=app_paths):
+                rc = service.run_api_request(
+                    {"operation": "set-telemetry", "params": {"enabled": False}},
+                    collector.sink,
+                )
+
+            self.assertEqual(rc, 0)
+            stages = collector.events_of_type("stage")
+            self.assertEqual([stage["stage"] for stage in stages], ["resolve_paths", "write_bootstrap"])
+            payload = self.assert_single_terminal_event(collector, "result")["payload"]
+            self.assertFalse(payload["telemetry_enabled"])
+            self.assertEqual(payload["bootstrap_path"], str(bootstrap_path))
+            self.assertIn("TELEMETRY=false", bootstrap_path.read_text())
+
+    def test_telemetry_identity_operation_reads_current_bootstrap_preference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bootstrap_path = Path(tmp) / ".bootstrap"
+            bootstrap_path.write_text("INSTALL_ID=install-one\nTELEMETRY=false\n")
+            app_paths = SimpleNamespace(bootstrap_path=bootstrap_path)
+            collector = CollectingSink()
+
+            with mock.patch("timecapsulesmb.app.ops.readiness.resolve_app_paths", return_value=app_paths):
+                rc = service.run_api_request({"operation": "telemetry-identity", "params": {}}, collector.sink)
+
+            self.assertEqual(rc, 0)
+            payload = self.assert_single_terminal_event(collector, "result")["payload"]
+            self.assertEqual(payload["install_id"], "install-one")
+            self.assertFalse(payload["telemetry_enabled"])
+
+    def test_version_check_operation_returns_structured_update_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app_paths = SimpleNamespace(version_check_cache_path=Path(tmp) / "version-cache.json")
+            collector = CollectingSink()
+            result = VersionCheckResult(
+                should_block=True,
+                checked_url="https://example.invalid/version.json",
+                message="Please update.",
+                download_url="https://example.invalid/download",
+                local_version_code=20004,
+                current_version=20005,
+                min_supported_version=20005,
+                latest_tag="v2.0.5",
+                source="network",
+            )
+
+            with mock.patch("timecapsulesmb.app.ops.readiness.resolve_app_paths", return_value=app_paths):
+                with mock.patch("timecapsulesmb.app.ops.readiness.check_client_version", return_value=result) as check:
+                    rc = service.run_api_request(
+                        {
+                            "operation": "version-check",
+                            "params": {"url": "https://example.invalid/version.json"},
+                        },
+                        collector.sink,
+                    )
+
+            self.assertEqual(rc, 0)
+            check.assert_called_once_with(
+                url="https://example.invalid/version.json",
+                cache_path=app_paths.version_check_cache_path,
+            )
+            payload = self.assert_single_terminal_event(collector, "result")["payload"]
+            self.assertTrue(payload["should_block"])
+            self.assertEqual(payload["current_version"], 20005)
+            self.assertEqual(payload["latest_tag"], "v2.0.5")
+            self.assertEqual(payload["source"], "network")
+
+    def test_version_check_operation_rejects_non_http_url(self) -> None:
+        collector = CollectingSink()
+
+        rc = service.run_api_request(
+            {"operation": "version-check", "params": {"url": "file:///tmp/version.json"}},
+            collector.sink,
+        )
+
+        self.assertEqual(rc, 1)
+        error = self.assert_single_terminal_event(collector, "error")
+        self.assertEqual(error["code"], "validation_failed")
 
     def test_missing_params_defaults_to_empty_object(self) -> None:
         collector = CollectingSink()

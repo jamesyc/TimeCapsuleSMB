@@ -6,8 +6,11 @@ final class AppStore: ObservableObject {
     @Published var selectedDeviceID: DeviceProfile.ID?
     @Published var showingAddDevice = false
     @Published var showingActivity = false
+    @Published var showingAppSettings = false
 
     let appReadinessStore: AppReadinessStore
+    let appSettingsStore: AppSettingsStore
+    let appUpdateStore: AppUpdateStore
     let deviceRegistry: DeviceRegistryStore
     let operationCoordinator: OperationCoordinator
     let passwordStore: PasswordStore
@@ -20,6 +23,7 @@ final class AppStore: ObservableObject {
         let coordinator = OperationCoordinator()
         self.init(
             appReadinessStore: AppReadinessStore(backend: coordinator.appLane.backend),
+            appSettingsStore: AppSettingsStore(),
             deviceRegistry: DeviceRegistryStore(),
             operationCoordinator: coordinator,
             passwordStore: KeychainPasswordStore(),
@@ -29,17 +33,21 @@ final class AppStore: ObservableObject {
 
     init(
         appReadinessStore: AppReadinessStore,
+        appSettingsStore: AppSettingsStore? = nil,
         deviceRegistry: DeviceRegistryStore,
         operationCoordinator: OperationCoordinator,
         passwordStore: PasswordStore,
         activityStore: ActivityStore? = nil,
+        appUpdateStore: AppUpdateStore? = nil,
         discoveryMonitor: DeviceDiscoveryMonitorStore? = nil
     ) {
         self.appReadinessStore = appReadinessStore
+        self.appSettingsStore = appSettingsStore ?? AppSettingsStore()
         self.deviceRegistry = deviceRegistry
         self.operationCoordinator = operationCoordinator
         self.passwordStore = passwordStore
         self.activityStore = activityStore ?? ActivityStore(coordinator: operationCoordinator)
+        self.appUpdateStore = appUpdateStore ?? AppUpdateStore(coordinator: operationCoordinator)
         self.discoveryMonitor = discoveryMonitor ?? DeviceDiscoveryMonitorStore(
             coordinator: operationCoordinator,
             readinessStore: appReadinessStore,
@@ -47,6 +55,16 @@ final class AppStore: ObservableObject {
         )
 
         appReadinessStore.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+        self.appSettingsStore.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+        self.appUpdateStore.objectWillChange
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
             }
@@ -89,28 +107,43 @@ final class AppStore: ObservableObject {
     }
 
     func start() async {
+        await appSettingsStore.load()
+        applyAppSettings(appSettingsStore.settings)
         await deviceRegistry.load()
         await refreshPasswordStates()
         appReadinessStore.start()
         discoveryMonitor.startMonitoring()
+        if appSettingsStore.settings.checkForUpdatesOnLaunch {
+            appUpdateStore.checkNow(settings: appSettingsStore.settings)
+        }
     }
 
     func select(_ profile: DeviceProfile) {
         selectedDeviceID = profile.id
         showingAddDevice = false
         showingActivity = false
+        showingAppSettings = false
     }
 
     func showAddDevice() {
         selectedDeviceID = nil
         showingAddDevice = true
         showingActivity = false
+        showingAppSettings = false
     }
 
     func showActivity() {
         selectedDeviceID = nil
         showingAddDevice = false
         showingActivity = true
+        showingAppSettings = false
+    }
+
+    func showAppSettings() {
+        selectedDeviceID = nil
+        showingAddDevice = false
+        showingActivity = false
+        showingAppSettings = true
     }
 
     func dashboardSummary(for profile: DeviceProfile) -> DeviceDashboardSummary {
@@ -131,8 +164,20 @@ final class AppStore: ObservableObject {
             passwordState: passwordState,
             displayStatus: displayStatus,
             primaryAction: primaryAction,
-            hostWarning: HostCompatibilityPolicy.warning()
+            hostWarning: HostCompatibilityPolicy.warning(enabled: appSettingsStore.settings.timeMachineWarningsEnabled)
         )
+    }
+
+    func saveAppSettings(_ settings: AppSettings) async throws {
+        let previousSettings = appSettingsStore.settings
+        try await appSettingsStore.save(settings)
+        applyAppSettings(settings)
+        if previousSettings.telemetryEnabled != settings.telemetryEnabled {
+            syncTelemetryPreference(settings.telemetryEnabled)
+        }
+        if previousSettings.helperPathOverride != settings.helperPathOverride {
+            appReadinessStore.start()
+        }
     }
 
     func password(for profile: DeviceProfile) -> String? {
@@ -170,6 +215,7 @@ final class AppStore: ObservableObject {
             selectedDeviceID = deviceRegistry.profiles.first?.id
             showingAddDevice = false
             showingActivity = false
+            showingAppSettings = false
         }
     }
 
@@ -186,6 +232,22 @@ final class AppStore: ObservableObject {
         return passwordStore.state(for: profile.keychainAccount)
     }
 
+    private func applyAppSettings(_ settings: AppSettings) {
+        if backend.helperPath != settings.helperPathOverride {
+            backend.helperPath = settings.helperPathOverride
+        }
+        discoveryMonitor.applyAppSettings(settings)
+    }
+
+    private func syncTelemetryPreference(_ enabled: Bool) {
+        let params: [String: JSONValue] = ["enabled": .bool(enabled)]
+        _ = operationCoordinator.run(
+            operation: "set-telemetry",
+            params: params,
+            laneKey: .localPath("app-settings")
+        )
+    }
+
     private func syncSelection(profiles: [DeviceProfile]) {
         if let selectedDeviceID, profiles.contains(where: { $0.id == selectedDeviceID }) {
             return
@@ -194,6 +256,7 @@ final class AppStore: ObservableObject {
         if !profiles.isEmpty {
             showingAddDevice = false
             showingActivity = false
+            showingAppSettings = false
         }
     }
 }

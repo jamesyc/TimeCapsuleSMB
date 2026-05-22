@@ -3,8 +3,10 @@ import SwiftUI
 public struct ContentView: View {
     @StateObject private var appStore: AppStore
     @StateObject private var addDeviceStore: AddDeviceFlowStore
+    @StateObject private var appSettingsEditorStore: AppSettingsEditorStore
     @StateObject private var dashboardStore: DashboardStore
     @State private var diagnosticsPresented = false
+    @State private var diagnosticsShowBackendEvents = true
     @State private var profilePendingDeletion: DeviceProfile?
     @State private var deleteErrorMessage: String?
 
@@ -12,6 +14,7 @@ public struct ContentView: View {
     public init() {
         let appStore = AppStore()
         _appStore = StateObject(wrappedValue: appStore)
+        _appSettingsEditorStore = StateObject(wrappedValue: AppSettingsEditorStore(settings: appStore.appSettingsStore.settings))
         _addDeviceStore = StateObject(wrappedValue: AddDeviceFlowStore(
             coordinator: appStore.operationCoordinator,
             registry: appStore.deviceRegistry,
@@ -83,15 +86,26 @@ public struct ContentView: View {
         }
         .task {
             await appStore.start()
+            addDeviceStore.applyAppSettings(appStore.appSettingsStore.settings)
+            appSettingsEditorStore.sync(settings: appStore.appSettingsStore.settings)
         }
         .onChange(of: addDeviceStore.savedProfile) { _, profile in
             guard let profile else { return }
             appStore.select(profile)
         }
+        .onChange(of: appStore.appSettingsStore.settings) { _, settings in
+            addDeviceStore.applyAppSettings(settings)
+            appSettingsEditorStore.sync(settings: settings)
+        }
+        .onChange(of: diagnosticsPresented) { _, isPresented in
+            guard isPresented else { return }
+            diagnosticsShowBackendEvents = appStore.appSettingsStore.settings.showRawBackendEventsByDefault
+        }
         .sheet(isPresented: $diagnosticsPresented) {
             AppDiagnosticsView(
                 store: appStore.appReadinessStore,
                 events: appStore.backend.events,
+                showBackendEvents: $diagnosticsShowBackendEvents,
                 helperPath: Binding(
                     get: { appStore.backend.helperPath },
                     set: { appStore.backend.helperPath = $0 }
@@ -194,6 +208,9 @@ public struct ContentView: View {
                 if appStore.showingActivity {
                     return "activity"
                 }
+                if appStore.showingAppSettings {
+                    return "settings"
+                }
                 if appStore.showingAddDevice {
                     return "add"
                 }
@@ -208,10 +225,13 @@ public struct ContentView: View {
                     appStore.showAddDevice()
                 } else if value == "activity" {
                     appStore.showActivity()
+                } else if value == "settings" {
+                    appStore.showAppSettings()
                 } else if value == "all" {
                     appStore.selectedDeviceID = nil
                     appStore.showingAddDevice = false
                     appStore.showingActivity = false
+                    appStore.showingAppSettings = false
                 } else if value.hasPrefix("device:") {
                     let id = String(value.dropFirst("device:".count))
                     if let profile = appStore.deviceRegistry.profile(id: id) {
@@ -228,6 +248,8 @@ public struct ContentView: View {
                 .tag("all")
             Label(L10n.string("sidebar.activity"), systemImage: appStore.activityStore.hasActiveActivity ? "hourglass" : "clock")
                 .tag("activity")
+            Label(L10n.string("sidebar.settings"), systemImage: "gearshape")
+                .tag("settings")
 
             Section(L10n.string("sidebar.devices")) {
                 ForEach(appStore.deviceRegistry.profiles) { profile in
@@ -263,6 +285,11 @@ public struct ContentView: View {
             ActivityDetailView(
                 activityStore: appStore.activityStore,
                 registry: appStore.deviceRegistry
+            )
+        } else if appStore.showingAppSettings {
+            AppSettingsView(
+                appStore: appStore,
+                editor: appSettingsEditorStore
             )
         } else if appStore.showingAddDevice {
             AddDeviceView(store: addDeviceStore)

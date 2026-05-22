@@ -3,6 +3,7 @@ import SwiftUI
 struct InstallTab: View {
     let profile: DeviceProfile
     @ObservedObject var session: DeviceDashboardSession
+    let appSettings: AppSettings
     let showDiagnostics: () -> Void
 
     var body: some View {
@@ -17,7 +18,7 @@ struct InstallTab: View {
             currentStage: store.currentStage,
             plannedOptions: store.plannedOptions,
             profile: profile,
-            hostWarning: HostCompatibilityPolicy.warning(),
+            hostWarning: HostCompatibilityPolicy.warning(enabled: appSettings.timeMachineWarningsEnabled),
             isCheckupRunning: summary.displayStatus == .checking
         )
         let progress = InstallProgressPresentation(state: store.state, currentStage: store.currentStage)

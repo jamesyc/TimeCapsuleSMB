@@ -82,7 +82,11 @@ final class AddDeviceFlowStore: ObservableObject {
     private let appLane: OperationLane
 
     private var pendingProfileID: DeviceProfile.ID?
+    private var pendingExistingProfileID: DeviceProfile.ID?
     private var pendingDiscoveredDevice: DiscoveredDevice?
+    private var defaultDeviceSettings: DeviceProfileSettings = AppSettings.default.defaultDeviceSettings
+    private var appliedDefaultDeviceSettings: DeviceProfileSettings = AppSettings.default.defaultDeviceSettings
+    private var appliedDefaultBonjourTimeout = AppSettings.default.defaultBonjourTimeoutSeconds
     private var activeOperation: ActiveOperation?
     private var activeLaneKey: OperationLaneKey?
     private var lastProcessedEventCounts: [OperationLaneKey: Int] = [:]
@@ -153,7 +157,7 @@ final class AddDeviceFlowStore: ObservableObject {
     }
 
     var bonjourTimeoutValue: Double? {
-        nonNegativeDouble(bonjourTimeout)
+        ValueParsers.nonNegativeDouble(bonjourTimeout)
     }
 
     var canConfigure: Bool {
@@ -251,8 +255,7 @@ final class AddDeviceFlowStore: ObservableObject {
         let targetHost = selectedDevice?.host ?? trimmedHost
         let existing = registry.matchingProfile(host: targetHost, bonjourFullname: selectedDevice?.fullname)
         let profileID = existing?.id ?? UUID().uuidString.lowercased()
-        pendingProfileID = profileID
-        pendingDiscoveredDevice = selectedDevice
+        let configureSettings = existing?.settings ?? defaultDeviceSettings
 
         let context = DeviceRuntimeContext(
             profileID: profileID,
@@ -265,11 +268,15 @@ final class AddDeviceFlowStore: ObservableObject {
 
         guard !lane.isBusy else {
             pendingProfileID = nil
+            pendingExistingProfileID = nil
             pendingDiscoveredDevice = nil
             rejectRun(L10n.string("operation.error.already_running"))
             return
         }
         resetRunState(clearDevices: false)
+        pendingProfileID = profileID
+        pendingExistingProfileID = existing?.id
+        pendingDiscoveredDevice = selectedDevice
         lastProcessedEventCounts[laneKey] = 0
         switch coordinator.run(
             operation: "configure",
@@ -277,7 +284,12 @@ final class AddDeviceFlowStore: ObservableObject {
                 host: targetHost,
                 selectedRecord: selectedDevice?.rawRecord,
                 password: password,
-                debugLogging: debugLogging
+                debugLogging: configureSettings.debugLogging,
+                internalShareUseDiskRoot: configureSettings.internalShareUseDiskRoot,
+                anyProtocol: configureSettings.anyProtocol,
+                ataIdleSeconds: configureSettings.ataIdleSeconds,
+                ataStandby: configureSettings.ataStandby,
+                includeAtaStandby: true
             ),
             context: context,
             activeDeviceID: profileID,
@@ -289,6 +301,7 @@ final class AddDeviceFlowStore: ObservableObject {
             state = .configuring
         case .rejected(let message):
             pendingProfileID = nil
+            pendingExistingProfileID = nil
             pendingDiscoveredDevice = nil
             rejectRun(message)
         }
@@ -326,6 +339,7 @@ final class AddDeviceFlowStore: ObservableObject {
         error = nil
         currentStage = nil
         pendingProfileID = nil
+        pendingExistingProfileID = nil
         pendingDiscoveredDevice = nil
         activeOperation = nil
         activeLaneKey = nil
@@ -352,6 +366,7 @@ final class AddDeviceFlowStore: ObservableObject {
         error = nil
         currentStage = nil
         pendingProfileID = nil
+        pendingExistingProfileID = nil
         pendingDiscoveredDevice = nil
         activeOperation = nil
         activeLaneKey = nil
@@ -364,6 +379,19 @@ final class AddDeviceFlowStore: ObservableObject {
             return
         }
         coordinator.cancel(laneKey: activeLaneKey)
+    }
+
+    func applyAppSettings(_ settings: AppSettings) {
+        let previousDefaultTimeout = Self.timeoutText(appliedDefaultBonjourTimeout)
+        if bonjourTimeout == previousDefaultTimeout {
+            bonjourTimeout = Self.timeoutText(settings.defaultBonjourTimeoutSeconds)
+        }
+        appliedDefaultBonjourTimeout = settings.defaultBonjourTimeoutSeconds
+        defaultDeviceSettings = settings.defaultDeviceSettings
+        if debugLogging == appliedDefaultDeviceSettings.debugLogging {
+            debugLogging = settings.defaultDeviceSettings.debugLogging
+        }
+        appliedDefaultDeviceSettings = settings.defaultDeviceSettings
     }
 
     private func resetRunState(clearDevices: Bool) {
@@ -383,6 +411,7 @@ final class AddDeviceFlowStore: ObservableObject {
         savedProfile = nil
         activeOperation = nil
         activeLaneKey = nil
+        pendingExistingProfileID = nil
         if clearDevices {
             devices = []
             selectedDeviceID = nil
@@ -466,20 +495,29 @@ final class AddDeviceFlowStore: ObservableObject {
 
         state = .savingProfile
         let profileID = pendingProfileID ?? UUID().uuidString.lowercased()
+        let existingProfileID = pendingExistingProfileID
         let pendingDiscoveredDevice = pendingDiscoveredDevice
         let password = password
+        let overrides = ConfiguredDeviceProfileOverrides(
+            displayName: nil,
+            settings: existingProfileID == nil ? defaultDeviceSettings : nil
+        )
         Task { @MainActor in
             do {
                 savedProfile = try await profileSaver.saveConfiguredDevice(
                     configuredDevice: configured,
                     discoveredDevice: pendingDiscoveredDevice,
                     password: password,
-                    preferredID: profileID
+                    preferredID: profileID,
+                    existingProfileID: existingProfileID,
+                    overrides: overrides
                 )
                 error = nil
                 state = .saved
                 activeOperation = nil
                 activeLaneKey = nil
+                pendingProfileID = nil
+                pendingExistingProfileID = nil
             } catch {
                 failProfileSave(error)
             }
@@ -498,6 +536,7 @@ final class AddDeviceFlowStore: ObservableObject {
         }
         activeOperation = nil
         activeLaneKey = nil
+        pendingExistingProfileID = nil
     }
 
     private func failFromResult(_ event: BackendEvent) {
@@ -509,6 +548,7 @@ final class AddDeviceFlowStore: ObservableObject {
         state = .failed
         activeOperation = nil
         activeLaneKey = nil
+        pendingExistingProfileID = nil
     }
 
     private func failContract(_ error: Error) {
@@ -520,6 +560,7 @@ final class AddDeviceFlowStore: ObservableObject {
         state = .failed
         activeOperation = nil
         activeLaneKey = nil
+        pendingExistingProfileID = nil
     }
 
     private func failProfileSave(_ error: Error) {
@@ -531,6 +572,7 @@ final class AddDeviceFlowStore: ObservableObject {
         state = .failed
         activeOperation = nil
         activeLaneKey = nil
+        pendingExistingProfileID = nil
     }
 
     private func failLocally(_ message: String) {
@@ -543,6 +585,7 @@ final class AddDeviceFlowStore: ObservableObject {
         state = .failed
         activeOperation = nil
         activeLaneKey = nil
+        pendingExistingProfileID = nil
     }
 
     private func rejectRun(_ message: String) {
@@ -555,14 +598,14 @@ final class AddDeviceFlowStore: ObservableObject {
         state = .failed
         activeOperation = nil
         activeLaneKey = nil
+        pendingExistingProfileID = nil
     }
 
-    private func nonNegativeDouble(_ text: String) -> Double? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let value = Double(trimmed), value.isFinite, value >= 0 else {
-            return nil
+    private static func timeoutText(_ value: Double) -> String {
+        guard value.rounded() == value else {
+            return String(value)
         }
-        return value
+        return String(Int(value))
     }
 
     private var hasSelectedTarget: Bool {

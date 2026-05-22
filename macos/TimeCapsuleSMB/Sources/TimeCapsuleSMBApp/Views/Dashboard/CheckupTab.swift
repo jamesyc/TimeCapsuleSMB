@@ -3,6 +3,7 @@ import SwiftUI
 struct CheckupTab: View {
     let profile: DeviceProfile
     @ObservedObject var session: DeviceDashboardSession
+    let appSettings: AppSettings
     let showDiagnostics: () -> Void
 
     var body: some View {
@@ -12,7 +13,7 @@ struct CheckupTab: View {
             state: store.state,
             events: store.events,
             currentStage: store.currentStage,
-            hostWarning: HostCompatibilityPolicy.warning()
+            hostWarning: HostCompatibilityPolicy.warning(enabled: appSettings.timeMachineWarningsEnabled)
         )
         let progress = CheckupProgressPresentation(state: store.state, currentStage: store.currentStage)
 

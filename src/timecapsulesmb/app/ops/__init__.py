@@ -16,7 +16,10 @@ from timecapsulesmb.app.ops.readiness import (
     capabilities_operation,
     discover_operation,
     paths_operation,
+    set_telemetry_operation,
+    telemetry_identity_operation,
     validate_install_operation,
+    version_check_operation,
 )
 from timecapsulesmb.services.app import OperationResult
 
@@ -31,6 +34,9 @@ OPERATIONS: dict[str, Callable[[dict[str, object], EventSink], OperationResult]]
     "fsck": fsck_operation,
     "paths": paths_operation,
     "repair-xattrs": repair_xattrs_operation,
+    "set-telemetry": set_telemetry_operation,
+    "telemetry-identity": telemetry_identity_operation,
     "uninstall": uninstall_operation,
     "validate-install": validate_install_operation,
+    "version-check": version_check_operation,
 }
