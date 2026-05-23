@@ -65,6 +65,7 @@
 #define AUTO_IP_STARTUP_POLL_SECONDS 2
 #define AUTO_IP_STABLE_POLL_SECONDS 30
 #define MDNS_DEGRADED_RETRY_SECONDS 5
+#define MDNS_COUNTER_LOG_INTERVAL_MS 30000
 #define ADVERTISER_VERSION_CODE 2104
 #define DNS_SD_SERVICE_ENUMERATION_NAME "_services._dns-sd._udp.local."
 
@@ -100,12 +101,6 @@
 #endif
 
 static volatile sig_atomic_t g_stop = 0;
-
-#if defined(__GNUC__)
-#define MDNS_UNUSED __attribute__((unused))
-#else
-#define MDNS_UNUSED
-#endif
 
 #ifndef TC_VA_COPY
 #if defined(va_copy)
@@ -244,10 +239,6 @@ struct config {
     char host_label[MAX_LABEL + 1];
     char host_fqdn[MAX_NAME];
     char adisk_service_type[MAX_NAME];
-    char adisk_share_name[MAX_NAME];
-    char adisk_disk_key[MAX_LABEL + 1];
-    char adisk_disk_advf[16];
-    char adisk_uuid[ADISK_DISK_UUID_LEN + 1];
     char adisk_shares_file[MAX_NAME];
     char adisk_sys_wama[18];
     struct adisk_disk_set adisk_disks;
@@ -264,7 +255,6 @@ struct config {
     char airport_syvs[32];
     char airport_srcv[32];
     char airport_bjsd[16];
-    uint32_t ipv4_addr;
     uint16_t port;
     uint16_t adisk_port;
     uint16_t airport_port;
@@ -379,15 +369,28 @@ struct mdns_runtime_counters {
     char last_send_failure[160];
 };
 
+struct mdns_counter_log_state {
+    unsigned long ipv4_packets_received;
+    unsigned long ipv6_packets_received;
+    unsigned long query_packets_matched;
+    unsigned long responses_sent;
+    unsigned long send_failures;
+    long long last_log_ms;
+    int logged_ipv4_packet;
+    int logged_ipv6_packet;
+    int logged_query_match;
+};
+
 static struct deferred_response g_deferred_response;
 static struct mdns_runtime_counters g_mdns_counters;
+static struct mdns_counter_log_state g_mdns_counter_log_state;
 static int g_last_ipv4_socket_errno = 0;
 static int g_last_ipv6_socket_errno = 0;
 static const unsigned int g_startup_burst_offsets_ms[STARTUP_BURST_COUNT] = {0, 1000, 3000, 7000};
 
+static long long monotonic_millis(void);
 static int name_equals(const char *a, const char *b);
 static int build_instance_fqdn(char *out, size_t out_len, const char *instance_name, const char *service_type);
-static int open_mdns_socket(int shared_bind, int log_bind_errors, uint32_t ipv4_addr, const char *socket_role);
 static int is_airport_enabled(const struct config *cfg);
 static int smb_enabled(const struct config *cfg);
 static int adisk_enabled(const struct config *cfg);
@@ -436,41 +439,8 @@ static int flush_deferred_response_if_due(long long now_ms);
 static long long deferred_response_adjust_wait_ms(long long now_ms, long long wait_ms);
 static void clear_deferred_response_for_sockfd(int sockfd);
 
-typedef int (*mdns_collect_iface_contexts_fn)(struct iface_context_set *out, void *userdata);
 typedef int (*mdns_collect_link_contexts_fn)(struct link_context_set *out, void *userdata);
 typedef void (*mdns_sleep_fn)(unsigned int seconds, void *userdata);
-
-static void derive_usable_iface_contexts_from_links(struct iface_context_set *out,
-                                                    const struct link_context_set *links) {
-    size_t i;
-
-    memset(out, 0, sizeof(*out));
-    out->truncated = links->truncated;
-    for (i = 0; i < links->count; i++) {
-        size_t j;
-        const struct link_context *link = &links->links[i];
-        for (j = 0; j < link->ipv4_count; j++) {
-            (void)append_iface_context(out,
-                                       link->name,
-                                       link->ipv4[j].addr,
-                                       link->ipv4[j].netmask,
-                                       link->flags);
-        }
-    }
-    sort_iface_contexts(out);
-}
-
-static int collect_usable_iface_contexts_provider(struct iface_context_set *out, void *userdata) {
-    struct link_context_set links;
-
-    (void)userdata;
-    memset(&links, 0, sizeof(links));
-    if (collect_usable_link_contexts(&links) != 0) {
-        return -1;
-    }
-    derive_usable_iface_contexts_from_links(out, &links);
-    return 0;
-}
 
 static int collect_usable_link_contexts_provider(struct link_context_set *out, void *userdata) {
     (void)userdata;
@@ -492,43 +462,6 @@ static int collect_usable_advertise_link_contexts_provider(struct link_context_s
 static void mdns_sleep_provider(unsigned int seconds, void *userdata) {
     (void)userdata;
     sleep(seconds);
-}
-
-static int wait_for_auto_iface_contexts_with_provider(struct iface_context_set *out,
-                                                     const char *role,
-                                                     mdns_collect_iface_contexts_fn collect_contexts,
-                                                     mdns_sleep_fn sleep_fn,
-                                                     void *userdata) {
-    struct iface_context_set first;
-
-    if (collect_contexts == NULL || sleep_fn == NULL) {
-        return -1;
-    }
-
-    memset(out, 0, sizeof(*out));
-    while (!g_stop) {
-        memset(&first, 0, sizeof(first));
-        if (collect_contexts(&first, userdata) == 0 && first.count > 0) {
-            fprintf(stderr, "%s auto-ip: first usable IPv4 observed; waiting %ds for network stabilization\n",
-                    role, AUTO_IP_STABILIZE_SECONDS);
-            sleep_fn(AUTO_IP_STABILIZE_SECONDS, userdata);
-            if (collect_contexts(out, userdata) == 0 && out->count > 0) {
-                sort_iface_contexts(out);
-                return 0;
-            }
-            fprintf(stderr, "%s auto-ip: usable IPv4 disappeared during stabilization; retrying\n", role);
-        }
-        sleep_fn(AUTO_IP_STARTUP_POLL_SECONDS, userdata);
-    }
-    return -1;
-}
-
-static int MDNS_UNUSED wait_for_auto_iface_contexts(struct iface_context_set *out, const char *role) {
-    return wait_for_auto_iface_contexts_with_provider(out,
-                                                     role,
-                                                     collect_usable_iface_contexts_provider,
-                                                     mdns_sleep_provider,
-                                                     NULL);
 }
 
 static int wait_for_auto_link_contexts_with_provider(struct link_context_set *out,
@@ -576,28 +509,71 @@ static int wait_for_auto_advertise_link_contexts(struct link_context_set *out, c
                                                     NULL);
 }
 
+static int print_link_ipv4_cidrs(FILE *stream, const struct link_context_set *set) {
+    int wrote = 0;
+    size_t i;
+
+    for (i = 0; i < set->count; i++) {
+        size_t j;
+        const struct link_context *link = &set->links[i];
+
+        for (j = 0; j < link->ipv4_count; j++) {
+            char cidr[INET_ADDRSTRLEN + 4];
+
+            if (link_context_ipv4_cidr(cidr, sizeof(cidr), &link->ipv4[j]) != 0) {
+                return -1;
+            }
+            if (wrote && fputc(' ', stream) == EOF) {
+                return -1;
+            }
+            if (fputs(cidr, stream) == EOF) {
+                return -1;
+            }
+            wrote = 1;
+        }
+    }
+    if (!wrote) {
+        return -1;
+    }
+    if (fputc('\n', stream) == EOF) {
+        return -1;
+    }
+    return 0;
+}
+
+static int link_contexts_have_ipv4_addr(const struct link_context_set *set) {
+    size_t i;
+
+    for (i = 0; i < set->count; i++) {
+        if (set->links[i].ipv4_count > 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int print_auto_ip_cidrs_with_provider(FILE *stream,
-                                             mdns_collect_iface_contexts_fn collect_contexts,
+                                             mdns_collect_link_contexts_fn collect_contexts,
                                              void *userdata) {
-    struct iface_context_set contexts;
+    struct link_context_set links;
 
     if (collect_contexts == NULL) {
         return EXIT_AUTO_IP_PROBE_FAILED;
     }
 
-    memset(&contexts, 0, sizeof(contexts));
-    if (collect_contexts(&contexts, userdata) != 0) {
+    memset(&links, 0, sizeof(links));
+    if (collect_contexts(&links, userdata) != 0) {
         return EXIT_AUTO_IP_PROBE_FAILED;
     }
-    if (contexts.count == 0) {
+    if (links.count == 0 || !link_contexts_have_ipv4_addr(&links)) {
         return EXIT_AUTO_IP_UNAVAILABLE;
     }
-    if (contexts.truncated) {
-        fprintf(stderr, "auto-ip: usable IPv4 context list exceeded static capacity\n");
+    if (links.truncated) {
+        fprintf(stderr, "auto-ip: usable address link list exceeded static capacity\n");
         return EXIT_AUTO_IP_PROBE_FAILED;
     }
-    sort_iface_contexts(&contexts);
-    if (print_iface_context_cidrs(stream, &contexts) != 0) {
+    sort_link_contexts(&links);
+    if (print_link_ipv4_cidrs(stream, &links) != 0) {
         return EXIT_AUTO_IP_PROBE_FAILED;
     }
     return EXIT_OK;
@@ -708,15 +684,13 @@ static void drop_mdns_multicast_group_best_effort(int sockfd, uint32_t ipv4_addr
 static void drop_mdns_multicast_group6_best_effort(int sockfd, unsigned int ifindex, const char *ifname,
                                                    const char *socket_role);
 
-static void log_startup_config(const struct config *cfg, int shared_bind, int auto_ip) {
-    char ipv4_buf[INET_ADDRSTRLEN];
-
+static void log_startup_config(const struct config *cfg) {
     fprintf(stderr,
             "mdns startup: mode=%s instance=%s host=%s ipv4=%s service=%s adisk=%s device_model=%s airport=%s advertise=%s\n",
-            shared_bind ? "shared" : "exclusive",
+            "exclusive",
             cfg->instance_name[0] != '\0' ? cfg->instance_name : "(empty)",
             cfg->host_label[0] != '\0' ? cfg->host_label : "(empty)",
-            auto_ip ? "auto" : ipv4_to_string(cfg->ipv4_addr, ipv4_buf, sizeof(ipv4_buf)),
+            "auto",
             cfg->service_type[0] != '\0' ? cfg->service_type : "(empty)",
             adisk_enabled(cfg) ? "enabled" : "disabled",
             cfg->device_model[0] != '\0' ? cfg->device_model : "(empty)",
@@ -764,6 +738,77 @@ static void log_mdns_counters(const char *reason) {
             g_mdns_counters.responses_sent,
             g_mdns_counters.send_failures,
             g_mdns_counters.last_send_failure[0] != '\0' ? g_mdns_counters.last_send_failure : "(none)");
+}
+
+static void remember_logged_mdns_counters(long long now_ms) {
+    g_mdns_counter_log_state.ipv4_packets_received = g_mdns_counters.ipv4_packets_received;
+    g_mdns_counter_log_state.ipv6_packets_received = g_mdns_counters.ipv6_packets_received;
+    g_mdns_counter_log_state.query_packets_matched = g_mdns_counters.query_packets_matched;
+    g_mdns_counter_log_state.responses_sent = g_mdns_counters.responses_sent;
+    g_mdns_counter_log_state.send_failures = g_mdns_counters.send_failures;
+    g_mdns_counter_log_state.last_log_ms = now_ms;
+}
+
+static int mdns_counters_changed_since_log(void) {
+    return g_mdns_counter_log_state.ipv4_packets_received != g_mdns_counters.ipv4_packets_received ||
+           g_mdns_counter_log_state.ipv6_packets_received != g_mdns_counters.ipv6_packets_received ||
+           g_mdns_counter_log_state.query_packets_matched != g_mdns_counters.query_packets_matched ||
+           g_mdns_counter_log_state.responses_sent != g_mdns_counters.responses_sent ||
+           g_mdns_counter_log_state.send_failures != g_mdns_counters.send_failures;
+}
+
+static void log_mdns_counters_force(const char *reason) {
+    long long now_ms = monotonic_millis();
+
+    log_mdns_counters(reason);
+    remember_logged_mdns_counters(now_ms);
+}
+
+static void maybe_log_mdns_counters(const char *reason, long long now_ms) {
+    if (!mdns_counters_changed_since_log()) {
+        return;
+    }
+    if (g_mdns_counter_log_state.last_log_ms > 0 &&
+        now_ms - g_mdns_counter_log_state.last_log_ms < MDNS_COUNTER_LOG_INTERVAL_MS) {
+        return;
+    }
+    log_mdns_counters(reason);
+    remember_logged_mdns_counters(now_ms);
+}
+
+static int note_mdns_ipv4_packet_received(void) {
+    g_mdns_counters.ipv4_packets_received++;
+    if (!g_mdns_counter_log_state.logged_ipv4_packet) {
+        g_mdns_counter_log_state.logged_ipv4_packet = 1;
+        return 1;
+    }
+    return 0;
+}
+
+static int note_mdns_ipv6_packet_received(void) {
+    g_mdns_counters.ipv6_packets_received++;
+    if (!g_mdns_counter_log_state.logged_ipv6_packet) {
+        g_mdns_counter_log_state.logged_ipv6_packet = 1;
+        return 1;
+    }
+    return 0;
+}
+
+static void log_mdns_receive_counters(const char *first_packet_reason,
+                                      int first_packet,
+                                      unsigned long query_matches_before,
+                                      long long now_ms) {
+    if (g_mdns_counters.query_packets_matched > query_matches_before &&
+        !g_mdns_counter_log_state.logged_query_match) {
+        g_mdns_counter_log_state.logged_query_match = 1;
+        log_mdns_counters_force("first_query_match");
+        return;
+    }
+    if (first_packet) {
+        log_mdns_counters_force(first_packet_reason);
+        return;
+    }
+    maybe_log_mdns_counters("traffic_summary", now_ms);
 }
 
 static void mdns_transport_requirements_from_links(const struct link_context_set *desired_links,
@@ -1122,8 +1167,8 @@ static int service_type_set_add(struct service_type_set *set, const char *servic
 
 static void usage(const char *prog) {
     fprintf(stderr,
-            "Usage: %s --instance <name> --host <label> (--ipv4 <address>|--auto-ip) [options]\n"
-            "       %s --save-snapshot <path> [--save-all-snapshot <path>] [airport identity options]\n"
+            "Usage: %s --instance <name> --host <label> --auto-ip [options]\n"
+            "       %s --save-snapshot <path> [--save-all-snapshot <path>] --auto-ip [airport identity options]\n"
             "       %s --save-airport-snapshot <path> --instance <name> --host <label> [airport identity options]\n"
             "       %s --print-auto-ip-cidrs\n"
             "       %s --print-smb-bind-interfaces\n"
@@ -1140,14 +1185,8 @@ static void usage(const char *prog) {
             "  --skip-capture-if-snapshot-newer-than-boot <path> Reuse an existing snapshot created after boot\n"
             "  --save-airport-snapshot <path> Generate an AirPort-only Apple snapshot file and exit unless loading\n"
             "  --load-snapshot <path> Kill Apple mDNSResponder and replay snapshot records\n"
-            "  --shared-bind     Allow shared UDP 5353 binding instead of exclusive takeover\n"
             "  --diskless        Suppress generated _smb and _adisk records while replaying other snapshot records\n"
-            "  --service <type>   Service type (default: _smb._tcp.local.)\n"
-            "  --adisk-share <n>  Also advertise _adisk._tcp for Time Machine\n"
             "  --adisk-shares-file <p> Tab-separated share,disk-key,uuid,adVF rows\n"
-            "  --adisk-disk-key <k> Disk key for _adisk TXT (default: dk0)\n"
-            "  --adisk-disk-advf <v> Volume flags for _adisk TXT (default: 0x1093)\n"
-            "  --adisk-uuid <u>   Stable UUID for _adisk TXT\n"
             "  --adisk-sys-wama <m> MAC address for _adisk sys TXT\n"
             "  --device-model <m> Also advertise _device-info._tcp with model=<m>\n"
             "  --airport-wama <m> Also advertise _airport._tcp with Apple-style TXT\n"
@@ -1160,9 +1199,7 @@ static void usage(const char *prog) {
             "  --airport-syvs <v> Firmware version for _airport._tcp\n"
             "  --airport-srcv <v> Source/build version for _airport._tcp\n"
             "  --airport-bjsd <n> Bonjour seed/build field for _airport._tcp\n"
-            "  --airport-port <p> _airport._tcp service port (default: 5009)\n"
-            "  --port <port>      Service port (default: 445)\n"
-            "  --ttl <seconds>    Record TTL (default: 120)\n",
+            "  --airport-port <p> _airport._tcp service port (default: 5009)\n",
             prog, prog, prog, prog, prog, prog, prog);
 }
 
@@ -1824,22 +1861,6 @@ static int add_service_record_answers(uint8_t *buf, size_t *off, size_t cap, con
     return 0;
 }
 
-static int MDNS_UNUSED add_snapshot_host_a_record(uint8_t *buf, size_t *off, size_t cap, const struct service_record *record,
-                                                  uint32_t response_ipv4_addr, uint32_t ttl, int *answers) {
-    if (record->host_fqdn[0] == '\0') {
-        return 0;
-    }
-    if (add_rr_a(buf, off, cap, record->host_fqdn, response_ipv4_addr, ttl) != 0) {
-        fprintf(stderr,
-                "mdns snapshot rr failure: rr=A type=%s instance=%s host=%s port=%u txt_count=%lu packet_len=%lu\n",
-                record->service_type, record->instance_fqdn, record->host_fqdn,
-                (unsigned int)record->port, (unsigned long)record->txt_count, (unsigned long)*off);
-        return -1;
-    }
-    *answers += 1;
-    return 0;
-}
-
 static int append_host_address_records(uint8_t *buf,
                                        size_t *off,
                                        size_t cap,
@@ -2335,10 +2356,6 @@ static int send_query_question_any(int sockfd,
     return sendto_retry(sockfd, packet, off, 0, dest, dest_len) >= 0 ? 0 : -1;
 }
 
-static int send_query_question(int sockfd, const struct sockaddr_in *dest, const char *qname, uint16_t qtype) {
-    return send_query_question_any(sockfd, (const struct sockaddr *)dest, sizeof(*dest), qname, qtype);
-}
-
 static void parse_txt_rdata(struct service_record *record, const uint8_t *rdata, size_t rdlength) {
     size_t pos = 0;
     record->txt_count = 0;
@@ -2457,36 +2474,6 @@ static int parse_snapshot_rrs(const uint8_t *packet, size_t packet_len, struct s
             }
 
             cursor += rdlength;
-        }
-    }
-
-    return 0;
-}
-
-static int open_capture_socket(uint32_t ipv4_addr) {
-    return open_mdns_socket(1, 1, ipv4_addr, "capture");
-}
-
-static int collect_mdns_responses(int sockfd, int seconds, struct service_record_set *set,
-                                  struct service_type_set *service_types) {
-    time_t deadline = time(NULL) + seconds;
-
-    while (time(NULL) < deadline) {
-        fd_set rfds;
-        struct timeval tv;
-        uint8_t packet[BUF_SIZE];
-        ssize_t nread;
-
-        FD_ZERO(&rfds);
-        FD_SET(sockfd, &rfds);
-        tv.tv_sec = 1;
-        tv.tv_usec = 0;
-        if (select(sockfd + 1, &rfds, NULL, NULL, &tv) <= 0) {
-            continue;
-        }
-        nread = recvfrom(sockfd, packet, sizeof(packet), 0, NULL, NULL);
-        if (nread > 0) {
-            (void)parse_snapshot_rrs(packet, (size_t)nread, set, service_types);
         }
     }
 
@@ -2679,42 +2666,6 @@ static int filter_records_by_host(struct service_record_set *out, const struct s
     return out->count > 0 ? 0 : -1;
 }
 
-static int capture_mdns_snapshot_raw(struct service_record_set *out, uint32_t ipv4_addr) {
-    int sockfd = -1;
-    struct sockaddr_in mdns_dest;
-    size_t i;
-    struct service_type_set service_types;
-
-    memset(out, 0, sizeof(*out));
-    memset(&service_types, 0, sizeof(service_types));
-    sockfd = open_capture_socket(ipv4_addr);
-    if (sockfd < 0) {
-        return -1;
-    }
-
-    memset(&mdns_dest, 0, sizeof(mdns_dest));
-    mdns_dest.sin_family = AF_INET;
-    mdns_dest.sin_port = htons(MDNS_PORT);
-    mdns_dest.sin_addr.s_addr = inet_addr(MDNS_GROUP);
-
-    (void)send_query_question(sockfd, &mdns_dest, "_services._dns-sd._udp.local.", DNS_TYPE_PTR);
-    (void)collect_mdns_responses(sockfd, SNAPSHOT_CAPTURE_STEP_SECONDS, out, &service_types);
-
-    for (i = 0; i < service_types.count; i++) {
-        (void)send_query_question(sockfd, &mdns_dest, service_types.types[i], DNS_TYPE_PTR);
-    }
-    (void)collect_mdns_responses(sockfd, SNAPSHOT_CAPTURE_STEP_SECONDS, out, &service_types);
-
-    for (i = 0; i < out->count; i++) {
-        (void)send_query_question(sockfd, &mdns_dest, out->records[i].instance_fqdn, DNS_TYPE_SRV);
-        (void)send_query_question(sockfd, &mdns_dest, out->records[i].instance_fqdn, DNS_TYPE_TXT);
-    }
-    (void)collect_mdns_responses(sockfd, SNAPSHOT_CAPTURE_STEP_SECONDS, out, &service_types);
-    close(sockfd);
-
-    return out->count > 0 ? 0 : -1;
-}
-
 static void scoped_mdns_dest6_for_link(struct sockaddr_in6 *out,
                                        const struct sockaddr_in6 *base,
                                        const struct link_context *link) {
@@ -2816,22 +2767,6 @@ static int prepare_loaded_snapshot_for_advertising(const struct config *cfg, con
     return filter_records_by_host(out, loaded, matched_host);
 }
 
-static int capture_mdns_snapshot_raw_with_retry(struct service_record_set *out, uint32_t ipv4_addr) {
-    time_t deadline = time(NULL) + SNAPSHOT_CAPTURE_TIMEOUT_SECONDS;
-
-    do {
-        if (capture_mdns_snapshot_raw(out, ipv4_addr) == 0) {
-            return 0;
-        }
-        if (time(NULL) >= deadline) {
-            break;
-        }
-        sleep(SNAPSHOT_CAPTURE_RETRY_INTERVAL_SECONDS);
-    } while (time(NULL) < deadline);
-
-    return -1;
-}
-
 static int capture_mdns_snapshot_links_with_retry(struct service_record_set *out,
                                                   const struct link_context_set *links) {
     time_t deadline = time(NULL) + SNAPSHOT_CAPTURE_TIMEOUT_SECONDS;
@@ -2847,100 +2782,6 @@ static int capture_mdns_snapshot_links_with_retry(struct service_record_set *out
     } while (time(NULL) < deadline);
 
     return -1;
-}
-
-static int service_records_match(const struct service_record *a, const struct service_record *b) {
-    return strcmp(a->service_type, b->service_type) == 0 &&
-           strcmp(a->instance_fqdn, b->instance_fqdn) == 0 &&
-           strcmp(a->host_fqdn, b->host_fqdn) == 0 &&
-           a->port == b->port;
-}
-
-static void append_snapshot_records_unique(struct service_record_set *dst, const struct service_record_set *src) {
-    size_t i;
-    size_t j;
-
-    for (i = 0; i < src->count; i++) {
-        int exists = 0;
-        for (j = 0; j < dst->count; j++) {
-            if (service_records_match(&dst->records[j], &src->records[i])) {
-                exists = 1;
-                break;
-            }
-        }
-        if (!exists) {
-            if (dst->count < SNAPSHOT_MAX_RECORDS) {
-                dst->records[dst->count++] = src->records[i];
-            } else {
-                dst->truncated = 1;
-            }
-        }
-    }
-}
-
-typedef int (*mdns_capture_context_fn)(struct service_record_set *out,
-                                       const struct iface_context *ctx,
-                                       void *userdata);
-
-static int capture_mdns_snapshot_context_raw(struct service_record_set *out,
-                                             const struct iface_context *ctx,
-                                             void *userdata) {
-    (void)userdata;
-    return capture_mdns_snapshot_raw_with_retry(out, ctx->ipv4_addr);
-}
-
-static int capture_mdns_snapshot_auto_with_provider(struct service_record_set *out,
-                                                   const struct iface_context_set *contexts,
-                                                   const struct config *cfg,
-                                                   int require_trusted_snapshot,
-                                                   mdns_capture_context_fn capture_context,
-                                                   void *userdata) {
-    size_t i;
-
-    if (capture_context == NULL || (require_trusted_snapshot && cfg == NULL)) {
-        return -1;
-    }
-
-    memset(out, 0, sizeof(*out));
-    for (i = 0; i < contexts->count; i++) {
-        struct service_record_set captured;
-        char ip_buf[INET_ADDRSTRLEN];
-        memset(&captured, 0, sizeof(captured));
-        fprintf(stderr, "snapshot capture: probing auto-ip context iface=%s ip=%s\n",
-                contexts->contexts[i].name,
-                ipv4_to_string(contexts->contexts[i].ipv4_addr, ip_buf, sizeof(ip_buf)));
-        if (capture_context(&captured, &contexts->contexts[i], userdata) == 0) {
-            append_snapshot_records_unique(out, &captured);
-            fprintf(stderr, "snapshot capture: merged auto-ip context iface=%s ip=%s records=%lu\n",
-                    contexts->contexts[i].name,
-                    ipv4_to_string(contexts->contexts[i].ipv4_addr, ip_buf, sizeof(ip_buf)),
-                    (unsigned long)captured.count);
-        }
-    }
-    if (out->count == 0) {
-        return -1;
-    }
-    if (require_trusted_snapshot) {
-        struct service_record_set filtered;
-        memset(&filtered, 0, sizeof(filtered));
-        if (prepare_loaded_snapshot_for_advertising(cfg, out, &filtered) != 0) {
-            fprintf(stderr, "snapshot capture: merged auto-ip records did not match local AirPort identity\n");
-            return -1;
-        }
-    }
-    return 0;
-}
-
-static int MDNS_UNUSED capture_mdns_snapshot_auto_with_retry(struct service_record_set *out,
-                                                            const struct iface_context_set *contexts,
-                                                            const struct config *cfg,
-                                                            int require_trusted_snapshot) {
-    return capture_mdns_snapshot_auto_with_provider(out,
-                                                   contexts,
-                                                   cfg,
-                                                   require_trusted_snapshot,
-                                                   capture_mdns_snapshot_context_raw,
-                                                   NULL);
 }
 
 static int get_boot_time_seconds(time_t *out) {
@@ -3213,64 +3054,6 @@ static int open_bound_mdns_socket(int shared_bind, int log_bind_errors) {
     return sockfd;
 }
 
-static int configure_mdns_socket_for_ipv4(int sockfd, uint32_t ipv4_addr, const char *socket_role) {
-    if (join_mdns_multicast_group(sockfd, ipv4_addr, socket_role) != 0) {
-        return -1;
-    }
-    if (configure_outbound_multicast_socket(sockfd, ipv4_addr, socket_role) != 0) {
-        return -1;
-    }
-    return 0;
-}
-
-static int configure_mdns_socket_for_contexts(int sockfd, const struct iface_context_set *set, const char *socket_role) {
-    size_t i;
-
-    if (set->count == 0) {
-        errno = EADDRNOTAVAIL;
-        return -1;
-    }
-    for (i = 0; i < set->count; i++) {
-        if (join_mdns_multicast_group(sockfd, set->contexts[i].ipv4_addr, socket_role) != 0) {
-            return -1;
-        }
-    }
-    if (configure_outbound_multicast_socket(sockfd, set->contexts[0].ipv4_addr, socket_role) != 0) {
-        return -1;
-    }
-    return 0;
-}
-
-static int iface_context_set_has_ipv4(const struct iface_context_set *set, uint32_t ipv4_addr) {
-    size_t i;
-
-    for (i = 0; i < set->count; i++) {
-        if (set->contexts[i].ipv4_addr == ipv4_addr) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int MDNS_UNUSED prepare_mdns_auto_socket_for_contexts(int sockfd,
-                                                            const struct iface_context_set *old_contexts,
-                                                            const struct iface_context_set *new_contexts) {
-    size_t i;
-
-    if (new_contexts->count == 0) {
-        return 0;
-    }
-    for (i = 0; i < new_contexts->count; i++) {
-        if (iface_context_set_has_ipv4(old_contexts, new_contexts->contexts[i].ipv4_addr)) {
-            continue;
-        }
-        if (join_mdns_multicast_group(sockfd, new_contexts->contexts[i].ipv4_addr, "runtime") != 0) {
-            return -1;
-        }
-    }
-    return configure_outbound_multicast_socket(sockfd, new_contexts->contexts[0].ipv4_addr, "runtime");
-}
-
 static void drop_mdns_multicast_group_best_effort(int sockfd, uint32_t ipv4_addr, const char *socket_role) {
 #ifdef IP_DROP_MEMBERSHIP
     struct ip_mreq mreq;
@@ -3296,138 +3079,6 @@ static void drop_mdns_multicast_group_best_effort(int sockfd, uint32_t ipv4_addr
     (void)ipv4_addr;
     (void)socket_role;
 #endif
-}
-
-static void MDNS_UNUSED retire_mdns_auto_socket_contexts(int sockfd,
-                                                         const struct iface_context_set *old_contexts,
-                                                         const struct iface_context_set *new_contexts) {
-    size_t i;
-
-    for (i = 0; i < old_contexts->count; i++) {
-        if (iface_context_set_has_ipv4(new_contexts, old_contexts->contexts[i].ipv4_addr)) {
-            continue;
-        }
-        drop_mdns_multicast_group_best_effort(sockfd, old_contexts->contexts[i].ipv4_addr, "runtime");
-    }
-}
-
-static int acquire_mdns_socket(int shared_bind, uint32_t ipv4_addr) {
-    static const unsigned int retry_delays_ms[TAKEOVER_RETRY_COUNT] = {0, 100, 200, 300, 400, 500};
-    size_t i;
-    int sockfd;
-
-    for (i = 0; i < TAKEOVER_RETRY_COUNT; i++) {
-        kill_mdnsresponder(SIGTERM);
-        sleep_millis(retry_delays_ms[i]);
-        sockfd = open_mdns_socket(shared_bind, 0, ipv4_addr, "runtime");
-        if (sockfd >= 0) {
-            if (mdns_takeover_confirmed(shared_bind)) {
-                fprintf(stderr,
-                        shared_bind
-                            ? "mDNS shared bind established after SIGTERM + %ums\n"
-                            : "mDNS takeover established after SIGTERM + %ums using exclusive bind\n",
-                        retry_delays_ms[i]);
-                return sockfd;
-            }
-            fprintf(stderr, "mDNS socket acquired after SIGTERM + %ums but Apple mDNSResponder is still alive; retrying\n",
-                    retry_delays_ms[i]);
-            close(sockfd);
-        }
-    }
-
-    for (i = 0; i < TAKEOVER_RETRY_COUNT; i++) {
-        kill_mdnsresponder(SIGKILL);
-        sleep_millis(retry_delays_ms[i]);
-        sockfd = open_mdns_socket(shared_bind, 0, ipv4_addr, "runtime");
-        if (sockfd >= 0) {
-            if (mdns_takeover_confirmed(shared_bind)) {
-                fprintf(stderr,
-                        shared_bind
-                            ? "mDNS shared bind established after SIGKILL + %ums\n"
-                            : "mDNS takeover established after SIGKILL + %ums using exclusive bind\n",
-                        retry_delays_ms[i]);
-                return sockfd;
-            }
-            fprintf(stderr, "mDNS socket acquired after SIGKILL + %ums but Apple mDNSResponder is still alive; retrying\n",
-                    retry_delays_ms[i]);
-            close(sockfd);
-        }
-    }
-
-    if (!shared_bind && mdnsresponder_is_alive()) {
-        fprintf(stderr, "mDNS takeover failed: Apple mDNSResponder is still alive after retry ladder\n");
-    } else {
-        fprintf(stderr, "mDNS takeover failed: could not acquire UDP %d socket using %s mode\n",
-                MDNS_PORT, shared_bind ? "shared" : "exclusive");
-    }
-    errno = EADDRINUSE;
-    return -1;
-}
-
-static int open_auto_mdns_socket(int shared_bind, const struct iface_context_set *set, int log_bind_errors) {
-    int sockfd;
-
-    sockfd = open_bound_mdns_socket(shared_bind, log_bind_errors);
-    if (sockfd < 0) {
-        return -1;
-    }
-    if (configure_mdns_socket_for_contexts(sockfd, set, "runtime") != 0) {
-        close(sockfd);
-        return -1;
-    }
-    return sockfd;
-}
-
-static int MDNS_UNUSED acquire_mdns_auto_socket(int shared_bind, const struct iface_context_set *set) {
-    static const unsigned int retry_delays_ms[TAKEOVER_RETRY_COUNT] = {0, 100, 200, 300, 400, 500};
-    size_t i;
-    int sockfd;
-
-    for (i = 0; i < TAKEOVER_RETRY_COUNT; i++) {
-        kill_mdnsresponder(SIGTERM);
-        sleep_millis(retry_delays_ms[i]);
-        sockfd = open_auto_mdns_socket(shared_bind, set, 0);
-        if (sockfd >= 0) {
-            if (mdns_takeover_confirmed(shared_bind)) {
-                fprintf(stderr,
-                        shared_bind
-                            ? "mDNS auto-ip shared bind established after SIGTERM + %ums using single socket\n"
-                            : "mDNS auto-ip takeover established after SIGTERM + %ums using exclusive single socket\n",
-                        retry_delays_ms[i]);
-                return sockfd;
-            }
-            fprintf(stderr, "mDNS auto-ip socket acquired after SIGTERM + %ums but Apple mDNSResponder is still alive; retrying\n",
-                    retry_delays_ms[i]);
-            close(sockfd);
-        }
-    }
-
-    for (i = 0; i < TAKEOVER_RETRY_COUNT; i++) {
-        kill_mdnsresponder(SIGKILL);
-        sleep_millis(retry_delays_ms[i]);
-        sockfd = open_auto_mdns_socket(shared_bind, set, 0);
-        if (sockfd >= 0) {
-            if (mdns_takeover_confirmed(shared_bind)) {
-                fprintf(stderr,
-                        shared_bind
-                            ? "mDNS auto-ip shared bind established after SIGKILL + %ums using single socket\n"
-                            : "mDNS auto-ip takeover established after SIGKILL + %ums using exclusive single socket\n",
-                        retry_delays_ms[i]);
-                return sockfd;
-            }
-            fprintf(stderr, "mDNS auto-ip socket acquired after SIGKILL + %ums but Apple mDNSResponder is still alive; retrying\n",
-                    retry_delays_ms[i]);
-            close(sockfd);
-        }
-    }
-
-    if (!shared_bind && mdnsresponder_is_alive()) {
-        fprintf(stderr, "mDNS auto-ip takeover failed: Apple mDNSResponder is still alive after retry ladder\n");
-    } else {
-        fprintf(stderr, "mDNS auto-ip takeover failed: could not acquire single UDP %d socket\n", MDNS_PORT);
-    }
-    errno = EADDRINUSE;
-    return -1;
 }
 
 static int link_has_any_mdns_transport(const struct link_context *link) {
@@ -4183,22 +3834,6 @@ static void log_snapshot_record_build_failure(const char *stage, const char *ste
             answers);
 }
 
-static void MDNS_UNUSED log_packet_send_failure_detail(const char *stage, const struct sockaddr_in *dest, size_t packet_len,
-                                                       int answers, int use_snapshot_records, int saved_errno) {
-    char destbuf[64];
-
-    format_dest_addr(dest, destbuf, sizeof(destbuf));
-    fprintf(stderr,
-            "mdns packet send failure: stage=%s dest=%s packet_len=%lu answers=%d records=%s errno=%d (%s)\n",
-            stage,
-            destbuf,
-            (unsigned long)packet_len,
-            answers,
-            use_snapshot_records ? "snapshot" : "generated",
-            saved_errno,
-            strerror(saved_errno));
-}
-
 static void log_packet_send_failure_detail_any(const char *stage, const struct sockaddr *dest, size_t packet_len,
                                                int answers, int use_snapshot_records, int saved_errno) {
     char destbuf[96];
@@ -4214,6 +3849,7 @@ static void log_packet_send_failure_detail_any(const char *stage, const struct s
             use_snapshot_records ? "snapshot" : "generated",
             saved_errno,
             strerror(saved_errno));
+    log_mdns_counters_force("send_failure");
 }
 
 static int send_dns_packet_any(const char *stage, int sockfd, const uint8_t *buf, size_t packet_len,
@@ -4255,18 +3891,6 @@ static int send_dns_packet_any(const char *stage, int sockfd, const uint8_t *buf
     }
 
     return 0;
-}
-
-static int send_dns_packet(const char *stage, int sockfd, const uint8_t *buf, size_t packet_len,
-                           const struct sockaddr_in *dest, int answers, int use_snapshot_records) {
-    return send_dns_packet_any(stage,
-                               sockfd,
-                               buf,
-                               packet_len,
-                               (const struct sockaddr *)dest,
-                               sizeof(*dest),
-                               answers,
-                               use_snapshot_records);
 }
 
 static int add_adisk_records(uint8_t *buf, size_t *off, size_t cap, const struct config *cfg, uint32_t ttl, int *answers) {
@@ -4362,21 +3986,6 @@ static int add_airport_records(uint8_t *buf, size_t *off, size_t cap, const stru
 static void init_announcement_packet(size_t *off, int *answers) {
     *off = sizeof(struct dns_header);
     *answers = 0;
-}
-
-static int MDNS_UNUSED finalize_and_send_announcement_packet(int sockfd, uint8_t *buf, size_t off, int answers,
-                                                             const struct sockaddr_in *dest, int use_snapshot_records) {
-    struct dns_header hdr;
-
-    if (answers <= 0) {
-        return 0;
-    }
-
-    memset(&hdr, 0, sizeof(hdr));
-    hdr.flags = htons(DNS_FLAG_QR | DNS_FLAG_AA);
-    hdr.ancount = htons((uint16_t)answers);
-    memcpy(buf, &hdr, sizeof(hdr));
-    return send_dns_packet("announcement", sockfd, buf, off, dest, answers, use_snapshot_records);
 }
 
 static int finalize_and_send_announcement_packet_any(int sockfd,
@@ -4505,9 +4114,9 @@ static int send_announcement_any(int sockfd,
                     }
                     init_announcement_packet(&off, &answers);
                     if (add_snapshot_host_address_records(buf, &off, sizeof(buf), &snapshot_records->records[i], response_link, 1, 1, ttl, &answers) != 0) {
-                        log_snapshot_record_build_failure("announcement", "add_snapshot_host_a_record", i,
+                        log_snapshot_record_build_failure("announcement", "add_snapshot_host_address_records", i,
                                                           &snapshot_records->records[i], off, answers);
-                        log_packet_build_failure("announcement", "add_snapshot_host_a_record", off, answers, use_snapshot_records);
+                        log_packet_build_failure("announcement", "add_snapshot_host_address_records", off, answers, use_snapshot_records);
                         return -1;
                     }
                 }
@@ -5752,123 +5361,6 @@ static int handle_query(int sockfd, const uint8_t *packet, size_t packet_len,
                             use_snapshot_records);
 }
 
-static const struct iface_context MDNS_UNUSED *select_response_context(const struct iface_context_set *contexts,
-                                                                       const struct sockaddr_in *source) {
-    size_t i;
-
-    if (contexts->count == 0) {
-        return NULL;
-    }
-    if (source != NULL && source->sin_addr.s_addr != 0) {
-        for (i = 0; i < contexts->count; i++) {
-            if (source_matches_context_subnet(source->sin_addr.s_addr, &contexts->contexts[i])) {
-                return &contexts->contexts[i];
-            }
-        }
-    }
-    return &contexts->contexts[0];
-}
-
-static void link_context_from_iface_context(struct link_context *out, const struct iface_context *ctx) {
-    memset(out, 0, sizeof(*out));
-    strncpy(out->name, ctx->name, sizeof(out->name) - 1);
-    out->flags = ctx->flags;
-    out->ipv4[0].addr = ctx->ipv4_addr;
-    out->ipv4[0].netmask = ctx->netmask;
-    out->ipv4_count = 1;
-    out->mdns_ipv4_transport = 1;
-    out->mdns_ipv4_transport_addr = ctx->ipv4_addr;
-}
-
-static void init_explicit_link_context(struct link_context *out, uint32_t ipv4_addr) {
-    memset(out, 0, sizeof(*out));
-    strncpy(out->name, "explicit", sizeof(out->name) - 1);
-    out->ipv4[0].addr = ipv4_addr;
-    out->ipv4[0].netmask = htonl(0xffffffffU);
-    out->ipv4_count = 1;
-    out->mdns_ipv4_transport = 1;
-    out->mdns_ipv4_transport_addr = ipv4_addr;
-}
-
-static int set_context_outbound_interface(int sockfd, const struct iface_context *ctx) {
-    return set_outbound_multicast_interface(sockfd, ctx->ipv4_addr, "runtime", 0, 0);
-}
-
-static int send_context_announcement(int sockfd,
-                                     const struct iface_context *ctx,
-                                     const struct sockaddr_in *dest,
-                                     const struct config *cfg,
-                                     const struct service_record_set *snapshot_records,
-                                     int use_snapshot_records) {
-    struct link_context link;
-
-    if (set_context_outbound_interface(sockfd, ctx) != 0) {
-        return -1;
-    }
-    link_context_from_iface_context(&link, ctx);
-    return send_announcement(sockfd, dest, cfg, &link, cfg->ttl, snapshot_records, use_snapshot_records);
-}
-
-static void MDNS_UNUSED send_context_goodbyes(int sockfd,
-                                              struct iface_context_set *contexts,
-                                              const struct sockaddr_in *dest,
-                                              const struct config *cfg,
-                                              const struct service_record_set *snapshot_records,
-                                              int use_snapshot_records) {
-    size_t i;
-
-    for (i = 0; i < contexts->count; i++) {
-        if (set_context_outbound_interface(sockfd, &contexts->contexts[i]) == 0) {
-            struct link_context link;
-            link_context_from_iface_context(&link, &contexts->contexts[i]);
-            (void)send_announcement(sockfd, dest, cfg, &link, 0, snapshot_records, use_snapshot_records);
-        }
-    }
-}
-
-static void MDNS_UNUSED send_context_goodbyes_for_missing(int sockfd,
-                                                          struct iface_context_set *old_contexts,
-                                                          const struct iface_context_set *active_contexts,
-                                                          const struct sockaddr_in *dest,
-                                                          const struct config *cfg,
-                                                          const struct service_record_set *snapshot_records,
-                                                          int use_snapshot_records) {
-    size_t i;
-
-    for (i = 0; i < old_contexts->count; i++) {
-        if (iface_context_set_contains(active_contexts, &old_contexts->contexts[i])) {
-            continue;
-        }
-        if (set_context_outbound_interface(sockfd, &old_contexts->contexts[i]) == 0) {
-            struct link_context link;
-            link_context_from_iface_context(&link, &old_contexts->contexts[i]);
-            (void)send_announcement(sockfd, dest, cfg, &link, 0, snapshot_records, use_snapshot_records);
-        }
-    }
-}
-
-static void MDNS_UNUSED announce_all_contexts(int sockfd,
-                                              struct iface_context_set *contexts,
-                                              const struct sockaddr_in *dest,
-                                              const struct config *cfg,
-                                              const struct service_record_set *snapshot_records,
-                                              int use_snapshot_records,
-                                              const char *stage) {
-    size_t i;
-
-    for (i = 0; i < contexts->count; i++) {
-        if (send_context_announcement(sockfd, &contexts->contexts[i], dest, cfg, snapshot_records, use_snapshot_records) != 0) {
-            char detail[128];
-            char ip_buf[INET_ADDRSTRLEN];
-            snprintf(detail, sizeof(detail), "stage=%s iface=%s ip=%s",
-                     stage,
-                     contexts->contexts[i].name,
-                     ipv4_to_string(contexts->contexts[i].ipv4_addr, ip_buf, sizeof(ip_buf)));
-            log_send_failure(stage, dest, use_snapshot_records, detail);
-        }
-    }
-}
-
 static int source_matches_link_ipv4_subnet(uint32_t source_ipv4_addr, const struct link_context *link) {
     size_t i;
 
@@ -6394,32 +5886,14 @@ static int recover_runtime_link_change_with_takeover(int shared_bind,
     return mdns_transport_has_active_socket(status) ? 1 : -1;
 }
 
-static int open_mdns_socket(int shared_bind, int log_bind_errors, uint32_t ipv4_addr, const char *socket_role) {
-    int sockfd;
-
-    sockfd = open_bound_mdns_socket(shared_bind, log_bind_errors);
-    if (sockfd < 0) {
-        return -1;
-    }
-    if (configure_mdns_socket_for_ipv4(sockfd, ipv4_addr, socket_role) != 0) {
-        close(sockfd);
-        return -1;
-    }
-
-    return sockfd;
-}
-
 int main(int argc, char **argv) {
     struct config cfg;
     struct service_record_set snapshot_records;
-    int sockfd = -1;
     struct sockaddr_in mdns_dest;
     struct sockaddr_in6 mdns_dest6;
     int i;
     int use_snapshot_records = 0;
-    int shared_bind = 0;
     int auto_ip = 0;
-    int explicit_ipv4 = 0;
     int print_auto_ip_cidrs = 0;
     int print_smb_bind_interfaces = 0;
     int print_mdns_socket_families = 0;
@@ -6439,8 +5913,6 @@ int main(int argc, char **argv) {
     memset(&active_links, 0, sizeof(active_links));
     strcpy(cfg.service_type, "_smb._tcp.local.");
     strcpy(cfg.adisk_service_type, "_adisk._tcp.local.");
-    strcpy(cfg.adisk_disk_key, ADISK_DEFAULT_DISK_KEY);
-    strcpy(cfg.adisk_disk_advf, ADISK_DEFAULT_DISK_ADVF);
     strcpy(cfg.device_info_service_type, "_device-info._tcp.local.");
     strcpy(cfg.airport_service_type, AIRPORT_SERVICE_TYPE);
     cfg.port = 445;
@@ -6461,8 +5933,6 @@ int main(int argc, char **argv) {
                     sizeof(cfg.skip_capture_if_snapshot_newer_than_boot_path) - 1);
         } else if (strcmp(argv[i], "--load-snapshot") == 0 && i + 1 < argc) {
             strncpy(cfg.load_snapshot_path, argv[++i], sizeof(cfg.load_snapshot_path) - 1);
-        } else if (strcmp(argv[i], "--shared-bind") == 0) {
-            shared_bind = 1;
         } else if (strcmp(argv[i], "--diskless") == 0) {
             cfg.diskless = 1;
         } else if (strcmp(argv[i], "--auto-ip") == 0) {
@@ -6476,18 +5946,8 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--version") == 0) {
             printf("%d\n", ADVERTISER_VERSION_CODE);
             return EXIT_OK;
-        } else if (strcmp(argv[i], "--service") == 0 && i + 1 < argc) {
-            strncpy(cfg.service_type, argv[++i], sizeof(cfg.service_type) - 1);
-        } else if (strcmp(argv[i], "--adisk-share") == 0 && i + 1 < argc) {
-            strncpy(cfg.adisk_share_name, argv[++i], sizeof(cfg.adisk_share_name) - 1);
         } else if (strcmp(argv[i], "--adisk-shares-file") == 0 && i + 1 < argc) {
             strncpy(cfg.adisk_shares_file, argv[++i], sizeof(cfg.adisk_shares_file) - 1);
-        } else if (strcmp(argv[i], "--adisk-disk-key") == 0 && i + 1 < argc) {
-            strncpy(cfg.adisk_disk_key, argv[++i], sizeof(cfg.adisk_disk_key) - 1);
-        } else if (strcmp(argv[i], "--adisk-disk-advf") == 0 && i + 1 < argc) {
-            strncpy(cfg.adisk_disk_advf, argv[++i], sizeof(cfg.adisk_disk_advf) - 1);
-        } else if (strcmp(argv[i], "--adisk-uuid") == 0 && i + 1 < argc) {
-            strncpy(cfg.adisk_uuid, argv[++i], sizeof(cfg.adisk_uuid) - 1);
         } else if (strcmp(argv[i], "--adisk-sys-wama") == 0 && i + 1 < argc) {
             strncpy(cfg.adisk_sys_wama, argv[++i], sizeof(cfg.adisk_sys_wama) - 1);
         } else if (strcmp(argv[i], "--device-model") == 0 && i + 1 < argc) {
@@ -6518,16 +5978,6 @@ int main(int argc, char **argv) {
             strncpy(cfg.instance_name, argv[++i], sizeof(cfg.instance_name) - 1);
         } else if (strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
             strncpy(cfg.host_label, argv[++i], sizeof(cfg.host_label) - 1);
-        } else if (strcmp(argv[i], "--ipv4") == 0 && i + 1 < argc) {
-            explicit_ipv4 = 1;
-            if (inet_pton(AF_INET, argv[++i], &cfg.ipv4_addr) != 1) {
-                fprintf(stderr, "Invalid IPv4 address\n");
-                return EXIT_INVALID_IPV4;
-            }
-        } else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
-            cfg.port = (uint16_t)atoi(argv[++i]);
-        } else if (strcmp(argv[i], "--ttl") == 0 && i + 1 < argc) {
-            cfg.ttl = (uint32_t)atoi(argv[++i]);
         } else {
             usage(argv[0]);
             return EXIT_USAGE;
@@ -6536,7 +5986,7 @@ int main(int argc, char **argv) {
 
     if (print_auto_ip_cidrs) {
         return print_auto_ip_cidrs_with_provider(stdout,
-                                                 collect_usable_iface_contexts_provider,
+                                                 collect_usable_link_contexts_provider,
                                                  NULL);
     }
     if (print_smb_bind_interfaces) {
@@ -6555,12 +6005,7 @@ int main(int argc, char **argv) {
                      cfg.save_airport_snapshot_path[0] != '\0' ||
                      cfg.save_snapshot_path[0] != '\0'));
 
-    if (auto_ip && explicit_ipv4) {
-        fprintf(stderr, "--auto-ip and --ipv4 are mutually exclusive\n");
-        usage(argv[0]);
-        return EXIT_USAGE;
-    }
-    if (!capture_only && (cfg.instance_name[0] == '\0' || cfg.host_label[0] == '\0' || (!auto_ip && cfg.ipv4_addr == 0))) {
+    if (!capture_only && (cfg.instance_name[0] == '\0' || cfg.host_label[0] == '\0' || !auto_ip)) {
         usage(argv[0]);
         return EXIT_MISSING_REQUIRED_ARGS;
     }
@@ -6575,14 +6020,15 @@ int main(int argc, char **argv) {
         (cfg.host_label[0] != '\0' && validate_single_dns_label(cfg.host_label, "host label") != 0)) {
         return EXIT_INVALID_DNS_LABEL;
     }
+    if ((cfg.save_all_snapshot_path[0] != '\0' || cfg.save_snapshot_path[0] != '\0') && !auto_ip) {
+        fprintf(stderr, "mDNS snapshot capture requires --auto-ip\n");
+        usage(argv[0]);
+        return EXIT_MISSING_REQUIRED_ARGS;
+    }
     if (validate_dns_name(cfg.service_type, "service type") != 0) {
         return EXIT_INVALID_SERVICE_TYPE;
     }
     if (cfg.adisk_shares_file[0] != '\0' && parse_adisk_shares_file(&cfg, cfg.adisk_shares_file) != 0) {
-        return EXIT_INVALID_ADISK_DISK;
-    }
-    if (cfg.adisk_share_name[0] != '\0' &&
-        add_adisk_disk_config(&cfg, cfg.adisk_share_name, cfg.adisk_disk_key, cfg.adisk_uuid, cfg.adisk_disk_advf) != 0) {
         return EXIT_INVALID_ADISK_DISK;
     }
     if (adisk_enabled(&cfg)) {
@@ -6609,7 +6055,7 @@ int main(int argc, char **argv) {
 
     if (!capture_only) {
         snprintf(cfg.host_fqdn, sizeof(cfg.host_fqdn), "%s.local.", cfg.host_label);
-        log_startup_config(&cfg, shared_bind, auto_ip);
+        log_startup_config(&cfg);
     } else {
         fprintf(stderr, "mdns capture-only: save_all=%s save_airport=%s save_trusted=%s airport_identity=%s\n",
                 cfg.save_all_snapshot_path[0] != '\0' ? cfg.save_all_snapshot_path : "(none)",
@@ -6669,9 +6115,8 @@ int main(int argc, char **argv) {
                     log_link_contexts("mdns capture auto-ip", &capture_links);
                 }
             }
-            if ((auto_ip && capture_links_ready &&
-                 capture_mdns_snapshot_links_with_retry(&captured_records, &capture_links) == 0) ||
-                (!auto_ip && capture_mdns_snapshot_raw_with_retry(&captured_records, cfg.ipv4_addr) == 0)) {
+            if (capture_links_ready &&
+                capture_mdns_snapshot_links_with_retry(&captured_records, &capture_links) == 0) {
                 fprintf(stderr, "snapshot capture: captured %lu records\n", (unsigned long)captured_records.count);
                 if (captured_records.truncated) {
                     fprintf(stderr,
@@ -6754,6 +6199,7 @@ int main(int argc, char **argv) {
         time_t last_degraded_retry;
         struct mdns_socket_pair sockets;
         struct mdns_transport_status transport_status;
+        int startup_counters_logged = 0;
 
         if (!auto_contexts_ready) {
             if (wait_for_auto_advertise_link_contexts(&desired_links, "mdns runtime") != 0) {
@@ -6764,11 +6210,12 @@ int main(int argc, char **argv) {
         log_link_contexts("mdns runtime desired", &desired_links);
         sockets.ipv4_fd = -1;
         sockets.ipv6_fd = -1;
-        if (acquire_dualstack_mdns_sockets(shared_bind, &desired_links, &active_links, &sockets, &transport_status) < 0) {
+        if (acquire_dualstack_mdns_sockets(0, &desired_links, &active_links, &sockets, &transport_status) < 0) {
             return EXIT_SOCKET_ACQUIRE_FAILED;
         }
         log_link_contexts("mdns runtime active", &active_links);
         log_mdns_transport_status("startup", &active_links, &transport_status);
+        log_mdns_counters_force("startup");
 
         startup_burst_start_ms = monotonic_millis();
         last_iface_poll = time(NULL);
@@ -6805,7 +6252,7 @@ int main(int argc, char **argv) {
                             desired_links = stabilized_links;
                             if (stabilized_links.count > 0) {
                                 log_link_contexts("mdns desired stabilized", &desired_links);
-                                if (recover_runtime_link_change_with_takeover(shared_bind,
+                                if (recover_runtime_link_change_with_takeover(0,
                                                                               &sockets,
                                                                               &active_links,
                                                                               &desired_links,
@@ -6828,7 +6275,7 @@ int main(int argc, char **argv) {
                                 if (wait_for_auto_advertise_link_contexts(&desired_links, "mdns runtime") != 0) {
                                     break;
                                 }
-                                if (acquire_dualstack_mdns_sockets(shared_bind, &desired_links, &active_links, &sockets, &transport_status) < 0) {
+                                if (acquire_dualstack_mdns_sockets(0, &desired_links, &active_links, &sockets, &transport_status) < 0) {
                                     fprintf(stderr, "mdns auto-ip: usable address links returned but sockets could not be acquired\n");
                                     last_iface_poll = time(NULL);
                                     continue;
@@ -6839,6 +6286,8 @@ int main(int argc, char **argv) {
                             fprintf(stderr, "mdns auto-ip: re-announcing after link change\n");
                             startup_burst_start_ms = monotonic_millis();
                             startup_burst_index = 0;
+                            startup_counters_logged = 0;
+                            log_mdns_counters_force("link_change");
                             last_degraded_retry = time(NULL);
                         }
                     }
@@ -6853,7 +6302,7 @@ int main(int argc, char **argv) {
                         "mdns desired transport state changed: retrying missing required transports ipv4=%d ipv6=%d\n",
                         transport_status.missing_required_ipv4,
                         transport_status.missing_required_ipv6);
-                if (recover_runtime_link_change_with_takeover(shared_bind,
+                if (recover_runtime_link_change_with_takeover(0,
                                                               &sockets,
                                                               &active_links,
                                                               &desired_links,
@@ -6868,8 +6317,11 @@ int main(int argc, char **argv) {
                     fprintf(stderr, "mdns auto-ip: re-announcing after degraded transport retry\n");
                     startup_burst_start_ms = monotonic_millis();
                     startup_burst_index = 0;
+                    startup_counters_logged = 0;
+                    log_mdns_counters_force("degraded_retry");
                 } else {
                     log_mdns_transport_status("degraded_retry_failed", &active_links, &transport_status);
+                    log_mdns_counters_force("degraded_retry_failed");
                 }
                 last_degraded_retry = time(NULL);
             }
@@ -6882,6 +6334,11 @@ int main(int argc, char **argv) {
                 startup_burst_index++;
                 now_ms = monotonic_millis();
             }
+            if (startup_burst_index >= STARTUP_BURST_COUNT && !startup_counters_logged) {
+                log_mdns_counters_force("startup_announcements_complete");
+                startup_counters_logged = 1;
+            }
+            maybe_log_mdns_counters("traffic_summary", now_ms);
 
             FD_ZERO(&rfds);
             if (sockets.ipv4_fd >= 0) {
@@ -6929,7 +6386,8 @@ int main(int argc, char **argv) {
                     ssize_t nread = recvfrom(sockets.ipv4_fd, packet, sizeof(packet), 0, (struct sockaddr *)&src, &src_len);
                     if (nread > 0) {
                         const struct link_context *link = select_response_link_ipv4(&active_links, &src);
-                        g_mdns_counters.ipv4_packets_received++;
+                        int first_packet = note_mdns_ipv4_packet_received();
+                        unsigned long query_matches_before = g_mdns_counters.query_packets_matched;
                         if (link != NULL &&
                             (set_link_outbound_interface4_for_peer(sockets.ipv4_fd, link, src.sin_addr.s_addr) != 0 ||
                              handle_query(sockets.ipv4_fd, packet, (size_t)nread, &mdns_dest, &src, &cfg, link, &snapshot_records, use_snapshot_records) != 0)) {
@@ -6939,7 +6397,7 @@ int main(int argc, char **argv) {
                                      (long)nread, inet_ntoa(src.sin_addr), (unsigned int)ntohs(src.sin_port));
                             log_send_failure("query_response", &mdns_dest, use_snapshot_records, detail);
                         }
-                        log_mdns_counters("ipv4_packet");
+                        log_mdns_receive_counters("first_ipv4_packet", first_packet, query_matches_before, now_ms);
                     }
                 }
                 if (selected > 0 && sockets.ipv6_fd >= 0 && FD_ISSET(sockets.ipv6_fd, &rfds)) {
@@ -6948,7 +6406,8 @@ int main(int argc, char **argv) {
                     ssize_t nread = recvfrom(sockets.ipv6_fd, packet, sizeof(packet), 0, (struct sockaddr *)&src6, &src6_len);
                     if (nread > 0) {
                         const struct link_context *link = select_response_link_ipv6(&active_links, &src6);
-                        g_mdns_counters.ipv6_packets_received++;
+                        int first_packet = note_mdns_ipv6_packet_received();
+                        unsigned long query_matches_before = g_mdns_counters.query_packets_matched;
                         if (link != NULL) {
                             struct sockaddr_in6 scoped_dest6;
                             int query_status;
@@ -6978,7 +6437,7 @@ int main(int argc, char **argv) {
                                         srcbuf);
                             }
                         }
-                        log_mdns_counters("ipv6_packet");
+                        log_mdns_receive_counters("first_ipv6_packet", first_packet, query_matches_before, now_ms);
                     }
                 }
             }
@@ -6986,80 +6445,14 @@ int main(int argc, char **argv) {
         }
 
         send_link_goodbyes(&sockets, &active_links, &mdns_dest, &mdns_dest6, &cfg, &snapshot_records, use_snapshot_records);
+        log_mdns_counters_force("shutdown");
         close_mdns_socket_pair(&sockets);
         return 0;
     }
 
-    sockfd = acquire_mdns_socket(shared_bind, cfg.ipv4_addr);
-    if (sockfd < 0) {
-        return EXIT_SOCKET_ACQUIRE_FAILED;
-    }
-
-    startup_burst_start_ms = monotonic_millis();
-
-    while (!g_stop) {
-        fd_set rfds;
-        struct timeval tv;
-        uint8_t packet[BUF_SIZE];
-        ssize_t nread;
-        long long now_ms;
-        long long next_burst_ms = -1;
-        long long wait_ms = 1000;
-
-        now_ms = monotonic_millis();
-        (void)flush_deferred_response_if_due(now_ms);
-        while (startup_burst_index < STARTUP_BURST_COUNT &&
-               now_ms - startup_burst_start_ms >= (long long)g_startup_burst_offsets_ms[startup_burst_index]) {
-            struct link_context link;
-            init_explicit_link_context(&link, cfg.ipv4_addr);
-            if (send_announcement(sockfd, &mdns_dest, &cfg, &link, cfg.ttl, &snapshot_records, use_snapshot_records) != 0) {
-                char detail[96];
-                snprintf(detail, sizeof(detail), "burst_index=%lu offset_ms=%u",
-                         (unsigned long)startup_burst_index, g_startup_burst_offsets_ms[startup_burst_index]);
-                log_send_failure("startup_announce", &mdns_dest, use_snapshot_records, detail);
-            }
-            startup_burst_index++;
-            now_ms = monotonic_millis();
-        }
-
-        FD_ZERO(&rfds);
-        FD_SET(sockfd, &rfds);
-        if (startup_burst_index < STARTUP_BURST_COUNT) {
-            next_burst_ms = startup_burst_start_ms + (long long)g_startup_burst_offsets_ms[startup_burst_index];
-            wait_ms = next_burst_ms - now_ms;
-            if (wait_ms < 0) {
-                wait_ms = 0;
-            } else if (wait_ms > 1000) {
-                wait_ms = 1000;
-            }
-        }
-        wait_ms = deferred_response_adjust_wait_ms(now_ms, wait_ms);
-        tv.tv_sec = (time_t)(wait_ms / 1000);
-        tv.tv_usec = (suseconds_t)((wait_ms % 1000) * 1000);
-
-        if (select(sockfd + 1, &rfds, NULL, NULL, &tv) > 0 && FD_ISSET(sockfd, &rfds)) {
-            struct sockaddr_in src;
-            socklen_t src_len = sizeof(src);
-            nread = recvfrom(sockfd, packet, sizeof(packet), 0, (struct sockaddr *)&src, &src_len);
-            if (nread > 0) {
-                struct link_context link;
-                init_explicit_link_context(&link, cfg.ipv4_addr);
-                if (handle_query(sockfd, packet, (size_t)nread, &mdns_dest, &src, &cfg, &link, &snapshot_records, use_snapshot_records) != 0) {
-                    char detail[128];
-                    snprintf(detail, sizeof(detail), "packet_len=%ld from=%s:%u",
-                             (long)nread, inet_ntoa(src.sin_addr), (unsigned int)ntohs(src.sin_port));
-                    log_send_failure("query_response", &mdns_dest, use_snapshot_records, detail);
-                }
-            }
-        }
-
-    }
-
-    clear_deferred_response_for_sockfd(sockfd);
-    close(sockfd);
-    return 0;
+    usage(argv[0]);
+    return EXIT_MISSING_REQUIRED_ARGS;
 }
 
 #undef fprintf
 #undef perror
-#undef MDNS_UNUSED
