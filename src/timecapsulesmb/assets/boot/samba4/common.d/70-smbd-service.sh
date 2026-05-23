@@ -252,12 +252,14 @@ tc_prepare_smbd_recovery_disk_runtime() {
         return 1
     fi
 
-    if [ ! -s "$TC_SHARES_TSV" ]; then
+    recovery_share_rows=$(tc_runtime_share_rows || true)
+    if [ -z "$recovery_share_rows" ]; then
         tc_log "watchdog recovery: active share state missing; smbd restart will use existing config"
         return 0
     fi
 
-    while IFS="$TC_TAB" read -r share_name share_path part_device builtin part_uuid; do
+    while IFS="$TC_TAB" read -r share_name share_path part_device builtin part_uuid ||
+        [ -n "$share_name$share_path$part_device$builtin$part_uuid" ]; do
         [ -n "$part_device" ] || continue
         recovery_share_count=$((recovery_share_count + 1))
         tc_log "watchdog recovery: ensuring active share volume is mounted before smbd restart: share=$share_name device=/dev/$part_device root=/Volumes/$part_device"
@@ -266,7 +268,9 @@ tc_prepare_smbd_recovery_disk_runtime() {
         else
             recovery_status=1
         fi
-    done <"$TC_SHARES_TSV"
+    done <<EOF
+$recovery_share_rows
+EOF
 
     if [ "$recovery_share_count" -eq 0 ]; then
         tc_log "watchdog recovery: active share state has no valid rows; smbd restart will use existing config"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import shlex
+import os
 import subprocess
 import sys
 import selectors
@@ -30,6 +31,7 @@ from timecapsulesmb.deploy.commands import (
     RemoteSymlink,
     RemovePathAction,
     RunScriptAction,
+    StopManagerAction,
     StopProcessAction,
     StopWatchdogAction,
     ensure_volume_mounted_action,
@@ -61,8 +63,10 @@ from timecapsulesmb.deploy.planner import (
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_SMBPASSWD_SOURCE,
     GENERATED_USERNAME_MAP_SOURCE,
+    PACKAGED_BOOT_SOURCE,
     PACKAGED_COMMON_SH_SOURCE,
     PACKAGED_DFREE_SH_SOURCE,
+    PACKAGED_MANAGER_SOURCE,
     PACKAGED_RC_LOCAL_SOURCE,
     PACKAGED_START_SAMBA_SOURCE,
     PACKAGED_WATCHDOG_SOURCE,
@@ -331,7 +335,7 @@ class DeployModuleTests(unittest.TestCase):
 
     def test_load_boot_asset_text_reads_packaged_asset(self) -> None:
         content = load_boot_asset_text("rc.local")
-        self.assertIn("/mnt/Flash/start-samba.sh", content)
+        self.assertIn("/mnt/Flash/boot.sh", content)
         common = load_boot_asset_text("common.sh")
         self.assertEqual(common, assemble_common_sh_text())
         self.assertIn("get_airport_syvs()", common)
@@ -405,6 +409,7 @@ class DeployModuleTests(unittest.TestCase):
                         "103 S    nbns-advertiser /mnt/Memory/samba4/sbin/nbns-advertiser --name TimeCapsule",
                         "104 S    sh              /bin/sh /mnt/Flash/watchdog.sh",
                         "105 S    sh              /bin/sh -c probe=/mnt/Flash/watchdog.sh",
+                        "106 S    sh              /bin/sh /mnt/Flash/manager.sh",
                     ]
                 )
                 + "\n"
@@ -417,7 +422,9 @@ runtime_process_present_by_ucomm wcifsnd; echo "zombie-name=$?"
 runtime_process_present_by_ucomm nbns-advertiser; echo "live-name=$?"
 runtime_watchdog_present; echo "live-full=$?"
 runtime_watchdog_present < /dev/null; echo "live-full-repeat=$?"
+runtime_manager_present; echo "manager-full=$?"
 echo "watchdog-pids=$(runtime_watchdog_pids)"
+echo "manager-pids=$(runtime_manager_pids)"
 runtime_process_present_by_ucomm wcifsfs; echo "zombie-full=$?"
 wait_for_process nbns-advertiser 1; echo "live-wait=$?"
 wait_for_process wcifsnd 1; echo "zombie-wait=$?"
@@ -431,7 +438,9 @@ wait_for_process wcifsnd 1; echo "zombie-wait=$?"
         self.assertIn("live-name=0", result.stdout)
         self.assertIn("live-full=0", result.stdout)
         self.assertIn("live-full-repeat=0", result.stdout)
+        self.assertIn("manager-full=0", result.stdout)
         self.assertIn("watchdog-pids=104", result.stdout)
+        self.assertIn("manager-pids=106", result.stdout)
         self.assertIn("zombie-full=1", result.stdout)
         self.assertIn("live-wait=0", result.stdout)
         self.assertIn("zombie-wait=1", result.stdout)
@@ -560,7 +569,7 @@ tc_prepare_local_hostname_resolution
         self.assertIn("local hostname resolution prepared for airport-base", log_text)
         self.assertIn("local hostname resolution already present for airport-base", log_text)
 
-    def test_common_watchdog_process_helper_does_not_self_match_literal(self) -> None:
+    def test_common_script_process_helpers_do_not_self_match_literal(self) -> None:
         common = load_boot_asset_text("common.sh").replace(
             "/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null",
             'cat "$PS_FIXTURE"',
@@ -573,6 +582,8 @@ tc_prepare_local_hostname_resolution
                     [
                         "101 S    sh              /bin/sh -c probe=/mnt/Flash/watchdog.sh",
                         "102 S    sh              sh -c /bin/sh -c 'probe=/mnt/Flash/watchdog.sh'",
+                        "103 S    sh              /bin/sh -c probe=/mnt/Flash/manager.sh",
+                        "104 S    sh              sh -c /bin/sh -c 'probe=/mnt/Flash/manager.sh'",
                     ]
                 )
                 + "\n"
@@ -583,6 +594,8 @@ tc_prepare_local_hostname_resolution
                 + """
 runtime_watchdog_present; echo "watchdog=$?"
 echo "watchdog-pids=$(runtime_watchdog_pids)"
+runtime_manager_present; echo "manager=$?"
+echo "manager-pids=$(runtime_manager_pids)"
 """
             )
 
@@ -591,6 +604,8 @@ echo "watchdog-pids=$(runtime_watchdog_pids)"
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("watchdog=1", result.stdout)
         self.assertIn("watchdog-pids=", result.stdout)
+        self.assertIn("manager=1", result.stdout)
+        self.assertIn("manager-pids=", result.stdout)
 
     def test_common_watchdog_kill_helper_targets_only_detected_pids(self) -> None:
         common = load_boot_asset_text("common.sh").replace("/bin/kill", "record_kill")
@@ -603,8 +618,11 @@ echo "watchdog-pids=$(runtime_watchdog_pids)"
                 + """
 record_kill() { echo "kill:$*" >> "$KILL_LOG"; }
 runtime_watchdog_pids() { printf '%s\\n' 111 222; }
+runtime_manager_pids() { printf '%s\\n' 333; }
 kill_watchdog_pids TERM
 kill_watchdog_pids KILL
+kill_manager_pids TERM
+kill_manager_pids KILL
 """
             )
 
@@ -614,8 +632,33 @@ kill_watchdog_pids KILL
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             kill_lines,
-            ["kill:111", "kill:222", "kill:-9 111", "kill:-9 222"],
+            ["kill:111", "kill:222", "kill:-9 111", "kill:-9 222", "kill:333", "kill:-9 333"],
         )
+
+    def test_common_script_kill_helper_allows_no_detected_pids_under_nounset(self) -> None:
+        common = load_boot_asset_text("common.sh").replace("/bin/kill", "record_kill")
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "check.sh"
+            kill_log = Path(tmp) / "kill.log"
+            script.write_text(
+                common
+                + f"\nKILL_LOG={shlex.quote(str(kill_log))}\n"
+                + """
+set -eu
+record_kill() { echo "unexpected kill:$*" >> "$KILL_LOG"; }
+runtime_watchdog_pids() { :; }
+runtime_manager_pids() { :; }
+kill_watchdog_pids TERM
+kill_manager_pids TERM
+echo ok
+"""
+            )
+
+            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "ok\n")
+        self.assertFalse(kill_log.exists())
 
     def test_extract_airport_identity_from_text_finds_time_capsule_model(self) -> None:
         result = extract_airport_identity_from_text("prefix\x00psyAM\x00pTimeCapsule6,113\x00suffix")
@@ -737,11 +780,17 @@ kill_watchdog_pids KILL
         content = load_boot_asset_text("common.sh")
         self.assertIn('if [ -n "$AIRPORT_WAMA" ] || [ -n "$AIRPORT_RAMA" ] || [ -n "$AIRPORT_RAM2" ] || [ -n "$AIRPORT_SRCV" ] || [ -n "$AIRPORT_SYVS" ]; then', content)
 
-    def test_start_and_watchdog_source_common_sh(self) -> None:
+    def test_runtime_scripts_source_common_sh(self) -> None:
+        boot = load_boot_asset_text("boot.sh")
+        manager = load_boot_asset_text("manager.sh")
         start = load_boot_asset_text("start-samba.sh")
         watchdog = load_boot_asset_text("watchdog.sh")
+        self.assertIn(". /mnt/Flash/common.sh", boot)
+        self.assertIn(". /mnt/Flash/common.sh", manager)
         self.assertIn(". /mnt/Flash/common.sh", start)
         self.assertIn(". /mnt/Flash/common.sh", watchdog)
+        self.assertNotIn("RAM_SAMBA_LIBEXEC", boot)
+        self.assertNotIn("RAM_SAMBA_LIBEXEC", manager)
         self.assertNotIn("RAM_SAMBA_LIBEXEC", start)
         self.assertNotIn("stage_runtime_helper", start)
         self.assertNotIn("get_radio_mac()", start)
@@ -753,15 +802,17 @@ kill_watchdog_pids KILL
         self.assertNotIn("get_airport_srcv()", watchdog)
         self.assertNotIn("get_airport_syvs()", watchdog)
 
-    def test_rc_local_leaves_watchdog_launch_to_start_samba(self) -> None:
+    def test_rc_local_leaves_service_launch_to_boot_script(self) -> None:
         content = load_boot_asset_text("rc.local")
-        self.assertIn("/mnt/Flash/start-samba.sh </dev/null >/dev/null 2>&1 &", content)
+        self.assertIn("/mnt/Flash/boot.sh </dev/null >/dev/null 2>&1 &", content)
+        self.assertNotIn("/mnt/Flash/start-samba.sh", content)
+        self.assertNotIn("/mnt/Flash/manager.sh", content)
         self.assertNotIn("/mnt/Flash/watchdog.sh", content)
         self.assertNotIn("pkill -0 -f /mnt/Flash/watchdog.sh", content)
 
     def test_rc_local_detaches_background_jobs_from_stdin(self) -> None:
         content = load_boot_asset_text("rc.local")
-        self.assertIn("/mnt/Flash/start-samba.sh </dev/null >/dev/null 2>&1 &", content)
+        self.assertIn("/mnt/Flash/boot.sh </dev/null >/dev/null 2>&1 &", content)
 
     def test_common_script_has_no_smbd_daemon_ready_helpers(self) -> None:
         common = load_boot_asset_text("common.sh")
@@ -1287,6 +1338,99 @@ int main(void) {{
             self.assertIn("exiting without UDP 5353 takeover or advertisement", run.stderr)
             self.assertFalse(all_snapshot.exists())
             self.assertEqual(apple_snapshot.read_text(), "trusted\n")
+
+    def test_mdns_advertiser_reports_snapshot_newer_than_boot(self) -> None:
+        if sys.platform != "darwin" and not sys.platform.startswith("netbsd"):
+            self.skipTest("snapshot freshness check requires BSD KERN_BOOTTIME")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bin_path = self._compile_mdns_advertiser_binary(tmp)
+            apple_snapshot = tmp / "applemdns.txt"
+            apple_snapshot.write_text("trusted\n")
+            run = subprocess.run(
+                [
+                    str(bin_path),
+                    "--snapshot-newer-than-boot",
+                    str(apple_snapshot),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertIn("mDNS snapshot is newer than current boot:", run.stderr)
+            self.assertEqual(run.stdout, "")
+
+    def test_mdns_advertiser_reports_missing_snapshot_as_not_fresh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bin_path = self._compile_mdns_advertiser_binary(tmp)
+            run = subprocess.run(
+                [
+                    str(bin_path),
+                    "--snapshot-newer-than-boot",
+                    str(tmp / "missing-applemdns.txt"),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+
+            self.assertEqual(run.returncode, 14, run.stderr)
+            self.assertIn("mDNS snapshot is missing, empty, or not newer than current boot:", run.stderr)
+            self.assertEqual(run.stdout, "")
+
+    def test_mdns_advertiser_reports_empty_snapshot_as_not_fresh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bin_path = self._compile_mdns_advertiser_binary(tmp)
+            apple_snapshot = tmp / "applemdns.txt"
+            apple_snapshot.touch()
+            run = subprocess.run(
+                [
+                    str(bin_path),
+                    "--snapshot-newer-than-boot",
+                    str(apple_snapshot),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+
+            self.assertEqual(run.returncode, 14, run.stderr)
+            self.assertIn("mDNS snapshot is missing, empty, or not newer than current boot:", run.stderr)
+            self.assertEqual(run.stdout, "")
+
+    def test_mdns_advertiser_reports_stale_snapshot_as_not_fresh(self) -> None:
+        if sys.platform != "darwin" and not sys.platform.startswith("netbsd"):
+            self.skipTest("snapshot freshness check requires BSD KERN_BOOTTIME")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bin_path = self._compile_mdns_advertiser_binary(tmp)
+            apple_snapshot = tmp / "applemdns.txt"
+            apple_snapshot.write_text("trusted\n")
+            os.utime(apple_snapshot, (1, 1))
+            run = subprocess.run(
+                [
+                    str(bin_path),
+                    "--snapshot-newer-than-boot",
+                    str(apple_snapshot),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+
+            self.assertEqual(run.returncode, 14, run.stderr)
+            self.assertIn("mDNS snapshot is missing, empty, or not newer than current boot:", run.stderr)
+            self.assertEqual(run.stdout, "")
 
     def test_mdns_advertiser_save_airport_snapshot_generates_one_record_without_takeover(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -5639,6 +5783,8 @@ int main(void) {{
             GENERATED_FLASH_CONFIG_SOURCE: Path("/tmp/tcapsulesmb.conf"),
             PACKAGED_RC_LOCAL_SOURCE: Path("/tmp/rc.local"),
             PACKAGED_COMMON_SH_SOURCE: Path("/tmp/common.sh"),
+            PACKAGED_BOOT_SOURCE: Path("/tmp/boot.sh"),
+            PACKAGED_MANAGER_SOURCE: Path("/tmp/manager.sh"),
             PACKAGED_DFREE_SH_SOURCE: Path("/tmp/dfree.sh"),
             PACKAGED_START_SAMBA_SOURCE: Path("/tmp/start-samba.sh"),
             PACKAGED_WATCHDOG_SOURCE: Path("/tmp/watchdog.sh"),
@@ -5651,7 +5797,7 @@ int main(void) {{
                         connection=connection,
                         source_resolver=source_resolver,
                     )
-        self.assertEqual(scp_mock.call_count, 12)
+        self.assertEqual(scp_mock.call_count, 14)
         self.assertEqual(mount_mock.call_count, 5)
         self.assertTrue(all(call.args[:3] == (connection, "/Volumes/dk2", "/dev/dk2") for call in mount_mock.call_args_list))
         self.assertTrue(all(call.kwargs == {"wait_seconds": DEFAULT_APPLE_MOUNT_WAIT_SECONDS} for call in mount_mock.call_args_list))
@@ -5665,6 +5811,8 @@ int main(void) {{
                 Path("/tmp/nbns-advertiser"),
                 Path("/tmp/rc.local"),
                 Path("/tmp/common.sh"),
+                Path("/tmp/boot.sh"),
+                Path("/tmp/manager.sh"),
                 Path("/tmp/start-samba.sh"),
                 Path("/tmp/watchdog.sh"),
                 Path("/tmp/dfree.sh"),
@@ -5683,6 +5831,8 @@ int main(void) {{
                 "/Volumes/dk2/samba4/nbns-advertiser",
                 "/mnt/Flash/.rc.local.tmp",
                 "/mnt/Flash/.common.sh.tmp",
+                "/mnt/Flash/.boot.sh.tmp",
+                "/mnt/Flash/.manager.sh.tmp",
                 "/mnt/Flash/.start-samba.sh.tmp",
                 "/mnt/Flash/.watchdog.sh.tmp",
                 "/mnt/Flash/.dfree.sh.tmp",
@@ -5694,13 +5844,13 @@ int main(void) {{
         binary_upload_timeouts = [call.kwargs.get("timeout") for call in scp_mock.call_args_list[:4]]
         self.assertEqual(binary_upload_timeouts, [PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS] * 4)
         text_upload_timeouts = [call.kwargs.get("timeout") for call in scp_mock.call_args_list[4:]]
-        self.assertEqual(text_upload_timeouts, [FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS] * 6 + [None] * 2)
-        self.assertEqual(ssh_mock.call_count, 14)
+        self.assertEqual(text_upload_timeouts, [FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS] * 8 + [None] * 2)
+        self.assertEqual(ssh_mock.call_count, 18)
 
     def test_upload_deployment_payload_consumes_plan_uploads_directly(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
         plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
-        custom_plan = replace(plan, uploads=[plan.uploads[8], plan.uploads[9]])
+        custom_plan = replace(plan, uploads=[plan.uploads[10], plan.uploads[11]])
         connection = SshConnection("host", "pw", "-o foo")
         source_resolver = {
             PACKAGED_DFREE_SH_SOURCE: Path("/tmp/dfree.sh"),
@@ -5883,12 +6033,14 @@ capture_fstat_for_ucomm "$mixed_smbd" smbd
             SMBD_STATUS_HELPERS
             + r'''
 real_watchdog="202 1 S 0:00.00 sh /bin/sh /mnt/Flash/watchdog.sh"
+real_manager="203 1 S 0:00.00 sh /bin/sh /mnt/Flash/manager.sh"
 self_match_watchdog=$(cat <<'EOF'
 3308 11745 S 0:00.01 sh /bin/sh -c probe=/mnt/Flash/watchdog.sh
 11745 11677 Ss 0:00.01 sh sh -c /bin/sh -c 'probe=/mnt/Flash/watchdog.sh'
 EOF
 )
 watchdog_process_present_for_volume "$real_watchdog"; echo "real=$?"
+manager_process_present_for_volume "$real_manager"; echo "manager=$?"
 watchdog_process_present_for_volume "$self_match_watchdog"; echo "self=$?"
 '''
         )
@@ -5897,6 +6049,7 @@ watchdog_process_present_for_volume "$self_match_watchdog"; echo "self=$?"
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("real=0", result.stdout)
+        self.assertIn("manager=0", result.stdout)
         self.assertIn("self=1", result.stdout)
 
     def test_probe_status_helpers_detect_runtime_startup_scripts(self) -> None:
@@ -5904,16 +6057,18 @@ watchdog_process_present_for_volume "$self_match_watchdog"; echo "self=$?"
             SMBD_STATUS_HELPERS
             + r'''
 rc_local="101 1 S 0:00.00 sh /bin/sh /mnt/Flash/rc.local"
-start_samba="102 1 S 0:00.00 sh /bin/sh /mnt/Flash/start-samba.sh"
-zombie_start_samba="103 1 Z 0:00.00 sh /bin/sh /mnt/Flash/start-samba.sh"
+boot="102 1 S 0:00.00 sh /bin/sh /mnt/Flash/boot.sh"
+start_samba="103 1 S 0:00.00 sh /bin/sh /mnt/Flash/start-samba.sh"
+zombie_boot="104 1 Z 0:00.00 sh /bin/sh /mnt/Flash/boot.sh"
 self_match=$(cat <<'EOF'
-3308 11745 S 0:00.01 sh /bin/sh -c probe=/mnt/Flash/start-samba.sh
+3308 11745 S 0:00.01 sh /bin/sh -c probe=/mnt/Flash/boot.sh
 11745 11677 Ss 0:00.01 sh sh -c /bin/sh -c 'probe=/mnt/Flash/rc.local'
 EOF
 )
 runtime_startup_script_present "$rc_local"; echo "rc-local=$?"
+runtime_startup_script_present "$boot"; echo "boot=$?"
 runtime_startup_script_present "$start_samba"; echo "start-samba=$?"
-runtime_startup_script_present "$zombie_start_samba"; echo "zombie=$?"
+runtime_startup_script_present "$zombie_boot"; echo "zombie=$?"
 runtime_startup_script_present "$self_match"; echo "self=$?"
 '''
         )
@@ -5922,6 +6077,7 @@ runtime_startup_script_present "$self_match"; echo "self=$?"
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("rc-local=0", result.stdout)
+        self.assertIn("boot=0", result.stdout)
         self.assertIn("start-samba=0", result.stdout)
         self.assertIn("zombie=1", result.stdout)
         self.assertIn("self=1", result.stdout)
@@ -5961,7 +6117,7 @@ runtime_startup_script_present "$self_match"; echo "self=$?"
             )
             ps_out = (
                 "101 1 S 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd -D -s /mnt/Memory/samba4/etc/smb.conf\n"
-                "202 1 S 0:00.00 sh /bin/sh /mnt/Flash/watchdog.sh\n"
+                "202 1 S 0:00.00 sh /bin/sh /mnt/Flash/manager.sh\n"
             )
             script = f"""
 RUNTIME_RAM_ROOT={shlex.quote(str(ram_root))}
@@ -5984,7 +6140,7 @@ printf 'status=%s\\n' "$?"
         self.assertIn("PASS:active smb.conf username map uses RAM username.map", result.stdout)
         self.assertIn("PASS:active smb.conf xattr_tdb:file is persistent", result.stdout)
         self.assertIn("PASS:all managed share volumes are mounted", result.stdout)
-        self.assertIn("PASS:watchdog is running for managed runtime", result.stdout)
+        self.assertIn("PASS:manager is running for managed runtime", result.stdout)
         self.assertIn("PASS:smbd bound to required TCP 445 sockets", result.stdout)
         self.assertIn("status=0", result.stdout)
 
@@ -6061,7 +6217,7 @@ fi
         self.assertIn("FAIL:active smb.conf username map is not staged in RAM", result.stdout)
         self.assertIn("FAIL:active smb.conf xattr_tdb:file is not persistent disk storage", result.stdout)
         self.assertIn("FAIL:one or more managed share volumes are not mounted", result.stdout)
-        self.assertIn("FAIL:watchdog is not running for managed runtime", result.stdout)
+        self.assertIn("FAIL:manager is not running for managed runtime", result.stdout)
         self.assertIn("status=1", result.stdout)
 
     def test_mdns_status_helper_reports_missing_binary_instead_of_network_defer(self) -> None:
@@ -6479,7 +6635,9 @@ fi
         self.assertIn("volume root: /Volumes/dk2", text)
         self.assertEqual(plan.device_path, "/dev/dk2")
         self.assertIn(f"diskd.useVolume wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s", text)
+        self.assertIn("tc_kill_manager_pids TERM", text)
         self.assertIn("tc_kill_watchdog_pids TERM", text)
+        self.assertNotIn("/usr/bin/pkill -f '[m]anager.sh'", text)
         self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", text)
         self.assertIn("/usr/bin/pkill '^mdns-advertiser$' >/dev/null 2>&1 || true", text)
         self.assertIn("/usr/bin/acp rpc diskd.useVolume path:s:/Volumes/dk2", text)
@@ -6538,6 +6696,7 @@ fi
         self.assertEqual(
             plan.activation_actions,
             [
+                StopManagerAction(),
                 StopWatchdogAction(),
                 StopProcessAction("wcifsfs"),
                 RunScriptAction("/mnt/Flash/rc.local"),
@@ -6560,12 +6719,15 @@ fi
         rendered = [render_remote_action(action) for action in plan.remote_actions]
         self.assertTrue(any(command.startswith("/usr/bin/pkill '^nbns-advertiser$' >/dev/null 2>&1 || true;") for command in rendered))
 
-    def test_build_uninstall_plan_stops_watchdog_first(self) -> None:
+    def test_build_uninstall_plan_stops_supervisors_first(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
         rendered = [render_remote_action(action) for action in plan.remote_actions]
-        self.assertTrue(rendered[0].startswith("tc_watchdog_pids() { "))
-        self.assertIn("tc_kill_watchdog_pids TERM", rendered[0])
-        self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", rendered[0])
+        self.assertTrue(rendered[0].startswith("tc_manager_pids() { "))
+        self.assertIn("tc_kill_manager_pids TERM", rendered[0])
+        self.assertTrue(rendered[1].startswith("tc_watchdog_pids() { "))
+        self.assertIn("tc_kill_watchdog_pids TERM", rendered[1])
+        self.assertNotIn("/usr/bin/pkill -f '[m]anager.sh'", rendered[0])
+        self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", rendered[1])
 
     def test_build_uninstall_plan_removes_mdns_snapshots(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
@@ -6668,6 +6830,10 @@ fi
             {"kind": "stop_watchdog", "args": []},
         )
         self.assertEqual(
+            remote_action_to_jsonable(StopManagerAction()),
+            {"kind": "stop_manager", "args": []},
+        )
+        self.assertEqual(
             remote_action_to_jsonable(EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", 30)),
             {
                 "kind": "ensure_volume_mounted",
@@ -6692,10 +6858,10 @@ fi
         plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
         expected_guard = EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
 
-        self.assertEqual(plan.pre_upload_actions[4], expected_guard)
-        self.assertEqual(plan.pre_upload_actions[6], expected_guard)
-        self.assertEqual(plan.pre_upload_actions[8], expected_guard)
-        self.assertEqual(plan.pre_upload_actions[10], expected_guard)
+        self.assertEqual(plan.pre_upload_actions[5], expected_guard)
+        self.assertEqual(plan.pre_upload_actions[7], expected_guard)
+        self.assertEqual(plan.pre_upload_actions[9], expected_guard)
+        self.assertEqual(plan.pre_upload_actions[11], expected_guard)
         self.assertEqual(plan.post_upload_actions[0], expected_guard)
 
     def test_deployment_plan_marks_uploaded_payload_binaries_executable(self) -> None:
@@ -6733,6 +6899,8 @@ fi
         self.assertTrue(process_present("wcifsnd", full=False, ps_lines=["S    wcifsnd         wcifsnd"]))
         self.assertFalse(process_present("/mnt/Flash/watchdog.sh", full=True, ps_lines=["Z    sh              /bin/sh /mnt/Flash/watchdog.sh"]))
         self.assertTrue(process_present("/mnt/Flash/watchdog.sh", full=True, ps_lines=["S    sh              /bin/sh /mnt/Flash/watchdog.sh"]))
+        self.assertFalse(process_present("/mnt/Flash/manager.sh", full=True, ps_lines=["Z    sh              /bin/sh /mnt/Flash/manager.sh"]))
+        self.assertTrue(process_present("/mnt/Flash/manager.sh", full=True, ps_lines=["S    sh              /bin/sh /mnt/Flash/manager.sh"]))
         self.assertFalse(
             process_present(
                 "/mnt/Flash/watchdog.sh",
@@ -6740,6 +6908,16 @@ fi
                 ps_lines=[
                     "S    sh              /bin/sh -c probe=/mnt/Flash/watchdog.sh",
                     "S    sh              sh -c /bin/sh -c 'probe=/mnt/Flash/watchdog.sh'",
+                ],
+            )
+        )
+        self.assertFalse(
+            process_present(
+                "/mnt/Flash/manager.sh",
+                full=True,
+                ps_lines=[
+                    "S    sh              /bin/sh -c probe=/mnt/Flash/manager.sh",
+                    "S    sh              sh -c /bin/sh -c 'probe=/mnt/Flash/manager.sh'",
                 ],
             )
         )
@@ -6782,6 +6960,15 @@ fi
         self.assertIn('if [ "${1:-}" = /bin/sh ] || [ "${1:-}" = sh ]; then', command)
         self.assertIn('/bin/kill -9 "$tc_watchdog_pid" >/dev/null 2>&1 || true', command)
         self.assertIn("echo 'process watchdog did not stop' >&2; exit 1", command)
+
+    def test_render_stop_manager_action_kills_by_full_match(self) -> None:
+        command = render_remote_action(StopManagerAction())
+        self.assertIn("tc_manager_pids() {", command)
+        self.assertIn("tc_kill_manager_pids TERM;", command)
+        self.assertIn('if [ "${1:-}" = /bin/sh ] || [ "${1:-}" = sh ]; then', command)
+        self.assertIn('/bin/kill -9 "$tc_manager_pid" >/dev/null 2>&1 || true', command)
+        self.assertIn("echo 'process manager did not stop' >&2; exit 1", command)
+        self.assertNotIn("/usr/bin/pkill -f '[m]anager.sh'", command)
 
     def test_wait_for_ssh_state_uses_real_ssh_probe_for_expected_up(self) -> None:
         proc = mock.Mock(returncode=0, stdout="ok\n")

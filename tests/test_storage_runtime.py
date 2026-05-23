@@ -44,7 +44,7 @@ from timecapsulesmb.device.storage import (
     wait_for_mast_volumes_conn,
 )
 from timecapsulesmb.transport.ssh import SshConnection
-from tests.storage_fixtures import INTERNAL_DATA, MAST_FIXTURES, SHELL_MAST_FIXTURES, MaStFixture
+from tests.storage_fixtures import EXTERNAL_BACKUP, INTERNAL_DATA, MAST_FIXTURES, SHELL_MAST_FIXTURES, MaStFixture
 
 
 class StorageRuntimeTests(unittest.TestCase):
@@ -72,6 +72,8 @@ class StorageRuntimeTests(unittest.TestCase):
         volumes.mkdir()
 
         common, start, watchdog = self.runtime_asset_texts()
+        boot = load_boot_asset_text("boot.sh")
+        manager = load_boot_asset_text("manager.sh")
         replacements = {
             "/mnt/Flash": str(flash),
             "/mnt/Memory": str(memory),
@@ -86,10 +88,18 @@ class StorageRuntimeTests(unittest.TestCase):
             replacements["/bin/hostname"] = str(hostname)
         for old, new in replacements.items():
             common = common.replace(old, new)
+            boot = boot.replace(old, new)
+            manager = manager.replace(old, new)
             start = start.replace(old, new)
             watchdog = watchdog.replace(old, new)
 
         (flash / "common.sh").write_text(common)
+        boot_path = flash / "boot.sh"
+        boot_path.write_text(boot)
+        boot_path.chmod(0o755)
+        manager_path = flash / "manager.sh"
+        manager_path.write_text(manager)
+        manager_path.chmod(0o755)
         start_path = flash / "start-samba.sh"
         start_path.write_text(start)
         start_path.chmod(0o755)
@@ -131,6 +141,34 @@ class StorageRuntimeTests(unittest.TestCase):
                         volume_root,
                         volume.name,
                         volume.adisk_uuid,
+                    )
+                )
+            )
+        return "\n".join(lines) + ("\n" if lines else "")
+
+    def expected_runtime_rows_tsv(
+        self,
+        fixture: MaStFixture,
+        volumes_root: Path,
+        *,
+        users_by_partition: dict[str, str] | None = None,
+    ) -> str:
+        users_by_partition = users_by_partition or {}
+        lines = []
+        for volume in fixture.expected:
+            volume_root = volume.volume_root.replace("/Volumes", str(volumes_root), 1)
+            builtin = "1" if volume.builtin else "0"
+            lines.append(
+                "\t".join(
+                    (
+                        volume.disk_device,
+                        builtin,
+                        volume.partition_device,
+                        volume_root,
+                        volume.name,
+                        volume.adisk_uuid,
+                        volume.format,
+                        users_by_partition.get(volume.partition_device, ""),
                     )
                 )
             )
@@ -238,6 +276,61 @@ class StorageRuntimeTests(unittest.TestCase):
             acp.write_text("#!/bin/sh\nprintf %s " + shlex.quote(raw_text) + "\n")
         acp.chmod(0o755)
         return acp
+
+    def write_sequence_acp(self, tmp_path: Path, raws: tuple[str | bytes, ...]) -> Path:
+        raw_dir = tmp_path / "acp-sequence"
+        raw_dir.mkdir()
+        count_path = tmp_path / "acp-count"
+        for index, raw in enumerate(raws, start=1):
+            raw_path = raw_dir / str(index)
+            if isinstance(raw, bytes):
+                raw_path.write_bytes(raw)
+            else:
+                raw_path.write_text(raw)
+        acp = tmp_path / "acp"
+        acp.write_text(
+            "#!/bin/sh\n"
+            f"count=$(/bin/cat {shlex.quote(str(count_path))} 2>/dev/null || echo 0)\n"
+            "count=$((count + 1))\n"
+            f"echo \"$count\" >{shlex.quote(str(count_path))}\n"
+            f"path={shlex.quote(str(raw_dir))}/$count\n"
+            f"last_path={shlex.quote(str(raw_dir))}/{len(raws)}\n"
+            "[ -f \"$path\" ] || path=$last_path\n"
+            "cat \"$path\"\n"
+        )
+        acp.chmod(0o755)
+        return count_path
+
+    def internal_mast_raw_with_volatile_fields(
+        self,
+        *,
+        users: int,
+        size_free: int = 100000,
+        size_used: int = 200000,
+        soft_disconnected: str = "false",
+    ) -> str:
+        return textwrap.dedent(
+            f"""\
+            MaSt = (
+                {{
+                    deviceName = "wd0";
+                    builtin = true;
+                    partitions = (
+                        {{
+                            deviceName = "dk2";
+                            name = "Data";
+                            format = "hfs";
+                            uuid = <f42bdb83 c2655522 a0872560 6a4d0abf>;
+                            sizeFree = {size_free};
+                            sizeUsed = {size_used};
+                            users = {users};
+                            softDisconnected = {soft_disconnected};
+                        }}
+                    );
+                }}
+            );
+            """
+        )
 
     def write_selectable_fixture_acp(self, tmp_path: Path, fixtures: tuple[MaStFixture, ...]) -> Path:
         raw_dir = tmp_path / "mast-fixtures"
@@ -1159,6 +1252,293 @@ MaSt = (
                 self.assertEqual(stdout, expected_stdout)
                 self.assertEqual(self.parse_topology_tsv(stdout, volumes), parse_mast_plist(fixture.raw))
 
+    def test_common_pure_shell_mast_runtime_parser_matches_shell_supported_fixtures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            fixture_dir = tmp_path / "runtime-parser-fixtures"
+            fixture_dir.mkdir()
+            for fixture in SHELL_MAST_FIXTURES:
+                raw_path = fixture_dir / f"{fixture.name}.raw"
+                if isinstance(fixture.raw, bytes):
+                    raw_path.write_bytes(fixture.raw)
+                else:
+                    raw_path.write_text(fixture.raw)
+            names = " ".join(shlex.quote(fixture.name) for fixture in SHELL_MAST_FIXTURES)
+            script = tmp_path / "runtime-parser-fixtures.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    for fixture_name in {names}; do
+                        raw={shlex.quote(str(fixture_dir))}/"$fixture_name.raw"
+                        rows={shlex.quote(str(tmp_path))}/"$fixture_name.rows"
+                        topology={shlex.quote(str(tmp_path))}/"$fixture_name.topology"
+                        set +e
+                        tc_mast_raw_to_runtime_rows <"$raw" >"$rows"
+                        status=$?
+                        set -e
+                        runtime_rows=$(/bin/cat "$rows")
+                        tc_mast_runtime_rows_to_topology "$runtime_rows" >"$topology"
+                        printf '__TC_BEGIN__\\t%s\\t%s\\n' "$fixture_name" "$status"
+                        printf 'runtime\\n'
+                        /bin/cat "$rows"
+                        printf 'topology\\n'
+                        /bin/cat "$topology"
+                        printf '__TC_END__\\t%s\\n' "$fixture_name"
+                    done
+                    """
+                )
+            )
+            script.chmod(0o755)
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        sections = self.parse_named_shell_sections(proc.stdout)
+        for fixture in SHELL_MAST_FIXTURES:
+            with self.subTest(fixture=fixture.name):
+                status, stdout = sections[fixture.name]
+                expected_runtime = self.expected_runtime_rows_tsv(fixture, volumes)
+                expected_topology = self.expected_topology_tsv(fixture, volumes)
+                self.assertEqual(status, 0)
+                self.assertEqual(stdout, f"runtime\n{expected_runtime}topology\n{expected_topology}")
+
+    def test_common_pure_shell_mast_runtime_parser_handles_xml_golden_path(self) -> None:
+        raw = textwrap.dedent(
+            """\
+            <array>
+                    <dict>
+                            <key>blockSize</key>
+                            <integer>512</integer>
+
+                            <key>builtin</key>
+                            <true/>
+
+                            <key>deviceName</key>
+                            <string>wd0</string>
+
+                            <key>info</key>
+                            <string>Disk 1</string>
+
+                            <key>partitions</key>
+                            <array>
+                                    <dict>
+                                            <key>deviceName</key>
+                                            <string>dk2</string>
+
+                                            <key>format</key>
+                                            <string>hfs</string>
+
+                                            <key>name</key>
+                                            <string>Data</string>
+
+                                            <key>size</key>
+                                            <integer>474891</integer>
+
+                                            <key>sizeFree</key>
+                                            <integer>474763</integer>
+
+                                            <key>sizeUsed</key>
+                                            <integer>128</integer>
+
+                                            <key>users</key>
+                                            <integer>5</integer>
+
+                                            <key>uuid</key>
+                                            <data>
+                                            9Cvbg8JlVSKghyVgak0Kvw==
+                                            </data>
+                                    </dict>
+                            </array>
+
+                            <key>product</key>
+                            <string>9QGAHX9L</string>
+
+                            <key>revision</key>
+                            <string>3.BTJ</string>
+
+                            <key>size</key>
+                            <integer>476940</integer>
+
+                            <key>smartStatus</key>
+                            <string>verified</string>
+
+                            <key>softDisconnected</key>
+                            <false/>
+
+                            <key>uuid</key>
+                            <data>
+                            cqEl/TpIVMS3S1L0bhbrVg==
+                            </data>
+
+                            <key>vendor</key>
+                            <string>ST3500630NS Q</string>
+                    </dict>
+            </array>
+            """
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            raw_path = tmp_path / "golden.xml"
+            raw_path.write_text(raw)
+            script = tmp_path / "runtime-parser-golden-xml.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    runtime_rows=$(tc_mast_raw_to_runtime_rows <{shlex.quote(str(raw_path))})
+                    printf 'runtime\\n'
+                    printf '%s\\n' "$runtime_rows"
+                    printf 'topology\\n'
+                    tc_mast_runtime_rows_to_topology "$runtime_rows"
+                    """
+                )
+            )
+            script.chmod(0o755)
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        golden_fixture = MaStFixture("xml_golden", raw, (INTERNAL_DATA,))
+        expected_runtime = self.expected_runtime_rows_tsv(golden_fixture, volumes, users_by_partition={"dk2": "5"})
+        expected_topology = self.expected_topology_tsv(golden_fixture, volumes)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, f"runtime\n{expected_runtime}topology\n{expected_topology}")
+
+    def test_common_pure_shell_mast_runtime_parser_handles_xml_edge_cases(self) -> None:
+        raw = textwrap.dedent(
+            """\
+            <array>
+              <dict>
+                <key>partitions</key>
+                <array>
+                  <dict>
+                    <key>uuid</key>
+                    <data>qqqqqru7zMzd3e7u7u7u7g==</data>
+                    <key>name</key>
+                    <string>USB Backup</string>
+                    <key>format</key>
+                    <string>HFS</string>
+                    <key>deviceName</key>
+                    <string>dk5</string>
+                  </dict>
+                  <dict>
+                    <key>deviceName</key>
+                    <string>dk1</string>
+                    <key>name</key>
+                    <string>APconfig</string>
+                    <key>format</key>
+                    <string>msdos</string>
+                    <key>uuid</key>
+                    <data>AAAAAAAAAAAAAAAAAAAAAA==</data>
+                  </dict>
+                  <dict>
+                    <key>deviceName</key>
+                    <string>rd0</string>
+                    <key>name</key>
+                    <string>Not a dk partition</string>
+                    <key>format</key>
+                    <string>hfs</string>
+                    <key>uuid</key>
+                    <data>mZmZmZmZmZmZmZmZmZmZmQ==</data>
+                  </dict>
+                  <dict>
+                    <key>deviceName</key>
+                    <string>dk6</string>
+                    <key>name</key>
+                    <string>Bad UUID</string>
+                    <key>format</key>
+                    <string>hfs</string>
+                    <key>uuid</key>
+                    <data>bad</data>
+                  </dict>
+                </array>
+                <key>deviceName</key>
+                <string>sd0</string>
+              </dict>
+            </array>
+            """
+        )
+        expected_volume = EXTERNAL_BACKUP
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            raw_path = tmp_path / "edge.xml"
+            raw_path.write_text(raw)
+            script = tmp_path / "runtime-parser-xml-edge.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    runtime_rows=$(tc_mast_raw_to_runtime_rows <{shlex.quote(str(raw_path))})
+                    printf '%s\\n' "$runtime_rows"
+                    """
+                )
+            )
+            script.chmod(0o755)
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        expected_runtime = self.expected_runtime_rows_tsv(MaStFixture("xml_edge", raw, (expected_volume,)), volumes)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, expected_runtime)
+
+    def test_common_pure_shell_mast_topology_projection_ignores_users_and_sizes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            raw_one = tmp_path / "one.raw"
+            raw_two = tmp_path / "two.raw"
+            raw_one.write_text(self.internal_mast_raw_with_volatile_fields(users=1, size_free=100000, size_used=200000))
+            raw_two.write_text(
+                self.internal_mast_raw_with_volatile_fields(
+                    users=9,
+                    size_free=90000,
+                    size_used=210000,
+                    soft_disconnected="true",
+                )
+            )
+            script = tmp_path / "runtime-parser-stable-projection.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    rows_one=$(tc_mast_raw_to_runtime_rows <{shlex.quote(str(raw_one))})
+                    rows_two=$(tc_mast_raw_to_runtime_rows <{shlex.quote(str(raw_two))})
+                    tc_mast_runtime_rows_to_topology "$rows_one" >{shlex.quote(str(tmp_path / "one.topology"))}
+                    tc_mast_runtime_rows_to_topology "$rows_two" >{shlex.quote(str(tmp_path / "two.topology"))}
+                    if cmp -s {shlex.quote(str(tmp_path / "one.topology"))} {shlex.quote(str(tmp_path / "two.topology"))}; then
+                        echo same
+                    else
+                        echo changed
+                    fi
+                    printf 'rows_one\\n%s\\n' "$rows_one"
+                    printf 'rows_two\\n%s\\n' "$rows_two"
+                    """
+                )
+            )
+            script.chmod(0o755)
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("same\n", proc.stdout)
+        self.assertIn("\thfs\t1\n", proc.stdout)
+        self.assertIn("\thfs\t9\n", proc.stdout)
+
     def test_start_samba_signature_mode_handles_mast_without_final_newline(self) -> None:
         raw = textwrap.dedent(
             """\
@@ -1445,6 +1825,1832 @@ MaSt = (
             proc.stdout,
             "cleanup\ntune\nlocks\nlegacy\nbind\nrefresh-fail\nsleep 5\nrefresh-ready\nidentity\nwatchdog\n",
         )
+
+    def test_boot_script_only_runs_one_time_boot_preparation_and_starts_manager(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        """\
+
+                        tc_cleanup_old_runtime() { echo cleanup; return 0; }
+                        tc_tune_kernel_memory() { echo tune; }
+                        tc_prepare_locks_ramdisk() { echo locks; return 0; }
+                        tc_prepare_ram_root() { echo ram; }
+                        tc_prepare_legacy_prefix() { echo legacy; }
+                        runtime_manager_present() { return 1; }
+                        tc_prepare_smb_bind_context() { echo unexpected-bind; return 1; }
+                        tc_refresh_disk_state() { echo unexpected-disk; return 1; }
+                        tc_stage_disk_runtime() { echo unexpected-stage; return 1; }
+                        tc_start_smbd() { echo unexpected-smbd; return 1; }
+                        tc_start_watchdog() { echo unexpected-watchdog; return 1; }
+                        """
+                    )
+                )
+            (flash / "manager.sh").write_text("#!/bin/sh\nexit 0\n")
+            (flash / "manager.sh").chmod(0o755)
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "boot.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            log_text = (_memory / "samba4/var/rc.local.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "cleanup\ntune\nlocks\nram\nlegacy\n")
+        self.assertIn("starting manager", log_text)
+        self.assertIn("manager launched as pid", log_text)
+
+    def test_manager_log_uses_second_timestamps_and_byte_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
+            self.write_fake_acp(tmp_path, fixture.raw)
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        """\
+
+                        tc_prepare_ram_root() { mkdir -p "$RAM_VAR"; }
+                        tc_prepare_local_hostname_resolution() { :; }
+                        tc_watchdog_reset_pass_state() {
+                            i=0
+                            payload='abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz'
+                            while [ "$i" -lt 220 ]; do
+                                tc_log "heavy manager log line $i $payload $payload $payload $payload $payload $payload $payload $payload"
+                                i=$((i + 1))
+                            done
+                        }
+                        tc_init_runtime_identity() {
+                            MDNS_INSTANCE_NAME=AirPort
+                            MDNS_HOST_LABEL=airport
+                            SMB_NETBIOS_NAME=AIRPORT
+                            SMB_SERVER_STRING=AirPort
+                        }
+                        tc_watchdog_stop_samba_lane_without_payload() { :; }
+                        runtime_process_present_by_ucomm() {
+                            case "$1" in
+                                mdns-advertiser) return 0 ;;
+                                *) return 1 ;;
+                            esac
+                        }
+                        stop_runtime_process_by_ucomm() { :; }
+                        tc_mdns_bound_udp_5353() { return 0; }
+                        sleep() {
+                            if [ "$1" = "1" ]; then
+                                return 0
+                            fi
+                            exit 0
+                        }
+                        """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            log_path = memory / "samba4/var/manager.log"
+            log_text = log_path.read_text()
+            log_size = log_path.stat().st_size
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertGreater(log_size, 32768)
+        self.assertLessEqual(log_size, 102400)
+        self.assertRegex(log_text, r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} manager: ")
+        self.assertNotIn(".000 manager:", log_text)
+        self.assertIn("manager sleeping 10s after ok pass", log_text)
+
+    def test_manager_mast_refresh_retries_transient_failures_until_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
+            acp_count = tmp_path / "manager-acp-count"
+            acp = tmp_path / "acp"
+            acp.write_text(
+                "#!/bin/sh\n"
+                f"count=$(/bin/cat {shlex.quote(str(acp_count))} 2>/dev/null || echo 0)\n"
+                "count=$((count + 1))\n"
+                f"echo \"$count\" >{shlex.quote(str(acp_count))}\n"
+                "if [ \"$count\" -eq 1 ]; then\n"
+                "    exit 1\n"
+                "fi\n"
+                "cat <<'OUT'\n"
+                + fixture.raw
+                + "\nOUT\n"
+            )
+            acp.chmod(0o755)
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        """\
+
+                    tc_prepare_ram_root() { :; }
+                    tc_prepare_local_hostname_resolution() { :; }
+                    tc_init_runtime_identity() {
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                    }
+                    tc_watchdog_stop_samba_lane_without_payload() { :; }
+                    runtime_process_present_by_ucomm() {
+                        case "$1" in
+                            mdns-advertiser) return 0 ;;
+                            *) return 1 ;;
+                        esac
+                    }
+                    stop_runtime_process_by_ucomm() { :; }
+                    tc_mdns_bound_udp_5353() { return 0; }
+                    sleep() {
+                        if [ "$1" = "1" ]; then
+                            return 0
+                        fi
+                        if [ "$1" = "5" ]; then
+                            echo "sleep $1"
+                            return 0
+                        fi
+                        echo "status=$manager_status"
+                        exit 0
+                    }
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            acp_count_text = acp_count.read_text().strip()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "status=0\n")
+        self.assertEqual(acp_count_text, "2")
+
+    def test_manager_mast_refresh_does_not_retry_zero_disk_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
+            acp_count = tmp_path / "manager-acp-count"
+            acp = tmp_path / "acp"
+            acp.write_text(
+                "#!/bin/sh\n"
+                f"count=$(/bin/cat {shlex.quote(str(acp_count))} 2>/dev/null || echo 0)\n"
+                "count=$((count + 1))\n"
+                f"echo \"$count\" >{shlex.quote(str(acp_count))}\n"
+                "cat <<'OUT'\n"
+                + fixture.raw
+                + "\nOUT\n"
+            )
+            acp.chmod(0o755)
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        """\
+
+                    tc_prepare_ram_root() { :; }
+                    tc_prepare_local_hostname_resolution() { :; }
+                    tc_init_runtime_identity() {
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                    }
+                    tc_watchdog_stop_samba_lane_without_payload() { :; }
+                    runtime_process_present_by_ucomm() {
+                        case "$1" in
+                            mdns-advertiser) return 0 ;;
+                            *) return 1 ;;
+                        esac
+                    }
+                    stop_runtime_process_by_ucomm() { :; }
+                    tc_mdns_bound_udp_5353() { return 0; }
+                    sleep() {
+                        if [ "$1" = "1" ]; then
+                            return 0
+                        fi
+                        if [ "$1" = "5" ]; then
+                            echo "unexpected sleep $1"
+                            return 0
+                        fi
+                        echo "status=$manager_status"
+                        exit 0
+                    }
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            acp_count_text = acp_count.read_text().strip()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "status=0\n")
+        self.assertEqual(acp_count_text, "1")
+
+    def test_manager_identity_reconcile_seeds_signature_on_first_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
+            self.write_fake_acp(tmp_path, fixture.raw)
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        """\
+
+                    tc_log() { :; }
+                    tc_prepare_local_hostname_resolution() { echo prepare; }
+                    tc_init_runtime_identity() {
+                        echo init
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                        TC_RUNTIME_IDENTITY_READY=1
+                    }
+                    runtime_process_present_by_ucomm() {
+                        case "$1" in
+                            mdns-advertiser) return 0 ;;
+                            *) echo unexpected-runtime; return 1 ;;
+                        esac
+                    }
+                    stop_runtime_process_by_ucomm() { :; }
+                    tc_mdns_bound_udp_5353() { return 0; }
+                    tc_nbns_enabled() { return 0; }
+                    TC_WATCHDOG_IDENTITY_SIGNATURE_READY=0
+                    TC_WATCHDOG_LAST_IDENTITY_SIGNATURE=
+                    tc_watchdog_stop_samba_lane_without_payload() { :; }
+                    sleep() {
+                        if [ "$1" = "1" ]; then
+                            return 0
+                        fi
+                        echo "changed=$TC_MANAGER_IDENTITY_CHANGED"
+                        echo "ready=$TC_WATCHDOG_IDENTITY_SIGNATURE_READY"
+                        exit 0
+                    }
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "prepare\ninit\nchanged=0\nready=1\n")
+
+    def test_manager_iteration_reconciles_no_payload_without_samba_or_nbns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
+            acp_count = tmp_path / "manager-acp-count"
+            acp = tmp_path / "acp"
+            acp.write_text(
+                "#!/bin/sh\n"
+                f"count=$(/bin/cat {shlex.quote(str(acp_count))} 2>/dev/null || echo 0)\n"
+                "count=$((count + 1))\n"
+                f"echo \"$count\" >{shlex.quote(str(acp_count))}\n"
+                "cat <<'OUT'\n"
+                + fixture.raw
+                + "\nOUT\n"
+            )
+            acp.chmod(0o755)
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        """\
+
+                    tc_log() { :; }
+                    tc_now_seconds() { echo 1000; }
+                    tc_watchdog_reset_pass_state() { echo reset; }
+                    tc_prepare_local_hostname_resolution() { :; }
+                    tc_init_runtime_identity() {
+                        echo identity
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                    }
+                    tc_stage_runtime() { echo unexpected-stage; return 1; }
+                    tc_watchdog_stop_samba_lane_without_payload() { echo no_payload; }
+                    runtime_process_present_by_ucomm() {
+                        case "$1" in
+                            mdns-advertiser) return 0 ;;
+                            *) return 1 ;;
+                        esac
+                    }
+                    stop_runtime_process_by_ucomm() { :; }
+                    tc_mdns_bound_udp_5353() { return 0; }
+                    tc_watchdog_reconcile_nbns() { echo unexpected-nbns; return 1; }
+                    sleep() {
+                        if [ "$1" = "1" ]; then
+                            return 0
+                        fi
+                        echo "status=$manager_status"
+                        exit 0
+                    }
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            acp_count_text = acp_count.read_text().strip()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "reset\nidentity\nno_payload\nstatus=0\n")
+        self.assertEqual(acp_count_text, "1")
+
+    def test_manager_scheduler_runs_bind_only_between_service_ticks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            acp_count = self.write_sequence_acp(
+                tmp_path,
+                (
+                    self.internal_mast_raw_with_volatile_fields(users=1),
+                    self.internal_mast_raw_with_volatile_fields(users=1),
+                ),
+            )
+            events = tmp_path / "events"
+            sleep_count = tmp_path / "sleep-count"
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                    tc_prepare_ram_root() {{ mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE" "$RAM_VAR"; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        echo identity >>{shlex.quote(str(events))}
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                        TC_RUNTIME_IDENTITY_READY=1
+                    }}
+                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_wake_or_mount_volume() {{ return 0; }}
+                    is_volume_root_mounted() {{ return 0; }}
+                    tc_verify_payload_dir() {{ return 0; }}
+                    tc_volume_is_writable() {{ return 0; }}
+                    tc_prepare_share_path() {{ echo "$2/ShareRoot"; }}
+                    tc_apply_ata_drive_setting() {{ :; }}
+                    tc_payload_log_dir_ready() {{ return 0; }}
+                    tc_find_payload_smbd() {{ echo "$1/smbd"; }}
+                    tc_stage_runtime() {{
+                        echo stage >>{shlex.quote(str(events))}
+                        mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE"
+                        printf '#!/bin/sh\\nexit 0\\n' >"$TC_SMBD_BIN"
+                        chmod 755 "$TC_SMBD_BIN"
+                        return 0
+                    }}
+                    tc_refresh_smb_bind_interfaces() {{
+                        echo refresh-bind >>{shlex.quote(str(events))}
+                        TC_SMB_BIND_INTERFACES="127.0.0.1/8"
+                        return 0
+                    }}
+                    tc_probe_smb_bind_interfaces() {{
+                        echo bind-probe >>{shlex.quote(str(events))}
+                        echo "127.0.0.1/8"
+                    }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            smbd) echo smbd-process >>{shlex.quote(str(events))}; return 0 ;;
+                            mdns-advertiser) echo mdns-process >>{shlex.quote(str(events))}; return 0 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_smbd_bound_tcp_445() {{ return 0; }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    stop_runtime_process_by_ucomm() {{ :; }}
+                    sleep() {{
+                        case "$1" in
+                            1|5) return 0 ;;
+                            10)
+                                count=$(/bin/cat {shlex.quote(str(sleep_count))} 2>/dev/null || echo 0)
+                                count=$((count + 1))
+                                echo "$count" >{shlex.quote(str(sleep_count))}
+                                if [ "$count" -eq 1 ]; then
+                                    return 0
+                                fi
+                                echo "status=$manager_status"
+                                exit 0
+                                ;;
+                        esac
+                        return 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            events_text = events.read_text()
+            log_text = (memory / "samba4/var/manager.log").read_text()
+            acp_count_text = acp_count.read_text().strip()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=0\n", proc.stdout)
+        self.assertEqual(acp_count_text, "2")
+        self.assertEqual(events_text.count("identity\n"), 1, events_text)
+        self.assertEqual(events_text.count("stage\n"), 1, events_text)
+        self.assertEqual(events_text.count("mdns-process\n"), 1, events_text)
+        self.assertEqual(events_text.count("bind-probe\n"), 2, events_text)
+        self.assertIn("manager pass 2 step=samba_bind start", log_text)
+        self.assertIn("scheduler=bind_only", log_text)
+
+    def test_manager_scheduler_runs_full_services_immediately_after_disk_change(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            initial_raw = self.internal_mast_raw_with_volatile_fields(users=1)
+            renamed_raw = initial_raw.replace('name = "Data";', 'name = "Data Two";')
+            acp_count = self.write_sequence_acp(tmp_path, (initial_raw, renamed_raw, renamed_raw))
+            events = tmp_path / "events"
+            sleep_count = tmp_path / "sleep-count"
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                    tc_prepare_ram_root() {{ mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE" "$RAM_VAR"; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        echo identity >>{shlex.quote(str(events))}
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                        TC_RUNTIME_IDENTITY_READY=1
+                    }}
+                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_wake_or_mount_volume() {{ return 0; }}
+                    is_volume_root_mounted() {{ return 0; }}
+                    tc_verify_payload_dir() {{ return 0; }}
+                    tc_volume_is_writable() {{ return 0; }}
+                    tc_prepare_share_path() {{ echo "$2/ShareRoot"; }}
+                    tc_apply_ata_drive_setting() {{ :; }}
+                    tc_payload_log_dir_ready() {{ return 0; }}
+                    tc_find_payload_smbd() {{ echo "$1/smbd"; }}
+                    tc_stage_runtime() {{
+                        echo stage >>{shlex.quote(str(events))}
+                        mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE"
+                        printf '#!/bin/sh\\nexit 0\\n' >"$TC_SMBD_BIN"
+                        chmod 755 "$TC_SMBD_BIN"
+                        return 0
+                    }}
+                    tc_refresh_smb_bind_interfaces() {{
+                        TC_SMB_BIND_INTERFACES="127.0.0.1/8"
+                        return 0
+                    }}
+                    tc_probe_smb_bind_interfaces() {{
+                        echo bind-probe >>{shlex.quote(str(events))}
+                        echo "127.0.0.1/8"
+                    }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            smbd) return 0 ;;
+                            mdns-advertiser) echo mdns-process >>{shlex.quote(str(events))}; return 0 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_smbd_bound_tcp_445() {{ return 0; }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    stop_runtime_process_by_ucomm() {{ :; }}
+                    sleep() {{
+                        case "$1" in
+                            1) return 0 ;;
+                            5) echo debounce; return 0 ;;
+                            10)
+                                count=$(/bin/cat {shlex.quote(str(sleep_count))} 2>/dev/null || echo 0)
+                                count=$((count + 1))
+                                echo "$count" >{shlex.quote(str(sleep_count))}
+                                if [ "$count" -eq 1 ]; then
+                                    return 0
+                                fi
+                                echo "status=$manager_status"
+                                exit 0
+                                ;;
+                        esac
+                        return 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            events_text = events.read_text()
+            log_text = (memory / "samba4/var/manager.log").read_text()
+            acp_count_text = acp_count.read_text().strip()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=0\n", proc.stdout)
+        self.assertIn("debounce\n", proc.stdout)
+        self.assertEqual(acp_count_text, "3")
+        self.assertEqual(events_text.count("identity\n"), 2, events_text)
+        self.assertEqual(events_text.count("mdns-process\n"), 2, events_text)
+        self.assertEqual(events_text.count("bind-probe\n"), 2, events_text)
+        self.assertIn("manager pass 2 step=identity start", log_text)
+        self.assertIn("manager pass 2 step=samba start", log_text)
+        self.assertIn("disk_probe=change_confirmed", log_text)
+
+    def test_manager_mdns_captures_with_one_retry_when_apple_responder_is_alive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
+            self.write_fake_acp(tmp_path, fixture.raw)
+            capture_count = tmp_path / "capture-count"
+            launched = tmp_path / "mdns-launched"
+            events = tmp_path / "mdns-events"
+            (flash / "mdns-advertiser").write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
+                "case \"$1\" in\n"
+                "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
+                "  --save-all-snapshot)\n"
+                f"    count=$(/bin/cat {shlex.quote(str(capture_count))} 2>/dev/null || echo 0)\n"
+                "    count=$((count + 1))\n"
+                f"    echo \"$count\" >{shlex.quote(str(capture_count))}\n"
+                "    if [ \"$count\" -eq 1 ]; then exit 12; fi\n"
+                "    while [ \"$#\" -gt 0 ]; do\n"
+                "      case \"$1\" in --save-snapshot) shift; echo captured >\"$1\" ;; esac\n"
+                "      shift\n"
+                "    done\n"
+                "    exit 0 ;;\n"
+                "  --snapshot-newer-than-boot) echo unexpected-freshness; exit 14 ;;\n"
+                "  --save-airport-snapshot) echo unexpected-generation; exit 9 ;;\n"
+                "  --load-snapshot) "
+                f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
+                "esac\n"
+                "exit 0\n"
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                    tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
+                    tc_watchdog_reset_pass_state() {{ :; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                    }}
+                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_prepare_mdns_identity() {{
+                        TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
+                        AIRPORT_INSTANCE_NAME=AirPort
+                        AIRPORT_HOST_LABEL=airport
+                        AIRPORT_WAMA=80:EA:96:E6:58:68
+                        AIRPORT_RAMA=
+                        AIRPORT_RAM2=
+                        AIRPORT_RAST=
+                        AIRPORT_RANA=
+                        AIRPORT_SYFL=
+                        AIRPORT_SYAP=
+                        AIRPORT_SYVS=
+                        AIRPORT_SRCV=
+                        AIRPORT_BJSD=
+                        return 0
+                    }}
+                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            mDNSResponder) return 0 ;;
+                            mdns-advertiser) [ -f {shlex.quote(str(launched))} ] ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    sleep() {{
+                        case "$1" in
+                            1) return 0 ;;
+                            3) echo "settle $1"; return 0 ;;
+                            10) echo "status=$manager_status"; exit 0 ;;
+                        esac
+                        return 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            log_text = (memory / "samba4/var/manager.log").read_text()
+            events_text = events.read_text()
+            capture_count_text = capture_count.read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("settle 3\n", proc.stdout)
+        self.assertIn("status=0\n", proc.stdout)
+        self.assertEqual(capture_count_text.strip(), "2")
+        self.assertEqual(events_text.count("--save-all-snapshot"), 2, events_text)
+        self.assertNotIn("--skip-capture-if-snapshot-newer-than-boot", events_text)
+        self.assertNotIn("--snapshot-newer-than-boot", events_text)
+        self.assertNotIn("--save-airport-snapshot", events_text)
+        self.assertIn("manager mDNS snapshot: capture failed; retrying once", log_text)
+
+    def test_manager_mdns_healthy_advertiser_does_not_probe_or_relaunch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
+            self.write_fake_acp(tmp_path, fixture.raw)
+            events = tmp_path / "mdns-events"
+            (flash / "mdns-advertiser").write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
+                "exit 0\n"
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        """\
+
+                    tc_prepare_ram_root() { mkdir -p "$RAM_VAR"; }
+                    tc_watchdog_reset_pass_state() { :; }
+                    tc_prepare_local_hostname_resolution() { :; }
+                    tc_init_runtime_identity() {
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                    }
+                    tc_watchdog_stop_samba_lane_without_payload() { :; }
+                    runtime_process_present_by_ucomm() {
+                        case "$1" in
+                            mdns-advertiser) return 0 ;;
+                            *) return 1 ;;
+                        esac
+                    }
+                    stop_runtime_process_by_ucomm() { :; }
+                    tc_mdns_bound_udp_5353() { return 0; }
+                    sleep() {
+                        case "$1" in
+                            1) return 0 ;;
+                            10) echo "status=$manager_status"; exit 0 ;;
+                        esac
+                        return 0
+                    }
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            events_exists = events.exists()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=0\n", proc.stdout)
+        self.assertFalse(events_exists)
+
+    def test_manager_mdns_defers_when_auto_ip_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
+            self.write_fake_acp(tmp_path, fixture.raw)
+            events = tmp_path / "mdns-events"
+            (flash / "mdns-advertiser").write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
+                "case \"$1\" in\n"
+                "  --print-mdns-socket-families) exit 11 ;;\n"
+                "  *) echo unexpected-mdns-command; exit 9 ;;\n"
+                "esac\n"
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        """\
+
+                    tc_prepare_ram_root() { mkdir -p "$RAM_VAR"; }
+                    tc_watchdog_reset_pass_state() { :; }
+                    tc_prepare_local_hostname_resolution() { :; }
+                    tc_init_runtime_identity() {
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                    }
+                    tc_watchdog_refresh_runtime_identity_for_recovery() { :; }
+                    tc_watchdog_stop_samba_lane_without_payload() { :; }
+                    runtime_process_present_by_ucomm() { return 1; }
+                    tc_mdns_bound_udp_5353() { return 1; }
+                    sleep() {
+                        case "$1" in
+                            1) return 0 ;;
+                            3) echo unexpected-settle; return 0 ;;
+                            10) echo "status=$manager_status deferred=$TC_WATCHDOG_MDNS_DEFERRED_NO_IP"; exit 0 ;;
+                        esac
+                        return 0
+                    }
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            events_text = events.read_text()
+            log_text = (memory / "samba4/var/manager.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=0 deferred=1\n", proc.stdout)
+        self.assertNotIn("unexpected-settle", proc.stdout)
+        self.assertEqual(events_text, "--print-mdns-socket-families\n")
+        self.assertIn("mDNS startup deferred; no usable address has appeared yet", log_text)
+
+    def test_manager_mdns_uses_first_successful_capture_without_retry_or_freshness_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
+            self.write_fake_acp(tmp_path, fixture.raw)
+            capture_count = tmp_path / "capture-count"
+            launched = tmp_path / "mdns-launched"
+            events = tmp_path / "mdns-events"
+            (flash / "mdns-advertiser").write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
+                "case \"$1\" in\n"
+                "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
+                "  --save-all-snapshot)\n"
+                f"    echo 1 >{shlex.quote(str(capture_count))}\n"
+                "    while [ \"$#\" -gt 0 ]; do\n"
+                "      case \"$1\" in --save-snapshot) shift; echo captured >\"$1\" ;; esac\n"
+                "      shift\n"
+                "    done\n"
+                "    exit 0 ;;\n"
+                "  --snapshot-newer-than-boot) echo unexpected-freshness; exit 14 ;;\n"
+                "  --save-airport-snapshot) echo unexpected-generation; exit 9 ;;\n"
+                "  --load-snapshot) "
+                f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
+                "esac\n"
+                "exit 0\n"
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                    tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
+                    tc_watchdog_reset_pass_state() {{ :; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                    }}
+                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_prepare_mdns_identity() {{
+                        TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
+                        AIRPORT_INSTANCE_NAME=AirPort
+                        AIRPORT_HOST_LABEL=airport
+                        AIRPORT_WAMA=80:EA:96:E6:58:68
+                        AIRPORT_RAMA=
+                        AIRPORT_RAM2=
+                        AIRPORT_RAST=
+                        AIRPORT_RANA=
+                        AIRPORT_SYFL=
+                        AIRPORT_SYAP=
+                        AIRPORT_SYVS=
+                        AIRPORT_SRCV=
+                        AIRPORT_BJSD=
+                        return 0
+                    }}
+                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            mDNSResponder) return 0 ;;
+                            mdns-advertiser) [ -f {shlex.quote(str(launched))} ] ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    sleep() {{
+                        case "$1" in
+                            1) return 0 ;;
+                            3) echo "settle $1"; return 0 ;;
+                            10) echo "status=$manager_status"; exit 0 ;;
+                        esac
+                        return 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            events_text = events.read_text()
+            capture_count_text = capture_count.read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("settle 3\n", proc.stdout)
+        self.assertIn("status=0\n", proc.stdout)
+        self.assertEqual(capture_count_text.strip(), "1")
+        self.assertEqual(events_text.count("--save-all-snapshot"), 1, events_text)
+        self.assertNotIn("--snapshot-newer-than-boot", events_text)
+        self.assertNotIn("--save-airport-snapshot", events_text)
+
+    def test_manager_mdns_reuses_fresh_snapshot_after_capture_attempts_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
+            self.write_fake_acp(tmp_path, fixture.raw)
+            capture_count = tmp_path / "capture-count"
+            launched = tmp_path / "mdns-launched"
+            events = tmp_path / "mdns-events"
+            (flash / "mdns-advertiser").write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
+                "case \"$1\" in\n"
+                "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
+                "  --save-all-snapshot)\n"
+                f"    count=$(/bin/cat {shlex.quote(str(capture_count))} 2>/dev/null || echo 0)\n"
+                "    count=$((count + 1))\n"
+                f"    echo \"$count\" >{shlex.quote(str(capture_count))}\n"
+                "    exit 12 ;;\n"
+                "  --snapshot-newer-than-boot) exit 0 ;;\n"
+                "  --save-airport-snapshot) echo unexpected-generation; exit 9 ;;\n"
+                "  --load-snapshot) "
+                f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
+                "esac\n"
+                "exit 0\n"
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                    tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
+                    tc_watchdog_reset_pass_state() {{ :; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                    }}
+                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_prepare_mdns_identity() {{
+                        TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
+                        AIRPORT_INSTANCE_NAME=AirPort
+                        AIRPORT_HOST_LABEL=airport
+                        AIRPORT_WAMA=80:EA:96:E6:58:68
+                        AIRPORT_RAMA=
+                        AIRPORT_RAM2=
+                        AIRPORT_RAST=
+                        AIRPORT_RANA=
+                        AIRPORT_SYFL=
+                        AIRPORT_SYAP=
+                        AIRPORT_SYVS=
+                        AIRPORT_SRCV=
+                        AIRPORT_BJSD=
+                        return 0
+                    }}
+                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            mDNSResponder) return 0 ;;
+                            mdns-advertiser) [ -f {shlex.quote(str(launched))} ] ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    sleep() {{
+                        case "$1" in
+                            1) return 0 ;;
+                            3) echo "settle $1"; return 0 ;;
+                            10) echo "status=$manager_status"; exit 0 ;;
+                        esac
+                        return 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            events_text = events.read_text()
+            capture_count_text = capture_count.read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("settle 3\n", proc.stdout)
+        self.assertIn("status=0\n", proc.stdout)
+        self.assertEqual(capture_count_text.strip(), "2")
+        self.assertEqual(events_text.count("--save-all-snapshot"), 2, events_text)
+        self.assertIn("--snapshot-newer-than-boot", events_text)
+        self.assertNotIn("--save-airport-snapshot", events_text)
+        self.assertIn("--load-snapshot", events_text)
+
+    def test_manager_mdns_reuses_fresh_snapshot_when_apple_responder_is_dead(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
+            self.write_fake_acp(tmp_path, fixture.raw)
+            events = tmp_path / "mdns-events"
+            launched = tmp_path / "mdns-launched"
+            (flash / "mdns-advertiser").write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
+                "case \"$1\" in\n"
+                "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
+                "  --snapshot-newer-than-boot) exit 0 ;;\n"
+                "  --save-all-snapshot) echo unexpected-capture; exit 9 ;;\n"
+                "  --save-airport-snapshot) echo unexpected-generation; exit 9 ;;\n"
+                "  --load-snapshot) "
+                f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
+                "esac\n"
+                "exit 0\n"
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                    tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
+                    tc_watchdog_reset_pass_state() {{ :; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                    }}
+                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_prepare_mdns_identity() {{
+                        TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
+                        AIRPORT_INSTANCE_NAME=AirPort
+                        AIRPORT_HOST_LABEL=airport
+                        AIRPORT_WAMA=80:EA:96:E6:58:68
+                        AIRPORT_RAMA=
+                        AIRPORT_RAM2=
+                        AIRPORT_RAST=
+                        AIRPORT_RANA=
+                        AIRPORT_SYFL=
+                        AIRPORT_SYAP=
+                        AIRPORT_SYVS=
+                        AIRPORT_SRCV=
+                        AIRPORT_BJSD=
+                        return 0
+                    }}
+                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            mdns-advertiser) [ -f {shlex.quote(str(launched))} ] ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    sleep() {{
+                        case "$1" in
+                            1) return 0 ;;
+                            3) echo unexpected-settle; return 0 ;;
+                            10) echo "status=$manager_status"; exit 0 ;;
+                        esac
+                        return 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            events_text = events.read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=0\n", proc.stdout)
+        self.assertNotIn("unexpected-settle", proc.stdout)
+        self.assertIn("--snapshot-newer-than-boot", events_text)
+        self.assertNotIn("--save-all-snapshot", events_text)
+        self.assertNotIn("--save-airport-snapshot", events_text)
+        self.assertIn("--load-snapshot", events_text)
+
+    def test_manager_mdns_generates_fallback_when_snapshot_is_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
+            self.write_fake_acp(tmp_path, fixture.raw)
+            events = tmp_path / "mdns-events"
+            launched = tmp_path / "mdns-launched"
+            (flash / "mdns-advertiser").write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$*\" >>{shlex.quote(str(events))}\n"
+                "case \"$1\" in\n"
+                "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
+                "  --snapshot-newer-than-boot) exit 14 ;;\n"
+                "  --save-airport-snapshot) shift; echo generated >\"$1\"; exit 0 ;;\n"
+                "  --save-all-snapshot) echo unexpected-capture; exit 9 ;;\n"
+                "  --load-snapshot) "
+                f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
+                "esac\n"
+                "exit 0\n"
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                    tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
+                    tc_watchdog_reset_pass_state() {{ :; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                    }}
+                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_prepare_mdns_identity() {{
+                        TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
+                        AIRPORT_INSTANCE_NAME=AirPort
+                        AIRPORT_HOST_LABEL=airport
+                        AIRPORT_WAMA=80:EA:96:E6:58:68
+                        AIRPORT_RAMA=
+                        AIRPORT_RAM2=
+                        AIRPORT_RAST=
+                        AIRPORT_RANA=
+                        AIRPORT_SYFL=
+                        AIRPORT_SYAP=
+                        AIRPORT_SYVS=
+                        AIRPORT_SRCV=
+                        AIRPORT_BJSD=
+                        return 0
+                    }}
+                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            mdns-advertiser) [ -f {shlex.quote(str(launched))} ] ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    sleep() {{
+                        case "$1" in
+                            1) return 0 ;;
+                            10) echo "status=$manager_status"; exit 0 ;;
+                        esac
+                        return 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            events_text = events.read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=0\n", proc.stdout)
+        self.assertIn("--snapshot-newer-than-boot", events_text)
+        self.assertIn("--save-airport-snapshot", events_text)
+        self.assertNotIn("--save-all-snapshot", events_text)
+        self.assertIn("--load-snapshot", events_text)
+
+    def test_manager_diskless_state_resets_advertiser_logs_to_ram(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
+            self.write_fake_acp(tmp_path, fixture.raw)
+            old_payload_logs = tmp_path / "old-payload/logs"
+            launched = tmp_path / "mdns-launched"
+            (flash / "mdns-advertiser").write_text(
+                "#!/bin/sh\n"
+                "case \"$1\" in\n"
+                "  --print-mdns-socket-families) echo ipv4; exit 0 ;;\n"
+                "  --snapshot-newer-than-boot) exit 14 ;;\n"
+                "  --save-airport-snapshot) shift; echo generated >\"$1\"; exit 0 ;;\n"
+                "  --load-snapshot) "
+                f"touch {shlex.quote(str(launched))}; exit 0 ;;\n"
+                "esac\n"
+                "exit 0\n"
+            )
+            (flash / "mdns-advertiser").chmod(0o755)
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                    tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
+                    tc_watchdog_reset_pass_state() {{
+                        tc_set_payload_log_dir {shlex.quote(str(old_payload_logs.parent))} {shlex.quote(str(old_payload_logs.parent))}
+                    }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                    }}
+                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_prepare_mdns_identity() {{
+                        TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
+                        AIRPORT_INSTANCE_NAME=AirPort
+                        AIRPORT_HOST_LABEL=airport
+                        AIRPORT_WAMA=80:EA:96:E6:58:68
+                        AIRPORT_RAMA=
+                        AIRPORT_RAM2=
+                        AIRPORT_RAST=
+                        AIRPORT_RANA=
+                        AIRPORT_SYFL=
+                        AIRPORT_SYAP=
+                        AIRPORT_SYVS=
+                        AIRPORT_SRCV=
+                        AIRPORT_BJSD=
+                        return 0
+                    }}
+                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            mdns-advertiser) [ -f {shlex.quote(str(launched))} ] ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    sleep() {{
+                        case "$1" in
+                            1) return 0 ;;
+                            10) echo "status=$manager_status"; exit 0 ;;
+                        esac
+                        return 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            ram_mdns_log_exists = (memory / "samba4/var/mdns.log").exists()
+            old_payload_mdns_log_exists = (old_payload_logs / "mdns.log").exists()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=0\n", proc.stdout)
+        self.assertTrue(ram_mdns_log_exists)
+        self.assertFalse(old_payload_mdns_log_exists)
+
+    def test_manager_ignores_volatile_mast_fields_when_comparing_topology(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            acp_count = self.write_sequence_acp(
+                tmp_path,
+                (
+                    self.internal_mast_raw_with_volatile_fields(users=1, size_free=100000, size_used=200000),
+                    self.internal_mast_raw_with_volatile_fields(users=2, size_free=90000, size_used=210000, soft_disconnected="true"),
+                ),
+            )
+            outer_sleep_count = tmp_path / "outer-sleep-count"
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                    tc_prepare_ram_root() {{ mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE" "$RAM_VAR"; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                    }}
+                    tc_wake_or_mount_volume() {{ echo "disk-mount $1 $2"; return 0; }}
+                    tc_watchdog_wake_or_mount_volume() {{ echo "unexpected-watchdog-mount $1 $2"; return 1; }}
+                    is_volume_root_mounted() {{ return 0; }}
+                    tc_verify_payload_dir() {{ return 0; }}
+                    tc_volume_is_writable() {{ return 0; }}
+                    tc_prepare_share_path() {{ echo "$2/ShareRoot"; }}
+                    tc_apply_ata_drive_setting() {{ :; }}
+                    tc_payload_log_dir_ready() {{ return 0; }}
+                    tc_find_payload_smbd() {{ echo "$1/smbd"; }}
+                    tc_stage_runtime() {{
+                        echo stage-runtime
+                        mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE"
+                        printf '#!/bin/sh\\nexit 0\\n' >"$TC_SMBD_BIN"
+                        chmod 755 "$TC_SMBD_BIN"
+                        return 0
+                    }}
+                    tc_probe_smb_bind_interfaces() {{ echo "127.0.0.1/8"; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            smbd|mdns-advertiser) return 0 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_smbd_bound_tcp_445() {{ return 0; }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    stop_runtime_process_by_ucomm() {{ :; }}
+                    sleep() {{
+                        case "$1" in
+                            1) return 0 ;;
+                            5) echo "unexpected-debounce"; return 0 ;;
+                            10)
+                                count=$(/bin/cat {shlex.quote(str(outer_sleep_count))} 2>/dev/null || echo 0)
+                                count=$((count + 1))
+                                echo "$count" >{shlex.quote(str(outer_sleep_count))}
+                                if [ "$count" -eq 1 ]; then
+                                    return 0
+                                fi
+                                echo "status=$manager_status"
+                                exit 0
+                                ;;
+                        esac
+                        return 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            acp_count_text = acp_count.read_text().strip()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(acp_count_text, "2")
+        self.assertEqual(proc.stdout.count("disk-mount /dev/dk2"), 1, proc.stdout)
+        self.assertIn("stage-runtime\n", proc.stdout)
+        self.assertIn("status=0\n", proc.stdout)
+        self.assertNotIn("unexpected-debounce", proc.stdout)
+        self.assertNotIn("unexpected-watchdog-mount", proc.stdout)
+
+    def test_manager_reclaims_active_disk_users_without_full_topology_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            acp_count = self.write_sequence_acp(
+                tmp_path,
+                (
+                    self.internal_mast_raw_with_volatile_fields(users=1),
+                    self.internal_mast_raw_with_volatile_fields(users=0),
+                ),
+            )
+            outer_sleep_count = tmp_path / "outer-sleep-count"
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                    tc_prepare_ram_root() {{ mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE" "$RAM_VAR"; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                    }}
+                    tc_wake_or_mount_volume() {{ echo "disk-mount $1 $2"; return 0; }}
+                    is_volume_root_mounted() {{ return 0; }}
+                    tc_verify_payload_dir() {{ return 0; }}
+                    tc_volume_is_writable() {{ return 0; }}
+                    tc_prepare_share_path() {{ echo "$2/ShareRoot"; }}
+                    tc_apply_ata_drive_setting() {{ :; }}
+                    tc_payload_log_dir_ready() {{ return 0; }}
+                    tc_find_payload_smbd() {{ echo "$1/smbd"; }}
+                    tc_stage_runtime() {{
+                        echo stage-runtime
+                        mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE"
+                        printf '#!/bin/sh\\nexit 0\\n' >"$TC_SMBD_BIN"
+                        chmod 755 "$TC_SMBD_BIN"
+                        return 0
+                    }}
+                    tc_probe_smb_bind_interfaces() {{ echo "127.0.0.1/8"; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            smbd|mdns-advertiser) return 0 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_smbd_bound_tcp_445() {{ return 0; }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    stop_runtime_process_by_ucomm() {{ :; }}
+                    sleep() {{
+                        case "$1" in
+                            1) return 0 ;;
+                            5) echo "unexpected-debounce"; return 0 ;;
+                            10)
+                                count=$(/bin/cat {shlex.quote(str(outer_sleep_count))} 2>/dev/null || echo 0)
+                                count=$((count + 1))
+                                echo "$count" >{shlex.quote(str(outer_sleep_count))}
+                                if [ "$count" -eq 1 ]; then
+                                    return 0
+                                fi
+                                echo "status=$manager_status"
+                                exit 0
+                                ;;
+                        esac
+                        return 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            acp_count_text = acp_count.read_text().strip()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(acp_count_text, "2")
+        self.assertEqual(proc.stdout.count("disk-mount /dev/dk2"), 2, proc.stdout)
+        self.assertIn("status=0\n", proc.stdout)
+        self.assertNotIn("unexpected-debounce", proc.stdout)
+
+    def test_manager_debounces_real_stable_mast_topology_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            empty_fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
+            external_fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_external_only")
+            acp_count = self.write_sequence_acp(
+                tmp_path,
+                (
+                    empty_fixture.raw,
+                    external_fixture.raw,
+                    external_fixture.raw,
+                ),
+            )
+            outer_sleep_count = tmp_path / "outer-sleep-count"
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                    tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                    }}
+                    tc_wake_or_mount_volume() {{ echo "disk-mount $1 $2"; return 0; }}
+                    is_volume_root_mounted() {{ return 0; }}
+                    tc_verify_payload_dir() {{ return 1; }}
+                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            mdns-advertiser) return 0 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    stop_runtime_process_by_ucomm() {{ :; }}
+                    sleep() {{
+                        case "$1" in
+                            1) return 0 ;;
+                            5) echo "debounce $1"; return 0 ;;
+                            10)
+                                count=$(/bin/cat {shlex.quote(str(outer_sleep_count))} 2>/dev/null || echo 0)
+                                count=$((count + 1))
+                                echo "$count" >{shlex.quote(str(outer_sleep_count))}
+                                if [ "$count" -eq 1 ]; then
+                                    return 0
+                                fi
+                                echo "status=$manager_status"
+                                exit 0
+                                ;;
+                        esac
+                        return 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            acp_count_text = acp_count.read_text().strip()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(acp_count_text, "3")
+        self.assertIn("debounce 5\n", proc.stdout)
+        self.assertIn("disk-mount /dev/dk5", proc.stdout)
+        self.assertIn("status=0\n", proc.stdout)
+
+    def test_manager_smbd_validation_does_not_wake_or_mount_disk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            self.write_fake_acp(tmp_path, self.internal_mast_raw_with_volatile_fields(users=1))
+            smbd_seen = tmp_path / "smbd-seen"
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                    tc_prepare_ram_root() {{ mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE" "$RAM_VAR"; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                    }}
+                    tc_wake_or_mount_volume() {{ echo "disk-mount $1 $2"; return 0; }}
+                    tc_watchdog_wake_or_mount_volume() {{ echo "unexpected-watchdog-mount $1 $2"; return 1; }}
+                    is_volume_root_mounted() {{ return 0; }}
+                    tc_verify_payload_dir() {{ return 0; }}
+                    tc_volume_is_writable() {{ return 0; }}
+                    tc_prepare_share_path() {{ echo "$2/ShareRoot"; }}
+                    tc_apply_ata_drive_setting() {{ :; }}
+                    tc_payload_log_dir_ready() {{ return 0; }}
+                    tc_find_payload_smbd() {{ echo "$1/smbd"; }}
+                    tc_stage_runtime() {{
+                        echo stage-runtime
+                        mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE"
+                        printf '#!/bin/sh\\nexit 0\\n' >"$TC_SMBD_BIN"
+                        chmod 755 "$TC_SMBD_BIN"
+                        return 0
+                    }}
+                    tc_probe_smb_bind_interfaces() {{ echo "127.0.0.1/8"; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            smbd) [ -f {shlex.quote(str(smbd_seen))} ] ;;
+                            mdns-advertiser) return 0 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    wait_for_process() {{
+                        if [ "$1" = "smbd" ]; then
+                            : >{shlex.quote(str(smbd_seen))}
+                        fi
+                        return 0
+                    }}
+                    tc_wait_for_smbd_ipv4_445() {{ return 0; }}
+                    tc_smbd_bound_tcp_445() {{ return 0; }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    stop_runtime_process_by_ucomm() {{ :; }}
+                    sleep() {{
+                        if [ "$1" = "1" ]; then
+                            return 0
+                        fi
+                        echo "status=$manager_status"
+                        exit 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.count("disk-mount /dev/dk2"), 1, proc.stdout)
+        self.assertIn("stage-runtime\n", proc.stdout)
+        self.assertIn("status=0\n", proc.stdout)
+        self.assertNotIn("unexpected-watchdog-mount", proc.stdout)
+
+    def test_manager_waits_for_nbns_udp_137_after_reconcile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            self.write_fake_acp(tmp_path, self.internal_mast_raw_with_volatile_fields(users=1))
+            with (flash / "tcapsulesmb.conf").open("a") as conf:
+                conf.write("NBNS_ENABLED=1\n")
+            nbns_bound_checks = tmp_path / "nbns-bound-checks"
+            events = tmp_path / "events"
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                    tc_prepare_ram_root() {{ mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE" "$RAM_VAR"; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                    }}
+                    tc_wake_or_mount_volume() {{ return 0; }}
+                    is_volume_root_mounted() {{ return 0; }}
+                    tc_verify_payload_dir() {{ return 0; }}
+                    tc_volume_is_writable() {{ return 0; }}
+                    tc_prepare_share_path() {{ echo "$2/ShareRoot"; }}
+                    tc_apply_ata_drive_setting() {{ :; }}
+                    tc_payload_log_dir_ready() {{ return 0; }}
+                    tc_find_payload_smbd() {{ echo "$1/smbd"; }}
+                    tc_find_payload_nbns() {{ echo "$1/nbns-advertiser"; }}
+                    tc_stage_runtime() {{
+                        mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE"
+                        printf '#!/bin/sh\\nexit 0\\n' >"$TC_SMBD_BIN"
+                        printf '#!/bin/sh\\nexit 0\\n' >"$TC_NBNS_BIN"
+                        chmod 755 "$TC_SMBD_BIN" "$TC_NBNS_BIN"
+                        return 0
+                    }}
+                    tc_probe_smb_bind_interfaces() {{ echo "127.0.0.1/8"; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            smbd) return 0 ;;
+                            mdns-advertiser) echo mdns-process >>{shlex.quote(str(events))}; return 0 ;;
+                            nbns-advertiser) echo nbns-process >>{shlex.quote(str(events))}; return 0 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_smbd_bound_tcp_445() {{ return 0; }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    tc_watchdog_reconcile_nbns() {{ echo nbns-reconcile >>{shlex.quote(str(events))}; echo nbns-reconcile; return 0; }}
+                    tc_nbns_bound_ipv4_udp_137() {{
+                        echo nbns-socket >>{shlex.quote(str(events))}
+                        count=$(/bin/cat {shlex.quote(str(nbns_bound_checks))} 2>/dev/null || echo 0)
+                        count=$((count + 1))
+                        echo "$count" >{shlex.quote(str(nbns_bound_checks))}
+                        [ "$count" -ge 2 ]
+                    }}
+                    stop_runtime_process_by_ucomm() {{ :; }}
+                    sleep() {{
+                        case "$1" in
+                            1) echo "sleep $1"; return 0 ;;
+                            10) echo "status=$manager_status"; exit 0 ;;
+                        esac
+                        return 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            log_text = (memory / "samba4/var/manager.log").read_text()
+            nbns_bound_check_count = int(nbns_bound_checks.read_text().strip())
+            events_text = events.read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("nbns-reconcile\n", proc.stdout)
+        self.assertIn("sleep 1\n", proc.stdout)
+        self.assertIn("status=0\n", proc.stdout)
+        self.assertGreaterEqual(nbns_bound_check_count, 2)
+        self.assertLess(events_text.index("nbns-reconcile"), events_text.index("mdns-process"))
+        self.assertLess(events_text.index("mdns-process"), events_text.index("nbns-process"))
+        self.assertLess(events_text.index("mdns-process"), events_text.index("nbns-socket"))
+        self.assertIn("manager NBNS: reconcile requested; readiness check will run after mDNS", log_text)
+        self.assertIn("manager NBNS: responder ready on IPv4 UDP 137", log_text)
+        self.assertNotIn("manager pass 1 step=health", log_text)
+        self.assertNotIn("manager health:", log_text)
+
+    def test_manager_skips_complete_health_sweep_after_reconciliation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
+            self.write_fake_acp(tmp_path, fixture.raw)
+            mdns_process_checks = tmp_path / "mdns-process-checks"
+            mdns_socket_checks = tmp_path / "mdns-socket-checks"
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                    tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
+                    tc_watchdog_reset_pass_state() {{ :; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                    }}
+                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            mdns-advertiser)
+                                count=$(/bin/cat {shlex.quote(str(mdns_process_checks))} 2>/dev/null || echo 0)
+                                count=$((count + 1))
+                                echo "$count" >{shlex.quote(str(mdns_process_checks))}
+                                return 0
+                                ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_mdns_bound_udp_5353() {{
+                        count=$(/bin/cat {shlex.quote(str(mdns_socket_checks))} 2>/dev/null || echo 0)
+                        count=$((count + 1))
+                        echo "$count" >{shlex.quote(str(mdns_socket_checks))}
+                        return 0
+                    }}
+                    stop_runtime_process_by_ucomm() {{ :; }}
+                    sleep() {{
+                        case "$1" in
+                            1) return 0 ;;
+                            10) echo "status=$manager_status"; exit 0 ;;
+                        esac
+                        return 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            log_text = (memory / "samba4/var/manager.log").read_text()
+            mdns_process_check_count = int(mdns_process_checks.read_text().strip())
+            mdns_socket_check_count = int(mdns_socket_checks.read_text().strip())
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=0\n", proc.stdout)
+        self.assertEqual(mdns_process_check_count, 1)
+        self.assertEqual(mdns_socket_check_count, 1)
+        self.assertNotIn("manager pass 1 step=health", log_text)
+        self.assertNotIn("manager health:", log_text)
+
+    def test_manager_nbns_readiness_logs_unbound_socket_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            self.write_fake_acp(tmp_path, self.internal_mast_raw_with_volatile_fields(users=1))
+            with (flash / "tcapsulesmb.conf").open("a") as conf:
+                conf.write("NBNS_ENABLED=1\n")
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        """\
+
+                    tc_prepare_ram_root() { mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE" "$RAM_VAR"; }
+                    tc_prepare_local_hostname_resolution() { :; }
+                    tc_init_runtime_identity() {
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                    }
+                    tc_wake_or_mount_volume() { return 0; }
+                    is_volume_root_mounted() { return 0; }
+                    tc_verify_payload_dir() { return 0; }
+                    tc_volume_is_writable() { return 0; }
+                    tc_prepare_share_path() { echo "$2/ShareRoot"; }
+                    tc_apply_ata_drive_setting() { :; }
+                    tc_payload_log_dir_ready() { return 0; }
+                    tc_find_payload_smbd() { echo "$1/smbd"; }
+                    tc_find_payload_nbns() { echo "$1/nbns-advertiser"; }
+                    tc_stage_runtime() {
+                        mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE"
+                        printf '#!/bin/sh\nexit 0\n' >"$TC_SMBD_BIN"
+                        printf '#!/bin/sh\nexit 0\n' >"$TC_NBNS_BIN"
+                        chmod 755 "$TC_SMBD_BIN" "$TC_NBNS_BIN"
+                        return 0
+                    }
+                    tc_probe_smb_bind_interfaces() { echo "127.0.0.1/8"; }
+                    runtime_process_present_by_ucomm() {
+                        case "$1" in
+                            smbd|mdns-advertiser|nbns-advertiser) return 0 ;;
+                            *) return 1 ;;
+                        esac
+                    }
+                    tc_smbd_bound_tcp_445() { return 0; }
+                    tc_mdns_bound_udp_5353() { return 0; }
+                    tc_watchdog_reconcile_nbns() { echo nbns-reconcile; return 0; }
+                    tc_nbns_bound_ipv4_udp_137() { return 1; }
+                    stop_runtime_process_by_ucomm() { :; }
+                    sleep() {
+                        case "$1" in
+                            1) echo "sleep $1"; return 0 ;;
+                            10) echo "status=$manager_status"; exit 0 ;;
+                        esac
+                        return 0
+                    }
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            log_text = (memory / "samba4/var/manager.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("nbns-reconcile\n", proc.stdout)
+        self.assertIn("status=1\n", proc.stdout)
+        self.assertIn("manager NBNS: responder did not become ready on IPv4 UDP 137 after 10s", log_text)
+        self.assertIn("nbns=failed", log_text)
+        self.assertNotIn("manager health:", log_text)
 
     def test_common_build_share_state_handles_volumes_tsv_without_final_newline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4702,6 +6908,53 @@ MaSt = (
         )
         self.assertNotIn("mount_hfs", log_text)
         self.assertNotIn("Apple mount", log_text)
+
+    def test_common_wake_or_mount_counts_diskd_rpc_time_when_reporting_mount_elapsed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            clock = tmp_path / "clock"
+            mounted = tmp_path / "mounted"
+            clock.write_text("100")
+            acp = tmp_path / "acp"
+            acp.write_text(
+                "#!/bin/sh\n"
+                f"echo 108 >{shlex.quote(str(clock))}\n"
+                f": >{shlex.quote(str(mounted))}\n"
+            )
+            acp.chmod(0o755)
+            script = tmp_path / "wake-count-diskd-time.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    DISKD_USE_VOLUME_ATTEMPTS=1
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR" {volumes}/dk2
+                    tc_now_seconds() {{ cat {shlex.quote(str(clock))}; }}
+                    tc_now_millis() {{ printf '%s000\\n' "$(tc_now_seconds)"; }}
+                    is_volume_root_mounted() {{ [ -f {shlex.quote(str(mounted))} ]; }}
+                    sleep() {{ echo "unexpected sleep $1"; exit 99; }}
+                    tc_wake_or_mount_volume /dev/dk2 {volumes}/dk2
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            log_text = (memory / "samba4/var/test.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "")
+        self.assertIn(
+            f"MaSt volume {volumes}/dk2: waiting up to 31s total for diskd.useVolume to mount {volumes}/dk2",
+            log_text,
+        )
+        self.assertIn(f"MaSt volume {volumes}/dk2: {volumes}/dk2 is mounted after 8s", log_text)
 
     def test_common_wake_or_mount_claims_diskd_user_even_when_already_mounted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

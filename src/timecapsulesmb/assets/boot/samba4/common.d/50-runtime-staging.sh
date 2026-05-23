@@ -187,6 +187,13 @@ tc_select_cache_directory() {
     esac
 }
 
+tc_clear_payload_log_dir() {
+    TC_PAYLOAD_LOG_DIR=
+    TC_PAYLOAD_LOG_VOLUME=
+    TC_MDNS_LOG_FILE="$RAM_VAR/mdns.log"
+    TC_NBNS_LOG_FILE="$RAM_VAR/nbns.log"
+}
+
 tc_set_payload_log_dir() {
     payload_dir=$1
     payload_volume=$2
@@ -283,6 +290,13 @@ tc_smbd_fruit_model() {
 
 tc_generate_smb_conf() {
     payload_dir=$1
+    share_rows=$(tc_runtime_share_rows || true)
+    tc_generate_smb_conf_from_share_rows "$payload_dir" "$share_rows"
+}
+
+tc_generate_smb_conf_from_share_rows() {
+    payload_dir=$1
+    runtime_share_rows=$2
     tc_ensure_runtime_identity
     if [ -z "$TC_SMB_BIND_INTERFACES" ]; then
         tc_log "smb.conf generation failed: TC_SMB_BIND_INTERFACES is empty"
@@ -357,7 +371,8 @@ $smbd_log_level_line
     fruit:delete_empty_adfiles = yes
 EOF
 
-        while IFS="$TC_TAB" read -r share_name share_path part_device builtin part_uuid; do
+        while IFS="$TC_TAB" read -r share_name share_path part_device builtin part_uuid ||
+            [ -n "$share_name$share_path$part_device$builtin$part_uuid" ]; do
             [ -n "$share_name" ] || continue
             cat <<EOF
 
@@ -384,6 +399,8 @@ EOF
     force create mode = 0666
     force directory mode = 0777
 EOF
-        done <"$TC_SHARES_TSV"
+        done <<EOF
+$runtime_share_rows
+EOF
     } >"$TC_SMBD_CONF" || return 1
 }

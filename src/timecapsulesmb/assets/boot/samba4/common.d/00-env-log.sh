@@ -52,7 +52,6 @@ TC_SMB_BIND_INTERFACES=${TC_SMB_BIND_INTERFACES:-}
 TC_SMB_IPV4_WAIT_LOGGED=0
 TC_SMB_IPV4_STARTUP_POLL_SECONDS=2
 TC_SMB_IPV4_SETTLE_SECONDS=3
-TC_MDNS_CAPTURE_ATTEMPTED=0
 TC_WATCHDOG_MDNS_DEFERRED_NO_IP=0
 TC_WATCHDOG_MDNS_UNAVAILABLE=0
 TC_WATCHDOG_NBNS_DEFERRED_NO_IP=0
@@ -212,16 +211,9 @@ tc_ram_rewrite_log_line() {
     log_path=$1
     line=$2
     log_dir=${log_path%/*}
-    tmp_log="$log_path.tmp.$$"
 
     [ -d "$log_dir" ] || mkdir -p "$log_dir"
-    {
-        if [ -f "$log_path" ]; then
-            /usr/bin/tail -n 255 "$log_path" 2>/dev/null || true
-        fi
-        echo "$line"
-    } >"$tmp_log"
-    mv "$tmp_log" "$log_path"
+    echo "$line" >>"$log_path"
     tc_trim_log_file_if_needed "$log_path" "$TC_LOG_MAX_BYTES"
 }
 
@@ -245,7 +237,27 @@ tc_prepare_log_file() {
     fi
 }
 
+tc_now_seconds() {
+    now_seconds=$(date '+%s' 2>/dev/null || echo 0)
+    case "$now_seconds" in
+        ""|*[!0123456789]*) echo 0 ;;
+        *) echo "$now_seconds" ;;
+    esac
+}
+
+tc_now_millis() {
+    now_millis=$(date '+%s%3N' 2>/dev/null || echo 0)
+    case "$now_millis" in
+        ""|*[!0123456789]*) echo "$(tc_now_seconds)000" ;;
+        *) echo "$now_millis" ;;
+    esac
+}
+
+tc_log_timestamp() {
+    date '+%Y-%m-%d %H:%M:%S'
+}
+
 tc_log() {
-    line="$(date '+%Y-%m-%d %H:%M:%S') $TC_LOG_PREFIX: $*"
+    line="$(tc_log_timestamp) $TC_LOG_PREFIX: $*"
     tc_ram_rewrite_log_line "$TC_LOG_FILE" "$line"
 }

@@ -38,7 +38,7 @@ def _add_reboot_request_json(data: dict[str, object], reboot_required: bool, *, 
 
 def _startup_description(plan: DeploymentPlan) -> str:
     if plan.startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
-        return "stop old watchdog and wcifsfs, run /mnt/Flash/rc.local now, then verify managed runtime"
+        return "stop old managers and wcifsfs, run /mnt/Flash/rc.local now, then verify managed runtime"
     if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
         return "reboot, wait for SSH, run /mnt/Flash/rc.local unless startup is already in progress, then verify managed runtime"
     if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_VERIFY:

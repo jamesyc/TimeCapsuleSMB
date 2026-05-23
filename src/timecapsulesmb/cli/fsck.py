@@ -10,7 +10,11 @@ from timecapsulesmb.cli.flows import observe_reboot_cycle
 from timecapsulesmb.cli.runtime import add_config_argument, load_env_config
 from timecapsulesmb.deploy.executor import DETACHED_SHUTDOWN_REBOOT_COMMAND
 from timecapsulesmb.deploy.planner import DEFAULT_APPLE_MOUNT_WAIT_SECONDS
-from timecapsulesmb.device.processes import render_direct_pkill9_by_ucomm, render_direct_pkill9_watchdog
+from timecapsulesmb.device.processes import (
+    render_direct_pkill9_by_ucomm,
+    render_direct_pkill9_manager,
+    render_direct_pkill9_watchdog,
+)
 from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.device.storage import MaStVolume
 from timecapsulesmb.telemetry import TelemetryClient
@@ -76,6 +80,7 @@ def select_fsck_target(targets: tuple[FsckTarget, ...], selector: str | None, *,
 
 def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> str:
     lines = [
+        render_direct_pkill9_manager(),
         render_direct_pkill9_watchdog(),
         render_direct_pkill9_by_ucomm("smbd"),
         render_direct_pkill9_by_ucomm("afpserver"),

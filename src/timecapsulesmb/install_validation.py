@@ -21,6 +21,8 @@ REQUIRED_PYTHON_MODULES = ("zeroconf", "pexpect", "ifaddr")
 BOOT_ASSET_NAMES = (
     "rc.local",
     "common.sh",
+    "boot.sh",
+    "manager.sh",
     "start-samba.sh",
     "watchdog.sh",
     "dfree.sh",
@@ -132,6 +134,8 @@ def validate_artifact_hashes(app_paths: AppPaths) -> InstallCheckResult:
 
 def validate_boot_script_tokens(app_paths: AppPaths) -> InstallCheckResult:
     try:
+        require_no_unresolved_asset_tokens(load_boot_asset_text("boot.sh"))
+        require_no_unresolved_asset_tokens(load_boot_asset_text("manager.sh"))
         require_no_unresolved_asset_tokens(load_boot_asset_text("start-samba.sh"))
         require_no_unresolved_asset_tokens(load_boot_asset_text("watchdog.sh"))
     except Exception as exc:

@@ -311,10 +311,12 @@ describe_managed_smbd_status() {{
         echo "FAIL:one or more managed share volumes are not mounted"
         status=1
     fi
-    if watchdog_process_present_for_volume "$ps_out"; then
-        echo "PASS:watchdog is running for managed runtime"
+    if manager_process_present_for_volume "$ps_out"; then
+        echo "PASS:manager is running for managed runtime"
+    elif watchdog_process_present_for_volume "$ps_out"; then
+        echo "PASS:legacy watchdog is running for managed runtime"
     else
-        echo "FAIL:watchdog is not running for managed runtime"
+        echo "FAIL:manager is not running for managed runtime"
         status=1
     fi
     if smbd_parent_process_present "$ps_out"; then
@@ -1247,8 +1249,8 @@ def probe_runtime_activation_state_conn(
             startup_scripts=first_startup,
         )
 
-    # rc.local is idempotent, and the startup path normally keeps
-    # start-samba.sh visible longer than this preflight window. If a short
+    # rc.local is idempotent, and the startup path normally keeps boot.sh
+    # visible longer than this preflight window. If a short
     # race slips between these checks, running rc.local again is acceptable.
     runtime = probe_managed_runtime_conn(connection, timeout_seconds=timeout_seconds)
     if runtime.ready:

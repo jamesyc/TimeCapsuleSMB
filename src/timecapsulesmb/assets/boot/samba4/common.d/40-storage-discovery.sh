@@ -13,6 +13,7 @@ tc_request_diskd_use_volume() {
     volume_root=$1
     mount_context=$2
     attempt_label=${3:-}
+    request_start_ms=$(tc_now_millis)
 
     mkdir -p "$volume_root"
     if [ -n "$attempt_label" ]; then
@@ -21,23 +22,43 @@ tc_request_diskd_use_volume() {
         tc_log "$mount_context: requesting diskd.useVolume for $volume_root"
     fi
     if /usr/bin/acp rpc diskd.useVolume path:s:"$volume_root" >/dev/null 2>&1; then
-        tc_log "$mount_context: diskd.useVolume command completed for $volume_root"
+        request_end_ms=$(tc_now_millis)
+        request_duration_ms=$((request_end_ms - request_start_ms))
+        [ "$request_duration_ms" -ge 0 ] || request_duration_ms=0
+        tc_log "$mount_context: diskd.useVolume command completed for $volume_root duration_ms=$request_duration_ms"
         return 0
     fi
-    tc_log "$mount_context: diskd.useVolume command failed for $volume_root"
+    request_end_ms=$(tc_now_millis)
+    request_duration_ms=$((request_end_ms - request_start_ms))
+    [ "$request_duration_ms" -ge 0 ] || request_duration_ms=0
+    tc_log "$mount_context: diskd.useVolume command failed for $volume_root duration_ms=$request_duration_ms"
     return 1
 }
 
 tc_wait_for_diskd_volume_mount() {
     volume_root=$1
     mount_context=$2
+    mount_started_ms=${3:-}
 
     tc_log_runtime_env_warnings
     mount_timeout_seconds=${TC_DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS:-31}
     mount_poll_seconds=${TC_DISKD_USE_VOLUME_MOUNT_POLL_SECONDS:-3}
 
-    tc_log "$mount_context: waiting up to ${mount_timeout_seconds}s for diskd.useVolume to mount $volume_root"
     elapsed=0
+    if tc_is_unsigned_integer "$mount_started_ms" && [ "$mount_started_ms" -gt 0 ]; then
+        current_ms=$(tc_now_millis)
+        elapsed_ms=$((current_ms - mount_started_ms))
+        [ "$elapsed_ms" -ge 0 ] || elapsed_ms=0
+        if [ "$elapsed_ms" -le 1000 ]; then
+            elapsed=0
+        else
+            elapsed=$((elapsed_ms / 1000))
+        fi
+        [ "$elapsed" -ge 0 ] || elapsed=0
+        tc_log "$mount_context: waiting up to ${mount_timeout_seconds}s total for diskd.useVolume to mount $volume_root"
+    else
+        tc_log "$mount_context: waiting up to ${mount_timeout_seconds}s for diskd.useVolume to mount $volume_root"
+    fi
     while :; do
         if is_volume_root_mounted "$volume_root"; then
             tc_log "$mount_context: $volume_root is mounted after ${elapsed}s"
@@ -91,9 +112,10 @@ tc_wake_or_mount_volume_with_policy() {
     while [ "$attempt" -le "$diskd_attempts" ]; do
         mounted_without_claim=0
         diskd_request_status=0
+        diskd_request_started_ms=$(tc_now_millis)
         tc_request_diskd_use_volume "$volume_root" "$mount_context" "attempt $attempt/$diskd_attempts" || diskd_request_status=$?
         if [ "$diskd_request_status" -eq 0 ]; then
-            if tc_wait_for_diskd_volume_mount "$volume_root" "$mount_context"; then
+            if tc_wait_for_diskd_volume_mount "$volume_root" "$mount_context" "$diskd_request_started_ms"; then
                 if [ "$was_mounted" -eq 1 ]; then
                     tc_log "$mount_context: diskd.useVolume claim complete; $volume_root remained mounted after attempt $attempt/$diskd_attempts"
                 else
@@ -294,6 +316,496 @@ tc_format_uuid_key() {
     echo "$hex" | /usr/bin/sed -n 's/^\([0-9A-Fa-f]\{8\}\)\([0-9A-Fa-f]\{4\}\)\([0-9A-Fa-f]\{4\}\)\([0-9A-Fa-f]\{4\}\)\([0-9A-Fa-f]\{12\}\)$/\1-\2-\3-\4-\5/p' | /usr/bin/sed 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/'
 }
 
+tc_mast_trim_value() {
+    TC_MAST_TRIMMED=$1
+    while :; do
+        case "$TC_MAST_TRIMMED" in
+            " "*) TC_MAST_TRIMMED=${TC_MAST_TRIMMED# } ;;
+            "$TC_TAB"*) TC_MAST_TRIMMED=${TC_MAST_TRIMMED#"$TC_TAB"} ;;
+            *) break ;;
+        esac
+    done
+    while :; do
+        case "$TC_MAST_TRIMMED" in
+            *" ") TC_MAST_TRIMMED=${TC_MAST_TRIMMED% } ;;
+            *"$TC_TAB") TC_MAST_TRIMMED=${TC_MAST_TRIMMED%"$TC_TAB"} ;;
+            *) break ;;
+        esac
+    done
+}
+
+tc_mast_clean_assignment_value() {
+    TC_MAST_VALUE=$1
+    tc_mast_trim_value "$TC_MAST_VALUE"
+    TC_MAST_VALUE=$TC_MAST_TRIMMED
+    while :; do
+        case "$TC_MAST_VALUE" in
+            *";"|*",")
+                TC_MAST_VALUE=${TC_MAST_VALUE%?}
+                tc_mast_trim_value "$TC_MAST_VALUE"
+                TC_MAST_VALUE=$TC_MAST_TRIMMED
+                ;;
+            *) break ;;
+        esac
+    done
+    case "$TC_MAST_VALUE" in
+        \"*\")
+            TC_MAST_VALUE=${TC_MAST_VALUE#\"}
+            TC_MAST_VALUE=${TC_MAST_VALUE%\"}
+            ;;
+        "<"*">")
+            TC_MAST_VALUE=${TC_MAST_VALUE#<}
+            TC_MAST_VALUE=${TC_MAST_VALUE%>}
+            ;;
+    esac
+}
+
+tc_mast_bool_value() {
+    case "$1" in
+        true|TRUE|True|1) TC_MAST_BOOL=1 ;;
+        *) TC_MAST_BOOL=0 ;;
+    esac
+}
+
+tc_mast_format_value() {
+    case "$1" in
+        [Hh][Ff][Ss]) TC_MAST_FORMAT=hfs ;;
+        *) TC_MAST_FORMAT=$1 ;;
+    esac
+}
+
+tc_mast_hex_nibble() {
+    case "$1" in
+        0) TC_MAST_HEX_NIBBLE=0 ;;
+        1) TC_MAST_HEX_NIBBLE=1 ;;
+        2) TC_MAST_HEX_NIBBLE=2 ;;
+        3) TC_MAST_HEX_NIBBLE=3 ;;
+        4) TC_MAST_HEX_NIBBLE=4 ;;
+        5) TC_MAST_HEX_NIBBLE=5 ;;
+        6) TC_MAST_HEX_NIBBLE=6 ;;
+        7) TC_MAST_HEX_NIBBLE=7 ;;
+        8) TC_MAST_HEX_NIBBLE=8 ;;
+        9) TC_MAST_HEX_NIBBLE=9 ;;
+        10) TC_MAST_HEX_NIBBLE=a ;;
+        11) TC_MAST_HEX_NIBBLE=b ;;
+        12) TC_MAST_HEX_NIBBLE=c ;;
+        13) TC_MAST_HEX_NIBBLE=d ;;
+        14) TC_MAST_HEX_NIBBLE=e ;;
+        *) TC_MAST_HEX_NIBBLE=f ;;
+    esac
+}
+
+tc_mast_hex_byte() {
+    byte_value=$1
+    tc_mast_hex_nibble $((byte_value / 16))
+    high_nibble=$TC_MAST_HEX_NIBBLE
+    tc_mast_hex_nibble $((byte_value % 16))
+    TC_MAST_HEX_BYTE=$high_nibble$TC_MAST_HEX_NIBBLE
+}
+
+tc_mast_uuid_from_hex() {
+    uuid_hex=$1
+    if [ "${#uuid_hex}" -ne 32 ]; then
+        TC_MAST_UUID=
+        return 1
+    fi
+
+    TC_MAST_UUID=
+    uuid_index=0
+    uuid_rest=$uuid_hex
+    while [ -n "$uuid_rest" ]; do
+        uuid_char=${uuid_rest%"${uuid_rest#?}"}
+        uuid_rest=${uuid_rest#?}
+        uuid_index=$((uuid_index + 1))
+        case "$uuid_index" in
+            9|13|17|21) TC_MAST_UUID="$TC_MAST_UUID-" ;;
+        esac
+        TC_MAST_UUID="$TC_MAST_UUID$uuid_char"
+    done
+    return 0
+}
+
+tc_mast_uuid_from_hexish() {
+    uuid_source=$1
+    case "$uuid_source" in
+        *"|"*) uuid_source=${uuid_source%%|*} ;;
+    esac
+    tc_mast_clean_assignment_value "$uuid_source"
+    uuid_source=$TC_MAST_VALUE
+    uuid_hex=
+    uuid_rest=$uuid_source
+    while [ -n "$uuid_rest" ]; do
+        uuid_char=${uuid_rest%"${uuid_rest#?}"}
+        uuid_rest=${uuid_rest#?}
+        case "$uuid_char" in
+            [0-9]|[a-f]) uuid_hex=$uuid_hex$uuid_char ;;
+            A) uuid_hex=${uuid_hex}a ;;
+            B) uuid_hex=${uuid_hex}b ;;
+            C) uuid_hex=${uuid_hex}c ;;
+            D) uuid_hex=${uuid_hex}d ;;
+            E) uuid_hex=${uuid_hex}e ;;
+            F) uuid_hex=${uuid_hex}f ;;
+        esac
+    done
+    tc_mast_uuid_from_hex "$uuid_hex"
+}
+
+tc_mast_b64_char_value() {
+    case "$1" in
+        A) TC_MAST_B64_VALUE=0 ;; B) TC_MAST_B64_VALUE=1 ;; C) TC_MAST_B64_VALUE=2 ;; D) TC_MAST_B64_VALUE=3 ;;
+        E) TC_MAST_B64_VALUE=4 ;; F) TC_MAST_B64_VALUE=5 ;; G) TC_MAST_B64_VALUE=6 ;; H) TC_MAST_B64_VALUE=7 ;;
+        I) TC_MAST_B64_VALUE=8 ;; J) TC_MAST_B64_VALUE=9 ;; K) TC_MAST_B64_VALUE=10 ;; L) TC_MAST_B64_VALUE=11 ;;
+        M) TC_MAST_B64_VALUE=12 ;; N) TC_MAST_B64_VALUE=13 ;; O) TC_MAST_B64_VALUE=14 ;; P) TC_MAST_B64_VALUE=15 ;;
+        Q) TC_MAST_B64_VALUE=16 ;; R) TC_MAST_B64_VALUE=17 ;; S) TC_MAST_B64_VALUE=18 ;; T) TC_MAST_B64_VALUE=19 ;;
+        U) TC_MAST_B64_VALUE=20 ;; V) TC_MAST_B64_VALUE=21 ;; W) TC_MAST_B64_VALUE=22 ;; X) TC_MAST_B64_VALUE=23 ;;
+        Y) TC_MAST_B64_VALUE=24 ;; Z) TC_MAST_B64_VALUE=25 ;;
+        a) TC_MAST_B64_VALUE=26 ;; b) TC_MAST_B64_VALUE=27 ;; c) TC_MAST_B64_VALUE=28 ;; d) TC_MAST_B64_VALUE=29 ;;
+        e) TC_MAST_B64_VALUE=30 ;; f) TC_MAST_B64_VALUE=31 ;; g) TC_MAST_B64_VALUE=32 ;; h) TC_MAST_B64_VALUE=33 ;;
+        i) TC_MAST_B64_VALUE=34 ;; j) TC_MAST_B64_VALUE=35 ;; k) TC_MAST_B64_VALUE=36 ;; l) TC_MAST_B64_VALUE=37 ;;
+        m) TC_MAST_B64_VALUE=38 ;; n) TC_MAST_B64_VALUE=39 ;; o) TC_MAST_B64_VALUE=40 ;; p) TC_MAST_B64_VALUE=41 ;;
+        q) TC_MAST_B64_VALUE=42 ;; r) TC_MAST_B64_VALUE=43 ;; s) TC_MAST_B64_VALUE=44 ;; t) TC_MAST_B64_VALUE=45 ;;
+        u) TC_MAST_B64_VALUE=46 ;; v) TC_MAST_B64_VALUE=47 ;; w) TC_MAST_B64_VALUE=48 ;; x) TC_MAST_B64_VALUE=49 ;;
+        y) TC_MAST_B64_VALUE=50 ;; z) TC_MAST_B64_VALUE=51 ;;
+        0) TC_MAST_B64_VALUE=52 ;; 1) TC_MAST_B64_VALUE=53 ;; 2) TC_MAST_B64_VALUE=54 ;; 3) TC_MAST_B64_VALUE=55 ;;
+        4) TC_MAST_B64_VALUE=56 ;; 5) TC_MAST_B64_VALUE=57 ;; 6) TC_MAST_B64_VALUE=58 ;; 7) TC_MAST_B64_VALUE=59 ;;
+        8) TC_MAST_B64_VALUE=60 ;; 9) TC_MAST_B64_VALUE=61 ;; +) TC_MAST_B64_VALUE=62 ;; /) TC_MAST_B64_VALUE=63 ;;
+        =) TC_MAST_B64_VALUE=0 ;;
+        *) TC_MAST_B64_VALUE= ;;
+    esac
+}
+
+tc_mast_uuid_from_base64_data() {
+    b64_source=$1
+    b64_clean=
+    b64_rest=$b64_source
+    while [ -n "$b64_rest" ]; do
+        b64_char=${b64_rest%"${b64_rest#?}"}
+        b64_rest=${b64_rest#?}
+        case "$b64_char" in
+            " "|"$TC_TAB") ;;
+            *) b64_clean=$b64_clean$b64_char ;;
+        esac
+    done
+
+    uuid_hex=
+    b64_rest=$b64_clean
+    while [ -n "$b64_rest" ]; do
+        b64_c1=${b64_rest%"${b64_rest#?}"}; b64_rest=${b64_rest#?}
+        b64_c2=${b64_rest%"${b64_rest#?}"}; b64_rest=${b64_rest#?}
+        b64_c3=${b64_rest%"${b64_rest#?}"}; b64_rest=${b64_rest#?}
+        b64_c4=${b64_rest%"${b64_rest#?}"}; b64_rest=${b64_rest#?}
+        [ -n "$b64_c1$b64_c2" ] || break
+
+        tc_mast_b64_char_value "$b64_c1"; b64_v1=$TC_MAST_B64_VALUE
+        tc_mast_b64_char_value "$b64_c2"; b64_v2=$TC_MAST_B64_VALUE
+        tc_mast_b64_char_value "$b64_c3"; b64_v3=$TC_MAST_B64_VALUE
+        tc_mast_b64_char_value "$b64_c4"; b64_v4=$TC_MAST_B64_VALUE
+        [ -n "$b64_v1$b64_v2$b64_v3$b64_v4" ] || {
+            TC_MAST_UUID=
+            return 1
+        }
+
+        tc_mast_hex_byte $((b64_v1 * 4 + b64_v2 / 16))
+        uuid_hex=$uuid_hex$TC_MAST_HEX_BYTE
+        if [ "$b64_c3" != "=" ]; then
+            tc_mast_hex_byte $(((b64_v2 % 16) * 16 + b64_v3 / 4))
+            uuid_hex=$uuid_hex$TC_MAST_HEX_BYTE
+        fi
+        if [ "$b64_c4" != "=" ]; then
+            tc_mast_hex_byte $(((b64_v3 % 4) * 64 + b64_v4))
+            uuid_hex=$uuid_hex$TC_MAST_HEX_BYTE
+        fi
+    done
+    tc_mast_uuid_from_hex "$uuid_hex"
+}
+
+tc_mast_append_runtime_pending_row() {
+    [ "$part_format" = "hfs" ] || return 0
+    [ -n "$part_device" ] || return 0
+    [ -n "$part_name" ] || return 0
+    [ -n "$part_uuid" ] || return 0
+    case "$part_device" in
+        dk[0-9]*) ;;
+        *) return 0 ;;
+    esac
+
+    pending_line="${part_device}${TC_TAB}/Volumes/${part_device}${TC_TAB}${part_name}${TC_TAB}${part_uuid}${TC_TAB}${part_format}${TC_TAB}${part_users}"
+    if [ -z "$mast_runtime_pending_rows" ]; then
+        mast_runtime_pending_rows=$pending_line
+    else
+        mast_runtime_pending_rows="$mast_runtime_pending_rows
+$pending_line"
+    fi
+}
+
+tc_mast_flush_runtime_rows() {
+    [ -n "$mast_runtime_pending_rows" ] || return 0
+    while IFS="$TC_TAB" read -r pending_part pending_root pending_name pending_uuid pending_format pending_users ||
+        [ -n "$pending_part$pending_root$pending_name$pending_uuid$pending_format$pending_users" ]; do
+        [ -n "$pending_part" ] || continue
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$disk_device" "$disk_builtin" "$pending_part" "$pending_root" "$pending_name" "$pending_uuid" "$pending_format" "$pending_users"
+    done <<EOF
+$mast_runtime_pending_rows
+EOF
+    mast_runtime_pending_rows=
+}
+
+tc_mast_reset_partition_state() {
+    part_device=
+    part_name=
+    part_format=
+    part_uuid=
+    part_users=
+}
+
+tc_mast_handle_object_end() {
+    if [ "$in_partitions" -eq 1 ]; then
+        tc_mast_append_runtime_pending_row
+        tc_mast_reset_partition_state
+    elif [ -n "$disk_device" ]; then
+        tc_mast_flush_runtime_rows
+        disk_device=
+        disk_builtin=0
+    fi
+}
+
+tc_mast_handle_key_value() {
+    mast_key=$1
+    mast_value=$2
+
+    case "$mast_key" in
+        builtin)
+            if [ "$in_partitions" -eq 0 ]; then
+                tc_mast_bool_value "$mast_value"
+                disk_builtin=$TC_MAST_BOOL
+            fi
+            ;;
+        partitions)
+            in_partitions=1
+            ;;
+        deviceName)
+            if [ "$in_partitions" -eq 1 ]; then
+                part_device=$mast_value
+            else
+                if [ -n "$disk_device" ]; then
+                    tc_mast_flush_runtime_rows
+                    disk_builtin=0
+                fi
+                disk_device=$mast_value
+            fi
+            ;;
+        name)
+            if [ "$in_partitions" -eq 1 ]; then
+                part_name=$mast_value
+            fi
+            ;;
+        format)
+            if [ "$in_partitions" -eq 1 ]; then
+                tc_mast_format_value "$mast_value"
+                part_format=$TC_MAST_FORMAT
+            fi
+            ;;
+        users)
+            if [ "$in_partitions" -eq 1 ]; then
+                case "$mast_value" in
+                    ""|*[!0123456789]*) part_users= ;;
+                    *) part_users=$mast_value ;;
+                esac
+            fi
+            ;;
+        uuid)
+            if [ "$in_partitions" -eq 1 ]; then
+                if tc_mast_uuid_from_hexish "$mast_value"; then
+                    part_uuid=$TC_MAST_UUID
+                else
+                    part_uuid=
+                fi
+            fi
+            ;;
+    esac
+}
+
+tc_mast_handle_xml_data_value() {
+    xml_data_key=$1
+    xml_data_value=$2
+    [ "$xml_data_key" = "uuid" ] || return 0
+    [ "$in_partitions" -eq 1 ] || return 0
+    if tc_mast_uuid_from_base64_data "$xml_data_value"; then
+        part_uuid=$TC_MAST_UUID
+    else
+        part_uuid=
+    fi
+}
+
+tc_mast_raw_to_runtime_rows() {
+    disk_device=
+    disk_builtin=0
+    in_partitions=0
+    mast_runtime_pending_rows=
+    tc_mast_reset_partition_state
+    xml_key=
+    xml_data_active=0
+    xml_data_key=
+    xml_data_value=
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        tc_mast_trim_value "$line"
+        mast_line=$TC_MAST_TRIMMED
+        [ -n "$mast_line" ] || continue
+
+        if [ "$xml_data_active" -eq 1 ]; then
+            case "$mast_line" in
+                *"</data>"*)
+                    xml_piece=${mast_line%%"</data>"*}
+                    tc_mast_trim_value "$xml_piece"
+                    xml_data_value=$xml_data_value$TC_MAST_TRIMMED
+                    tc_mast_handle_xml_data_value "$xml_data_key" "$xml_data_value"
+                    xml_data_active=0
+                    xml_data_key=
+                    xml_data_value=
+                    xml_key=
+                    ;;
+                *)
+                    tc_mast_trim_value "$mast_line"
+                    xml_data_value=$xml_data_value$TC_MAST_TRIMMED
+                    ;;
+            esac
+            continue
+        fi
+
+        case "$mast_line" in
+            "<key>"*"</key>")
+                xml_key=${mast_line#"<key>"}
+                xml_key=${xml_key%"</key>"}
+                continue
+                ;;
+            "<string>"*"</string>")
+                if [ -n "$xml_key" ]; then
+                    xml_value=${mast_line#"<string>"}
+                    xml_value=${xml_value%"</string>"}
+                    tc_mast_handle_key_value "$xml_key" "$xml_value"
+                    xml_key=
+                    continue
+                fi
+                ;;
+            "<integer>"*"</integer>")
+                if [ -n "$xml_key" ]; then
+                    xml_value=${mast_line#"<integer>"}
+                    xml_value=${xml_value%"</integer>"}
+                    tc_mast_handle_key_value "$xml_key" "$xml_value"
+                    xml_key=
+                    continue
+                fi
+                ;;
+            "<true/>"|"<true />")
+                if [ -n "$xml_key" ]; then
+                    tc_mast_handle_key_value "$xml_key" true
+                    xml_key=
+                    continue
+                fi
+                ;;
+            "<false/>"|"<false />")
+                if [ -n "$xml_key" ]; then
+                    tc_mast_handle_key_value "$xml_key" false
+                    xml_key=
+                    continue
+                fi
+                ;;
+            "<data>"*"</data>")
+                if [ -n "$xml_key" ]; then
+                    xml_value=${mast_line#"<data>"}
+                    xml_value=${xml_value%"</data>"}
+                    tc_mast_handle_xml_data_value "$xml_key" "$xml_value"
+                    xml_key=
+                    continue
+                fi
+                ;;
+            "<data>"*)
+                if [ -n "$xml_key" ]; then
+                    xml_data_active=1
+                    xml_data_key=$xml_key
+                    xml_data_value=${mast_line#"<data>"}
+                    continue
+                fi
+                ;;
+            "<array>")
+                if [ "$xml_key" = "partitions" ]; then
+                    in_partitions=1
+                    xml_key=
+                fi
+                continue
+                ;;
+            "</array>")
+                if [ "$in_partitions" -eq 1 ]; then
+                    in_partitions=0
+                fi
+                continue
+                ;;
+            "<dict>")
+                if [ "$in_partitions" -eq 1 ]; then
+                    tc_mast_reset_partition_state
+                fi
+                continue
+                ;;
+            "</dict>")
+                tc_mast_handle_object_end
+                continue
+                ;;
+        esac
+
+        case "$mast_line" in
+            "}"|"};"*|"},"*)
+                tc_mast_handle_object_end
+                continue
+                ;;
+            "]"|"];"*|")"|");"*)
+                if [ "$in_partitions" -eq 1 ]; then
+                    in_partitions=0
+                fi
+                continue
+                ;;
+            "{"|"["|"("|");"|");"*|"MaSt"*)
+                ;;
+        esac
+
+        case "$mast_line" in
+            *"="*)
+                mast_key=${mast_line%%=*}
+                mast_value=${mast_line#*=}
+                tc_mast_trim_value "$mast_key"
+                mast_key=$TC_MAST_TRIMMED
+                tc_mast_clean_assignment_value "$mast_value"
+                mast_value=$TC_MAST_VALUE
+                tc_mast_handle_key_value "$mast_key" "$mast_value"
+                ;;
+        esac
+    done
+
+    if [ -n "$part_device" ]; then
+        tc_mast_append_runtime_pending_row
+    fi
+    if [ -n "$disk_device" ]; then
+        tc_mast_flush_runtime_rows
+    fi
+    return 0
+}
+
+tc_mast_runtime_rows_to_topology() {
+    runtime_rows=$1
+    while IFS="$TC_TAB" read -r disk_device builtin part_device volume_root part_name part_uuid part_format part_users ||
+        [ -n "$disk_device$builtin$part_device$volume_root$part_name$part_uuid$part_format$part_users" ]; do
+        [ -n "$part_device" ] || continue
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$disk_device" "$builtin" "$part_device" "$volume_root" "$part_name" "$part_uuid"
+    done <<EOF
+$runtime_rows
+EOF
+}
+
+tc_mast_raw_to_topology() {
+    runtime_rows=$(tc_mast_raw_to_runtime_rows) || return 1
+    tc_mast_runtime_rows_to_topology "$runtime_rows"
+}
+
 tc_emit_mast_volume() {
     emit_out_file=$1
     if [ "$part_format" != "hfs" ] || [ -z "$part_device" ] || [ -z "$part_name" ] || [ -z "$part_uuid" ]; then
@@ -317,6 +829,107 @@ tc_flush_mast_disk() {
         printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$flush_disk_device" "$flush_disk_builtin" "$pending_part" "$pending_root" "$pending_name" "$pending_uuid" >>"$flush_out_file"
     done <"$flush_pending_file"
     : >"$flush_pending_file"
+}
+
+tc_append_mast_pending_row() {
+    pending_line=$(printf '%s\t%s\t%s\t%s\n' "$part_device" "/Volumes/$part_device" "$part_name" "$part_uuid")
+    if [ -z "$mast_pending_rows" ]; then
+        mast_pending_rows=$pending_line
+    else
+        mast_pending_rows="$mast_pending_rows
+$pending_line"
+    fi
+}
+
+tc_flush_mast_pending_rows() {
+    [ -n "$mast_pending_rows" ] || return 0
+    printf '%s\n' "$mast_pending_rows" | while IFS="$TC_TAB" read -r pending_part pending_root pending_name pending_uuid ||
+        [ -n "$pending_part$pending_root$pending_name$pending_uuid" ]; do
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$disk_device" "$disk_builtin" "$pending_part" "$pending_root" "$pending_name" "$pending_uuid"
+    done
+    mast_pending_rows=
+}
+
+tc_mast_raw_to_topology_sed_legacy() {
+    disk_device=
+    disk_builtin=0
+    in_partitions=0
+    part_device=
+    part_name=
+    part_format=
+    part_uuid=
+    mast_pending_rows=
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        trimmed_line=$(tc_trim_plist_line "$line")
+        if tc_plist_is_object_end "$trimmed_line"; then
+            if [ "$in_partitions" -eq 1 ] && [ -n "$part_device" ]; then
+                if [ "$part_format" = "hfs" ]; then
+                    case "$part_device" in
+                        dk[0-9]*)
+                            if [ -n "$part_name" ] && [ -n "$part_uuid" ]; then
+                                tc_append_mast_pending_row
+                            fi
+                            ;;
+                    esac
+                fi
+                part_device=
+                part_name=
+                part_format=
+                part_uuid=
+            elif [ -n "$disk_device" ]; then
+                tc_flush_mast_pending_rows
+                disk_device=
+                disk_builtin=0
+            fi
+        elif tc_plist_is_array_end "$trimmed_line"; then
+            in_partitions=0
+        fi
+
+        key=$(tc_plist_key "$line")
+        case "$key" in
+            builtin)
+                if [ "$in_partitions" -eq 0 ]; then
+                    disk_builtin=$(tc_extract_plist_bool_key builtin "$line")
+                fi
+                ;;
+            partitions)
+                in_partitions=1
+                ;;
+            deviceName)
+                value=$(tc_extract_plist_string_key deviceName "$line")
+                if [ "$in_partitions" -eq 1 ]; then
+                    part_device=$value
+                else
+                    if [ -n "$disk_device" ]; then
+                        tc_flush_mast_pending_rows
+                        disk_builtin=0
+                    fi
+                    disk_device=$value
+                fi
+                ;;
+            name)
+                if [ "$in_partitions" -eq 1 ]; then
+                    part_name=$(tc_extract_plist_string_key name "$line")
+                fi
+                ;;
+            format)
+                if [ "$in_partitions" -eq 1 ]; then
+                    part_format=$(tc_extract_plist_string_key format "$line" | /usr/bin/sed 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/')
+                fi
+                ;;
+            uuid)
+                if [ "$in_partitions" -eq 1 ]; then
+                    part_uuid=$(tc_format_uuid_key uuid "$line")
+                fi
+                ;;
+        esac
+    done
+
+    if [ -n "$disk_device" ]; then
+        tc_flush_mast_pending_rows
+    fi
+    return 0
 }
 
 tc_read_mast_volumes_to() {
@@ -604,7 +1217,8 @@ tc_append_share_state_row() {
 
 tc_active_share_device_is_managed() {
     wanted_part_device=$1
-    [ -s "$TC_SHARES_TSV" ] || return 1
+    runtime_share_rows=$(tc_runtime_share_rows || true)
+    [ -n "$runtime_share_rows" ] || return 1
 
     while IFS="$TC_TAB" read -r share_name share_path part_device builtin part_uuid ||
         [ -n "$share_name$share_path$part_device$builtin$part_uuid" ]; do
@@ -612,8 +1226,19 @@ tc_active_share_device_is_managed() {
         if [ "$part_device" = "$wanted_part_device" ]; then
             return 0
         fi
-    done <"$TC_SHARES_TSV"
+    done <<EOF
+$runtime_share_rows
+EOF
     return 1
+}
+
+tc_runtime_share_rows() {
+    [ -s "$TC_SHARES_TSV" ] || return 1
+    /bin/cat "$TC_SHARES_TSV"
+}
+
+tc_runtime_has_share_rows() {
+    [ -s "$TC_SHARES_TSV" ]
 }
 
 tc_reset_share_state_build() {

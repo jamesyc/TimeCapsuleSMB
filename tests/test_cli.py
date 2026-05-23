@@ -88,6 +88,7 @@ from timecapsulesmb.device.storage import (
 )
 from timecapsulesmb.deploy.commands import (
     RunScriptAction,
+    StopManagerAction,
     StopProcessAction,
     StopWatchdogAction,
 )
@@ -99,6 +100,8 @@ from timecapsulesmb.deploy.planner import (
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_SMBPASSWD_SOURCE,
     GENERATED_USERNAME_MAP_SOURCE,
+    PACKAGED_BOOT_SOURCE,
+    PACKAGED_MANAGER_SOURCE,
 )
 from timecapsulesmb.deploy.verify import VerificationResult
 from timecapsulesmb.flash_payloads import find_apple_firmware_match
@@ -4618,6 +4621,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             result.mocks.run_remote_actions.call_args_list[2].args[1],
             [
+                StopManagerAction(),
                 StopWatchdogAction(),
                 StopProcessAction("wcifsfs"),
                 RunScriptAction("/mnt/Flash/rc.local"),
@@ -4647,6 +4651,8 @@ class CliTests(unittest.TestCase):
         self.assertIn(GENERATED_SMBPASSWD_SOURCE, captured["source_ids"])
         self.assertIn(GENERATED_USERNAME_MAP_SOURCE, captured["source_ids"])
         self.assertIn(GENERATED_FLASH_CONFIG_SOURCE, captured["source_ids"])
+        self.assertIn(PACKAGED_BOOT_SOURCE, captured["source_ids"])
+        self.assertIn(PACKAGED_MANAGER_SOURCE, captured["source_ids"])
         self.assertNotIn("rendered:smb.conf.template", captured["source_ids"])
         self.assertNotIn("generated:adisk.uuid", captured["source_ids"])
         self.assertNotIn("generated:nbns.enabled", captured["source_ids"])
@@ -4766,6 +4772,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             result.mocks.run_remote_actions.call_args_list[2].args[1],
             [
+                StopManagerAction(),
                 StopWatchdogAction(),
                 StopProcessAction("wcifsfs"),
                 RunScriptAction("/mnt/Flash/rc.local"),
@@ -4995,7 +5002,9 @@ class CliTests(unittest.TestCase):
         actions_mock.assert_not_called()
         text = output.getvalue()
         self.assertIn("Dry run: NetBSD4 activation plan", text)
+        self.assertIn("tc_kill_manager_pids TERM", text)
         self.assertIn("tc_kill_watchdog_pids TERM", text)
+        self.assertNotIn("/usr/bin/pkill -f '[m]anager.sh'", text)
         self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", text)
         self.assertNotIn("/usr/bin/pkill '^smbd$' >/dev/null 2>&1 || true", text)
         self.assertNotIn("/usr/bin/pkill '^mdns-advertiser$' >/dev/null 2>&1 || true", text)
@@ -5147,6 +5156,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             actions_mock.call_args.args[1],
             [
+                StopManagerAction(),
                 StopWatchdogAction(),
                 StopProcessAction("wcifsfs"),
                 RunScriptAction("/mnt/Flash/rc.local"),
@@ -7600,6 +7610,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(run_ssh_mock.call_args.kwargs["timeout"], fsck.FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS)
         self.assertEqual(fsck.FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS, 10800)
         remote_cmd = run_ssh_mock.call_args.args[1]
+        self.assertIn("tc_kill_manager_pids KILL", remote_cmd)
+        self.assertIn("/mnt/Flash/manager.sh", remote_cmd)
         self.assertIn("tc_kill_watchdog_pids KILL", remote_cmd)
         self.assertIn("/mnt/Flash/watchdog.sh", remote_cmd)
         self.assertNotIn("pkill -9 -f", remote_cmd)
