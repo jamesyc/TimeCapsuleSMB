@@ -145,12 +145,10 @@ static void on_signal(int signo) {
 
 static void usage(const char *prog) {
     fprintf(stderr,
-            "Usage: %s --name <netbios-name> (--ipv4 <address>|--auto-ip) [options]\n"
+            "Usage: %s --name <netbios-name> --auto-ip [options]\n"
             "Options:\n"
             "  --auto-ip          Answer with the matching live interface IPv4\n"
-            "  --check-auto-ip    Exit 0 if at least one usable live IPv4 exists\n"
-            "  --version          Print advertiser version code and exit\n"
-            "  --ttl <seconds>    Record TTL (default: 120)\n",
+            "  --version          Print advertiser version code and exit\n",
             prog);
 }
 
@@ -281,26 +279,6 @@ static int validate_netbios_name(const char *name) {
         }
     }
 
-    return 0;
-}
-
-static int parse_ttl_arg(const char *value, uint32_t *out) {
-    char *end = NULL;
-    long ttl;
-
-    if (value == NULL || value[0] == '\0') {
-        fprintf(stderr, "ttl must be between 1 and 86400\n");
-        return -1;
-    }
-
-    errno = 0;
-    ttl = strtol(value, &end, 10);
-    if (errno != 0 || end == value || *end != '\0' || ttl <= 0 || ttl > 86400) {
-        fprintf(stderr, "ttl must be between 1 and 86400\n");
-        return -1;
-    }
-
-    *out = (uint32_t)ttl;
     return 0;
 }
 
@@ -690,8 +668,6 @@ int main(int argc, char **argv) {
     int yes = 1;
     int i;
     int auto_ip = 0;
-    int explicit_ipv4 = 0;
-    int check_auto_ip = 0;
     time_t last_iface_poll = 0;
     struct iface_context_set iface_contexts;
 
@@ -712,23 +688,11 @@ int main(int argc, char **argv) {
                 return 2;
             }
             memcpy(cfg.netbios_name, name_arg, name_len + 1);
-        } else if (strcmp(argv[i], "--ipv4") == 0 && i + 1 < argc) {
-            explicit_ipv4 = 1;
-            if (inet_aton(argv[++i], (struct in_addr *)&cfg.ipv4_addr) == 0) {
-                fprintf(stderr, "invalid IPv4 address\n");
-                return 2;
-            }
         } else if (strcmp(argv[i], "--auto-ip") == 0) {
             auto_ip = 1;
-        } else if (strcmp(argv[i], "--check-auto-ip") == 0) {
-            check_auto_ip = 1;
         } else if (strcmp(argv[i], "--version") == 0) {
             printf("%d\n", ADVERTISER_VERSION_CODE);
             return 0;
-        } else if (strcmp(argv[i], "--ttl") == 0 && i + 1 < argc) {
-            if (parse_ttl_arg(argv[++i], &cfg.ttl) != 0) {
-                return 2;
-            }
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             usage(argv[0]);
             return 0;
@@ -738,34 +702,20 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (check_auto_ip) {
-        struct iface_context_set check_contexts;
-        memset(&check_contexts, 0, sizeof(check_contexts));
-        if (collect_usable_iface_contexts(&check_contexts) == 0 && check_contexts.count > 0) {
-            return 0;
-        }
-        return 1;
-    }
-
     if (cfg.netbios_name[0] == '\0') {
         fprintf(stderr, "missing required option: --name\n");
         return 2;
     }
-    if (auto_ip && explicit_ipv4) {
-        fprintf(stderr, "--auto-ip and --ipv4 are mutually exclusive\n");
+    if (!auto_ip) {
+        fprintf(stderr, "missing required option: --auto-ip\n");
+        usage(argv[0]);
         return 2;
     }
-    if (!auto_ip && cfg.ipv4_addr == 0) {
-        fprintf(stderr, "missing required option: --ipv4\n");
-        return 2;
+    if (wait_for_auto_iface_contexts(&iface_contexts) != 0) {
+        return 1;
     }
-    if (auto_ip) {
-        if (wait_for_auto_iface_contexts(&iface_contexts) != 0) {
-            return 1;
-        }
-        log_iface_contexts("nbns auto-ip active", &iface_contexts);
-        last_iface_poll = time(NULL);
-    }
+    log_iface_contexts("nbns auto-ip active", &iface_contexts);
+    last_iface_poll = time(NULL);
 
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
@@ -816,7 +766,7 @@ int main(int argc, char **argv) {
         timeout.tv_sec = 1;
         timeout.tv_usec = 0;
 
-        if (auto_ip && refresh_auto_iface_contexts_if_needed(&iface_contexts, &last_iface_poll) != 0) {
+        if (refresh_auto_iface_contexts_if_needed(&iface_contexts, &last_iface_poll) != 0) {
             break;
         }
 
@@ -843,7 +793,7 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        if (auto_ip) {
+        {
             uint32_t response_ip;
             struct config context_cfg = cfg;
             response_ip = choose_response_ipv4(&iface_contexts, peer.sin_addr.s_addr);
@@ -853,8 +803,6 @@ int main(int argc, char **argv) {
             }
             context_cfg.ipv4_addr = response_ip;
             (void)maybe_respond_to_query(sock, &context_cfg, buf, (size_t)nread, &peer, peer_len);
-        } else {
-            (void)maybe_respond_to_query(sock, &cfg, buf, (size_t)nread, &peer, peer_len);
         }
     }
 

@@ -910,6 +910,8 @@ int main(int argc, char **argv) {
             tmp = Path(tmpdir)
             shares_file = tmp / "adisk.tsv"
             shares_file.write_text(f"Data\tdk2\t{adisk_uuid}\t0x82\n")
+            bad_shares_file = tmp / "bad-adisk.tsv"
+            bad_shares_file.write_text("Data\tdk2\tbad\t0x82\n")
 
             def base_args(snapshot_name: str) -> list[str]:
                 return [
@@ -931,32 +933,20 @@ int main(int argc, char **argv) {
                     "",
                 ),
                 (
-                    "diskful_adisk_share_requires_adisk_sys_wama",
-                    ["--adisk-share", "Data", "--adisk-uuid", adisk_uuid],
-                    7,
-                    "",
-                ),
-                (
                     "diskful_adisk_shares_file_requires_adisk_sys_wama",
                     ["--adisk-shares-file", str(shares_file)],
                     7,
                     "",
                 ),
                 (
-                    "diskful_adisk_share_rejects_invalid_adisk_sys_wama",
-                    ["--adisk-share", "Data", "--adisk-uuid", adisk_uuid, "--adisk-sys-wama", "not-a-mac"],
+                    "diskful_adisk_shares_file_rejects_invalid_adisk_sys_wama",
+                    ["--adisk-shares-file", str(shares_file), "--adisk-sys-wama", "not-a-mac"],
                     7,
                     "adisk sys waMA must be a MAC address",
                 ),
                 (
-                    "diskful_adisk_share_accepts_valid_adisk_sys_wama",
-                    ["--adisk-share", "Data", "--adisk-uuid", adisk_uuid, "--adisk-sys-wama", "80:EA:96:E6:58:68"],
-                    0,
-                    "",
-                ),
-                (
-                    "diskless_adisk_share_suppresses_missing_adisk_sys_wama",
-                    ["--diskless", "--adisk-share", "Data", "--adisk-uuid", adisk_uuid],
+                    "diskful_adisk_shares_file_accepts_valid_adisk_sys_wama",
+                    ["--adisk-shares-file", str(shares_file), "--adisk-sys-wama", "80:EA:96:E6:58:68"],
                     0,
                     "",
                 ),
@@ -967,14 +957,14 @@ int main(int argc, char **argv) {
                     "",
                 ),
                 (
-                    "diskless_adisk_share_suppresses_invalid_adisk_sys_wama",
-                    ["--diskless", "--adisk-share", "Data", "--adisk-uuid", adisk_uuid, "--adisk-sys-wama", "not-a-mac"],
+                    "diskless_adisk_shares_file_suppresses_invalid_adisk_sys_wama",
+                    ["--diskless", "--adisk-shares-file", str(shares_file), "--adisk-sys-wama", "not-a-mac"],
                     0,
                     "",
                 ),
                 (
                     "diskless_still_validates_configured_adisk_disk_fields",
-                    ["--diskless", "--adisk-share", "Data", "--adisk-uuid", "bad"],
+                    ["--diskless", "--adisk-shares-file", str(bad_shares_file)],
                     8,
                     "adisk uuid must be 36 characters",
                 ),
@@ -1170,7 +1160,7 @@ int main(void) {{
     dest.sin_family = AF_INET;
     dest.sin_port = htons(5353);
     dest.sin_addr.s_addr = inet_addr("224.0.0.251");
-    if (send_query_question(1, &dest, "home.local.", DNS_TYPE_A) != 0 ||
+    if (send_query_question_any(1, (const struct sockaddr *)&dest, sizeof(dest), "home.local.", DNS_TYPE_A) != 0 ||
         read_first_question_class(captured_packet, captured_len, &rrclass) != 0 ||
         rrclass != DNS_CLASS_IN) {{
         return 7;
@@ -1200,33 +1190,6 @@ int main(void) {{
         self.assertEqual(run.returncode, 0)
         self.assertEqual(run.stdout, "2104\n")
         self.assertEqual(run.stderr, "")
-
-    def test_mdns_advertiser_save_args_capture_and_exit_without_takeover(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            bin_path = self._compile_mdns_advertiser_binary(tmp)
-            all_snapshot = tmp / "allmdns.txt"
-            apple_snapshot = tmp / "applemdns.txt"
-            run = subprocess.run(
-                [
-                    str(bin_path),
-                    "--save-all-snapshot",
-                    str(all_snapshot),
-                    "--save-snapshot",
-                    str(apple_snapshot),
-                    "--airport-wama",
-                    "80:EA:96:E6:58:68",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=2,
-            )
-        self.assertEqual(run.returncode, 12, run.stderr)
-        self.assertIn("mdns capture-only:", run.stderr)
-        self.assertIn("exiting without UDP 5353 takeover or advertisement", run.stderr)
-        self.assertNotIn("serving summary", run.stderr)
-        self.assertNotIn("mDNS takeover", run.stderr)
 
     def test_mdns_timestamped_logging_truncates_long_lines_without_heap(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
@@ -1302,6 +1265,7 @@ int main(void) {{
             run = subprocess.run(
                 [
                     str(bin_path),
+                    "--auto-ip",
                     "--save-all-snapshot",
                     str(all_snapshot),
                     "--save-snapshot",
@@ -1397,64 +1361,6 @@ int main(void) {{
         self.assertIn("Usage:", run.stderr)
         self.assertNotIn("snapshot load:", run.stderr)
 
-    def test_mdns_advertiser_load_arg_reaches_takeover_after_loading_snapshot(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            bin_path = self._compile_mdns_advertiser_binary(tmp)
-            snapshot = tmp / "applemdns.txt"
-            self._write_matching_airport_snapshot(snapshot)
-            run = self._run_mdns_advertiser_until_ready_or_exit(
-                bin_path,
-                [
-                    "--shared-bind",
-                    "--load-snapshot",
-                    str(snapshot),
-                    "--instance",
-                    "TimeCapsule",
-                    "--host",
-                    "timecapsulesamba",
-                    "--ipv4",
-                    "127.0.0.1",
-                    "--airport-wama",
-                    "80:EA:96:E6:58:68",
-                ],
-            )
-        self.assertIn("snapshot load: loaded 1 records, advertising 1 snapshot records", run.stderr)
-        self.assertIn("serving summary:", run.stderr)
-        self.assertNotIn("mdns capture-only:", run.stderr)
-
-    def test_mdns_advertiser_save_and_load_args_preserve_combined_mode(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            bin_path = self._compile_mdns_advertiser_binary(tmp)
-            all_snapshot = tmp / "allmdns.txt"
-            apple_snapshot = tmp / "applemdns.txt"
-            self._write_matching_airport_snapshot(apple_snapshot)
-            run = self._run_mdns_advertiser_until_ready_or_exit(
-                bin_path,
-                [
-                    "--shared-bind",
-                    "--save-all-snapshot",
-                    str(all_snapshot),
-                    "--save-snapshot",
-                    str(apple_snapshot),
-                    "--load-snapshot",
-                    str(apple_snapshot),
-                    "--instance",
-                    "TimeCapsule",
-                    "--host",
-                    "timecapsulesamba",
-                    "--ipv4",
-                    "127.0.0.1",
-                    "--airport-wama",
-                    "80:EA:96:E6:58:68",
-                ],
-            )
-        self.assertIn("warning: could not capture Apple mDNS snapshot", run.stderr)
-        self.assertIn("snapshot load: loaded 1 records, advertising 1 snapshot records", run.stderr)
-        self.assertIn("serving summary:", run.stderr)
-        self.assertNotIn("mdns capture-only:", run.stderr)
-
     def test_mdns_advertiser_capture_only_validates_optional_dns_labels(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
@@ -1473,6 +1379,26 @@ int main(void) {{
             )
         self.assertEqual(run.returncode, 5)
         self.assertIn("host label must not contain dots", run.stderr)
+        self.assertNotIn("mdns capture-only:", run.stderr)
+
+    def test_mdns_advertiser_snapshot_capture_requires_auto_ip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bin_path = self._compile_mdns_advertiser_binary(tmp)
+            run = subprocess.run(
+                [
+                    str(bin_path),
+                    "--save-snapshot",
+                    str(tmp / "applemdns.txt"),
+                    "--host",
+                    "timecapsule",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(run.returncode, 4)
+        self.assertIn("mDNS snapshot capture requires --auto-ip", run.stderr)
         self.assertNotIn("mdns capture-only:", run.stderr)
 
     def test_mdns_advertiser_auto_ip_airport_snapshot_does_not_require_ipv4(self) -> None:
@@ -1501,32 +1427,6 @@ int main(void) {{
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("airport snapshot: wrote 1 record", run.stderr)
         self.assertTrue(snapshot_exists)
-
-    def test_mdns_advertiser_rejects_auto_ip_with_explicit_ipv4(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            bin_path = self._compile_mdns_advertiser_binary(tmp)
-            run = subprocess.run(
-                [
-                    str(bin_path),
-                    "--auto-ip",
-                    "--ipv4",
-                    "192.168.1.217",
-                    "--save-airport-snapshot",
-                    str(tmp / "airport.txt"),
-                    "--instance",
-                    "TimeCapsule",
-                    "--host",
-                    "timecapsule",
-                    "--airport-wama",
-                    "80:EA:96:E6:58:68",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        self.assertEqual(run.returncode, 3)
-        self.assertIn("mutually exclusive", run.stderr)
 
     def test_mdns_auto_ip_helpers_filter_and_detect_interface_changes(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
@@ -1876,18 +1776,25 @@ struct fake_auto_ip_plan {{
     int mode;
 }};
 
-static int fake_collect_contexts(struct iface_context_set *out, void *userdata) {{
+static int fake_collect_contexts(struct link_context_set *out, void *userdata) {{
     struct fake_auto_ip_plan *plan = (struct fake_auto_ip_plan *)userdata;
     memset(out, 0, sizeof(*out));
     if (plan->mode == 1) {{
         return -1;
     }}
     if (plan->mode == 2) {{
-        append_iface_context(out, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+        append_link_ipv4(out, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
     }}
     if (plan->mode == 3) {{
-        append_iface_context(out, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+        append_link_ipv4(out, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
         out->truncated = 1;
+    }}
+    if (plan->mode == 4) {{
+        struct in6_addr addr6;
+        if (inet_pton(AF_INET6, "fdbb:1111:2222:3333::40", &addr6) != 1) {{
+            return -1;
+        }}
+        append_link_ipv6(out, "bridge0", &addr6, 64, 7, IFF_UP | IFF_RUNNING);
     }}
     return 0;
 }}
@@ -1914,6 +1821,10 @@ int main(void) {{
     plan.mode = 3;
     if (print_auto_ip_cidrs_with_provider(stdout, fake_collect_contexts, &plan) != EXIT_AUTO_IP_PROBE_FAILED) {{
         return 5;
+    }}
+    plan.mode = 4;
+    if (print_auto_ip_cidrs_with_provider(stdout, fake_collect_contexts, &plan) != EXIT_AUTO_IP_UNAVAILABLE) {{
+        return 6;
     }}
     return 0;
 }}
@@ -2106,587 +2017,6 @@ int main(void) {{
 }}
 '''.format(mdns_source=mdns_source)
         run = self._compile_and_run_c_helper(source, "mdns_scoped_ipv6_dest")
-        self.assertEqual(run.returncode, 0, run.stderr)
-
-    def test_mdns_auto_ip_wait_stabilizes_after_first_usable_ipv4(self) -> None:
-        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
-        source = '''
-#include <arpa/inet.h>
-#include <string.h>
-#define main mdns_advertiser_main
-#include "{mdns_source}"
-#undef main
-
-struct wait_plan {{
-    int collect_calls;
-    int startup_poll_sleeps;
-    int stabilize_sleeps;
-}};
-
-static int fake_collect_contexts(struct iface_context_set *out, void *userdata) {{
-    struct wait_plan *plan = (struct wait_plan *)userdata;
-    memset(out, 0, sizeof(*out));
-    plan->collect_calls++;
-    if (plan->collect_calls >= 2) {{
-        append_iface_context(out, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
-    }}
-    return 0;
-}}
-
-static void fake_sleep(unsigned int seconds, void *userdata) {{
-    struct wait_plan *plan = (struct wait_plan *)userdata;
-    if (seconds == AUTO_IP_STARTUP_POLL_SECONDS) {{
-        plan->startup_poll_sleeps++;
-    }} else if (seconds == AUTO_IP_STABILIZE_SECONDS) {{
-        plan->stabilize_sleeps++;
-    }}
-}}
-
-int main(void) {{
-    struct iface_context_set out;
-    struct wait_plan plan;
-
-    memset(&out, 0, sizeof(out));
-    memset(&plan, 0, sizeof(plan));
-    g_stop = 0;
-
-    if (wait_for_auto_iface_contexts_with_provider(&out, "test", fake_collect_contexts, fake_sleep, &plan) != 0) {{
-        return 1;
-    }}
-    if (AUTO_IP_STARTUP_POLL_SECONDS != 2 || AUTO_IP_STABLE_POLL_SECONDS != 30) {{
-        return 4;
-    }}
-    if (plan.collect_calls != 3 || plan.startup_poll_sleeps != 1 || plan.stabilize_sleeps != 1) {{
-        return 2;
-    }}
-    if (out.count != 1 || strcmp(out.contexts[0].name, "bridge0") != 0 ||
-        out.contexts[0].ipv4_addr != inet_addr("10.0.1.1")) {{
-        return 3;
-    }}
-    return 0;
-}}
-'''.format(mdns_source=mdns_source)
-        run = self._compile_and_run_c_helper(source, "mdns_auto_ip_wait")
-        self.assertEqual(run.returncode, 0, run.stderr)
-
-    def test_mdns_auto_capture_merges_all_context_snapshots(self) -> None:
-        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
-        source = '''
-#include <arpa/inet.h>
-#include <string.h>
-#define main mdns_advertiser_main
-#include "{mdns_source}"
-#undef main
-
-struct fake_capture_plan {{
-    struct service_record_set sets[2];
-    int calls;
-}};
-
-static void add_airport_record(struct service_record_set *set, const char *host, const char *mac) {{
-    struct service_record *record;
-    char txt[80];
-
-    record = find_or_add_record(set, AIRPORT_SERVICE_TYPE, "James's AirPort Time Capsule");
-    if (record == NULL) {{
-        return;
-    }}
-    snprintf(record->host_label, sizeof(record->host_label), "%s", host);
-    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s.local.", host);
-    record->port = AIRPORT_DEFAULT_PORT;
-    snprintf(txt, sizeof(txt), "waMA=%s", mac);
-    snprintf(record->txt[0], sizeof(record->txt[0]), "%s", txt);
-    record->txt_len[0] = (uint8_t)strlen(record->txt[0]);
-    record->txt_count = 1;
-}}
-
-static int fake_capture_context(struct service_record_set *out, const struct iface_context *ctx, void *userdata) {{
-    struct fake_capture_plan *plan = (struct fake_capture_plan *)userdata;
-    (void)ctx;
-    *out = plan->sets[plan->calls];
-    plan->calls++;
-    return 0;
-}}
-
-int main(void) {{
-    struct config cfg;
-    struct iface_context_set contexts;
-    struct fake_capture_plan plan;
-    struct service_record_set out;
-
-    memset(&cfg, 0, sizeof(cfg));
-    memset(&contexts, 0, sizeof(contexts));
-    memset(&plan, 0, sizeof(plan));
-    memset(&out, 0, sizeof(out));
-
-    snprintf(cfg.airport_wama, sizeof(cfg.airport_wama), "%s", "80:EA:96:E6:58:68");
-    append_iface_context(&contexts, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
-    append_iface_context(&contexts, "bcmeth0", inet_addr("192.168.1.217"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
-    add_airport_record(&plan.sets[0], "timecapsule", "80-EA-96-E6-58-68");
-    add_airport_record(&plan.sets[1], "timecapsule-wan", "80-EA-96-E6-58-68");
-
-    if (capture_mdns_snapshot_auto_with_provider(&out, &contexts, &cfg, 0, fake_capture_context, &plan) != 0) {{
-        return 1;
-    }}
-    if (plan.calls != 2 || out.count != 2 ||
-        strcmp(out.records[0].host_label, "timecapsule") != 0 ||
-        strcmp(out.records[1].host_label, "timecapsule-wan") != 0) {{
-        return 2;
-    }}
-    return 0;
-}}
-'''.format(mdns_source=mdns_source)
-        run = self._compile_and_run_c_helper(source, "mdns_auto_capture_first_match")
-        self.assertEqual(run.returncode, 0, run.stderr)
-
-    def test_mdns_auto_capture_keeps_untrusted_records_for_later_filtering(self) -> None:
-        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
-        source = '''
-#include <arpa/inet.h>
-#include <string.h>
-#define main mdns_advertiser_main
-#include "{mdns_source}"
-#undef main
-
-struct fake_capture_plan {{
-    struct service_record_set sets[2];
-    int calls;
-}};
-
-static void add_airport_record(struct service_record_set *set, const char *host, const char *mac) {{
-    struct service_record *record;
-    char txt[80];
-
-    record = find_or_add_record(set, AIRPORT_SERVICE_TYPE, "James's AirPort Time Capsule");
-    if (record == NULL) {{
-        return;
-    }}
-    snprintf(record->host_label, sizeof(record->host_label), "%s", host);
-    snprintf(record->host_fqdn, sizeof(record->host_fqdn), "%s.local.", host);
-    record->port = AIRPORT_DEFAULT_PORT;
-    snprintf(txt, sizeof(txt), "waMA=%s", mac);
-    snprintf(record->txt[0], sizeof(record->txt[0]), "%s", txt);
-    record->txt_len[0] = (uint8_t)strlen(record->txt[0]);
-    record->txt_count = 1;
-}}
-
-static int fake_capture_context(struct service_record_set *out, const struct iface_context *ctx, void *userdata) {{
-    struct fake_capture_plan *plan = (struct fake_capture_plan *)userdata;
-    (void)ctx;
-    *out = plan->sets[plan->calls];
-    plan->calls++;
-    return 0;
-}}
-
-int main(void) {{
-    struct config cfg;
-    struct iface_context_set contexts;
-    struct fake_capture_plan plan;
-    struct service_record_set out;
-
-    memset(&cfg, 0, sizeof(cfg));
-    memset(&contexts, 0, sizeof(contexts));
-    memset(&plan, 0, sizeof(plan));
-    memset(&out, 0, sizeof(out));
-
-    snprintf(cfg.airport_wama, sizeof(cfg.airport_wama), "%s", "80:EA:96:E6:58:68");
-    append_iface_context(&contexts, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
-    append_iface_context(&contexts, "bcmeth0", inet_addr("192.168.1.217"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
-    add_airport_record(&plan.sets[0], "wrong-device", "00-11-22-33-44-55");
-    add_airport_record(&plan.sets[1], "timecapsule", "80-EA-96-E6-58-68");
-
-    if (capture_mdns_snapshot_auto_with_provider(&out, &contexts, &cfg, 1, fake_capture_context, &plan) != 0) {{
-        return 1;
-    }}
-    if (plan.calls != 2 || out.count != 2 ||
-        strcmp(out.records[0].host_label, "wrong-device") != 0 ||
-        strcmp(out.records[1].host_label, "timecapsule") != 0) {{
-        return 2;
-    }}
-    return 0;
-}}
-'''.format(mdns_source=mdns_source)
-        run = self._compile_and_run_c_helper(source, "mdns_auto_capture_second_match")
-        self.assertEqual(run.returncode, 0, run.stderr)
-
-    def test_mdns_context_announcement_uses_context_ipv4(self) -> None:
-        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
-        source = '''
-#include <arpa/inet.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-
-static unsigned char captured_packet[1500];
-static size_t captured_len;
-
-ssize_t fake_sendto(int sockfd, const void *buf, size_t len, int flags,
-                    const struct sockaddr *dest, socklen_t dest_len) {{
-    (void)sockfd;
-    (void)flags;
-    (void)dest;
-    (void)dest_len;
-    memcpy(captured_packet, buf, len);
-    captured_len = len;
-    return (ssize_t)len;
-}}
-
-int fake_setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen) {{
-    (void)sockfd;
-    (void)level;
-    (void)optname;
-    (void)optval;
-    (void)optlen;
-    return 0;
-}}
-
-#define sendto fake_sendto
-#define setsockopt fake_setsockopt
-#define main mdns_advertiser_main
-#include "{mdns_source}"
-#undef main
-#undef setsockopt
-#undef sendto
-
-static int contains_ipv4(const unsigned char *needle) {{
-    size_t i;
-    for (i = 0; i + 4 <= captured_len; i++) {{
-        if (memcmp(captured_packet + i, needle, 4) == 0) {{
-            return 1;
-        }}
-    }}
-    return 0;
-}}
-
-int main(void) {{
-    struct config cfg;
-    struct iface_context ctx;
-    struct service_record_set snapshot;
-    struct sockaddr_in dest;
-    struct in_addr context_ip;
-    struct in_addr global_ip;
-
-    memset(&cfg, 0, sizeof(cfg));
-    memset(&ctx, 0, sizeof(ctx));
-    memset(&snapshot, 0, sizeof(snapshot));
-    memset(&dest, 0, sizeof(dest));
-
-    snprintf(cfg.instance_name, sizeof(cfg.instance_name), "%s", "TimeCapsule");
-    snprintf(cfg.host_label, sizeof(cfg.host_label), "%s", "timecapsule");
-    snprintf(cfg.host_fqdn, sizeof(cfg.host_fqdn), "%s", "timecapsule.local.");
-    snprintf(cfg.service_type, sizeof(cfg.service_type), "%s", "_smb._tcp.local.");
-    snprintf(cfg.device_info_service_type, sizeof(cfg.device_info_service_type), "%s", "_device-info._tcp.local.");
-    snprintf(cfg.adisk_service_type, sizeof(cfg.adisk_service_type), "%s", "_adisk._tcp.local.");
-    snprintf(cfg.airport_service_type, sizeof(cfg.airport_service_type), "%s", "_airport._tcp.local.");
-    cfg.port = 445;
-    cfg.ttl = 120;
-    cfg.ipv4_addr = inet_addr("192.168.1.217");
-
-    snprintf(ctx.name, sizeof(ctx.name), "%s", "bridge0");
-    ctx.ipv4_addr = inet_addr("10.0.1.1");
-
-    dest.sin_family = AF_INET;
-    dest.sin_port = htons(5353);
-    dest.sin_addr.s_addr = inet_addr("224.0.0.251");
-
-    if (send_context_announcement(1, &ctx, &dest, &cfg, &snapshot, 0) != 0) {{
-        return 1;
-    }}
-    context_ip.s_addr = inet_addr("10.0.1.1");
-    global_ip.s_addr = inet_addr("192.168.1.217");
-    if (!contains_ipv4((const unsigned char *)&context_ip.s_addr)) {{
-        return 2;
-    }}
-    if (contains_ipv4((const unsigned char *)&global_ip.s_addr)) {{
-        return 3;
-    }}
-    return 0;
-}}
-'''.format(mdns_source=mdns_source)
-        run = self._compile_and_run_c_helper(source, "mdns_context_announcement_ip")
-        self.assertEqual(run.returncode, 0, run.stderr)
-
-    def test_mdns_auto_ip_takeover_uses_one_exclusive_socket(self) -> None:
-        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
-        source = r'''
-#include <arpa/inet.h>
-#include <errno.h>
-#include <stdio.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
-
-static int fake_socket(int domain, int type, int protocol);
-static int fake_setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen);
-static int fake_bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
-static int fake_close(int fd);
-static int fake_system(const char *cmd);
-static int fake_usleep(useconds_t usec);
-static FILE *fake_popen(const char *cmd, const char *mode);
-static char *fake_fgets(char *s, int size, FILE *stream);
-static int fake_pclose(FILE *fp);
-
-#define socket fake_socket
-#define setsockopt fake_setsockopt
-#define bind fake_bind
-#define close fake_close
-#define system fake_system
-#define usleep fake_usleep
-#define popen fake_popen
-#define fgets fake_fgets
-#define pclose fake_pclose
-#define main mdns_advertiser_main
-#include "@MDNS_SOURCE@"
-#undef main
-#undef pclose
-#undef fgets
-#undef popen
-#undef usleep
-#undef system
-#undef close
-#undef bind
-#undef setsockopt
-#undef socket
-
-static int socket_calls;
-static int socket_domain;
-static int socket_type;
-static int socket_protocol;
-static int bind_calls;
-static int bind_family;
-static unsigned int bind_port;
-static uint32_t bind_addr;
-static int close_calls;
-static int reuseaddr_sets;
-static int reuseport_sets;
-static int membership_sets;
-static int drop_membership_sets;
-static int outbound_sets;
-static int system_calls;
-static int fake_mdns_alive;
-static int fake_fgets_served;
-static int next_fd = 100;
-
-static void reset_fakes(void) {
-    socket_calls = 0;
-    socket_domain = 0;
-    socket_type = 0;
-    socket_protocol = 0;
-    bind_calls = 0;
-    bind_family = 0;
-    bind_port = 0;
-    bind_addr = 0xffffffffU;
-    close_calls = 0;
-    reuseaddr_sets = 0;
-    reuseport_sets = 0;
-    membership_sets = 0;
-    drop_membership_sets = 0;
-    outbound_sets = 0;
-    system_calls = 0;
-    fake_mdns_alive = 0;
-    fake_fgets_served = 0;
-    next_fd = 100;
-}
-
-static int fake_socket(int domain, int type, int protocol) {
-    socket_calls++;
-    socket_domain = domain;
-    socket_type = type;
-    socket_protocol = protocol;
-    return next_fd++;
-}
-
-static int fake_setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen) {
-    (void)sockfd;
-    (void)optval;
-    (void)optlen;
-    if (level == SOL_SOCKET && optname == SO_REUSEADDR) {
-        reuseaddr_sets++;
-    }
-#ifdef SO_REUSEPORT
-    if (level == SOL_SOCKET && optname == SO_REUSEPORT) {
-        reuseport_sets++;
-    }
-#endif
-    if (level == IPPROTO_IP && optname == IP_ADD_MEMBERSHIP) {
-        membership_sets++;
-    }
-#ifdef IP_DROP_MEMBERSHIP
-    if (level == IPPROTO_IP && optname == IP_DROP_MEMBERSHIP) {
-        drop_membership_sets++;
-    }
-#endif
-    if (level == IPPROTO_IP && optname == IP_MULTICAST_IF) {
-        outbound_sets++;
-    }
-    return 0;
-}
-
-static int fake_bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
-    const struct sockaddr_in *sin;
-    (void)sockfd;
-    bind_calls++;
-    if (addrlen >= sizeof(*sin) && addr != NULL) {
-        sin = (const struct sockaddr_in *)addr;
-        bind_family = sin->sin_family;
-        bind_port = (unsigned int)ntohs(sin->sin_port);
-        bind_addr = ntohl(sin->sin_addr.s_addr);
-    }
-    return 0;
-}
-
-static int fake_close(int fd) {
-    (void)fd;
-    close_calls++;
-    return 0;
-}
-
-static int fake_system(const char *cmd) {
-    (void)cmd;
-    system_calls++;
-    return 0;
-}
-
-static int fake_usleep(useconds_t usec) {
-    (void)usec;
-    return 0;
-}
-
-static FILE *fake_popen(const char *cmd, const char *mode) {
-    (void)cmd;
-    (void)mode;
-    if (!fake_mdns_alive) {
-        return NULL;
-    }
-    fake_fgets_served = 0;
-    return (FILE *)1;
-}
-
-static char *fake_fgets(char *s, int size, FILE *stream) {
-    const char *line = "S mDNSResponder\n";
-    (void)stream;
-    if (!fake_mdns_alive || fake_fgets_served || size <= 0) {
-        return NULL;
-    }
-    snprintf(s, (size_t)size, "%s", line);
-    fake_fgets_served = 1;
-    return s;
-}
-
-static int fake_pclose(FILE *fp) {
-    (void)fp;
-    return 0;
-}
-
-static void add_contexts(struct iface_context_set *contexts) {
-    memset(contexts, 0, sizeof(*contexts));
-    append_iface_context(contexts, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
-    append_iface_context(contexts, "bcmeth0", inet_addr("192.168.1.217"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
-}
-
-int main(void) {
-    struct iface_context_set contexts;
-    struct sockaddr_in source;
-    int fd;
-
-    add_contexts(&contexts);
-    if (contexts.count != 2) {
-        return 1;
-    }
-    memset(&source, 0, sizeof(source));
-    source.sin_addr.s_addr = inet_addr("192.168.1.88");
-    if (select_response_context(&contexts, &source) != &contexts.contexts[1]) {
-        return 6;
-    }
-    source.sin_addr.s_addr = inet_addr("172.16.0.10");
-    if (select_response_context(&contexts, &source) != &contexts.contexts[0]) {
-        return 7;
-    }
-
-    reset_fakes();
-    fd = acquire_mdns_auto_socket(0, &contexts);
-    if (fd < 0 || socket_calls != 1 || bind_calls != 1 || close_calls != 0 ||
-        reuseaddr_sets != 0 || reuseport_sets != 0 || membership_sets != 2 || outbound_sets != 1) {
-        return 2;
-    }
-    if (socket_domain != AF_INET || socket_type != SOCK_DGRAM || socket_protocol != 0 ||
-        bind_family != AF_INET || bind_port != MDNS_PORT || bind_addr != INADDR_ANY) {
-        return 14;
-    }
-
-    reset_fakes();
-    fake_mdns_alive = 1;
-    fd = acquire_mdns_auto_socket(0, &contexts);
-    if (fd >= 0 || socket_calls != TAKEOVER_RETRY_COUNT * 2 ||
-        close_calls != TAKEOVER_RETRY_COUNT * 2 || reuseaddr_sets != 0 || reuseport_sets != 0) {
-        return 3;
-    }
-
-    reset_fakes();
-    fd = acquire_mdns_auto_socket(1, &contexts);
-    if (fd < 0 || socket_calls != 1 || reuseaddr_sets != 1 || membership_sets != 2) {
-        return 4;
-    }
-    if (bind_family != AF_INET || bind_port != MDNS_PORT || bind_addr != INADDR_ANY) {
-        return 15;
-    }
-#ifdef SO_REUSEPORT
-    if (reuseport_sets != 1) {
-        return 5;
-    }
-#endif
-
-    {
-        struct iface_context_set old_contexts;
-        struct iface_context_set new_contexts;
-        struct iface_context_set empty_contexts;
-
-        memset(&old_contexts, 0, sizeof(old_contexts));
-        memset(&new_contexts, 0, sizeof(new_contexts));
-        memset(&empty_contexts, 0, sizeof(empty_contexts));
-        append_iface_context(&old_contexts, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
-        append_iface_context(&old_contexts, "bcmeth0", inet_addr("192.168.1.217"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
-        append_iface_context(&new_contexts, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
-        append_iface_context(&new_contexts, "en1", inet_addr("192.168.50.2"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
-
-        reset_fakes();
-        if (prepare_mdns_auto_socket_for_contexts(55, &old_contexts, &new_contexts) != 0 ||
-            socket_calls != 0 || bind_calls != 0 || close_calls != 0 ||
-            membership_sets != 1 || outbound_sets != 1) {
-            return 8;
-        }
-        retire_mdns_auto_socket_contexts(55, &old_contexts, &new_contexts);
-        if (close_calls != 0) {
-            return 9;
-        }
-#ifdef IP_DROP_MEMBERSHIP
-        if (drop_membership_sets != 1) {
-            return 10;
-        }
-#endif
-
-        reset_fakes();
-        if (prepare_mdns_auto_socket_for_contexts(55, &old_contexts, &empty_contexts) != 0 ||
-            socket_calls != 0 || bind_calls != 0 || close_calls != 0 ||
-            membership_sets != 0 || outbound_sets != 0) {
-            return 11;
-        }
-        retire_mdns_auto_socket_contexts(55, &old_contexts, &empty_contexts);
-        if (close_calls != 0) {
-            return 12;
-        }
-#ifdef IP_DROP_MEMBERSHIP
-        if (drop_membership_sets != 2) {
-            return 13;
-        }
-#endif
-    }
-
-    return 0;
-}
-'''.replace("@MDNS_SOURCE@", mdns_source)
-        run = self._compile_and_run_c_helper(source, "mdns_auto_ip_takeover_socket_shape")
         self.assertEqual(run.returncode, 0, run.stderr)
 
     def test_mdns_advertiser_extracts_service_type_from_arbitrary_instance_fqdn(self) -> None:
@@ -3456,7 +2786,6 @@ static void configure_base(struct config *cfg) {
     cfg->adisk_port = 9;
     cfg->airport_port = 5009;
     cfg->ttl = 120;
-    cfg->ipv4_addr = inet_addr("10.0.1.77");
 }
 
 static void configure_addrs(struct sockaddr_in *mdns_dest, struct sockaddr_in *source) {
@@ -3620,7 +2949,6 @@ static int legacy_response_repeats_question(const unsigned char *response, size_
 
 static int run_route_cases(void) {
     struct config cfg;
-    struct iface_context response_ctx;
     struct link_context response_link;
     struct service_record_set snapshot;
     struct sockaddr_in mdns_dest;
@@ -3629,11 +2957,14 @@ static int run_route_cases(void) {
     size_t query_len;
 
     configure_base(&cfg);
-    memset(&response_ctx, 0, sizeof(response_ctx));
-    snprintf(response_ctx.name, sizeof(response_ctx.name), "%s", "bridge0");
-    response_ctx.ipv4_addr = cfg.ipv4_addr;
-    response_ctx.netmask = inet_addr("255.255.255.0");
-    link_context_from_iface_context(&response_link, &response_ctx);
+    memset(&response_link, 0, sizeof(response_link));
+    snprintf(response_link.name, sizeof(response_link.name), "%s", "bridge0");
+    response_link.flags = IFF_UP | IFF_RUNNING;
+    response_link.ipv4[0].addr = inet_addr("10.0.1.77");
+    response_link.ipv4[0].netmask = inet_addr("255.255.255.0");
+    response_link.ipv4_count = 1;
+    response_link.mdns_ipv4_transport = 1;
+    response_link.mdns_ipv4_transport_addr = response_link.ipv4[0].addr;
     memset(&snapshot, 0, sizeof(snapshot));
     configure_addrs(&mdns_dest, &source);
 
@@ -3794,17 +3125,17 @@ static void configure_base(struct config *cfg) {
     cfg->adisk_port = 9;
     cfg->airport_port = 5009;
     cfg->ttl = 120;
-    cfg->ipv4_addr = inet_addr("10.0.1.77");
 }
 
 static void configure_link(struct link_context *link, uint32_t ipv4_addr) {
-    struct iface_context ctx;
-
-    memset(&ctx, 0, sizeof(ctx));
-    snprintf(ctx.name, sizeof(ctx.name), "%s", "bridge0");
-    ctx.ipv4_addr = ipv4_addr;
-    ctx.netmask = inet_addr("255.255.255.0");
-    link_context_from_iface_context(link, &ctx);
+    memset(link, 0, sizeof(*link));
+    snprintf(link->name, sizeof(link->name), "%s", "bridge0");
+    link->flags = IFF_UP | IFF_RUNNING;
+    link->ipv4[0].addr = ipv4_addr;
+    link->ipv4[0].netmask = inet_addr("255.255.255.0");
+    link->ipv4_count = 1;
+    link->mdns_ipv4_transport = 1;
+    link->mdns_ipv4_transport_addr = ipv4_addr;
 }
 
 static void configure_addrs(struct sockaddr_in *mdns_dest, struct sockaddr_in *source) {
@@ -3944,7 +3275,7 @@ int main(void) {
     size_t query_len;
 
     configure_base(&cfg);
-    configure_link(&link, cfg.ipv4_addr);
+    configure_link(&link, inet_addr("10.0.1.77"));
     configure_addrs(&mdns_dest, &source);
     memset(&snapshot, 0, sizeof(snapshot));
 
@@ -4107,17 +3438,17 @@ static void configure_base(struct config *cfg) {
     snprintf(cfg->service_type, sizeof(cfg->service_type), "%s", "_smb._tcp.local.");
     cfg->port = 445;
     cfg->ttl = 120;
-    cfg->ipv4_addr = inet_addr("10.0.1.77");
 }
 
 static void configure_link(struct link_context *link, uint32_t ipv4_addr) {
-    struct iface_context ctx;
-
-    memset(&ctx, 0, sizeof(ctx));
-    snprintf(ctx.name, sizeof(ctx.name), "%s", "bridge0");
-    ctx.ipv4_addr = ipv4_addr;
-    ctx.netmask = inet_addr("255.255.255.0");
-    link_context_from_iface_context(link, &ctx);
+    memset(link, 0, sizeof(*link));
+    snprintf(link->name, sizeof(link->name), "%s", "bridge0");
+    link->flags = IFF_UP | IFF_RUNNING;
+    link->ipv4[0].addr = ipv4_addr;
+    link->ipv4[0].netmask = inet_addr("255.255.255.0");
+    link->ipv4_count = 1;
+    link->mdns_ipv4_transport = 1;
+    link->mdns_ipv4_transport_addr = ipv4_addr;
     link->ifindex = 5;
 }
 
@@ -4146,7 +3477,7 @@ static int handle_query_from_port(uint16_t port) {
     size_t query_len;
 
     configure_base(&cfg);
-    configure_link(&link, cfg.ipv4_addr);
+    configure_link(&link, inet_addr("10.0.1.77"));
     memset(&snapshot, 0, sizeof(snapshot));
     memset(&mdns_dest, 0, sizeof(mdns_dest));
     mdns_dest.sin_family = AF_INET;
@@ -4305,7 +3636,6 @@ static void configure_base(struct config *cfg) {
     cfg->adisk_port = 9;
     cfg->airport_port = 5009;
     cfg->ttl = 120;
-    cfg->ipv4_addr = inet_addr("10.0.1.77");
     cfg->diskless = 1;
 }
 
@@ -4365,7 +3695,6 @@ static int count_rr_type(const unsigned char *packet, size_t packet_len, unsigne
 
 int main(void) {
     struct config cfg;
-    struct iface_context response_ctx;
     struct link_context response_link;
     struct service_record_set snapshot;
     struct sockaddr_in mdns_dest;
@@ -4374,11 +3703,14 @@ int main(void) {
     size_t query_len;
 
     configure_base(&cfg);
-    memset(&response_ctx, 0, sizeof(response_ctx));
-    snprintf(response_ctx.name, sizeof(response_ctx.name), "%s", "bridge0");
-    response_ctx.ipv4_addr = cfg.ipv4_addr;
-    response_ctx.netmask = inet_addr("255.255.255.0");
-    link_context_from_iface_context(&response_link, &response_ctx);
+    memset(&response_link, 0, sizeof(response_link));
+    snprintf(response_link.name, sizeof(response_link.name), "%s", "bridge0");
+    response_link.flags = IFF_UP | IFF_RUNNING;
+    response_link.ipv4[0].addr = inet_addr("10.0.1.77");
+    response_link.ipv4[0].netmask = inet_addr("255.255.255.0");
+    response_link.ipv4_count = 1;
+    response_link.mdns_ipv4_transport = 1;
+    response_link.mdns_ipv4_transport_addr = response_link.ipv4[0].addr;
     memset(&snapshot, 0, sizeof(snapshot));
     memset(&mdns_dest, 0, sizeof(mdns_dest));
     mdns_dest.sin_family = AF_INET;
@@ -4471,7 +3803,6 @@ static void configure_base(struct config *cfg) {
     snprintf(cfg->airport_service_type, sizeof(cfg->airport_service_type), "%s", "_airport._tcp.local.");
     cfg->port = 445;
     cfg->ttl = 120;
-    cfg->ipv4_addr = inet_addr("10.0.1.77");
 }
 
 static size_t make_query_with_known_a_pair(unsigned char *packet, const struct config *cfg,
@@ -4553,21 +3884,25 @@ static int count_rr_type(const unsigned char *packet, size_t packet_len, unsigne
 
 int main(void) {
     struct config cfg;
-    struct iface_context response_ctx;
     struct link_context response_link;
     struct service_record_set snapshot;
     struct sockaddr_in mdns_dest;
     struct sockaddr_in source;
     unsigned char query[BUF_SIZE];
     size_t query_len;
+    uint32_t primary_addr;
     uint32_t link_local_addr;
 
     configure_base(&cfg);
-    memset(&response_ctx, 0, sizeof(response_ctx));
-    snprintf(response_ctx.name, sizeof(response_ctx.name), "%s", "bridge0");
-    response_ctx.ipv4_addr = cfg.ipv4_addr;
-    response_ctx.netmask = inet_addr("255.255.255.0");
-    link_context_from_iface_context(&response_link, &response_ctx);
+    primary_addr = inet_addr("10.0.1.77");
+    memset(&response_link, 0, sizeof(response_link));
+    snprintf(response_link.name, sizeof(response_link.name), "%s", "bridge0");
+    response_link.flags = IFF_UP | IFF_RUNNING;
+    response_link.ipv4[0].addr = primary_addr;
+    response_link.ipv4[0].netmask = inet_addr("255.255.255.0");
+    response_link.ipv4_count = 1;
+    response_link.mdns_ipv4_transport = 1;
+    response_link.mdns_ipv4_transport_addr = primary_addr;
     memset(&snapshot, 0, sizeof(snapshot));
     memset(&mdns_dest, 0, sizeof(mdns_dest));
     mdns_dest.sin_family = AF_INET;
@@ -4579,7 +3914,7 @@ int main(void) {
     source.sin_addr.s_addr = inet_addr("10.0.1.42");
 
     reset_captures();
-    query_len = make_query_with_known_a(query, &cfg, 100, cfg.ipv4_addr);
+    query_len = make_query_with_known_a(query, &cfg, 100, primary_addr);
     if (query_len == 0 ||
         handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0 ||
         captured_count != 0) {
@@ -4595,7 +3930,7 @@ int main(void) {
     response_link.ipv4_count++;
 
     reset_captures();
-    query_len = make_query_with_known_a(query, &cfg, 100, cfg.ipv4_addr);
+    query_len = make_query_with_known_a(query, &cfg, 100, primary_addr);
     if (query_len == 0 ||
         handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0 ||
         captured_count != 1 ||
@@ -4604,7 +3939,7 @@ int main(void) {
     }
 
     reset_captures();
-    query_len = make_query_with_known_a_pair(query, &cfg, 100, cfg.ipv4_addr, 1, link_local_addr);
+    query_len = make_query_with_known_a_pair(query, &cfg, 100, primary_addr, 1, link_local_addr);
     if (query_len == 0 ||
         handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0 ||
         captured_count != 0) {
@@ -4612,7 +3947,7 @@ int main(void) {
     }
 
     reset_captures();
-    query_len = make_query_with_known_a(query, &cfg, 10, cfg.ipv4_addr);
+    query_len = make_query_with_known_a(query, &cfg, 10, primary_addr);
     if (query_len == 0 ||
         handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0 ||
         captured_count != 1 ||
@@ -4689,7 +4024,6 @@ static void configure_base(struct config *cfg) {
     snprintf(cfg->airport_service_type, sizeof(cfg->airport_service_type), "%s", "_airport._tcp.local.");
     cfg->port = 445;
     cfg->ttl = 120;
-    cfg->ipv4_addr = inet_addr("10.0.1.77");
 }
 
 static int count_rr_type(const unsigned char *packet, size_t packet_len, unsigned short want_type) {
@@ -4827,7 +4161,6 @@ static size_t make_srv_query_with_known(unsigned char *packet, const struct conf
 
 int main(void) {
     struct config cfg;
-    struct iface_context response_ctx;
     struct link_context response_link;
     struct service_record_set snapshot;
     struct sockaddr_in mdns_dest;
@@ -4835,17 +4168,22 @@ int main(void) {
     unsigned char query[BUF_SIZE];
     size_t query_len;
     char instance_fqdn[MAX_NAME];
+    uint32_t primary_addr;
     uint32_t link_local_addr;
 
     configure_base(&cfg);
+    primary_addr = inet_addr("10.0.1.77");
     if (build_instance_fqdn(instance_fqdn, sizeof(instance_fqdn), cfg.instance_name, cfg.service_type) != 0) {
         return 1;
     }
-    memset(&response_ctx, 0, sizeof(response_ctx));
-    snprintf(response_ctx.name, sizeof(response_ctx.name), "%s", "bridge0");
-    response_ctx.ipv4_addr = cfg.ipv4_addr;
-    response_ctx.netmask = inet_addr("255.255.255.0");
-    link_context_from_iface_context(&response_link, &response_ctx);
+    memset(&response_link, 0, sizeof(response_link));
+    snprintf(response_link.name, sizeof(response_link.name), "%s", "bridge0");
+    response_link.flags = IFF_UP | IFF_RUNNING;
+    response_link.ipv4[0].addr = primary_addr;
+    response_link.ipv4[0].netmask = inet_addr("255.255.255.0");
+    response_link.ipv4_count = 1;
+    response_link.mdns_ipv4_transport = 1;
+    response_link.mdns_ipv4_transport_addr = primary_addr;
     link_local_addr = inet_addr("169.254.44.55");
     response_link.ipv4[response_link.ipv4_count].addr = link_local_addr;
     response_link.ipv4[response_link.ipv4_count].netmask = ipv4_link_local_netmask();
@@ -4869,7 +4207,7 @@ int main(void) {
         !g_deferred_response.active) {
         return 2;
     }
-    query_len = make_known_a_only(query, &cfg, cfg.ipv4_addr);
+    query_len = make_known_a_only(query, &cfg, primary_addr);
     if (query_len == 0 ||
         handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0 ||
         captured_count != 1 ||
@@ -4976,7 +4314,6 @@ static void configure_base(struct config *cfg) {
     cfg->adisk_port = 9;
     cfg->airport_port = 5009;
     cfg->ttl = 120;
-    cfg->ipv4_addr = inet_addr("10.0.1.77");
 }
 
 static void configure_addrs(struct sockaddr_in *mdns_dest, struct sockaddr_in *source) {
@@ -5071,7 +4408,6 @@ static int packet_has_browse_additionals(const unsigned char *packet, size_t pac
 
 int main(void) {
     struct config cfg;
-    struct iface_context response_ctx;
     struct link_context response_link;
     struct service_record_set snapshot;
     struct sockaddr_in mdns_dest;
@@ -5080,11 +4416,14 @@ int main(void) {
     size_t query_len;
 
     configure_base(&cfg);
-    memset(&response_ctx, 0, sizeof(response_ctx));
-    snprintf(response_ctx.name, sizeof(response_ctx.name), "%s", "bridge0");
-    response_ctx.ipv4_addr = cfg.ipv4_addr;
-    response_ctx.netmask = inet_addr("255.255.255.0");
-    link_context_from_iface_context(&response_link, &response_ctx);
+    memset(&response_link, 0, sizeof(response_link));
+    snprintf(response_link.name, sizeof(response_link.name), "%s", "bridge0");
+    response_link.flags = IFF_UP | IFF_RUNNING;
+    response_link.ipv4[0].addr = inet_addr("10.0.1.77");
+    response_link.ipv4[0].netmask = inet_addr("255.255.255.0");
+    response_link.ipv4_count = 1;
+    response_link.mdns_ipv4_transport = 1;
+    response_link.mdns_ipv4_transport_addr = response_link.ipv4[0].addr;
     memset(&snapshot, 0, sizeof(snapshot));
     configure_addrs(&mdns_dest, &source);
     add_snapshot_record(&snapshot, "_airport._tcp.local.", "Alton Time Capsule", "Alton-Time-Capsule", 5009, "syAP=116");
@@ -5262,7 +4601,6 @@ static int count_rr_type(const unsigned char *packet, size_t packet_len, unsigne
 
 int main(void) {{
     struct config cfg;
-    struct iface_context response_ctx;
     struct link_context response_link;
     struct service_record_set snapshot;
     struct sockaddr_in dest;
@@ -5283,20 +4621,21 @@ int main(void) {{
     snprintf(cfg.adisk_service_type, sizeof(cfg.adisk_service_type), "%s", "_adisk._tcp.local.");
     snprintf(cfg.airport_service_type, sizeof(cfg.airport_service_type), "%s", "_airport._tcp.local.");
     snprintf(cfg.device_model, sizeof(cfg.device_model), "%s", "TimeCapsule8,119");
-    snprintf(cfg.adisk_share_name, sizeof(cfg.adisk_share_name), "%s", "Data");
-    snprintf(cfg.adisk_disk_key, sizeof(cfg.adisk_disk_key), "%s", "dk2");
-    snprintf(cfg.adisk_uuid, sizeof(cfg.adisk_uuid), "%s", "c4f673b8-c422-4da7-92a1-54bffe406af2");
-    snprintf(cfg.adisk_disk_advf, sizeof(cfg.adisk_disk_advf), "%s", "0x82");
     snprintf(cfg.adisk_sys_wama, sizeof(cfg.adisk_sys_wama), "%s", "80:EA:96:E6:58:68");
     cfg.port = 445;
     cfg.adisk_port = 9;
     cfg.ttl = 120;
-    cfg.ipv4_addr = inet_addr("192.168.1.217");
-    memset(&response_ctx, 0, sizeof(response_ctx));
-    snprintf(response_ctx.name, sizeof(response_ctx.name), "%s", "bridge0");
-    response_ctx.ipv4_addr = cfg.ipv4_addr;
-    response_ctx.netmask = inet_addr("255.255.255.0");
-    link_context_from_iface_context(&response_link, &response_ctx);
+    if (add_adisk_disk_config(&cfg, "Data", "dk2", "c4f673b8-c422-4da7-92a1-54bffe406af2", "0x82") != 0) {{
+        return 1;
+    }}
+    memset(&response_link, 0, sizeof(response_link));
+    snprintf(response_link.name, sizeof(response_link.name), "%s", "bridge0");
+    response_link.flags = IFF_UP | IFF_RUNNING;
+    response_link.ipv4[0].addr = inet_addr("192.168.1.217");
+    response_link.ipv4[0].netmask = inet_addr("255.255.255.0");
+    response_link.ipv4_count = 1;
+    response_link.mdns_ipv4_transport = 1;
+    response_link.mdns_ipv4_transport_addr = response_link.ipv4[0].addr;
 
     memset(&snapshot, 0, sizeof(snapshot));
 
@@ -5481,7 +4820,6 @@ static void add_snapshot_record(struct service_record_set *snapshot,
 
 int main(void) {
     struct config cfg;
-    struct iface_context response_ctx;
     struct link_context response_link;
     struct service_record_set snapshot;
     struct sockaddr_in dest;
@@ -5510,13 +4848,15 @@ int main(void) {
     cfg.adisk_port = 9;
     cfg.airport_port = 5009;
     cfg.ttl = 120;
-    cfg.ipv4_addr = inet_addr("10.0.1.77");
     cfg.diskless = 1;
-    memset(&response_ctx, 0, sizeof(response_ctx));
-    snprintf(response_ctx.name, sizeof(response_ctx.name), "%s", "bridge0");
-    response_ctx.ipv4_addr = cfg.ipv4_addr;
-    response_ctx.netmask = inet_addr("255.255.255.0");
-    link_context_from_iface_context(&response_link, &response_ctx);
+    memset(&response_link, 0, sizeof(response_link));
+    snprintf(response_link.name, sizeof(response_link.name), "%s", "bridge0");
+    response_link.flags = IFF_UP | IFF_RUNNING;
+    response_link.ipv4[0].addr = inet_addr("10.0.1.77");
+    response_link.ipv4[0].netmask = inet_addr("255.255.255.0");
+    response_link.ipv4_count = 1;
+    response_link.mdns_ipv4_transport = 1;
+    response_link.mdns_ipv4_transport_addr = response_link.ipv4[0].addr;
     if (add_adisk_disk_config(&cfg, "Data", "dk2", "12345678-1234-1234-1234-123456789012", "0x82") != 0) {
         return 1;
     }
@@ -5643,20 +4983,35 @@ int main(void) {{
         run = self._compile_and_run_c_helper(source, "nbns_sendto_eintr")
         self.assertEqual(run.returncode, 0, run.stderr)
 
-    def test_nbns_advertiser_rejects_auto_ip_with_explicit_ipv4(self) -> None:
+    def test_nbns_advertiser_rejects_removed_legacy_cli_modes(self) -> None:
         if shutil.which("cc") is None:
             self.skipTest("cc not available")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             bin_path = self._compile_nbns_advertiser_binary(Path(tmpdir))
-            run = subprocess.run(
-                [str(bin_path), "--name", "TimeCapsule", "--auto-ip", "--ipv4", "192.168.1.217"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        self.assertEqual(run.returncode, 2)
-        self.assertIn("mutually exclusive", run.stderr)
+            runs = [
+                subprocess.run(
+                    [str(bin_path), "--name", "TimeCapsule", "--ipv4", "192.168.1.217"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                ),
+                subprocess.run(
+                    [str(bin_path), "--name", "TimeCapsule", "--auto-ip", "--ttl", "30"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                ),
+                subprocess.run(
+                    [str(bin_path), "--check-auto-ip"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                ),
+            ]
+        for run in runs:
+            self.assertEqual(run.returncode, 2)
+            self.assertIn("Usage:", run.stderr)
 
     def test_nbns_advertiser_version_prints_version_code(self) -> None:
         if shutil.which("cc") is None:
@@ -5669,22 +5024,7 @@ int main(void) {{
         self.assertEqual(run.stdout, "2104\n")
         self.assertEqual(run.stderr, "")
 
-    def test_nbns_advertiser_rejects_ttl_with_trailing_garbage(self) -> None:
-        if shutil.which("cc") is None:
-            self.skipTest("cc not available")
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            bin_path = self._compile_nbns_advertiser_binary(Path(tmpdir))
-            run = subprocess.run(
-                [str(bin_path), "--name", "TimeCapsule", "--ipv4", "192.168.1.217", "--ttl", "30junk"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        self.assertEqual(run.returncode, 2)
-        self.assertIn("ttl must be between 1 and 86400", run.stderr)
-
-    def test_nbns_advertiser_usage_reports_120_second_default_ttl(self) -> None:
+    def test_nbns_advertiser_usage_reports_auto_ip_only(self) -> None:
         if shutil.which("cc") is None:
             self.skipTest("cc not available")
 
@@ -5693,7 +5033,11 @@ int main(void) {{
             run = subprocess.run([str(bin_path), "--help"], capture_output=True, text=True, check=False)
 
         self.assertEqual(run.returncode, 0)
-        self.assertIn("Record TTL (default: 120)", run.stderr)
+        self.assertIn("Usage:", run.stderr)
+        self.assertIn("--auto-ip", run.stderr)
+        self.assertNotIn("--ipv4", run.stderr)
+        self.assertNotIn("--ttl", run.stderr)
+        self.assertNotIn("--check-auto-ip", run.stderr)
 
     def test_nbns_advertiser_builds_rfc_query_and_status_responses(self) -> None:
         nbns_source = (REPO_ROOT / "build" / "nbns-advertiser.c").as_posix()
@@ -6222,7 +5566,7 @@ int main(void) {{
         with tempfile.TemporaryDirectory() as tmpdir:
             bin_path = self._compile_nbns_advertiser_binary(Path(tmpdir))
             run = subprocess.run(
-                [str(bin_path), "--name", "ABCDEFGHIJKLMNOP", "--ipv4", "192.168.1.217"],
+                [str(bin_path), "--name", "ABCDEFGHIJKLMNOP", "--auto-ip"],
                 capture_output=True,
                 text=True,
                 check=False,
