@@ -22,6 +22,7 @@ case "$TC_START_MODE" in
         exit $?
         ;;
     ""|--reload-disk-runtime)
+        # reload means the old runtime is no longer trusted; stop it, then rebuild from current truth, and stay down if current truth is broken
         ;;
     *)
         tc_log "unknown start-samba.sh mode: $TC_START_MODE"

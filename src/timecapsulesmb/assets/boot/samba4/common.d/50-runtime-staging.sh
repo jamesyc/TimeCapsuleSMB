@@ -1,3 +1,29 @@
+tc_cleanup_disk_refresh_temp_files() {
+    rm -f "$1" "$2" "$3" "$4" "$5"
+}
+
+tc_write_empty_disk_refresh_state() {
+    empty_shares_file=$1
+    empty_adisk_file=$2
+    empty_payload_file=$3
+
+    : >"$empty_shares_file" || return 1
+    : >"$empty_adisk_file" || return 1
+    : >"$empty_payload_file" || return 1
+}
+
+tc_publish_disk_refresh_state() {
+    publish_volumes_file=$1
+    publish_shares_file=$2
+    publish_adisk_file=$3
+    publish_payload_file=$4
+
+    mv -f "$publish_volumes_file" "$TC_TOPOLOGY_SIGNATURE" || return 1
+    mv -f "$publish_shares_file" "$TC_SHARES_TSV" || return 1
+    mv -f "$publish_adisk_file" "$TC_ADISK_TSV" || return 1
+    mv -f "$publish_payload_file" "$TC_PAYLOAD_TSV" || return 1
+}
+
 tc_refresh_disk_state() {
     volumes_file="$TC_STATE_DIR/mast-volumes.$$"
     raw_file="$TC_STATE_DIR/mast.raw.$$"
@@ -11,7 +37,7 @@ tc_refresh_disk_state() {
     if ! tc_read_mast_volumes_to "$volumes_file" "$raw_file"; then
         tc_log "MaSt discovery failed"
         TC_DISK_REFRESH_RESULT=mast_failed
-        rm -f "$volumes_file" "$raw_file" "$shares_file" "$adisk_file" "$payload_file"
+        tc_cleanup_disk_refresh_temp_files "$volumes_file" "$raw_file" "$shares_file" "$adisk_file" "$payload_file"
         return 1
     fi
     tc_log "disk-state refresh: MaSt discovery complete"
@@ -19,16 +45,15 @@ tc_refresh_disk_state() {
 
     if [ ! -s "$volumes_file" ]; then
         tc_log "disk-state refresh: MaSt reports zero managed HFS volumes; writing diskless runtime state"
-        : >"$shares_file"
-        : >"$adisk_file"
-        : >"$payload_file"
-        mv -f "$volumes_file" "$TC_TOPOLOGY_SIGNATURE"
-        mv -f "$shares_file" "$TC_SHARES_TSV"
-        mv -f "$adisk_file" "$TC_ADISK_TSV"
-        mv -f "$payload_file" "$TC_PAYLOAD_TSV"
+        if ! tc_write_empty_disk_refresh_state "$shares_file" "$adisk_file" "$payload_file" ||
+            ! tc_publish_disk_refresh_state "$volumes_file" "$shares_file" "$adisk_file" "$payload_file"; then
+            tc_log "disk-state refresh failed: could not publish diskless runtime state"
+            tc_cleanup_disk_refresh_temp_files "$volumes_file" "$raw_file" "$shares_file" "$adisk_file" "$payload_file"
+            return 1
+        fi
         TC_DISK_REFRESH_RESULT=no_payload
         tc_log "disk-state refresh complete: diskless runtime state written"
-        rm -f "$raw_file" "$volumes_file" "$shares_file" "$adisk_file" "$payload_file"
+        tc_cleanup_disk_refresh_temp_files "$volumes_file" "$raw_file" "$shares_file" "$adisk_file" "$payload_file"
         return 0
     fi
 
@@ -38,32 +63,30 @@ tc_refresh_disk_state() {
     tc_log "disk-state refresh: resolving payload directory"
     if ! tc_resolve_payload "$volumes_file"; then
         tc_log "payload discovery failed; writing no-payload runtime state"
-        : >"$shares_file"
-        : >"$adisk_file"
-        : >"$payload_file"
-        mv -f "$volumes_file" "$TC_TOPOLOGY_SIGNATURE"
-        mv -f "$shares_file" "$TC_SHARES_TSV"
-        mv -f "$adisk_file" "$TC_ADISK_TSV"
-        mv -f "$payload_file" "$TC_PAYLOAD_TSV"
+        if ! tc_write_empty_disk_refresh_state "$shares_file" "$adisk_file" "$payload_file" ||
+            ! tc_publish_disk_refresh_state "$volumes_file" "$shares_file" "$adisk_file" "$payload_file"; then
+            tc_log "disk-state refresh failed: could not publish no-payload runtime state"
+            tc_cleanup_disk_refresh_temp_files "$volumes_file" "$raw_file" "$shares_file" "$adisk_file" "$payload_file"
+            return 1
+        fi
         TC_DISK_REFRESH_RESULT=no_payload
         tc_log "disk-state refresh complete: no-payload runtime state written"
-        rm -f "$raw_file" "$volumes_file" "$shares_file" "$adisk_file" "$payload_file"
+        tc_cleanup_disk_refresh_temp_files "$volumes_file" "$raw_file" "$shares_file" "$adisk_file" "$payload_file"
         return 0
     fi
 
     tc_log "disk-state refresh: building share state from mounted writable MaSt volumes"
     if ! tc_build_share_state "$volumes_file" "$shares_file" "$adisk_file"; then
         tc_log "no writable MaSt share volumes are available; writing no-payload runtime state"
-        : >"$shares_file"
-        : >"$adisk_file"
-        : >"$payload_file"
-        mv -f "$volumes_file" "$TC_TOPOLOGY_SIGNATURE"
-        mv -f "$shares_file" "$TC_SHARES_TSV"
-        mv -f "$adisk_file" "$TC_ADISK_TSV"
-        mv -f "$payload_file" "$TC_PAYLOAD_TSV"
+        if ! tc_write_empty_disk_refresh_state "$shares_file" "$adisk_file" "$payload_file" ||
+            ! tc_publish_disk_refresh_state "$volumes_file" "$shares_file" "$adisk_file" "$payload_file"; then
+            tc_log "disk-state refresh failed: could not publish no-payload runtime state"
+            tc_cleanup_disk_refresh_temp_files "$volumes_file" "$raw_file" "$shares_file" "$adisk_file" "$payload_file"
+            return 1
+        fi
         TC_DISK_REFRESH_RESULT=no_payload
         tc_log "disk-state refresh complete: no-payload runtime state written"
-        rm -f "$raw_file" "$volumes_file" "$shares_file" "$adisk_file" "$payload_file"
+        tc_cleanup_disk_refresh_temp_files "$volumes_file" "$raw_file" "$shares_file" "$adisk_file" "$payload_file"
         return 0
     fi
     tc_log "disk-state refresh: share state ready"
@@ -71,11 +94,12 @@ tc_refresh_disk_state() {
     tc_log "disk-state refresh: applying ATA drive settings after payload and share-state build"
     tc_configure_ata_drive_settings_for_mast_disks "$volumes_file" || true
 
-    tc_write_payload_state "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME" "$TC_RESOLVED_PAYLOAD_DEVICE" "$payload_file"
-    mv -f "$volumes_file" "$TC_TOPOLOGY_SIGNATURE"
-    mv -f "$shares_file" "$TC_SHARES_TSV"
-    mv -f "$adisk_file" "$TC_ADISK_TSV"
-    mv -f "$payload_file" "$TC_PAYLOAD_TSV"
+    if ! tc_write_payload_state "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME" "$TC_RESOLVED_PAYLOAD_DEVICE" "$payload_file" ||
+        ! tc_publish_disk_refresh_state "$volumes_file" "$shares_file" "$adisk_file" "$payload_file"; then
+        tc_log "disk-state refresh failed: could not publish runtime state"
+        tc_cleanup_disk_refresh_temp_files "$volumes_file" "$raw_file" "$shares_file" "$adisk_file" "$payload_file"
+        return 1
+    fi
     tc_log "disk-state refresh: payload state written: dir=$TC_RESOLVED_PAYLOAD_DIR volume=$TC_RESOLVED_PAYLOAD_VOLUME device=$TC_RESOLVED_PAYLOAD_DEVICE"
     tc_set_payload_log_dir "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME"
     if tc_payload_log_dir_ready; then
@@ -86,7 +110,7 @@ tc_refresh_disk_state() {
 
     tc_log "disk-state refresh complete: runtime state written"
     TC_DISK_REFRESH_RESULT=ready
-    rm -f "$volumes_file" "$raw_file" "$shares_file" "$adisk_file" "$payload_file"
+    tc_cleanup_disk_refresh_temp_files "$volumes_file" "$raw_file" "$shares_file" "$adisk_file" "$payload_file"
     return 0
 }
 
@@ -111,14 +135,14 @@ tc_stage_disk_runtime() {
         fi
     fi
 
-    tc_stage_runtime "$TC_PAYLOAD_DIR" "$SMBD_SRC" "$NBNS_SRC"
+    tc_stage_runtime "$TC_PAYLOAD_DIR" "$SMBD_SRC" "$NBNS_SRC" || return 1
     if [ -z "$TC_SMB_BIND_INTERFACES" ]; then
         tc_refresh_smb_bind_interfaces || {
             tc_log "runtime staging failed: no usable bind address is available"
             return 1
         }
     fi
-    tc_generate_smb_conf "$TC_PAYLOAD_DIR"
+    tc_generate_smb_conf "$TC_PAYLOAD_DIR" || return 1
     tc_log "runtime staging complete under $RAM_ROOT"
 }
 
@@ -217,22 +241,22 @@ tc_stage_runtime() {
     smbd_src=$2
     nbns_src=${3:-}
 
-    cp "$smbd_src" "$TC_SMBD_BIN"
-    chmod 755 "$TC_SMBD_BIN"
+    cp "$smbd_src" "$TC_SMBD_BIN" || return 1
+    chmod 755 "$TC_SMBD_BIN" || return 1
 
     for required_file in smbpasswd username.map; do
         if [ ! -f "$payload_dir/private/$required_file" ]; then
             tc_log "required Samba private file missing: $payload_dir/private/$required_file"
             return 1
         fi
-        cp "$payload_dir/private/$required_file" "$RAM_PRIVATE/$required_file"
+        cp "$payload_dir/private/$required_file" "$RAM_PRIVATE/$required_file" || return 1
     done
-    chmod 600 "$RAM_PRIVATE/smbpasswd" "$RAM_PRIVATE/username.map"
+    chmod 600 "$RAM_PRIVATE/smbpasswd" "$RAM_PRIVATE/username.map" || return 1
     tc_log "staged Samba auth files into RAM private directory"
 
     if [ "$NBNS_ENABLED" = "1" ] && [ -n "$nbns_src" ] && [ -x "$nbns_src" ]; then
-        cp "$nbns_src" "$TC_NBNS_BIN"
-        chmod 755 "$TC_NBNS_BIN"
+        cp "$nbns_src" "$TC_NBNS_BIN" || return 1
+        chmod 755 "$TC_NBNS_BIN" || return 1
         tc_log "staged nbns runtime binary"
     else
         tc_log "nbns runtime staging skipped"
@@ -271,7 +295,7 @@ tc_generate_smb_conf() {
     smbd_protocol_lines=
     smbd_fruit_model=$(tc_smbd_fruit_model)
 
-    mkdir -p "$payload_dir/logs"
+    mkdir -p "$payload_dir/logs" || return 1
     chmod 755 "$payload_dir/logs" >/dev/null 2>&1 || true
     tc_prepare_smbd_core_dir "$payload_dir/logs" || true
     if [ "$TC_SMBD_DISK_LOGGING_ENABLED" = "1" ]; then
@@ -279,7 +303,7 @@ tc_generate_smb_conf() {
         : >>"$smbd_log" || true
         tc_log "smbd debug logging enabled at $smbd_log"
     else
-        tc_prepare_log_file "$smbd_log" "$TC_RUNTIME_LOG_MAX_BYTES"
+        tc_prepare_log_file "$smbd_log" "$TC_RUNTIME_LOG_MAX_BYTES" || return 1
     fi
     if [ "$ANY_PROTOCOL" != "1" ]; then
         smbd_protocol_lines="    min protocol = SMB2
@@ -361,5 +385,5 @@ EOF
     force directory mode = 0777
 EOF
         done <"$TC_SHARES_TSV"
-    } >"$TC_SMBD_CONF"
+    } >"$TC_SMBD_CONF" || return 1
 }

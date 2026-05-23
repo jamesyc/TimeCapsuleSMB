@@ -543,7 +543,7 @@ tc_unique_share_name() {
         candidate=$(tc_share_name_with_suffix "$base" " ($device-$suffix)" "$max_bytes")
         suffix=$((suffix + 1))
     done
-    echo "$candidate" >>"$TC_USED_SHARE_NAMES_FILE"
+    echo "$candidate" >>"$TC_USED_SHARE_NAMES_FILE" || return 1
     echo "$candidate"
 }
 
@@ -574,7 +574,7 @@ tc_prepare_time_machine_marker() {
     share_path=$1
     marker="$share_path/.com.apple.timemachine.supported"
 
-    : >"$marker"
+    : >"$marker" || return 1
 }
 
 tc_prepare_share_path() {
@@ -583,9 +583,9 @@ tc_prepare_share_path() {
     share_path=$(tc_share_path_for_volume "$builtin" "$volume_root")
 
     if [ "$share_path" != "$volume_root" ]; then
-        mkdir -p "$share_path"
+        mkdir -p "$share_path" || return 1
     fi
-    tc_prepare_time_machine_marker "$share_path"
+    tc_prepare_time_machine_marker "$share_path" || return 1
     echo "$share_path"
 }
 
@@ -598,8 +598,8 @@ tc_append_share_state_row() {
     shares_tsv=${TC_BUILD_SHARES_TSV:-$TC_SHARES_TSV}
     adisk_tsv=${TC_BUILD_ADISK_TSV:-$TC_ADISK_TSV}
 
-    printf '%s\t%s\t%s\t%s\t%s\n' "$share_name" "$share_path" "$part_device" "$builtin" "$part_uuid" >>"$shares_tsv"
-    printf '%s\t%s\t%s\t%s\n' "$share_name" "$part_device" "$part_uuid" "$TC_ADISK_DISK_ADVF" >>"$adisk_tsv"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$share_name" "$share_path" "$part_device" "$builtin" "$part_uuid" >>"$shares_tsv" || return 1
+    printf '%s\t%s\t%s\t%s\n' "$share_name" "$part_device" "$part_uuid" "$TC_ADISK_DISK_ADVF" >>"$adisk_tsv" || return 1
 }
 
 tc_active_share_device_is_managed() {
@@ -616,6 +616,15 @@ tc_active_share_device_is_managed() {
     return 1
 }
 
+tc_reset_share_state_build() {
+    if [ -n "$TC_USED_SHARE_NAMES_FILE" ]; then
+        rm -f "$TC_USED_SHARE_NAMES_FILE"
+    fi
+    TC_BUILD_SHARES_TSV=
+    TC_BUILD_ADISK_TSV=
+    TC_USED_SHARE_NAMES_FILE=
+}
+
 tc_build_share_state() {
     volumes_file=${1:-}
     shares_tsv=${2:-$TC_SHARES_TSV}
@@ -629,12 +638,15 @@ tc_build_share_state() {
         return 1
     fi
 
-    : >"$shares_tsv"
-    : >"$adisk_tsv"
+    : >"$shares_tsv" || return 1
+    : >"$adisk_tsv" || return 1
     TC_BUILD_SHARES_TSV=$shares_tsv
     TC_BUILD_ADISK_TSV=$adisk_tsv
     TC_USED_SHARE_NAMES_FILE=$used_share_names_file
-    : >"$TC_USED_SHARE_NAMES_FILE"
+    : >"$TC_USED_SHARE_NAMES_FILE" || {
+        tc_reset_share_state_build
+        return 1
+    }
 
     tc_log "share state build: scanning mounted writable MaSt volumes"
     disk_device=
@@ -658,18 +670,25 @@ tc_build_share_state() {
             continue
         fi
 
-        share_path=$(tc_prepare_share_path "$builtin" "$volume_root")
+        share_path=$(tc_prepare_share_path "$builtin" "$volume_root") || {
+            tc_reset_share_state_build
+            return 1
+        }
         base_name=$(tc_sanitize_share_name "$part_name" "$part_device")
         share_name_budget=$(tc_adisk_share_name_budget "$part_device" "$part_uuid" "$TC_ADISK_DISK_ADVF")
-        share_name=$(tc_unique_share_name "$base_name" "$part_device" "$share_name_budget")
-        tc_append_share_state_row "$share_name" "$share_path" "$part_device" "$builtin" "$part_uuid"
+        share_name=$(tc_unique_share_name "$base_name" "$part_device" "$share_name_budget") || {
+            tc_reset_share_state_build
+            return 1
+        }
+        tc_append_share_state_row "$share_name" "$share_path" "$part_device" "$builtin" "$part_uuid" || {
+            tc_reset_share_state_build
+            return 1
+        }
         share_count=$((share_count + 1))
         tc_log "share prepared: $share_name -> $share_path uuid=$part_uuid builtin=$builtin"
     done <"$volumes_file"
 
-    rm -f "$TC_USED_SHARE_NAMES_FILE"
-    TC_BUILD_SHARES_TSV=
-    TC_BUILD_ADISK_TSV=
+    tc_reset_share_state_build
     tc_log "share state build complete: candidates=$candidate_count shares=$share_count"
     [ -s "$shares_tsv" ]
 }
@@ -804,7 +823,7 @@ tc_write_payload_state() {
     volume_root=$2
     device_path=$3
     payload_tsv=${4:-$TC_PAYLOAD_TSV}
-    printf '%s\t%s\t%s\n' "$payload_dir" "$volume_root" "$device_path" >"$payload_tsv"
+    printf '%s\t%s\t%s\n' "$payload_dir" "$volume_root" "$device_path" >"$payload_tsv" || return 1
 }
 
 tc_load_payload_state() {

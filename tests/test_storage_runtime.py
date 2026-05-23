@@ -1924,6 +1924,50 @@ MaSt = (
         self.assertNotIn("unexpected-mount", proc.stdout)
         self.assertIn("MaSt reports zero managed HFS volumes; writing diskless runtime state", proc.stdout)
 
+    def test_common_refresh_disk_state_publish_failure_fails_under_conditional_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            script = tmp_path / "refresh-publish-failure.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    mkdir -p "$RAM_VAR"
+                    tc_read_mast_volumes_to() {{ : >"$1"; : >"$2"; return 0; }}
+                    mv() {{
+                        if [ "${{3:-}}" = "$TC_PAYLOAD_TSV" ]; then
+                            echo "blocked publish $3"
+                            return 1
+                        fi
+                        /bin/mv "$@"
+                    }}
+                    if tc_refresh_disk_state; then
+                        echo refresh-ok
+                    else
+                        echo refresh-failed
+                    fi
+                    printf 'result=%s\\n' "$TC_DISK_REFRESH_RESULT"
+                    cat "$RAM_VAR/test.log"
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("blocked publish ", proc.stdout)
+        self.assertIn("refresh-failed\n", proc.stdout)
+        self.assertIn("result=failed\n", proc.stdout)
+        self.assertIn("disk-state refresh failed: could not publish diskless runtime state", proc.stdout)
+        self.assertNotIn("disk-state refresh complete: diskless runtime state written", proc.stdout)
+
     def test_common_refresh_disk_state_mast_failure_keeps_existing_runtime_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -2099,6 +2143,104 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("status=1\n", proc.stdout)
         self.assertIn("payload discovery failed: payload state is unavailable", proc.stdout)
+
+    def test_common_stage_disk_runtime_copy_failure_fails_under_conditional_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            (payload / "private").mkdir(parents=True)
+            (payload / "smbd").write_text("#!/bin/sh\n")
+            (payload / "smbd").chmod(0o755)
+            (payload / "private/smbpasswd").write_text("admin:x\n")
+            (payload / "private/username.map").write_text("admin = root\n")
+            script = tmp_path / "stage-copy-failure.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    tc_prepare_ram_root
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
+                    tc_write_payload_state {payload} {volumes}/dk2 /dev/dk2
+                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	f42bdb83-c265-5522-a087-25606a4d0abf
+                    EOF
+                    cp() {{
+                        echo "blocked cp $1 $2"
+                        return 1
+                    }}
+                    if tc_stage_disk_runtime; then
+                        echo stage-ok
+                    else
+                        echo stage-failed
+                    fi
+                    cat {memory}/samba4/var/test.log
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("blocked cp ", proc.stdout)
+        self.assertIn("stage-failed\n", proc.stdout)
+        self.assertNotIn("stage-ok", proc.stdout)
+        self.assertNotIn("runtime staging complete under", proc.stdout)
+
+    def test_common_stage_disk_runtime_config_failure_fails_under_conditional_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            (payload / "private").mkdir(parents=True)
+            (payload / "smbd").write_text("#!/bin/sh\n")
+            (payload / "smbd").chmod(0o755)
+            (payload / "private/smbpasswd").write_text("admin:x\n")
+            (payload / "private/username.map").write_text("admin = root\n")
+            script = tmp_path / "stage-config-failure.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_set_log "$RAM_VAR/test.log" test
+                    tc_prepare_ram_root
+                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
+                    tc_write_payload_state {payload} {volumes}/dk2 /dev/dk2
+                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    Data	{volumes}/dk2/ShareRoot	dk2	1	f42bdb83-c265-5522-a087-25606a4d0abf
+                    EOF
+                    tc_generate_smb_conf() {{
+                        echo generate-failed
+                        return 1
+                    }}
+                    if tc_stage_disk_runtime; then
+                        echo stage-ok
+                    else
+                        echo stage-failed
+                    fi
+                    cat {memory}/samba4/var/test.log
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("generate-failed\n", proc.stdout)
+        self.assertIn("stage-failed\n", proc.stdout)
+        self.assertNotIn("stage-ok", proc.stdout)
+        self.assertNotIn("runtime staging complete under", proc.stdout)
 
     def test_common_smb_bind_context_waits_settles_and_uses_fresh_probe(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
