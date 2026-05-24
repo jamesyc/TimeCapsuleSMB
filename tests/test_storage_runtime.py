@@ -2247,6 +2247,8 @@ MaSt = (
                         mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE"
                         printf '#!/bin/sh\\nexit 0\\n' >"$TC_SMBD_BIN"
                         chmod 755 "$TC_SMBD_BIN"
+                        : >"$RAM_PRIVATE/smbpasswd"
+                        : >"$RAM_PRIVATE/username.map"
                         return 0
                     }}
                     tc_refresh_smb_bind_interfaces() {{
@@ -2419,6 +2421,8 @@ MaSt = (
                         mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE"
                         printf '#!/bin/sh\\nexit 0\\n' >"$TC_SMBD_BIN"
                         chmod 755 "$TC_SMBD_BIN"
+                        : >"$RAM_PRIVATE/smbpasswd"
+                        : >"$RAM_PRIVATE/username.map"
                         return 0
                     }}
                     tc_refresh_smb_bind_interfaces() {{
@@ -2437,6 +2441,7 @@ MaSt = (
                         esac
                     }}
                     tc_smbd_bound_tcp_445() {{ return 0; }}
+                    tc_reload_smbd_config() {{ echo reload >>{shlex.quote(str(events))}; }}
                     tc_mdns_bound_udp_5353() {{ return 0; }}
                     stop_runtime_process_by_ucomm() {{ :; }}
                     sleep() {{
@@ -2476,11 +2481,107 @@ MaSt = (
         self.assertIn("debounce\n", proc.stdout)
         self.assertEqual(acp_count_text, "3")
         self.assertEqual(events_text.count("identity\n"), 2, events_text)
+        self.assertEqual(events_text.count("stage\n"), 1, events_text)
+        self.assertEqual(events_text.count("reload\n"), 1, events_text)
         self.assertEqual(events_text.count("mdns-process\n"), 2, events_text)
         self.assertEqual(events_text.count("bind-probe\n"), 2, events_text)
         self.assertNotIn("manager pass 2 step=identity start", log_text)
         self.assertNotIn("manager pass 2 step=samba start", log_text)
         self.assertIn("disk_probe=change_confirmed", log_text)
+
+    def test_manager_restarts_smbd_when_config_reload_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            self.write_fake_acp(tmp_path, self.internal_mast_raw_with_volatile_fields(users=1))
+            with (flash / "tcapsulesmb.conf").open("a") as conf:
+                conf.write("TC_SMB_BIND_INTERFACES='127.0.0.1/8'\n")
+            events = tmp_path / "events"
+            smbd_state = tmp_path / "smbd-state"
+            smbd_state.write_text("running\n")
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                    tc_prepare_ram_root() {{ mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE" "$RAM_VAR"; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                        TC_RUNTIME_IDENTITY_READY=1
+                    }}
+                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_wake_or_mount_volume() {{ return 0; }}
+                    is_volume_root_mounted() {{ return 0; }}
+                    tc_verify_payload_dir() {{ return 0; }}
+                    tc_volume_is_writable() {{ return 0; }}
+                    tc_prepare_share_path() {{ echo "$2/ShareRoot"; }}
+                    tc_apply_ata_drive_setting() {{ :; }}
+                    tc_payload_log_dir_ready() {{ return 0; }}
+                    tc_find_payload_smbd() {{ echo "$1/smbd"; }}
+                    tc_stage_runtime() {{
+                        echo stage >>{shlex.quote(str(events))}
+                        mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE"
+                        cat >"$TC_SMBD_BIN" <<'EOF'
+                    #!/bin/sh
+                    printf 'running\\n' >{shlex.quote(str(smbd_state))}
+                    printf 'launched\\n' >>{shlex.quote(str(events))}
+                    exit 0
+                    EOF
+                        chmod 755 "$TC_SMBD_BIN"
+                        : >"$RAM_PRIVATE/smbpasswd"
+                        : >"$RAM_PRIVATE/username.map"
+                        return 0
+                    }}
+                    tc_probe_smb_bind_interfaces() {{ echo "127.0.0.1/8"; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            smbd) [ "$(/bin/cat {shlex.quote(str(smbd_state))})" = "running" ] ;;
+                            mdns-advertiser) return 0 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    tc_smbd_bound_tcp_445() {{ [ "$(/bin/cat {shlex.quote(str(smbd_state))})" = "running" ]; }}
+                    tc_reload_smbd_config() {{ echo reload >>{shlex.quote(str(events))}; return 1; }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    stop_runtime_process_by_ucomm() {{
+                        echo "stop $1" >>{shlex.quote(str(events))}
+                        if [ "$1" = "smbd" ]; then
+                            printf 'stopped\\n' >{shlex.quote(str(smbd_state))}
+                        fi
+                    }}
+                    sleep() {{
+                        case "$1" in
+                            1|5) return 0 ;;
+                            10) echo "status=$manager_status"; exit 0 ;;
+                        esac
+                        return 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            events_text = events.read_text()
+            log_text = (memory / "samba4/var/manager.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=0\n", proc.stdout)
+        self.assertEqual(
+            events_text.splitlines(),
+            ["stage", "reload", "stop smbd", "launched", "stop mdns-advertiser"],
+            events_text,
+        )
+        self.assertIn("manager smbd recovery: smbd config reload failed; restarting", log_text)
 
     def test_manager_mdns_captures_with_one_retry_when_apple_responder_is_alive(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4406,6 +4507,62 @@ MaSt = (
         self.assertIn("bind interfaces only = yes", proc.stdout)
         self.assertIn("nbns runtime staging skipped", log_text)
         self.assertNotIn("nbns binary not found", log_text)
+
+    def test_common_stage_runtime_installs_executables_with_temp_rename(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            payload = volumes / "dk2/.samba4"
+            (payload / "private").mkdir(parents=True)
+            (payload / "smbd").write_text("payload smbd\n")
+            (payload / "smbd").chmod(0o755)
+            (payload / "private/smbpasswd").write_text("admin:x\n")
+            (payload / "private/username.map").write_text("admin = root\n")
+            events = tmp_path / "stage-events"
+            script = tmp_path / "stage-runtime-temp-rename.sh"
+            script.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/bin/sh
+                    set -eu
+                    . {flash}/common.sh
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    tc_prepare_ram_root
+                    cp() {{
+                        echo "cp:$1:$2" >>{shlex.quote(str(events))}
+                        /bin/cp "$1" "$2"
+                    }}
+                    chmod() {{
+                        echo "chmod:$*" >>{shlex.quote(str(events))}
+                        /bin/chmod "$@"
+                    }}
+                    mv() {{
+                        echo "mv:$1:$2" >>{shlex.quote(str(events))}
+                        /bin/mv "$1" "$2"
+                    }}
+                    tc_stage_runtime {payload} {payload}/smbd ""
+                    printf 'dest='
+                    /bin/cat "$TC_SMBD_BIN"
+                    /bin/cat {shlex.quote(str(events))}
+                    """
+                )
+            )
+            script.chmod(0o755)
+
+            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("dest=payload smbd\n", proc.stdout)
+        self.assertRegex(
+            proc.stdout,
+            rf"cp:{payload}/smbd:{memory}/samba4/sbin/smbd\.tmp\.[0-9]+",
+        )
+        self.assertRegex(
+            proc.stdout,
+            rf"mv:{memory}/samba4/sbin/smbd\.tmp\.[0-9]+:{memory}/samba4/sbin/smbd",
+        )
+        self.assertNotIn(f"cp:{payload}/smbd:{memory}/samba4/sbin/smbd\n", proc.stdout)
 
     def test_common_stage_disk_runtime_fails_without_payload_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

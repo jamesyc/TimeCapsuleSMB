@@ -149,6 +149,49 @@ tc_manager_generate_smb_conf() {
     tc_generate_smb_conf_from_share_rows "$manager_payload_dir" "${manager_share_rows:-}"
 }
 
+tc_manager_file_metadata_signature() {
+    metadata_path=$1
+
+    if [ ! -f "$metadata_path" ]; then
+        printf '%s\tmissing\n' "$metadata_path"
+        return 0
+    fi
+
+    set -- $(/bin/ls -ln "$metadata_path" 2>/dev/null)
+    printf '%s\t%s\t%s\t%s\t%s\n' "$metadata_path" "${5:-}" "${6:-}" "${7:-}" "${8:-}"
+}
+
+tc_manager_samba_file_signature() {
+    payload_dir=$1
+    smbd_src=$2
+    nbns_src=$3
+
+    printf 'payload\t%s\n' "$payload_dir"
+    tc_manager_file_metadata_signature "$smbd_src"
+    tc_manager_file_metadata_signature "$payload_dir/private/smbpasswd"
+    tc_manager_file_metadata_signature "$payload_dir/private/username.map"
+    if [ "$NBNS_ENABLED" = "1" ] && [ -n "$nbns_src" ]; then
+        tc_manager_file_metadata_signature "$nbns_src"
+    else
+        printf 'nbns\t%s\n' "disabled-or-missing"
+    fi
+}
+
+tc_manager_samba_config_signature() {
+    printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+        "${TC_PAYLOAD_DIR:-}" \
+        "${TC_PAYLOAD_VOLUME:-}" \
+        "${TC_PAYLOAD_DEVICE:-}" \
+        "${TC_SMB_BIND_INTERFACES:-}" \
+        "${MDNS_DEVICE_MODEL:-}" \
+        "${SMB_NETBIOS_NAME:-}" \
+        "${SMB_SERVER_STRING:-}" \
+        "${ANY_PROTOCOL:-}" \
+        "${TC_SMBD_DISK_LOGGING_ENABLED:-}" \
+        "${PAYLOAD_DIR_NAME:-}" \
+        "${manager_share_rows:-}"
+}
+
 tc_manager_clear_payload_state() {
     manager_payload_ready=0
     manager_payload_dir=
@@ -160,6 +203,10 @@ tc_manager_clear_payload_state() {
     tc_clear_payload_log_dir
     manager_share_rows=
     manager_adisk_rows=
+    TC_MANAGER_RUNTIME_STAGED=0
+    TC_MANAGER_LAST_BINARY_SIGNATURE=
+    TC_MANAGER_LAST_CONFIG_SIGNATURE=
+    TC_MANAGER_PENDING_CONFIG_SIGNATURE=
     tc_manager_materialize_adisk_state || true
 }
 
@@ -431,6 +478,9 @@ tc_manager_apply_diskless_state() {
     manager_topology_rows=
     tc_manager_clear_payload_state
     TC_MANAGER_RUNTIME_STAGED=0
+    TC_MANAGER_LAST_BINARY_SIGNATURE=
+    TC_MANAGER_LAST_CONFIG_SIGNATURE=
+    TC_MANAGER_PENDING_CONFIG_SIGNATURE=
     TC_MANAGER_DISK_STATE_CHANGED=1
     tc_log "manager disk refresh complete: diskless/no-payload state applied reason=$refresh_reason"
 }
@@ -651,35 +701,107 @@ tc_manager_reconcile_disk_state() {
     return 0
 }
 
-tc_manager_stage_samba_runtime() {
+tc_manager_select_samba_sources() {
     if ! tc_manager_select_current_payload; then
         tc_log "manager Samba staging skipped: payload state is unavailable"
         return 1
     fi
 
-    SMBD_SRC=$(tc_find_payload_smbd "$manager_payload_dir") || {
+    manager_smbd_src=$(tc_find_payload_smbd "$manager_payload_dir") || {
         tc_log "manager Samba staging failed: missing smbd binary in $manager_payload_dir"
         return 1
     }
 
-    NBNS_SRC=
+    manager_nbns_src=
     if [ "$NBNS_ENABLED" = "1" ]; then
-        if NBNS_SRC=$(tc_find_payload_nbns "$manager_payload_dir"); then
+        if manager_nbns_src=$(tc_find_payload_nbns "$manager_payload_dir"); then
             :
         else
-            NBNS_SRC=
+            manager_nbns_src=
         fi
     fi
+}
 
-    tc_stage_runtime "$manager_payload_dir" "$SMBD_SRC" "$NBNS_SRC" || return 1
-    if [ -z "$TC_SMB_BIND_INTERFACES" ]; then
-        tc_refresh_smb_bind_interfaces || {
-            tc_log "manager Samba staging failed: no usable bind address is available"
-            return 1
-        }
+tc_manager_samba_runtime_files_missing() {
+    [ -x "$TC_SMBD_BIN" ] || return 0
+    [ -f "$RAM_PRIVATE/smbpasswd" ] || return 0
+    [ -f "$RAM_PRIVATE/username.map" ] || return 0
+    if [ "$NBNS_ENABLED" = "1" ] && [ -n "${manager_nbns_src:-}" ]; then
+        [ -x "$TC_NBNS_BIN" ] || return 0
     fi
+    return 1
+}
+
+tc_manager_stage_samba_runtime_files_if_needed() {
+    if ! tc_manager_select_samba_sources; then
+        return 1
+    fi
+
+    fresh_binary_signature=$(tc_manager_samba_file_signature "$manager_payload_dir" "$manager_smbd_src" "$manager_nbns_src")
+    manager_stage_needed=0
+    manager_binary_changed=0
+    if [ "${TC_MANAGER_RUNTIME_STAGED:-0}" != "1" ]; then
+        manager_stage_needed=1
+    elif [ "$fresh_binary_signature" != "${TC_MANAGER_LAST_BINARY_SIGNATURE:-}" ]; then
+        manager_stage_needed=1
+        manager_binary_changed=1
+    elif tc_manager_samba_runtime_files_missing; then
+        manager_stage_needed=1
+    fi
+
+    if [ "$manager_stage_needed" -eq 0 ]; then
+        tc_manager_debug_log "manager Samba runtime file staging unchanged"
+        return 0
+    fi
+
+    tc_log "manager Samba runtime file staging required"
+    tc_stage_runtime "$manager_payload_dir" "$manager_smbd_src" "$manager_nbns_src" || return 1
+    TC_MANAGER_LAST_BINARY_SIGNATURE=$fresh_binary_signature
+    TC_MANAGER_RUNTIME_STAGED=1
+    tc_log "manager Samba runtime file staging complete"
+
+    if runtime_process_present_by_ucomm smbd; then
+        if [ "$manager_binary_changed" -eq 1 ]; then
+            TC_MANAGER_SMBD_RESTART_REQUIRED=1
+        else
+            TC_MANAGER_SMBD_RELOAD_REQUIRED=1
+        fi
+    fi
+    return 0
+}
+
+tc_manager_render_smb_conf_if_needed() {
+    fresh_config_signature=$(tc_manager_samba_config_signature)
+    if [ "$fresh_config_signature" = "${TC_MANAGER_LAST_CONFIG_SIGNATURE:-}" ] && [ -f "$TC_SMBD_CONF" ]; then
+        tc_manager_debug_log "manager Samba config render unchanged"
+        return 0
+    fi
+
+    tc_log "manager Samba config render required"
     tc_manager_generate_smb_conf || return 1
-    tc_log "manager Samba staging complete under $RAM_ROOT"
+    TC_MANAGER_PENDING_CONFIG_SIGNATURE=$fresh_config_signature
+    if runtime_process_present_by_ucomm smbd; then
+        TC_MANAGER_SMBD_RELOAD_REQUIRED=1
+    fi
+    return 0
+}
+
+tc_manager_commit_smbd_runtime_apply() {
+    if [ -n "${TC_MANAGER_PENDING_CONFIG_SIGNATURE:-}" ]; then
+        TC_MANAGER_LAST_CONFIG_SIGNATURE=$TC_MANAGER_PENDING_CONFIG_SIGNATURE
+        TC_MANAGER_PENDING_CONFIG_SIGNATURE=
+    fi
+    TC_MANAGER_SMBD_RESTART_REQUIRED=0
+    TC_MANAGER_SMBD_RELOAD_REQUIRED=0
+}
+
+tc_manager_restore_smb_bind_after_config_failure() {
+    if [ "${TC_MANAGER_SMB_BIND_CHANGED:-0}" = "1" ]; then
+        TC_SMB_BIND_INTERFACES=${TC_MANAGER_SMB_BIND_PREVIOUS:-}
+        TC_MANAGER_SMB_BIND_CHANGED=0
+        TC_MANAGER_SMB_BIND_PREVIOUS=
+        tc_log "manager Samba: restored previous bind interfaces after config render failure"
+    fi
 }
 
 tc_manager_validate_smbd_runtime_state() {
@@ -762,19 +884,52 @@ tc_manager_start_smbd_if_needed() {
     return 1
 }
 
-tc_manager_restart_smbd_for_bind_change() {
-    restart_reason=$1
-    tc_log "manager smbd recovery: restarting smbd after bind interface change: $restart_reason"
-    stop_runtime_process_by_ucomm "smbd" smbd || return 1
-    tc_manager_start_smbd_if_needed
+tc_manager_apply_smbd_runtime_changes() {
+    if [ "${TC_MANAGER_SMBD_RESTART_REQUIRED:-0}" = "1" ]; then
+        tc_log "manager smbd recovery: restarting smbd after staged runtime change"
+        if runtime_process_present_by_ucomm smbd; then
+            stop_runtime_process_by_ucomm "smbd" smbd || return 1
+        fi
+        TC_MANAGER_SMBD_RELOAD_REQUIRED=0
+        if tc_manager_start_smbd_if_needed; then
+            tc_manager_commit_smbd_runtime_apply
+            return 0
+        fi
+        return 1
+    fi
+
+    if [ "${TC_MANAGER_SMBD_RELOAD_REQUIRED:-0}" = "1" ] &&
+        runtime_process_present_by_ucomm smbd &&
+        tc_smbd_bound_tcp_445; then
+        if tc_reload_smbd_config; then
+            tc_manager_commit_smbd_runtime_apply
+            return 0
+        fi
+        tc_log "manager smbd recovery: smbd config reload failed; restarting"
+        stop_runtime_process_by_ucomm "smbd" smbd || return 1
+        TC_MANAGER_SMBD_RELOAD_REQUIRED=0
+        if tc_manager_start_smbd_if_needed; then
+            tc_manager_commit_smbd_runtime_apply
+            return 0
+        fi
+        return 1
+    fi
+
+    if tc_manager_start_smbd_if_needed; then
+        tc_manager_commit_smbd_runtime_apply
+        return 0
+    fi
+    return 1
 }
 
 tc_manager_reconcile_smb_bind_interfaces() {
     TC_MANAGER_SMB_BIND_CHANGED=0
     TC_MANAGER_SMB_BIND_DEFERRED=0
+    TC_MANAGER_SMB_BIND_PREVIOUS=
 
     if fresh_bind_interfaces=$(tc_probe_smb_bind_interfaces); then
         if [ -z "${TC_SMB_BIND_INTERFACES:-}" ]; then
+            TC_MANAGER_SMB_BIND_PREVIOUS=
             TC_SMB_BIND_INTERFACES=$fresh_bind_interfaces
             TC_MANAGER_SMB_BIND_CHANGED=1
             tc_log "manager Samba: initialized bind interfaces: $TC_SMB_BIND_INTERFACES"
@@ -786,20 +941,16 @@ tc_manager_reconcile_smb_bind_interfaces() {
 
         old_bind_interfaces=$TC_SMB_BIND_INTERFACES
         TC_SMB_BIND_INTERFACES=$fresh_bind_interfaces
+        TC_MANAGER_SMB_BIND_PREVIOUS=$old_bind_interfaces
         TC_MANAGER_SMB_BIND_CHANGED=1
         tc_log "manager Samba: bind interfaces changed: $old_bind_interfaces -> $TC_SMB_BIND_INTERFACES"
         if ! tc_manager_validate_smbd_runtime_state; then
             TC_SMB_BIND_INTERFACES=$old_bind_interfaces
             TC_MANAGER_SMB_BIND_CHANGED=0
+            TC_MANAGER_SMB_BIND_PREVIOUS=
             tc_log "manager Samba: cannot apply bind change; disk runtime validation failed"
             return 1
         fi
-        if ! tc_manager_generate_smb_conf; then
-            TC_SMB_BIND_INTERFACES=$old_bind_interfaces
-            TC_MANAGER_SMB_BIND_CHANGED=0
-            return 1
-        fi
-        tc_manager_restart_smbd_for_bind_change "bind interfaces changed" || return 1
         return 0
     else
         bind_probe_status=$?
@@ -816,7 +967,7 @@ tc_manager_reconcile_smb_bind_interfaces() {
 }
 
 tc_manager_reconcile_smbd() {
-    if ! tc_manager_start_smbd_if_needed; then
+    if ! tc_manager_apply_smbd_runtime_changes; then
         tc_mark_smb_deferred_no_ip
         return 1
     fi
@@ -974,7 +1125,6 @@ tc_manager_run_identity_step() {
         TC_WATCHDOG_RECOVERY_IDENTITY_REFRESHED=1
         if tc_watchdog_identity_signature_changed; then
             TC_MANAGER_IDENTITY_CHANGED=1
-            TC_MANAGER_RUNTIME_STAGED=0
             tc_log "manager identity change: refreshing managed advertisers and Samba config"
             if tc_manager_current_payload_ready && [ -f "$TC_SMBD_CONF" ]; then
                 if ! tc_manager_generate_smb_conf; then
@@ -985,6 +1135,9 @@ tc_manager_run_identity_step() {
                         manager_step_status=1
                     fi
                 fi
+            fi
+            if [ "$manager_step_status" -eq 0 ] && tc_manager_current_payload_ready && [ -f "$TC_SMBD_CONF" ]; then
+                TC_MANAGER_LAST_CONFIG_SIGNATURE=$(tc_manager_samba_config_signature)
             fi
             if [ "$manager_step_status" -eq 0 ]; then
                 stop_runtime_process_by_ucomm "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" || true
@@ -1029,40 +1182,29 @@ tc_manager_run_samba_full_step() {
     tc_manager_debug_log "manager pass $manager_iteration_id step=samba start"
     manager_step_status=0
     tc_manager_debug_log "manager Samba: reconciling staged runtime, bind interfaces, and smbd"
-    fresh_runtime_signature=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
-        "${TC_PAYLOAD_DIR:-}" \
-        "${TC_PAYLOAD_VOLUME:-}" \
-        "${TC_PAYLOAD_DEVICE:-}" \
-        "${manager_topology_rows:-}" \
-        "${manager_share_rows:-}" \
-        "${manager_adisk_rows:-}")
-    manager_runtime_stage_needed=0
-    if [ "${TC_MANAGER_RUNTIME_STAGED:-0}" != "1" ]; then
-        manager_runtime_stage_needed=1
-    elif [ "$fresh_runtime_signature" != "${TC_MANAGER_LAST_RUNTIME_SIGNATURE:-}" ]; then
-        manager_runtime_stage_needed=1
-    elif [ ! -x "$TC_SMBD_BIN" ] || [ ! -f "$TC_SMBD_CONF" ]; then
-        manager_runtime_stage_needed=1
-    fi
+    TC_MANAGER_SMBD_RESTART_REQUIRED=0
+    TC_MANAGER_SMBD_RELOAD_REQUIRED=0
+    TC_MANAGER_PENDING_CONFIG_SIGNATURE=
 
-    if [ "$manager_runtime_stage_needed" -eq 1 ]; then
-        tc_log "manager Samba runtime staging required"
-        if tc_manager_stage_samba_runtime; then
-            TC_MANAGER_LAST_RUNTIME_SIGNATURE=$fresh_runtime_signature
-            TC_MANAGER_RUNTIME_STAGED=1
-            tc_log "manager Samba runtime staging complete"
-        else
-            manager_step_status=1
-        fi
-    else
-        tc_manager_debug_log "manager Samba runtime staging unchanged"
+    if ! tc_manager_stage_samba_runtime_files_if_needed; then
+        manager_step_status=1
     fi
     if [ "$manager_step_status" -eq 0 ]; then
         tc_manager_debug_log "manager Samba: reconciling bind interfaces"
         if tc_manager_reconcile_smb_bind_interfaces; then
+            if [ "${TC_MANAGER_SMB_BIND_CHANGED:-0}" = "1" ]; then
+                TC_MANAGER_SMBD_RESTART_REQUIRED=1
+            fi
             tc_manager_record_successful_bind_status
         else
             manager_bind_status=failed
+            manager_step_status=1
+        fi
+    fi
+    if [ "$manager_step_status" -eq 0 ]; then
+        tc_manager_debug_log "manager Samba: rendering config"
+        if ! tc_manager_render_smb_conf_if_needed; then
+            tc_manager_restore_smb_bind_after_config_failure
             manager_step_status=1
         fi
     fi
@@ -1087,6 +1229,10 @@ tc_manager_run_samba_full_step() {
 tc_manager_run_samba_bind_step() {
     manager_step_start_ms=$(tc_now_millis)
     tc_manager_debug_log "manager pass $manager_iteration_id step=samba_bind start"
+    TC_MANAGER_SMBD_RESTART_REQUIRED=0
+    TC_MANAGER_SMBD_RELOAD_REQUIRED=0
+    TC_MANAGER_PENDING_CONFIG_SIGNATURE=
+
     if ! tc_manager_current_payload_ready; then
         manager_bind_status=skipped_no_payload
         tc_log "manager Samba bind: skipped because no payload is active"
@@ -1102,6 +1248,22 @@ tc_manager_run_samba_bind_step() {
 
     tc_manager_debug_log "manager Samba bind: checking bind interfaces"
     if tc_manager_reconcile_smb_bind_interfaces; then
+        if [ "${TC_MANAGER_SMB_BIND_CHANGED:-0}" = "1" ]; then
+            TC_MANAGER_SMBD_RESTART_REQUIRED=1
+            if ! tc_manager_render_smb_conf_if_needed; then
+                tc_manager_restore_smb_bind_after_config_failure
+                manager_status=1
+                manager_bind_status=failed
+                tc_manager_log_step_end "$manager_iteration_id" samba_bind "$manager_step_start_ms" failed
+                return 1
+            fi
+            if ! tc_manager_reconcile_smbd; then
+                manager_status=1
+                manager_bind_status=failed
+                tc_manager_log_step_end "$manager_iteration_id" samba_bind "$manager_step_start_ms" failed
+                return 1
+            fi
+        fi
         tc_manager_record_successful_bind_status
         tc_manager_log_step_end "$manager_iteration_id" samba_bind "$manager_step_start_ms" ok
         return 0
@@ -1118,7 +1280,11 @@ tc_manager_run_no_payload_step() {
     tc_manager_debug_log "manager pass $manager_iteration_id step=no_payload start"
     tc_manager_debug_log "manager no_payload: clearing staged runtime and stopping Samba lane"
     TC_MANAGER_RUNTIME_STAGED=0
-    TC_MANAGER_LAST_RUNTIME_SIGNATURE=
+    TC_MANAGER_LAST_BINARY_SIGNATURE=
+    TC_MANAGER_LAST_CONFIG_SIGNATURE=
+    TC_MANAGER_PENDING_CONFIG_SIGNATURE=
+    TC_MANAGER_SMBD_RESTART_REQUIRED=0
+    TC_MANAGER_SMBD_RELOAD_REQUIRED=0
     if tc_watchdog_stop_samba_lane_without_payload; then
         manager_samba_status=no_payload
         tc_manager_log_step_end "$manager_iteration_id" no_payload "$manager_step_start_ms" ok
@@ -1217,13 +1383,20 @@ MANAGER_MAST_RETRY_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_MAST_RETRY_
 MANAGER_TOPOLOGY_DEBOUNCE_SECONDS=$(tc_sanitize_positive_integer "${WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS:-5}" 5)
 TC_MANAGER_ITERATION=0
 TC_MANAGER_RUNTIME_STAGED=0
-TC_MANAGER_LAST_RUNTIME_SIGNATURE=
+TC_MANAGER_LAST_BINARY_SIGNATURE=
+TC_MANAGER_LAST_CONFIG_SIGNATURE=
+TC_MANAGER_PENDING_CONFIG_SIGNATURE=
+TC_MANAGER_SMBD_RESTART_REQUIRED=0
+TC_MANAGER_SMBD_RELOAD_REQUIRED=0
+TC_MANAGER_SMB_BIND_PREVIOUS=
 TC_MANAGER_MAST_CONFIRMED_STABLE_SIGNATURE=
 TC_MANAGER_MAST_CONFIRMED_STABLE_SIGNATURE_READY=0
 manager_payload_ready=0
 manager_payload_dir=
 manager_payload_volume=
 manager_payload_device=
+manager_smbd_src=
+manager_nbns_src=
 manager_topology_rows=
 manager_share_rows=
 manager_adisk_rows=

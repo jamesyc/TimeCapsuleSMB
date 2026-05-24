@@ -243,13 +243,34 @@ tc_prepare_runtime_log_file() {
     tc_trim_log_file_if_needed "$log_path" "$max_bytes"
 }
 
+tc_stage_runtime_executable() {
+    executable_src=$1
+    executable_dest=$2
+    executable_tmp="$executable_dest.tmp.$$"
+
+    rm -f "$executable_tmp" >/dev/null 2>&1 || true
+    # Copy through a same-directory temporary file so a failed copy cannot
+    # truncate the executable path that a running daemon may still need.
+    cp "$executable_src" "$executable_tmp" || {
+        rm -f "$executable_tmp" >/dev/null 2>&1 || true
+        return 1
+    }
+    chmod 755 "$executable_tmp" || {
+        rm -f "$executable_tmp" >/dev/null 2>&1 || true
+        return 1
+    }
+    mv "$executable_tmp" "$executable_dest" || {
+        rm -f "$executable_tmp" >/dev/null 2>&1 || true
+        return 1
+    }
+}
+
 tc_stage_runtime() {
     payload_dir=$1
     smbd_src=$2
     nbns_src=${3:-}
 
-    cp "$smbd_src" "$TC_SMBD_BIN" || return 1
-    chmod 755 "$TC_SMBD_BIN" || return 1
+    tc_stage_runtime_executable "$smbd_src" "$TC_SMBD_BIN" || return 1
 
     for required_file in smbpasswd username.map; do
         if [ ! -f "$payload_dir/private/$required_file" ]; then
@@ -262,8 +283,7 @@ tc_stage_runtime() {
     tc_log "staged Samba auth files into RAM private directory"
 
     if [ "$NBNS_ENABLED" = "1" ] && [ -n "$nbns_src" ] && [ -x "$nbns_src" ]; then
-        cp "$nbns_src" "$TC_NBNS_BIN" || return 1
-        chmod 755 "$TC_NBNS_BIN" || return 1
+        tc_stage_runtime_executable "$nbns_src" "$TC_NBNS_BIN" || return 1
         tc_log "staged nbns runtime binary"
     else
         tc_log "nbns runtime staging skipped"
@@ -308,6 +328,7 @@ tc_generate_smb_conf_from_share_rows() {
     smbd_log_level_line=
     smbd_protocol_lines=
     smbd_fruit_model=$(tc_smbd_fruit_model)
+    smbd_conf_tmp="$TC_SMBD_CONF.tmp.$$"
 
     mkdir -p "$payload_dir/logs" || return 1
     chmod 755 "$payload_dir/logs" >/dev/null 2>&1 || true
@@ -325,6 +346,7 @@ tc_generate_smb_conf_from_share_rows() {
 "
     fi
 
+    rm -f "$smbd_conf_tmp" >/dev/null 2>&1 || true
     {
         cat <<EOF
 [global]
@@ -402,5 +424,12 @@ EOF
         done <<EOF
 $runtime_share_rows
 EOF
-    } >"$TC_SMBD_CONF" || return 1
+    } >"$smbd_conf_tmp" || {
+        rm -f "$smbd_conf_tmp" >/dev/null 2>&1 || true
+        return 1
+    }
+    mv "$smbd_conf_tmp" "$TC_SMBD_CONF" || {
+        rm -f "$smbd_conf_tmp" >/dev/null 2>&1 || true
+        return 1
+    }
 }

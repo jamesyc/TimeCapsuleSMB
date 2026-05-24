@@ -1547,6 +1547,7 @@ int main(void) {{
 int main(void) {{
     struct iface_context_set a;
     struct iface_context_set b;
+    char synthetic_name[IFNAMSIZ];
 
     if (runtime_ipv4_is_usable(inet_addr("0.1.2.3")) ||
         runtime_ipv4_is_usable(inet_addr("127.0.0.1")) ||
@@ -1564,6 +1565,14 @@ int main(void) {{
         iface_flags_are_usable(IFF_UP | IFF_LOOPBACK, 0) ||
         iface_flags_are_usable(IFF_RUNNING, 0)) {{
         return 2;
+    }}
+    synthetic_ipv4_ifaddrs_name(synthetic_name, sizeof(synthetic_name), inet_addr("192.168.100.100"));
+    if (strcmp(synthetic_name, "ip4-c0a86464") != 0) {{
+        return 7;
+    }}
+    synthetic_ipv4_ifaddrs_name(synthetic_name, sizeof(synthetic_name), inet_addr("255.255.255.255"));
+    if (strcmp(synthetic_name, "ip4-ffffffff") != 0 || strlen(synthetic_name) >= IFNAMSIZ) {{
+        return 8;
     }}
 
     memset(&a, 0, sizeof(a));
