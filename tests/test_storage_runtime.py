@@ -1062,6 +1062,7 @@ MaSt = (
                     tc_init_runtime_env
                     mkdir -p "$RAM_VAR"
                     tc_set_log "$RAM_VAR/test.log" test
+                    SMBD_DEBUG_LOGGING=1
                     get_airport_acp_value() {{
                         case "$1" in
                             syNm) echo "极端 时间胶囊" ;;
@@ -1118,6 +1119,7 @@ MaSt = (
                     tc_init_runtime_env
                     mkdir -p "$RAM_ETC" "$RAM_VAR"
                     tc_set_log "$RAM_VAR/test.log" test
+                    SMBD_DEBUG_LOGGING=1
                     get_airport_acp_value() {{
                         case "$1" in
                             syNm) echo "James's AirPort Time Capsule" ;;
@@ -1458,6 +1460,16 @@ MaSt = (
                     <string>hfs</string>
                     <key>uuid</key>
                     <data>bad</data>
+                  </dict>
+                  <dict>
+                    <key>deviceName</key>
+                    <string>dk7</string>
+                    <key>name</key>
+                    <string>Invalid Base64 UUID</string>
+                    <key>format</key>
+                    <string>hfs</string>
+                    <key>uuid</key>
+                    <data>AAAA!AAAAAAAAAAAAAAAAA==</data>
                   </dict>
                 </array>
                 <key>deviceName</key>
@@ -1928,7 +1940,7 @@ MaSt = (
         self.assertLessEqual(log_size, 102400)
         self.assertRegex(log_text, r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} manager: ")
         self.assertNotIn(".000 manager:", log_text)
-        self.assertIn("manager sleeping 10s after ok pass", log_text)
+        self.assertNotIn("manager sleeping 10s after ok pass", log_text)
 
     def test_manager_mast_refresh_retries_transient_failures_until_success(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2292,6 +2304,78 @@ MaSt = (
         self.assertEqual(events_text.count("stage\n"), 1, events_text)
         self.assertEqual(events_text.count("mdns-process\n"), 1, events_text)
         self.assertEqual(events_text.count("bind-probe\n"), 2, events_text)
+        self.assertNotIn("manager pass 2 step=samba_bind start", log_text)
+        self.assertNotIn("manager scheduler: Samba bind reconciliation due", log_text)
+        self.assertNotIn("scheduler=bind_only", log_text)
+
+    def test_manager_smbd_debug_logging_prints_happy_path_pass_chatter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            with (flash / "tcapsulesmb.conf").open("a") as conf:
+                conf.write("SMBD_DEBUG_LOGGING=1\n")
+            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
+            acp_count = self.write_sequence_acp(tmp_path, (fixture.raw, fixture.raw))
+            sleep_count = tmp_path / "sleep-count"
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                    tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                        TC_RUNTIME_IDENTITY_READY=1
+                    }}
+                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            mdns-advertiser) return 0 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    stop_runtime_process_by_ucomm() {{ :; }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    sleep() {{
+                        case "$1" in
+                            1|5) return 0 ;;
+                            10)
+                                count=$(/bin/cat {shlex.quote(str(sleep_count))} 2>/dev/null || echo 0)
+                                count=$((count + 1))
+                                echo "$count" >{shlex.quote(str(sleep_count))}
+                                if [ "$count" -eq 1 ]; then
+                                    return 0
+                                fi
+                                echo "status=$manager_status"
+                                exit 0
+                                ;;
+                        esac
+                        return 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            log_text = (memory / "samba4/var/manager.log").read_text()
+            acp_count_text = acp_count.read_text().strip()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=0\n", proc.stdout)
+        self.assertEqual(acp_count_text, "2")
+        self.assertIn("manager pass 2 start", log_text)
+        self.assertIn("manager MaSt stable signature unchanged; disk refresh skipped", log_text)
+        self.assertIn("manager scheduler: Samba bind reconciliation due", log_text)
         self.assertIn("manager pass 2 step=samba_bind start", log_text)
         self.assertIn("scheduler=bind_only", log_text)
 
@@ -2392,8 +2476,8 @@ MaSt = (
         self.assertEqual(events_text.count("identity\n"), 2, events_text)
         self.assertEqual(events_text.count("mdns-process\n"), 2, events_text)
         self.assertEqual(events_text.count("bind-probe\n"), 2, events_text)
-        self.assertIn("manager pass 2 step=identity start", log_text)
-        self.assertIn("manager pass 2 step=samba start", log_text)
+        self.assertNotIn("manager pass 2 step=identity start", log_text)
+        self.assertNotIn("manager pass 2 step=samba start", log_text)
         self.assertIn("disk_probe=change_confirmed", log_text)
 
     def test_manager_mdns_captures_with_one_retry_when_apple_responder_is_alive(self) -> None:
@@ -3502,8 +3586,8 @@ MaSt = (
         self.assertLess(events_text.index("nbns-reconcile"), events_text.index("mdns-process"))
         self.assertLess(events_text.index("mdns-process"), events_text.index("nbns-process"))
         self.assertLess(events_text.index("mdns-process"), events_text.index("nbns-socket"))
-        self.assertIn("manager NBNS: reconcile requested; readiness check will run after mDNS", log_text)
-        self.assertIn("manager NBNS: responder ready on IPv4 UDP 137", log_text)
+        self.assertNotIn("manager NBNS: reconcile requested; readiness check will run after mDNS", log_text)
+        self.assertNotIn("manager NBNS: responder ready on IPv4 UDP 137", log_text)
         self.assertNotIn("manager pass 1 step=health", log_text)
         self.assertNotIn("manager health:", log_text)
 

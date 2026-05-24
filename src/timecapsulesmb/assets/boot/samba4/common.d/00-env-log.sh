@@ -261,3 +261,13 @@ tc_log() {
     line="$(tc_log_timestamp) $TC_LOG_PREFIX: $*"
     tc_ram_rewrite_log_line "$TC_LOG_FILE" "$line"
 }
+
+tc_smbd_debug_logging_enabled() {
+    [ "${SMBD_DEBUG_LOGGING:-0}" = "1" ]
+}
+
+tc_smbd_debug_log() {
+    if tc_smbd_debug_logging_enabled; then
+        tc_log "$@"
+    fi
+}

@@ -500,7 +500,7 @@ tc_mast_uuid_from_base64_data() {
         tc_mast_b64_char_value "$b64_c2"; b64_v2=$TC_MAST_B64_VALUE
         tc_mast_b64_char_value "$b64_c3"; b64_v3=$TC_MAST_B64_VALUE
         tc_mast_b64_char_value "$b64_c4"; b64_v4=$TC_MAST_B64_VALUE
-        [ -n "$b64_v1$b64_v2$b64_v3$b64_v4" ] || {
+        [ -n "$b64_v1" ] && [ -n "$b64_v2" ] && [ -n "$b64_v3" ] && [ -n "$b64_v4" ] || {
             TC_MAST_UUID=
             return 1
         }

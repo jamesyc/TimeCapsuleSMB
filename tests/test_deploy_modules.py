@@ -554,6 +554,7 @@ tc_prepare_log_file "$LEGACY_LOG" 5
                 + f"TC_LOG_FILE={shlex.quote(str(log))}\n"
                 + """
 tc_prepare_local_hostname_resolution
+SMBD_DEBUG_LOGGING=1
 tc_prepare_local_hostname_resolution
 """
             )
@@ -1795,6 +1796,68 @@ int main(void) {{
         run = self._compile_and_run_c_helper(source, "mdns_auto_ip_cidrs")
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(run.stdout, "10.0.1.1/24 192.168.1.40/24\n")
+
+    def test_auto_ip_netmask_probe_queries_specific_ipv4_address(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <arpa/inet.h>
+#include <net/if.h>
+#include <stdarg.h>
+#include <string.h>
+#include <sys/ioctl.h>
+
+static struct sockaddr_in captured_netmask_query;
+
+static int fake_ioctl(int sockfd, unsigned long request, ...) {{
+    va_list ap;
+    struct ifreq *ifr;
+    struct sockaddr_in mask;
+
+    (void)sockfd;
+    va_start(ap, request);
+    ifr = va_arg(ap, struct ifreq *);
+    va_end(ap);
+
+    if (request != SIOCGIFNETMASK || strcmp(ifr->ifr_name, "bridge0") != 0) {{
+        return -1;
+    }}
+
+    memset(&captured_netmask_query, 0, sizeof(captured_netmask_query));
+    memcpy(&captured_netmask_query, &ifr->ifr_addr, sizeof(captured_netmask_query));
+
+    memset(&mask, 0, sizeof(mask));
+#if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
+    mask.sin_len = sizeof(mask);
+#endif
+    mask.sin_family = AF_INET;
+    mask.sin_addr.s_addr = inet_addr("255.255.255.0");
+    memcpy(&ifr->ifr_addr, &mask, sizeof(mask));
+    return 0;
+}}
+
+#define ioctl fake_ioctl
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+#undef ioctl
+
+int main(void) {{
+    uint32_t mask = get_ipv4_netmask(7, "bridge0", inet_addr("10.0.1.1"));
+
+    if (mask != inet_addr("255.255.255.0")) {{
+        return 1;
+    }}
+    if (captured_netmask_query.sin_family != AF_INET) {{
+        return 2;
+    }}
+    if (captured_netmask_query.sin_addr.s_addr != inet_addr("10.0.1.1")) {{
+        return 3;
+    }}
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        run = self._compile_and_run_c_helper(source, "auto_ip_netmask_probe")
+        self.assertEqual(run.returncode, 0, run.stderr)
 
     def test_mdns_smb_bind_tokens_and_host_records_are_link_scoped_dual_stack(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
@@ -5684,6 +5747,19 @@ int main(void) {{
     }}
     if (choose_response_ipv4(&contexts, inet_addr("172.16.1.5")) != 0) {{
         return 4;
+    }}
+
+    memset(&contexts, 0, sizeof(contexts));
+    append_iface_context(&contexts, "bridge0", inet_addr("10.0.1.1"), 0, IFF_UP | IFF_RUNNING);
+    append_iface_context(&contexts, "bcmeth0", inet_addr("192.168.1.217"), 0, IFF_UP | IFF_RUNNING);
+    if (choose_response_ipv4(&contexts, inet_addr("10.0.1.3")) != inet_addr("10.0.1.1")) {{
+        return 14;
+    }}
+    if (choose_response_ipv4(&contexts, inet_addr("192.168.1.40")) != inet_addr("192.168.1.217")) {{
+        return 15;
+    }}
+    if (choose_response_ipv4(&contexts, inet_addr("172.16.1.5")) != 0) {{
+        return 16;
     }}
 
     memset(&contexts, 0, sizeof(contexts));

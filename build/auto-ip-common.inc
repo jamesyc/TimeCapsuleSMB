@@ -302,6 +302,23 @@ static uint32_t TC_AUTO_IP_UNUSED ipv4_link_local_netmask(void) {
     return htonl(0xffff0000U);
 }
 
+static uint32_t TC_AUTO_IP_UNUSED ipv4_private_fallback_netmask(void) {
+    return htonl(0xffffff00U);
+}
+
+static uint32_t TC_AUTO_IP_UNUSED effective_ipv4_netmask(uint32_t ipv4_addr, uint32_t netmask) {
+    if (netmask != 0) {
+        return netmask;
+    }
+    if (ipv4_is_link_local(ipv4_addr)) {
+        return ipv4_link_local_netmask();
+    }
+    if (ipv4_is_rfc1918(ipv4_addr)) {
+        return ipv4_private_fallback_netmask();
+    }
+    return 0;
+}
+
 static int TC_AUTO_IP_UNUSED ipv6_is_unspecified_addr(const struct in6_addr *addr) {
     static const unsigned char zero[16] = {0};
     return memcmp(addr->s6_addr, zero, sizeof(zero)) == 0;
@@ -394,6 +411,7 @@ static int TC_AUTO_IP_UNUSED get_iface_flags(int sockfd, const char *name, int *
 
 static uint32_t TC_AUTO_IP_UNUSED get_ipv4_netmask(int sockfd, const char *name, uint32_t ipv4_addr) {
     struct ifreq mask_req;
+    struct sockaddr_in query_addr;
 
     if (ipv4_is_link_local(ipv4_addr)) {
         return ipv4_link_local_netmask();
@@ -401,6 +419,13 @@ static uint32_t TC_AUTO_IP_UNUSED get_ipv4_netmask(int sockfd, const char *name,
 
     memset(&mask_req, 0, sizeof(mask_req));
     strncpy(mask_req.ifr_name, name, sizeof(mask_req.ifr_name) - 1);
+    memset(&query_addr, 0, sizeof(query_addr));
+#if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
+    query_addr.sin_len = sizeof(query_addr);
+#endif
+    query_addr.sin_family = AF_INET;
+    query_addr.sin_addr.s_addr = ipv4_addr;
+    memcpy(&mask_req.ifr_addr, &query_addr, sizeof(query_addr));
     if (ioctl(sockfd, SIOCGIFNETMASK, &mask_req) == 0) {
         struct sockaddr_in netmask_addr;
         memset(&netmask_addr, 0, sizeof(netmask_addr));
@@ -645,21 +670,25 @@ static int TC_AUTO_IP_UNUSED iface_context_sets_equal(const struct iface_context
 
 static int TC_AUTO_IP_UNUSED source_matches_context_subnet(uint32_t source_ipv4_addr,
                                                            const struct iface_context *ctx) {
-    if (ctx->netmask == 0) {
+    uint32_t netmask = effective_ipv4_netmask(ctx->ipv4_addr, ctx->netmask);
+
+    if (netmask == 0) {
         return source_ipv4_addr == ctx->ipv4_addr;
     }
-    return (source_ipv4_addr & ctx->netmask) == (ctx->ipv4_addr & ctx->netmask);
+    return (source_ipv4_addr & netmask) == (ctx->ipv4_addr & netmask);
 }
 
 static int TC_AUTO_IP_UNUSED iface_context_cidr(char *out, size_t out_len, const struct iface_context *ctx) {
     char ip_buf[INET_ADDRSTRLEN];
+    uint32_t netmask;
     int written;
 
+    netmask = effective_ipv4_netmask(ctx->ipv4_addr, ctx->netmask);
     written = snprintf(out,
                        out_len,
                        "%s/%d",
                        ipv4_to_string(ctx->ipv4_addr, ip_buf, sizeof(ip_buf)),
-                       netmask_prefix_length(ctx->netmask));
+                       netmask_prefix_length(netmask));
     if (written < 0 || (size_t)written >= out_len) {
         return -1;
     }

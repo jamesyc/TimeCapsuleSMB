@@ -19,6 +19,10 @@ case "${1:-}" in
         ;;
 esac
 
+tc_manager_debug_log() {
+    tc_smbd_debug_log "$@"
+}
+
 tc_manager_log_step_end() {
     iteration_id=$1
     step_name=$2
@@ -27,7 +31,14 @@ tc_manager_log_step_end() {
     step_end_ms=$(tc_now_millis)
     step_duration_ms=$((step_end_ms - step_start_ms))
 
-    tc_log "manager pass $iteration_id step=$step_name end status=$step_status duration_ms=$step_duration_ms"
+    case "$step_status" in
+        ok|skipped)
+            tc_manager_debug_log "manager pass $iteration_id step=$step_name end status=$step_status duration_ms=$step_duration_ms"
+            ;;
+        *)
+            tc_log "manager pass $iteration_id step=$step_name end status=$step_status duration_ms=$step_duration_ms"
+            ;;
+    esac
 }
 
 tc_manager_read_mast_raw() {
@@ -591,7 +602,7 @@ tc_manager_reconcile_disk_state() {
         TC_MANAGER_DISK_PROBE_RESULT=unchanged
         TC_MANAGER_DISK_REFRESH_RESULT=skipped_unchanged
         TC_MANAGER_DISK_STATE_CHANGED=0
-        tc_log "manager MaSt stable signature unchanged; disk refresh skipped"
+        tc_manager_debug_log "manager MaSt stable signature unchanged; disk refresh skipped"
         return 0
     fi
 
@@ -907,7 +918,7 @@ tc_manager_wait_for_nbns_ready() {
     while [ "$wait_attempt" -le "$wait_attempts" ]; do
         if runtime_process_present_by_ucomm "$NBNS_PROC_NAME" &&
             tc_nbns_bound_ipv4_udp_137; then
-            tc_log "manager NBNS: responder ready on IPv4 UDP 137"
+            tc_manager_debug_log "manager NBNS: responder ready on IPv4 UDP 137"
             return 0
         fi
 
@@ -950,9 +961,9 @@ tc_manager_record_successful_bind_status() {
 
 tc_manager_run_identity_step() {
     manager_step_start_ms=$(tc_now_millis)
-    tc_log "manager pass $manager_iteration_id step=identity start"
+    tc_manager_debug_log "manager pass $manager_iteration_id step=identity start"
     manager_step_status=0
-    tc_log "manager identity: refreshing runtime naming and local hostname"
+    tc_manager_debug_log "manager identity: refreshing runtime naming and local hostname"
     if ! tc_prepare_local_hostname_resolution; then
         manager_step_status=1
     fi
@@ -1000,7 +1011,7 @@ tc_manager_run_identity_step() {
 
 tc_manager_run_disk_step() {
     manager_step_start_ms=$(tc_now_millis)
-    tc_log "manager pass $manager_iteration_id step=disk start"
+    tc_manager_debug_log "manager pass $manager_iteration_id step=disk start"
     if tc_manager_reconcile_disk_state; then
         manager_disk_status=ok
         tc_manager_log_step_end "$manager_iteration_id" disk "$manager_step_start_ms" ok
@@ -1015,9 +1026,9 @@ tc_manager_run_disk_step() {
 
 tc_manager_run_samba_full_step() {
     manager_step_start_ms=$(tc_now_millis)
-    tc_log "manager pass $manager_iteration_id step=samba start"
+    tc_manager_debug_log "manager pass $manager_iteration_id step=samba start"
     manager_step_status=0
-    tc_log "manager Samba: reconciling staged runtime, bind interfaces, and smbd"
+    tc_manager_debug_log "manager Samba: reconciling staged runtime, bind interfaces, and smbd"
     fresh_runtime_signature=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
         "${TC_PAYLOAD_DIR:-}" \
         "${TC_PAYLOAD_VOLUME:-}" \
@@ -1044,10 +1055,10 @@ tc_manager_run_samba_full_step() {
             manager_step_status=1
         fi
     else
-        tc_log "manager Samba runtime staging unchanged"
+        tc_manager_debug_log "manager Samba runtime staging unchanged"
     fi
     if [ "$manager_step_status" -eq 0 ]; then
-        tc_log "manager Samba: reconciling bind interfaces"
+        tc_manager_debug_log "manager Samba: reconciling bind interfaces"
         if tc_manager_reconcile_smb_bind_interfaces; then
             tc_manager_record_successful_bind_status
         else
@@ -1056,7 +1067,7 @@ tc_manager_run_samba_full_step() {
         fi
     fi
     if [ "$manager_step_status" -eq 0 ]; then
-        tc_log "manager Samba: reconciling smbd"
+        tc_manager_debug_log "manager Samba: reconciling smbd"
         if ! tc_manager_reconcile_smbd; then
             manager_step_status=1
         fi
@@ -1075,7 +1086,7 @@ tc_manager_run_samba_full_step() {
 
 tc_manager_run_samba_bind_step() {
     manager_step_start_ms=$(tc_now_millis)
-    tc_log "manager pass $manager_iteration_id step=samba_bind start"
+    tc_manager_debug_log "manager pass $manager_iteration_id step=samba_bind start"
     if ! tc_manager_current_payload_ready; then
         manager_bind_status=skipped_no_payload
         tc_log "manager Samba bind: skipped because no payload is active"
@@ -1089,7 +1100,7 @@ tc_manager_run_samba_bind_step() {
         return 0
     fi
 
-    tc_log "manager Samba bind: checking bind interfaces"
+    tc_manager_debug_log "manager Samba bind: checking bind interfaces"
     if tc_manager_reconcile_smb_bind_interfaces; then
         tc_manager_record_successful_bind_status
         tc_manager_log_step_end "$manager_iteration_id" samba_bind "$manager_step_start_ms" ok
@@ -1104,8 +1115,8 @@ tc_manager_run_samba_bind_step() {
 
 tc_manager_run_no_payload_step() {
     manager_step_start_ms=$(tc_now_millis)
-    tc_log "manager pass $manager_iteration_id step=no_payload start"
-    tc_log "manager no_payload: clearing staged runtime and stopping Samba lane"
+    tc_manager_debug_log "manager pass $manager_iteration_id step=no_payload start"
+    tc_manager_debug_log "manager no_payload: clearing staged runtime and stopping Samba lane"
     TC_MANAGER_RUNTIME_STAGED=0
     TC_MANAGER_LAST_RUNTIME_SIGNATURE=
     if tc_watchdog_stop_samba_lane_without_payload; then
@@ -1121,10 +1132,10 @@ tc_manager_run_no_payload_step() {
 }
 
 tc_manager_run_nbns_reconcile_before_mdns() {
-    tc_log "manager NBNS: reconciling responder before mDNS so startup can overlap mDNS capture"
+    tc_manager_debug_log "manager NBNS: reconciling responder before mDNS so startup can overlap mDNS capture"
     if tc_watchdog_reconcile_nbns; then
         manager_nbns_reconcile_status=ok
-        tc_log "manager NBNS: reconcile requested; readiness check will run after mDNS"
+        tc_manager_debug_log "manager NBNS: reconcile requested; readiness check will run after mDNS"
         return 0
     fi
 
@@ -1137,8 +1148,8 @@ tc_manager_run_nbns_reconcile_before_mdns() {
 
 tc_manager_run_mdns_step() {
     manager_step_start_ms=$(tc_now_millis)
-    tc_log "manager pass $manager_iteration_id step=mdns start"
-    tc_log "manager mDNS: reconciling advertiser"
+    tc_manager_debug_log "manager pass $manager_iteration_id step=mdns start"
+    tc_manager_debug_log "manager mDNS: reconciling advertiser"
     if [ "${TC_MANAGER_DISK_STATE_CHANGED:-0}" = "1" ] || [ "${TC_MANAGER_IDENTITY_CHANGED:-0}" = "1" ]; then
         tc_log "manager mDNS refresh required after disk or identity change"
         stop_runtime_process_by_ucomm "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" || true
@@ -1157,7 +1168,7 @@ tc_manager_run_mdns_step() {
 
 tc_manager_run_nbns_wait_step() {
     manager_step_start_ms=$(tc_now_millis)
-    tc_log "manager pass $manager_iteration_id step=nbns start"
+    tc_manager_debug_log "manager pass $manager_iteration_id step=nbns start"
     if [ "$manager_nbns_reconcile_status" = "ok" ] && tc_manager_wait_for_nbns_ready 10; then
         manager_nbns_status=ok
         tc_manager_log_step_end "$manager_iteration_id" nbns "$manager_step_start_ms" ok
@@ -1252,7 +1263,7 @@ while :; do
         manager_bind_due=1
     fi
 
-    tc_log "manager pass $manager_iteration_id start"
+    tc_manager_debug_log "manager pass $manager_iteration_id start"
     tc_watchdog_reset_pass_state
 
     tc_manager_run_disk_step || true
@@ -1274,7 +1285,7 @@ while :; do
 
     if [ "$manager_services_due" -eq 1 ]; then
         manager_scheduler_status=services
-        tc_log "manager scheduler: full service reconciliation due"
+        tc_manager_debug_log "manager scheduler: full service reconciliation due"
         if tc_manager_run_full_service_steps; then
             manager_service_seconds_until_due=$MANAGER_SERVICE_POLL_SECONDS
         else
@@ -1283,14 +1294,14 @@ while :; do
         manager_bind_seconds_until_due=$MANAGER_BIND_POLL_SECONDS
     elif [ "$manager_bind_due" -eq 1 ]; then
         manager_scheduler_status=bind_only
-        tc_log "manager scheduler: Samba bind reconciliation due"
+        tc_manager_debug_log "manager scheduler: Samba bind reconciliation due"
         if tc_manager_run_samba_bind_step; then
             manager_bind_seconds_until_due=$MANAGER_BIND_POLL_SECONDS
         else
             manager_bind_seconds_until_due=0
         fi
     else
-        tc_log "manager scheduler: service reconciliation skipped on disk-only pass"
+        tc_manager_debug_log "manager scheduler: service reconciliation skipped on disk-only pass"
     fi
 
     manager_iteration_end_ms=$(tc_now_millis)
@@ -1308,8 +1319,15 @@ while :; do
     if [ "$manager_next_bind_seconds" -lt 0 ]; then
         manager_next_bind_seconds=0
     fi
-    tc_log "manager pass $manager_iteration_id summary status=$manager_pass_status scheduler=$manager_scheduler_status identity=$manager_identity_status disk=$manager_disk_status disk_probe=${TC_MANAGER_DISK_PROBE_RESULT:-unknown} disk_refresh=${TC_MANAGER_DISK_REFRESH_RESULT:-unknown} payload=$manager_payload_status samba=$manager_samba_status bind=$manager_bind_status mdns=$manager_mdns_status nbns=$manager_nbns_status services=$manager_services_status duration_ms=$manager_iteration_duration_ms"
-    tc_log "manager sleeping ${MANAGER_DISK_POLL_SECONDS}s after $manager_pass_status pass next_service=${manager_next_service_seconds}s next_bind=${manager_next_bind_seconds}s"
+    if tc_smbd_debug_logging_enabled ||
+        [ "$manager_pass_status" != "ok" ] ||
+        [ "${TC_MANAGER_DISK_STATE_CHANGED:-0}" = "1" ] ||
+        [ "${TC_MANAGER_IDENTITY_CHANGED:-0}" = "1" ] ||
+        [ "$manager_bind_status" = "changed" ] ||
+        [ "$manager_bind_status" = "deferred_no_ip" ]; then
+        tc_log "manager pass $manager_iteration_id summary status=$manager_pass_status scheduler=$manager_scheduler_status identity=$manager_identity_status disk=$manager_disk_status disk_probe=${TC_MANAGER_DISK_PROBE_RESULT:-unknown} disk_refresh=${TC_MANAGER_DISK_REFRESH_RESULT:-unknown} payload=$manager_payload_status samba=$manager_samba_status bind=$manager_bind_status mdns=$manager_mdns_status nbns=$manager_nbns_status services=$manager_services_status duration_ms=$manager_iteration_duration_ms"
+    fi
+    tc_manager_debug_log "manager sleeping ${MANAGER_DISK_POLL_SECONDS}s after $manager_pass_status pass next_service=${manager_next_service_seconds}s next_bind=${manager_next_bind_seconds}s"
     sleep "$MANAGER_DISK_POLL_SECONDS"
     manager_service_seconds_until_due=$manager_next_service_seconds
     manager_bind_seconds_until_due=$manager_next_bind_seconds

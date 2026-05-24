@@ -131,7 +131,7 @@ tc_prepare_local_hostname_resolution() {
     fi
 
     if tc_hosts_has_hostname "$device_hostname"; then
-        tc_log "local hostname resolution already present for $device_hostname"
+        tc_smbd_debug_log "local hostname resolution already present for $device_hostname"
     elif printf '127.0.0.1\t%s %s.local\n' "$device_hostname" "$device_hostname" >>/etc/hosts; then
         tc_log "local hostname resolution prepared for $device_hostname"
     else

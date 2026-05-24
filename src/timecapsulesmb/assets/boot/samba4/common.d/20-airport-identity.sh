@@ -184,7 +184,7 @@ tc_init_runtime_identity() {
     SMB_NETBIOS_NAME=$runtime_netbios_name
     SMB_SERVER_STRING=$runtime_server_string
     TC_RUNTIME_IDENTITY_READY=1
-    tc_log "runtime identity: mdns_instance=$MDNS_INSTANCE_NAME mdns_host=$MDNS_HOST_LABEL netbios=$SMB_NETBIOS_NAME server_string=$SMB_SERVER_STRING"
+    tc_smbd_debug_log "runtime identity: mdns_instance=$MDNS_INSTANCE_NAME mdns_host=$MDNS_HOST_LABEL netbios=$SMB_NETBIOS_NAME server_string=$SMB_SERVER_STRING"
 }
 
 tc_ensure_runtime_identity() {
@@ -273,4 +273,3 @@ get_airport_bjsd() {
     acp_value=$(get_airport_acp_value bjSd) || return 1
     airport_acp_decimal_value "$acp_value"
 }
-
