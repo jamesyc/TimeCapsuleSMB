@@ -418,6 +418,14 @@ static const char TC_AUTO_IP_UNUSED *usable_ifaddrs_name(const struct ifaddrs *i
                                                         char *buf,
                                                         size_t buf_len,
                                                         const char *fallback) {
+    /*
+     * AF_LINK exists on BSD-derived targets, where unnamed address rows can
+     * still expose the interface name through sockaddr_dl. Linux omits that
+     * path, so the scratch buffer is intentionally unused there.
+     */
+    (void)buf;
+    (void)buf_len;
+
     if (ifa->ifa_name != NULL && ifa->ifa_name[0] != '\0') {
         return ifa->ifa_name;
     }

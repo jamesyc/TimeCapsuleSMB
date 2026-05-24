@@ -9,7 +9,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.transport.local import command_exists, run_local_capture
@@ -29,7 +29,7 @@ class SmbClientTarget:
         return self.server
 
 
-SmbClientTargetInput = str | SmbClientTarget
+SmbClientTargetInput = Union[str, SmbClientTarget]
 
 
 def _normalize_smb_client_target(target: SmbClientTargetInput) -> SmbClientTarget:
