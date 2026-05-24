@@ -51,6 +51,7 @@ from timecapsulesmb.device.probe import (
     RemoteInterfaceProbeResult,
     RemoteNetworkCapabilitiesProbeResult,
     RUNTIME_RAM_ROOT,
+    RUNTIME_SMB_CONF,
     RuntimeNamingIdentityProbeResult,
 )
 from timecapsulesmb.device.storage import MAST_PROBE_COMMAND, MaStProbeDiagnostics, MaStVolume
@@ -65,6 +66,12 @@ from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshEr
 
 DEFAULT_SMB_PORT_CHECK = object()
 REAL_SMB_PORT_CHECK = object()
+DEFAULT_ACTIVE_SMB_CONF = """[global]
+    netbios name = TimeCapsule
+    xattr_tdb:file = /Volumes/dk2/.samba4/private/xattr.tdb
+[Data]
+    path = /Volumes/dk2/ShareRoot
+"""
 
 
 class CheckTests(unittest.TestCase):
@@ -107,6 +114,20 @@ class CheckTests(unittest.TestCase):
             detail="ok",
         )
 
+    def run_ssh_with_active_smb_conf(
+        self,
+        *,
+        active_smb_conf: str = DEFAULT_ACTIVE_SMB_CONF,
+        other_stdout: str = "",
+        returncode: int = 0,
+    ):
+        def fake_run_ssh(_connection: SshConnection, remote_cmd: str, **_kwargs: object):
+            if RUNTIME_SMB_CONF in remote_cmd:
+                return mock.Mock(returncode=0, stdout=active_smb_conf)
+            return mock.Mock(returncode=returncode, stdout=other_stdout)
+
+        return fake_run_ssh
+
     def mast_probe_diagnostics(self) -> MaStProbeDiagnostics:
         return MaStProbeDiagnostics(
             command=MAST_PROBE_COMMAND,
@@ -143,7 +164,6 @@ class CheckTests(unittest.TestCase):
         run_ssh_side_effect=None,
         command_exists=None,
         read_active_smb_conf: str | None = None,
-        runtime_share_names: list[str] | None = None,
         xattr_result=None,
         smbd_probe=None,
         mdns_probe=None,
@@ -202,14 +222,10 @@ class CheckTests(unittest.TestCase):
                 )
             if command_exists is not None:
                 mocks.command_exists = stack.enter_context(mock.patch("timecapsulesmb.checks.doctor_steps.command_exists", return_value=command_exists))
-            if read_active_smb_conf is not None:
-                mocks.read_active_smb_conf_conn = stack.enter_context(
-                    mock.patch("timecapsulesmb.checks.doctor_steps.read_active_smb_conf_conn", return_value=read_active_smb_conf)
-                )
-            mocks.read_runtime_share_names_conn = stack.enter_context(
+            mocks.read_active_smb_conf_conn = stack.enter_context(
                 mock.patch(
-                    "timecapsulesmb.checks.doctor_steps.read_runtime_share_names_conn",
-                    return_value=["Data"] if runtime_share_names is None else runtime_share_names,
+                    "timecapsulesmb.checks.doctor_steps.read_active_smb_conf_conn",
+                    return_value=DEFAULT_ACTIVE_SMB_CONF if read_active_smb_conf is None else read_active_smb_conf,
                 )
             )
             if xattr_result is not None:
@@ -378,9 +394,7 @@ class CheckTests(unittest.TestCase):
                 ),
             )
         )
-        self._exit_stack.enter_context(
-            mock.patch("timecapsulesmb.checks.doctor_steps.read_runtime_share_names_conn", return_value=["Data"])
-        )
+        self._exit_stack.enter_context(mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout=DEFAULT_ACTIVE_SMB_CONF)))
 
     def tearDown(self) -> None:
         self._exit_stack.close()
@@ -1648,7 +1662,7 @@ class CheckTests(unittest.TestCase):
                                     tunnel_mock.return_value.__exit__.return_value = None
                                     with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing", return_value=self.smb_listing_result()) as smb_listing_mock:
                                         with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed", return_value=[mock.Mock(status="PASS", message="file ops ok")]) as smb_file_ops_mock:
-                                            with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout="enabled\n")):
+                                            with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=self.run_ssh_with_active_smb_conf(other_stdout="enabled\n")):
                                                 with mock.patch("timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution") as nbns_mock:
                                                     results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
         self.assertFalse(fatal)
@@ -1710,7 +1724,7 @@ class CheckTests(unittest.TestCase):
                                     tunnel_mock.return_value.__exit__.return_value = None
                                     with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing", return_value=self.smb_listing_result()) as smb_listing_mock:
                                         with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed", return_value=[mock.Mock(status="PASS", message="file ops ok")]) as smb_file_ops_mock:
-                                            with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout="enabled\n")):
+                                            with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=self.run_ssh_with_active_smb_conf(other_stdout="enabled\n")):
                                                 with mock.patch("timecapsulesmb.checks.doctor_steps.check_nbns_name_resolution") as nbns_mock:
                                                     results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
         self.assertFalse(fatal)
@@ -1819,7 +1833,7 @@ class CheckTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.checks.doctor_steps.check_smb_instance", return_value=[mock.Mock(status="PASS", message="bonjour ok")]):
                             with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing", return_value=self.smb_listing_result()):
                                 with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed", return_value=[mock.Mock(status="PASS", message="file ops ok")]):
-                                    with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout="")):
+                                    with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=self.run_ssh_with_active_smb_conf()):
                                         results, fatal = run_doctor_checks(
                                             self.doctor_config(values),
                                             repo_root=REPO_ROOT,
@@ -1860,7 +1874,7 @@ class CheckTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.checks.doctor_steps.check_smb_instance", return_value=[]):
                             with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing", return_value=self.smb_listing_result()):
                                 with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed", return_value=smb_results):
-                                    with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout="")):
+                                    with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=self.run_ssh_with_active_smb_conf()):
                                         results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT, skip_bonjour=True)
         self.assertFalse(fatal)
         self.assertEqual([result.message for result in results[-10:]], [result.message for result in smb_results])
@@ -2008,7 +2022,7 @@ class CheckTests(unittest.TestCase):
                                             with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing", return_value=self.smb_listing_result()):
                                                 with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed", return_value=[mock.Mock(status="PASS", message="file ops ok")]):
                                                     with mock.patch("timecapsulesmb.checks.doctor_steps.probe_remote_runtime_naming_identity_conn", return_value=self.runtime_identity_from_values(values)):
-                                                        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout="")):
+                                                        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=self.run_ssh_with_active_smb_conf()):
                                                             results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
 
         self.assertFalse(fatal)
@@ -2047,7 +2061,7 @@ class CheckTests(unittest.TestCase):
                                         "timecapsulesmb.checks.doctor_steps.probe_remote_runtime_naming_identity_conn",
                                         return_value=self.runtime_identity_from_values(values),
                                     ):
-                                        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout="")):
+                                        with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=self.run_ssh_with_active_smb_conf()):
                                             run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
         listing_mock.assert_called_once_with(
             "admin",
@@ -2092,7 +2106,7 @@ class CheckTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.checks.doctor_steps.probe_remote_runtime_naming_identity_conn", return_value=probed_identity):
                             with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing", return_value=self.smb_listing_result("time-capsule.local")) as listing_mock:
                                 with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed", return_value=[]):
-                                    with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout="")):
+                                    with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=self.run_ssh_with_active_smb_conf()):
                                         results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT, skip_bonjour=True)
         self.assertFalse(any("TC_MDNS_HOST_LABEL" in result.message for result in results))
         self.assertFalse(fatal)
@@ -2605,7 +2619,7 @@ class CheckTests(unittest.TestCase):
                         with mock.patch("timecapsulesmb.checks.doctor_steps.check_smb_instance", return_value=[]):
                             with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_listing", return_value=self.smb_listing_result()):
                                 with mock.patch("timecapsulesmb.checks.doctor_steps.check_authenticated_smb_file_ops_detailed", return_value=[mock.Mock(status="PASS", message="file ops ok")]):
-                                    with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout="")):
+                                    with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=self.run_ssh_with_active_smb_conf()):
                                         results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
         self.assertFalse(fatal)
         nbns_result = next(result for result in results if "NBNS responder not enabled" in result.message)
@@ -2958,7 +2972,7 @@ class CheckTests(unittest.TestCase):
                                         return_value=RemoteInterfaceProbeResult(iface="bridge0", exists=True, detail="interface bridge0 exists"),
                                     ):
                                         with mock.patch("timecapsulesmb.checks.doctor_steps.probe_managed_mdns_takeover_conn", return_value=mock.Mock(ready=True, detail="managed mDNS takeover active")):
-                                            with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout="")):
+                                            with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=self.run_ssh_with_active_smb_conf()):
                                                 with mock.patch("timecapsulesmb.checks.doctor_steps.nbns_flash_config_enabled_conn", side_effect=RuntimeError("flash config probe failed")):
                                                     results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
         self.assertFalse(fatal)
@@ -2991,7 +3005,7 @@ class CheckTests(unittest.TestCase):
                                         return_value=RemoteInterfaceProbeResult(iface="bridge0", exists=True, detail="interface bridge0 exists"),
                                     ):
                                         with mock.patch("timecapsulesmb.checks.doctor_steps.probe_managed_mdns_takeover_conn", return_value=mock.Mock(ready=True, detail="managed mDNS takeover active")):
-                                            with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout="")):
+                                            with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=self.run_ssh_with_active_smb_conf()):
                                                 with mock.patch("timecapsulesmb.checks.doctor_steps.nbns_flash_config_enabled_conn", side_effect=SshError("ssh failed")):
                                                     results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT)
         self.assertFalse(fatal)
@@ -3085,7 +3099,7 @@ class CheckTests(unittest.TestCase):
                 with mock.patch("timecapsulesmb.checks.doctor_steps.check_ssh_login", return_value=mock.Mock(status="PASS", message="ssh ok")):
                     with mock.patch("timecapsulesmb.checks.doctor_steps.find_free_local_port", return_value=1445):
                         with mock.patch("timecapsulesmb.checks.doctor_steps.ssh_local_forward", side_effect=SshError("tunnel failed")):
-                            with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=mock.Mock(stdout="")):
+                            with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=self.run_ssh_with_active_smb_conf()):
                                 results, fatal = run_doctor_checks(self.doctor_config(values), repo_root=REPO_ROOT, skip_bonjour=True)
         self.assertTrue(fatal)
         smb_result = next(result for result in results if result.message.startswith("authenticated SMB checks failed through SSH tunnel:"))

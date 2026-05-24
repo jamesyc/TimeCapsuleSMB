@@ -6317,13 +6317,9 @@ runtime_startup_script_present "$self_match"; echo "self=$?"
     xattr_tdb:file = {payload_private}/xattr.tdb
 [Data]
     path = {data_root}
+[USB]
+    path = {external_data_root}
 """,
-                encoding="utf-8",
-            )
-            shares_tsv = ram_root / "var" / "shares.tsv"
-            shares_tsv.write_text(
-                f"Data\t{data_root}\tdk2\t1\taaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n"
-                f"USB\t{external_data_root}\tdk3\t0\tbbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\n",
                 encoding="utf-8",
             )
             ps_out = (
@@ -6333,7 +6329,6 @@ runtime_startup_script_present "$self_match"; echo "self=$?"
             script = f"""
 RUNTIME_RAM_ROOT={shlex.quote(str(ram_root))}
 RUNTIME_SMB_CONF_PATH={shlex.quote(str(smb_conf))}
-RUNTIME_SHARES_TSV_PATH={shlex.quote(str(shares_tsv))}
 RUNTIME_PERSISTENT_ROOT_PREFIX={shlex.quote(str(persistent_prefix) + "/")}
 {SMBD_STATUS_HELPERS}
 capture_df_for_volume_root() {{ echo "/dev/dk2 100 10 90 10% $1"; }}

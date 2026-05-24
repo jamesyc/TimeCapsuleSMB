@@ -73,7 +73,6 @@ from timecapsulesmb.device.probe import (
     probe_remote_runtime_naming_identity_conn,
     read_deployed_version_conn,
     read_active_smb_conf_conn,
-    read_runtime_share_names_conn,
     runtime_ram_root_present_conn,
 )
 from timecapsulesmb.transport.local import find_free_local_port
@@ -497,13 +496,7 @@ def _add_bonjour_results(
     )
 
 
-def _doctor_share_name(connection: SshConnection, active_smb_conf: str | None) -> str:
-    try:
-        runtime_share_names = read_runtime_share_names_conn(connection)
-    except Exception:
-        runtime_share_names = []
-    if runtime_share_names:
-        return runtime_share_names[0]
+def _doctor_share_name(active_smb_conf: str | None) -> str:
     active_share_names = parse_active_share_names(active_smb_conf or "")
     if active_share_names:
         return active_share_names[0]
@@ -710,7 +703,7 @@ def _add_authenticated_smb_results(
     add_result: Callable[[CheckResult], None],
 ) -> None:
     try:
-        share_name = _doctor_share_name(connection, active_smb_conf)
+        share_name = _doctor_share_name(active_smb_conf)
     except RuntimeError as exc:
         add_result(CheckResult("FAIL", str(exc)))
         return

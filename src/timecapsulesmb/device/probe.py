@@ -8,6 +8,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from timecapsulesmb.core.smb_config import parse_active_payload_dir
 from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.processes import PROBE_PROCESS_HELPERS
@@ -29,8 +30,6 @@ if TYPE_CHECKING:
 RUNTIME_RAM_ROOT = "/mnt/Memory/samba4"
 RUNTIME_SMB_CONF = f"{RUNTIME_RAM_ROOT}/etc/smb.conf"
 RUNTIME_NBNS_BIN = f"{RUNTIME_RAM_ROOT}/sbin/nbns-advertiser"
-RUNTIME_SHARES_TSV = f"{RUNTIME_RAM_ROOT}/var/shares.tsv"
-RUNTIME_PAYLOAD_TSV = f"{RUNTIME_RAM_ROOT}/var/payload.tsv"
 FLASH_RUNTIME_CONFIG = "/mnt/Flash/tcapsulesmb.conf"
 REMOTE_STATE_PROBE_TIMEOUT_SECONDS = 10
 REMOTE_LOG_TAIL_LINES = 80
@@ -61,9 +60,7 @@ SMBD_STATUS_HELPERS = rf'''
     RUNTIME_RAM_PRIVATE="$RUNTIME_RAM_ROOT/private"
     RUNTIME_MDNS_BIN=${{RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}}
     RUNTIME_SMB_CONF_PATH=${{RUNTIME_SMB_CONF_PATH:-{RUNTIME_SMB_CONF}}}
-RUNTIME_SHARES_TSV_PATH=${{RUNTIME_SHARES_TSV_PATH:-{RUNTIME_SHARES_TSV}}}
 RUNTIME_PERSISTENT_ROOT_PREFIX=${{RUNTIME_PERSISTENT_ROOT_PREFIX:-/Volumes/}}
-RUNTIME_TAB=$(printf '\t')
 
 runtime_smb_conf_present() {{
     [ -f "$RUNTIME_SMB_CONF_PATH" ]
@@ -100,12 +97,15 @@ runtime_xattr_tdb_path() {{
     read_smb_conf_value "xattr_tdb:file"
 }}
 
-runtime_data_root_path() {{
-    read_smb_conf_value "path"
+runtime_share_data_paths() {{
+    if ! runtime_smb_conf_present; then
+        return 1
+    fi
+    /usr/bin/sed -n '/^[[:space:]]*[#;]/d;s/^[[:space:]]*[Pp][Aa][Tt][Hh][[:space:]]*=[[:space:]]*//p' "$RUNTIME_SMB_CONF_PATH"
 }}
 
-runtime_volume_root() {{
-    data_root=$(runtime_data_root_path || true)
+runtime_volume_root_for_data_path() {{
+    data_root=$1
     case "$data_root" in
         "$RUNTIME_PERSISTENT_ROOT_PREFIX"*)
             rest=${{data_root#"$RUNTIME_PERSISTENT_ROOT_PREFIX"}}
@@ -116,6 +116,21 @@ runtime_volume_root() {{
             fi
             ;;
     esac
+    return 1
+}}
+
+runtime_volume_root() {{
+    share_paths=$(runtime_share_data_paths || true)
+    [ -n "$share_paths" ] || return 1
+    while IFS= read -r data_root; do
+        volume_root=$(runtime_volume_root_for_data_path "$data_root" || true)
+        if [ -n "$volume_root" ]; then
+            printf '%s\n' "$volume_root"
+            return 0
+        fi
+    done <<EOF
+$share_paths
+EOF
     return 1
 }}
 
@@ -130,23 +145,22 @@ runtime_volume_device() {{
 
 runtime_share_volume_roots() {{
     seen_roots=""
-    if [ -s "$RUNTIME_SHARES_TSV_PATH" ]; then
-        while IFS="$RUNTIME_TAB" read -r share_name share_path part_device builtin part_uuid; do
-            [ -n "$part_device" ] || continue
-            volume_root="$RUNTIME_PERSISTENT_ROOT_PREFIX$part_device"
-            case " $seen_roots " in
-                *" $volume_root "*) ;;
-                *)
-                    seen_roots="$seen_roots $volume_root"
-                    printf '%s\n' "$volume_root"
-                    ;;
-            esac
-        done <"$RUNTIME_SHARES_TSV_PATH"
-        if [ -n "$seen_roots" ]; then
-            return 0
-        fi
-    fi
-    runtime_volume_root
+    share_paths=$(runtime_share_data_paths || true)
+    [ -n "$share_paths" ] || return 1
+    while IFS= read -r data_root; do
+        volume_root=$(runtime_volume_root_for_data_path "$data_root" || true)
+        [ -n "$volume_root" ] || continue
+        case " $seen_roots " in
+            *" $volume_root "*) ;;
+            *)
+                seen_roots="$seen_roots $volume_root"
+                printf '%s\n' "$volume_root"
+                ;;
+        esac
+    done <<EOF
+$share_paths
+EOF
+    [ -n "$seen_roots" ]
 }}
 
 capture_df_for_volume_root() {{
@@ -1119,13 +1133,18 @@ def read_interface_ipv4_addrs_conn(connection: SshConnection, iface: str) -> tup
     return tuple(line.strip() for line in proc.stdout.splitlines() if line.strip())
 
 
-def read_active_smb_conf_conn(connection: SshConnection) -> str:
+def read_active_smb_conf_conn(
+    connection: SshConnection,
+    *,
+    timeout_seconds: int = REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
+) -> str:
     quoted_conf = shlex.quote(RUNTIME_SMB_CONF)
     script = f"if [ -f {quoted_conf} ]; then cat {quoted_conf}; fi"
     proc = run_ssh(
         connection,
         f"/bin/sh -c {shlex.quote(script)}",
         check=False,
+        timeout=timeout_seconds,
     )
     return proc.stdout
 
@@ -1455,28 +1474,6 @@ def nbns_flash_config_enabled_conn(connection: SshConnection) -> bool:
     return proc.stdout.strip() == "enabled"
 
 
-def read_runtime_share_names_conn(connection: SshConnection) -> list[str]:
-    quoted_state = shlex.quote(RUNTIME_SHARES_TSV)
-    script = f"if [ -f {quoted_state} ]; then /bin/cat {quoted_state}; fi"
-    proc = run_ssh(
-        connection,
-        f"/bin/sh -c {shlex.quote(script)}",
-        check=False,
-        timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
-    )
-    names: list[str] = []
-    for raw_line in proc.stdout.splitlines():
-        line = raw_line.rstrip("\n")
-        if not line.strip():
-            continue
-        if "\t" not in line:
-            continue
-        name = line.split("\t", 1)[0].strip()
-        if name:
-            names.append(name)
-    return names
-
-
 def read_deployed_version_conn(connection: SshConnection) -> DeployedVersionProbeResult:
     script = (
         f"config={shlex.quote(FLASH_RUNTIME_CONFIG)}; "
@@ -1552,26 +1549,16 @@ def read_remote_log_tail_conn(connection: SshConnection, path: str) -> str:
     return _limit_remote_log_tail(text)
 
 
-def read_runtime_payload_dir_conn(connection: SshConnection) -> str | None:
-    script = (
-        f"payload_tsv={shlex.quote(RUNTIME_PAYLOAD_TSV)}; "
-        'if [ -s "$payload_tsv" ]; then '
-        "IFS=$(printf '\\t') read -r payload_dir payload_volume payload_device <\"$payload_tsv\"; "
-        'if [ -n "$payload_dir" ]; then printf "%s\\n" "$payload_dir"; exit 0; fi; '
-        "fi; exit 1"
-    )
-    proc = run_ssh(
-        connection,
-        f"/bin/sh -c {shlex.quote(script)}",
-        check=False,
-        timeout=REMOTE_LOG_TAIL_TIMEOUT_SECONDS,
-    )
-    if proc.returncode != 0:
+def read_runtime_payload_dir_conn(
+    connection: SshConnection,
+    *,
+    timeout_seconds: int = REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
+) -> str | None:
+    try:
+        smb_conf = read_active_smb_conf_conn(connection, timeout_seconds=timeout_seconds)
+    except Exception:
         return None
-    stdout = (proc.stdout or "").strip()
-    if not stdout:
-        return None
-    return stdout.splitlines()[0]
+    return parse_active_payload_dir(smb_conf)
 
 
 def read_runtime_log_tails_conn(connection: SshConnection) -> dict[str, str]:
@@ -1582,7 +1569,7 @@ def read_runtime_log_tails_conn(connection: SshConnection) -> dict[str, str]:
         except Exception as e:
             logs[key] = f"(unavailable: {e})"
     try:
-        payload_dir = read_runtime_payload_dir_conn(connection)
+        payload_dir = read_runtime_payload_dir_conn(connection, timeout_seconds=REMOTE_LOG_TAIL_TIMEOUT_SECONDS)
     except Exception as e:
         payload_dir = None
         logs["remote_payload_log_dir"] = f"(unavailable: {e})"
@@ -1595,7 +1582,7 @@ def read_runtime_log_tails_conn(connection: SshConnection) -> dict[str, str]:
             except Exception as e:
                 logs[key] = f"(unavailable: {e})"
     else:
-        logs.setdefault("remote_payload_log_dir", f"(missing {RUNTIME_PAYLOAD_TSV})")
+        logs.setdefault("remote_payload_log_dir", f"(unavailable from active {RUNTIME_SMB_CONF})")
     for key, path in REMOTE_RUNTIME_FALLBACK_LOG_PATHS.items():
         if key in logs:
             continue
