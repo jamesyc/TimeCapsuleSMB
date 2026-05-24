@@ -453,11 +453,8 @@ static void TC_AUTO_IP_UNUSED synthetic_ipv4_ifaddrs_name(char *buf, size_t buf_
     uint32_t host_order = ntohl(ipv4_addr);
     snprintf(buf,
              buf_len,
-             "ipv4-%u-%u-%u-%u",
-             (unsigned int)((host_order >> 24) & 0xff),
-             (unsigned int)((host_order >> 16) & 0xff),
-             (unsigned int)((host_order >> 8) & 0xff),
-             (unsigned int)(host_order & 0xff));
+             "ip4-%08x",
+             (unsigned int)host_order);
 }
 
 static void TC_AUTO_IP_UNUSED synthetic_ipv6_ifaddrs_name(char *buf,
