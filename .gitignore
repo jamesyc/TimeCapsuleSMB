@@ -46,6 +46,7 @@ coverage.xml
 
 # Env
 .env
+.env.local*
 .env.backup*
 .bootstrap
 .version-check-cache.json
