@@ -780,7 +780,7 @@ MaSt = (
         mount_mock.assert_called_once_with(connection, internal, wait_seconds=30)
         writable_mock.assert_called_once_with(connection, "/Volumes/dk2")
 
-    def test_ensure_volume_root_mounted_conn_uses_diskd_and_mount_hfs_fallback(self) -> None:
+    def test_ensure_volume_root_mounted_conn_claims_diskd_without_mount_hfs_fallback(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")
         with mock.patch("timecapsulesmb.device.storage.run_ssh", return_value=mock.Mock(returncode=0)) as run_ssh_mock:
             self.assertTrue(ensure_volume_root_mounted_conn(connection, "/Volumes/dk2", "/dev/dk2", wait_seconds=12))
@@ -790,11 +790,13 @@ MaSt = (
         self.assertIn("/bin/df -k /Volumes/dk2", remote_command)
         self.assertIn("/usr/bin/tail -n +2", remote_command)
         self.assertIn("/usr/bin/acp rpc diskd.useVolume", remote_command)
-        self.assertIn("/sbin/mount_hfs /dev/dk2 /Volumes/dk2", remote_command)
+        self.assertLess(remote_command.index("/usr/bin/acp rpc diskd.useVolume"), remote_command.index("/bin/df -k /Volumes/dk2"))
+        self.assertIn('while [ "$diskd_attempt" -le 2 ]', remote_command)
+        self.assertNotIn("mount_hfs", remote_command)
         self.assertNotIn("grep", remote_command)
         self.assertNotIn("awk", remote_command)
         self.assertNotIn("cut", remote_command)
-        self.assertEqual(run_ssh_mock.call_args.kwargs["timeout"], 57)
+        self.assertEqual(run_ssh_mock.call_args.kwargs["timeout"], 69)
 
     def test_ensure_volume_root_mounted_conn_reports_failure(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")
@@ -3587,7 +3589,7 @@ MaSt = (
         self.assertLess(events_text.index("mdns-process"), events_text.index("nbns-process"))
         self.assertLess(events_text.index("mdns-process"), events_text.index("nbns-socket"))
         self.assertNotIn("manager NBNS: reconcile requested; readiness check will run after mDNS", log_text)
-        self.assertNotIn("manager NBNS: responder ready on IPv4 UDP 137", log_text)
+        self.assertNotIn("manager NBNS: responder ready on required UDP 137 sockets", log_text)
         self.assertNotIn("manager pass 1 step=health", log_text)
         self.assertNotIn("manager health:", log_text)
 
@@ -3732,7 +3734,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("nbns-reconcile\n", proc.stdout)
         self.assertIn("status=1\n", proc.stdout)
-        self.assertIn("manager NBNS: responder did not become ready on IPv4 UDP 137 after 10s", log_text)
+        self.assertIn("manager NBNS: responder did not become ready on required UDP 137 sockets after 10s", log_text)
         self.assertIn("nbns=failed", log_text)
         self.assertNotIn("manager health:", log_text)
 
@@ -5626,7 +5628,7 @@ MaSt = (
             "102\n",
         )
 
-    def test_common_mdns_bound_udp_5353_uses_ipv4_preferred_family_policy(self) -> None:
+    def test_common_mdns_bound_udp_5353_requires_all_reported_socket_families(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
@@ -5649,8 +5651,8 @@ MaSt = (
                     mkdir -p "$RAM_VAR"
                     v4_status=1
                     v6_status=1
-                    tc_mdns_bound_ipv4_udp_5353() {{ return "$v4_status"; }}
-                    tc_mdns_bound_ipv6_udp_5353() {{ return "$v6_status"; }}
+                    tc_process_bound_ipv4_udp_port() {{ return "$v4_status"; }}
+                    tc_process_bound_ipv6_udp_port() {{ return "$v6_status"; }}
 
                     v4_status=0
                     v6_status=1
@@ -5700,7 +5702,7 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(
             proc.stdout,
-            "dual_prefers_ipv4=0\n"
+            "dual_prefers_ipv4=1\n"
             "dual_missing_ipv4=1\n"
             "ipv4_only=0\n"
             "ipv6_only=0\n"
@@ -5727,8 +5729,8 @@ MaSt = (
                         [ "$1" = "$MDNS_PROC_NAME" ]
                     }}
                     tc_probe_mdns_socket_families() {{ echo ipv6; }}
-                    tc_mdns_bound_ipv4_udp_5353() {{ echo unexpected-ipv4; return 1; }}
-                    tc_mdns_bound_ipv6_udp_5353() {{ echo ipv6-bound; return 0; }}
+                    tc_process_bound_ipv4_udp_port() {{ echo unexpected-ipv4; return 1; }}
+                    tc_process_bound_ipv6_udp_port() {{ echo ipv6-bound; return 0; }}
                     tc_mdns_auto_ip_available() {{ echo unexpected-auto-ip; return 0; }}
                     stop_runtime_process_by_ucomm() {{ echo "unexpected-stop $1"; return 1; }}
                     tc_restart_mdns() {{ echo unexpected-restart; return 1; }}
@@ -5947,7 +5949,7 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "auto-ip\nstop nbns-advertiser\nidentity\nrestart\n")
-        self.assertIn("watchdog recovery: nbns responder is running without IPv4 UDP 137", log_text)
+        self.assertIn("watchdog recovery: nbns responder is running without required UDP 137 sockets", log_text)
 
     def test_common_watchdog_defers_nbns_when_running_without_udp_137_and_no_auto_ip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5984,8 +5986,8 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "auto-ip\ndeferred=1\n")
-        self.assertIn("watchdog recovery: nbns responder is running without IPv4 UDP 137", log_text)
-        self.assertIn("NBNS startup deferred; no usable IPv4 has appeared yet", log_text)
+        self.assertIn("watchdog recovery: nbns responder is running without required UDP 137 sockets", log_text)
+        self.assertIn("NBNS startup deferred; no usable address has appeared yet", log_text)
         self.assertNotIn("unexpected", proc.stdout)
 
     def test_common_watchdog_reports_nbns_hard_auto_ip_failure_when_unbound(self) -> None:
@@ -6025,7 +6027,7 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "auto-ip\nstatus=1\ndeferred=0\n")
-        self.assertIn("watchdog recovery: nbns responder is running without IPv4 UDP 137", log_text)
+        self.assertIn("watchdog recovery: nbns responder is running without required UDP 137 sockets", log_text)
         self.assertIn("watchdog recovery: NBNS auto-ip check failed with exit code 13", log_text)
         self.assertNotIn("unexpected", proc.stdout)
 
@@ -8394,7 +8396,7 @@ MaSt = (
                 )
             ),
         )
-        self.assertIn("watchdog recovery: nbns responder is running without IPv4 UDP 137", log_text)
+        self.assertIn("watchdog recovery: nbns responder is running without required UDP 137 sockets", log_text)
         self.assertIn("watchdog recovery: live disk runtime refresh complete", log_text)
 
     def test_common_watchdog_live_reload_restores_bind_when_config_generation_fails(self) -> None:

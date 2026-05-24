@@ -255,7 +255,7 @@ tc_nbns_enabled() {
 tc_mark_nbns_deferred_no_ip() {
     TC_WATCHDOG_NBNS_DEFERRED_NO_IP=1
     if [ "${TC_NBNS_AUTO_IP_WAIT_LOGGED:-0}" != "1" ]; then
-        tc_log "NBNS startup deferred; no usable IPv4 has appeared yet"
+        tc_log "NBNS startup deferred; no usable address has appeared yet"
         TC_NBNS_AUTO_IP_WAIT_LOGGED=1
     fi
 }
@@ -315,7 +315,7 @@ tc_all_managed_services_healthy() {
         if ! runtime_process_present_by_ucomm "$NBNS_PROC_NAME"; then
             return 1
         fi
-        if ! tc_nbns_bound_ipv4_udp_137; then
+        if ! tc_nbns_bound_udp_137; then
             return 1
         fi
     fi
@@ -506,10 +506,10 @@ tc_watchdog_reconcile_nbns() {
     fi
 
     if runtime_process_present_by_ucomm "$NBNS_PROC_NAME"; then
-        if tc_nbns_bound_ipv4_udp_137; then
+        if tc_nbns_bound_udp_137; then
             return 0
         fi
-        tc_log "watchdog recovery: nbns responder is running without IPv4 UDP 137"
+        tc_log "watchdog recovery: nbns responder is running without required UDP 137 sockets"
         if tc_nbns_auto_ip_available; then
             stop_runtime_process_by_ucomm "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" || return 1
         else

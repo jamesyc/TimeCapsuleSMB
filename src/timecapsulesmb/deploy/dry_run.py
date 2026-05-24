@@ -56,7 +56,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     lines.append(f"  payload dir: {plan.payload_dir}")
     lines.append("")
     lines.append("Boot options:")
-    lines.append(f"  diskd.useVolume wait: {plan.apple_mount_wait_seconds}s")
+    lines.append(f"  diskd.useVolume wait: {plan.apple_mount_wait_seconds}s per attempt")
     lines.append("")
     lines.append("Remote actions (pre-upload):")
     for command in render_remote_actions(plan.pre_upload_actions):

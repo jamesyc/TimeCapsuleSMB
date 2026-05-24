@@ -4512,7 +4512,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("host: root@10.0.0.2", text)
         self.assertIn("volume root: resolved from MaSt at deploy time", text)
         self.assertIn("payload dir: resolved from MaSt at deploy time/.samba4", text)
-        self.assertIn(f"diskd.useVolume wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s", text)
+        self.assertIn(f"diskd.useVolume wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s per attempt", text)
         self.assertIn("generated flash runtime config", text)
         self.assertIn("generated smbpasswd", text)
         self.assertNotIn("rendered:smb.conf.template", text)
@@ -4924,6 +4924,35 @@ class CliTests(unittest.TestCase):
         )
         self.assertIn("Activating deployed runtime after reboot.", result.text)
         self.assertIn("NetBSD4 activation complete.", result.text)
+
+    def test_deploy_netbsd4_forces_ssh_pipe_upload_fallback(self) -> None:
+        result = self.run_deploy_cli(
+            ["--yes"],
+            values=self.make_valid_env(TC_PAYLOAD_DIR_NAME="samba4"),
+            artifacts=[("smbd-netbsd4le", True, "ok")],
+            compatibility=self.make_supported_netbsd4_compatibility(),
+            patch_actions=True,
+            patch_upload=True,
+            verify_runtime=self.managed_runtime_probe(True),
+            wait_side_effect=[True, True],
+        )
+
+        self.assertEqual(result.rc, 0)
+        upload_connection = result.mocks.upload_deployment_payload.call_args.kwargs["connection"]
+        self.assertFalse(upload_connection.remote_has_scp)
+
+    def test_deploy_netbsd6_leaves_scp_capability_probe_enabled(self) -> None:
+        result = self.run_deploy_cli(
+            ["--yes"],
+            patch_actions=True,
+            patch_upload=True,
+            verify_runtime=self.managed_runtime_probe(True),
+            wait_side_effect=[True, True],
+        )
+
+        self.assertEqual(result.rc, 0)
+        upload_connection = result.mocks.upload_deployment_payload.call_args.kwargs["connection"]
+        self.assertIsNone(upload_connection.remote_has_scp)
 
     def test_deploy_netbsd4_yes_waits_when_flash_boot_already_started_runtime(self) -> None:
         result = self.run_deploy_cli(

@@ -820,7 +820,7 @@ static void mdns_transport_requirements_from_links(const struct link_context_set
 
     memset(requirements, 0, sizeof(*requirements));
     requirements->ipv4_required = wants_ipv4;
-    requirements->ipv6_required = !wants_ipv4 && wants_ipv6;
+    requirements->ipv6_required = wants_ipv6;
 }
 
 static void mdns_transport_status_from_links(const struct link_context_set *desired_links,
@@ -3146,7 +3146,7 @@ static uint32_t link_ipv4_source_for_peer(const struct link_context *link, uint3
         return link_preferred_ipv4_source(link);
     }
     for (i = 0; i < link->ipv4_count; i++) {
-        uint32_t netmask = link->ipv4[i].netmask;
+        uint32_t netmask = effective_ipv4_netmask(link->ipv4[i].addr, link->ipv4[i].netmask);
         int matches;
         int score;
 
@@ -5260,6 +5260,9 @@ static int handle_query_any(int sockfd,
             reply_route = MDNS_REPLY_LEGACY_UNICAST;
         } else if ((qclass_raw & DNS_CLASS_QU) && source_allows_unicast) {
             reply_route = MDNS_REPLY_UNICAST;
+            if (source_port == MDNS_PORT) {
+                reply_route |= MDNS_REPLY_MULTICAST;
+            }
         } else {
             reply_route = MDNS_REPLY_MULTICAST;
         }
@@ -5369,7 +5372,7 @@ static int source_matches_link_ipv4_subnet(uint32_t source_ipv4_addr, const stru
     size_t i;
 
     for (i = 0; i < link->ipv4_count; i++) {
-        uint32_t netmask = link->ipv4[i].netmask;
+        uint32_t netmask = effective_ipv4_netmask(link->ipv4[i].addr, link->ipv4[i].netmask);
         if (netmask == 0) {
             if (source_ipv4_addr == link->ipv4[i].addr) {
                 return 1;

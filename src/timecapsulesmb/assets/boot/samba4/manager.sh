@@ -910,15 +910,15 @@ tc_manager_wait_for_nbns_ready() {
         return 0
     fi
     if [ "${TC_WATCHDOG_NBNS_DEFERRED_NO_IP:-0}" = "1" ]; then
-        tc_log "manager NBNS: readiness wait skipped; NBNS deferred waiting for usable IPv4"
+        tc_log "manager NBNS: readiness wait skipped; NBNS deferred waiting for usable address"
         return 0
     fi
 
     wait_attempt=0
     while [ "$wait_attempt" -le "$wait_attempts" ]; do
         if runtime_process_present_by_ucomm "$NBNS_PROC_NAME" &&
-            tc_nbns_bound_ipv4_udp_137; then
-            tc_manager_debug_log "manager NBNS: responder ready on IPv4 UDP 137"
+            tc_nbns_bound_udp_137; then
+            tc_manager_debug_log "manager NBNS: responder ready on required UDP 137 sockets"
             return 0
         fi
 
@@ -929,7 +929,7 @@ tc_manager_wait_for_nbns_ready() {
         sleep 1
     done
 
-    tc_log "manager NBNS: responder did not become ready on IPv4 UDP 137 after ${wait_attempts}s"
+    tc_log "manager NBNS: responder did not become ready on required UDP 137 sockets after ${wait_attempts}s"
     return 1
 }
 

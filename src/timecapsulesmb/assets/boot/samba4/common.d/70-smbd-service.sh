@@ -138,6 +138,10 @@ tc_nbns_bound_ipv4_udp_137() {
     tc_process_bound_ipv4_udp_port "$NBNS_PROC_NAME" 137
 }
 
+tc_nbns_bound_ipv6_udp_137() {
+    tc_process_bound_ipv6_udp_port "$NBNS_PROC_NAME" 137
+}
+
 tc_mdns_bound_ipv4_udp_5353() {
     tc_process_bound_ipv4_udp_port "$MDNS_PROC_NAME" 5353
 }
@@ -146,32 +150,41 @@ tc_mdns_bound_ipv6_udp_5353() {
     tc_process_bound_ipv6_udp_port "$MDNS_PROC_NAME" 5353
 }
 
-tc_mdns_health_socket_family() {
-    families=$(tc_probe_mdns_socket_families) || return $?
+tc_process_bound_required_udp_families() {
+    proc_name=$1
+    port=$2
+    families=$3
+    saw_family=0
 
     set -- $families
     for family in "$@"; do
-        if [ "$family" = "ipv4" ]; then
-            printf '%s\n' ipv4
-            return 0
-        fi
+        case "$family" in
+            ipv4)
+                saw_family=1
+                tc_process_bound_ipv4_udp_port "$proc_name" "$port" || return 1
+                ;;
+            ipv6)
+                saw_family=1
+                tc_process_bound_ipv6_udp_port "$proc_name" "$port" || return 1
+                ;;
+            *) return 1 ;;
+        esac
     done
-    for family in "$@"; do
-        if [ "$family" = "ipv6" ]; then
-            printf '%s\n' ipv6
-            return 0
-        fi
-    done
-    return 1
+
+    [ "$saw_family" = "1" ]
 }
 
 tc_mdns_bound_udp_5353() {
-    family=$(tc_mdns_health_socket_family) || return $?
-    case "$family" in
-        ipv4) tc_mdns_bound_ipv4_udp_5353 ;;
-        ipv6) tc_mdns_bound_ipv6_udp_5353 ;;
-        *) return 1 ;;
-    esac
+    families=$(tc_probe_mdns_socket_families) || return $?
+    tc_process_bound_required_udp_families "$MDNS_PROC_NAME" 5353 "$families"
+}
+
+tc_nbns_bound_udp_137() {
+    if ! families=$(tc_probe_nbns_socket_families); then
+        tc_nbns_bound_ipv4_udp_137
+        return $?
+    fi
+    tc_process_bound_required_udp_families "$NBNS_PROC_NAME" 137 "$families"
 }
 
 tc_wait_for_smbd_ipv4_445() {

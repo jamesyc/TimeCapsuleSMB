@@ -3,6 +3,7 @@ from __future__ import annotations
 import socket
 import struct
 from typing import Optional
+import ipaddress
 
 from timecapsulesmb.checks.models import CheckResult
 
@@ -61,21 +62,31 @@ def extract_nbns_response_ip(packet: bytes) -> Optional[str]:
 
         rtype, rclass, _ttl, rdlength = struct.unpack("!HHIH", packet[offset : offset + 10])
         offset += 10
-        if rtype != NB_TYPE_NB or rclass != DNS_CLASS_IN or rdlength < 6 or offset + rdlength > len(packet):
+        if rtype != NB_TYPE_NB or rclass != DNS_CLASS_IN or offset + rdlength > len(packet):
             return None
 
-        return socket.inet_ntoa(packet[offset + 2 : offset + 6])
+        if rdlength == 6:
+            return socket.inet_ntoa(packet[offset + 2 : offset + 6])
+        if rdlength == 18:
+            return socket.inet_ntop(socket.AF_INET6, packet[offset + 2 : offset + 18])
+        return None
     except (IndexError, OSError, ValueError, struct.error):
         return None
 
 
 def check_nbns_name_resolution(netbios_name: str, target_host: str, expected_ip: str, *, timeout: float = 2.0) -> CheckResult:
     query = build_nbns_query(netbios_name)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        expected_addr = ipaddress.ip_address(expected_ip)
+    except ValueError:
+        return CheckResult("FAIL", f"NBNS check expected IP is invalid: {expected_ip}")
+    expected_ip = str(expected_addr)
+    sock_family = socket.AF_INET6 if expected_addr.version == 6 else socket.AF_INET
+    sock = socket.socket(sock_family, socket.SOCK_DGRAM)
     sock.settimeout(timeout)
     try:
         sock.sendto(query, (target_host, NBNS_PORT))
-        packet, _ = sock.recvfrom(576)
+        packet, _ = sock.recvfrom(1024)
     except TimeoutError:
         return CheckResult("FAIL", f"NBNS query for {netbios_name!r} timed out against {target_host}:137")
     except OSError as exc:

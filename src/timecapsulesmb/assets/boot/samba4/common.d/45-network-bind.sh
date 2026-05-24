@@ -129,6 +129,12 @@ tc_probe_mdns_socket_families() {
     tc_normalize_mdns_socket_families "$families" || return 1
 }
 
+tc_probe_nbns_socket_families() {
+    [ -x "$TC_NBNS_BIN" ] || return 1
+    families=$("$TC_NBNS_BIN" --print-nbns-socket-families 2>/dev/null) || return $?
+    tc_normalize_mdns_socket_families "$families" || return 1
+}
+
 tc_probe_smb_bind_interfaces() {
     bind_tokens=$(tc_probe_smb_bind_tokens) || return $?
     printf '127.0.0.1/8 ::1/128 %s\n' "$bind_tokens"

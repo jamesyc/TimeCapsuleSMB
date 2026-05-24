@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
 RUNTIME_RAM_ROOT = "/mnt/Memory/samba4"
 RUNTIME_SMB_CONF = f"{RUNTIME_RAM_ROOT}/etc/smb.conf"
+RUNTIME_NBNS_BIN = f"{RUNTIME_RAM_ROOT}/sbin/nbns-advertiser"
 RUNTIME_SHARES_TSV = f"{RUNTIME_RAM_ROOT}/var/shares.tsv"
 RUNTIME_PAYLOAD_TSV = f"{RUNTIME_RAM_ROOT}/var/payload.tsv"
 FLASH_RUNTIME_CONFIG = "/mnt/Flash/tcapsulesmb.conf"
@@ -218,25 +219,6 @@ smbd_bound_445() {{
     return 0
 }}
 
-mdns_health_socket_family() {{
-    families=$1
-
-    set -- $families
-    for family in "$@"; do
-        if [ "$family" = "ipv4" ]; then
-            printf '%s\n' ipv4
-            return 0
-        fi
-    done
-    for family in "$@"; do
-        if [ "$family" = "ipv6" ]; then
-            printf '%s\n' ipv6
-            return 0
-        fi
-    done
-    return 1
-}}
-
 mdns_bound_5353() {{
     fstat_out=$1
     family=$2
@@ -256,6 +238,40 @@ mdns_bound_5353() {{
             ;;
         *) return 1 ;;
     esac
+}}
+
+mdns_socket_families_supported() {{
+    families=$1
+    saw_family=0
+
+    set -- $families
+    for family in "$@"; do
+        case "$family" in
+            ipv4|ipv6) saw_family=1 ;;
+            *) return 1 ;;
+        esac
+    done
+
+    [ "$saw_family" -eq 1 ]
+}}
+
+mdns_bound_required_5353() {{
+    fstat_out=$1
+    families=$2
+    saw_family=0
+
+    set -- $families
+    for family in "$@"; do
+        case "$family" in
+            ipv4|ipv6)
+                saw_family=1
+                mdns_bound_5353 "$fstat_out" "$family" || return 1
+                ;;
+            *) return 1 ;;
+        esac
+    done
+
+    [ "$saw_family" -eq 1 ]
 }}
 
 describe_managed_smbd_status() {{
@@ -341,7 +357,6 @@ describe_managed_mdns_status() {{
     mdns_auto_ip_state=waiting
     mdns_auto_ip_failure=
     mdns_socket_families=
-    mdns_health_family=ipv4
     mdns_health_family_supported=1
     if [ ! -e "$RUNTIME_MDNS_BIN" ]; then
         mdns_auto_ip_state=failed
@@ -362,9 +377,7 @@ describe_managed_mdns_status() {{
         esac
     fi
     if [ "$mdns_auto_ip_state" = "active" ]; then
-        if mdns_health_family=$(mdns_health_socket_family "$mdns_socket_families"); then
-            mdns_health_family_supported=1
-        else
+        if ! mdns_socket_families_supported "$mdns_socket_families"; then
             mdns_health_family_supported=0
         fi
     fi
@@ -384,8 +397,8 @@ describe_managed_mdns_status() {{
         fi
         status=1
     fi
-    if [ "$mdns_health_family_supported" -eq 1 ] && mdns_bound_5353 "$fstat_out" "$mdns_health_family"; then
-        echo "PASS:mdns-advertiser bound to required $mdns_health_family UDP 5353 listener"
+    if [ "$mdns_health_family_supported" -eq 1 ] && mdns_bound_required_5353 "$fstat_out" "$mdns_socket_families"; then
+        echo "PASS:mdns-advertiser bound to required UDP 5353 listeners"
         if [ "$mdns_auto_ip_state" = "active" ]; then
             echo "PASS:mdns-advertiser bind address active"
         else
@@ -484,6 +497,14 @@ class ManagedMdnsTakeoverProbeResult:
     ready: bool
     detail: str
     lines: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class RemoteNetworkCapabilitiesProbeResult:
+    smb_bind_interfaces: str = ""
+    mdns_families: tuple[str, ...] = ()
+    nbns_families: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1194,6 +1215,81 @@ exit "$status"
         ready=False,
         detail=_probe_detail(lines, "managed mDNS takeover not active"),
         lines=lines,
+    )
+
+
+def _capability_family_tokens(value: str) -> tuple[str, ...]:
+    tokens: list[str] = []
+    for token in value.split():
+        token = token.strip().lower()
+        if token in {"ipv4", "ipv6"} and token not in tokens:
+            tokens.append(token)
+    return tuple(tokens)
+
+
+def probe_remote_network_capabilities_conn(connection: SshConnection, *, timeout_seconds: int = 10) -> RemoteNetworkCapabilitiesProbeResult:
+    script = rf'''
+RUNTIME_RAM_ROOT=${{RUNTIME_RAM_ROOT:-/mnt/Memory/samba4}}
+RUNTIME_RAM_SBIN="$RUNTIME_RAM_ROOT/sbin"
+RUNTIME_MDNS_BIN=${{RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}}
+RUNTIME_NBNS_BIN=${{RUNTIME_NBNS_BIN:-$RUNTIME_RAM_SBIN/nbns-advertiser}}
+
+tc_probe_cap() {{
+    cap_name=$1
+    cap_bin=$2
+    shift 2
+    if [ ! -x "$cap_bin" ]; then
+        echo "TC_CAP_ERROR $cap_name missing"
+        return 0
+    fi
+    cap_out=$("$cap_bin" "$@" 2>/dev/null)
+    cap_rc=$?
+    if [ "$cap_rc" -eq 0 ]; then
+        echo "TC_CAP $cap_name $cap_out"
+    else
+        echo "TC_CAP_ERROR $cap_name rc=$cap_rc"
+    fi
+}}
+
+tc_probe_cap smb "$RUNTIME_MDNS_BIN" --print-smb-bind-interfaces
+tc_probe_cap mdns "$RUNTIME_MDNS_BIN" --print-mdns-socket-families
+tc_probe_cap nbns "$RUNTIME_NBNS_BIN" --print-nbns-socket-families
+'''
+    proc = run_ssh(
+        connection,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=timeout_seconds,
+    )
+
+    smb_bind_interfaces = ""
+    mdns_families: tuple[str, ...] = ()
+    nbns_families: tuple[str, ...] = ()
+    errors: list[str] = []
+    for raw_line in (proc.stdout or "").splitlines():
+        line = raw_line.strip()
+        if line.startswith("TC_CAP "):
+            fields = line.split(" ", 2)
+            if len(fields) < 3:
+                errors.append(line.removeprefix("TC_CAP "))
+                continue
+            _prefix, cap_name, value = fields
+            if cap_name == "smb":
+                smb_bind_interfaces = value.strip()
+            elif cap_name == "mdns":
+                mdns_families = _capability_family_tokens(value)
+            elif cap_name == "nbns":
+                nbns_families = _capability_family_tokens(value)
+        elif line.startswith("TC_CAP_ERROR "):
+            errors.append(line.removeprefix("TC_CAP_ERROR "))
+    stderr = (proc.stderr or "").strip()
+    if stderr:
+        errors.append(stderr)
+    return RemoteNetworkCapabilitiesProbeResult(
+        smb_bind_interfaces=smb_bind_interfaces,
+        mdns_families=mdns_families,
+        nbns_families=nbns_families,
+        errors=tuple(errors),
     )
 
 

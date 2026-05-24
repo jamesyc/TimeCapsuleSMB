@@ -4,8 +4,9 @@ from dataclasses import dataclass
 
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import AppConfig
-from timecapsulesmb.core.net import extract_host, ipv4_literal, resolve_host_ipv4s
+from timecapsulesmb.core.net import extract_host, ipv4_literal, ipv6_literal, resolve_host_ips
 from timecapsulesmb.discovery.bonjour import (
+    BonjourIPFamily,
     BonjourDiscoverySnapshot,
     BonjourDiscoveryDiagnostics,
     BonjourResolvedService,
@@ -57,7 +58,7 @@ def build_bonjour_expected_identity(
     target_ip = None
     candidate_ip = extract_host(config.get("TC_HOST")).strip()
     if candidate_ip:
-        target_ip = ipv4_literal(candidate_ip)
+        target_ip = ipv4_literal(candidate_ip) or ipv6_literal(candidate_ip)
     return BonjourExpectedIdentity(
         instance_name=runtime_naming_identity.mdns_instance_name if runtime_naming_identity is not None else None,
         host_label=runtime_naming_identity.mdns_host_label if runtime_naming_identity is not None else None,
@@ -70,9 +71,17 @@ def discover_smb_services_detailed(
     *,
     include_related: bool = False,
     target_ip: str | None = None,
+    family: BonjourIPFamily | None = None,
+    interfaces: list[str] | None = None,
 ) -> tuple[BonjourDiscoverySnapshot | None, CheckResult | None, BonjourDiscoveryDiagnostics | None]:
     try:
-        snapshot, diagnostics = discover_snapshot_detailed(None if include_related else SMB_SERVICE, timeout=timeout, target_ip=target_ip)
+        snapshot, diagnostics = discover_snapshot_detailed(
+            None if include_related else SMB_SERVICE,
+            timeout=timeout,
+            target_ip=target_ip,
+            family=family,
+            interfaces=interfaces,
+        )
         return snapshot, None, diagnostics
     except Exception as e:
         return None, CheckResult("FAIL", f"Bonjour check failed: {e}"), None
@@ -125,7 +134,7 @@ def select_resolved_smb_record_by_ip(
         record
         for record in records
         if (record.service_type == SMB_SERVICE or record.service_type.startswith(f"{SMB_SERVICE}."))
-        and target_ip in (record.ipv4 or [])
+        and (target_ip in (record.ipv4 or []) or target_ip in (record.ipv6 or []))
     ]
     if not matches:
         return None
@@ -157,9 +166,17 @@ def resolve_smb_instance(
     timeout_ms: int = FINAL_PENDING_RESOLVE_TIMEOUT_MS,
     *,
     target_ip: str | None = None,
+    family: BonjourIPFamily | None = None,
+    interfaces: list[str] | None = None,
 ) -> tuple[BonjourResolvedService | None, CheckResult | None]:
     try:
-        record = resolve_service_instance(instance, timeout_ms=timeout_ms, target_ip=target_ip)
+        record = resolve_service_instance(
+            instance,
+            timeout_ms=timeout_ms,
+            target_ip=target_ip,
+            family=family,
+            interfaces=interfaces,
+        )
     except Exception as e:
         return None, CheckResult("FAIL", f"Bonjour check failed: {e}")
     if record is None:
@@ -205,7 +222,7 @@ def check_bonjour_host_ip(
     for ip in record_ips or []:
         if ip and ip not in known_ips:
             known_ips.append(ip)
-    for ip in resolve_host_ipv4s(hostname):
+    for ip in resolve_host_ips(hostname):
         if ip not in known_ips:
             known_ips.append(ip)
 

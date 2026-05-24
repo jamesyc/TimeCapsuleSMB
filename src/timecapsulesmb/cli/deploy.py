@@ -205,7 +205,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         type=_non_negative_int,
         default=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
         metavar="SECONDS",
-        help=f"Seconds for deployment-time diskd.useVolume mount guards to wait before their manual fallback (default: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS})",
+        help=f"Seconds for each deployment-time diskd.useVolume mount guard attempt to wait (default: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS})",
     )
     parser.add_argument("--debug-logging", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -248,6 +248,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             raise SystemExit(f"{compatibility_message}\nNo deployable payload is available for this detected device.")
         payload_family = compatibility.payload_family
         is_netbsd4 = is_netbsd4_payload_family(payload_family)
+        if is_netbsd4:
+            # Apple NetBSD 4 firmware can expose /usr/bin/scp but hang after
+            # writing the file. Use the SSH pipe upload fallback consistently.
+            connection.remote_has_scp = False
         startup_mode = _startup_mode_for_deploy(no_reboot=args.no_reboot, is_netbsd4=is_netbsd4)
         command_context.update_fields(deploy_startup_mode=startup_mode)
         if not args.json:

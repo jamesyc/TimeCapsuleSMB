@@ -234,7 +234,7 @@ tc_mdns_auto_ip_available() {
 }
 
 tc_nbns_auto_ip_available() {
-    tc_probe_auto_ip_cidrs >/dev/null 2>&1
+    tc_probe_nbns_socket_families >/dev/null 2>&1
 }
 
 tc_mark_mdns_deferred_no_ip() {

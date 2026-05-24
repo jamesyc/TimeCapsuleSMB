@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from timecapsulesmb.checks.doctor_state import (
     DoctorOptions,
     DoctorSink,
     DoctorTarget,
+    NetworkPlanState,
     RemoteAccess,
     RuntimeNamingState,
     SmbConfigState,
@@ -31,20 +33,30 @@ from timecapsulesmb.checks.doctor_state import (
 from timecapsulesmb.checks.local_tools import check_required_artifacts, check_required_local_tools
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.checks.network import check_smb_port, check_ssh_login, ssh_opts_use_proxy
+from timecapsulesmb.checks.network_plan import (
+    NetworkCheckPlan,
+    NetworkFamilyPlan,
+    bind_interface_families,
+    build_network_check_plan,
+    local_interface_addresses,
+)
 from timecapsulesmb.checks.nbns import check_nbns_name_resolution
 from timecapsulesmb.checks.smb import (
+    SmbClientTarget,
+    SmbClientTargetInput,
     check_authenticated_smb_listing,
     check_authenticated_smb_file_ops_detailed,
 )
 from timecapsulesmb.checks.smb_config import (
     parse_active_netbios_name,
     parse_active_share_names,
+    parse_global_option,
     parse_xattr_tdb_paths,
 )
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers
 from timecapsulesmb.core.config import AppConfig, DEFAULT_SAMBA_AUTH_USER, validate_app_config
 from timecapsulesmb.core.release import CLI_VERSION_CODE, RELEASE_TAG
-from timecapsulesmb.core.net import extract_host, ipv4_literal, is_link_local_ipv4, resolve_host_ipv4s
+from timecapsulesmb.core.net import extract_host
 from timecapsulesmb.device.compat import is_netbsd4_payload_family, is_netbsd6_payload_family, render_compatibility_message
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
@@ -56,11 +68,11 @@ from timecapsulesmb.device.probe import (
     probe_connection_state,
     probe_managed_mdns_takeover_conn,
     probe_managed_smbd_conn,
+    probe_remote_network_capabilities_conn,
     probe_remote_interface_conn,
     probe_remote_runtime_naming_identity_conn,
     read_deployed_version_conn,
     read_active_smb_conf_conn,
-    read_interface_ipv4_conn,
     read_runtime_share_names_conn,
     runtime_ram_root_present_conn,
 )
@@ -250,12 +262,71 @@ def _add_bonjour_host_ip_results(
     add_result(host_ip_result)
 
 
+def _record_ips(record: object) -> list[str]:
+    ips: list[str] = []
+    for ip in list(getattr(record, "ipv4", []) or []) + list(getattr(record, "ipv6", []) or []):
+        if ip and ip not in ips:
+            ips.append(ip)
+    return ips
+
+
+def _network_plan_debug(plan: NetworkCheckPlan) -> dict[str, object]:
+    def family_debug(family_plan: NetworkFamilyPlan) -> dict[str, object]:
+        return {
+            "remote_addresses": list(family_plan.remote_addresses),
+            "remote_cidrs": list(family_plan.remote_cidrs),
+            "local_sources": list(family_plan.local_sources),
+            "mdns_expected": family_plan.mdns_expected,
+            "samba_expected": family_plan.samba_expected,
+            "nbns_expected": family_plan.nbns_expected,
+        }
+
+    return {
+        "ipv4": family_debug(plan.ipv4),
+        "ipv6": family_debug(plan.ipv6),
+    }
+
+
+def _family_label(family: str) -> str:
+    return "IPv6" if family == "ipv6" else "IPv4"
+
+
+def _prefixed_check_result(result: CheckResult, prefix: str) -> CheckResult:
+    if not prefix:
+        return result
+    return CheckResult(result.status, f"{prefix}{result.message}", result.details)
+
+
+def _bonjour_family_attempts(
+    network_plan: NetworkCheckPlan | None,
+    legacy_target_ip: str | None,
+    add_result: Callable[[CheckResult], None],
+) -> list[tuple[NetworkFamilyPlan | None, str | None, list[str] | None]]:
+    if network_plan is None:
+        return [(None, legacy_target_ip, None)]
+
+    attempts: list[tuple[NetworkFamilyPlan | None, str | None, list[str] | None]] = []
+    for family_plan in network_plan.families():
+        if not family_plan.mdns_expected:
+            continue
+        family_label = _family_label(family_plan.family)
+        if not family_plan.remote_addresses:
+            add_result(CheckResult("SKIP", f"Bonjour {family_label} check skipped; runtime has no advertised {family_plan.family} address"))
+            continue
+        if not family_plan.local_sources:
+            add_result(CheckResult("SKIP", f"Bonjour {family_label} check skipped; local host has no address on the remote {family_plan.family} network"))
+            continue
+        attempts.append((family_plan, family_plan.remote_addresses[0], list(family_plan.local_sources)))
+    return attempts
+
+
 def _add_bonjour_results(
     config: AppConfig,
     runtime_naming_identity: RuntimeNamingIdentityProbeResult | None,
     *,
     proxied_ssh: bool,
     skip_bonjour: bool,
+    network_plan: NetworkCheckPlan | None = None,
     add_result: Callable[[CheckResult], None],
 ) -> DoctorBonjourResult:
     bonjour_instance: str | None = None
@@ -277,7 +348,7 @@ def _add_bonjour_results(
                 "host_label": bonjour_expected.host_label,
                 "target_ip": bonjour_expected.target_ip,
             }
-            if bonjour_expected.instance_name is None and bonjour_expected.target_ip is None:
+            if bonjour_expected.instance_name is None and bonjour_expected.target_ip is None and network_plan is None:
                 bonjour_reason = "Bonjour identity check skipped; device naming probe unavailable and TC_HOST is not a literal IP"
                 add_result(CheckResult("SKIP", bonjour_reason))
                 return DoctorBonjourResult(
@@ -289,16 +360,43 @@ def _add_bonjour_results(
                     expected_debug=bonjour_expected_debug,
                     zeroconf_debug=None,
                 )
-            smb_snapshot, discovery_error, bonjour_zeroconf_debug = discover_smb_services_detailed(
-                include_related=True,
-                target_ip=bonjour_expected.target_ip,
-            )
+            attempt_diagnostics: list[object] = []
+            attempts = _bonjour_family_attempts(network_plan, bonjour_expected.target_ip, add_result)
+            if not attempts:
+                bonjour_reason = "Bonjour check skipped; no reachable local address for runtime mDNS families"
+                add_result(CheckResult("SKIP", bonjour_reason))
+                return DoctorBonjourResult(
+                    instance=None,
+                    target=None,
+                    service_targets={},
+                    reason=bonjour_reason,
+                    debug_needed=False,
+                    expected_debug=bonjour_expected_debug,
+                    zeroconf_debug=None,
+                )
+
             bonjour_reason = ""
-            if discovery_error is not None:
-                bonjour_reason = discovery_error.message
-                bonjour_debug_needed = True
-                add_result(discovery_error)
-            else:
+            for family_plan, target_ip, interfaces in attempts:
+                family = family_plan.family if family_plan is not None else None
+                result_prefix = f"Bonjour {_family_label(family)}: " if family_plan is not None else ""
+
+                def add_attempt_result(result: CheckResult) -> None:
+                    add_result(_prefixed_check_result(result, result_prefix))
+
+                smb_snapshot, discovery_error, attempt_debug = discover_smb_services_detailed(
+                    include_related=True,
+                    target_ip=target_ip,
+                    family=family,
+                    interfaces=interfaces,
+                )
+                if attempt_debug is not None:
+                    attempt_diagnostics.append(attempt_debug)
+                if discovery_error is not None:
+                    bonjour_reason = discovery_error.message
+                    bonjour_debug_needed = True
+                    add_attempt_result(discovery_error)
+                    continue
+
                 assert smb_snapshot is not None
                 smb_instances = [instance for instance in smb_snapshot.instances if _bonjour_service_label(instance.service_type) == "_smb"]
                 smb_records = [record for record in smb_snapshot.resolved if _bonjour_service_label(record.service_type) == "_smb"]
@@ -308,23 +406,25 @@ def _add_bonjour_results(
                         expected_instance_name=bonjour_expected.instance_name,
                     )
                     for result in check_smb_instance(selection):
-                        add_result(result)
+                        add_attempt_result(result)
                     if selection.instance is not None:
                         bonjour_instance = selection.instance.name
                         bonjour_service_targets = _bonjour_service_targets_for_instance(smb_snapshot.resolved, selection.instance.name)
-                        if _add_bonjour_service_target_consistency_results(selection.instance.name, bonjour_service_targets, add_result):
+                        if _add_bonjour_service_target_consistency_results(selection.instance.name, bonjour_service_targets, add_attempt_result):
                             bonjour_debug_needed = True
                         resolved_record = select_resolved_smb_record(smb_records, selection.instance)
                         resolve_error = None
                         if resolved_record is None:
                             resolved_record, resolve_error = resolve_smb_instance(
                                 selection.instance,
-                                target_ip=bonjour_expected.target_ip,
+                                target_ip=target_ip,
+                                family=family,
+                                interfaces=interfaces,
                             )
                         if resolve_error is not None:
                             bonjour_reason = resolve_error.message
                             bonjour_debug_needed = True
-                            add_result(resolve_error)
+                            add_attempt_result(resolve_error)
                         elif resolved_record is not None:
                             target = resolve_smb_service_target(
                                 resolved_record,
@@ -333,33 +433,32 @@ def _add_bonjour_results(
                             target_result = check_smb_service_target(target)
                             if target_result.status == "FAIL":
                                 bonjour_debug_needed = True
-                            add_result(target_result)
+                            add_attempt_result(target_result)
                             if target.hostname:
                                 bonjour_target = target
-                                record_ips = list(getattr(resolved_record, "ipv4", []) or [])
                                 _add_bonjour_host_ip_results(
                                     target.hostname,
-                                    expected_ip=bonjour_expected.target_ip,
-                                    record_ips=record_ips,
-                                    add_result=add_result,
+                                    expected_ip=target_ip,
+                                    record_ips=_record_ips(resolved_record),
+                                    add_result=add_attempt_result,
                                 )
                     else:
                         bonjour_debug_needed = True
-                elif bonjour_expected.target_ip is not None:
+                elif target_ip is not None:
                     resolved_record = select_resolved_smb_record_by_ip(
                         smb_records,
-                        bonjour_expected.target_ip,
+                        target_ip,
                     )
                     if resolved_record is None:
                         bonjour_debug_needed = True
-                        bonjour_reason = f"no resolved _smb._tcp service matched target IP {bonjour_expected.target_ip}"
-                        add_result(CheckResult("FAIL", bonjour_reason))
+                        bonjour_reason = f"no resolved _smb._tcp service matched target IP {target_ip}"
+                        add_attempt_result(CheckResult("FAIL", bonjour_reason))
                     else:
                         bonjour_instance = resolved_record.name
                         bonjour_service_targets = _bonjour_service_targets_for_instance(smb_snapshot.resolved, resolved_record.name)
-                        if _add_bonjour_service_target_consistency_results(resolved_record.name, bonjour_service_targets, add_result):
+                        if _add_bonjour_service_target_consistency_results(resolved_record.name, bonjour_service_targets, add_attempt_result):
                             bonjour_debug_needed = True
-                        add_result(CheckResult("PASS", f"discovered _smb._tcp service matching target IP {bonjour_expected.target_ip}"))
+                        add_attempt_result(CheckResult("PASS", f"discovered _smb._tcp service matching target IP {target_ip}"))
                         target = resolve_smb_service_target(
                             resolved_record,
                             expected_instance_name=None,
@@ -367,16 +466,19 @@ def _add_bonjour_results(
                         target_result = check_smb_service_target(target)
                         if target_result.status == "FAIL":
                             bonjour_debug_needed = True
-                        add_result(target_result)
+                        add_attempt_result(target_result)
                         if target.hostname:
                             bonjour_target = target
-                            record_ips = list(getattr(resolved_record, "ipv4", []) or [])
                             _add_bonjour_host_ip_results(
                                 target.hostname,
-                                expected_ip=bonjour_expected.target_ip,
-                                record_ips=record_ips,
-                                add_result=add_result,
+                                expected_ip=target_ip,
+                                record_ips=_record_ips(resolved_record),
+                                add_result=add_attempt_result,
                             )
+            if len(attempt_diagnostics) == 1:
+                bonjour_zeroconf_debug = attempt_diagnostics[0]
+            elif attempt_diagnostics:
+                bonjour_zeroconf_debug = attempt_diagnostics
         except Exception as e:
             bonjour_reason = str(e)
             bonjour_debug_needed = True
@@ -408,31 +510,19 @@ def _doctor_share_name(connection: SshConnection, active_smb_conf: str | None) -
     raise RuntimeError("could not determine active Samba share name")
 
 
-def _expected_nbns_ipv4(connection: SshConnection, config: AppConfig, host: str) -> str | None:
-    iface = config.get("TC_NET_IFACE").strip()
-    if iface:
-        try:
-            return read_interface_ipv4_conn(connection, iface)
-        except Exception:
-            pass
-
-    literal = ipv4_literal(host)
-    if literal is not None:
-        return literal
-    for candidate in resolve_host_ipv4s(host):
-        if not is_link_local_ipv4(candidate):
-            return candidate
-    return None
+def _nbns_family_targets(network_plan: NetworkCheckPlan | None) -> tuple[NetworkFamilyPlan, ...]:
+    if network_plan is None:
+        return ()
+    return tuple(family_plan for family_plan in network_plan.families() if family_plan.nbns_expected)
 
 
 def _add_nbns_results(
     connection: SshConnection,
-    config: AppConfig,
     *,
-    host: str,
     proxied_ssh: bool,
     active_smb_conf: str | None,
     runtime_naming_identity: RuntimeNamingIdentityProbeResult | None,
+    network_plan: NetworkCheckPlan | None,
     add_result: Callable[[CheckResult], None],
 ) -> None:
     try:
@@ -446,22 +536,163 @@ def _add_nbns_results(
                 if expected_name is None:
                     add_result(CheckResult("SKIP", "NBNS check skipped; active/probed NetBIOS name unavailable"))
                     return
-                expected_ip = _expected_nbns_ipv4(connection, config, host)
-                if expected_ip is None:
-                    add_result(CheckResult("SKIP", "NBNS check skipped; configured SSH host did not resolve to a non-link-local IPv4 address"))
+                family_targets = _nbns_family_targets(network_plan)
+                if not family_targets:
+                    add_result(CheckResult("SKIP", "NBNS check skipped; runtime network plan unavailable"))
                     return
-                nbns_result = check_nbns_name_resolution(expected_name, host, expected_ip)
-                if nbns_result.status == "FAIL":
-                    nbns_result = CheckResult(
-                        "INFO",
-                        f"optional NBNS check failed: {nbns_result.message}",
-                        nbns_result.details,
-                    )
-                add_result(nbns_result)
+                checked = False
+                for family_plan in family_targets:
+                    family_label = _family_label(family_plan.family)
+                    if not family_plan.remote_addresses:
+                        add_result(CheckResult("SKIP", f"NBNS {family_label} check skipped; runtime has no advertised {family_plan.family} address"))
+                        continue
+                    if not family_plan.local_sources:
+                        add_result(CheckResult("SKIP", f"NBNS {family_label} check skipped; local host has no address on the remote {family_plan.family} network"))
+                        continue
+                    checked = True
+                    expected_ip = family_plan.remote_addresses[0]
+                    nbns_result = check_nbns_name_resolution(expected_name, expected_ip, expected_ip)
+                    if nbns_result.status == "FAIL":
+                        nbns_result = CheckResult(
+                            "INFO",
+                            f"optional NBNS {family_label} check failed: {nbns_result.message}",
+                            nbns_result.details,
+                        )
+                    add_result(nbns_result)
+                if not checked:
+                    add_result(CheckResult("SKIP", "NBNS check skipped; no locally reachable runtime NBNS family"))
         else:
             add_result(CheckResult("SKIP", "NBNS responder not enabled"))
     except Exception as e:
         add_result(CheckResult("WARN", f"NBNS check skipped: {e}"))
+
+
+def _ip_literal(value: str) -> str | None:
+    text = value.strip()
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    try:
+        return str(ipaddress.ip_address(text))
+    except ValueError:
+        return None
+
+
+def _smb_client_target_debug(target: SmbClientTargetInput) -> str:
+    if isinstance(target, SmbClientTarget):
+        return target.display
+    return target
+
+
+def _doctor_smb_client_targets(
+    config: AppConfig,
+    bonjour_target: BonjourServiceTarget | None,
+    runtime_naming_identity: RuntimeNamingIdentityProbeResult | None,
+    network_plan: NetworkCheckPlan | None,
+) -> list[SmbClientTargetInput]:
+    servers = doctor_smb_servers(config, bonjour_target, runtime_naming_identity)
+    targets: list[SmbClientTargetInput] = []
+    seen: set[tuple[str, str | None]] = set()
+
+    def add(target: SmbClientTargetInput) -> None:
+        if isinstance(target, SmbClientTarget):
+            key = (target.server, target.ip_address)
+        else:
+            key = (target, None)
+        if key not in seen:
+            seen.add(key)
+            targets.append(target)
+
+    pinned_server = next((server for server in servers if _ip_literal(server) is None), None)
+    if network_plan is not None:
+        for family_plan in network_plan.families():
+            if not family_plan.samba_expected or not family_plan.remote_addresses or not family_plan.local_sources:
+                continue
+            remote_address = family_plan.remote_addresses[0]
+            server = pinned_server
+            if server is None and _ip_literal(remote_address) is not None and ":" not in remote_address:
+                server = remote_address
+            if server is not None:
+                add(
+                    SmbClientTarget(
+                        server=server,
+                        ip_address=remote_address,
+                    )
+                )
+
+    if targets:
+        return targets
+
+    for server in servers:
+        add(server)
+    return targets
+
+
+def _smb_listing_looks_like_local_route_failure(result: CheckResult) -> bool:
+    if "NT_STATUS_HOST_UNREACHABLE" in result.message:
+        return True
+    attempts = result.details.get("attempts")
+    if not isinstance(attempts, list):
+        return False
+    for attempt in attempts:
+        if not isinstance(attempt, dict):
+            continue
+        for key in ("failure", "stderr_tail", "stdout_tail"):
+            value = attempt.get(key)
+            if isinstance(value, str) and "NT_STATUS_HOST_UNREACHABLE" in value:
+                return True
+    return False
+
+
+def _add_tunneled_authenticated_smb_results(
+    connection: SshConnection,
+    *,
+    host: str,
+    smb_password: str,
+    share_name: str,
+    remote_port: int,
+    debug_prefix: str,
+    debug_fields: dict[str, object] | None,
+    add_result: Callable[[CheckResult], None],
+) -> bool:
+    local_port = find_free_local_port()
+    if debug_fields is not None:
+        debug_fields[f"{debug_prefix}_listing_servers"] = ["127.0.0.1"]
+        debug_fields[f"{debug_prefix}_listing_expected_share"] = share_name
+    try:
+        with ssh_local_forward(
+            connection,
+            local_port=local_port,
+            remote_host=host,
+            remote_port=remote_port,
+        ):
+            listing_result = check_authenticated_smb_listing(
+                DEFAULT_SAMBA_AUTH_USER,
+                smb_password,
+                "127.0.0.1",
+                expected_share_name=share_name,
+                port=local_port,
+            )
+            if debug_fields is not None and listing_result.details.get("attempts"):
+                debug_fields[f"{debug_prefix}_listing_attempts"] = listing_result.details["attempts"]
+            add_result(listing_result)
+            if listing_result.status != "PASS":
+                return False
+
+            file_ops_ok = True
+            for result in check_authenticated_smb_file_ops_detailed(
+                DEFAULT_SAMBA_AUTH_USER,
+                smb_password,
+                "127.0.0.1",
+                share_name,
+                port=local_port,
+            ):
+                add_result(result)
+                if result.status == "FAIL":
+                    file_ops_ok = False
+            return file_ops_ok
+    except Exception as e:
+        add_result(CheckResult("FAIL", f"authenticated SMB checks failed through SSH tunnel: {e}"))
+        return False
 
 
 def _add_authenticated_smb_results(
@@ -474,6 +705,7 @@ def _add_authenticated_smb_results(
     smb_password: str,
     proxied_ssh: bool,
     active_smb_conf: str | None,
+    network_plan: NetworkCheckPlan | None,
     debug_fields: dict[str, object] | None,
     add_result: Callable[[CheckResult], None],
 ) -> None:
@@ -483,64 +715,72 @@ def _add_authenticated_smb_results(
         add_result(CheckResult("FAIL", str(exc)))
         return
     if proxied_ssh:
-        local_port = find_free_local_port()
-        if debug_fields is not None:
-            debug_fields["authenticated_smb_listing_servers"] = ["127.0.0.1"]
-            debug_fields["authenticated_smb_listing_expected_share"] = share_name
-        try:
-            with ssh_local_forward(
-                connection,
-                local_port=local_port,
-                remote_host=host,
-                remote_port=445,
-            ):
-                listing_result = check_authenticated_smb_listing(
-                    DEFAULT_SAMBA_AUTH_USER,
-                    smb_password,
-                    "127.0.0.1",
-                    expected_share_name=share_name,
-                    port=local_port,
-                )
-                if debug_fields is not None and listing_result.details.get("attempts"):
-                    debug_fields["authenticated_smb_listing_attempts"] = listing_result.details["attempts"]
-                add_result(listing_result)
-                for result in check_authenticated_smb_file_ops_detailed(
-                    DEFAULT_SAMBA_AUTH_USER,
-                    smb_password,
-                    "127.0.0.1",
-                    share_name,
-                    port=local_port,
-                ):
-                    add_result(result)
-        except Exception as e:
-            add_result(CheckResult("FAIL", f"authenticated SMB checks failed through SSH tunnel: {e}"))
+        _add_tunneled_authenticated_smb_results(
+            connection,
+            host=host,
+            smb_password=smb_password,
+            share_name=share_name,
+            remote_port=445,
+            debug_prefix="authenticated_smb",
+            debug_fields=debug_fields,
+            add_result=add_result,
+        )
         return
 
-    smb_servers = doctor_smb_servers(config, bonjour_target, runtime_naming_identity)
+    smb_servers = _doctor_smb_client_targets(config, bonjour_target, runtime_naming_identity, network_plan)
     if debug_fields is not None:
-        debug_fields["authenticated_smb_listing_servers"] = smb_servers
+        debug_fields["authenticated_smb_listing_servers"] = [_smb_client_target_debug(target) for target in smb_servers]
         debug_fields["authenticated_smb_listing_expected_share"] = share_name
     listing_result = check_authenticated_smb_listing(
         DEFAULT_SAMBA_AUTH_USER,
         smb_password,
         smb_servers,
         expected_share_name=share_name,
+        port=445,
     )
     if debug_fields is not None and listing_result.details.get("attempts"):
         debug_fields["authenticated_smb_listing_attempts"] = listing_result.details["attempts"]
-    add_result(listing_result)
     if listing_result.status != "PASS":
+        if _smb_listing_looks_like_local_route_failure(listing_result):
+            add_result(
+                CheckResult(
+                    "WARN",
+                    "direct local smbclient authenticated SMB check failed with NT_STATUS_HOST_UNREACHABLE, likely due to macOS permissions issue; retrying through SSH tunnel",
+                    {"direct_attempts": listing_result.details.get("attempts", [])},
+                )
+            )
+            if _add_tunneled_authenticated_smb_results(
+                connection,
+                host=host,
+                smb_password=smb_password,
+                share_name=share_name,
+                remote_port=445,
+                debug_prefix="authenticated_smb_tunnel",
+                debug_fields=debug_fields,
+                add_result=add_result,
+            ):
+                return
+        add_result(listing_result)
         return
+    add_result(listing_result)
 
     smb_server = listing_result.details.get("server")
     if not isinstance(smb_server, str) or not smb_server:
         add_result(CheckResult("FAIL", "authenticated SMB listing did not report the server used for file-ops checks"))
         return
+    smb_ip_address = listing_result.details.get("ip_address")
+    if not isinstance(smb_ip_address, str) or not smb_ip_address:
+        smb_ip_address = None
+    file_ops_kwargs = {}
+    if smb_ip_address is not None:
+        file_ops_kwargs["ip_address"] = smb_ip_address
     for result in check_authenticated_smb_file_ops_detailed(
         DEFAULT_SAMBA_AUTH_USER,
         smb_password,
         smb_server,
         share_name,
+        port=445,
+        **file_ops_kwargs,
     ):
         add_result(result)
 
@@ -750,22 +990,102 @@ def _doctor_check_active_smb_conf(target: DoctorTarget, remote: RemoteAccess, si
         return SmbConfigState(text=None, reason=str(e))
 
 
-def _doctor_check_direct_smb_port(target: DoctorTarget, remote: RemoteAccess, sink: DoctorSink) -> None:
+def _doctor_check_network_plan(target: DoctorTarget, remote: RemoteAccess, smb_config: SmbConfigState, sink: DoctorSink) -> NetworkPlanState:
+    if not remote.remote_checks_enabled:
+        return NetworkPlanState(plan=None, reason="remote checks disabled")
+
+    capability_errors: tuple[str, ...] = ()
+    try:
+        capabilities = probe_remote_network_capabilities_conn(target.connection)
+    except Exception as e:
+        capabilities = None
+        capability_errors = (f"{type(e).__name__}: {e}",)
+
+    smb_bind_interfaces = ""
+    mdns_families: tuple[str, ...] = ()
+    nbns_families: tuple[str, ...] = ()
+    if capabilities is not None:
+        smb_bind_interfaces = capabilities.smb_bind_interfaces
+        mdns_families = capabilities.mdns_families
+        nbns_families = capabilities.nbns_families
+        capability_errors = capabilities.errors
+
+    if not smb_bind_interfaces:
+        smb_bind_interfaces = parse_global_option(smb_config.text or "", "interfaces") or ""
+
+    bind_families = bind_interface_families(smb_bind_interfaces)
+    if not mdns_families:
+        mdns_families = bind_families
+    if not nbns_families:
+        nbns_families = bind_families
+
+    if not smb_bind_interfaces or not bind_families:
+        reason = "runtime network plan unavailable; active smb.conf has no non-loopback bind interfaces"
+        if sink.debug_fields is not None:
+            sink.debug_fields["runtime_network_plan_unavailable"] = {
+                "reason": reason,
+                "capability_errors": list(capability_errors),
+            }
+        return NetworkPlanState(plan=None, reason=reason)
+
+    plan = build_network_check_plan(
+        smb_bind_interfaces=smb_bind_interfaces,
+        mdns_families=mdns_families,
+        nbns_families=nbns_families,
+        local_addresses=local_interface_addresses(),
+    )
+    if sink.debug_fields is not None:
+        sink.debug_fields["runtime_network_capabilities"] = {
+            "smb_bind_interfaces": smb_bind_interfaces,
+            "mdns_families": list(mdns_families),
+            "nbns_families": list(nbns_families),
+            "errors": list(capability_errors),
+        }
+        sink.debug_fields["runtime_network_plan"] = _network_plan_debug(plan)
+    return NetworkPlanState(plan=plan)
+
+
+def _doctor_check_direct_smb_port(target: DoctorTarget, remote: RemoteAccess, network_plan: NetworkPlanState, sink: DoctorSink) -> None:
     if target.proxied_ssh:
         sink.add(CheckResult("SKIP", f"direct SMB port check skipped for SSH-proxied target {target.host}"))
+        return
+
+    results: list[CheckResult] = []
+    if network_plan.plan is not None:
+        for family_plan in network_plan.plan.families():
+            if not family_plan.samba_expected:
+                continue
+            family_label = _family_label(family_plan.family)
+            if not family_plan.remote_addresses:
+                result = CheckResult("SKIP", f"direct SMB {family_label} port check skipped; runtime has no advertised {family_plan.family} address")
+            elif not family_plan.local_sources:
+                result = CheckResult("SKIP", f"direct SMB {family_label} port check skipped; local host has no address on the remote {family_plan.family} network")
+            else:
+                result = check_smb_port(family_plan.remote_addresses[0])
+            sink.add(result)
+            results.append(result)
     else:
         result = check_smb_port(target.host)
         sink.add(result)
-        if result.status != "PASS":
-            _add_remote_service_socket_debug(target, remote, sink)
+        results.append(result)
+
+    if any(result.status != "PASS" and result.status != "SKIP" for result in results):
+        _add_remote_service_socket_debug(target, remote, sink)
 
 
-def _doctor_check_bonjour(inputs: DoctorInputs, target: DoctorTarget, naming: RuntimeNamingState, sink: DoctorSink) -> DoctorBonjourResult:
+def _doctor_check_bonjour(
+    inputs: DoctorInputs,
+    target: DoctorTarget,
+    naming: RuntimeNamingState,
+    network_plan: NetworkPlanState,
+    sink: DoctorSink,
+) -> DoctorBonjourResult:
     return _add_bonjour_results(
         inputs.config,
         naming.identity,
         proxied_ssh=target.proxied_ssh,
         skip_bonjour=inputs.options.skip_bonjour,
+        network_plan=network_plan.plan,
         add_result=sink.add,
     )
 
@@ -788,11 +1108,11 @@ def _doctor_add_active_smb_conf_info(smb_config: SmbConfigState, sink: DoctorSin
 
 
 def _doctor_check_nbns(
-    inputs: DoctorInputs,
     target: DoctorTarget,
     remote: RemoteAccess,
     smb_config: SmbConfigState,
     naming: RuntimeNamingState,
+    network_plan: NetworkPlanState,
     sink: DoctorSink,
 ) -> None:
     if not remote.remote_checks_enabled:
@@ -801,11 +1121,10 @@ def _doctor_check_nbns(
     result_start = sink.result_count()
     _add_nbns_results(
         target.connection,
-        inputs.config,
-        host=target.host,
         proxied_ssh=target.proxied_ssh,
         active_smb_conf=smb_config.text,
         runtime_naming_identity=naming.identity,
+        network_plan=network_plan.plan,
         add_result=sink.add,
     )
     if any("failed" in result.message for result in sink.new_results_since(result_start)):
@@ -818,6 +1137,7 @@ def _doctor_check_authenticated_smb(
     smb_config: SmbConfigState,
     naming: RuntimeNamingState,
     bonjour_result: DoctorBonjourResult,
+    network_plan: NetworkPlanState,
     sink: DoctorSink,
 ) -> None:
     if inputs.options.skip_smb:
@@ -832,6 +1152,7 @@ def _doctor_check_authenticated_smb(
         smb_password=target.smb_password,
         proxied_ssh=target.proxied_ssh,
         active_smb_conf=smb_config.text,
+        network_plan=network_plan.plan,
         debug_fields=sink.debug_fields,
         add_result=sink.add,
     )
