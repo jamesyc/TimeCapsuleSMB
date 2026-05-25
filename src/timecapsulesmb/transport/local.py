@@ -4,6 +4,7 @@ import shlex
 import shutil
 import socket
 import subprocess
+from collections.abc import Mapping
 
 
 def find_command(name: str) -> str | None:
@@ -54,5 +55,10 @@ def find_free_local_port(host: str = "127.0.0.1") -> int:
         return int(sock.getsockname()[1])
 
 
-def run_local_capture(cmd: list[str], timeout: int = 15) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+def run_local_capture(
+    cmd: list[str],
+    timeout: int = 15,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)

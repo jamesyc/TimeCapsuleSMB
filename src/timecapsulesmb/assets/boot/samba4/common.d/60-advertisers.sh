@@ -2,7 +2,7 @@ tc_cleanup_old_runtime() {
     cleanup_status=0
 
     tc_log "cleaning old managed runtime processes and RAM state"
-    stop_watchdog_process || cleanup_status=1
+    stop_manager_process || cleanup_status=1
     stop_runtime_process_by_ucomm "smbd" "smbd" || cleanup_status=1
     stop_runtime_process_by_ucomm "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" || cleanup_status=1
     stop_runtime_process_by_ucomm "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" || cleanup_status=1
@@ -130,7 +130,7 @@ tc_prepare_local_hostname_resolution() {
     fi
 
     if tc_hosts_has_hostname "$device_hostname"; then
-        tc_log "local hostname resolution already present for $device_hostname"
+        tc_smbd_debug_log "local hostname resolution already present for $device_hostname"
     elif printf '127.0.0.1\t%s %s.local\n' "$device_hostname" "$device_hostname" >>/etc/hosts; then
         tc_log "local hostname resolution prepared for $device_hostname"
     else
@@ -161,17 +161,6 @@ derive_airport_fields() {
         return 0
     fi
     return 1
-}
-
-tc_log_mdns_snapshot_age() {
-    snapshot_path=$1
-    if [ ! -f "$snapshot_path" ]; then
-        tc_log "trusted Apple mDNS snapshot missing at $snapshot_path"
-        return 1
-    fi
-
-    tc_log "trusted Apple mDNS snapshot present: $snapshot_path"
-    return 0
 }
 
 tc_prepare_mdns_identity() {
@@ -233,11 +222,11 @@ tc_mdns_auto_ip_available() {
 }
 
 tc_nbns_auto_ip_available() {
-    tc_probe_auto_ip_cidrs >/dev/null 2>&1
+    tc_probe_nbns_socket_families >/dev/null 2>&1
 }
 
 tc_mark_mdns_deferred_no_ip() {
-    TC_WATCHDOG_MDNS_DEFERRED_NO_IP=1
+    TC_MANAGER_MDNS_DEFERRED_NO_IP=1
     if [ "$TC_MDNS_AUTO_IP_WAIT_LOGGED" != "1" ]; then
         tc_log "mDNS startup deferred; no usable address has appeared yet"
         TC_MDNS_AUTO_IP_WAIT_LOGGED=1
@@ -250,7 +239,7 @@ tc_ensure_mdns_auto_ip_seen() {
     fi
 
     if [ ! -x "$TC_MDNS_BIN" ]; then
-        TC_WATCHDOG_MDNS_UNAVAILABLE=1
+        TC_MANAGER_MDNS_UNAVAILABLE=1
         tc_log "mDNS auto-ip check failed; missing $TC_MDNS_BIN"
         return 1
     fi
@@ -269,23 +258,22 @@ tc_ensure_mdns_auto_ip_seen() {
         tc_log "mDNS auto-ip check: no usable address yet"
         tc_mark_mdns_deferred_no_ip
     else
-        TC_WATCHDOG_MDNS_UNAVAILABLE=1
+        TC_MANAGER_MDNS_UNAVAILABLE=1
         tc_log "mDNS auto-ip check failed with exit code $mdns_auto_ip_status"
     fi
     return 1
 }
 
-tc_start_mdns_capture() {
+tc_run_mdns_capture() {
     if ! tc_prepare_mdns_identity "" "mdns capture"; then
-        return 0
+        return 1
     fi
 
     tc_log "starting mDNS snapshot capture"
     set -- "$TC_MDNS_BIN" \
         --save-all-snapshot "$ALL_MDNS_SNAPSHOT" \
-        --save-snapshot "$APPLE_MDNS_SNAPSHOT" \
-        --skip-capture-if-snapshot-newer-than-boot "$APPLE_MDNS_SNAPSHOT" \
-        --auto-ip
+        --save-snapshot "$APPLE_MDNS_SNAPSHOT"
+    set -- "$@" --auto-ip
     if [ -n "${AIRPORT_WAMA:-}" ] || [ -n "${AIRPORT_RAMA:-}" ] || [ -n "${AIRPORT_RAM2:-}" ] || [ -n "${AIRPORT_RAST:-}" ] || [ -n "${AIRPORT_RANA:-}" ] || [ -n "${AIRPORT_SYFL:-}" ] || [ -n "${AIRPORT_SYAP:-}" ] || [ -n "${AIRPORT_SYVS:-}" ] || [ -n "${AIRPORT_SRCV:-}" ] || [ -n "${AIRPORT_BJSD:-}" ]; then
         set -- "$@" \
             --airport-wama "$AIRPORT_WAMA" \
@@ -308,18 +296,50 @@ tc_start_mdns_capture() {
         fi
         printf '%s %s: launching mdns-advertiser capture\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$TC_LOG_PREFIX" >>"$TC_MDNS_LOG_FILE"
         if "$@" >>"$TC_MDNS_LOG_FILE" 2>&1; then
-            tc_log "mDNS snapshot capture finished"
+            if [ -s "$APPLE_MDNS_SNAPSHOT" ]; then
+                tc_log "mDNS snapshot capture finished"
+                return 0
+            fi
+            tc_log "mDNS snapshot capture completed without trusted Apple snapshot"
         else
             tc_log "mDNS snapshot capture exited with failure; final advertiser will use generated records if needed"
         fi
     else
         tc_log "mdns capture: log unavailable at $TC_MDNS_LOG_FILE"
         if "$@" >/dev/null 2>&1; then
-            tc_log "mDNS snapshot capture finished"
+            if [ -s "$APPLE_MDNS_SNAPSHOT" ]; then
+                tc_log "mDNS snapshot capture finished"
+                return 0
+            fi
+            tc_log "mDNS snapshot capture completed without trusted Apple snapshot"
         else
             tc_log "mDNS snapshot capture exited with failure; final advertiser will use generated records if needed"
         fi
     fi
+    return 1
+}
+
+tc_capture_mdns_snapshot_for_manager() {
+    tc_run_mdns_capture
+}
+
+tc_mdnsresponder_alive() {
+    runtime_process_present_by_ucomm mDNSResponder
+}
+
+tc_mdns_snapshot_newer_than_boot() {
+    if [ ! -x "$TC_MDNS_BIN" ]; then
+        tc_log "mDNS snapshot freshness check skipped; missing $TC_MDNS_BIN"
+        return 1
+    fi
+
+    if tc_run_mdns_snapshot_command "snapshot freshness" "$TC_MDNS_BIN" --snapshot-newer-than-boot "$APPLE_MDNS_SNAPSHOT"; then
+        tc_log "trusted Apple mDNS snapshot is newer than current boot: $APPLE_MDNS_SNAPSHOT"
+        return 0
+    fi
+
+    tc_log "trusted Apple mDNS snapshot is missing, stale, or freshness check failed: $APPLE_MDNS_SNAPSHOT"
+    return 1
 }
 
 tc_generate_mdns() {
@@ -352,21 +372,6 @@ tc_generate_mdns() {
     fi
 
     tc_log "mDNS AirPort snapshot generation failed; final advertiser will use generated records if needed"
-}
-
-tc_finalize_mdns_snapshot_after_capture() {
-    if [ -s "$APPLE_MDNS_SNAPSHOT" ]; then
-        tc_log_mdns_snapshot_age "$APPLE_MDNS_SNAPSHOT" || true
-        return 0
-    fi
-
-    tc_log "mDNS snapshot capture did not produce trusted Apple snapshot; generating AirPort fallback"
-    tc_generate_mdns
-    if [ -s "$APPLE_MDNS_SNAPSHOT" ]; then
-        tc_log_mdns_snapshot_age "$APPLE_MDNS_SNAPSHOT" || true
-    else
-        tc_log "mdns advertiser will fall back to generated records"
-    fi
 }
 
 tc_launch_mdns_advertiser() {
@@ -442,23 +447,6 @@ tc_launch_mdns_advertiser() {
     fi
 }
 
-tc_start_mdns_advertiser() {
-    tc_finalize_mdns_snapshot_after_capture
-    if tc_load_payload_state; then
-        tc_launch_mdns_advertiser "mdns startup" 1 100 0
-    else
-        tc_launch_mdns_advertiser "mdns startup" 1 100 1
-    fi
-}
-
-tc_restart_mdns() {
-    if tc_load_payload_state; then
-        tc_launch_mdns_advertiser "watchdog recovery" 1 0 0
-    else
-        tc_launch_mdns_advertiser "watchdog recovery" 1 0 1
-    fi
-}
-
 tc_launch_nbns() {
     context=$1
     wait_attempts=$2
@@ -474,7 +462,7 @@ tc_launch_nbns() {
         return 0
     fi
 
-    if [ "$context" = "watchdog recovery" ]; then
+    if [ "$context" = "manager NBNS recovery" ]; then
         stop_apple_nbns_conflicts || {
             tc_log "$context: nbns responder launch skipped; conflicting Apple CIFS/NBNS processes still running"
             return 0
@@ -514,5 +502,5 @@ tc_launch_nbns() {
 }
 
 tc_restart_nbns() {
-    tc_launch_nbns "watchdog recovery" 0
+    tc_launch_nbns "manager NBNS recovery" 0
 }

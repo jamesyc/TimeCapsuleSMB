@@ -53,7 +53,9 @@ tc_smbd_parent_pid() {
     echo "$smbd_pid"
 }
 
-runtime_watchdog_pids() {
+runtime_script_pids() {
+    script_path=$1
+
     if ps_out=$(/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null); then
         old_ifs=$IFS
         IFS='
@@ -65,39 +67,51 @@ runtime_watchdog_pids() {
             set -- $line
             IFS=$line_ifs
             [ "$#" -ge 4 ] || continue
-            watchdog_pid=$1
-            watchdog_stat=$2
-            watchdog_ucomm=$3
+            script_pid=$1
+            script_stat=$2
+            script_ucomm=$3
             shift 3
-            case "$watchdog_stat" in
+            case "$script_stat" in
                 Z*) continue ;;
             esac
-            [ "$watchdog_ucomm" = "sh" ] || continue
-            if [ "${1:-}" = "/mnt/Flash/watchdog.sh" ]; then
-                printf '%s\n' "$watchdog_pid"
+            [ "$script_ucomm" = "sh" ] || continue
+            if [ "${1:-}" = "$script_path" ]; then
+                printf '%s\n' "$script_pid"
                 continue
             fi
             if [ "${1:-}" = "/bin/sh" ] || [ "${1:-}" = "sh" ]; then
-                [ "${2:-}" = "/mnt/Flash/watchdog.sh" ] && printf '%s\n' "$watchdog_pid"
+                [ "${2:-}" = "$script_path" ] && printf '%s\n' "$script_pid"
             fi
         done
         IFS=$old_ifs
     fi
 }
 
-runtime_watchdog_present() {
-    [ -n "$(runtime_watchdog_pids)" ]
+runtime_manager_pids() {
+    runtime_script_pids "/mnt/Flash/manager.sh"
 }
 
-kill_watchdog_pids() {
-    watchdog_signal=$1
-    for watchdog_pid in $(runtime_watchdog_pids); do
-        case "$watchdog_signal" in
-            KILL) /bin/kill -9 "$watchdog_pid" >/dev/null 2>&1 || true ;;
-            TERM|"") /bin/kill "$watchdog_pid" >/dev/null 2>&1 || true ;;
+runtime_manager_present() {
+    [ -n "$(runtime_manager_pids)" ]
+}
+
+kill_runtime_script_pids() {
+    script_signal=$1
+    shift
+    [ "$#" -gt 0 ] || return 0
+
+    for script_pid do
+        case "$script_signal" in
+            KILL) /bin/kill -9 "$script_pid" >/dev/null 2>&1 || true ;;
+            TERM|"") /bin/kill "$script_pid" >/dev/null 2>&1 || true ;;
             *) return 1 ;;
         esac
     done
+}
+
+kill_manager_pids() {
+    manager_signal=$1
+    kill_runtime_script_pids "$manager_signal" $(runtime_manager_pids)
 }
 
 wait_for_runtime_process_absent_by_ucomm() {
@@ -115,11 +129,11 @@ wait_for_runtime_process_absent_by_ucomm() {
     return 0
 }
 
-wait_for_watchdog_absent() {
+wait_for_manager_absent() {
     max_attempts=${1:-5}
     attempt=0
 
-    while runtime_watchdog_present; do
+    while runtime_manager_present; do
         if [ "$attempt" -ge "$max_attempts" ]; then
             return 1
         fi
@@ -158,22 +172,22 @@ stop_runtime_process_by_ucomm() {
     return 1
 }
 
-stop_watchdog_process() {
-    tc_log "stopping old watchdog"
-    kill_watchdog_pids TERM
+stop_manager_process() {
+    tc_log "stopping old manager"
+    kill_manager_pids TERM
 
-    if wait_for_watchdog_absent 5; then
+    if wait_for_manager_absent 5; then
         return 0
     fi
 
-    tc_log "old watchdog still running after TERM; sending KILL"
-    kill_watchdog_pids KILL
+    tc_log "old manager still running after TERM; sending KILL"
+    kill_manager_pids KILL
 
-    if wait_for_watchdog_absent 5; then
+    if wait_for_manager_absent 5; then
         return 0
     fi
 
-    tc_log "old watchdog survived KILL"
+    tc_log "old manager survived KILL"
     return 1
 }
 
@@ -194,4 +208,3 @@ stop_nbns_conflicts() {
 
     return "$cleanup_status"
 }
-

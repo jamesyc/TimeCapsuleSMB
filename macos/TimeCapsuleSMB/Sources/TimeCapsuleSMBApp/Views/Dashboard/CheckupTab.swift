@@ -33,7 +33,7 @@ struct CheckupTab: View {
                             Label(action.title, systemImage: action.systemImage)
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(store.isRunning || store.bonjourTimeoutValue == nil)
+                        .disabled(store.isRunning)
                     }
 
                     if !presentation.timeline.isEmpty {
@@ -171,12 +171,6 @@ private struct CheckupAdvancedOptionsView: View {
     var body: some View {
         DashboardDisclosureSection(title: L10n.string("checkup.advanced_options")) {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-                GridRow {
-                    Text(L10n.string("field.bonjour_timeout"))
-                        .foregroundStyle(.secondary)
-                    TextField(L10n.string("field.bonjour_timeout"), text: $store.bonjourTimeout)
-                        .frame(width: 180)
-                }
                 GridRow {
                     Toggle(L10n.string("checkup.option.skip_ssh"), isOn: $store.skipSSH)
                     Toggle(L10n.string("checkup.option.skip_bonjour"), isOn: $store.skipBonjour)

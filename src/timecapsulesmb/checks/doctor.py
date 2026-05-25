@@ -22,6 +22,7 @@ from timecapsulesmb.checks.doctor_steps import (
     _doctor_check_direct_smb_port,
     _doctor_check_managed_mdns,
     _doctor_check_managed_smbd,
+    _doctor_check_network_plan,
     _doctor_check_nbns,
     _doctor_check_runtime_naming_identity,
     _doctor_check_runtime_ram_root,
@@ -32,7 +33,6 @@ from timecapsulesmb.checks.doctor_steps import (
 from timecapsulesmb.checks.models import CheckResult
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.device.probe import ProbedDeviceState, RemoteInterfaceProbeResult
-from timecapsulesmb.discovery.bonjour import DEFAULT_BROWSE_TIMEOUT_SEC
 from timecapsulesmb.transport.ssh import SshConnection
 
 
@@ -46,7 +46,6 @@ def run_doctor_checks(
     skip_ssh: bool = False,
     skip_bonjour: bool = False,
     skip_smb: bool = False,
-    bonjour_timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC,
     on_result: Optional[Callable[[CheckResult], None]] = None,
     debug_fields: dict[str, object] | None = None,
 ) -> tuple[list[CheckResult], bool]:
@@ -54,7 +53,6 @@ def run_doctor_checks(
         skip_ssh=skip_ssh,
         skip_bonjour=skip_bonjour,
         skip_smb=skip_smb,
-        bonjour_timeout=bonjour_timeout,
     )
     inputs = DoctorInputs(
         config=config,
@@ -85,13 +83,14 @@ def run_doctor_checks(
     _doctor_check_managed_smbd(target, remote, sink)
     _doctor_check_managed_mdns(target, remote, sink)
     smb_config = _doctor_check_active_smb_conf(target, remote, sink)
-    _doctor_check_direct_smb_port(target, remote, sink)
-    bonjour_result = _doctor_check_bonjour(inputs, target, naming, sink)
+    network_plan = _doctor_check_network_plan(target, remote, smb_config, sink)
+    _doctor_check_direct_smb_port(target, remote, network_plan, sink)
+    bonjour_result = _doctor_check_bonjour(inputs, target, naming, network_plan, sink)
     _doctor_add_bonjour_debug_fields(bonjour_result, sink)
     _doctor_add_bonjour_naming_info(bonjour_result, sink)
     _doctor_add_active_smb_conf_info(smb_config, sink)
-    _doctor_check_nbns(inputs, target, remote, smb_config, naming, sink)
-    _doctor_check_authenticated_smb(inputs, target, smb_config, naming, bonjour_result, sink)
+    _doctor_check_nbns(target, remote, smb_config, naming, network_plan, sink)
+    _doctor_check_authenticated_smb(inputs, target, smb_config, naming, bonjour_result, network_plan, sink)
     _doctor_add_mast_probe_on_disk_failure(target, remote, sink)
     _doctor_add_fatal_runtime_log_tails(target, remote, sink)
     return sink.results, sink.fatal()

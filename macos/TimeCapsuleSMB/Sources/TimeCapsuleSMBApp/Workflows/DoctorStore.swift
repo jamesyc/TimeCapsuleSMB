@@ -1,13 +1,6 @@
 import Combine
 import Foundation
 
-struct DoctorOptions: Equatable {
-    let bonjourTimeout: Double
-    let skipSSH: Bool
-    let skipBonjour: Bool
-    let skipSMB: Bool
-}
-
 enum DoctorWorkflowState: String, CaseIterable, Equatable, Codable {
     case idle
     case running
@@ -88,7 +81,6 @@ struct DoctorSummary: Equatable {
 
 @MainActor
 final class DoctorStore: ObservableObject {
-    @Published var bonjourTimeout = "6"
     @Published var skipSSH = false
     @Published var skipBonjour = false
     @Published var skipSMB = false
@@ -104,7 +96,6 @@ final class DoctorStore: ObservableObject {
     private let laneKey: OperationLaneKey?
 
     private var activeOperation: ActiveOperation?
-    private var appliedDefaultBonjourTimeout = AppSettings.default.defaultBonjourTimeoutSeconds
     private var lastProcessedEventCount = 0
     private var cancellables: Set<AnyCancellable> = []
 
@@ -157,16 +148,8 @@ final class DoctorStore: ObservableObject {
         backend.canCancel
     }
 
-    var bonjourTimeoutValue: Double? {
-        ValueParsers.nonNegativeDouble(bonjourTimeout)
-    }
-
     @discardableResult
     func runDoctor(password: String, profile: DeviceProfile? = nil) -> OperationStartResult {
-        guard let timeout = bonjourTimeoutValue else {
-            failLocally(message: "Bonjour timeout must be a non-negative number.")
-            return .rejected("Bonjour timeout must be a non-negative number.")
-        }
         guard !isBusy else {
             rejectRun("Another operation is already running.")
             return .rejected("Another operation is already running.")
@@ -175,7 +158,6 @@ final class DoctorStore: ObservableObject {
         let start = run(
             operation: "doctor",
             params: OperationParams.doctor(
-                bonjourTimeout: timeout,
                 password: password,
                 skipSSH: skipSSH,
                 skipBonjour: skipBonjour,
@@ -212,14 +194,6 @@ final class DoctorStore: ObservableObject {
 
     func cancel() {
         backend.cancel()
-    }
-
-    func applyAppSettings(_ settings: AppSettings) {
-        let previousDefaultTimeout = Self.timeoutText(appliedDefaultBonjourTimeout)
-        if bonjourTimeout == previousDefaultTimeout {
-            bonjourTimeout = Self.timeoutText(settings.defaultBonjourTimeoutSeconds)
-        }
-        appliedDefaultBonjourTimeout = settings.defaultBonjourTimeoutSeconds
     }
 
     private func process(_ events: [BackendEvent]) {
@@ -289,17 +263,6 @@ final class DoctorStore: ObservableObject {
         }
     }
 
-    private func failLocally(message: String) {
-        error = BackendErrorViewModel(
-            operation: "doctor",
-            code: "validation_failed",
-            message: message
-        )
-        currentStage = nil
-        state = .runFailed
-        activeOperation = nil
-    }
-
     private func rejectRun(_ message: String) {
         error = BackendErrorViewModel(
             operation: "doctor",
@@ -309,13 +272,6 @@ final class DoctorStore: ObservableObject {
         currentStage = nil
         state = .runFailed
         activeOperation = nil
-    }
-
-    private static func timeoutText(_ value: Double) -> String {
-        guard value.rounded() == value else {
-            return String(value)
-        }
-        return String(Int(value))
     }
 
     private func run(operation: String, params: [String: JSONValue], profile: DeviceProfile?) -> OperationStartResult {

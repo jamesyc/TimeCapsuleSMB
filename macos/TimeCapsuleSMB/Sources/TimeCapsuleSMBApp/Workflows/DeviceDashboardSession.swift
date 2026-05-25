@@ -45,12 +45,10 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
         self.maintenanceStore = MaintenanceStore(coordinator: appStore.operationCoordinator, laneKey: laneKey)
         self.profileEditorStore = DeviceProfileEditorStore(profile: profile, appStore: appStore)
         applyProfileSettings(profile.settings)
-        doctorStore.applyAppSettings(appStore.appSettingsStore.settings)
         forwardChildChanges()
         forwardLaneEvents()
         observeSnapshots()
         observeProfileEditor()
-        observeAppSettings()
     }
 
     func summary(for profile: DeviceProfile) -> DeviceDashboardSummary {
@@ -348,14 +346,6 @@ final class DeviceDashboardSession: ObservableObject, Identifiable {
             .compactMap { $0 }
             .sink { [weak self] profile in
                 self?.applyProfileSettings(profile.settings)
-            }
-            .store(in: &cancellables)
-    }
-
-    private func observeAppSettings() {
-        appStore.appSettingsStore.$settings
-            .sink { [weak self] settings in
-                self?.doctorStore.applyAppSettings(settings)
             }
             .store(in: &cancellables)
     }

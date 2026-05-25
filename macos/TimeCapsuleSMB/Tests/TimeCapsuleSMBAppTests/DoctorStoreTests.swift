@@ -14,18 +14,6 @@ final class DoctorStoreTests: XCTestCase {
         ])
     }
 
-    func testInvalidBonjourTimeoutMovesToRunFailedWithoutRunningHelper() {
-        let runner = StoreTestRunner(responses: [])
-        let store = DoctorStore(backend: BackendClient(runner: runner))
-        store.bonjourTimeout = "nan"
-
-        store.runDoctor(password: "pw")
-
-        XCTAssertEqual(store.state, .runFailed)
-        XCTAssertEqual(store.error?.code, "validation_failed")
-        XCTAssertEqual(runner.calls, [])
-    }
-
     func testRunSendsDoctorParamsAndPassedResult() async throws {
         let runner = StoreTestRunner(responses: [
             .init(events: [
@@ -40,7 +28,6 @@ final class DoctorStoreTests: XCTestCase {
             ])
         ])
         let store = DoctorStore(backend: BackendClient(runner: runner))
-        store.bonjourTimeout = "4.5"
         store.skipSSH = true
         store.skipBonjour = true
         store.skipSMB = true
@@ -53,7 +40,6 @@ final class DoctorStoreTests: XCTestCase {
         XCTAssertEqual(store.summary?.passCount, 1)
         XCTAssertEqual(store.summary?.infoCount, 1)
         XCTAssertEqual(runner.calls.first?.operation, "doctor")
-        XCTAssertEqual(runner.calls.first?.params["bonjour_timeout"], .number(4.5))
         XCTAssertEqual(runner.calls.first?.params["skip_ssh"], .bool(true))
         XCTAssertEqual(runner.calls.first?.params["skip_bonjour"], .bool(true))
         XCTAssertEqual(runner.calls.first?.params["skip_smb"], .bool(true))

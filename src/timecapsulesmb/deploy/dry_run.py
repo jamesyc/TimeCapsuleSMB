@@ -38,7 +38,7 @@ def _add_reboot_request_json(data: dict[str, object], reboot_required: bool, *, 
 
 def _startup_description(plan: DeploymentPlan) -> str:
     if plan.startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
-        return "stop old watchdog and wcifsfs, run /mnt/Flash/rc.local now, then verify managed runtime"
+        return "stop old managers and wcifsfs, run /mnt/Flash/rc.local now, then verify managed runtime"
     if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE:
         return "reboot, wait for SSH, run /mnt/Flash/rc.local unless startup is already in progress, then verify managed runtime"
     if plan.startup_mode == DEPLOY_STARTUP_REBOOT_THEN_VERIFY:
@@ -56,7 +56,7 @@ def format_deployment_plan(plan: DeploymentPlan) -> str:
     lines.append(f"  payload dir: {plan.payload_dir}")
     lines.append("")
     lines.append("Boot options:")
-    lines.append(f"  diskd.useVolume wait: {plan.apple_mount_wait_seconds}s")
+    lines.append(f"  diskd.useVolume wait: {plan.apple_mount_wait_seconds}s per attempt")
     lines.append("")
     lines.append("Remote actions (pre-upload):")
     for command in render_remote_actions(plan.pre_upload_actions):
