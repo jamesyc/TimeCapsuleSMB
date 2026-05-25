@@ -29,6 +29,7 @@ from timecapsulesmb.identity import ensure_install_id
 from timecapsulesmb.deploy.artifact_resolver import resolve_payload_artifacts
 from timecapsulesmb.deploy.artifacts import validate_artifacts
 from timecapsulesmb.deploy.auth import render_smbpasswd
+from timecapsulesmb.deploy.commands import RemoteAction, StopProcessAction
 from timecapsulesmb.deploy.dry_run import deployment_plan_to_jsonable, format_deployment_plan
 from timecapsulesmb.deploy.executor import flush_remote_filesystem_writes, run_remote_actions, upload_deployment_payload
 from timecapsulesmb.deploy.planner import (
@@ -41,6 +42,7 @@ from timecapsulesmb.deploy.planner import (
     DEPLOY_STARTUP_REBOOT_THEN_ACTIVATE,
     DEPLOY_STARTUP_REBOOT_THEN_VERIFY,
     DeploymentStartupMode,
+    FileTransfer,
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_SMBPASSWD_SOURCE,
     GENERATED_USERNAME_MAP_SOURCE,
@@ -211,9 +213,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.json and not args.dry_run:
         parser.error("--json currently requires --dry-run")
 
-    if not args.json:
-        print("Deploying...")
-
     nbns_enabled = not args.no_nbns
     ensure_install_id()
     app_paths = resolve_app_paths(config_path=args.config)
@@ -226,17 +225,23 @@ def main(argv: Optional[list[str]] = None) -> int:
             device_came_back_after_reboot=False,
         )
         command_context.set_stage("resolve_managed_target")
+        if not args.json:
+            print("Resolving deployment target...", flush=True)
         target = command_context.resolve_validated_managed_target(profile="deploy", include_probe=True)
         connection = target.connection
         host = connection.host
         smb_password = connection.password
 
         command_context.set_stage("validate_artifacts")
+        if not args.json:
+            print("Validating local artifacts...", flush=True)
         artifact_results = validate_artifacts(app_paths.distribution_root)
         failures = [message for _, ok, message in artifact_results if not ok]
         if failures:
             raise SystemExit("; ".join(failures))
         command_context.set_stage("check_compatibility")
+        if not args.json:
+            print("Checking device compatibility...", flush=True)
         compatibility, compatibility_message = require_supported_device_compatibility(
             command_context,
             allow_unsupported=args.allow_unsupported,
@@ -253,7 +258,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         startup_mode = _startup_mode_for_deploy(no_reboot=args.no_reboot, is_netbsd4=is_netbsd4)
         command_context.update_fields(deploy_startup_mode=startup_mode)
         if not args.json:
-            print(f"Using {payload_family_description(payload_family)} payload...")
+            print(f"Using {payload_family_description(payload_family)} payload.", flush=True)
         apple_mount_wait_seconds = args.mount_wait
         resolved_artifacts = resolve_payload_artifacts(app_paths.distribution_root, payload_family)
         smbd_path = resolved_artifacts["smbd"].absolute_path
@@ -262,6 +267,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         if args.dry_run:
             payload_home = build_dry_run_payload_home(MANAGED_PAYLOAD_DIR_NAME)
         else:
+            if not args.json:
+                print("Finding payload volume...", flush=True)
             mast_discovery = command_context.wait_for_mast_volumes(
                 connection,
                 attempts=MAST_DISCOVERY_ATTEMPTS,
@@ -284,6 +291,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             if selection.payload_home is None:
                 raise SystemExit(_no_writable_mast_volumes_message(len(mast_volumes)))
             payload_home = selection.payload_home
+            if not args.json:
+                print(f"Using payload directory {payload_home.payload_dir}.", flush=True)
         command_context.set_stage("build_deployment_plan")
         plan = build_deployment_plan(
             host,
@@ -308,10 +317,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.succeed()
             return 0
 
-        print("Deleting old deployed files...")
+        print("Deleting old deployed files...", flush=True)
+        print("Stopping existing runtime...", flush=True)
+
+        def report_pre_upload_action(action: RemoteAction, _index: int, _total: int) -> None:
+            if isinstance(action, StopProcessAction) and action.name == "nbns-advertiser":
+                print("Cleaning up previous deployment files...", flush=True)
+
         command_context.set_stage("pre_upload_actions")
-        run_remote_actions(connection, plan.pre_upload_actions)
-        print("Deploying runtime files...")
+        run_remote_actions(connection, plan.pre_upload_actions, on_action_done=report_pre_upload_action)
         command_context.set_stage("prepare_deployment_files")
         flash_config_text = render_flash_runtime_config(
             config,
@@ -343,17 +357,39 @@ def main(argv: Optional[list[str]] = None) -> int:
                 PACKAGED_DFREE_SH_SOURCE: boot_assets.enter_context(boot_asset_path("dfree.sh")),
             }
 
+            def report_uploaded_file(transfer: FileTransfer) -> None:
+                message = None
+                if transfer.source_id == BINARY_SMBD_SOURCE:
+                    message = "Uploaded smbd."
+                elif transfer.source_id == BINARY_MDNS_SOURCE and transfer.mode == "flash_atomic":
+                    message = "Uploaded mdns-advertiser."
+                elif transfer.source_id == BINARY_NBNS_SOURCE:
+                    message = "Uploaded nbns-advertiser."
+                elif transfer.source_id == PACKAGED_DFREE_SH_SOURCE:
+                    message = "Uploaded boot files."
+                elif transfer.source_id == GENERATED_FLASH_CONFIG_SOURCE:
+                    message = "Uploaded runtime config."
+                elif transfer.source_id == GENERATED_USERNAME_MAP_SOURCE:
+                    message = "Uploaded Samba account files."
+                if message is not None:
+                    print(message, flush=True)
+
             command_context.set_stage("upload_payload")
+            print("Uploading deployment payload...", flush=True)
             upload_deployment_payload(
                 plan,
                 connection=connection,
                 source_resolver=upload_sources,
+                on_uploaded=report_uploaded_file,
             )
+            print("Upload phase complete.", flush=True)
 
         command_context.set_stage("post_upload_actions")
+        print("Applying file permissions...", flush=True)
         run_remote_actions(connection, plan.post_upload_actions)
 
         command_context.set_stage("verify_payload_upload")
+        print("Verifying uploaded payload...", flush=True)
         payload_verification = verify_payload_home_conn(
             connection,
             payload_home,
@@ -365,7 +401,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         command_context.set_stage("flush_payload_upload")
         if not args.json:
-            print("Flushing deployed payload to disk...")
+            print("Flushing payload to disk...", flush=True)
         flush_remote_filesystem_writes(connection)
 
         # The immediate verification above can succeed from cache. Flush and
@@ -381,8 +417,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not payload_verification.ok:
             raise SystemExit(_payload_verification_error(payload_home, payload_verification))
 
-        print(f"Deployed Samba payload to {plan.payload_dir}")
-        print("Updated /mnt/Flash boot files.")
+        print("Verified uploaded payload.", flush=True)
+        print(f"Deployed Samba payload to {plan.payload_dir}", flush=True)
+        print("Updated /mnt/Flash boot files.", flush=True)
 
         if startup_mode == DEPLOY_STARTUP_ACTIVATE_NOW:
             if not activate_deployed_runtime_flow(
@@ -420,10 +457,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             if proceed is None:
                 return 1
             if not proceed:
-                print("Deployment complete without reboot.")
+                print("Deployment complete without reboot.", flush=True)
                 command_context.cancel_with_error("Cancelled by user at reboot confirmation prompt.")
                 return 0
 
+        print("Requesting reboot...", flush=True)
         if not request_deploy_reboot_and_wait(
             connection,
             command_context,
@@ -453,7 +491,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             command_context.succeed()
             return 0
 
-        print("Waiting for managed runtime to finish starting...")
+        print("Waiting for managed runtime to finish starting...", flush=True)
         if verify_managed_runtime_flow(
             connection,
             command_context,

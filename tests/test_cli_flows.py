@@ -15,6 +15,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.cli.flows import (
     ACP_REBOOT_REQUEST_TIMEOUT_SECONDS,
+    DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
     REBOOT_UP_TIMEOUT_MESSAGE,
     SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE,
     observe_reboot_cycle,
@@ -379,6 +380,24 @@ class CliFlowTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(command_context.error, REBOOT_UP_TIMEOUT_MESSAGE)
         self.assertIn(REBOOT_UP_TIMEOUT_MESSAGE, output.getvalue())
+
+    def test_request_deploy_reboot_and_wait_fails_with_deploy_guidance_when_ssh_does_not_return(self) -> None:
+        command_context = FakeCommandContext()
+        output = io.StringIO()
+        with mock.patch("timecapsulesmb.cli.flows.remote_request_reboot"):
+            with mock.patch("timecapsulesmb.cli.flows.wait_for_ssh_state_conn", side_effect=[True, False]):
+                with redirect_stdout(output):
+                    ok = request_deploy_reboot_and_wait(
+                        self.make_connection(),
+                        command_context,
+                        reboot_no_down_message="did not go down",
+                    )
+
+        self.assertFalse(ok)
+        self.assertEqual(command_context.error, DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE)
+        self.assertIn("The payload was uploaded and the reboot request succeeded", output.getvalue())
+        self.assertIn("same network/wifi", output.getvalue())
+        self.assertIn("tcapsule activate", output.getvalue())
 
     def test_verify_managed_runtime_flow_succeeds_when_runtime_ready(self) -> None:
         command_context = FakeCommandContext()

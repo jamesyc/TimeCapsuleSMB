@@ -48,6 +48,7 @@ from timecapsulesmb.deploy.executor import (
     REBOOT_REQUEST_TIMEOUT_SECONDS,
     flush_remote_filesystem_writes,
     remote_request_reboot,
+    run_remote_actions,
     remote_uninstall_payload,
     upload_deployment_payload,
     upload_flash_file,
@@ -330,6 +331,20 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("/bin/sync", FLUSH_REMOTE_FILESYSTEMS_COMMAND)
         self.assertIn("/bin/sleep 5", FLUSH_REMOTE_FILESYSTEMS_COMMAND)
         self.assertGreaterEqual(FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS, 300)
+
+    def test_run_remote_actions_reports_completed_actions(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        actions = [StopManagerAction(), RemovePathAction("/tmp/tc-old")]
+        completed = []
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
+            run_remote_actions(
+                connection,
+                actions,
+                on_action_done=lambda action, index, total: completed.append((action, index, total)),
+            )
+
+        self.assertEqual(run_ssh_mock.call_count, 2)
+        self.assertEqual(completed, [(actions[0], 1, 2), (actions[1], 2, 2)])
 
     def test_load_boot_asset_text_reads_packaged_asset(self) -> None:
         content = load_boot_asset_text("rc.local")
@@ -5913,10 +5928,12 @@ int main(void) {{
         with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
             with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as ssh_mock:
                 with mock.patch("timecapsulesmb.deploy.executor.ensure_volume_root_mounted_conn", return_value=True) as mount_mock:
+                    uploaded = []
                     upload_deployment_payload(
                         plan,
                         connection=connection,
                         source_resolver=source_resolver,
+                        on_uploaded=uploaded.append,
                     )
         self.assertEqual(scp_mock.call_count, 12)
         self.assertEqual(mount_mock.call_count, 5)
@@ -5963,6 +5980,7 @@ int main(void) {{
         text_upload_timeouts = [call.kwargs.get("timeout") for call in scp_mock.call_args_list[4:]]
         self.assertEqual(text_upload_timeouts, [FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS] * 6 + [None] * 2)
         self.assertEqual(ssh_mock.call_count, 14)
+        self.assertEqual(uploaded, plan.uploads)
 
     def test_upload_deployment_payload_consumes_plan_uploads_directly(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")

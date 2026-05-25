@@ -4613,7 +4613,7 @@ class CliTests(unittest.TestCase):
             result.mocks.wait_for_mast_volumes_conn.call_args.args[0]
         )
         self.assertIn("Deleting old deployed files...", result.text)
-        self.assertIn("Flushing deployed payload to disk...", result.text)
+        self.assertIn("Flushing payload to disk...", result.text)
         self.assertIn("Deployed Samba payload to /Volumes/dk2/.samba4", result.text)
         self.assertIn("Updated /mnt/Flash boot files.", result.text)
         self.assertIn("Starting deployed runtime without reboot.", result.text)
@@ -4631,7 +4631,7 @@ class CliTests(unittest.TestCase):
     def test_deploy_upload_source_resolver_contains_flash_config_and_no_legacy_generated_files(self) -> None:
         captured: dict[str, object] = {}
 
-        def fake_upload(_plan, *, connection, source_resolver):
+        def fake_upload(_plan, *, connection, source_resolver, on_uploaded=None):
             captured["host"] = connection.host
             captured["source_ids"] = set(source_resolver)
             captured["smbpasswd"] = source_resolver[GENERATED_SMBPASSWD_SOURCE].read_text()
@@ -4677,7 +4677,7 @@ class CliTests(unittest.TestCase):
     def test_deploy_no_nbns_writes_disabled_flash_config(self) -> None:
         captured: dict[str, str] = {}
 
-        def fake_upload(_plan, *, connection, source_resolver):
+        def fake_upload(_plan, *, connection, source_resolver, on_uploaded=None):
             captured["flash_config"] = source_resolver[GENERATED_FLASH_CONFIG_SOURCE].read_text()
 
         result = self.run_deploy_cli(
