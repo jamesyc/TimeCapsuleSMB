@@ -162,32 +162,10 @@ class StorageRuntimeTests(unittest.TestCase):
             )
         return "\n".join(lines) + ("\n" if lines else "")
 
-    def write_fixture_state_files(self, tmp_path: Path, fixture: MaStFixture, volumes_root: Path) -> tuple[Path, Path]:
-        fixture_dir = tmp_path / "fixture-state"
-        fixture_dir.mkdir(exist_ok=True)
-        topology_path = fixture_dir / f"{fixture.name}.volumes.tsv"
-        raw_path = fixture_dir / f"{fixture.name}.raw"
-        topology_path.write_text(self.expected_topology_tsv(fixture, volumes_root))
-        if isinstance(fixture.raw, bytes):
-            raw_path.write_bytes(fixture.raw)
-        else:
-            raw_path.write_text(fixture.raw)
-        return topology_path, raw_path
-
-    def render_mast_wait_fixture_override(self, topology_path: Path, raw_path: Path) -> str:
-        return (
-            "tc_read_mast_volumes_to() { "
-            f"/bin/cat {shlex.quote(str(topology_path))} >\"$1\"; "
-            f"/bin/cat {shlex.quote(str(raw_path))} >\"$2\"; "
-            "return 0; }; "
-            "tc_wait_for_mast_volumes_to() { "
-            "tc_read_mast_volumes_to \"$1\" \"$2\"; }"
-        )
-
     def test_common_select_advertise_mac_prefers_acp_lama(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
             acp = tmp_path / "acp"
             acp.write_text(
                 textwrap.dedent(
@@ -224,7 +202,7 @@ class StorageRuntimeTests(unittest.TestCase):
     def test_common_select_advertise_mac_falls_back_to_live_interface_mac(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
             fake_ifconfig = tmp_path / "ifconfig"
             fake_ifconfig.write_text(
                 "#!/bin/sh\n"
@@ -395,103 +373,6 @@ class StorageRuntimeTests(unittest.TestCase):
             )
         return tuple(volumes)
 
-    def mapped_volume_root(self, volume: MaStVolume, volumes_root: Path) -> str:
-        return volume.volume_root.replace("/Volumes", str(volumes_root), 1)
-
-    def sanitize_share_base(self, volume: MaStVolume) -> str:
-        base = volume.name.strip()
-        sanitized = "".join(
-            "_"
-            if ord(char) < 32 or char in '/\\:*?"<>|,=[]'
-            else char
-            for char in base
-        ).strip()
-        return sanitized or f"Disk {volume.partition_device}"
-
-    def unique_share_names(self, volumes: tuple[MaStVolume, ...]) -> list[str]:
-        names: list[str] = []
-        used: set[str] = set()
-        for volume in volumes:
-            base = self.sanitize_share_base(volume)
-            candidate = base
-            suffix = 1
-            if candidate in used:
-                candidate = f"{base} ({volume.partition_device})"
-            while candidate in used:
-                candidate = f"{base} ({volume.partition_device}-{suffix})"
-                suffix += 1
-            used.add(candidate)
-            names.append(candidate)
-        return names
-
-    def expected_share_state(
-        self,
-        fixture: MaStFixture,
-        volumes_root: Path,
-        *,
-        internal_share_use_disk_root: bool,
-    ) -> tuple[str, str]:
-        share_lines: list[str] = []
-        adisk_lines: list[str] = []
-        for volume, share_name in zip(fixture.expected, self.unique_share_names(fixture.expected)):
-            volume_root = self.mapped_volume_root(volume, volumes_root)
-            if volume.builtin and not internal_share_use_disk_root:
-                share_path = f"{volume_root}/ShareRoot"
-            else:
-                share_path = volume_root
-            builtin = "1" if volume.builtin else "0"
-            share_lines.append("\t".join((share_name, share_path, volume.partition_device, builtin, volume.adisk_uuid)))
-            adisk_lines.append("\t".join((share_name, volume.partition_device, volume.adisk_uuid, "0x82")))
-        return "\n".join(share_lines) + "\n", "\n".join(adisk_lines) + "\n"
-
-    def run_share_state_fixture_batch(
-        self,
-        fixtures: tuple[MaStFixture, ...],
-        tmp_path: Path,
-        flash: Path,
-        volumes_root: Path,
-        *,
-        internal_share_use_disk_root: bool,
-    ) -> subprocess.CompletedProcess[str]:
-        for fixture in fixtures:
-            for volume in fixture.expected:
-                Path(self.mapped_volume_root(volume, volumes_root)).mkdir(parents=True, exist_ok=True)
-            self.write_fixture_state_files(tmp_path, fixture, volumes_root)
-        override = "INTERNAL_SHARE_USE_DISK_ROOT=1" if internal_share_use_disk_root else ""
-        names = " ".join(shlex.quote(fixture.name) for fixture in fixtures)
-        fixture_dir = tmp_path / "fixture-state"
-        script = tmp_path / "share-state-fixtures.sh"
-        script.write_text(
-            textwrap.dedent(
-                f"""\
-                #!/bin/sh
-                set -eu
-                . {flash}/common.sh
-                . {flash}/tcapsulesmb.conf
-                {override}
-                tc_init_runtime_env
-                tc_set_log "$RAM_VAR/test.log" test
-                mkdir -p "$RAM_VAR"
-                is_volume_root_mounted() {{ return 0; }}
-                for fixture_name in {names}; do
-                    topology_file={shlex.quote(str(fixture_dir))}/"$fixture_name.volumes.tsv"
-                    set +e
-                    tc_build_share_state "$topology_file"
-                    status=$?
-                    set -e
-                    printf '__TC_BEGIN__\\t%s\\t%s\\n' "$fixture_name" "$status"
-                    printf 'shares\\n'
-                    cat "$TC_SHARES_TSV"
-                    printf 'adisk\\n'
-                    cat "$TC_ADISK_TSV"
-                    printf '__TC_END__\\t%s\\n' "$fixture_name"
-                done
-                """
-            )
-        )
-        script.chmod(0o755)
-        return subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
     def test_parse_mast_plist_matches_golden_fixtures(self) -> None:
         for fixture in MAST_FIXTURES:
             with self.subTest(fixture=fixture.name):
@@ -646,104 +527,6 @@ MaSt = (
         self.assertIn("<truncated", str(summary["mast_probe_stderr"]))
         self.assertLess(len(str(summary["mast_probe_stdout"])), 10000)
         self.assertLess(len(str(summary["mast_probe_stderr"])), 10001)
-
-    def test_common_waits_for_mast_volumes_to_become_available(self) -> None:
-        fixture = SHELL_MAST_FIXTURES[0]
-        raw_text = fixture.raw.decode("utf-8", errors="replace") if isinstance(fixture.raw, bytes) else fixture.raw
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            acp_counter = tmp_path / "acp-count"
-            acp = tmp_path / "acp"
-            acp.write_text(
-                "#!/bin/sh\n"
-                "count=0\n"
-                f"if [ -f {shlex.quote(str(acp_counter))} ]; then\n"
-                f"    count=$(cat {shlex.quote(str(acp_counter))})\n"
-                "fi\n"
-                "count=$((count + 1))\n"
-                f"echo \"$count\" >{shlex.quote(str(acp_counter))}\n"
-                "if [ \"$count\" -lt 3 ]; then\n"
-                "    exit 1\n"
-                "fi\n"
-                "cat <<'OUT'\n"
-                f"{raw_text}\n"
-                "OUT\n"
-            )
-            acp.chmod(0o755)
-            script = tmp_path / "wait-mast.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    sleep() {{ :; }}
-                    tc_wait_for_mast_volumes_to "$RAM_VAR/test-volumes.tsv" "$RAM_VAR/test-mast.raw" 6
-                    printf 'count=%s\\n' "$(cat {acp_counter})"
-                    cat "$RAM_VAR/test-volumes.tsv"
-                    cat "$RAM_VAR/test.log"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("count=3\n", proc.stdout)
-        self.assertIn(self.expected_topology_tsv(fixture, volumes).splitlines()[0], proc.stdout)
-        self.assertIn("MaSt discovery not ready; waiting up to 6s for a successful MaSt read", proc.stdout)
-        self.assertIn("MaSt discovery succeeded after 6s", proc.stdout)
-
-    def test_common_waits_for_mast_volumes_times_out_after_three_second_polling(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            acp_counter = tmp_path / "acp-count"
-            acp = tmp_path / "acp"
-            acp.write_text(
-                "#!/bin/sh\n"
-                "count=0\n"
-                f"if [ -f {shlex.quote(str(acp_counter))} ]; then\n"
-                f"    count=$(cat {shlex.quote(str(acp_counter))})\n"
-                "fi\n"
-                "count=$((count + 1))\n"
-                f"echo \"$count\" >{shlex.quote(str(acp_counter))}\n"
-                "exit 1\n"
-            )
-            acp.chmod(0o755)
-            script = tmp_path / "wait-mast-timeout.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    sleep() {{ :; }}
-                    tc_wait_for_mast_volumes_to "$RAM_VAR/test-volumes.tsv" "$RAM_VAR/test-mast.raw" 6 || status=$?
-                    printf 'status=%s\\n' "${{status:-0}}"
-                    printf 'count=%s\\n' "$(cat {acp_counter})"
-                    cat "$RAM_VAR/test.log"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("status=1\n", proc.stdout)
-        self.assertIn("count=3\n", proc.stdout)
-        self.assertIn("MaSt discovery timed out after 6s waiting for a successful MaSt read", proc.stdout)
 
     def test_payload_candidate_order_is_internal_first_then_external_mast_order_in_python(self) -> None:
         external_a = MaStVolume("sd0", "dk3", "/Volumes/dk3", "USB A", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs")
@@ -1120,16 +903,16 @@ MaSt = (
                             *) return 1 ;;
                         esac
                     }}
-                    get_iface_mac() {{ echo 80:EA:96:E6:58:68; }}
                     get_radio_mac() {{ return 1; }}
                     stop_nbns_conflicts() {{ return 0; }}
                     tc_set_payload_log_dir {payload} {volumes}/dk2
-                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    share_rows=$(cat <<'EOF'
                     Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     EOF
+                    )
                     TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
                     tc_init_runtime_identity
-                    tc_generate_smb_conf {payload}
+                    tc_generate_smb_conf_from_share_rows {payload} "$share_rows"
                     tc_launch_mdns_advertiser "mdns test" 0 0
                     wait "$mdns_launch_pid" || true
                     tc_launch_nbns "nbns test" 0
@@ -1201,10 +984,10 @@ MaSt = (
         self.assertIn("chmod 600 /mnt/Flash/.tcapsulesmb.conf.tmp", install_command)
         self.assertIn("mv -f /mnt/Flash/.tcapsulesmb.conf.tmp /mnt/Flash/tcapsulesmb.conf", install_command)
 
-    def test_common_topology_signature_matches_shell_supported_mast_fixtures(self) -> None:
+    def test_common_mast_runtime_topology_projection_matches_shell_supported_fixtures(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
+            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
             selector = self.write_selectable_fixture_acp(tmp_path, SHELL_MAST_FIXTURES)
             names = " ".join(shlex.quote(fixture.name) for fixture in SHELL_MAST_FIXTURES)
             script = tmp_path / "signature-fixtures.sh"
@@ -1219,7 +1002,9 @@ MaSt = (
                         out={shlex.quote(str(tmp_path))}/"signature-$fixture_name.out"
                         err={shlex.quote(str(tmp_path))}/"signature-$fixture_name.err"
                         set +e
-                        tc_print_topology_signature >"$out" 2>"$err"
+                        raw=$({shlex.quote(str(tmp_path / "acp"))} -A MaSt)
+                        runtime_rows=$(printf '%s\\n' "$raw" | tc_mast_raw_to_runtime_rows)
+                        tc_mast_runtime_rows_to_topology "$runtime_rows" >"$out" 2>"$err"
                         status=$?
                         set -e
                         printf '__TC_BEGIN__\\t%s\\t%s\\n' "$fixture_name" "$status"
@@ -1498,7 +1283,7 @@ MaSt = (
     def test_common_pure_shell_mast_topology_projection_ignores_users_and_sizes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
             raw_one = tmp_path / "one.raw"
             raw_two = tmp_path / "two.raw"
             raw_one.write_text(self.internal_mast_raw_with_volatile_fields(users=1, size_free=100000, size_used=200000))
@@ -1541,7 +1326,7 @@ MaSt = (
         self.assertIn("\thfs\t1\n", proc.stdout)
         self.assertIn("\thfs\t9\n", proc.stdout)
 
-    def test_common_topology_signature_handles_mast_without_final_newline(self) -> None:
+    def test_common_mast_runtime_topology_projection_handles_input_without_final_newline(self) -> None:
         raw = textwrap.dedent(
             """\
             [
@@ -1560,7 +1345,8 @@ MaSt = (
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            self.write_fake_acp(tmp_path, raw, final_newline=False)
+            raw_path = tmp_path / "mast-no-final-newline.raw"
+            raw_path.write_text(raw)
             script = tmp_path / "signature-no-final-newline.sh"
             script.write_text(
                 textwrap.dedent(
@@ -1568,7 +1354,10 @@ MaSt = (
                     #!/bin/sh
                     set -eu
                     . {flash}/common.sh
-                    tc_print_topology_signature
+                    . {flash}/tcapsulesmb.conf
+                    tc_init_runtime_env
+                    runtime_rows=$(tc_mast_raw_to_runtime_rows <{shlex.quote(str(raw_path))})
+                    tc_mast_runtime_rows_to_topology "$runtime_rows"
                     """
                 )
             )
@@ -1590,7 +1379,7 @@ MaSt = (
     def test_boot_script_only_runs_one_time_boot_preparation_and_starts_manager(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
             with (flash / "common.sh").open("a") as common:
                 common.write(
                     textwrap.dedent(
@@ -1602,9 +1391,6 @@ MaSt = (
                         tc_prepare_ram_root() { echo ram; }
                         tc_prepare_legacy_prefix() { echo legacy; }
                         runtime_manager_present() { return 1; }
-                        tc_prepare_smb_bind_context() { echo unexpected-bind; return 1; }
-                        tc_refresh_disk_state() { echo unexpected-disk; return 1; }
-                        tc_stage_disk_runtime() { echo unexpected-stage; return 1; }
                         """
                     )
                 )
@@ -1618,7 +1404,7 @@ MaSt = (
                 stderr=subprocess.PIPE,
                 check=False,
             )
-            log_text = (_memory / "samba4/var/rc.local.log").read_text()
+            log_text = (memory / "samba4/var/rc.local.log").read_text()
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "cleanup\ntune\nlocks\nram\nlegacy\n")
@@ -2122,11 +1908,6 @@ MaSt = (
                         : >"$RAM_PRIVATE/username.map"
                         return 0
                     }}
-                    tc_refresh_smb_bind_interfaces() {{
-                        echo refresh-bind >>{shlex.quote(str(events))}
-                        TC_SMB_BIND_INTERFACES="127.0.0.1/8"
-                        return 0
-                    }}
                     tc_probe_smb_bind_interfaces() {{
                         echo bind-probe >>{shlex.quote(str(events))}
                         echo "127.0.0.1/8"
@@ -2294,10 +2075,6 @@ MaSt = (
                         chmod 755 "$TC_SMBD_BIN"
                         : >"$RAM_PRIVATE/smbpasswd"
                         : >"$RAM_PRIVATE/username.map"
-                        return 0
-                    }}
-                    tc_refresh_smb_bind_interfaces() {{
-                        TC_SMB_BIND_INTERFACES="127.0.0.1/8"
                         return 0
                     }}
                     tc_probe_smb_bind_interfaces() {{
@@ -3791,675 +3568,6 @@ MaSt = (
         self.assertIn("nbns=failed", log_text)
         self.assertNotIn("manager health:", log_text)
 
-    def test_common_build_share_state_handles_volumes_tsv_without_final_newline(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            volume_root = self.mapped_volume_root(INTERNAL_DATA, volumes)
-            Path(volume_root).mkdir(parents=True, exist_ok=True)
-            row = "\t".join(
-                (
-                    INTERNAL_DATA.disk_device,
-                    "1",
-                    INTERNAL_DATA.partition_device,
-                    volume_root,
-                    INTERNAL_DATA.name,
-                    INTERNAL_DATA.adisk_uuid,
-                )
-            )
-            script = tmp_path / "share-state-no-final-newline.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    is_volume_root_mounted() {{ return 0; }}
-                    printf %s {shlex.quote(row)} >"$RAM_VAR/test-volumes.tsv"
-                    tc_build_share_state "$RAM_VAR/test-volumes.tsv"
-                    printf 'shares\\n'
-                    cat "$TC_SHARES_TSV"
-                    printf 'adisk\\n'
-                    cat "$TC_ADISK_TSV"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run(
-                ["/bin/sh", str(script)],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-
-        expected_shares, expected_adisk = self.expected_share_state(
-            MaStFixture("no_final_newline_volumes", "", (INTERNAL_DATA,)),
-            volumes,
-            internal_share_use_disk_root=False,
-        )
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, f"shares\n{expected_shares}adisk\n{expected_adisk}")
-
-    def test_common_share_state_matches_python_policy_for_shell_supported_mast_fixtures(self) -> None:
-        fixtures = tuple(fixture for fixture in SHELL_MAST_FIXTURES if fixture.expected)
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-
-            proc = self.run_share_state_fixture_batch(
-                fixtures,
-                tmp_path,
-                flash,
-                volumes,
-                internal_share_use_disk_root=False,
-            )
-
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            sections = self.parse_named_shell_sections(proc.stdout)
-            for fixture in fixtures:
-                with self.subTest(fixture=fixture.name):
-                    expected_shares, expected_adisk = self.expected_share_state(
-                        fixture,
-                        volumes,
-                        internal_share_use_disk_root=False,
-                    )
-                    expected_stdout = f"shares\n{expected_shares}adisk\n{expected_adisk}"
-                    status, stdout = sections[fixture.name]
-                    self.assertEqual(status, 0)
-                    self.assertEqual(stdout, expected_stdout)
-                    for volume in fixture.expected:
-                        volume_root = Path(self.mapped_volume_root(volume, volumes))
-                        if volume.builtin:
-                            marker = volume_root / "ShareRoot/.com.apple.timemachine.supported"
-                        else:
-                            marker = volume_root / ".com.apple.timemachine.supported"
-                        self.assertTrue(marker.exists(), str(marker))
-
-    def test_common_share_state_internal_disk_root_override_matches_python_policy(self) -> None:
-        fixtures = tuple(fixture for fixture in SHELL_MAST_FIXTURES if any(volume.builtin for volume in fixture.expected))
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-
-            proc = self.run_share_state_fixture_batch(
-                fixtures,
-                tmp_path,
-                flash,
-                volumes,
-                internal_share_use_disk_root=True,
-            )
-
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            sections = self.parse_named_shell_sections(proc.stdout)
-            for fixture in fixtures:
-                with self.subTest(fixture=fixture.name):
-                    expected_shares, expected_adisk = self.expected_share_state(
-                        fixture,
-                        volumes,
-                        internal_share_use_disk_root=True,
-                    )
-                    expected_stdout = f"shares\n{expected_shares}adisk\n{expected_adisk}"
-                    status, stdout = sections[fixture.name]
-                    self.assertEqual(status, 0)
-                    self.assertEqual(stdout, expected_stdout)
-                    self.assertNotIn("/ShareRoot", stdout)
-
-    def test_common_build_share_state_uses_modern_mast_rules(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            (volumes / "dk2").mkdir()
-            (volumes / "dk3").mkdir()
-            script = tmp_path / "build-shares.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    is_volume_root_mounted() {{ return 0; }}
-                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
-                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
-                    sd0	0	dk3	{volumes}/dk3	Data	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
-                    EOF
-                    tc_build_share_state "$RAM_VAR/test-volumes.tsv"
-                    printf 'shares\\n'
-                    cat "$TC_SHARES_TSV"
-                    printf 'adisk\\n'
-                    cat "$TC_ADISK_TSV"
-                    printf 'internal_marker=%s\\n' "$([ -f {volumes}/dk2/ShareRoot/.com.apple.timemachine.supported ] && echo yes || echo no)"
-                    printf 'external_marker=%s\\n' "$([ -f {volumes}/dk3/.com.apple.timemachine.supported ] && echo yes || echo no)"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn(f"Data\t{volumes}/dk2/ShareRoot\tdk2\t1\taaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n", proc.stdout)
-        self.assertIn(f"Data (dk3)\t{volumes}/dk3\tdk3\t0\tbbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\n", proc.stdout)
-        self.assertIn("Data\tdk2\taaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\t0x82\n", proc.stdout)
-        self.assertIn("Data (dk3)\tdk3\tbbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\t0x82\n", proc.stdout)
-        self.assertIn("internal_marker=yes\n", proc.stdout)
-        self.assertIn("external_marker=yes\n", proc.stdout)
-
-    def test_common_build_share_state_bounds_names_to_adisk_txt_budget(self) -> None:
-        long_name = "é" * 100
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            (volumes / "dk2").mkdir()
-            (volumes / "dk3").mkdir()
-            script = tmp_path / "build-long-shares.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    is_volume_root_mounted() {{ return 0; }}
-                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
-                    wd0	1	dk2	{volumes}/dk2	{long_name}	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
-                    sd0	0	dk3	{volumes}/dk3	{long_name}	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
-                    EOF
-                    tc_build_share_state "$RAM_VAR/test-volumes.tsv"
-                    cat "$TC_ADISK_TSV"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        rows = [line.split("\t") for line in proc.stdout.splitlines()]
-        self.assertEqual(len(rows), 2)
-        self.assertEqual(len(rows[0][0].encode("utf-8")), 194)
-        self.assertEqual(len(rows[1][0].encode("utf-8")), 194)
-        self.assertTrue(rows[1][0].endswith(" (dk3)"))
-        for share_name, disk_key, adisk_uuid, advf in rows:
-            txt = f"{disk_key}=adVF={advf},adVN={share_name},adVU={adisk_uuid}"
-            self.assertLessEqual(len(txt.encode("utf-8")), 255)
-
-    def test_common_payload_recovery_writes_resolved_state(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            (volumes / "dk2").mkdir()
-            (volumes / "dk3/.samba4/private").mkdir(parents=True)
-            (volumes / "dk3/.samba4/smbd").write_text("")
-            (volumes / "dk3/.samba4/smbd").chmod(0o755)
-            (volumes / "dk3/.samba4/private/smbpasswd").write_text("")
-            (volumes / "dk3/.samba4/private/username.map").write_text("")
-            script = tmp_path / "payload-recovery.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    is_volume_root_mounted() {{ return 0; }}
-                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
-                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
-                    sd0	0	dk3	{volumes}/dk3	USB	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
-                    EOF
-                    tc_resolve_payload "$RAM_VAR/test-volumes.tsv"
-                    tc_write_payload_state "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME" "$TC_RESOLVED_PAYLOAD_DEVICE"
-                    tc_load_payload_state
-                    printf '%s\\n%s\\n%s\\n' "$TC_PAYLOAD_DIR" "$TC_PAYLOAD_VOLUME" "$TC_PAYLOAD_DEVICE"
-                    printf 'mdns-log=%s\\nnbns-log=%s\\n' "$TC_MDNS_LOG_FILE" "$TC_NBNS_LOG_FILE"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            log_text = (memory / "samba4/var/test.log").read_text()
-
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertEqual(
-                proc.stdout,
-                f"{volumes}/dk3/.samba4\n{volumes}/dk3\n/dev/dk3\n"
-                f"mdns-log={volumes}/dk3/.samba4/logs/mdns.log\n"
-                f"nbns-log={volumes}/dk3/.samba4/logs/nbns.log\n",
-            )
-            self.assertIn(f"payload directory selected from mounted MaSt volumes: {volumes}/dk3/.samba4", log_text)
-
-    def test_common_payload_discovery_does_not_manual_mount_after_first_invalid_payload(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            (volumes / "dk2").mkdir()
-            mount_log = tmp_path / "mount.log"
-            script = tmp_path / "payload-no-manual-mount.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    is_volume_root_mounted() {{ [ "$1" = "{volumes}/dk2" ]; }}
-                    mount_hfs_bounded() {{
-                        echo "unexpected manual mount" >>{mount_log}
-                        return 0
-                    }}
-                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
-                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
-                    EOF
-                    tc_resolve_payload "$RAM_VAR/test-volumes.tsv" || status=$?
-                    printf 'status=%s\\n' "${{status:-0}}"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            log_text = (memory / "samba4/var/test.log").read_text()
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "status=1\n")
-        self.assertFalse(mount_log.exists())
-        self.assertIn(f"payload discovery first invalid payload check failed for {volumes}/dk2/.samba4", log_text)
-        self.assertIn("payload candidate diagnostics (first failure)", log_text)
-        self.assertIn(f"payload diagnostic command: df -k {volumes}/dk2", log_text)
-        self.assertIn(f"payload diagnostic command: ls -la {volumes}/dk2/.samba4", log_text)
-        self.assertIn("payload discovery: mount_hfs retry skipped; runtime uses diskd.useVolume-only activation", log_text)
-        self.assertIn("payload candidate diagnostics (after final failure)", log_text)
-        self.assertIn("no valid payload directory found on mounted MaSt volumes", log_text)
-
-    def test_common_payload_discovery_logs_final_diagnostics_for_invalid_payload(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            (volumes / "dk2").mkdir()
-            script = tmp_path / "payload-final-failure.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    is_volume_root_mounted() {{ [ "$1" = "{volumes}/dk2" ]; }}
-                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
-                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
-                    EOF
-                    tc_resolve_payload "$RAM_VAR/test-volumes.tsv" || status=$?
-                    printf 'status=%s\\n' "${{status:-0}}"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            log_text = (memory / "samba4/var/test.log").read_text()
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "status=1\n")
-        self.assertIn(f"payload discovery first invalid payload check failed for {volumes}/dk2/.samba4", log_text)
-        self.assertIn("payload candidate diagnostics (first failure)", log_text)
-        self.assertIn("payload discovery failed: first mounted payload candidate is invalid", log_text)
-        self.assertIn("payload discovery: mount_hfs retry skipped; runtime uses diskd.useVolume-only activation", log_text)
-        self.assertIn("payload candidate diagnostics (after final failure)", log_text)
-        self.assertIn(f"payload diagnostic command: df -k {volumes}/dk2", log_text)
-        self.assertIn(f"payload diagnostic command: ls -la {volumes}/dk2", log_text)
-        self.assertIn(f"payload diagnostic command: ls -la {volumes}/dk2/.samba4", log_text)
-        self.assertIn(f"payload diagnostic command: ls -la {volumes}/dk2/.samba4/private", log_text)
-        self.assertIn("no valid payload directory found on mounted MaSt volumes", log_text)
-
-    def test_common_refresh_disk_state_succeeds_with_payload_and_one_share_when_external_optional_fails(self) -> None:
-        fixture = SHELL_MAST_FIXTURES[0]
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            topology_path, raw_path = self.write_fixture_state_files(tmp_path, fixture, volumes)
-            (volumes / "dk2/.samba4/private").mkdir(parents=True)
-            (volumes / "dk2/.samba4/smbd").write_text("")
-            (volumes / "dk2/.samba4/smbd").chmod(0o755)
-            (volumes / "dk2/.samba4/private/smbpasswd").write_text("")
-            (volumes / "dk2/.samba4/private/username.map").write_text("")
-            script = tmp_path / "refresh-disk-state.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR" {volumes}/dk2 {volumes}/dk3
-                    {self.render_mast_wait_fixture_override(topology_path, raw_path)}
-                    tc_mount_mast_volumes_for_boot() {{ :; }}
-                    is_volume_root_mounted() {{ [ "$1" = "{volumes}/dk2" ]; }}
-                    tc_refresh_disk_state
-                    printf 'payload\\n'
-                    cat "$TC_PAYLOAD_TSV"
-                    printf 'shares\\n'
-                    cat "$TC_SHARES_TSV"
-                    [ -f {volumes}/dk2/ShareRoot/.com.apple.timemachine.supported ] && echo internal-marker
-                    [ ! -f {volumes}/dk3/.com.apple.timemachine.supported ] && echo external-skipped
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn(f"payload\n{volumes}/dk2/.samba4\t{volumes}/dk2\t/dev/dk2\n", proc.stdout)
-        self.assertIn(f"Data\t{volumes}/dk2/ShareRoot\tdk2\t1\tf42bdb83-c265-5522-a087-25606a4d0abf\n", proc.stdout)
-        self.assertIn("internal-marker\n", proc.stdout)
-        self.assertIn("external-skipped\n", proc.stdout)
-
-    def test_common_refresh_disk_state_requires_payload_even_when_share_is_writable(self) -> None:
-        fixture = SHELL_MAST_FIXTURES[0]
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            topology_path, raw_path = self.write_fixture_state_files(tmp_path, fixture, volumes)
-            script = tmp_path / "refresh-disk-state-missing-payload.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR" {volumes}/dk2 {volumes}/dk3
-                    {self.render_mast_wait_fixture_override(topology_path, raw_path)}
-                    tc_mount_mast_volumes_for_boot() {{ :; }}
-                    is_volume_root_mounted() {{ return 0; }}
-                    tc_refresh_disk_state || status=$?
-                    printf 'status=%s\\n' "${{status:-0}}"
-                    printf 'payload-size=%s\\n' "$([ -s "$TC_PAYLOAD_TSV" ] && echo nonempty || echo empty)"
-                    printf 'shares-size=%s\\n' "$([ -s "$TC_SHARES_TSV" ] && echo nonempty || echo empty)"
-                    printf 'adisk-size=%s\\n' "$([ -s "$TC_ADISK_TSV" ] && echo nonempty || echo empty)"
-                    cat "$RAM_VAR/test.log"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("status=0\n", proc.stdout)
-        self.assertIn("payload-size=empty\n", proc.stdout)
-        self.assertIn("shares-size=empty\n", proc.stdout)
-        self.assertIn("adisk-size=empty\n", proc.stdout)
-        self.assertIn("no valid payload directory found on mounted MaSt volumes", proc.stdout)
-        self.assertIn("payload discovery failed; writing no-payload runtime state", proc.stdout)
-
-    def test_common_refresh_disk_state_zero_mast_clears_stale_runtime_state(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            script = tmp_path / "refresh-zero-mast-clears-stale.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    cat >"$TC_TOPOLOGY_SIGNATURE" <<'EOF'
-                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
-                    EOF
-                    cat >"$TC_SHARES_TSV" <<'EOF'
-                    Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
-                    EOF
-                    cat >"$TC_ADISK_TSV" <<'EOF'
-                    Data	dk2	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa	0x82
-                    EOF
-                    tc_write_payload_state {volumes}/dk2/.samba4 {volumes}/dk2 /dev/dk2
-                    tc_read_mast_volumes_to() {{ : >"$1"; : >"$2"; return 0; }}
-                    tc_mount_mast_volumes_for_boot() {{ echo unexpected-mount; return 1; }}
-                    tc_refresh_disk_state
-                    printf 'result=%s\\n' "$TC_DISK_REFRESH_RESULT"
-                    printf 'topology-size=%s\\n' "$([ -s "$TC_TOPOLOGY_SIGNATURE" ] && echo nonempty || echo empty)"
-                    printf 'shares-size=%s\\n' "$([ -s "$TC_SHARES_TSV" ] && echo nonempty || echo empty)"
-                    printf 'adisk-size=%s\\n' "$([ -s "$TC_ADISK_TSV" ] && echo nonempty || echo empty)"
-                    printf 'payload-size=%s\\n' "$([ -s "$TC_PAYLOAD_TSV" ] && echo nonempty || echo empty)"
-                    cat "$RAM_VAR/test.log"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("result=no_payload\n", proc.stdout)
-        self.assertIn("topology-size=empty\n", proc.stdout)
-        self.assertIn("shares-size=empty\n", proc.stdout)
-        self.assertIn("adisk-size=empty\n", proc.stdout)
-        self.assertIn("payload-size=empty\n", proc.stdout)
-        self.assertNotIn("unexpected-mount", proc.stdout)
-        self.assertIn("MaSt reports zero managed HFS volumes; writing diskless runtime state", proc.stdout)
-
-    def test_common_refresh_disk_state_publish_failure_fails_under_conditional_call(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            script = tmp_path / "refresh-publish-failure.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    tc_read_mast_volumes_to() {{ : >"$1"; : >"$2"; return 0; }}
-                    mv() {{
-                        if [ "${{3:-}}" = "$TC_PAYLOAD_TSV" ]; then
-                            echo "blocked publish $3"
-                            return 1
-                        fi
-                        /bin/mv "$@"
-                    }}
-                    if tc_refresh_disk_state; then
-                        echo refresh-ok
-                    else
-                        echo refresh-failed
-                    fi
-                    printf 'result=%s\\n' "$TC_DISK_REFRESH_RESULT"
-                    cat "$RAM_VAR/test.log"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("blocked publish ", proc.stdout)
-        self.assertIn("refresh-failed\n", proc.stdout)
-        self.assertIn("result=failed\n", proc.stdout)
-        self.assertIn("disk-state refresh failed: could not publish diskless runtime state", proc.stdout)
-        self.assertNotIn("disk-state refresh complete: diskless runtime state written", proc.stdout)
-
-    def test_common_refresh_disk_state_mast_failure_keeps_existing_runtime_state(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            script = tmp_path / "refresh-mast-failure-keeps-state.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    echo old-topology >"$TC_TOPOLOGY_SIGNATURE"
-                    echo old-share >"$TC_SHARES_TSV"
-                    echo old-adisk >"$TC_ADISK_TSV"
-                    echo old-payload >"$TC_PAYLOAD_TSV"
-                    tc_read_mast_volumes_to() {{ : >"$1"; : >"$2"; return 1; }}
-                    tc_refresh_disk_state || status=$?
-                    printf 'status=%s\\n' "${{status:-0}}"
-                    printf 'result=%s\\n' "$TC_DISK_REFRESH_RESULT"
-                    printf 'topology='
-                    cat "$TC_TOPOLOGY_SIGNATURE"
-                    printf 'shares='
-                    cat "$TC_SHARES_TSV"
-                    printf 'adisk='
-                    cat "$TC_ADISK_TSV"
-                    printf 'payload='
-                    cat "$TC_PAYLOAD_TSV"
-                    cat "$RAM_VAR/test.log"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("status=1\n", proc.stdout)
-        self.assertIn("result=mast_failed\n", proc.stdout)
-        self.assertIn("topology=old-topology\n", proc.stdout)
-        self.assertIn("shares=old-share\n", proc.stdout)
-        self.assertIn("adisk=old-adisk\n", proc.stdout)
-        self.assertIn("payload=old-payload\n", proc.stdout)
-        self.assertIn("MaSt discovery failed", proc.stdout)
-
-    def test_common_refresh_disk_state_sets_ata_drive_settings_after_share_state(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            events = tmp_path / "events.log"
-            payload = volumes / "dk2/.samba4"
-            script = tmp_path / "refresh-order.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR" {payload}
-                    tc_read_mast_volumes_to() {{
-                        cat >"$1" <<'EOF'
-                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
-                    EOF
-                        : >"$2"
-                        return 0
-                    }}
-                    tc_mount_mast_volumes_for_boot() {{ echo mount >>{events}; }}
-                    tc_build_share_state() {{
-                        echo share >>{events}
-                        : >"$2"
-                        echo "Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" >>"$2"
-                        : >"$3"
-                        return 0
-                    }}
-                    tc_configure_ata_drive_settings_for_mast_disks() {{ echo ata >>{events}; }}
-                    tc_resolve_payload() {{
-                        echo payload >>{events}
-                        TC_RESOLVED_PAYLOAD_DIR={payload}
-                        TC_RESOLVED_PAYLOAD_VOLUME={volumes}/dk2
-                        TC_RESOLVED_PAYLOAD_DEVICE=/dev/dk2
-                        return 0
-                    }}
-                    tc_payload_log_dir_ready() {{ return 0; }}
-                    tc_refresh_disk_state
-                    cat {events}
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout.splitlines(), ["mount", "payload", "share", "ata"])
-
-    def test_common_stage_disk_runtime_reads_payload_state_and_rebuilds_ram_runtime(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            payload = volumes / "dk2/.samba4"
-            (payload / "private").mkdir(parents=True)
-            (payload / "smbd").write_text("#!/bin/sh\n")
-            (payload / "smbd").chmod(0o755)
-            (payload / "private/smbpasswd").write_text("admin:x\n")
-            (payload / "private/username.map").write_text("admin = root\n")
-            script = tmp_path / "stage-disk-runtime.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    tc_prepare_ram_root
-                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
-                    tc_write_payload_state {payload} {volumes}/dk2 /dev/dk2
-                    cat >"$TC_SHARES_TSV" <<'EOF'
-                    Data	{volumes}/dk2/ShareRoot	dk2	1	f42bdb83-c265-5522-a087-25606a4d0abf
-                    EOF
-                    tc_stage_disk_runtime
-                    [ -x {memory}/samba4/sbin/smbd ] && echo smbd-staged
-                    [ -f {memory}/samba4/private/smbpasswd ] && echo private-staged
-                    cat {memory}/samba4/etc/smb.conf
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            log_text = (memory / "samba4/var/test.log").read_text()
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("smbd-staged\n", proc.stdout)
-        self.assertIn("private-staged\n", proc.stdout)
-        self.assertIn("interfaces = 127.0.0.1/8 192.168.1.40/24", proc.stdout)
-        self.assertIn("bind interfaces only = yes", proc.stdout)
-        self.assertIn("nbns runtime staging skipped", log_text)
-        self.assertNotIn("nbns binary not found", log_text)
-
     def test_common_stage_runtime_installs_executables_with_temp_rename(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -4516,180 +3624,6 @@ MaSt = (
         )
         self.assertNotIn(f"cp:{payload}/smbd:{memory}/samba4/sbin/smbd\n", proc.stdout)
 
-    def test_common_stage_disk_runtime_fails_without_payload_state(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            script = tmp_path / "stage-disk-runtime-no-state.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    tc_prepare_ram_root
-                    tc_stage_disk_runtime || status=$?
-                    printf 'status=%s\\n' "${{status:-0}}"
-                    cat "$RAM_VAR/test.log"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("status=1\n", proc.stdout)
-        self.assertIn("payload discovery failed: payload state is unavailable", proc.stdout)
-
-    def test_common_stage_disk_runtime_copy_failure_fails_under_conditional_call(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            payload = volumes / "dk2/.samba4"
-            (payload / "private").mkdir(parents=True)
-            (payload / "smbd").write_text("#!/bin/sh\n")
-            (payload / "smbd").chmod(0o755)
-            (payload / "private/smbpasswd").write_text("admin:x\n")
-            (payload / "private/username.map").write_text("admin = root\n")
-            script = tmp_path / "stage-copy-failure.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    tc_prepare_ram_root
-                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
-                    tc_write_payload_state {payload} {volumes}/dk2 /dev/dk2
-                    cat >"$TC_SHARES_TSV" <<'EOF'
-                    Data	{volumes}/dk2/ShareRoot	dk2	1	f42bdb83-c265-5522-a087-25606a4d0abf
-                    EOF
-                    cp() {{
-                        echo "blocked cp $1 $2"
-                        return 1
-                    }}
-                    if tc_stage_disk_runtime; then
-                        echo stage-ok
-                    else
-                        echo stage-failed
-                    fi
-                    cat {memory}/samba4/var/test.log
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("blocked cp ", proc.stdout)
-        self.assertIn("stage-failed\n", proc.stdout)
-        self.assertNotIn("stage-ok", proc.stdout)
-        self.assertNotIn("runtime staging complete under", proc.stdout)
-
-    def test_common_stage_disk_runtime_config_failure_fails_under_conditional_call(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            payload = volumes / "dk2/.samba4"
-            (payload / "private").mkdir(parents=True)
-            (payload / "smbd").write_text("#!/bin/sh\n")
-            (payload / "smbd").chmod(0o755)
-            (payload / "private/smbpasswd").write_text("admin:x\n")
-            (payload / "private/username.map").write_text("admin = root\n")
-            script = tmp_path / "stage-config-failure.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    tc_prepare_ram_root
-                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
-                    tc_write_payload_state {payload} {volumes}/dk2 /dev/dk2
-                    cat >"$TC_SHARES_TSV" <<'EOF'
-                    Data	{volumes}/dk2/ShareRoot	dk2	1	f42bdb83-c265-5522-a087-25606a4d0abf
-                    EOF
-                    tc_generate_smb_conf() {{
-                        echo generate-failed
-                        return 1
-                    }}
-                    if tc_stage_disk_runtime; then
-                        echo stage-ok
-                    else
-                        echo stage-failed
-                    fi
-                    cat {memory}/samba4/var/test.log
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("generate-failed\n", proc.stdout)
-        self.assertIn("stage-failed\n", proc.stdout)
-        self.assertNotIn("stage-ok", proc.stdout)
-        self.assertNotIn("runtime staging complete under", proc.stdout)
-
-    def test_common_smb_bind_context_waits_settles_and_uses_fresh_probe(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            probe_count = tmp_path / "probe-count"
-            (flash / "mdns-advertiser").write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    [ "$1" = "--print-smb-bind-interfaces" ] || exit 2
-                    if [ -f {probe_count} ]; then
-                        echo 192.168.1.40/24
-                    else
-                        : >{probe_count}
-                        echo 192.168.1.39/24
-                    fi
-                    """
-                )
-            )
-            (flash / "mdns-advertiser").chmod(0o755)
-            script = tmp_path / "smb-bind-context.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    sleep() {{ echo "sleep $1"; }}
-                    tc_prepare_smb_bind_context
-                    printf 'bind=%s\\n' "$TC_SMB_BIND_INTERFACES"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            log_text = (memory / "samba4/var/test.log").read_text()
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "sleep 3\nbind=127.0.0.1/8 ::1/128 192.168.1.40/24\n")
-        self.assertIn("first usable address observed: 192.168.1.39/24", log_text)
-        self.assertIn("Samba bind interfaces: 127.0.0.1/8 ::1/128 192.168.1.40/24", log_text)
-
     def test_common_smb_bind_probe_rejects_invalid_cidr_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -4707,107 +3641,99 @@ MaSt = (
                     tc_init_runtime_env
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
-                    if tc_refresh_smb_bind_interfaces; then
+                    if bind=$(tc_probe_smb_bind_interfaces); then
                         echo status=0
+                        printf 'bind=%s\\n' "$bind"
                     else
                         echo status=$?
+                        printf 'bind=\\n'
                     fi
-                    printf 'bind=%s\\n' "${{TC_SMB_BIND_INTERFACES:-}}"
                     """
                 )
             )
             script.chmod(0o755)
 
             proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            log_text = (memory / "samba4/var/test.log").read_text()
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("status=1\n", proc.stdout)
         self.assertIn("bind=\n", proc.stdout)
-        self.assertIn("Samba bind interface probe failed with exit code 1", log_text)
 
-    def test_common_smb_bind_context_fails_hard_on_probe_error(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            (flash / "mdns-advertiser").write_text("#!/bin/sh\nexit 13\n")
-            (flash / "mdns-advertiser").chmod(0o755)
-            script = tmp_path / "smb-bind-hard-fail.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    sleep() {{ echo "unexpected sleep"; }}
-                    tc_prepare_smb_bind_context || status=$?
-                    printf 'status=%s\\n' "${{status:-0}}"
-                    cat "$RAM_VAR/test.log"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("status=1\n", proc.stdout)
-        self.assertIn("Samba bind discovery failed with exit code 13", proc.stdout)
-        self.assertNotIn("no usable address has appeared yet", proc.stdout)
-        self.assertNotIn("unexpected sleep", proc.stdout)
-
-    def test_payload_on_external_disk_is_also_served_as_share_and_hidden_in_smb_conf(self) -> None:
+    def test_manager_serves_external_payload_disk_as_hidden_samba_share(self) -> None:
         fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_external_only")
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            topology_path, raw_path = self.write_fixture_state_files(tmp_path, fixture, volumes)
+            self.write_fake_acp(tmp_path, fixture.raw)
             payload = volumes / "dk5/.samba4"
             (payload / "private").mkdir(parents=True)
-            (payload / "smbd").write_text("#!/bin/sh\n")
+            (payload / "smbd").write_text("#!/bin/sh\nexit 0\n")
             (payload / "smbd").chmod(0o755)
             (payload / "private/smbpasswd").write_text("root:x\n")
             (payload / "private/username.map").write_text("root = *\n")
-            script = tmp_path / "external-payload-integration.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    {self.render_mast_wait_fixture_override(topology_path, raw_path)}
-                    tc_mount_mast_volumes_for_boot() {{ :; }}
-                    is_volume_root_mounted() {{ return 0; }}
-                    TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
-                    mkdir -p "$RAM_VAR" {volumes}/dk5
-                    tc_refresh_disk_state
-                    tc_prepare_ram_root
-                    tc_stage_disk_runtime
-                    printf 'payload\\n'
-                    cat "$TC_PAYLOAD_TSV"
-                    printf 'shares\\n'
-                    cat "$TC_SHARES_TSV"
-                    printf 'adisk\\n'
-                    cat "$TC_ADISK_TSV"
-                    printf 'marker=%s\\n' "$([ -f {volumes}/dk5/.com.apple.timemachine.supported ] && echo yes || echo no)"
-                    printf 'runtime=%s\\n' "$([ -x {memory}/samba4/sbin/smbd ] && echo yes || echo no)"
-                    cat "$TC_SMBD_CONF"
-                    """
-                )
-            )
-            script.chmod(0o755)
+            marker = shlex.quote(str(volumes / "dk5/.com.apple.timemachine.supported"))
+            with (flash / "tcapsulesmb.conf").open("a") as conf:
+                conf.write("TC_SMB_BIND_INTERFACES='127.0.0.1/8'\n")
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
 
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AirPort
+                        SMB_SERVER_STRING=AirPort
+                        TC_RUNTIME_IDENTITY_READY=1
+                    }}
+                    tc_wake_or_mount_volume() {{ return 0; }}
+                    is_volume_root_mounted() {{ return 0; }}
+                    tc_apply_ata_drive_setting() {{ :; }}
+                    tc_probe_smb_bind_interfaces() {{ echo "127.0.0.1/8"; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            mdns-advertiser) return 0 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    wait_for_process() {{ return 0; }}
+                    tc_wait_for_smbd_ipv4_445() {{ return 0; }}
+                    tc_smbd_bound_tcp_445() {{ return 0; }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    tc_manager_reconcile_nbns() {{ return 0; }}
+                    tc_manager_wait_for_nbns_ready() {{ return 0; }}
+                    stop_runtime_process_by_ucomm() {{ :; }}
+                    sleep() {{
+                        case "$1" in
+                            1|5) return 0 ;;
+                            10)
+                                printf 'payload=%s|%s|%s\\n' "$TC_PAYLOAD_DIR" "$TC_PAYLOAD_VOLUME" "$TC_PAYLOAD_DEVICE"
+                                printf 'shares\\n%s\\n' "$manager_share_rows"
+                                printf 'adisk\\n'
+                                cat "$TC_ADISK_TSV"
+                                printf 'marker=%s\\n' "$([ -f {marker} ] && echo yes || echo no)"
+                                printf 'runtime=%s\\n' "$([ -x "$TC_SMBD_BIN" ] && echo yes || echo no)"
+                                cat "$TC_SMBD_CONF"
+                                exit 0
+                                ;;
+                        esac
+                        return 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn(f"payload\n{volumes}/dk5/.samba4\t{volumes}/dk5\t/dev/dk5\n", proc.stdout)
+        self.assertIn(f"payload={volumes}/dk5/.samba4|{volumes}/dk5|/dev/dk5\n", proc.stdout)
         self.assertIn(f"shares\nUSB Backup\t{volumes}/dk5\tdk5\t0\taaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n", proc.stdout)
         self.assertIn("adisk\nUSB Backup\tdk5\taaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\t0x82\n", proc.stdout)
         self.assertIn("marker=yes\n", proc.stdout)
@@ -4834,11 +3760,12 @@ MaSt = (
                     tc_init_runtime_env
                     mkdir -p "$RAM_ETC" "$RAM_VAR"
                     TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
-                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    share_rows=$(cat <<'EOF'
                     Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     USB	{volumes}/dk3	dk3	0	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
                     EOF
-                    tc_generate_smb_conf {payload}
+                    )
+                    tc_generate_smb_conf_from_share_rows {payload} "$share_rows"
                     cat "$TC_SMBD_CONF"
                     """
                 )
@@ -4896,10 +3823,11 @@ MaSt = (
                     tc_init_runtime_env
                     mkdir -p "$RAM_ETC" "$RAM_VAR"
                     TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
-                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    share_rows=$(cat <<'EOF'
                     Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     EOF
-                    tc_generate_smb_conf {payload}
+                    )
+                    tc_generate_smb_conf_from_share_rows {payload} "$share_rows"
                     cat "$TC_SMBD_CONF"
                     """
                 )
@@ -4945,10 +3873,11 @@ MaSt = (
                     tc_init_runtime_env
                     mkdir -p "$RAM_ETC" "$RAM_VAR"
                     TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
-                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    share_rows=$(cat <<'EOF'
                     Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     EOF
-                    tc_generate_smb_conf {payload}
+                    )
+                    tc_generate_smb_conf_from_share_rows {payload} "$share_rows"
                     sed -n 's/^[[:space:]]*fruit:model = //p' "$TC_SMBD_CONF"
                     """
                 )
@@ -4985,10 +3914,11 @@ MaSt = (
                     tc_init_runtime_env
                     mkdir -p "$RAM_ETC" "$RAM_VAR"
                     TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
-                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    share_rows=$(cat <<'EOF'
                     Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     EOF
-                    tc_generate_smb_conf {payload}
+                    )
+                    tc_generate_smb_conf_from_share_rows {payload} "$share_rows"
                     sed -n 's/^[[:space:]]*fruit:model = //p' "$TC_SMBD_CONF"
                     """
                 )
@@ -5018,10 +3948,11 @@ MaSt = (
                     tc_init_runtime_env
                     mkdir -p "$RAM_ETC" "$RAM_VAR"
                     TC_SMB_BIND_INTERFACES="127.0.0.1/8 192.168.1.40/24"
-                    cat >"$TC_SHARES_TSV" <<'EOF'
+                    share_rows=$(cat <<'EOF'
                     Data	{volumes}/dk2/ShareRoot	dk2	1	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
                     EOF
-                    tc_generate_smb_conf {payload}
+                    )
+                    tc_generate_smb_conf_from_share_rows {payload} "$share_rows"
                     cat "$TC_SMBD_CONF"
                     """
                 )
@@ -5436,7 +4367,6 @@ MaSt = (
                     mkdir -p "$RAM_VAR"
                     echo stale >"$APPLE_MDNS_SNAPSHOT"
                     echo stale >"$ALL_MDNS_SNAPSHOT"
-                    get_iface_mac() {{ echo 80:EA:96:E6:58:68; }}
                     get_radio_mac() {{
                         case "$1" in
                             bwl0) echo 80:EA:96:EB:2E:7D ;;
@@ -5457,7 +4387,7 @@ MaSt = (
                         esac
                     }}
                     get_airport_rast() {{ echo 3; }}
-                    tc_start_mdns_capture
+                    tc_capture_mdns_snapshot_for_manager || true
                     [ -f {shlex.quote(str(marker))} ] || exit 99
                     cat "$TC_MDNS_LOG_FILE"
                     cat "$RAM_VAR/test.log"
@@ -5472,64 +4402,8 @@ MaSt = (
         self.assertIn("launching mdns-advertiser capture", proc.stdout)
         self.assertIn("--save-all-snapshot", proc.stdout)
         self.assertIn("--save-snapshot", proc.stdout)
-        self.assertIn("--skip-capture-if-snapshot-newer-than-boot", proc.stdout)
         self.assertIn("--auto-ip", proc.stdout)
         self.assertIn("mDNS snapshot capture exited with failure; final advertiser will use generated records if needed", proc.stdout)
-
-    def test_common_mdns_capture_skips_when_snapshot_is_newer_than_boot(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            marker = tmp_path / "capture.started"
-            (flash / "mdns-advertiser").write_text(
-                "#!/bin/sh\n"
-                "while [ \"$#\" -gt 0 ]; do\n"
-                "  case \"$1\" in\n"
-                "    --skip-capture-if-snapshot-newer-than-boot) shift; echo \"mDNS snapshot capture skipped; $1 is newer than current boot\" >&2; exit 0 ;;\n"
-                "  esac\n"
-                "  shift\n"
-                "done\n"
-                f"echo started >{shlex.quote(str(marker))}\n"
-                "printf 'capture-args:%s\\n' \"$*\"\n"
-                "exit 0\n"
-            )
-            (flash / "mdns-advertiser").chmod(0o755)
-            script = tmp_path / "mdns-capture-skip-fresh-snapshot.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    echo trusted >"$APPLE_MDNS_SNAPSHOT"
-                    echo raw >"$ALL_MDNS_SNAPSHOT"
-                    tc_start_mdns_capture
-                    [ ! -f {shlex.quote(str(marker))} ] && echo capture-skipped
-                    printf 'apple='
-                    cat "$APPLE_MDNS_SNAPSHOT"
-                    printf 'all='
-                    cat "$ALL_MDNS_SNAPSHOT"
-                    cat "$TC_MDNS_LOG_FILE"
-                    cat "$RAM_VAR/test.log"
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("capture-skipped\n", proc.stdout)
-        self.assertIn("apple=trusted\n", proc.stdout)
-        self.assertIn("all=raw\n", proc.stdout)
-        self.assertIn("mDNS snapshot capture skipped;", proc.stdout)
-        self.assertIn("is newer than current boot", proc.stdout)
-        self.assertNotIn("capture-args:", proc.stdout)
-        self.assertIn("launching mdns-advertiser capture", proc.stdout)
 
     def test_common_mdns_advertiser_uses_capture_snapshot_without_generation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5560,7 +4434,6 @@ MaSt = (
                     tc_init_runtime_env
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
-                    get_iface_mac() {{ echo 80:EA:96:E6:58:68; }}
                     get_radio_mac() {{ return 1; }}
                     get_airport_host_label() {{ echo jamess-airport-time-capsule; }}
                     get_airport_acp_value() {{
@@ -5571,8 +4444,7 @@ MaSt = (
                             *) return 1 ;;
                         esac
                     }}
-                    tc_start_mdns_capture
-                    tc_finalize_mdns_snapshot_after_capture
+                    tc_capture_mdns_snapshot_for_manager
                     tc_launch_mdns_advertiser "mdns test" 1 0
                     wait "$mdns_launch_pid" || true
                     cat "$APPLE_MDNS_SNAPSHOT"
@@ -5592,7 +4464,6 @@ MaSt = (
         self.assertIn("--save-snapshot", proc.stdout)
         self.assertIn("--auto-ip", proc.stdout)
         self.assertNotIn("--save-airport-snapshot", proc.stdout)
-        self.assertIn("trusted Apple mDNS snapshot present:", proc.stdout)
         self.assertIn("--load-snapshot", proc.stdout)
 
     def test_common_mdns_advertiser_generates_airport_snapshot_when_capture_has_no_trusted_snapshot(self) -> None:
@@ -5624,7 +4495,6 @@ MaSt = (
                     tc_init_runtime_env
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR"
-                    get_iface_mac() {{ echo 80:EA:96:E6:58:68; }}
                     get_radio_mac() {{ return 1; }}
                     get_airport_host_label() {{ echo jamess-airport-time-capsule; }}
                     get_airport_acp_value() {{
@@ -5635,8 +4505,11 @@ MaSt = (
                             *) return 1 ;;
                         esac
                     }}
-                    tc_start_mdns_capture
-                    tc_finalize_mdns_snapshot_after_capture
+                    tc_capture_mdns_snapshot_for_manager || true
+                    if [ ! -s "$APPLE_MDNS_SNAPSHOT" ]; then
+                        tc_log "manager mDNS snapshot: no fresh snapshot exists; generating AirPort fallback"
+                        tc_generate_mdns
+                    fi
                     tc_launch_mdns_advertiser "mdns test" 1 0
                     wait "$mdns_launch_pid" || true
                     cat "$APPLE_MDNS_SNAPSHOT"
@@ -5654,7 +4527,7 @@ MaSt = (
         self.assertIn("launching mdns-advertiser capture", proc.stdout)
         self.assertIn("--save-all-snapshot", proc.stdout)
         self.assertIn("--auto-ip", proc.stdout)
-        self.assertIn("mDNS snapshot capture did not produce trusted Apple snapshot; generating AirPort fallback", proc.stdout)
+        self.assertIn("manager mDNS snapshot: no fresh snapshot exists; generating AirPort fallback", proc.stdout)
         self.assertIn("launching mdns-advertiser airport snapshot", proc.stdout)
         self.assertIn("--save-airport-snapshot", proc.stdout)
         self.assertIn("--load-snapshot", proc.stdout)
@@ -5747,7 +4620,6 @@ MaSt = (
                     tc_init_runtime_env
                     mkdir -p "$RAM_VAR"
                     is_volume_root_mounted() {{ [ "$1" = "{volumes}/dk2" ]; }}
-                    get_iface_mac() {{ echo 80:EA:96:E6:58:68; }}
                     get_radio_mac() {{
                         case "$1" in
                             bwl0) echo 80:EA:96:EB:2E:7D ;;
@@ -5829,7 +4701,6 @@ MaSt = (
                     . {flash}/tcapsulesmb.conf
                     tc_init_runtime_env
                     mkdir -p "$RAM_VAR"
-                    get_iface_mac() {{ echo 80:EA:96:E6:58:68; }}
                     get_radio_mac() {{ return 1; }}
                     get_airport_host_label() {{ echo jamess-airport-time-capsule; }}
                     get_airport_acp_value() {{
@@ -5858,296 +4729,6 @@ MaSt = (
         self.assertNotIn("launching mdns-advertiser capture", proc.stdout)
         self.assertNotIn("--save-all-snapshot", proc.stdout)
         self.assertNotIn("unexpected-capture", proc.stdout)
-
-    def test_common_boot_mount_uses_diskd_usevolume_without_shared_wait_when_it_mounts(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, _memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            events = tmp_path / "events.log"
-            acp = tmp_path / "acp"
-            acp.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    echo "acp $@" >>{shlex.quote(str(events))}
-                    root=${{3#path:s:}}
-                    touch "$root/.mounted"
-                    """
-                )
-            )
-            acp.chmod(0o755)
-            script = tmp_path / "boot-mount-diskd.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    DISKD_USE_VOLUME_ATTEMPTS=5
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    is_volume_root_mounted() {{ [ -f "$1/.mounted" ]; }}
-                    sleep() {{ echo "sleep $1" >>{events}; }}
-                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
-                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
-                    sd0	0	dk3	{volumes}/dk3	USB	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
-                    EOF
-                    tc_mount_mast_volumes_for_boot "$RAM_VAR/test-volumes.tsv"
-                    cat {events}
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(
-            proc.stdout.splitlines(),
-            [
-                f"acp rpc diskd.useVolume path:s:{volumes}/dk2",
-                f"acp rpc diskd.useVolume path:s:{volumes}/dk3",
-            ],
-        )
-
-    def test_common_boot_mount_retries_diskd_per_volume_without_mount_hfs_fallback(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            events = tmp_path / "events.log"
-            acp = tmp_path / "acp"
-            acp.write_text(f"#!/bin/sh\necho \"acp $@\" >>{shlex.quote(str(events))}\n")
-            acp.chmod(0o755)
-            script = tmp_path / "boot-mount-global-deadline.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    DISKD_USE_VOLUME_ATTEMPTS=2
-                    DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS=7
-                    DISKD_USE_VOLUME_MOUNT_POLL_SECONDS=3
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    is_volume_root_mounted() {{ return 1; }}
-                    sleep() {{ echo "sleep $1" >>{events}; }}
-                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
-                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
-                    sd0	0	dk3	{volumes}/dk3	USB	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
-                    EOF
-                    tc_mount_mast_volumes_for_boot "$RAM_VAR/test-volumes.tsv"
-                    cat {events}
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            log_text = (memory / "samba4/var/test.log").read_text()
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(
-            proc.stdout.splitlines(),
-            [
-                f"acp rpc diskd.useVolume path:s:{volumes}/dk2",
-                "sleep 3",
-                "sleep 3",
-                "sleep 1",
-                "sleep 1",
-                f"acp rpc diskd.useVolume path:s:{volumes}/dk2",
-                "sleep 3",
-                "sleep 3",
-                "sleep 1",
-                f"acp rpc diskd.useVolume path:s:{volumes}/dk3",
-                "sleep 3",
-                "sleep 3",
-                "sleep 1",
-                "sleep 1",
-                f"acp rpc diskd.useVolume path:s:{volumes}/dk3",
-                "sleep 3",
-                "sleep 3",
-                "sleep 1",
-            ],
-        )
-        self.assertIn("boot disk load: activating MaSt volumes through diskd.useVolume", log_text)
-        self.assertIn(
-            f"MaSt volume {volumes}/dk2: diskd.useVolume did not mount {volumes}/dk2 after 2 attempt(s); leaving volume unavailable without mount_hfs fallback",
-            log_text,
-        )
-        self.assertIn(
-            f"MaSt volume {volumes}/dk3: diskd.useVolume did not mount {volumes}/dk3 after 2 attempt(s); leaving volume unavailable without mount_hfs fallback",
-            log_text,
-        )
-        self.assertNotIn("MaSt volume diskd.useVolume wait beginning", log_text)
-        self.assertNotIn("launching mount_hfs", log_text)
-        self.assertNotIn("Apple mount", log_text)
-
-    def test_common_ata_idle_tunes_only_builtin_wd_disks_once(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            atactl_log = tmp_path / "atactl.log"
-            atactl = tmp_path / "atactl"
-            atactl.write_text(f"#!/bin/sh\necho \"$@\" >>{shlex.quote(str(atactl_log))}\n")
-            atactl.chmod(0o755)
-            common_path = flash / "common.sh"
-            common_path.write_text(common_path.read_text().replace("/sbin/atactl", str(atactl)))
-            script = tmp_path / "ata-idle.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    is_volume_root_mounted() {{ return 0; }}
-                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
-                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
-                    wd0	1	dk3	{volumes}/dk3	More	bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
-                    sd0	0	dk4	{volumes}/dk4	USB	cccccccc-cccc-cccc-cccc-cccccccccccc
-                    sd1	1	dk5	{volumes}/dk5	SSD	dddddddd-dddd-dddd-dddd-dddddddddddd
-                    EOF
-                    tc_configure_ata_idle_for_mast_disks "$RAM_VAR/test-volumes.tsv"
-                    cat {atactl_log}
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            log_text = (memory / "samba4/var/test.log").read_text()
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "wd0 setidle 300\n")
-        self.assertIn("ATA drive settings: set wd0 idle timer to 300s", log_text)
-        self.assertIn("ATA drive settings: skipping sd0 for /dev/dk4; MaSt marks disk as external", log_text)
-        self.assertIn("ATA drive settings: skipping sd1 for /dev/dk5; not a wd ATA disk", log_text)
-
-    def test_common_ata_idle_zero_disables_tuning(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            atactl_log = tmp_path / "atactl.log"
-            atactl = tmp_path / "atactl"
-            atactl.write_text(f"#!/bin/sh\necho \"$@\" >>{shlex.quote(str(atactl_log))}\n")
-            atactl.chmod(0o755)
-            common_path = flash / "common.sh"
-            common_path.write_text(common_path.read_text().replace("/sbin/atactl", str(atactl)))
-            script = tmp_path / "ata-idle-disabled.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    ATA_IDLE_SECONDS=0
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    is_volume_root_mounted() {{ return 0; }}
-                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
-                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
-                    EOF
-                    tc_configure_ata_idle_for_mast_disks "$RAM_VAR/test-volumes.tsv"
-                    cat {atactl_log}
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            log_text = (memory / "samba4/var/test.log").read_text()
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "wd0 setidle 0\n")
-        self.assertIn("ATA drive settings: disabled wd0 idle timer", log_text)
-
-    def test_common_ata_standby_applies_when_configured(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            atactl_log = tmp_path / "atactl.log"
-            atactl = tmp_path / "atactl"
-            atactl.write_text(f"#!/bin/sh\necho \"$@\" >>{shlex.quote(str(atactl_log))}\n")
-            atactl.chmod(0o755)
-            common_path = flash / "common.sh"
-            common_path.write_text(common_path.read_text().replace("/sbin/atactl", str(atactl)))
-            script = tmp_path / "ata-standby.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    ATA_STANDBY=0
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    is_volume_root_mounted() {{ return 0; }}
-                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
-                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
-                    EOF
-                    tc_configure_ata_drive_settings_for_mast_disks "$RAM_VAR/test-volumes.tsv"
-                    cat {atactl_log}
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            log_text = (memory / "samba4/var/test.log").read_text()
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "wd0 setidle 300\nwd0 setstandby 0\n")
-        self.assertIn("ATA drive settings: disabled wd0 standby timer", log_text)
-
-    def test_common_ata_idle_failure_logs_and_continues(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            flash, memory, _locks, volumes = self.write_runtime_harness(tmp_path)
-            atactl = tmp_path / "atactl"
-            atactl.write_text("#!/bin/sh\nexit 1\n")
-            atactl.chmod(0o755)
-            common_path = flash / "common.sh"
-            common_path.write_text(common_path.read_text().replace("/sbin/atactl", str(atactl)))
-            script = tmp_path / "ata-idle-failure.sh"
-            script.write_text(
-                textwrap.dedent(
-                    f"""\
-                    #!/bin/sh
-                    set -eu
-                    . {flash}/common.sh
-                    . {flash}/tcapsulesmb.conf
-                    tc_init_runtime_env
-                    tc_set_log "$RAM_VAR/test.log" test
-                    mkdir -p "$RAM_VAR"
-                    is_volume_root_mounted() {{ return 0; }}
-                    cat >"$RAM_VAR/test-volumes.tsv" <<'EOF'
-                    wd0	1	dk2	{volumes}/dk2	Data	aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
-                    EOF
-                    tc_configure_ata_idle_for_mast_disks "$RAM_VAR/test-volumes.tsv"
-                    echo continued
-                    """
-                )
-            )
-            script.chmod(0o755)
-
-            proc = subprocess.run([str(script)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-            log_text = (memory / "samba4/var/test.log").read_text()
-
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "continued\n")
-        self.assertIn("ATA drive settings: failed to set wd0 idle timer to 300s", log_text)
 
     def test_common_wake_or_mount_uses_diskd_without_mount_hfs_fallback_when_it_mounts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -69,10 +69,6 @@ tc_normalize_smb_bind_tokens() {
     printf '%s\n' "$normalized"
 }
 
-tc_normalize_smb_bind_cidrs() {
-    tc_normalize_smb_bind_tokens "$1"
-}
-
 tc_normalize_mdns_socket_families() {
     families=$1
     saw_ipv4=0
@@ -111,12 +107,6 @@ tc_normalize_mdns_socket_families() {
     printf '%s\n' "$normalized"
 }
 
-tc_probe_auto_ip_cidrs() {
-    [ -x "$TC_MDNS_BIN" ] || return 1
-    cidrs=$("$TC_MDNS_BIN" --print-auto-ip-cidrs 2>/dev/null) || return $?
-    tc_normalize_smb_bind_cidrs "$cidrs" || return 1
-}
-
 tc_probe_smb_bind_tokens() {
     [ -x "$TC_MDNS_BIN" ] || return 1
     bind_tokens=$("$TC_MDNS_BIN" --print-smb-bind-interfaces 2>/dev/null) || return $?
@@ -150,53 +140,4 @@ tc_mark_smb_deferred_no_ip() {
         tc_log "Samba bind discovery deferred; no usable address has appeared yet"
         TC_SMB_IPV4_WAIT_LOGGED=1
     fi
-}
-
-tc_wait_for_smb_ipv4() {
-    if [ ! -x "$TC_MDNS_BIN" ]; then
-        tc_log "Samba bind discovery failed; missing $TC_MDNS_BIN"
-        return 1
-    fi
-
-    while :; do
-        if bind_tokens=$(tc_probe_smb_bind_tokens); then
-            tc_log "Samba bind discovery: first usable address observed: $bind_tokens"
-            return 0
-        else
-            probe_status=$?
-        fi
-
-        if ! tc_auto_ip_unavailable_status "$probe_status"; then
-            tc_log "Samba bind discovery failed with exit code $probe_status"
-            return 1
-        fi
-
-        tc_mark_smb_deferred_no_ip
-        sleep "$TC_SMB_IPV4_STARTUP_POLL_SECONDS"
-    done
-}
-
-tc_refresh_smb_bind_interfaces() {
-    if bind_interfaces=$(tc_probe_smb_bind_interfaces); then
-        TC_SMB_BIND_INTERFACES=$bind_interfaces
-        TC_MANAGER_SMB_DEFERRED_NO_IP=0
-        tc_log "Samba bind interfaces: $TC_SMB_BIND_INTERFACES"
-        return 0
-    else
-        probe_status=$?
-    fi
-
-    if tc_auto_ip_unavailable_status "$probe_status"; then
-        tc_mark_smb_deferred_no_ip
-    else
-        tc_log "Samba bind interface probe failed with exit code $probe_status"
-    fi
-    return 1
-}
-
-tc_prepare_smb_bind_context() {
-    tc_wait_for_smb_ipv4 || return 1
-    tc_log "Samba bind discovery: waiting ${TC_SMB_IPV4_SETTLE_SECONDS}s for network stabilization"
-    sleep "$TC_SMB_IPV4_SETTLE_SECONDS"
-    tc_refresh_smb_bind_interfaces
 }

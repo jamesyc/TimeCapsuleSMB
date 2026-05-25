@@ -163,17 +163,6 @@ derive_airport_fields() {
     return 1
 }
 
-tc_log_mdns_snapshot_age() {
-    snapshot_path=$1
-    if [ ! -f "$snapshot_path" ]; then
-        tc_log "trusted Apple mDNS snapshot missing at $snapshot_path"
-        return 1
-    fi
-
-    tc_log "trusted Apple mDNS snapshot present: $snapshot_path"
-    return 0
-}
-
 tc_prepare_mdns_identity() {
     iface_mac=${1:-}
     context=$2
@@ -276,23 +265,14 @@ tc_ensure_mdns_auto_ip_seen() {
 }
 
 tc_run_mdns_capture() {
-    skip_fresh_snapshot=$1
-
     if ! tc_prepare_mdns_identity "" "mdns capture"; then
         return 1
     fi
 
-    if [ "$skip_fresh_snapshot" = "1" ]; then
-        tc_log "starting mDNS snapshot capture"
-    else
-        tc_log "starting mDNS snapshot capture without freshness skip"
-    fi
+    tc_log "starting mDNS snapshot capture"
     set -- "$TC_MDNS_BIN" \
         --save-all-snapshot "$ALL_MDNS_SNAPSHOT" \
         --save-snapshot "$APPLE_MDNS_SNAPSHOT"
-    if [ "$skip_fresh_snapshot" = "1" ]; then
-        set -- "$@" --skip-capture-if-snapshot-newer-than-boot "$APPLE_MDNS_SNAPSHOT"
-    fi
     set -- "$@" --auto-ip
     if [ -n "${AIRPORT_WAMA:-}" ] || [ -n "${AIRPORT_RAMA:-}" ] || [ -n "${AIRPORT_RAM2:-}" ] || [ -n "${AIRPORT_RAST:-}" ] || [ -n "${AIRPORT_RANA:-}" ] || [ -n "${AIRPORT_SYFL:-}" ] || [ -n "${AIRPORT_SYAP:-}" ] || [ -n "${AIRPORT_SYVS:-}" ] || [ -n "${AIRPORT_SRCV:-}" ] || [ -n "${AIRPORT_BJSD:-}" ]; then
         set -- "$@" \
@@ -339,12 +319,8 @@ tc_run_mdns_capture() {
     return 1
 }
 
-tc_start_mdns_capture() {
-    tc_run_mdns_capture 1 || true
-}
-
 tc_capture_mdns_snapshot_for_manager() {
-    tc_run_mdns_capture 0
+    tc_run_mdns_capture
 }
 
 tc_mdnsresponder_alive() {
@@ -396,21 +372,6 @@ tc_generate_mdns() {
     fi
 
     tc_log "mDNS AirPort snapshot generation failed; final advertiser will use generated records if needed"
-}
-
-tc_finalize_mdns_snapshot_after_capture() {
-    if [ -s "$APPLE_MDNS_SNAPSHOT" ]; then
-        tc_log_mdns_snapshot_age "$APPLE_MDNS_SNAPSHOT" || true
-        return 0
-    fi
-
-    tc_log "mDNS snapshot capture did not produce trusted Apple snapshot; generating AirPort fallback"
-    tc_generate_mdns
-    if [ -s "$APPLE_MDNS_SNAPSHOT" ]; then
-        tc_log_mdns_snapshot_age "$APPLE_MDNS_SNAPSHOT" || true
-    else
-        tc_log "mdns advertiser will fall back to generated records"
-    fi
 }
 
 tc_launch_mdns_advertiser() {
@@ -483,23 +444,6 @@ tc_launch_mdns_advertiser() {
         else
             tc_log "$context: mdns advertiser failed to stay running"
         fi
-    fi
-}
-
-tc_start_mdns_advertiser() {
-    tc_finalize_mdns_snapshot_after_capture
-    if tc_load_payload_state; then
-        tc_launch_mdns_advertiser "mdns startup" 1 100 0
-    else
-        tc_launch_mdns_advertiser "mdns startup" 1 100 1
-    fi
-}
-
-tc_restart_mdns() {
-    if tc_load_payload_state; then
-        tc_launch_mdns_advertiser "manager mDNS recovery" 1 0 0
-    else
-        tc_launch_mdns_advertiser "manager mDNS recovery" 1 0 1
     fi
 }
 

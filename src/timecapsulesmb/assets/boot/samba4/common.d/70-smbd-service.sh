@@ -19,14 +19,6 @@ tc_runtime_fstat_pid() {
     /usr/bin/fstat -p "$1" 2>/dev/null
 }
 
-tc_fstat_line_is_ipv4_tcp_445() {
-    tc_fstat_line_matches_socket internet stream tcp 445 "$1"
-}
-
-tc_fstat_line_is_ipv6_tcp_445() {
-    tc_fstat_line_matches_socket internet6 stream tcp 445 "$1"
-}
-
 tc_bind_interfaces_have_ipv6() {
     set -- ${TC_SMB_BIND_INTERFACES:-}
     for token in "$@"; do
@@ -101,14 +93,6 @@ tc_smbd_bound_tcp_445() {
     return 0
 }
 
-tc_fstat_line_is_ipv4_udp_port() {
-    tc_fstat_line_matches_socket internet dgram udp "$1" "$2"
-}
-
-tc_fstat_line_is_ipv6_udp_port() {
-    tc_fstat_line_matches_socket internet6 dgram udp "$1" "$2"
-}
-
 tc_process_bound_ipv4_udp_port() {
     proc_name=$1
     port=$2
@@ -136,14 +120,6 @@ tc_bind_interfaces_have_nonloopback_ipv4() {
 
 tc_nbns_bound_ipv4_udp_137() {
     tc_process_bound_ipv4_udp_port "$NBNS_PROC_NAME" 137
-}
-
-tc_mdns_bound_ipv4_udp_5353() {
-    tc_process_bound_ipv4_udp_port "$MDNS_PROC_NAME" 5353
-}
-
-tc_mdns_bound_ipv6_udp_5353() {
-    tc_process_bound_ipv6_udp_port "$MDNS_PROC_NAME" 5353
 }
 
 tc_process_bound_required_udp_families() {

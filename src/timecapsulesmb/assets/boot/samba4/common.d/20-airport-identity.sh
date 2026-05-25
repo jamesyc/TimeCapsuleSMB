@@ -1,12 +1,3 @@
-get_iface_mac() {
-    iface=$1
-    /sbin/ifconfig "$iface" 2>/dev/null \
-        | sed -n \
-            -e 's/^[[:space:]]*ether[[:space:]]\([0-9A-Fa-f:]*\).*/\1/p' \
-            -e 's/^[[:space:]]*address:*[[:space:]]\([0-9A-Fa-f:]*\).*/\1/p' \
-        | sed -n '1p'
-}
-
 get_radio_mac() {
     radio_iface=$1
     /sbin/ifconfig "$radio_iface" 2>/dev/null \

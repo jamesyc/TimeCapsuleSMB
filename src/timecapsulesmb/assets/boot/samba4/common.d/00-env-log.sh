@@ -16,11 +16,7 @@ APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt
 
 TC_CONFIG_FILE=/mnt/Flash/tcapsulesmb.conf
 TC_STATE_DIR="$RAM_VAR"
-TC_SHARES_TSV="$TC_STATE_DIR/shares.tsv"
 TC_ADISK_TSV="$TC_STATE_DIR/adisk.tsv"
-TC_PAYLOAD_TSV="$TC_STATE_DIR/payload.tsv"
-TC_TOPOLOGY_SIGNATURE="$TC_STATE_DIR/topology.signature"
-TC_USED_SHARE_NAMES_FILE=
 TC_TAB=$(printf '\t')
 
 TC_LOG_FILE="$TC_STATE_DIR/runtime.log"

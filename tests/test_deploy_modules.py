@@ -375,9 +375,9 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("NBNS_PROC_NAME=nbns-advertiser", content)
         self.assertIn("ALL_MDNS_SNAPSHOT=/mnt/Flash/allmdns.txt", content)
         self.assertIn("APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt", content)
-        self.assertIn("get_iface_mac()", content)
         self.assertIn("tc_select_advertise_mac()", content)
         self.assertIn("tc_select_live_iface_mac()", content)
+        self.assertNotIn("get_iface_mac()", content)
         self.assertNotIn("tc_select_advertise_network()", content)
         self.assertNotIn("tc_find_iface_for_ipv4()", content)
         self.assertIn("get_radio_mac()", content)
@@ -749,10 +749,10 @@ echo ok
             with self.assertRaisesRegex(RuntimeError, "could not read runtime naming identity: rc=1"):
                 probe_remote_runtime_naming_identity_conn(connection)
 
-    def test_common_sh_helpers_take_iface_argument(self) -> None:
+    def test_common_sh_mac_helpers_use_live_scan_and_radio_argument(self) -> None:
         content = load_boot_asset_text("common.sh")
-        self.assertIn("iface=$1", content)
-        self.assertIn('ifconfig "$iface"', content)
+        self.assertIn("tc_select_live_iface_mac()", content)
+        self.assertIn("ifconfig -a", content)
         self.assertIn("radio_iface=$1", content)
         self.assertIn('ifconfig "$radio_iface"', content)
 
