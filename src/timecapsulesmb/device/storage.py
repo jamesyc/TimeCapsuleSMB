@@ -19,6 +19,7 @@ MAST_ACP_COMMAND = "/usr/bin/acp MaSt"
 MAST_PROBE_COMMAND = "/usr/bin/acp -A MaSt"
 MAST_PROBE_TIMEOUT_SECONDS = 30
 MAST_PROBE_OUTPUT_DEBUG_LIMIT = 8192
+DISKD_USE_VOLUME_GUARD_ATTEMPTS = 2
 DRY_RUN_VOLUME_ROOT_PLACEHOLDER = "resolved from MaSt at deploy time"
 DRY_RUN_DEVICE_PATH_PLACEHOLDER = "resolved from MaSt at deploy time"
 UNINSTALL_DRY_RUN_VOLUME_ROOT_PLACEHOLDER = "resolved from MaSt at uninstall time"
@@ -418,21 +419,26 @@ def _remote_mounted_test(volume_root: str) -> str:
     )
 
 
-def render_ensure_volume_root_mounted_script(volume_root: str, device_path: str, wait_seconds: int) -> str:
+def render_ensure_volume_root_mounted_script(volume_root: str, _device_path: str, wait_seconds: int) -> str:
     root = shlex.quote(volume_root)
-    dev = shlex.quote(device_path)
     mounted_test = _remote_mounted_test(volume_root)
+    attempts = DISKD_USE_VOLUME_GUARD_ATTEMPTS
     return (
         f"mkdir -p {root}; "
+        "diskd_attempt=1; "
+        f"while [ \"$diskd_attempt\" -le {attempts} ]; do "
+        f"if /usr/bin/acp rpc diskd.useVolume path:s:{root} >/dev/null 2>&1; then "
+        "wait_attempt=0; "
+        f'while [ "$wait_attempt" -le {wait_seconds} ]; do '
         f"if /bin/sh -c {shlex.quote(mounted_test)}; then exit 0; fi; "
-        f"/usr/bin/acp rpc diskd.useVolume path:s:{root} >/dev/null 2>&1 || true; "
-        "attempt=0; "
-        f'while [ "$attempt" -lt {wait_seconds} ]; do '
-        f"if /bin/sh -c {shlex.quote(mounted_test)}; then exit 0; fi; "
-        'attempt=$((attempt + 1)); sleep 1; '
+        f'if [ "$wait_attempt" -eq {wait_seconds} ]; then break; fi; '
+        'wait_attempt=$((wait_attempt + 1)); sleep 1; '
         "done; "
-        f"if [ -b {dev} ]; then /sbin/mount_hfs {dev} {root} >/dev/null 2>&1 || true; fi; "
-        f"/bin/sh -c {shlex.quote(mounted_test)}"
+        "fi; "
+        f'if [ "$diskd_attempt" -lt {attempts} ]; then sleep 1; fi; '
+        'diskd_attempt=$((diskd_attempt + 1)); '
+        "done; "
+        "exit 1"
     )
 
 
@@ -444,7 +450,8 @@ def ensure_volume_root_mounted_conn(
     wait_seconds: int,
 ) -> bool:
     script = render_ensure_volume_root_mounted_script(volume_root, device_path, wait_seconds)
-    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=max(30, wait_seconds + 45))
+    timeout = max(30, wait_seconds * DISKD_USE_VOLUME_GUARD_ATTEMPTS + 45)
+    proc = run_ssh(connection, f"/bin/sh -c {shlex.quote(script)}", check=False, timeout=timeout)
     return proc.returncode == 0
 
 

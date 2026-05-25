@@ -16,11 +16,7 @@ APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt
 
 TC_CONFIG_FILE=/mnt/Flash/tcapsulesmb.conf
 TC_STATE_DIR="$RAM_VAR"
-TC_SHARES_TSV="$TC_STATE_DIR/shares.tsv"
 TC_ADISK_TSV="$TC_STATE_DIR/adisk.tsv"
-TC_PAYLOAD_TSV="$TC_STATE_DIR/payload.tsv"
-TC_TOPOLOGY_SIGNATURE="$TC_STATE_DIR/topology.signature"
-TC_USED_SHARE_NAMES_FILE=
 TC_TAB=$(printf '\t')
 
 TC_LOG_FILE="$TC_STATE_DIR/runtime.log"
@@ -52,13 +48,12 @@ TC_SMB_BIND_INTERFACES=${TC_SMB_BIND_INTERFACES:-}
 TC_SMB_IPV4_WAIT_LOGGED=0
 TC_SMB_IPV4_STARTUP_POLL_SECONDS=2
 TC_SMB_IPV4_SETTLE_SECONDS=3
-TC_MDNS_CAPTURE_ATTEMPTED=0
-TC_WATCHDOG_MDNS_DEFERRED_NO_IP=0
-TC_WATCHDOG_MDNS_UNAVAILABLE=0
-TC_WATCHDOG_NBNS_DEFERRED_NO_IP=0
-TC_WATCHDOG_SMB_DEFERRED_NO_IP=0
-TC_WATCHDOG_LAST_IDENTITY_SIGNATURE=
-TC_WATCHDOG_IDENTITY_SIGNATURE_READY=0
+TC_MANAGER_MDNS_DEFERRED_NO_IP=0
+TC_MANAGER_MDNS_UNAVAILABLE=0
+TC_MANAGER_NBNS_DEFERRED_NO_IP=0
+TC_MANAGER_SMB_DEFERRED_NO_IP=0
+TC_MANAGER_LAST_IDENTITY_SIGNATURE=
+TC_MANAGER_IDENTITY_SIGNATURE_READY=0
 TC_RUNTIME_IDENTITY_READY=
 TC_AIRPORT_FIELDS_READY=0
 TC_AIRPORT_FIELDS_ADVERTISE_MAC=
@@ -138,8 +133,7 @@ tc_init_runtime_env() {
     ATA_IDLE_SECONDS=${ATA_IDLE_SECONDS:-300}
     ATA_STANDBY=${ATA_STANDBY:-}
     MAST_DISCOVERY_WAIT_SECONDS=${MAST_DISCOVERY_WAIT_SECONDS:-120}
-    WATCHDOG_DISKD_USE_VOLUME_ATTEMPTS=${WATCHDOG_DISKD_USE_VOLUME_ATTEMPTS:-$DISKD_USE_VOLUME_ATTEMPTS}
-    WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS=${WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS:-5}
+    MANAGER_TOPOLOGY_DEBOUNCE_SECONDS=${MANAGER_TOPOLOGY_DEBOUNCE_SECONDS:-${WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS:-5}}
     INTERNAL_SHARE_USE_DISK_ROOT=${INTERNAL_SHARE_USE_DISK_ROOT:-0}
     ANY_PROTOCOL=${ANY_PROTOCOL:-0}
     NBNS_ENABLED=${NBNS_ENABLED:-0}
@@ -212,16 +206,9 @@ tc_ram_rewrite_log_line() {
     log_path=$1
     line=$2
     log_dir=${log_path%/*}
-    tmp_log="$log_path.tmp.$$"
 
     [ -d "$log_dir" ] || mkdir -p "$log_dir"
-    {
-        if [ -f "$log_path" ]; then
-            /usr/bin/tail -n 255 "$log_path" 2>/dev/null || true
-        fi
-        echo "$line"
-    } >"$tmp_log"
-    mv "$tmp_log" "$log_path"
+    echo "$line" >>"$log_path"
     tc_trim_log_file_if_needed "$log_path" "$TC_LOG_MAX_BYTES"
 }
 
@@ -245,7 +232,41 @@ tc_prepare_log_file() {
     fi
 }
 
+tc_now_seconds() {
+    now_seconds=$(date '+%s' 2>/dev/null || echo 0)
+    case "$now_seconds" in
+        ""|*[!0123456789]*) echo 0 ;;
+        *) echo "$now_seconds" ;;
+    esac
+}
+
+tc_elapsed_seconds_since() {
+    elapsed_start_seconds=$1
+    elapsed_end_seconds=$(tc_now_seconds)
+    if ! tc_is_unsigned_integer "$elapsed_start_seconds"; then
+        echo 0
+        return 0
+    fi
+    elapsed_seconds=$((elapsed_end_seconds - elapsed_start_seconds))
+    [ "$elapsed_seconds" -ge 0 ] || elapsed_seconds=0
+    echo "$elapsed_seconds"
+}
+
+tc_log_timestamp() {
+    date '+%Y-%m-%d %H:%M:%S'
+}
+
 tc_log() {
-    line="$(date '+%Y-%m-%d %H:%M:%S') $TC_LOG_PREFIX: $*"
+    line="$(tc_log_timestamp) $TC_LOG_PREFIX: $*"
     tc_ram_rewrite_log_line "$TC_LOG_FILE" "$line"
+}
+
+tc_smbd_debug_logging_enabled() {
+    [ "${SMBD_DEBUG_LOGGING:-0}" = "1" ]
+}
+
+tc_smbd_debug_log() {
+    if tc_smbd_debug_logging_enabled; then
+        tc_log "$@"
+    fi
 }

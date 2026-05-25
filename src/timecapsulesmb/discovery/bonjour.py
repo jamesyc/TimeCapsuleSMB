@@ -7,7 +7,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any
+from typing import Any, Literal
 
 from timecapsulesmb.core.errors import missing_dependency_message
 from timecapsulesmb.core.net import is_link_local_ipv4
@@ -30,6 +30,7 @@ FINAL_PENDING_RESOLVE_TIMEOUT_MS = 3000
 MAX_DIAGNOSTIC_OBSERVATIONS = 100
 DNS_RECORD_TYPE_PTR = 12
 MDNS_PORT = 5353
+BonjourIPFamily = Literal["ipv4", "ipv6"]
 
 
 @dataclass
@@ -283,6 +284,37 @@ def _source_ipv4_for_target(target_ip: str | None) -> str | None:
     except ValueError:
         return None
     return source_ip if source.version == 4 else None
+
+
+def _source_ipv6_for_target(target_ip: str | None) -> str | None:
+    if not target_ip:
+        return None
+    try:
+        parsed = ipaddress.ip_address(target_ip)
+    except ValueError:
+        return None
+    if parsed.version != 6:
+        return None
+
+    try:
+        sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+    except OSError:
+        return None
+    try:
+        sock.connect((target_ip, MDNS_PORT))
+        source_ip = sock.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        sock.close()
+
+    if not source_ip or source_ip == "::":
+        return None
+    try:
+        source = ipaddress.ip_address(source_ip.split("%", 1)[0])
+    except ValueError:
+        return None
+    return source_ip if source.version == 6 else None
 
 
 class Collector:
@@ -593,26 +625,39 @@ def _adapter_ipv6_addresses_for_ipv4(source_ipv4: str) -> list[str]:
     return []
 
 
-def _zeroconf_interfaces_for_target(target_ip: str | None) -> list[str] | None:
+def _zeroconf_interfaces_for_target(target_ip: str | None, *, family: BonjourIPFamily | None = None) -> list[str] | None:
+    if family == "ipv6":
+        source_ipv6 = _source_ipv6_for_target(target_ip)
+        return [source_ipv6] if source_ipv6 else None
+
     source_ipv4 = _source_ipv4_for_target(target_ip)
     if not source_ipv4:
         return None
+    if family == "ipv4":
+        return [source_ipv4]
     return [source_ipv4, *_adapter_ipv6_addresses_for_ipv4(source_ipv4)]
 
 
-def _zeroconf_ip_version(IPVersion: Any) -> tuple[Any, str]:
+def _zeroconf_ip_version(IPVersion: Any, *, family: BonjourIPFamily | None = None) -> tuple[Any, str]:
+    if family == "ipv4":
+        return IPVersion.V4Only, "V4Only"
+    if family == "ipv6":
+        try:
+            return IPVersion.V6Only, "V6Only"
+        except AttributeError:
+            return IPVersion.All, "All"
     try:
         return IPVersion.All, "All"
     except AttributeError:
         return IPVersion.V4Only, "V4Only"
 
 
-def _zeroconf_ip_version_name() -> str:
+def _zeroconf_ip_version_name(*, family: BonjourIPFamily | None = None) -> str:
     try:
         from zeroconf import IPVersion
     except Exception:
         return "All"
-    _ip_version, ip_version_name = _zeroconf_ip_version(IPVersion)
+    _ip_version, ip_version_name = _zeroconf_ip_version(IPVersion, family=family)
     return ip_version_name
 
 
@@ -622,13 +667,13 @@ def _format_zeroconf_interfaces(interfaces: Sequence[str] | None) -> str:
     return ",".join(interfaces)
 
 
-def _open_zeroconf(interfaces: Sequence[str] | None = None) -> Any:
+def _open_zeroconf(interfaces: Sequence[str] | None = None, *, family: BonjourIPFamily | None = None) -> Any:
     try:
         from zeroconf import IPVersion, Zeroconf
     except Exception as e:
         raise RuntimeError(missing_dependency_message("zeroconf", e)) from e
 
-    ip_version, _ip_version_name = _zeroconf_ip_version(IPVersion)
+    ip_version, _ip_version_name = _zeroconf_ip_version(IPVersion, family=family)
     if interfaces:
         return Zeroconf(interfaces=list(interfaces), ip_version=ip_version)
     return Zeroconf(ip_version=ip_version)
@@ -639,14 +684,17 @@ def resolve_service_instance(
     timeout_ms: int = FINAL_PENDING_RESOLVE_TIMEOUT_MS,
     *,
     target_ip: str | None = None,
+    family: BonjourIPFamily | None = None,
+    interfaces: Sequence[str] | None = None,
 ) -> BonjourResolvedService | None:
     try:
         from zeroconf import DNSQuestionType
     except Exception as e:
         raise RuntimeError(missing_dependency_message("zeroconf", e)) from e
 
-    interfaces = _zeroconf_interfaces_for_target(target_ip)
-    zc = _open_zeroconf(interfaces)
+    if interfaces is None:
+        interfaces = _zeroconf_interfaces_for_target(target_ip, family=family)
+    zc = _open_zeroconf(interfaces, family=family)
     try:
         info = zc.get_service_info(instance.service_type, instance.fullname, timeout_ms, question_type=DNSQuestionType.QM)
     finally:
@@ -672,11 +720,13 @@ def discover_snapshot_detailed(
     timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC,
     *,
     target_ip: str | None = None,
+    family: BonjourIPFamily | None = None,
+    interfaces: Sequence[str] | None = None,
 ) -> tuple[BonjourDiscoverySnapshot, BonjourDiscoveryDiagnostics]:
     service_types = _matching_service_types(service)
     start = time.monotonic()
-    zeroconf_interfaces = _zeroconf_interfaces_for_target(target_ip)
-    zc = _open_zeroconf(zeroconf_interfaces)
+    zeroconf_interfaces = interfaces if interfaces is not None else _zeroconf_interfaces_for_target(target_ip, family=family)
+    zc = _open_zeroconf(zeroconf_interfaces, family=family)
     ptr_observer: PtrRecordObserver | None = None
     ptr_records: list[BonjourPtrRecordObservation] = []
     ptr_record_error: str | None = None
@@ -717,7 +767,7 @@ def discover_snapshot_detailed(
         service_types=list(service_types),
         timeout_sec=timeout,
         elapsed_sec=round(time.monotonic() - start, 3),
-        ip_version=_zeroconf_ip_version_name(),
+        ip_version=_zeroconf_ip_version_name(family=family),
         instance_count=len(sorted_instances),
         resolved_count=len(sorted_records),
         pending_count=collector.pending_count(),
@@ -743,8 +793,16 @@ def discover_snapshot(
     timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC,
     *,
     target_ip: str | None = None,
+    family: BonjourIPFamily | None = None,
+    interfaces: Sequence[str] | None = None,
 ) -> BonjourDiscoverySnapshot:
-    snapshot, _diagnostics = discover_snapshot_detailed(service=service, timeout=timeout, target_ip=target_ip)
+    snapshot, _diagnostics = discover_snapshot_detailed(
+        service=service,
+        timeout=timeout,
+        target_ip=target_ip,
+        family=family,
+        interfaces=interfaces,
+    )
     return snapshot
 
 
@@ -770,12 +828,28 @@ def discover_resolved_records(
     timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC,
     *,
     target_ip: str | None = None,
+    family: BonjourIPFamily | None = None,
+    interfaces: Sequence[str] | None = None,
 ) -> list[BonjourResolvedService]:
-    return discover_snapshot(service=service, timeout=timeout, target_ip=target_ip).resolved
+    return discover_snapshot(
+        service=service,
+        timeout=timeout,
+        target_ip=target_ip,
+        family=family,
+        interfaces=interfaces,
+    ).resolved
 
 
-def discover(timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC, *, target_ip: str | None = None) -> list[BonjourResolvedService]:
-    return _records_with_unresolved_instances(discover_snapshot(timeout=timeout, target_ip=target_ip))
+def discover(
+    timeout: float = DEFAULT_BROWSE_TIMEOUT_SEC,
+    *,
+    target_ip: str | None = None,
+    family: BonjourIPFamily | None = None,
+    interfaces: Sequence[str] | None = None,
+) -> list[BonjourResolvedService]:
+    return _records_with_unresolved_instances(
+        discover_snapshot(timeout=timeout, target_ip=target_ip, family=family, interfaces=interfaces)
+    )
 
 
 def record_has_service(record: BonjourResolvedService, service: str) -> bool:

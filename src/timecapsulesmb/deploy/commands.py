@@ -6,6 +6,7 @@ from typing import Iterable, Union
 
 from timecapsulesmb.device.processes import (
     render_pkill_wait_pkill9_by_ucomm,
+    render_pkill_wait_pkill9_manager,
     render_pkill_wait_pkill9_watchdog,
 )
 from timecapsulesmb.device.storage import render_ensure_volume_root_mounted_script
@@ -52,6 +53,11 @@ class StopWatchdogAction:
 
 
 @dataclass(frozen=True)
+class StopManagerAction:
+    pass
+
+
+@dataclass(frozen=True)
 class RemovePathAction:
     path: str
 
@@ -67,6 +73,7 @@ RemoteAction = Union[
     InstallPermissionsAction,
     StopProcessAction,
     StopWatchdogAction,
+    StopManagerAction,
     RemovePathAction,
     RunScriptAction,
 ]
@@ -126,6 +133,8 @@ def render_remote_action(action: RemoteAction) -> str:
         return render_pkill_wait_pkill9_by_ucomm(action.name, attempts=5)
     if isinstance(action, StopWatchdogAction):
         return render_pkill_wait_pkill9_watchdog(attempts=5)
+    if isinstance(action, StopManagerAction):
+        return render_pkill_wait_pkill9_manager(attempts=5)
     if isinstance(action, PrepareDirsAction):
         return _render_prepare_dirs_action(action)
     if isinstance(action, InstallPermissionsAction):
@@ -153,6 +162,8 @@ def remote_action_to_jsonable(action: RemoteAction) -> dict[str, object]:
         return {"kind": "stop_process", "args": [action.name]}
     if isinstance(action, StopWatchdogAction):
         return {"kind": "stop_watchdog", "args": []}
+    if isinstance(action, StopManagerAction):
+        return {"kind": "stop_manager", "args": []}
     if isinstance(action, PrepareDirsAction):
         return {
             "kind": "prepare_dirs",

@@ -88,6 +88,7 @@ from timecapsulesmb.device.storage import (
 )
 from timecapsulesmb.deploy.commands import (
     RunScriptAction,
+    StopManagerAction,
     StopProcessAction,
     StopWatchdogAction,
 )
@@ -99,6 +100,8 @@ from timecapsulesmb.deploy.planner import (
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_SMBPASSWD_SOURCE,
     GENERATED_USERNAME_MAP_SOURCE,
+    PACKAGED_BOOT_SOURCE,
+    PACKAGED_MANAGER_SOURCE,
 )
 from timecapsulesmb.deploy.verify import VerificationResult
 from timecapsulesmb.flash_payloads import find_apple_firmware_match
@@ -1986,7 +1989,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("mDNS device model hint", seen_defaults)
         self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
 
-    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
+    @unittest.skip("TC_NET_IFACE is no longer configured; runtime manager selects advertise IP at boot")
     def test_configure_uses_target_ip_interface_default_instead_of_static_bridge0(self) -> None:
         seen_defaults = {}
         prompt_values = iter([
@@ -2029,7 +2032,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("bcmeth1: 10.0.1.1 (suggested)", result.text)
         self.assertIn("Using probed default for TC_NET_IFACE: bcmeth1", result.text)
 
-    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
+    @unittest.skip("TC_NET_IFACE is no longer configured; runtime manager selects advertise IP at boot")
     def test_configure_uses_discovered_ip_for_interface_default_when_host_is_name(self) -> None:
         seen_defaults = {}
         record = Discovered(
@@ -2079,7 +2082,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_NET_IFACE"], "bcmeth1")
         self.assertIn("bcmeth1: 10.0.1.1 (suggested)", result.text)
 
-    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
+    @unittest.skip("TC_NET_IFACE is no longer configured; runtime manager selects advertise IP at boot")
     def test_configure_keeps_saved_interface_when_it_matches_probed_candidates(self) -> None:
         seen_defaults = {}
         existing = {"TC_NET_IFACE": "bcmeth1"}
@@ -2122,7 +2125,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_NET_IFACE"], "bcmeth1")
         self.assertIn("Found saved value: bcmeth1", result.text)
 
-    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
+    @unittest.skip("TC_NET_IFACE is no longer configured; runtime manager selects advertise IP at boot")
     def test_configure_target_ip_match_overrides_conflicting_saved_interface(self) -> None:
         seen_defaults = {}
         existing = {"TC_NET_IFACE": "bridge0"}
@@ -2167,7 +2170,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Found saved value: bridge0", result.text)
         self.assertIn("Probed target IP 10.0.1.1 is on bcmeth1, so bcmeth1 is suggested instead.", result.text)
 
-    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
+    @unittest.skip("TC_NET_IFACE is no longer configured; runtime manager selects advertise IP at boot")
     def test_configure_private_discovered_ip_beats_loopback_ssh_target(self) -> None:
         seen_defaults = {}
         record = Discovered(
@@ -2220,7 +2223,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_NET_IFACE"], "bridge0")
         self.assertIn("bridge0: 192.168.1.217 (suggested)", result.text)
 
-    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
+    @unittest.skip("TC_NET_IFACE is no longer configured; runtime manager selects advertise IP at boot")
     def test_configure_loopback_target_ip_does_not_win_runtime_interface(self) -> None:
         seen_defaults = {}
         prompt_values = iter([
@@ -2338,7 +2341,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
         self.assertIn("capsule.local resolves to 169.254.x.x link-local IPv4 address 169.254.44.9", result.text)
 
-    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
+    @unittest.skip("TC_NET_IFACE is no longer configured; runtime manager selects advertise IP at boot")
     def test_configure_multiple_private_interfaces_without_exact_match_prints_candidates_and_prompts(self) -> None:
         seen_defaults = {}
         prompt_values = iter([
@@ -2382,7 +2385,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("bcmeth1: 10.0.1.1", text)
         self.assertIn("bridge0: 192.168.1.217 (suggested)", text)
 
-    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
+    @unittest.skip("TC_NET_IFACE is no longer configured; runtime manager selects advertise IP at boot")
     def test_configure_uses_ssh_target_ip_before_discovered_ip_for_interface_default(self) -> None:
         seen_defaults = {}
         record = Discovered(
@@ -2435,7 +2438,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_NET_IFACE"], "bcmeth1")
         self.assertIn("bcmeth1: 10.0.1.1 (suggested)", result.text)
 
-    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
+    @unittest.skip("TC_NET_IFACE is no longer configured; runtime manager selects advertise IP at boot")
     def test_configure_fails_when_probe_has_no_runtime_usable_ipv4_candidates(self) -> None:
         seen_defaults = {}
         prompt_values = iter([
@@ -4509,7 +4512,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("host: root@10.0.0.2", text)
         self.assertIn("volume root: resolved from MaSt at deploy time", text)
         self.assertIn("payload dir: resolved from MaSt at deploy time/.samba4", text)
-        self.assertIn(f"diskd.useVolume wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s", text)
+        self.assertIn(f"diskd.useVolume wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s per attempt", text)
         self.assertIn("generated flash runtime config", text)
         self.assertIn("generated smbpasswd", text)
         self.assertNotIn("rendered:smb.conf.template", text)
@@ -4618,6 +4621,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             result.mocks.run_remote_actions.call_args_list[2].args[1],
             [
+                StopManagerAction(),
                 StopWatchdogAction(),
                 StopProcessAction("wcifsfs"),
                 RunScriptAction("/mnt/Flash/rc.local"),
@@ -4647,6 +4651,8 @@ class CliTests(unittest.TestCase):
         self.assertIn(GENERATED_SMBPASSWD_SOURCE, captured["source_ids"])
         self.assertIn(GENERATED_USERNAME_MAP_SOURCE, captured["source_ids"])
         self.assertIn(GENERATED_FLASH_CONFIG_SOURCE, captured["source_ids"])
+        self.assertIn(PACKAGED_BOOT_SOURCE, captured["source_ids"])
+        self.assertIn(PACKAGED_MANAGER_SOURCE, captured["source_ids"])
         self.assertNotIn("rendered:smb.conf.template", captured["source_ids"])
         self.assertNotIn("generated:adisk.uuid", captured["source_ids"])
         self.assertNotIn("generated:nbns.enabled", captured["source_ids"])
@@ -4766,6 +4772,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             result.mocks.run_remote_actions.call_args_list[2].args[1],
             [
+                StopManagerAction(),
                 StopWatchdogAction(),
                 StopProcessAction("wcifsfs"),
                 RunScriptAction("/mnt/Flash/rc.local"),
@@ -4918,6 +4925,35 @@ class CliTests(unittest.TestCase):
         self.assertIn("Activating deployed runtime after reboot.", result.text)
         self.assertIn("NetBSD4 activation complete.", result.text)
 
+    def test_deploy_netbsd4_forces_ssh_pipe_upload_fallback(self) -> None:
+        result = self.run_deploy_cli(
+            ["--yes"],
+            values=self.make_valid_env(TC_PAYLOAD_DIR_NAME="samba4"),
+            artifacts=[("smbd-netbsd4le", True, "ok")],
+            compatibility=self.make_supported_netbsd4_compatibility(),
+            patch_actions=True,
+            patch_upload=True,
+            verify_runtime=self.managed_runtime_probe(True),
+            wait_side_effect=[True, True],
+        )
+
+        self.assertEqual(result.rc, 0)
+        upload_connection = result.mocks.upload_deployment_payload.call_args.kwargs["connection"]
+        self.assertFalse(upload_connection.remote_has_scp)
+
+    def test_deploy_netbsd6_leaves_scp_capability_probe_enabled(self) -> None:
+        result = self.run_deploy_cli(
+            ["--yes"],
+            patch_actions=True,
+            patch_upload=True,
+            verify_runtime=self.managed_runtime_probe(True),
+            wait_side_effect=[True, True],
+        )
+
+        self.assertEqual(result.rc, 0)
+        upload_connection = result.mocks.upload_deployment_payload.call_args.kwargs["connection"]
+        self.assertIsNone(upload_connection.remote_has_scp)
+
     def test_deploy_netbsd4_yes_waits_when_flash_boot_already_started_runtime(self) -> None:
         result = self.run_deploy_cli(
             ["--yes"],
@@ -4995,7 +5031,9 @@ class CliTests(unittest.TestCase):
         actions_mock.assert_not_called()
         text = output.getvalue()
         self.assertIn("Dry run: NetBSD4 activation plan", text)
+        self.assertIn("tc_kill_manager_pids TERM", text)
         self.assertIn("tc_kill_watchdog_pids TERM", text)
+        self.assertNotIn("/usr/bin/pkill -f '[m]anager.sh'", text)
         self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", text)
         self.assertNotIn("/usr/bin/pkill '^smbd$' >/dev/null 2>&1 || true", text)
         self.assertNotIn("/usr/bin/pkill '^mdns-advertiser$' >/dev/null 2>&1 || true", text)
@@ -5147,6 +5185,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             actions_mock.call_args.args[1],
             [
+                StopManagerAction(),
                 StopWatchdogAction(),
                 StopProcessAction("wcifsfs"),
                 RunScriptAction("/mnt/Flash/rc.local"),
@@ -7600,6 +7639,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(run_ssh_mock.call_args.kwargs["timeout"], fsck.FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS)
         self.assertEqual(fsck.FSCK_REMOTE_COMMAND_TIMEOUT_SECONDS, 10800)
         remote_cmd = run_ssh_mock.call_args.args[1]
+        self.assertIn("tc_kill_manager_pids KILL", remote_cmd)
+        self.assertIn("/mnt/Flash/manager.sh", remote_cmd)
         self.assertIn("tc_kill_watchdog_pids KILL", remote_cmd)
         self.assertIn("/mnt/Flash/watchdog.sh", remote_cmd)
         self.assertNotIn("pkill -9 -f", remote_cmd)

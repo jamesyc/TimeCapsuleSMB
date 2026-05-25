@@ -24,7 +24,7 @@ COMMON_SH_FRAGMENTS = (
     "common.d/50-runtime-staging.sh",
     "common.d/60-advertisers.sh",
     "common.d/70-smbd-service.sh",
-    "common.d/80-watchdog.sh",
+    "common.d/80-manager-reconcile.sh",
 )
 
 

@@ -10,6 +10,7 @@ from timecapsulesmb.deploy.commands import (
     RemotePermission,
     RemoteSymlink,
     RunScriptAction,
+    StopManagerAction,
     StopProcessAction,
     StopWatchdogAction,
     ensure_volume_mounted_action,
@@ -28,8 +29,8 @@ BINARY_NBNS_SOURCE = "binary:nbns-advertiser"
 PACKAGED_RC_LOCAL_SOURCE = "packaged:rc.local"
 PACKAGED_COMMON_SH_SOURCE = "packaged:common.sh"
 PACKAGED_DFREE_SH_SOURCE = "packaged:dfree.sh"
-PACKAGED_START_SAMBA_SOURCE = "packaged:start-samba.sh"
-PACKAGED_WATCHDOG_SOURCE = "packaged:watchdog.sh"
+PACKAGED_BOOT_SOURCE = "packaged:boot.sh"
+PACKAGED_MANAGER_SOURCE = "packaged:manager.sh"
 GENERATED_FLASH_CONFIG_SOURCE = "generated:tcapsulesmb.conf"
 GENERATED_SMBPASSWD_SOURCE = "generated:smbpasswd"
 GENERATED_USERNAME_MAP_SOURCE = "generated:username.map"
@@ -140,8 +141,9 @@ def build_runtime_start_actions() -> list[RemoteAction]:
 def build_runtime_activation_actions() -> list[RemoteAction]:
     return [
         # No-reboot activation runs while the old OS runtime is still alive.
-        # rc.local/start-samba.sh owns managed daemon cleanup; stop only the
-        # supervisor and Apple's CIFS service that can race startup.
+        # rc.local/boot.sh owns managed daemon cleanup; stop supervisors and
+        # Apple's CIFS service that can race startup.
+        StopManagerAction(),
         StopWatchdogAction(),
         StopProcessAction("wcifsfs"),
         *build_runtime_start_actions(),
@@ -204,8 +206,8 @@ def build_deployment_plan(
     flash_targets = {
         "rc.local": "/mnt/Flash/rc.local",
         "common.sh": "/mnt/Flash/common.sh",
-        "start-samba.sh": "/mnt/Flash/start-samba.sh",
-        "watchdog.sh": "/mnt/Flash/watchdog.sh",
+        "boot.sh": "/mnt/Flash/boot.sh",
+        "manager.sh": "/mnt/Flash/manager.sh",
         "dfree.sh": "/mnt/Flash/dfree.sh",
         "mdns-advertiser": "/mnt/Flash/mdns-advertiser",
         "tcapsulesmb.conf": "/mnt/Flash/tcapsulesmb.conf",
@@ -242,8 +244,8 @@ def build_deployment_plan(
         RemotePermission(payload_targets["nbns-advertiser"], "755"),
         RemotePermission(flash_targets["rc.local"], "755"),
         RemotePermission(flash_targets["common.sh"], "755"),
-        RemotePermission(flash_targets["start-samba.sh"], "755"),
-        RemotePermission(flash_targets["watchdog.sh"], "755"),
+        RemotePermission(flash_targets["boot.sh"], "755"),
+        RemotePermission(flash_targets["manager.sh"], "755"),
         RemotePermission(flash_targets["dfree.sh"], "755"),
         RemotePermission(flash_targets["mdns-advertiser"], "755"),
         RemotePermission(flash_targets["tcapsulesmb.conf"], "600"),
@@ -274,20 +276,23 @@ def build_deployment_plan(
             FileTransfer(BINARY_NBNS_SOURCE, payload_targets["nbns-advertiser"], "scp", PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS, "checked-in nbns-advertiser"),
             FileTransfer(PACKAGED_RC_LOCAL_SOURCE, flash_targets["rc.local"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged rc.local"),
             FileTransfer(PACKAGED_COMMON_SH_SOURCE, flash_targets["common.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged common.sh"),
-            FileTransfer(PACKAGED_START_SAMBA_SOURCE, flash_targets["start-samba.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged start-samba.sh"),
-            FileTransfer(PACKAGED_WATCHDOG_SOURCE, flash_targets["watchdog.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged watchdog.sh"),
+            FileTransfer(PACKAGED_BOOT_SOURCE, flash_targets["boot.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged boot.sh"),
+            FileTransfer(PACKAGED_MANAGER_SOURCE, flash_targets["manager.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged manager.sh"),
             FileTransfer(PACKAGED_DFREE_SH_SOURCE, flash_targets["dfree.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged dfree.sh"),
             FileTransfer(GENERATED_FLASH_CONFIG_SOURCE, flash_targets["tcapsulesmb.conf"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "generated flash runtime config"),
             *generated_files,
         ],
         pre_upload_actions=[
             # Existing installs run mdns-advertiser directly from /mnt/Flash.
-            # Stop the watchdog first so it does not restart daemons while
+            # Stop runtime supervisors first so they do not restart daemons while
             # deploy is overwriting the payload and auth files.
+            StopManagerAction(),
             StopWatchdogAction(),
             StopProcessAction("smbd"),
             StopProcessAction("mdns-advertiser"),
             StopProcessAction("nbns-advertiser"),
+            RemovePathAction("/mnt/Flash/start-samba.sh"),
+            RemovePathAction("/mnt/Flash/watchdog.sh"),
             ensure_payload_volume,
             RemovePathAction(f"{payload_dir}/smb.conf.template"),
             ensure_payload_volume,
@@ -329,6 +334,8 @@ def build_uninstall_plan(
     flash_targets = {
         "rc.local": "/mnt/Flash/rc.local",
         "common.sh": "/mnt/Flash/common.sh",
+        "boot.sh": "/mnt/Flash/boot.sh",
+        "manager.sh": "/mnt/Flash/manager.sh",
         "start-samba.sh": "/mnt/Flash/start-samba.sh",
         "watchdog.sh": "/mnt/Flash/watchdog.sh",
         "dfree.sh": "/mnt/Flash/dfree.sh",
@@ -353,6 +360,7 @@ def build_uninstall_plan(
         flash_targets=flash_targets,
         verify_absent_targets=verify_absent_targets,
         remote_actions=[
+            StopManagerAction(),
             StopWatchdogAction(),
             StopProcessAction("smbd"),
             StopProcessAction("mdns-advertiser"),
@@ -360,6 +368,8 @@ def build_uninstall_plan(
             *(RemovePathAction(payload_dir) for payload_dir in payload_dirs),
             RemovePathAction(flash_targets["rc.local"]),
             RemovePathAction(flash_targets["common.sh"]),
+            RemovePathAction(flash_targets["boot.sh"]),
+            RemovePathAction(flash_targets["manager.sh"]),
             RemovePathAction(flash_targets["start-samba.sh"]),
             RemovePathAction(flash_targets["watchdog.sh"]),
             RemovePathAction(flash_targets["dfree.sh"]),

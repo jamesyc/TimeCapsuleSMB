@@ -8,6 +8,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from timecapsulesmb.core.smb_config import parse_active_payload_dir
 from timecapsulesmb.device.compat import compatibility_from_probe_result
 from timecapsulesmb.device.errors import DeviceError
 from timecapsulesmb.device.processes import PROBE_PROCESS_HELPERS
@@ -28,8 +29,7 @@ if TYPE_CHECKING:
 
 RUNTIME_RAM_ROOT = "/mnt/Memory/samba4"
 RUNTIME_SMB_CONF = f"{RUNTIME_RAM_ROOT}/etc/smb.conf"
-RUNTIME_SHARES_TSV = f"{RUNTIME_RAM_ROOT}/var/shares.tsv"
-RUNTIME_PAYLOAD_TSV = f"{RUNTIME_RAM_ROOT}/var/payload.tsv"
+RUNTIME_NBNS_BIN = f"{RUNTIME_RAM_ROOT}/sbin/nbns-advertiser"
 FLASH_RUNTIME_CONFIG = "/mnt/Flash/tcapsulesmb.conf"
 REMOTE_STATE_PROBE_TIMEOUT_SECONDS = 10
 REMOTE_LOG_TAIL_LINES = 80
@@ -43,7 +43,7 @@ REMOTE_LOG_TAIL_TIMEOUT_SECONDS = 10
 REMOTE_NETWORK_DIAGNOSTICS_TIMEOUT_SECONDS = 10
 REMOTE_RUNTIME_RAM_LOG_PATHS = {
     "remote_rc_local_log_tail": "/mnt/Memory/samba4/var/rc.local.log",
-    "remote_watchdog_log_tail": "/mnt/Memory/samba4/var/watchdog.log",
+    "remote_manager_log_tail": "/mnt/Memory/samba4/var/manager.log",
 }
 REMOTE_PAYLOAD_LOG_FILENAMES = {
     "remote_smbd_log_tail": "log.smbd",
@@ -60,9 +60,7 @@ SMBD_STATUS_HELPERS = rf'''
     RUNTIME_RAM_PRIVATE="$RUNTIME_RAM_ROOT/private"
     RUNTIME_MDNS_BIN=${{RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}}
     RUNTIME_SMB_CONF_PATH=${{RUNTIME_SMB_CONF_PATH:-{RUNTIME_SMB_CONF}}}
-RUNTIME_SHARES_TSV_PATH=${{RUNTIME_SHARES_TSV_PATH:-{RUNTIME_SHARES_TSV}}}
 RUNTIME_PERSISTENT_ROOT_PREFIX=${{RUNTIME_PERSISTENT_ROOT_PREFIX:-/Volumes/}}
-RUNTIME_TAB=$(printf '\t')
 
 runtime_smb_conf_present() {{
     [ -f "$RUNTIME_SMB_CONF_PATH" ]
@@ -99,12 +97,15 @@ runtime_xattr_tdb_path() {{
     read_smb_conf_value "xattr_tdb:file"
 }}
 
-runtime_data_root_path() {{
-    read_smb_conf_value "path"
+runtime_share_data_paths() {{
+    if ! runtime_smb_conf_present; then
+        return 1
+    fi
+    /usr/bin/sed -n '/^[[:space:]]*[#;]/d;s/^[[:space:]]*[Pp][Aa][Tt][Hh][[:space:]]*=[[:space:]]*//p' "$RUNTIME_SMB_CONF_PATH"
 }}
 
-runtime_volume_root() {{
-    data_root=$(runtime_data_root_path || true)
+runtime_volume_root_for_data_path() {{
+    data_root=$1
     case "$data_root" in
         "$RUNTIME_PERSISTENT_ROOT_PREFIX"*)
             rest=${{data_root#"$RUNTIME_PERSISTENT_ROOT_PREFIX"}}
@@ -115,6 +116,21 @@ runtime_volume_root() {{
             fi
             ;;
     esac
+    return 1
+}}
+
+runtime_volume_root() {{
+    share_paths=$(runtime_share_data_paths || true)
+    [ -n "$share_paths" ] || return 1
+    while IFS= read -r data_root; do
+        volume_root=$(runtime_volume_root_for_data_path "$data_root" || true)
+        if [ -n "$volume_root" ]; then
+            printf '%s\n' "$volume_root"
+            return 0
+        fi
+    done <<EOF
+$share_paths
+EOF
     return 1
 }}
 
@@ -129,23 +145,22 @@ runtime_volume_device() {{
 
 runtime_share_volume_roots() {{
     seen_roots=""
-    if [ -s "$RUNTIME_SHARES_TSV_PATH" ]; then
-        while IFS="$RUNTIME_TAB" read -r share_name share_path part_device builtin part_uuid; do
-            [ -n "$part_device" ] || continue
-            volume_root="$RUNTIME_PERSISTENT_ROOT_PREFIX$part_device"
-            case " $seen_roots " in
-                *" $volume_root "*) ;;
-                *)
-                    seen_roots="$seen_roots $volume_root"
-                    printf '%s\n' "$volume_root"
-                    ;;
-            esac
-        done <"$RUNTIME_SHARES_TSV_PATH"
-        if [ -n "$seen_roots" ]; then
-            return 0
-        fi
-    fi
-    runtime_volume_root
+    share_paths=$(runtime_share_data_paths || true)
+    [ -n "$share_paths" ] || return 1
+    while IFS= read -r data_root; do
+        volume_root=$(runtime_volume_root_for_data_path "$data_root" || true)
+        [ -n "$volume_root" ] || continue
+        case " $seen_roots " in
+            *" $volume_root "*) ;;
+            *)
+                seen_roots="$seen_roots $volume_root"
+                printf '%s\n' "$volume_root"
+                ;;
+        esac
+    done <<EOF
+$share_paths
+EOF
+    [ -n "$seen_roots" ]
 }}
 
 capture_df_for_volume_root() {{
@@ -218,25 +233,6 @@ smbd_bound_445() {{
     return 0
 }}
 
-mdns_health_socket_family() {{
-    families=$1
-
-    set -- $families
-    for family in "$@"; do
-        if [ "$family" = "ipv4" ]; then
-            printf '%s\n' ipv4
-            return 0
-        fi
-    done
-    for family in "$@"; do
-        if [ "$family" = "ipv6" ]; then
-            printf '%s\n' ipv6
-            return 0
-        fi
-    done
-    return 1
-}}
-
 mdns_bound_5353() {{
     fstat_out=$1
     family=$2
@@ -256,6 +252,40 @@ mdns_bound_5353() {{
             ;;
         *) return 1 ;;
     esac
+}}
+
+mdns_socket_families_supported() {{
+    families=$1
+    saw_family=0
+
+    set -- $families
+    for family in "$@"; do
+        case "$family" in
+            ipv4|ipv6) saw_family=1 ;;
+            *) return 1 ;;
+        esac
+    done
+
+    [ "$saw_family" -eq 1 ]
+}}
+
+mdns_bound_required_5353() {{
+    fstat_out=$1
+    families=$2
+    saw_family=0
+
+    set -- $families
+    for family in "$@"; do
+        case "$family" in
+            ipv4|ipv6)
+                saw_family=1
+                mdns_bound_5353 "$fstat_out" "$family" || return 1
+                ;;
+            *) return 1 ;;
+        esac
+    done
+
+    [ "$saw_family" -eq 1 ]
 }}
 
 describe_managed_smbd_status() {{
@@ -311,10 +341,10 @@ describe_managed_smbd_status() {{
         echo "FAIL:one or more managed share volumes are not mounted"
         status=1
     fi
-    if watchdog_process_present_for_volume "$ps_out"; then
-        echo "PASS:watchdog is running for managed runtime"
+    if manager_process_present_for_volume "$ps_out"; then
+        echo "PASS:manager is running for managed runtime"
     else
-        echo "FAIL:watchdog is not running for managed runtime"
+        echo "FAIL:manager is not running for managed runtime"
         status=1
     fi
     if smbd_parent_process_present "$ps_out"; then
@@ -339,7 +369,6 @@ describe_managed_mdns_status() {{
     mdns_auto_ip_state=waiting
     mdns_auto_ip_failure=
     mdns_socket_families=
-    mdns_health_family=ipv4
     mdns_health_family_supported=1
     if [ ! -e "$RUNTIME_MDNS_BIN" ]; then
         mdns_auto_ip_state=failed
@@ -360,9 +389,7 @@ describe_managed_mdns_status() {{
         esac
     fi
     if [ "$mdns_auto_ip_state" = "active" ]; then
-        if mdns_health_family=$(mdns_health_socket_family "$mdns_socket_families"); then
-            mdns_health_family_supported=1
-        else
+        if ! mdns_socket_families_supported "$mdns_socket_families"; then
             mdns_health_family_supported=0
         fi
     fi
@@ -382,8 +409,8 @@ describe_managed_mdns_status() {{
         fi
         status=1
     fi
-    if [ "$mdns_health_family_supported" -eq 1 ] && mdns_bound_5353 "$fstat_out" "$mdns_health_family"; then
-        echo "PASS:mdns-advertiser bound to required $mdns_health_family UDP 5353 listener"
+    if [ "$mdns_health_family_supported" -eq 1 ] && mdns_bound_required_5353 "$fstat_out" "$mdns_socket_families"; then
+        echo "PASS:mdns-advertiser bound to required UDP 5353 listeners"
         if [ "$mdns_auto_ip_state" = "active" ]; then
             echo "PASS:mdns-advertiser bind address active"
         else
@@ -482,6 +509,14 @@ class ManagedMdnsTakeoverProbeResult:
     ready: bool
     detail: str
     lines: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class RemoteNetworkCapabilitiesProbeResult:
+    smb_bind_interfaces: str = ""
+    mdns_families: tuple[str, ...] = ()
+    nbns_families: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1096,13 +1131,18 @@ def read_interface_ipv4_addrs_conn(connection: SshConnection, iface: str) -> tup
     return tuple(line.strip() for line in proc.stdout.splitlines() if line.strip())
 
 
-def read_active_smb_conf_conn(connection: SshConnection) -> str:
+def read_active_smb_conf_conn(
+    connection: SshConnection,
+    *,
+    timeout_seconds: int = REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
+) -> str:
     quoted_conf = shlex.quote(RUNTIME_SMB_CONF)
     script = f"if [ -f {quoted_conf} ]; then cat {quoted_conf}; fi"
     proc = run_ssh(
         connection,
         f"/bin/sh -c {shlex.quote(script)}",
         check=False,
+        timeout=timeout_seconds,
     )
     return proc.stdout
 
@@ -1195,6 +1235,81 @@ exit "$status"
     )
 
 
+def _capability_family_tokens(value: str) -> tuple[str, ...]:
+    tokens: list[str] = []
+    for token in value.split():
+        token = token.strip().lower()
+        if token in {"ipv4", "ipv6"} and token not in tokens:
+            tokens.append(token)
+    return tuple(tokens)
+
+
+def probe_remote_network_capabilities_conn(connection: SshConnection, *, timeout_seconds: int = 10) -> RemoteNetworkCapabilitiesProbeResult:
+    script = rf'''
+RUNTIME_RAM_ROOT=${{RUNTIME_RAM_ROOT:-/mnt/Memory/samba4}}
+RUNTIME_RAM_SBIN="$RUNTIME_RAM_ROOT/sbin"
+RUNTIME_MDNS_BIN=${{RUNTIME_MDNS_BIN:-/mnt/Flash/mdns-advertiser}}
+RUNTIME_NBNS_BIN=${{RUNTIME_NBNS_BIN:-$RUNTIME_RAM_SBIN/nbns-advertiser}}
+
+tc_probe_cap() {{
+    cap_name=$1
+    cap_bin=$2
+    shift 2
+    if [ ! -x "$cap_bin" ]; then
+        echo "TC_CAP_ERROR $cap_name missing"
+        return 0
+    fi
+    cap_out=$("$cap_bin" "$@" 2>/dev/null)
+    cap_rc=$?
+    if [ "$cap_rc" -eq 0 ]; then
+        echo "TC_CAP $cap_name $cap_out"
+    else
+        echo "TC_CAP_ERROR $cap_name rc=$cap_rc"
+    fi
+}}
+
+tc_probe_cap smb "$RUNTIME_MDNS_BIN" --print-smb-bind-interfaces
+tc_probe_cap mdns "$RUNTIME_MDNS_BIN" --print-mdns-socket-families
+tc_probe_cap nbns "$RUNTIME_NBNS_BIN" --print-nbns-socket-families
+'''
+    proc = run_ssh(
+        connection,
+        f"/bin/sh -c {shlex.quote(script)}",
+        check=False,
+        timeout=timeout_seconds,
+    )
+
+    smb_bind_interfaces = ""
+    mdns_families: tuple[str, ...] = ()
+    nbns_families: tuple[str, ...] = ()
+    errors: list[str] = []
+    for raw_line in (proc.stdout or "").splitlines():
+        line = raw_line.strip()
+        if line.startswith("TC_CAP "):
+            fields = line.split(" ", 2)
+            if len(fields) < 3:
+                errors.append(line.removeprefix("TC_CAP "))
+                continue
+            _prefix, cap_name, value = fields
+            if cap_name == "smb":
+                smb_bind_interfaces = value.strip()
+            elif cap_name == "mdns":
+                mdns_families = _capability_family_tokens(value)
+            elif cap_name == "nbns":
+                nbns_families = _capability_family_tokens(value)
+        elif line.startswith("TC_CAP_ERROR "):
+            errors.append(line.removeprefix("TC_CAP_ERROR "))
+    stderr = (proc.stderr or "").strip()
+    if stderr:
+        errors.append(stderr)
+    return RemoteNetworkCapabilitiesProbeResult(
+        smb_bind_interfaces=smb_bind_interfaces,
+        mdns_families=mdns_families,
+        nbns_families=nbns_families,
+        errors=tuple(errors),
+    )
+
+
 def probe_runtime_startup_scripts_conn(connection: SshConnection, *, timeout_seconds: int = 5) -> RuntimeStartupScriptsProbeResult:
     script = rf'''
 {SMBD_STATUS_HELPERS}
@@ -1247,8 +1362,8 @@ def probe_runtime_activation_state_conn(
             startup_scripts=first_startup,
         )
 
-    # rc.local is idempotent, and the startup path normally keeps
-    # start-samba.sh visible longer than this preflight window. If a short
+    # rc.local is idempotent, and the startup path normally keeps boot.sh
+    # visible longer than this preflight window. If a short
     # race slips between these checks, running rc.local again is acceptable.
     runtime = probe_managed_runtime_conn(connection, timeout_seconds=timeout_seconds)
     if runtime.ready:
@@ -1357,28 +1472,6 @@ def nbns_flash_config_enabled_conn(connection: SshConnection) -> bool:
     return proc.stdout.strip() == "enabled"
 
 
-def read_runtime_share_names_conn(connection: SshConnection) -> list[str]:
-    quoted_state = shlex.quote(RUNTIME_SHARES_TSV)
-    script = f"if [ -f {quoted_state} ]; then /bin/cat {quoted_state}; fi"
-    proc = run_ssh(
-        connection,
-        f"/bin/sh -c {shlex.quote(script)}",
-        check=False,
-        timeout=REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
-    )
-    names: list[str] = []
-    for raw_line in proc.stdout.splitlines():
-        line = raw_line.rstrip("\n")
-        if not line.strip():
-            continue
-        if "\t" not in line:
-            continue
-        name = line.split("\t", 1)[0].strip()
-        if name:
-            names.append(name)
-    return names
-
-
 def read_deployed_version_conn(connection: SshConnection) -> DeployedVersionProbeResult:
     script = (
         f"config={shlex.quote(FLASH_RUNTIME_CONFIG)}; "
@@ -1454,26 +1547,16 @@ def read_remote_log_tail_conn(connection: SshConnection, path: str) -> str:
     return _limit_remote_log_tail(text)
 
 
-def read_runtime_payload_dir_conn(connection: SshConnection) -> str | None:
-    script = (
-        f"payload_tsv={shlex.quote(RUNTIME_PAYLOAD_TSV)}; "
-        'if [ -s "$payload_tsv" ]; then '
-        "IFS=$(printf '\\t') read -r payload_dir payload_volume payload_device <\"$payload_tsv\"; "
-        'if [ -n "$payload_dir" ]; then printf "%s\\n" "$payload_dir"; exit 0; fi; '
-        "fi; exit 1"
-    )
-    proc = run_ssh(
-        connection,
-        f"/bin/sh -c {shlex.quote(script)}",
-        check=False,
-        timeout=REMOTE_LOG_TAIL_TIMEOUT_SECONDS,
-    )
-    if proc.returncode != 0:
+def read_runtime_payload_dir_conn(
+    connection: SshConnection,
+    *,
+    timeout_seconds: int = REMOTE_STATE_PROBE_TIMEOUT_SECONDS,
+) -> str | None:
+    try:
+        smb_conf = read_active_smb_conf_conn(connection, timeout_seconds=timeout_seconds)
+    except Exception:
         return None
-    stdout = (proc.stdout or "").strip()
-    if not stdout:
-        return None
-    return stdout.splitlines()[0]
+    return parse_active_payload_dir(smb_conf)
 
 
 def read_runtime_log_tails_conn(connection: SshConnection) -> dict[str, str]:
@@ -1484,7 +1567,7 @@ def read_runtime_log_tails_conn(connection: SshConnection) -> dict[str, str]:
         except Exception as e:
             logs[key] = f"(unavailable: {e})"
     try:
-        payload_dir = read_runtime_payload_dir_conn(connection)
+        payload_dir = read_runtime_payload_dir_conn(connection, timeout_seconds=REMOTE_LOG_TAIL_TIMEOUT_SECONDS)
     except Exception as e:
         payload_dir = None
         logs["remote_payload_log_dir"] = f"(unavailable: {e})"
@@ -1497,7 +1580,7 @@ def read_runtime_log_tails_conn(connection: SshConnection) -> dict[str, str]:
             except Exception as e:
                 logs[key] = f"(unavailable: {e})"
     else:
-        logs.setdefault("remote_payload_log_dir", f"(missing {RUNTIME_PAYLOAD_TSV})")
+        logs.setdefault("remote_payload_log_dir", f"(unavailable from active {RUNTIME_SMB_CONF})")
     for key, path in REMOTE_RUNTIME_FALLBACK_LOG_PATHS.items():
         if key in logs:
             continue
@@ -1516,7 +1599,7 @@ def runtime_startup_failure_debug_fields(
     combined = "\n".join(
         str(value)
         for value in (
-            logs.get("remote_watchdog_log_tail"),
+            logs.get("remote_manager_log_tail"),
             logs.get("remote_mdns_log_tail"),
             logs.get("remote_nbns_log_tail"),
             verification_detail,
@@ -1530,8 +1613,6 @@ def runtime_startup_failure_debug_fields(
             "mDNS startup deferred; no usable address has appeared yet",
             "mdns-advertiser is waiting for auto-IP",
             "mdns-advertiser is waiting for a usable address",
-            "watchdog steady check: core services healthy; mDNS deferred waiting for usable IPv4",
-            "watchdog steady check: core services healthy; mDNS deferred waiting for usable address",
         )
     ):
         return {

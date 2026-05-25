@@ -44,11 +44,11 @@ from timecapsulesmb.deploy.planner import (
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_SMBPASSWD_SOURCE,
     GENERATED_USERNAME_MAP_SOURCE,
+    PACKAGED_BOOT_SOURCE,
     PACKAGED_COMMON_SH_SOURCE,
     PACKAGED_DFREE_SH_SOURCE,
-    PACKAGED_START_SAMBA_SOURCE,
+    PACKAGED_MANAGER_SOURCE,
     PACKAGED_RC_LOCAL_SOURCE,
-    PACKAGED_WATCHDOG_SOURCE,
     build_deployment_plan,
 )
 from timecapsulesmb.deploy.boot_assets import (
@@ -203,7 +203,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         type=_non_negative_int,
         default=DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
         metavar="SECONDS",
-        help=f"Seconds for deployment-time diskd.useVolume mount guards to wait before their manual fallback (default: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS})",
+        help=f"Seconds for each deployment-time diskd.useVolume mount guard attempt to wait (default: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS})",
     )
     parser.add_argument("--debug-logging", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -246,6 +246,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             raise SystemExit(f"{compatibility_message}\nNo deployable payload is available for this detected device.")
         payload_family = compatibility.payload_family
         is_netbsd4 = is_netbsd4_payload_family(payload_family)
+        if is_netbsd4:
+            # Apple NetBSD 4 firmware can expose /usr/bin/scp but hang after
+            # writing the file. Use the SSH pipe upload fallback consistently.
+            connection.remote_has_scp = False
         startup_mode = _startup_mode_for_deploy(no_reboot=args.no_reboot, is_netbsd4=is_netbsd4)
         command_context.update_fields(deploy_startup_mode=startup_mode)
         if not args.json:
@@ -334,9 +338,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 GENERATED_FLASH_CONFIG_SOURCE: generated_flash_config,
                 PACKAGED_RC_LOCAL_SOURCE: boot_assets.enter_context(boot_asset_path("rc.local")),
                 PACKAGED_COMMON_SH_SOURCE: boot_assets.enter_context(boot_asset_path("common.sh")),
+                PACKAGED_BOOT_SOURCE: boot_assets.enter_context(boot_asset_path("boot.sh")),
+                PACKAGED_MANAGER_SOURCE: boot_assets.enter_context(boot_asset_path("manager.sh")),
                 PACKAGED_DFREE_SH_SOURCE: boot_assets.enter_context(boot_asset_path("dfree.sh")),
-                PACKAGED_START_SAMBA_SOURCE: boot_assets.enter_context(boot_asset_path("start-samba.sh")),
-                PACKAGED_WATCHDOG_SOURCE: boot_assets.enter_context(boot_asset_path("watchdog.sh")),
             }
 
             command_context.set_stage("upload_payload")
