@@ -2710,6 +2710,89 @@ MaSt = (
         )
         self.assertIn("manager smbd recovery: smbd config reload failed; restarting", log_text)
 
+    def test_manager_smbd_apply_failure_logs_runtime_reason_without_ip_defer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            self.write_fake_acp(tmp_path, self.internal_mast_raw_with_volatile_fields(users=1))
+            with (flash / "tcapsulesmb.conf").open("a") as conf:
+                conf.write("TC_SMB_BIND_INTERFACES='127.0.0.1/8'\n")
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        """\
+
+                    tc_prepare_ram_root() { mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE" "$RAM_VAR"; }
+                    tc_prepare_local_hostname_resolution() { :; }
+                    tc_init_runtime_identity() {
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                        TC_RUNTIME_IDENTITY_READY=1
+                    }
+                    tc_watchdog_refresh_runtime_identity_for_recovery() { :; }
+                    tc_wake_or_mount_volume() { return 0; }
+                    is_volume_root_mounted() { return 0; }
+                    tc_verify_payload_dir() { return 0; }
+                    tc_volume_is_writable() { return 0; }
+                    tc_prepare_share_path() { echo "$2/ShareRoot"; }
+                    tc_apply_ata_drive_setting() { :; }
+                    tc_payload_log_dir_ready() { return 0; }
+                    tc_find_payload_smbd() { echo "$1/smbd"; }
+                    tc_stage_runtime() {
+                        mkdir -p "$RAM_SBIN" "$RAM_ETC" "$RAM_PRIVATE"
+                        printf '#!/bin/sh\\nexit 0\\n' >"$TC_SMBD_BIN"
+                        chmod 755 "$TC_SMBD_BIN"
+                        : >"$RAM_PRIVATE/smbpasswd"
+                        : >"$RAM_PRIVATE/username.map"
+                        return 0
+                    }
+                    tc_probe_smb_bind_interfaces() { echo "127.0.0.1/8"; }
+                    runtime_process_present_by_ucomm() {
+                        case "$1" in
+                            smbd) return 1 ;;
+                            mdns-advertiser) return 0 ;;
+                            *) return 1 ;;
+                        esac
+                    }
+                    wait_for_process() {
+                        case "$1" in
+                            smbd) return 1 ;;
+                            *) return 0 ;;
+                        esac
+                    }
+                    tc_wait_for_smbd_ipv4_445() { return 1; }
+                    tc_smbd_bound_tcp_445() { return 1; }
+                    tc_mdns_bound_udp_5353() { return 0; }
+                    stop_runtime_process_by_ucomm() { :; }
+                    sleep() {
+                        case "$1" in
+                            1|5) return 0 ;;
+                            10) echo "status=$manager_status bind=$manager_bind_status samba=$manager_samba_status"; exit 0 ;;
+                        esac
+                        return 0
+                    }
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            log_text = (memory / "samba4/var/manager.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("status=1 bind=ok samba=failed\n", proc.stdout)
+        self.assertIn("manager Samba: smbd runtime apply failed reason=start_failed; will retry on next reconciliation pass", log_text)
+        self.assertIn("samba=failed bind=ok", log_text)
+        self.assertNotIn("Samba bind discovery deferred; no usable address has appeared yet", log_text)
+        self.assertNotIn("bind=deferred_no_ip", log_text)
+
     def test_manager_mdns_captures_with_one_retry_when_apple_responder_is_alive(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

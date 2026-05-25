@@ -909,16 +909,22 @@ tc_manager_start_smbd_if_needed() {
 }
 
 tc_manager_apply_smbd_runtime_changes() {
+    TC_MANAGER_SMBD_APPLY_FAILURE=
+
     if [ "${TC_MANAGER_SMBD_RESTART_REQUIRED:-0}" = "1" ]; then
         tc_log "manager smbd recovery: restarting smbd after staged runtime change"
         if runtime_process_present_by_ucomm smbd; then
-            stop_runtime_process_by_ucomm "smbd" smbd || return 1
+            if ! stop_runtime_process_by_ucomm "smbd" smbd; then
+                TC_MANAGER_SMBD_APPLY_FAILURE=stop_failed
+                return 1
+            fi
         fi
         TC_MANAGER_SMBD_RELOAD_REQUIRED=0
         if tc_manager_start_smbd_if_needed; then
             tc_manager_commit_smbd_runtime_apply
             return 0
         fi
+        TC_MANAGER_SMBD_APPLY_FAILURE=restart_failed
         return 1
     fi
 
@@ -930,12 +936,16 @@ tc_manager_apply_smbd_runtime_changes() {
             return 0
         fi
         tc_log "manager smbd recovery: smbd config reload failed; restarting"
-        stop_runtime_process_by_ucomm "smbd" smbd || return 1
+        if ! stop_runtime_process_by_ucomm "smbd" smbd; then
+            TC_MANAGER_SMBD_APPLY_FAILURE=stop_after_reload_failed
+            return 1
+        fi
         TC_MANAGER_SMBD_RELOAD_REQUIRED=0
         if tc_manager_start_smbd_if_needed; then
             tc_manager_commit_smbd_runtime_apply
             return 0
         fi
+        TC_MANAGER_SMBD_APPLY_FAILURE=restart_after_reload_failed
         return 1
     fi
 
@@ -943,6 +953,7 @@ tc_manager_apply_smbd_runtime_changes() {
         tc_manager_commit_smbd_runtime_apply
         return 0
     fi
+    TC_MANAGER_SMBD_APPLY_FAILURE=start_failed
     return 1
 }
 
@@ -992,7 +1003,7 @@ tc_manager_reconcile_smb_bind_interfaces() {
 
 tc_manager_reconcile_smbd() {
     if ! tc_manager_apply_smbd_runtime_changes; then
-        tc_mark_smb_deferred_no_ip
+        tc_log "manager Samba: smbd runtime apply failed reason=${TC_MANAGER_SMBD_APPLY_FAILURE:-unknown}; will retry on next reconciliation pass"
         return 1
     fi
 }
@@ -1414,6 +1425,7 @@ TC_MANAGER_LAST_CONFIG_SIGNATURE=
 TC_MANAGER_PENDING_CONFIG_SIGNATURE=
 TC_MANAGER_SMBD_RESTART_REQUIRED=0
 TC_MANAGER_SMBD_RELOAD_REQUIRED=0
+TC_MANAGER_SMBD_APPLY_FAILURE=
 TC_MANAGER_SMB_BIND_PREVIOUS=
 TC_MANAGER_MAST_CONFIRMED_STABLE_SIGNATURE=
 TC_MANAGER_MAST_CONFIRMED_STABLE_SIGNATURE_READY=0
