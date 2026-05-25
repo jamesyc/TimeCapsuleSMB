@@ -71,14 +71,12 @@ enum OperationParams {
     }
 
     static func doctor(
-        bonjourTimeout: Double,
         password: String,
         skipSSH: Bool = false,
         skipBonjour: Bool = false,
         skipSMB: Bool = false
     ) -> [String: JSONValue] {
         withCredentials([
-            "bonjour_timeout": .number(bonjourTimeout),
             "skip_ssh": .bool(skipSSH),
             "skip_bonjour": .bool(skipBonjour),
             "skip_smb": .bool(skipSMB)

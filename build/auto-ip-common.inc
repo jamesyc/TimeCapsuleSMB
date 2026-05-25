@@ -12,6 +12,8 @@
 #include <netinet6/in6_var.h>
 #endif
 
+#include <ifaddrs.h>
+
 #ifndef MAX_LINK_IPV4_ADDRS
 #define MAX_LINK_IPV4_ADDRS 8
 #endif
@@ -63,13 +65,6 @@ struct link_context_set {
     int truncated;
 };
 
-struct ifconf_entry_view {
-    char name[IFNAMSIZ];
-    const struct sockaddr *addr;
-    size_t addr_len;
-    size_t step;
-};
-
 static int TC_AUTO_IP_UNUSED runtime_ipv4_is_usable(uint32_t ipv4_addr) {
     uint32_t host_order = ntohl(ipv4_addr);
     unsigned int first_octet = (unsigned int)((host_order >> 24) & 0xff);
@@ -117,107 +112,6 @@ static int TC_AUTO_IP_UNUSED iface_flags_are_usable(int flags, int require_runni
         return 0;
     }
     return 1;
-}
-
-static int TC_AUTO_IP_UNUSED ifreq_table_uses_fixed_entries(size_t ifc_len) {
-    /*
-     * NetBSD 6/7 uses fixed-size struct ifreq records here, while NetBSD 4
-     * returns the older variable-length layout with sa_len-sized sockaddr
-     * payloads. The fixed layout has the large ifreq union; the old layout
-     * stays close to IFNAMSIZ + struct sockaddr.
-     */
-    return sizeof(struct ifreq) > 64 && ifc_len > 0 && (ifc_len % sizeof(struct ifreq)) == 0;
-}
-
-static size_t TC_AUTO_IP_UNUSED ifreq_sockaddr_len(const struct ifreq *ifr, size_t remaining) {
-    size_t sockaddr_len = sizeof(struct sockaddr);
-
-    (void)ifr;
-    if (remaining < IFNAMSIZ + sizeof(struct sockaddr)) {
-        return 0;
-    }
-#if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
-    if (ifr->ifr_addr.sa_len > sockaddr_len) {
-        sockaddr_len = ifr->ifr_addr.sa_len;
-    }
-#endif
-    if (sockaddr_len > remaining - IFNAMSIZ) {
-        return 0;
-    }
-    return sockaddr_len;
-}
-
-static size_t TC_AUTO_IP_UNUSED ifreq_entry_size(const struct ifreq *ifr, size_t remaining, int fixed_entries) {
-    size_t sockaddr_len;
-    size_t step;
-    size_t align;
-
-    if (fixed_entries) {
-        if (remaining < sizeof(*ifr)) {
-            return 0;
-        }
-        return sizeof(*ifr);
-    }
-
-    sockaddr_len = ifreq_sockaddr_len(ifr, remaining);
-    if (sockaddr_len == 0) {
-        return 0;
-    }
-
-    step = IFNAMSIZ + sockaddr_len;
-    align = sizeof(long);
-    if (align > 0 && (step % align) != 0) {
-        step += align - (step % align);
-    }
-    if (step < sizeof(*ifr)) {
-        step = sizeof(*ifr);
-    }
-    if (step > remaining) {
-        return 0;
-    }
-    return step;
-}
-
-static int TC_AUTO_IP_UNUSED copy_ifreq_entry(struct ifreq *out, const char *cursor, size_t remaining) {
-    size_t copy_len;
-
-    if (remaining < IFNAMSIZ + sizeof(struct sockaddr)) {
-        return -1;
-    }
-
-    memset(out, 0, sizeof(*out));
-    copy_len = remaining < sizeof(*out) ? remaining : sizeof(*out);
-    memcpy(out, cursor, copy_len);
-    return 0;
-}
-
-static int TC_AUTO_IP_UNUSED ifconf_entry_view_from_cursor(struct ifconf_entry_view *out,
-                                                           const char *cursor,
-                                                           size_t remaining,
-                                                           int fixed_entries) {
-    struct ifreq ifr;
-    size_t addr_len;
-    size_t step;
-
-    if (copy_ifreq_entry(&ifr, cursor, remaining) != 0) {
-        return -1;
-    }
-    step = ifreq_entry_size(&ifr, remaining, fixed_entries);
-    if (step == 0) {
-        return -1;
-    }
-    addr_len = ifreq_sockaddr_len(&ifr, remaining);
-    if (addr_len == 0) {
-        return -1;
-    }
-
-    memset(out, 0, sizeof(*out));
-    memcpy(out->name, ifr.ifr_name, IFNAMSIZ);
-    out->name[IFNAMSIZ - 1] = '\0';
-    out->addr = (const struct sockaddr *)(const void *)(cursor + IFNAMSIZ);
-    out->addr_len = addr_len;
-    out->step = step;
-    return 0;
 }
 
 static int TC_AUTO_IP_UNUSED netmask_prefix_length(uint32_t netmask) {
@@ -302,6 +196,45 @@ static uint32_t TC_AUTO_IP_UNUSED ipv4_link_local_netmask(void) {
     return htonl(0xffff0000U);
 }
 
+static uint32_t TC_AUTO_IP_UNUSED ipv4_private_fallback_netmask(uint32_t ipv4_addr) {
+    uint32_t host_order = ntohl(ipv4_addr);
+    unsigned int first_octet = (unsigned int)((host_order >> 24) & 0xff);
+    unsigned int second_octet = (unsigned int)((host_order >> 16) & 0xff);
+
+    if (first_octet == 10) {
+        return htonl(0xff000000U);
+    }
+    if (first_octet == 172 && second_octet >= 16 && second_octet <= 31) {
+        return htonl(0xfff00000U);
+    }
+    if (first_octet == 192 && second_octet == 168) {
+        return htonl(0xffffff00U);
+    }
+    return 0;
+}
+
+static uint32_t TC_AUTO_IP_UNUSED effective_ipv4_netmask(uint32_t ipv4_addr, uint32_t netmask) {
+    if (netmask != 0) {
+        return netmask;
+    }
+    if (ipv4_is_link_local(ipv4_addr)) {
+        return ipv4_link_local_netmask();
+    }
+    if (ipv4_is_rfc1918(ipv4_addr)) {
+        return ipv4_private_fallback_netmask(ipv4_addr);
+    }
+    return 0;
+}
+
+static int TC_AUTO_IP_UNUSED effective_ipv4_prefix_length(uint32_t ipv4_addr, uint32_t netmask) {
+    uint32_t effective_netmask = effective_ipv4_netmask(ipv4_addr, netmask);
+
+    if (effective_netmask == 0) {
+        return 32;
+    }
+    return netmask_prefix_length(effective_netmask);
+}
+
 static int TC_AUTO_IP_UNUSED ipv6_is_unspecified_addr(const struct in6_addr *addr) {
     static const unsigned char zero[16] = {0};
     return memcmp(addr->s6_addr, zero, sizeof(zero)) == 0;
@@ -380,64 +313,9 @@ static int TC_AUTO_IP_UNUSED ipv6_prefix_matches(const struct in6_addr *a,
     return (a->s6_addr[full_bytes] & mask) == (b->s6_addr[full_bytes] & mask);
 }
 
-static int TC_AUTO_IP_UNUSED get_iface_flags(int sockfd, const char *name, int *flags_out) {
-    struct ifreq flags_req;
-
-    memset(&flags_req, 0, sizeof(flags_req));
-    strncpy(flags_req.ifr_name, name, sizeof(flags_req.ifr_name) - 1);
-    if (ioctl(sockfd, SIOCGIFFLAGS, &flags_req) != 0) {
-        return -1;
-    }
-    *flags_out = flags_req.ifr_flags;
-    return 0;
-}
-
-static uint32_t TC_AUTO_IP_UNUSED get_ipv4_netmask(int sockfd, const char *name, uint32_t ipv4_addr) {
-    struct ifreq mask_req;
-
-    if (ipv4_is_link_local(ipv4_addr)) {
-        return ipv4_link_local_netmask();
-    }
-
-    memset(&mask_req, 0, sizeof(mask_req));
-    strncpy(mask_req.ifr_name, name, sizeof(mask_req.ifr_name) - 1);
-    if (ioctl(sockfd, SIOCGIFNETMASK, &mask_req) == 0) {
-        struct sockaddr_in netmask_addr;
-        memset(&netmask_addr, 0, sizeof(netmask_addr));
-        memcpy(&netmask_addr, &mask_req.ifr_addr, sizeof(netmask_addr));
-        if (netmask_addr.sin_family == AF_INET) {
-            return netmask_addr.sin_addr.s_addr;
-        }
-    }
-    return 0;
-}
-
-static int TC_AUTO_IP_UNUSED get_ipv6_prefix_len(int sockfd6, const char *name, const struct sockaddr_in6 *sin6) {
-#if defined(SIOCGIFNETMASK_IN6)
-    struct in6_ifreq mask_req;
-
-    if (sockfd6 < 0) {
-        return -1;
-    }
-
-    memset(&mask_req, 0, sizeof(mask_req));
-    strncpy(mask_req.ifr_name, name, sizeof(mask_req.ifr_name) - 1);
-    mask_req.ifr_ifru.ifru_addr = *sin6;
-    if (ioctl(sockfd6, SIOCGIFNETMASK_IN6, &mask_req) == 0 &&
-        mask_req.ifr_ifru.ifru_addr.sin6_family == AF_INET6) {
-        return ipv6_prefix_length_from_mask(&mask_req.ifr_ifru.ifru_addr.sin6_addr);
-    }
-#else
-    (void)sockfd6;
-    (void)name;
-    (void)sin6;
-#endif
-    return -1;
-}
-
 static int TC_AUTO_IP_UNUSED iface_context_priority_score(const struct iface_context *ctx) {
     int score = 0;
-    int prefix = netmask_prefix_length(ctx->netmask);
+    int prefix = effective_ipv4_prefix_length(ctx->ipv4_addr, ctx->netmask);
 
     if (ipv4_is_rfc1918(ctx->ipv4_addr)) {
         score -= 4000;
@@ -536,59 +414,130 @@ static int TC_AUTO_IP_UNUSED append_iface_context(struct iface_context_set *out,
     return 1;
 }
 
+static const char TC_AUTO_IP_UNUSED *usable_ifaddrs_name(const struct ifaddrs *ifa,
+                                                        char *buf,
+                                                        size_t buf_len,
+                                                        const char *fallback) {
+    /*
+     * AF_LINK exists on BSD-derived targets, where unnamed address rows can
+     * still expose the interface name through sockaddr_dl. Linux omits that
+     * path, so the scratch buffer is intentionally unused there.
+     */
+    (void)buf;
+    (void)buf_len;
+
+    if (ifa->ifa_name != NULL && ifa->ifa_name[0] != '\0') {
+        return ifa->ifa_name;
+    }
+#if defined(AF_LINK) && (defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__))
+    if (ifa->ifa_addr != NULL && ifa->ifa_addr->sa_family == AF_LINK) {
+        const struct sockaddr_dl *sdl = (const struct sockaddr_dl *)(const void *)ifa->ifa_addr;
+        if (sdl->sdl_nlen > 0 && buf_len > 0) {
+            size_t copy_len = (size_t)sdl->sdl_nlen;
+            if (copy_len >= buf_len) {
+                copy_len = buf_len - 1;
+            }
+            memcpy(buf, sdl->sdl_data, copy_len);
+            buf[copy_len] = '\0';
+            return buf;
+        }
+    }
+#endif
+    if (fallback != NULL && fallback[0] != '\0') {
+        return fallback;
+    }
+    return "";
+}
+
+static void TC_AUTO_IP_UNUSED synthetic_ipv4_ifaddrs_name(char *buf, size_t buf_len, uint32_t ipv4_addr) {
+    uint32_t host_order = ntohl(ipv4_addr);
+    snprintf(buf,
+             buf_len,
+             "ip4-%08x",
+             (unsigned int)host_order);
+}
+
+static void TC_AUTO_IP_UNUSED synthetic_ipv6_ifaddrs_name(char *buf,
+                                                         size_t buf_len,
+                                                         const struct sockaddr_in6 *sin6) {
+    if (sin6->sin6_scope_id != 0) {
+        snprintf(buf, buf_len, "ipv6-if%u", (unsigned int)sin6->sin6_scope_id);
+        return;
+    }
+    snprintf(buf, buf_len, "ipv6");
+}
+
+static uint32_t TC_AUTO_IP_UNUSED getifaddrs_ipv4_netmask(const struct ifaddrs *ifa) {
+    const struct sockaddr_in *netmask;
+
+    if (ifa->ifa_addr == NULL ||
+        ifa->ifa_addr->sa_family != AF_INET ||
+        ifa->ifa_netmask == NULL) {
+        return 0;
+    }
+
+    netmask = (const struct sockaddr_in *)(const void *)ifa->ifa_netmask;
+    return netmask->sin_addr.s_addr;
+}
+
+static int TC_AUTO_IP_UNUSED getifaddrs_ipv6_prefix_len(const struct ifaddrs *ifa) {
+    const struct sockaddr_in6 *netmask;
+
+    if (ifa->ifa_addr == NULL ||
+        ifa->ifa_addr->sa_family != AF_INET6 ||
+        ifa->ifa_netmask == NULL) {
+        return -1;
+    }
+
+    netmask = (const struct sockaddr_in6 *)(const void *)ifa->ifa_netmask;
+    return ipv6_prefix_length_from_mask(&netmask->sin6_addr);
+}
+
 static int TC_AUTO_IP_UNUSED collect_iface_contexts_with_policy(struct iface_context_set *out, int require_running) {
-    int sockfd = -1;
-    char buffer[8192];
-    struct ifconf ifc;
-    char *cursor;
-    char *end;
-    int fixed_entries;
+    struct ifaddrs *ifaddr_list = NULL;
+    struct ifaddrs *ifa;
+    char current_name[IFNAMSIZ];
 
     memset(out, 0, sizeof(*out));
+    current_name[0] = '\0';
 
-    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sockfd < 0) {
-        perror("socket interface enumeration");
+    if (getifaddrs(&ifaddr_list) != 0) {
+        perror("getifaddrs interface enumeration");
         return -1;
     }
 
-    memset(&ifc, 0, sizeof(ifc));
-    ifc.ifc_len = sizeof(buffer);
-    ifc.ifc_buf = buffer;
-    if (ioctl(sockfd, SIOCGIFCONF, &ifc) < 0) {
-        perror("ioctl(SIOCGIFCONF)");
-        close(sockfd);
-        return -1;
-    }
-
-    cursor = ifc.ifc_buf;
-    end = cursor + ifc.ifc_len;
-    fixed_entries = ifreq_table_uses_fixed_entries((size_t)ifc.ifc_len);
-    while (cursor < end) {
-        struct ifconf_entry_view entry;
+    for (ifa = ifaddr_list; ifa != NULL; ifa = ifa->ifa_next) {
         struct sockaddr_in sin;
-        int flags;
-        size_t remaining = (size_t)(end - cursor);
+        char name_buf[IFNAMSIZ];
+        const char *name;
 
-        if (ifconf_entry_view_from_cursor(&entry, cursor, remaining, fixed_entries) != 0) {
-            break;
+        if (ifa->ifa_addr == NULL) {
+            continue;
+        }
+        name = usable_ifaddrs_name(ifa, name_buf, sizeof(name_buf), current_name);
+        if (name[0] != '\0') {
+            strncpy(current_name, name, sizeof(current_name) - 1);
+            current_name[sizeof(current_name) - 1] = '\0';
+        }
+        if (ifa->ifa_addr->sa_family != AF_INET ||
+            !iface_flags_are_usable((int)ifa->ifa_flags, require_running)) {
+            continue;
         }
 
-        if (entry.addr->sa_family == AF_INET && entry.addr_len >= sizeof(sin) &&
-            get_iface_flags(sockfd, entry.name, &flags) == 0 &&
-            iface_flags_are_usable(flags, require_running)) {
-            memset(&sin, 0, sizeof(sin));
-            memcpy(&sin, entry.addr, sizeof(sin));
-            append_iface_context(out,
-                                 entry.name,
-                                 sin.sin_addr.s_addr,
-                                 get_ipv4_netmask(sockfd, entry.name, sin.sin_addr.s_addr),
-                                 flags);
+        memset(&sin, 0, sizeof(sin));
+        memcpy(&sin, ifa->ifa_addr, sizeof(sin));
+        if (name[0] == '\0') {
+            synthetic_ipv4_ifaddrs_name(name_buf, sizeof(name_buf), sin.sin_addr.s_addr);
+            name = name_buf;
         }
-        cursor += entry.step;
+        append_iface_context(out,
+                             name,
+                             sin.sin_addr.s_addr,
+                             getifaddrs_ipv4_netmask(ifa),
+                             (int)ifa->ifa_flags);
     }
 
-    close(sockfd);
+    freeifaddrs(ifaddr_list);
     sort_iface_contexts(out);
     return 0;
 }
@@ -645,10 +594,12 @@ static int TC_AUTO_IP_UNUSED iface_context_sets_equal(const struct iface_context
 
 static int TC_AUTO_IP_UNUSED source_matches_context_subnet(uint32_t source_ipv4_addr,
                                                            const struct iface_context *ctx) {
-    if (ctx->netmask == 0) {
+    uint32_t netmask = effective_ipv4_netmask(ctx->ipv4_addr, ctx->netmask);
+
+    if (netmask == 0) {
         return source_ipv4_addr == ctx->ipv4_addr;
     }
-    return (source_ipv4_addr & ctx->netmask) == (ctx->ipv4_addr & ctx->netmask);
+    return (source_ipv4_addr & netmask) == (ctx->ipv4_addr & netmask);
 }
 
 static int TC_AUTO_IP_UNUSED iface_context_cidr(char *out, size_t out_len, const struct iface_context *ctx) {
@@ -659,7 +610,7 @@ static int TC_AUTO_IP_UNUSED iface_context_cidr(char *out, size_t out_len, const
                        out_len,
                        "%s/%d",
                        ipv4_to_string(ctx->ipv4_addr, ip_buf, sizeof(ip_buf)),
-                       netmask_prefix_length(ctx->netmask));
+                       effective_ipv4_prefix_length(ctx->ipv4_addr, ctx->netmask));
     if (written < 0 || (size_t)written >= out_len) {
         return -1;
     }
@@ -997,7 +948,7 @@ static int TC_AUTO_IP_UNUSED link_context_ipv4_cidr(char *out,
                        out_len,
                        "%s/%d",
                        ipv4_to_string(addr->addr, ip_buf, sizeof(ip_buf)),
-                       netmask_prefix_length(addr->netmask));
+                       effective_ipv4_prefix_length(addr->addr, addr->netmask));
     if (written < 0 || (size_t)written >= out_len) {
         return -1;
     }
@@ -1094,95 +1045,82 @@ static int TC_AUTO_IP_UNUSED print_iface_context_cidrs(FILE *stream, const struc
 }
 
 static int TC_AUTO_IP_UNUSED collect_link_contexts_with_policy(struct link_context_set *out, int require_running) {
-    int sockfd = -1;
-    int sockfd6 = -1;
-    char buffer[8192];
-    struct ifconf ifc;
-    char *cursor;
-    char *end;
-    int fixed_entries;
+    struct ifaddrs *ifaddr_list = NULL;
+    struct ifaddrs *ifa;
+    char current_name[IFNAMSIZ];
 
     memset(out, 0, sizeof(*out));
+    current_name[0] = '\0';
 
-    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sockfd < 0) {
-        perror("socket interface enumeration");
-        return -1;
-    }
-    sockfd6 = socket(AF_INET6, SOCK_DGRAM, 0);
-
-    memset(&ifc, 0, sizeof(ifc));
-    ifc.ifc_len = sizeof(buffer);
-    ifc.ifc_buf = buffer;
-    if (ioctl(sockfd, SIOCGIFCONF, &ifc) < 0) {
-        perror("ioctl(SIOCGIFCONF)");
-        if (sockfd6 >= 0) {
-            close(sockfd6);
-        }
-        close(sockfd);
+    if (getifaddrs(&ifaddr_list) != 0) {
+        perror("getifaddrs interface enumeration");
         return -1;
     }
 
-    cursor = ifc.ifc_buf;
-    end = cursor + ifc.ifc_len;
-    fixed_entries = ifreq_table_uses_fixed_entries((size_t)ifc.ifc_len);
-    while (cursor < end) {
-        struct ifconf_entry_view entry;
-        int flags = 0;
-        size_t remaining = (size_t)(end - cursor);
+    for (ifa = ifaddr_list; ifa != NULL; ifa = ifa->ifa_next) {
+        int flags;
+        char name_buf[IFNAMSIZ];
+        const char *name;
 
-        if (ifconf_entry_view_from_cursor(&entry, cursor, remaining, fixed_entries) != 0) {
-            break;
-        }
-
-        if (get_iface_flags(sockfd, entry.name, &flags) != 0) {
-            cursor += entry.step;
+        if (ifa->ifa_addr == NULL) {
             continue;
         }
+        flags = (int)ifa->ifa_flags;
         if (!iface_flags_are_usable(flags, require_running)) {
-            cursor += entry.step;
             continue;
         }
+        name = usable_ifaddrs_name(ifa, name_buf, sizeof(name_buf), current_name);
+        if (name[0] != '\0') {
+            strncpy(current_name, name, sizeof(current_name) - 1);
+            current_name[sizeof(current_name) - 1] = '\0';
+        }
 
-        if (entry.addr->sa_family == AF_INET && entry.addr_len >= sizeof(struct sockaddr_in)) {
+        if (ifa->ifa_addr->sa_family == AF_INET) {
             struct sockaddr_in sin;
             memset(&sin, 0, sizeof(sin));
-            memcpy(&sin, entry.addr, sizeof(sin));
+            memcpy(&sin, ifa->ifa_addr, sizeof(sin));
+            if (name[0] == '\0') {
+                synthetic_ipv4_ifaddrs_name(name_buf, sizeof(name_buf), sin.sin_addr.s_addr);
+                name = name_buf;
+            }
             append_link_ipv4(out,
-                             entry.name,
+                             name,
                              sin.sin_addr.s_addr,
-                             get_ipv4_netmask(sockfd, entry.name, sin.sin_addr.s_addr),
+                             getifaddrs_ipv4_netmask(ifa),
                              flags);
-        } else if (entry.addr->sa_family == AF_INET6 && entry.addr_len >= sizeof(struct sockaddr_in6)) {
+        } else if (ifa->ifa_addr->sa_family == AF_INET6) {
             struct sockaddr_in6 sin6;
             int prefix_len;
 
             memset(&sin6, 0, sizeof(sin6));
-            memcpy(&sin6, entry.addr, sizeof(sin6));
-            prefix_len = get_ipv6_prefix_len(sockfd6, entry.name, &sin6);
+            memcpy(&sin6, ifa->ifa_addr, sizeof(sin6));
+            prefix_len = getifaddrs_ipv6_prefix_len(ifa);
+            if (name[0] == '\0') {
+                synthetic_ipv6_ifaddrs_name(name_buf, sizeof(name_buf), &sin6);
+                name = name_buf;
+            }
             append_link_ipv6_with_transport(out,
-                                            entry.name,
+                                            name,
                                             &sin6.sin6_addr,
                                             prefix_len,
                                             (unsigned int)sin6.sin6_scope_id,
                                             flags,
-                                            sockfd6 >= 0);
+                                            1);
 #if defined(AF_LINK) && (defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__))
-        } else if (entry.addr->sa_family == AF_LINK && entry.addr_len >= sizeof(struct sockaddr_dl)) {
-            const struct sockaddr_dl *sdl = (const struct sockaddr_dl *)entry.addr;
-            struct link_context *ctx = find_or_add_link_context(out, entry.name, flags);
+        } else if (ifa->ifa_addr->sa_family == AF_LINK) {
+            const struct sockaddr_dl *sdl = (const struct sockaddr_dl *)(const void *)ifa->ifa_addr;
+            struct link_context *ctx = NULL;
+            if (name[0] != '\0') {
+                ctx = find_or_add_link_context(out, name, flags);
+            }
             if (ctx != NULL && ctx->ifindex == 0) {
                 ctx->ifindex = (unsigned int)sdl->sdl_index;
             }
 #endif
         }
-        cursor += entry.step;
     }
 
-    if (sockfd6 >= 0) {
-        close(sockfd6);
-    }
-    close(sockfd);
+    freeifaddrs(ifaddr_list);
     {
         size_t i;
         size_t write_i = 0;

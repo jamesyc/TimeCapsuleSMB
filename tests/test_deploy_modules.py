@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import shlex
+import os
 import subprocess
 import sys
 import selectors
@@ -30,6 +31,7 @@ from timecapsulesmb.deploy.commands import (
     RemoteSymlink,
     RemovePathAction,
     RunScriptAction,
+    StopManagerAction,
     StopProcessAction,
     StopWatchdogAction,
     ensure_volume_mounted_action,
@@ -46,6 +48,7 @@ from timecapsulesmb.deploy.executor import (
     REBOOT_REQUEST_TIMEOUT_SECONDS,
     flush_remote_filesystem_writes,
     remote_request_reboot,
+    run_remote_actions,
     remote_uninstall_payload,
     upload_deployment_payload,
     upload_flash_file,
@@ -61,11 +64,11 @@ from timecapsulesmb.deploy.planner import (
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_SMBPASSWD_SOURCE,
     GENERATED_USERNAME_MAP_SOURCE,
+    PACKAGED_BOOT_SOURCE,
     PACKAGED_COMMON_SH_SOURCE,
     PACKAGED_DFREE_SH_SOURCE,
+    PACKAGED_MANAGER_SOURCE,
     PACKAGED_RC_LOCAL_SOURCE,
-    PACKAGED_START_SAMBA_SOURCE,
-    PACKAGED_WATCHDOG_SOURCE,
     PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS,
     build_deployment_plan,
     build_uninstall_plan,
@@ -329,9 +332,23 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("/bin/sleep 5", FLUSH_REMOTE_FILESYSTEMS_COMMAND)
         self.assertGreaterEqual(FLUSH_REMOTE_FILESYSTEMS_TIMEOUT_SECONDS, 300)
 
+    def test_run_remote_actions_reports_completed_actions(self) -> None:
+        connection = SshConnection("root@10.0.0.2", "pw", "-o foo")
+        actions = [StopManagerAction(), RemovePathAction("/tmp/tc-old")]
+        completed = []
+        with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as run_ssh_mock:
+            run_remote_actions(
+                connection,
+                actions,
+                on_action_done=lambda action, index, total: completed.append((action, index, total)),
+            )
+
+        self.assertEqual(run_ssh_mock.call_count, 2)
+        self.assertEqual(completed, [(actions[0], 1, 2), (actions[1], 2, 2)])
+
     def test_load_boot_asset_text_reads_packaged_asset(self) -> None:
         content = load_boot_asset_text("rc.local")
-        self.assertIn("/mnt/Flash/start-samba.sh", content)
+        self.assertIn("/mnt/Flash/boot.sh", content)
         common = load_boot_asset_text("common.sh")
         self.assertEqual(common, assemble_common_sh_text())
         self.assertIn("get_airport_syvs()", common)
@@ -373,9 +390,9 @@ class DeployModuleTests(unittest.TestCase):
         self.assertIn("NBNS_PROC_NAME=nbns-advertiser", content)
         self.assertIn("ALL_MDNS_SNAPSHOT=/mnt/Flash/allmdns.txt", content)
         self.assertIn("APPLE_MDNS_SNAPSHOT=/mnt/Flash/applemdns.txt", content)
-        self.assertIn("get_iface_mac()", content)
         self.assertIn("tc_select_advertise_mac()", content)
         self.assertIn("tc_select_live_iface_mac()", content)
+        self.assertNotIn("get_iface_mac()", content)
         self.assertNotIn("tc_select_advertise_network()", content)
         self.assertNotIn("tc_find_iface_for_ipv4()", content)
         self.assertIn("get_radio_mac()", content)
@@ -403,8 +420,7 @@ class DeployModuleTests(unittest.TestCase):
                         "101 Z    wcifsnd         (wcifsnd)",
                         "102 Z    wcifsfs         (wcifsfs)",
                         "103 S    nbns-advertiser /mnt/Memory/samba4/sbin/nbns-advertiser --name TimeCapsule",
-                        "104 S    sh              /bin/sh /mnt/Flash/watchdog.sh",
-                        "105 S    sh              /bin/sh -c probe=/mnt/Flash/watchdog.sh",
+                        "106 S    sh              /bin/sh /mnt/Flash/manager.sh",
                     ]
                 )
                 + "\n"
@@ -415,9 +431,8 @@ class DeployModuleTests(unittest.TestCase):
                 + """
 runtime_process_present_by_ucomm wcifsnd; echo "zombie-name=$?"
 runtime_process_present_by_ucomm nbns-advertiser; echo "live-name=$?"
-runtime_watchdog_present; echo "live-full=$?"
-runtime_watchdog_present < /dev/null; echo "live-full-repeat=$?"
-echo "watchdog-pids=$(runtime_watchdog_pids)"
+runtime_manager_present; echo "manager-full=$?"
+echo "manager-pids=$(runtime_manager_pids)"
 runtime_process_present_by_ucomm wcifsfs; echo "zombie-full=$?"
 wait_for_process nbns-advertiser 1; echo "live-wait=$?"
 wait_for_process wcifsnd 1; echo "zombie-wait=$?"
@@ -429,9 +444,8 @@ wait_for_process wcifsnd 1; echo "zombie-wait=$?"
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("zombie-name=1", result.stdout)
         self.assertIn("live-name=0", result.stdout)
-        self.assertIn("live-full=0", result.stdout)
-        self.assertIn("live-full-repeat=0", result.stdout)
-        self.assertIn("watchdog-pids=104", result.stdout)
+        self.assertIn("manager-full=0", result.stdout)
+        self.assertIn("manager-pids=106", result.stdout)
         self.assertIn("zombie-full=1", result.stdout)
         self.assertIn("live-wait=0", result.stdout)
         self.assertIn("zombie-wait=1", result.stdout)
@@ -459,6 +473,50 @@ echo "file-size=$(tc_log_file_size "$SAMPLE")"
         self.assertIn("byte-len=12", result.stdout)
         self.assertIn("utf8-byte-len=4", result.stdout)
         self.assertIn("file-size=12", result.stdout)
+
+    def test_common_binary_selection_logs_only_when_debug_logging_enabled(self) -> None:
+        common = load_boot_asset_text("common.sh")
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            payload = tmp_path / "payload"
+            payload.mkdir()
+            for name in ("smbd", "nbns-advertiser"):
+                binary = payload / name
+                binary.write_text("#!/bin/sh\n")
+                binary.chmod(0o755)
+            log = tmp_path / "runtime.log"
+            script = tmp_path / "check.sh"
+            script.write_text(
+                common
+                + f"\nPAYLOAD={shlex.quote(str(payload))}\n"
+                + f"TC_LOG_FILE={shlex.quote(str(log))}\n"
+                + """
+TC_LOG_PREFIX=manager
+TC_LOG_MAX_BYTES=65536
+SMBD_DEBUG_LOGGING=0
+echo "smbd-normal=$(tc_find_payload_smbd "$PAYLOAD")"
+echo "nbns-normal=$(tc_find_payload_nbns "$PAYLOAD")"
+normal_log=$(cat "$TC_LOG_FILE" 2>/dev/null || true)
+SMBD_DEBUG_LOGGING=1
+echo "smbd-debug=$(tc_find_payload_smbd "$PAYLOAD")"
+echo "nbns-debug=$(tc_find_payload_nbns "$PAYLOAD")"
+printf '%s\n' "$normal_log" >"$PAYLOAD/normal.log"
+"""
+            )
+
+            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
+            normal_log = (payload / "normal.log").read_text()
+            debug_log = log.read_text()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"smbd-normal={payload}/smbd", result.stdout)
+        self.assertIn(f"nbns-normal={payload}/nbns-advertiser", result.stdout)
+        self.assertIn(f"smbd-debug={payload}/smbd", result.stdout)
+        self.assertIn(f"nbns-debug={payload}/nbns-advertiser", result.stdout)
+        self.assertNotIn("selected smbd binary", normal_log)
+        self.assertNotIn("selected nbns binary", normal_log)
+        self.assertIn(f"selected smbd binary {payload}/smbd", debug_log)
+        self.assertIn(f"selected nbns binary {payload}/nbns-advertiser", debug_log)
 
     def test_common_select_advertise_mac_falls_back_to_ifconfig_mac(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -545,6 +603,7 @@ tc_prepare_log_file "$LEGACY_LOG" 5
                 + f"TC_LOG_FILE={shlex.quote(str(log))}\n"
                 + """
 tc_prepare_local_hostname_resolution
+SMBD_DEBUG_LOGGING=1
 tc_prepare_local_hostname_resolution
 """
             )
@@ -560,7 +619,7 @@ tc_prepare_local_hostname_resolution
         self.assertIn("local hostname resolution prepared for airport-base", log_text)
         self.assertIn("local hostname resolution already present for airport-base", log_text)
 
-    def test_common_watchdog_process_helper_does_not_self_match_literal(self) -> None:
+    def test_common_script_process_helpers_do_not_self_match_literal(self) -> None:
         common = load_boot_asset_text("common.sh").replace(
             "/bin/ps axww -o pid= -o stat= -o ucomm= -o command= 2>/dev/null",
             'cat "$PS_FIXTURE"',
@@ -571,8 +630,8 @@ tc_prepare_local_hostname_resolution
             fixture.write_text(
                 "\n".join(
                     [
-                        "101 S    sh              /bin/sh -c probe=/mnt/Flash/watchdog.sh",
-                        "102 S    sh              sh -c /bin/sh -c 'probe=/mnt/Flash/watchdog.sh'",
+                        "103 S    sh              /bin/sh -c probe=/mnt/Flash/manager.sh",
+                        "104 S    sh              sh -c /bin/sh -c 'probe=/mnt/Flash/manager.sh'",
                     ]
                 )
                 + "\n"
@@ -581,18 +640,18 @@ tc_prepare_local_hostname_resolution
                 common
                 + f"\nPS_FIXTURE={shlex.quote(str(fixture))}\n"
                 + """
-runtime_watchdog_present; echo "watchdog=$?"
-echo "watchdog-pids=$(runtime_watchdog_pids)"
+runtime_manager_present; echo "manager=$?"
+echo "manager-pids=$(runtime_manager_pids)"
 """
             )
 
             result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("watchdog=1", result.stdout)
-        self.assertIn("watchdog-pids=", result.stdout)
+        self.assertIn("manager=1", result.stdout)
+        self.assertIn("manager-pids=", result.stdout)
 
-    def test_common_watchdog_kill_helper_targets_only_detected_pids(self) -> None:
+    def test_common_manager_kill_helper_targets_only_detected_pids(self) -> None:
         common = load_boot_asset_text("common.sh").replace("/bin/kill", "record_kill")
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / "check.sh"
@@ -602,9 +661,9 @@ echo "watchdog-pids=$(runtime_watchdog_pids)"
                 + f"\nKILL_LOG={shlex.quote(str(kill_log))}\n"
                 + """
 record_kill() { echo "kill:$*" >> "$KILL_LOG"; }
-runtime_watchdog_pids() { printf '%s\\n' 111 222; }
-kill_watchdog_pids TERM
-kill_watchdog_pids KILL
+runtime_manager_pids() { printf '%s\\n' 333; }
+kill_manager_pids TERM
+kill_manager_pids KILL
 """
             )
 
@@ -614,8 +673,31 @@ kill_watchdog_pids KILL
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             kill_lines,
-            ["kill:111", "kill:222", "kill:-9 111", "kill:-9 222"],
+            ["kill:333", "kill:-9 333"],
         )
+
+    def test_common_script_kill_helper_allows_no_detected_pids_under_nounset(self) -> None:
+        common = load_boot_asset_text("common.sh").replace("/bin/kill", "record_kill")
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "check.sh"
+            kill_log = Path(tmp) / "kill.log"
+            script.write_text(
+                common
+                + f"\nKILL_LOG={shlex.quote(str(kill_log))}\n"
+                + """
+set -eu
+record_kill() { echo "unexpected kill:$*" >> "$KILL_LOG"; }
+runtime_manager_pids() { :; }
+kill_manager_pids TERM
+echo ok
+"""
+            )
+
+            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "ok\n")
+        self.assertFalse(kill_log.exists())
 
     def test_extract_airport_identity_from_text_finds_time_capsule_model(self) -> None:
         result = extract_airport_identity_from_text("prefix\x00psyAM\x00pTimeCapsule6,113\x00suffix")
@@ -726,10 +808,10 @@ kill_watchdog_pids KILL
             with self.assertRaisesRegex(RuntimeError, "could not read runtime naming identity: rc=1"):
                 probe_remote_runtime_naming_identity_conn(connection)
 
-    def test_common_sh_helpers_take_iface_argument(self) -> None:
+    def test_common_sh_mac_helpers_use_live_scan_and_radio_argument(self) -> None:
         content = load_boot_asset_text("common.sh")
-        self.assertIn("iface=$1", content)
-        self.assertIn('ifconfig "$iface"', content)
+        self.assertIn("tc_select_live_iface_mac()", content)
+        self.assertIn("ifconfig -a", content)
         self.assertIn("radio_iface=$1", content)
         self.assertIn('ifconfig "$radio_iface"', content)
 
@@ -737,31 +819,25 @@ kill_watchdog_pids KILL
         content = load_boot_asset_text("common.sh")
         self.assertIn('if [ -n "$AIRPORT_WAMA" ] || [ -n "$AIRPORT_RAMA" ] || [ -n "$AIRPORT_RAM2" ] || [ -n "$AIRPORT_SRCV" ] || [ -n "$AIRPORT_SYVS" ]; then', content)
 
-    def test_start_and_watchdog_source_common_sh(self) -> None:
-        start = load_boot_asset_text("start-samba.sh")
-        watchdog = load_boot_asset_text("watchdog.sh")
-        self.assertIn(". /mnt/Flash/common.sh", start)
-        self.assertIn(". /mnt/Flash/common.sh", watchdog)
-        self.assertNotIn("RAM_SAMBA_LIBEXEC", start)
-        self.assertNotIn("stage_runtime_helper", start)
-        self.assertNotIn("get_radio_mac()", start)
-        self.assertNotIn("get_airport_srcv()", start)
-        self.assertNotIn("get_airport_syvs()", start)
-        self.assertNotIn("wait_for_process()", start)
-        self.assertNotIn("wait_for_smbd_ready()", start)
-        self.assertNotIn("get_radio_mac()", watchdog)
-        self.assertNotIn("get_airport_srcv()", watchdog)
-        self.assertNotIn("get_airport_syvs()", watchdog)
+    def test_runtime_scripts_source_common_sh(self) -> None:
+        boot = load_boot_asset_text("boot.sh")
+        manager = load_boot_asset_text("manager.sh")
+        self.assertIn(". /mnt/Flash/common.sh", boot)
+        self.assertIn(". /mnt/Flash/common.sh", manager)
+        self.assertNotIn("RAM_SAMBA_LIBEXEC", boot)
+        self.assertNotIn("RAM_SAMBA_LIBEXEC", manager)
 
-    def test_rc_local_leaves_watchdog_launch_to_start_samba(self) -> None:
+    def test_rc_local_leaves_service_launch_to_boot_script(self) -> None:
         content = load_boot_asset_text("rc.local")
-        self.assertIn("/mnt/Flash/start-samba.sh </dev/null >/dev/null 2>&1 &", content)
+        self.assertIn("/mnt/Flash/boot.sh </dev/null >/dev/null 2>&1 &", content)
+        self.assertNotIn("/mnt/Flash/start-samba.sh", content)
+        self.assertNotIn("/mnt/Flash/manager.sh", content)
         self.assertNotIn("/mnt/Flash/watchdog.sh", content)
         self.assertNotIn("pkill -0 -f /mnt/Flash/watchdog.sh", content)
 
     def test_rc_local_detaches_background_jobs_from_stdin(self) -> None:
         content = load_boot_asset_text("rc.local")
-        self.assertIn("/mnt/Flash/start-samba.sh </dev/null >/dev/null 2>&1 &", content)
+        self.assertIn("/mnt/Flash/boot.sh </dev/null >/dev/null 2>&1 &", content)
 
     def test_common_script_has_no_smbd_daemon_ready_helpers(self) -> None:
         common = load_boot_asset_text("common.sh")
@@ -1214,44 +1290,6 @@ int main(void) {{
         self.assertLess(run.stderr.count("A"), 5000)
         self.assertTrue(run.stderr.endswith("\n"))
 
-    def test_mdns_ifreq_copy_handles_unaligned_source_buffer(self) -> None:
-        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
-        source = f'''
-#include <string.h>
-#define main mdns_advertiser_main
-#include "{mdns_source}"
-#undef main
-
-int main(void) {{
-    char raw[sizeof(struct ifreq) + 1];
-    struct ifreq source;
-    struct ifreq copied;
-
-    memset(raw, 0, sizeof(raw));
-    memset(&source, 0, sizeof(source));
-    memset(&copied, 0, sizeof(copied));
-    snprintf(source.ifr_name, sizeof(source.ifr_name), "%s", "bridge0");
-    source.ifr_addr.sa_family = AF_INET;
-    memcpy(raw + 1, &source, sizeof(source));
-
-    if (copy_ifreq_entry(&copied, raw + 1, sizeof(source)) != 0) {{
-        return 1;
-    }}
-    if (strcmp(copied.ifr_name, "bridge0") != 0) {{
-        return 2;
-    }}
-    if (copied.ifr_addr.sa_family != AF_INET) {{
-        return 3;
-    }}
-    if (ifreq_entry_size(&copied, sizeof(source), 1) != sizeof(struct ifreq)) {{
-        return 4;
-    }}
-    return 0;
-}}
-'''
-        run = self._compile_and_run_c_helper(source, "mdns_unaligned_ifreq_copy")
-        self.assertEqual(run.returncode, 0, run.stderr)
-
     def test_mdns_advertiser_can_skip_capture_when_snapshot_is_newer_than_boot(self) -> None:
         if sys.platform != "darwin" and not sys.platform.startswith("netbsd"):
             self.skipTest("snapshot freshness check requires BSD KERN_BOOTTIME")
@@ -1287,6 +1325,99 @@ int main(void) {{
             self.assertIn("exiting without UDP 5353 takeover or advertisement", run.stderr)
             self.assertFalse(all_snapshot.exists())
             self.assertEqual(apple_snapshot.read_text(), "trusted\n")
+
+    def test_mdns_advertiser_reports_snapshot_newer_than_boot(self) -> None:
+        if sys.platform != "darwin" and not sys.platform.startswith("netbsd"):
+            self.skipTest("snapshot freshness check requires BSD KERN_BOOTTIME")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bin_path = self._compile_mdns_advertiser_binary(tmp)
+            apple_snapshot = tmp / "applemdns.txt"
+            apple_snapshot.write_text("trusted\n")
+            run = subprocess.run(
+                [
+                    str(bin_path),
+                    "--snapshot-newer-than-boot",
+                    str(apple_snapshot),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertIn("mDNS snapshot is newer than current boot:", run.stderr)
+            self.assertEqual(run.stdout, "")
+
+    def test_mdns_advertiser_reports_missing_snapshot_as_not_fresh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bin_path = self._compile_mdns_advertiser_binary(tmp)
+            run = subprocess.run(
+                [
+                    str(bin_path),
+                    "--snapshot-newer-than-boot",
+                    str(tmp / "missing-applemdns.txt"),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+
+            self.assertEqual(run.returncode, 14, run.stderr)
+            self.assertIn("mDNS snapshot is missing, empty, or not newer than current boot:", run.stderr)
+            self.assertEqual(run.stdout, "")
+
+    def test_mdns_advertiser_reports_empty_snapshot_as_not_fresh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bin_path = self._compile_mdns_advertiser_binary(tmp)
+            apple_snapshot = tmp / "applemdns.txt"
+            apple_snapshot.touch()
+            run = subprocess.run(
+                [
+                    str(bin_path),
+                    "--snapshot-newer-than-boot",
+                    str(apple_snapshot),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+
+            self.assertEqual(run.returncode, 14, run.stderr)
+            self.assertIn("mDNS snapshot is missing, empty, or not newer than current boot:", run.stderr)
+            self.assertEqual(run.stdout, "")
+
+    def test_mdns_advertiser_reports_stale_snapshot_as_not_fresh(self) -> None:
+        if sys.platform != "darwin" and not sys.platform.startswith("netbsd"):
+            self.skipTest("snapshot freshness check requires BSD KERN_BOOTTIME")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bin_path = self._compile_mdns_advertiser_binary(tmp)
+            apple_snapshot = tmp / "applemdns.txt"
+            apple_snapshot.write_text("trusted\n")
+            os.utime(apple_snapshot, (1, 1))
+            run = subprocess.run(
+                [
+                    str(bin_path),
+                    "--snapshot-newer-than-boot",
+                    str(apple_snapshot),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+
+            self.assertEqual(run.returncode, 14, run.stderr)
+            self.assertIn("mDNS snapshot is missing, empty, or not newer than current boot:", run.stderr)
+            self.assertEqual(run.stdout, "")
 
     def test_mdns_advertiser_save_airport_snapshot_generates_one_record_without_takeover(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1440,9 +1571,7 @@ int main(void) {{
 int main(void) {{
     struct iface_context_set a;
     struct iface_context_set b;
-    struct ifreq sample_ifr;
-    struct ifconf_entry_view view;
-    size_t expected_variable_step;
+    char synthetic_name[IFNAMSIZ];
 
     if (runtime_ipv4_is_usable(inet_addr("0.1.2.3")) ||
         runtime_ipv4_is_usable(inet_addr("127.0.0.1")) ||
@@ -1461,80 +1590,14 @@ int main(void) {{
         iface_flags_are_usable(IFF_RUNNING, 0)) {{
         return 2;
     }}
-    memset(&sample_ifr, 0, sizeof(sample_ifr));
-    if (((sizeof(struct ifreq) > 64) ? 1 : 0) != ifreq_table_uses_fixed_entries(sizeof(struct ifreq) * 2)) {{
+    synthetic_ipv4_ifaddrs_name(synthetic_name, sizeof(synthetic_name), inet_addr("192.168.100.100"));
+    if (strcmp(synthetic_name, "ip4-c0a86464") != 0) {{
         return 7;
     }}
-    if (ifreq_entry_size(&sample_ifr, sizeof(sample_ifr), 1) != sizeof(sample_ifr)) {{
+    synthetic_ipv4_ifaddrs_name(synthetic_name, sizeof(synthetic_name), inet_addr("255.255.255.255"));
+    if (strcmp(synthetic_name, "ip4-ffffffff") != 0 || strlen(synthetic_name) >= IFNAMSIZ) {{
         return 8;
     }}
-    expected_variable_step = IFNAMSIZ + sizeof(struct sockaddr);
-#if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
-    sample_ifr.ifr_addr.sa_len = sizeof(struct sockaddr) + 4;
-    expected_variable_step = IFNAMSIZ + sample_ifr.ifr_addr.sa_len;
-#endif
-    if ((expected_variable_step % sizeof(long)) != 0) {{
-        expected_variable_step += sizeof(long) - (expected_variable_step % sizeof(long));
-    }}
-    if (expected_variable_step < sizeof(sample_ifr)) {{
-        expected_variable_step = sizeof(sample_ifr);
-    }}
-    if (ifreq_entry_size(&sample_ifr, expected_variable_step, 0) != expected_variable_step) {{
-        return 9;
-    }}
-#if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
-    {{
-    struct sockaddr_in6 raw_sin6;
-    struct sockaddr_in6 copied_sin6;
-    union {{
-        long align;
-        char bytes[IFNAMSIZ + sizeof(struct sockaddr_in6) + sizeof(long)];
-    }} raw_entry;
-    size_t expected_raw_step;
-
-    memset(&raw_entry, 0, sizeof(raw_entry));
-    memcpy(raw_entry.bytes, "bridge0", 7);
-    memset(&raw_sin6, 0, sizeof(raw_sin6));
-    raw_sin6.sin6_family = AF_INET6;
-    raw_sin6.sin6_len = sizeof(raw_sin6);
-    if (inet_pton(AF_INET6, "fdbb:1111:2222:3333::40", &raw_sin6.sin6_addr) != 1) {{
-        return 12;
-    }}
-    memcpy(raw_entry.bytes + IFNAMSIZ, &raw_sin6, sizeof(raw_sin6));
-    expected_raw_step = IFNAMSIZ + sizeof(raw_sin6);
-    if ((expected_raw_step % sizeof(long)) != 0) {{
-        expected_raw_step += sizeof(long) - (expected_raw_step % sizeof(long));
-    }}
-    if (expected_raw_step < sizeof(sample_ifr)) {{
-        expected_raw_step = sizeof(sample_ifr);
-    }}
-    if (ifconf_entry_view_from_cursor(&view, raw_entry.bytes, sizeof(raw_entry.bytes), 0) != 0 ||
-        view.step != expected_raw_step ||
-        view.addr_len != sizeof(raw_sin6) ||
-        strcmp(view.name, "bridge0") != 0) {{
-        return 13;
-    }}
-    memset(&copied_sin6, 0, sizeof(copied_sin6));
-    memcpy(&copied_sin6, view.addr, sizeof(copied_sin6));
-    if (memcmp(&copied_sin6.sin6_addr, &raw_sin6.sin6_addr, sizeof(raw_sin6.sin6_addr)) != 0) {{
-        return 14;
-    }}
-    }}
-#else
-    {{
-        struct ifreq raw_ifr;
-        memset(&raw_ifr, 0, sizeof(raw_ifr));
-        memcpy(raw_ifr.ifr_name, "bridge0", 7);
-        raw_ifr.ifr_addr.sa_family = AF_INET;
-        if (ifconf_entry_view_from_cursor(&view, (const char *)(const void *)&raw_ifr, sizeof(raw_ifr), 1) != 0 ||
-            view.step != sizeof(raw_ifr) ||
-            view.addr_len != sizeof(struct sockaddr) ||
-            strcmp(view.name, "bridge0") != 0 ||
-            view.addr->sa_family != AF_INET) {{
-            return 13;
-        }}
-    }}
-#endif
 
     memset(&a, 0, sizeof(a));
     memset(&b, 0, sizeof(b));
@@ -1651,6 +1714,223 @@ int main(void) {{
         run = self._compile_and_run_c_helper(source, "mdns_auto_ip_cidrs")
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(run.stdout, "10.0.1.1/24 192.168.1.40/24\n")
+
+    def test_auto_ip_context_collection_uses_getifaddrs_netmasks(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <string.h>
+
+static int fake_getifaddrs(struct ifaddrs **out);
+static void fake_freeifaddrs(struct ifaddrs *list);
+
+#define getifaddrs fake_getifaddrs
+#define freeifaddrs fake_freeifaddrs
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+#undef getifaddrs
+#undef freeifaddrs
+
+static struct ifaddrs fake_ifas[4];
+static struct sockaddr_in fake_addrs[3];
+static struct sockaddr_in fake_masks[3];
+
+static void set_ipv4_sockaddr(struct sockaddr_in *sin, const char *addr) {{
+    memset(sin, 0, sizeof(*sin));
+#if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
+    sin->sin_len = sizeof(*sin);
+#endif
+    sin->sin_family = AF_INET;
+    sin->sin_addr.s_addr = inet_addr(addr);
+}}
+
+static int fake_getifaddrs(struct ifaddrs **out) {{
+    memset(fake_ifas, 0, sizeof(fake_ifas));
+    memset(fake_addrs, 0, sizeof(fake_addrs));
+    memset(fake_masks, 0, sizeof(fake_masks));
+
+    set_ipv4_sockaddr(&fake_addrs[0], "10.0.1.1");
+    set_ipv4_sockaddr(&fake_masks[0], "255.0.0.0");
+    fake_ifas[0].ifa_next = &fake_ifas[1];
+    fake_ifas[0].ifa_name = "bridge0";
+    fake_ifas[0].ifa_flags = IFF_UP | IFF_RUNNING;
+    fake_ifas[0].ifa_addr = (struct sockaddr *)(void *)&fake_addrs[0];
+    fake_ifas[0].ifa_netmask = (struct sockaddr *)(void *)&fake_masks[0];
+
+    set_ipv4_sockaddr(&fake_addrs[1], "192.168.1.217");
+    set_ipv4_sockaddr(&fake_masks[1], "255.255.255.0");
+    fake_ifas[1].ifa_next = &fake_ifas[2];
+    fake_ifas[1].ifa_name = "bcmeth1";
+    fake_ifas[1].ifa_flags = IFF_UP | IFF_RUNNING;
+    fake_ifas[1].ifa_addr = (struct sockaddr *)(void *)&fake_addrs[1];
+    fake_ifas[1].ifa_netmask = (struct sockaddr *)(void *)&fake_masks[1];
+
+    set_ipv4_sockaddr(&fake_addrs[2], "10.2.3.4");
+    set_ipv4_sockaddr(&fake_masks[2], "255.0.0.0");
+    fake_ifas[2].ifa_next = NULL;
+    fake_ifas[2].ifa_name = "down0";
+    fake_ifas[2].ifa_flags = IFF_UP;
+    fake_ifas[2].ifa_addr = (struct sockaddr *)(void *)&fake_addrs[2];
+    fake_ifas[2].ifa_netmask = (struct sockaddr *)(void *)&fake_masks[2];
+
+    *out = &fake_ifas[0];
+    return 0;
+}}
+
+static void fake_freeifaddrs(struct ifaddrs *list) {{
+    (void)list;
+}}
+
+int main(void) {{
+    struct iface_context_set iface_contexts;
+    struct link_context_set link_contexts;
+    char cidr[INET_ADDRSTRLEN + 4];
+
+    if (collect_usable_iface_contexts(&iface_contexts) != 0 || iface_contexts.count != 2) {{
+        return 1;
+    }}
+    if (strcmp(iface_contexts.contexts[0].name, "bridge0") != 0 ||
+        iface_contexts.contexts[0].ipv4_addr != inet_addr("10.0.1.1") ||
+        iface_contexts.contexts[0].netmask != inet_addr("255.0.0.0")) {{
+        return 2;
+    }}
+    if (source_matches_context_subnet(inet_addr("10.44.55.66"), &iface_contexts.contexts[0]) != 1) {{
+        return 3;
+    }}
+    if (source_matches_context_subnet(inet_addr("11.0.1.3"), &iface_contexts.contexts[0]) != 0) {{
+        return 4;
+    }}
+    if (collect_usable_link_contexts(&link_contexts) != 0 || link_contexts.count != 2) {{
+        return 5;
+    }}
+    if (link_context_ipv4_cidr(cidr, sizeof(cidr), &link_contexts.links[0].ipv4[0]) != 0 ||
+        strcmp(cidr, "10.0.1.1/8") != 0) {{
+        return 6;
+    }}
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        run = self._compile_and_run_c_helper(source, "auto_ip_getifaddrs_netmasks")
+        self.assertEqual(run.returncode, 0, run.stderr)
+
+    def test_auto_ip_getifaddrs_handles_unnamed_netbsd4_address_entries(self) -> None:
+        mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
+        source = '''
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <string.h>
+
+static int fake_getifaddrs(struct ifaddrs **out);
+static void fake_freeifaddrs(struct ifaddrs *list);
+
+#define getifaddrs fake_getifaddrs
+#define freeifaddrs fake_freeifaddrs
+#define main mdns_advertiser_main
+#include "{mdns_source}"
+#undef main
+#undef getifaddrs
+#undef freeifaddrs
+
+static struct ifaddrs fake_ifas[3];
+static struct sockaddr_in fake_addrs[3];
+static struct sockaddr_in fake_masks[3];
+
+static void set_ipv4_sockaddr(struct sockaddr_in *sin, const char *addr, int family) {{
+    memset(sin, 0, sizeof(*sin));
+#if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
+    sin->sin_len = sizeof(*sin);
+#endif
+    sin->sin_family = family;
+    sin->sin_addr.s_addr = inet_addr(addr);
+}}
+
+static int fake_getifaddrs(struct ifaddrs **out) {{
+    memset(fake_ifas, 0, sizeof(fake_ifas));
+    memset(fake_addrs, 0, sizeof(fake_addrs));
+    memset(fake_masks, 0, sizeof(fake_masks));
+
+    set_ipv4_sockaddr(&fake_addrs[0], "192.168.1.217", AF_INET);
+    set_ipv4_sockaddr(&fake_masks[0], "255.255.255.0", 0);
+    fake_ifas[0].ifa_next = &fake_ifas[1];
+    fake_ifas[0].ifa_name = "";
+    fake_ifas[0].ifa_flags = IFF_UP | IFF_RUNNING;
+    fake_ifas[0].ifa_addr = (struct sockaddr *)(void *)&fake_addrs[0];
+    fake_ifas[0].ifa_netmask = (struct sockaddr *)(void *)&fake_masks[0];
+
+    set_ipv4_sockaddr(&fake_addrs[1], "10.0.1.1", AF_INET);
+    set_ipv4_sockaddr(&fake_masks[1], "255.0.0.0", 0);
+    fake_ifas[1].ifa_next = &fake_ifas[2];
+    fake_ifas[1].ifa_name = "";
+    fake_ifas[1].ifa_flags = IFF_UP | IFF_RUNNING;
+    fake_ifas[1].ifa_addr = (struct sockaddr *)(void *)&fake_addrs[1];
+    fake_ifas[1].ifa_netmask = (struct sockaddr *)(void *)&fake_masks[1];
+
+    set_ipv4_sockaddr(&fake_addrs[2], "169.254.155.207", AF_INET);
+    set_ipv4_sockaddr(&fake_masks[2], "255.255.0.0", 0);
+    fake_ifas[2].ifa_next = NULL;
+    fake_ifas[2].ifa_name = "";
+    fake_ifas[2].ifa_flags = IFF_UP | IFF_RUNNING;
+    fake_ifas[2].ifa_addr = (struct sockaddr *)(void *)&fake_addrs[2];
+    fake_ifas[2].ifa_netmask = (struct sockaddr *)(void *)&fake_masks[2];
+
+    *out = &fake_ifas[0];
+    return 0;
+}}
+
+static void fake_freeifaddrs(struct ifaddrs *list) {{
+    (void)list;
+}}
+
+int main(void) {{
+    struct iface_context_set iface_contexts;
+    struct link_context_set link_contexts;
+    const struct iface_context *ten_iface = NULL;
+    const struct link_context *ten_link = NULL;
+    char cidr[INET_ADDRSTRLEN + 4];
+    size_t i;
+
+    if (collect_usable_iface_contexts(&iface_contexts) != 0 || iface_contexts.count != 2) {{
+        return 1;
+    }}
+    for (i = 0; i < iface_contexts.count; i++) {{
+        if (iface_contexts.contexts[i].ipv4_addr == inet_addr("10.0.1.1")) {{
+            ten_iface = &iface_contexts.contexts[i];
+        }}
+    }}
+    if (ten_iface == NULL ||
+        strcmp(ten_iface->name, "") == 0 ||
+        ten_iface->netmask != inet_addr("255.0.0.0")) {{
+        return 2;
+    }}
+    if (collect_usable_link_contexts(&link_contexts) != 0 || link_contexts.count != 3) {{
+        return 3;
+    }}
+    for (i = 0; i < link_contexts.count; i++) {{
+        if (link_contexts.links[i].ipv4_count > 0 &&
+            link_contexts.links[i].ipv4[0].addr == inet_addr("10.0.1.1")) {{
+            ten_link = &link_contexts.links[i];
+        }}
+    }}
+    if (ten_link == NULL) {{
+        return 4;
+    }}
+    if (source_matches_link_ipv4_subnet(inet_addr("10.44.55.66"), ten_link) != 1) {{
+        return 5;
+    }}
+    if (link_ipv4_source_for_peer(ten_link, inet_addr("10.44.55.66")) != inet_addr("10.0.1.1")) {{
+        return 6;
+    }}
+    if (link_context_ipv4_cidr(cidr, sizeof(cidr), &ten_link->ipv4[0]) != 0 ||
+        strcmp(cidr, "10.0.1.1/8") != 0) {{
+        return 7;
+    }}
+    return 0;
+}}
+'''.format(mdns_source=mdns_source)
+        run = self._compile_and_run_c_helper(source, "auto_ip_getifaddrs_unnamed_entries")
+        self.assertEqual(run.returncode, 0, run.stderr)
 
     def test_mdns_smb_bind_tokens_and_host_records_are_link_scoped_dual_stack(self) -> None:
         mdns_source = (REPO_ROOT / "build" / "mdns-advertiser.c").as_posix()
@@ -2995,6 +3275,22 @@ static int run_route_cases(void) {
         captured_dests[0].sin_port != mdns_dest.sin_port ||
         !packet_has_smb_browse_additionals(captured_packets[0], captured_lengths[0])) {
         return 4;
+    }
+
+    reset_captures();
+    query_len = make_query(query, cfg.service_type, DNS_TYPE_PTR, DNS_CLASS_IN | DNS_CLASS_CACHE_FLUSH);
+    if (query_len == 0 ||
+        handle_query(1, query, query_len, &mdns_dest, &source, &cfg, &response_link, &snapshot, 0) != 0) {
+        return 13;
+    }
+    if (captured_count != 2 ||
+        captured_dests[0].sin_addr.s_addr != source.sin_addr.s_addr ||
+        captured_dests[0].sin_port != source.sin_port ||
+        captured_dests[1].sin_addr.s_addr != mdns_dest.sin_addr.s_addr ||
+        captured_dests[1].sin_port != mdns_dest.sin_port ||
+        !packet_has_smb_browse_additionals(captured_packets[0], captured_lengths[0]) ||
+        !packet_has_smb_browse_additionals(captured_packets[1], captured_lengths[1])) {
+        return 14;
     }
 
     source.sin_port = htons(MDNS_PORT);
@@ -5181,7 +5477,13 @@ static int invoke_query(const uint8_t *query, size_t query_len) {
     peer.sin_port = htons(40000);
     peer.sin_addr.s_addr = inet_addr("192.168.1.50");
 
-    return maybe_respond_to_query(1, &cfg, query, query_len, &peer, sizeof(peer));
+    return maybe_respond_to_query_addr(
+        1,
+        &cfg,
+        query,
+        query_len,
+        (const struct sockaddr *)(const void *)&peer,
+        sizeof(peer));
 }
 
 static int expect_positive_nb_response(const uint8_t *query, size_t qname_len) {
@@ -5396,7 +5698,13 @@ static int invoke_query(const uint8_t *query, size_t query_len) {
     peer.sin_port = htons(40000);
     peer.sin_addr.s_addr = inet_addr("192.168.1.50");
 
-    return maybe_respond_to_query(1, &cfg, query, query_len, &peer, sizeof(peer));
+    return maybe_respond_to_query_addr(
+        1,
+        &cfg,
+        query,
+        query_len,
+        (const struct sockaddr *)(const void *)&peer,
+        sizeof(peer));
 }
 
 static int expect_no_response(const uint8_t *query, size_t query_len) {
@@ -5470,11 +5778,12 @@ int main(void) {
 #undef main
 
 int main(void) {{
-    struct iface_context_set contexts;
-    struct ifreq sample_ifr;
-    struct ifreq copied_ifr;
-    char raw_ifr[sizeof(struct ifreq) + 1];
-    size_t expected_variable_step;
+    struct link_context_set links;
+    struct link_context_set single_link;
+    struct link_context_set v6_only_links;
+    struct link_context_set links_a;
+    struct link_context_set links_b;
+    struct in6_addr v6_addr;
 
     if (AUTO_IP_STARTUP_POLL_SECONDS != 2 || AUTO_IP_STABLE_POLL_SECONDS != 30) {{
         return 10;
@@ -5497,61 +5806,78 @@ int main(void) {{
         iface_flags_are_usable(IFF_RUNNING, 0)) {{
         return 2;
     }}
-    memset(&sample_ifr, 0, sizeof(sample_ifr));
-    if (((sizeof(struct ifreq) > 64) ? 1 : 0) != ifreq_table_uses_fixed_entries(sizeof(struct ifreq) * 2)) {{
-        return 6;
-    }}
-    if (ifreq_entry_size(&sample_ifr, sizeof(sample_ifr), 1) != sizeof(sample_ifr)) {{
-        return 7;
-    }}
-    expected_variable_step = IFNAMSIZ + sizeof(struct sockaddr);
-#if defined(__NetBSD__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
-    sample_ifr.ifr_addr.sa_len = sizeof(struct sockaddr) + 4;
-    expected_variable_step = IFNAMSIZ + sample_ifr.ifr_addr.sa_len;
-#endif
-    if ((expected_variable_step % sizeof(long)) != 0) {{
-        expected_variable_step += sizeof(long) - (expected_variable_step % sizeof(long));
-    }}
-    if (expected_variable_step < sizeof(sample_ifr)) {{
-        expected_variable_step = sizeof(sample_ifr);
-    }}
-    if (ifreq_entry_size(&sample_ifr, expected_variable_step, 0) != expected_variable_step) {{
-        return 8;
-    }}
-    memset(raw_ifr, 0, sizeof(raw_ifr));
-    memset(&sample_ifr, 0, sizeof(sample_ifr));
-    memset(&copied_ifr, 0, sizeof(copied_ifr));
-    snprintf(sample_ifr.ifr_name, sizeof(sample_ifr.ifr_name), "%s", "bridge0");
-    sample_ifr.ifr_addr.sa_family = AF_INET;
-    memcpy(raw_ifr + 1, &sample_ifr, sizeof(sample_ifr));
-    if (copy_ifreq_entry(&copied_ifr, raw_ifr + 1, sizeof(sample_ifr)) != 0) {{
-        return 11;
-    }}
-    if (strcmp(copied_ifr.ifr_name, "bridge0") != 0 || copied_ifr.ifr_addr.sa_family != AF_INET) {{
-        return 12;
-    }}
 
-    memset(&contexts, 0, sizeof(contexts));
-    append_iface_context(&contexts, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
-    append_iface_context(&contexts, "bcmeth0", inet_addr("192.168.50.2"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
-
-    if (choose_response_ipv4(&contexts, inet_addr("192.168.50.99")) != inet_addr("192.168.50.2")) {{
+    memset(&links, 0, sizeof(links));
+    append_link_ipv4(&links, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    append_link_ipv4(&links, "bcmeth0", inet_addr("192.168.50.2"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    if (choose_response_ipv4_from_links(&links, inet_addr("192.168.50.99")) != inet_addr("192.168.50.2")) {{
         return 3;
     }}
-    if (choose_response_ipv4(&contexts, inet_addr("172.16.1.5")) != 0) {{
+    if (choose_response_ipv4_from_links(&links, inet_addr("172.16.1.5")) != 0) {{
         return 4;
     }}
 
-    memset(&contexts, 0, sizeof(contexts));
-    append_iface_context(&contexts, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
-    if (choose_response_ipv4(&contexts, inet_addr("172.16.1.5")) != inet_addr("10.0.1.1")) {{
+    memset(&links, 0, sizeof(links));
+    append_link_ipv4(&links, "bridge0", inet_addr("10.0.1.1"), 0, IFF_UP | IFF_RUNNING);
+    append_link_ipv4(&links, "bcmeth0", inet_addr("192.168.1.217"), 0, IFF_UP | IFF_RUNNING);
+    if (choose_response_ipv4_from_links(&links, inet_addr("10.0.1.3")) != inet_addr("10.0.1.1")) {{
+        return 14;
+    }}
+    if (choose_response_ipv4_from_links(&links, inet_addr("10.44.55.66")) != inet_addr("10.0.1.1")) {{
+        return 17;
+    }}
+    if (choose_response_ipv4_from_links(&links, inet_addr("192.168.1.40")) != inet_addr("192.168.1.217")) {{
+        return 15;
+    }}
+    if (choose_response_ipv4_from_links(&links, inet_addr("172.16.1.5")) != 0) {{
+        return 16;
+    }}
+
+    memset(&single_link, 0, sizeof(single_link));
+    append_link_ipv4(&single_link, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    if (choose_response_ipv4_from_links(&single_link, inet_addr("172.16.1.5")) != inet_addr("10.0.1.1")) {{
         return 13;
     }}
 
-    append_iface_context(&contexts, "bcmeth0", inet_addr("192.168.50.2"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
-    contexts.contexts[1].netmask = inet_addr("255.255.0.0");
-    if (iface_context_sets_equal(&contexts, &contexts) != 1) {{
-        return 9;
+    memset(&links, 0, sizeof(links));
+    append_link_ipv4(&links, "bridge0", inet_addr("10.0.1.1"), 0, IFF_UP | IFF_RUNNING);
+    if (inet_pton(AF_INET6, "fd00::1", &v6_addr) != 1) {{
+        return 20;
+    }}
+    append_link_ipv6(&links, "bridge0", &v6_addr, 64, 0, IFF_UP | IFF_RUNNING);
+    keep_only_nbns_ipv4_link_contexts(&links);
+    if (!link_contexts_need_nbns_ipv4_socket(&links)) {{
+        return 21;
+    }}
+    if (links.count != 1 || links.links[0].ipv6_count != 0 || links.links[0].mdns_ipv6_transport != 0) {{
+        return 22;
+    }}
+    if (choose_response_ipv4_from_links(&links, inet_addr("172.16.1.5")) != inet_addr("10.0.1.1")) {{
+        return 23;
+    }}
+
+    memset(&v6_only_links, 0, sizeof(v6_only_links));
+    append_link_ipv6(&v6_only_links, "bridge0", &v6_addr, 64, 0, IFF_UP | IFF_RUNNING);
+    keep_only_nbns_ipv4_link_contexts(&v6_only_links);
+    if (v6_only_links.count != 0) {{
+        return 24;
+    }}
+    if (link_contexts_need_nbns_ipv4_socket(&v6_only_links)) {{
+        return 25;
+    }}
+
+    memset(&links_a, 0, sizeof(links_a));
+    memset(&links_b, 0, sizeof(links_b));
+    append_link_ipv4(&links_a, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    append_link_ipv6(&links_a, "bridge0", &v6_addr, 64, 0, IFF_UP | IFF_RUNNING);
+    append_link_ipv6(&links_b, "bridge0", &v6_addr, 64, 0, IFF_UP | IFF_RUNNING);
+    append_link_ipv4(&links_b, "bridge0", inet_addr("10.0.1.1"), inet_addr("255.255.255.0"), IFF_UP | IFF_RUNNING);
+    if (!link_context_sets_equal(&links_a, &links_b)) {{
+        return 27;
+    }}
+    links_b.links[0].ipv6[0].prefix_len = 48;
+    if (link_context_sets_equal(&links_a, &links_b)) {{
+        return 28;
     }}
     return 0;
 }}
@@ -5639,17 +5965,19 @@ int main(void) {{
             GENERATED_FLASH_CONFIG_SOURCE: Path("/tmp/tcapsulesmb.conf"),
             PACKAGED_RC_LOCAL_SOURCE: Path("/tmp/rc.local"),
             PACKAGED_COMMON_SH_SOURCE: Path("/tmp/common.sh"),
+            PACKAGED_BOOT_SOURCE: Path("/tmp/boot.sh"),
+            PACKAGED_MANAGER_SOURCE: Path("/tmp/manager.sh"),
             PACKAGED_DFREE_SH_SOURCE: Path("/tmp/dfree.sh"),
-            PACKAGED_START_SAMBA_SOURCE: Path("/tmp/start-samba.sh"),
-            PACKAGED_WATCHDOG_SOURCE: Path("/tmp/watchdog.sh"),
         }
         with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
             with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as ssh_mock:
                 with mock.patch("timecapsulesmb.deploy.executor.ensure_volume_root_mounted_conn", return_value=True) as mount_mock:
+                    uploaded = []
                     upload_deployment_payload(
                         plan,
                         connection=connection,
                         source_resolver=source_resolver,
+                        on_uploaded=uploaded.append,
                     )
         self.assertEqual(scp_mock.call_count, 12)
         self.assertEqual(mount_mock.call_count, 5)
@@ -5665,8 +5993,8 @@ int main(void) {{
                 Path("/tmp/nbns-advertiser"),
                 Path("/tmp/rc.local"),
                 Path("/tmp/common.sh"),
-                Path("/tmp/start-samba.sh"),
-                Path("/tmp/watchdog.sh"),
+                Path("/tmp/boot.sh"),
+                Path("/tmp/manager.sh"),
                 Path("/tmp/dfree.sh"),
                 Path("/tmp/tcapsulesmb.conf"),
                 Path("/tmp/smbpasswd"),
@@ -5683,8 +6011,8 @@ int main(void) {{
                 "/Volumes/dk2/samba4/nbns-advertiser",
                 "/mnt/Flash/.rc.local.tmp",
                 "/mnt/Flash/.common.sh.tmp",
-                "/mnt/Flash/.start-samba.sh.tmp",
-                "/mnt/Flash/.watchdog.sh.tmp",
+                "/mnt/Flash/.boot.sh.tmp",
+                "/mnt/Flash/.manager.sh.tmp",
                 "/mnt/Flash/.dfree.sh.tmp",
                 "/mnt/Flash/.tcapsulesmb.conf.tmp",
                 "/Volumes/dk2/samba4/private/smbpasswd",
@@ -5696,6 +6024,7 @@ int main(void) {{
         text_upload_timeouts = [call.kwargs.get("timeout") for call in scp_mock.call_args_list[4:]]
         self.assertEqual(text_upload_timeouts, [FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS] * 6 + [None] * 2)
         self.assertEqual(ssh_mock.call_count, 14)
+        self.assertEqual(uploaded, plan.uploads)
 
     def test_upload_deployment_payload_consumes_plan_uploads_directly(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
@@ -5878,25 +6207,25 @@ capture_fstat_for_ucomm "$mixed_smbd" smbd
         self.assertNotIn("fstat:100", result.stdout)
         self.assertIn("fstat:101", result.stdout)
 
-    def test_probe_status_helpers_do_not_count_probe_shell_body_as_watchdog(self) -> None:
+    def test_probe_status_helpers_do_not_count_probe_shell_body_as_manager(self) -> None:
         script = (
             SMBD_STATUS_HELPERS
             + r'''
-real_watchdog="202 1 S 0:00.00 sh /bin/sh /mnt/Flash/watchdog.sh"
-self_match_watchdog=$(cat <<'EOF'
-3308 11745 S 0:00.01 sh /bin/sh -c probe=/mnt/Flash/watchdog.sh
-11745 11677 Ss 0:00.01 sh sh -c /bin/sh -c 'probe=/mnt/Flash/watchdog.sh'
+real_manager="203 1 S 0:00.00 sh /bin/sh /mnt/Flash/manager.sh"
+self_match_manager=$(cat <<'EOF'
+3308 11745 S 0:00.01 sh /bin/sh -c probe=/mnt/Flash/manager.sh
+11745 11677 Ss 0:00.01 sh sh -c /bin/sh -c 'probe=/mnt/Flash/manager.sh'
 EOF
 )
-watchdog_process_present_for_volume "$real_watchdog"; echo "real=$?"
-watchdog_process_present_for_volume "$self_match_watchdog"; echo "self=$?"
+manager_process_present_for_volume "$real_manager"; echo "manager=$?"
+manager_process_present_for_volume "$self_match_manager"; echo "self=$?"
 '''
         )
 
         result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("real=0", result.stdout)
+        self.assertIn("manager=0", result.stdout)
         self.assertIn("self=1", result.stdout)
 
     def test_probe_status_helpers_detect_runtime_startup_scripts(self) -> None:
@@ -5904,16 +6233,18 @@ watchdog_process_present_for_volume "$self_match_watchdog"; echo "self=$?"
             SMBD_STATUS_HELPERS
             + r'''
 rc_local="101 1 S 0:00.00 sh /bin/sh /mnt/Flash/rc.local"
-start_samba="102 1 S 0:00.00 sh /bin/sh /mnt/Flash/start-samba.sh"
-zombie_start_samba="103 1 Z 0:00.00 sh /bin/sh /mnt/Flash/start-samba.sh"
+boot="102 1 S 0:00.00 sh /bin/sh /mnt/Flash/boot.sh"
+start_samba="103 1 S 0:00.00 sh /bin/sh /mnt/Flash/start-samba.sh"
+zombie_boot="104 1 Z 0:00.00 sh /bin/sh /mnt/Flash/boot.sh"
 self_match=$(cat <<'EOF'
-3308 11745 S 0:00.01 sh /bin/sh -c probe=/mnt/Flash/start-samba.sh
+3308 11745 S 0:00.01 sh /bin/sh -c probe=/mnt/Flash/boot.sh
 11745 11677 Ss 0:00.01 sh sh -c /bin/sh -c 'probe=/mnt/Flash/rc.local'
 EOF
 )
 runtime_startup_script_present "$rc_local"; echo "rc-local=$?"
+runtime_startup_script_present "$boot"; echo "boot=$?"
 runtime_startup_script_present "$start_samba"; echo "start-samba=$?"
-runtime_startup_script_present "$zombie_start_samba"; echo "zombie=$?"
+runtime_startup_script_present "$zombie_boot"; echo "zombie=$?"
 runtime_startup_script_present "$self_match"; echo "self=$?"
 '''
         )
@@ -5922,11 +6253,12 @@ runtime_startup_script_present "$self_match"; echo "self=$?"
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("rc-local=0", result.stdout)
-        self.assertIn("start-samba=0", result.stdout)
+        self.assertIn("boot=0", result.stdout)
+        self.assertIn("start-samba=1", result.stdout)
         self.assertIn("zombie=1", result.stdout)
         self.assertIn("self=1", result.stdout)
 
-    def test_smbd_status_helpers_pass_only_with_live_ram_auth_mount_and_watchdog(self) -> None:
+    def test_smbd_status_helpers_pass_only_with_live_ram_auth_mount_and_manager(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             ram_root = tmp / "mnt" / "Memory" / "samba4"
@@ -5950,23 +6282,18 @@ runtime_startup_script_present "$self_match"; echo "self=$?"
     xattr_tdb:file = {payload_private}/xattr.tdb
 [Data]
     path = {data_root}
+[USB]
+    path = {external_data_root}
 """,
-                encoding="utf-8",
-            )
-            shares_tsv = ram_root / "var" / "shares.tsv"
-            shares_tsv.write_text(
-                f"Data\t{data_root}\tdk2\t1\taaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n"
-                f"USB\t{external_data_root}\tdk3\t0\tbbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\n",
                 encoding="utf-8",
             )
             ps_out = (
                 "101 1 S 0:00.00 smbd /mnt/Memory/samba4/sbin/smbd -D -s /mnt/Memory/samba4/etc/smb.conf\n"
-                "202 1 S 0:00.00 sh /bin/sh /mnt/Flash/watchdog.sh\n"
+                "202 1 S 0:00.00 sh /bin/sh /mnt/Flash/manager.sh\n"
             )
             script = f"""
 RUNTIME_RAM_ROOT={shlex.quote(str(ram_root))}
 RUNTIME_SMB_CONF_PATH={shlex.quote(str(smb_conf))}
-RUNTIME_SHARES_TSV_PATH={shlex.quote(str(shares_tsv))}
 RUNTIME_PERSISTENT_ROOT_PREFIX={shlex.quote(str(persistent_prefix) + "/")}
 {SMBD_STATUS_HELPERS}
 capture_df_for_volume_root() {{ echo "/dev/dk2 100 10 90 10% $1"; }}
@@ -5984,7 +6311,7 @@ printf 'status=%s\\n' "$?"
         self.assertIn("PASS:active smb.conf username map uses RAM username.map", result.stdout)
         self.assertIn("PASS:active smb.conf xattr_tdb:file is persistent", result.stdout)
         self.assertIn("PASS:all managed share volumes are mounted", result.stdout)
-        self.assertIn("PASS:watchdog is running for managed runtime", result.stdout)
+        self.assertIn("PASS:manager is running for managed runtime", result.stdout)
         self.assertIn("PASS:smbd bound to required TCP 445 sockets", result.stdout)
         self.assertIn("status=0", result.stdout)
 
@@ -6016,7 +6343,7 @@ smbd_bound_445 "$both" "127.0.0.1/8 ::1/128 192.168.1.40/24 fdbb:1111:2222:3333:
         self.assertIn("ipv4_missing_v6=1", result.stdout)
         self.assertIn("both_required=0", result.stdout)
 
-    def test_smbd_status_helpers_fail_for_disk_auth_unmounted_volume_and_missing_watchdog(self) -> None:
+    def test_smbd_status_helpers_fail_for_disk_auth_unmounted_volume_and_missing_manager(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             ram_root = tmp / "mnt" / "Memory" / "samba4"
@@ -6061,7 +6388,7 @@ fi
         self.assertIn("FAIL:active smb.conf username map is not staged in RAM", result.stdout)
         self.assertIn("FAIL:active smb.conf xattr_tdb:file is not persistent disk storage", result.stdout)
         self.assertIn("FAIL:one or more managed share volumes are not mounted", result.stdout)
-        self.assertIn("FAIL:watchdog is not running for managed runtime", result.stdout)
+        self.assertIn("FAIL:manager is not running for managed runtime", result.stdout)
         self.assertIn("status=1", result.stdout)
 
     def test_mdns_status_helper_reports_missing_binary_instead_of_network_defer(self) -> None:
@@ -6112,8 +6439,7 @@ fi
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("PASS:mdns-advertiser process is running", result.stdout)
-        self.assertIn("PASS:mdns-advertiser bound to required ipv4 UDP 5353 listener", result.stdout)
-        self.assertIn("FAIL:mdns-advertiser bound to UDP 5353 but bind address is not active", result.stdout)
+        self.assertIn("FAIL:mdns-advertiser is waiting for a usable address", result.stdout)
         self.assertIn("status=1", result.stdout)
         self.assertNotIn("PASS:mdns-advertiser bind address active", result.stdout)
 
@@ -6141,8 +6467,7 @@ fi
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("FAIL:mdns-advertiser mDNS socket family probe failed with exit code 3", result.stdout)
         self.assertIn("PASS:mdns-advertiser process is running", result.stdout)
-        self.assertIn("PASS:mdns-advertiser bound to required ipv4 UDP 5353 listener", result.stdout)
-        self.assertIn("FAIL:mdns-advertiser bound to UDP 5353 but bind address is not active", result.stdout)
+        self.assertIn("FAIL:mdns-advertiser is not bound to required UDP 5353 listener", result.stdout)
         self.assertIn("status=1", result.stdout)
 
     def test_mdns_status_helper_passes_only_when_bound_and_auto_ip_active(self) -> None:
@@ -6168,18 +6493,23 @@ fi
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("PASS:mdns-advertiser process is running", result.stdout)
-        self.assertIn("PASS:mdns-advertiser bound to required ipv4 UDP 5353 listener", result.stdout)
+        self.assertIn("PASS:mdns-advertiser bound to required UDP 5353 listeners", result.stdout)
         self.assertIn("PASS:mdns-advertiser bind address active", result.stdout)
         self.assertIn("PASS:Apple mDNSResponder is stopped", result.stdout)
         self.assertIn("status=0", result.stdout)
 
-    def test_mdns_status_helper_prefers_ipv4_udp_5353_when_advertiser_is_dual_stack(self) -> None:
+    def test_mdns_status_helper_requires_both_udp_5353_listeners_when_advertiser_is_dual_stack(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             mdns_bin = Path(tmpdir) / "mdns-advertiser"
             mdns_bin.write_text("#!/bin/sh\necho 'ipv4 ipv6'\n")
             mdns_bin.chmod(0o755)
             ps_out = "201 1 S 0:00.00 mdns-advertiser /mnt/Flash/mdns-advertiser"
-            fstat_out = "root mdns-advertiser 201 10 internet dgram udp 0x0 *:5353"
+            fstat_out = "\n".join(
+                [
+                    "root mdns-advertiser 201 10 internet dgram udp 0x0 *:5353",
+                    "root mdns-advertiser 201 11 internet6 dgram udp 0x0 [*]:5353",
+                ]
+            )
             script = f"""
 RUNTIME_MDNS_BIN={shlex.quote(str(mdns_bin))}
 {SMBD_STATUS_HELPERS}
@@ -6196,7 +6526,7 @@ fi
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("PASS:mdns-advertiser process is running", result.stdout)
-        self.assertIn("PASS:mdns-advertiser bound to required ipv4 UDP 5353 listener", result.stdout)
+        self.assertIn("PASS:mdns-advertiser bound to required UDP 5353 listeners", result.stdout)
         self.assertIn("status=0", result.stdout)
 
     def test_mdns_status_helper_accepts_ipv6_udp_5353_when_advertiser_is_ipv6_only(self) -> None:
@@ -6222,7 +6552,7 @@ fi
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("PASS:mdns-advertiser process is running", result.stdout)
-        self.assertIn("PASS:mdns-advertiser bound to required ipv6 UDP 5353 listener", result.stdout)
+        self.assertIn("PASS:mdns-advertiser bound to required UDP 5353 listeners", result.stdout)
         self.assertIn("PASS:mdns-advertiser bind address active", result.stdout)
         self.assertIn("status=0", result.stdout)
 
@@ -6478,8 +6808,10 @@ fi
         text = format_deployment_plan(plan)
         self.assertIn("volume root: /Volumes/dk2", text)
         self.assertEqual(plan.device_path, "/dev/dk2")
-        self.assertIn(f"diskd.useVolume wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s", text)
+        self.assertIn(f"diskd.useVolume wait: {DEFAULT_APPLE_MOUNT_WAIT_SECONDS}s per attempt", text)
+        self.assertIn("tc_kill_manager_pids TERM", text)
         self.assertIn("tc_kill_watchdog_pids TERM", text)
+        self.assertNotIn("/usr/bin/pkill -f '[m]anager.sh'", text)
         self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", text)
         self.assertIn("/usr/bin/pkill '^mdns-advertiser$' >/dev/null 2>&1 || true", text)
         self.assertIn("/usr/bin/acp rpc diskd.useVolume path:s:/Volumes/dk2", text)
@@ -6538,6 +6870,7 @@ fi
         self.assertEqual(
             plan.activation_actions,
             [
+                StopManagerAction(),
                 StopWatchdogAction(),
                 StopProcessAction("wcifsfs"),
                 RunScriptAction("/mnt/Flash/rc.local"),
@@ -6560,12 +6893,15 @@ fi
         rendered = [render_remote_action(action) for action in plan.remote_actions]
         self.assertTrue(any(command.startswith("/usr/bin/pkill '^nbns-advertiser$' >/dev/null 2>&1 || true;") for command in rendered))
 
-    def test_build_uninstall_plan_stops_watchdog_first(self) -> None:
+    def test_build_uninstall_plan_stops_supervisors_first(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
         rendered = [render_remote_action(action) for action in plan.remote_actions]
-        self.assertTrue(rendered[0].startswith("tc_watchdog_pids() { "))
-        self.assertIn("tc_kill_watchdog_pids TERM", rendered[0])
-        self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", rendered[0])
+        self.assertTrue(rendered[0].startswith("tc_manager_pids() { "))
+        self.assertIn("tc_kill_manager_pids TERM", rendered[0])
+        self.assertTrue(rendered[1].startswith("tc_watchdog_pids() { "))
+        self.assertIn("tc_kill_watchdog_pids TERM", rendered[1])
+        self.assertNotIn("/usr/bin/pkill -f '[m]anager.sh'", rendered[0])
+        self.assertNotIn("/usr/bin/pkill -f '[w]atchdog.sh'", rendered[1])
 
     def test_build_uninstall_plan_removes_mdns_snapshots(self) -> None:
         plan = build_uninstall_plan("root@10.0.0.2", ["/Volumes/dk2"], ["/Volumes/dk2/samba4"])
@@ -6668,6 +7004,10 @@ fi
             {"kind": "stop_watchdog", "args": []},
         )
         self.assertEqual(
+            remote_action_to_jsonable(StopManagerAction()),
+            {"kind": "stop_manager", "args": []},
+        )
+        self.assertEqual(
             remote_action_to_jsonable(EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", 30)),
             {
                 "kind": "ensure_volume_mounted",
@@ -6692,10 +7032,10 @@ fi
         plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
         expected_guard = EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
 
-        self.assertEqual(plan.pre_upload_actions[4], expected_guard)
-        self.assertEqual(plan.pre_upload_actions[6], expected_guard)
-        self.assertEqual(plan.pre_upload_actions[8], expected_guard)
-        self.assertEqual(plan.pre_upload_actions[10], expected_guard)
+        self.assertEqual(plan.pre_upload_actions[7], expected_guard)
+        self.assertEqual(plan.pre_upload_actions[9], expected_guard)
+        self.assertEqual(plan.pre_upload_actions[11], expected_guard)
+        self.assertEqual(plan.pre_upload_actions[13], expected_guard)
         self.assertEqual(plan.post_upload_actions[0], expected_guard)
 
     def test_deployment_plan_marks_uploaded_payload_binaries_executable(self) -> None:
@@ -6733,6 +7073,8 @@ fi
         self.assertTrue(process_present("wcifsnd", full=False, ps_lines=["S    wcifsnd         wcifsnd"]))
         self.assertFalse(process_present("/mnt/Flash/watchdog.sh", full=True, ps_lines=["Z    sh              /bin/sh /mnt/Flash/watchdog.sh"]))
         self.assertTrue(process_present("/mnt/Flash/watchdog.sh", full=True, ps_lines=["S    sh              /bin/sh /mnt/Flash/watchdog.sh"]))
+        self.assertFalse(process_present("/mnt/Flash/manager.sh", full=True, ps_lines=["Z    sh              /bin/sh /mnt/Flash/manager.sh"]))
+        self.assertTrue(process_present("/mnt/Flash/manager.sh", full=True, ps_lines=["S    sh              /bin/sh /mnt/Flash/manager.sh"]))
         self.assertFalse(
             process_present(
                 "/mnt/Flash/watchdog.sh",
@@ -6740,6 +7082,16 @@ fi
                 ps_lines=[
                     "S    sh              /bin/sh -c probe=/mnt/Flash/watchdog.sh",
                     "S    sh              sh -c /bin/sh -c 'probe=/mnt/Flash/watchdog.sh'",
+                ],
+            )
+        )
+        self.assertFalse(
+            process_present(
+                "/mnt/Flash/manager.sh",
+                full=True,
+                ps_lines=[
+                    "S    sh              /bin/sh -c probe=/mnt/Flash/manager.sh",
+                    "S    sh              sh -c /bin/sh -c 'probe=/mnt/Flash/manager.sh'",
                 ],
             )
         )
@@ -6782,6 +7134,15 @@ fi
         self.assertIn('if [ "${1:-}" = /bin/sh ] || [ "${1:-}" = sh ]; then', command)
         self.assertIn('/bin/kill -9 "$tc_watchdog_pid" >/dev/null 2>&1 || true', command)
         self.assertIn("echo 'process watchdog did not stop' >&2; exit 1", command)
+
+    def test_render_stop_manager_action_kills_by_full_match(self) -> None:
+        command = render_remote_action(StopManagerAction())
+        self.assertIn("tc_manager_pids() {", command)
+        self.assertIn("tc_kill_manager_pids TERM;", command)
+        self.assertIn('if [ "${1:-}" = /bin/sh ] || [ "${1:-}" = sh ]; then', command)
+        self.assertIn('/bin/kill -9 "$tc_manager_pid" >/dev/null 2>&1 || true', command)
+        self.assertIn("echo 'process manager did not stop' >&2; exit 1", command)
+        self.assertNotIn("/usr/bin/pkill -f '[m]anager.sh'", command)
 
     def test_wait_for_ssh_state_uses_real_ssh_probe_for_expected_up(self) -> None:
         proc = mock.Mock(returncode=0, stdout="ok\n")

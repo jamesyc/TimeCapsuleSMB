@@ -216,7 +216,8 @@ enum exit_code {
     EXIT_INVALID_AIRPORT_TXT = 10,
     EXIT_AUTO_IP_UNAVAILABLE = 11,
     EXIT_SNAPSHOT_CAPTURE_FAILED = 12,
-    EXIT_AUTO_IP_PROBE_FAILED = 13
+    EXIT_AUTO_IP_PROBE_FAILED = 13,
+    EXIT_SNAPSHOT_NOT_FRESH = 14
 };
 
 struct adisk_disk {
@@ -263,6 +264,7 @@ struct config {
     char load_snapshot_path[MAX_NAME];
     char save_snapshot_path[MAX_NAME];
     char skip_capture_if_snapshot_newer_than_boot_path[MAX_NAME];
+    char snapshot_newer_than_boot_path[MAX_NAME];
 };
 
 struct service_record {
@@ -818,7 +820,7 @@ static void mdns_transport_requirements_from_links(const struct link_context_set
 
     memset(requirements, 0, sizeof(*requirements));
     requirements->ipv4_required = wants_ipv4;
-    requirements->ipv6_required = !wants_ipv4 && wants_ipv6;
+    requirements->ipv6_required = wants_ipv6;
 }
 
 static void mdns_transport_status_from_links(const struct link_context_set *desired_links,
@@ -1170,6 +1172,7 @@ static void usage(const char *prog) {
             "Usage: %s --instance <name> --host <label> --auto-ip [options]\n"
             "       %s --save-snapshot <path> [--save-all-snapshot <path>] --auto-ip [airport identity options]\n"
             "       %s --save-airport-snapshot <path> --instance <name> --host <label> [airport identity options]\n"
+            "       %s --snapshot-newer-than-boot <path>\n"
             "       %s --print-auto-ip-cidrs\n"
             "       %s --print-smb-bind-interfaces\n"
             "       %s --print-mdns-socket-families\n"
@@ -1183,6 +1186,7 @@ static void usage(const char *prog) {
             "  --save-all-snapshot <path> Capture raw LAN-wide mDNS records into a snapshot file\n"
             "  --save-snapshot <path> Capture Apple mDNS records into a snapshot file; without --load-snapshot, capture and exit\n"
             "  --skip-capture-if-snapshot-newer-than-boot <path> Reuse an existing snapshot created after boot\n"
+            "  --snapshot-newer-than-boot <path> Exit 0 when snapshot exists, is non-empty, and is newer than boot\n"
             "  --save-airport-snapshot <path> Generate an AirPort-only Apple snapshot file and exit unless loading\n"
             "  --load-snapshot <path> Kill Apple mDNSResponder and replay snapshot records\n"
             "  --diskless        Suppress generated _smb and _adisk records while replaying other snapshot records\n"
@@ -1200,7 +1204,7 @@ static void usage(const char *prog) {
             "  --airport-srcv <v> Source/build version for _airport._tcp\n"
             "  --airport-bjsd <n> Bonjour seed/build field for _airport._tcp\n"
             "  --airport-port <p> _airport._tcp service port (default: 5009)\n",
-            prog, prog, prog, prog, prog, prog, prog);
+            prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 static int append_bytes(uint8_t *buf, size_t *off, size_t cap, const void *src, size_t len) {
@@ -3142,7 +3146,7 @@ static uint32_t link_ipv4_source_for_peer(const struct link_context *link, uint3
         return link_preferred_ipv4_source(link);
     }
     for (i = 0; i < link->ipv4_count; i++) {
-        uint32_t netmask = link->ipv4[i].netmask;
+        uint32_t netmask = effective_ipv4_netmask(link->ipv4[i].addr, link->ipv4[i].netmask);
         int matches;
         int score;
 
@@ -5256,6 +5260,9 @@ static int handle_query_any(int sockfd,
             reply_route = MDNS_REPLY_LEGACY_UNICAST;
         } else if ((qclass_raw & DNS_CLASS_QU) && source_allows_unicast) {
             reply_route = MDNS_REPLY_UNICAST;
+            if (source_port == MDNS_PORT) {
+                reply_route |= MDNS_REPLY_MULTICAST;
+            }
         } else {
             reply_route = MDNS_REPLY_MULTICAST;
         }
@@ -5365,7 +5372,7 @@ static int source_matches_link_ipv4_subnet(uint32_t source_ipv4_addr, const stru
     size_t i;
 
     for (i = 0; i < link->ipv4_count; i++) {
-        uint32_t netmask = link->ipv4[i].netmask;
+        uint32_t netmask = effective_ipv4_netmask(link->ipv4[i].addr, link->ipv4[i].netmask);
         if (netmask == 0) {
             if (source_ipv4_addr == link->ipv4[i].addr) {
                 return 1;
@@ -5931,6 +5938,10 @@ int main(int argc, char **argv) {
             strncpy(cfg.skip_capture_if_snapshot_newer_than_boot_path,
                     argv[++i],
                     sizeof(cfg.skip_capture_if_snapshot_newer_than_boot_path) - 1);
+        } else if (strcmp(argv[i], "--snapshot-newer-than-boot") == 0 && i + 1 < argc) {
+            strncpy(cfg.snapshot_newer_than_boot_path,
+                    argv[++i],
+                    sizeof(cfg.snapshot_newer_than_boot_path) - 1);
         } else if (strcmp(argv[i], "--load-snapshot") == 0 && i + 1 < argc) {
             strncpy(cfg.load_snapshot_path, argv[++i], sizeof(cfg.load_snapshot_path) - 1);
         } else if (strcmp(argv[i], "--diskless") == 0) {
@@ -5998,6 +6009,25 @@ int main(int argc, char **argv) {
         return print_mdns_socket_families_with_provider(stdout,
                                                        collect_usable_link_contexts_provider,
                                                        NULL);
+    }
+    if (cfg.snapshot_newer_than_boot_path[0] != '\0') {
+        int snapshot_freshness = snapshot_file_newer_than_boot(cfg.snapshot_newer_than_boot_path);
+        if (snapshot_freshness > 0) {
+            fprintf(stderr,
+                    "mDNS snapshot is newer than current boot: %s\n",
+                    cfg.snapshot_newer_than_boot_path);
+            return EXIT_OK;
+        }
+        if (snapshot_freshness < 0) {
+            fprintf(stderr,
+                    "mDNS snapshot freshness check unavailable for %s\n",
+                    cfg.snapshot_newer_than_boot_path);
+        } else {
+            fprintf(stderr,
+                    "mDNS snapshot is missing, empty, or not newer than current boot: %s\n",
+                    cfg.snapshot_newer_than_boot_path);
+        }
+        return EXIT_SNAPSHOT_NOT_FRESH;
     }
 
     capture_only = (cfg.load_snapshot_path[0] == '\0' &&

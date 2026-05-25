@@ -41,11 +41,11 @@ from timecapsulesmb.deploy.planner import (
     GENERATED_FLASH_CONFIG_SOURCE,
     GENERATED_SMBPASSWD_SOURCE,
     GENERATED_USERNAME_MAP_SOURCE,
+    PACKAGED_BOOT_SOURCE,
     PACKAGED_COMMON_SH_SOURCE,
     PACKAGED_DFREE_SH_SOURCE,
+    PACKAGED_MANAGER_SOURCE,
     PACKAGED_RC_LOCAL_SOURCE,
-    PACKAGED_START_SAMBA_SOURCE,
-    PACKAGED_WATCHDOG_SOURCE,
     build_deployment_plan,
 )
 from timecapsulesmb.deploy.verify import (
@@ -271,6 +271,10 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
     compatibility = require_supported_payload(target, allow_unsupported=allow_unsupported)
     payload_family = compatibility.payload_family
     is_netbsd4 = is_netbsd4_payload_family(payload_family)
+    if is_netbsd4:
+        # Apple NetBSD 4 firmware can expose /usr/bin/scp but hang after
+        # writing the file. Use the SSH pipe upload fallback consistently.
+        connection.remote_has_scp = False
     startup_mode = startup_mode_for_deploy(no_reboot=no_reboot, is_netbsd4=is_netbsd4)
     no_wait = effective_no_wait_for_deploy(requested=no_wait, no_reboot=no_reboot)
     sink.log(operation, f"Using {payload_family_description(payload_family)} payload.")
@@ -409,8 +413,8 @@ def deploy_operation(params: dict[str, object], sink: EventSink) -> OperationRes
             PACKAGED_RC_LOCAL_SOURCE: boot_assets.enter_context(boot_asset_path("rc.local")),
             PACKAGED_COMMON_SH_SOURCE: boot_assets.enter_context(boot_asset_path("common.sh")),
             PACKAGED_DFREE_SH_SOURCE: boot_assets.enter_context(boot_asset_path("dfree.sh")),
-            PACKAGED_START_SAMBA_SOURCE: boot_assets.enter_context(boot_asset_path("start-samba.sh")),
-            PACKAGED_WATCHDOG_SOURCE: boot_assets.enter_context(boot_asset_path("watchdog.sh")),
+            PACKAGED_BOOT_SOURCE: boot_assets.enter_context(boot_asset_path("boot.sh")),
+            PACKAGED_MANAGER_SOURCE: boot_assets.enter_context(boot_asset_path("manager.sh")),
         }
         sink.stage(operation, "upload_payload")
         upload_deployment_payload(plan, connection=connection, source_resolver=upload_sources)

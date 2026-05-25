@@ -60,7 +60,7 @@
 "app_settings.blank_uses_device_default" = "Blank";
 "app_settings.check_now" = "Check Now";
 "app_settings.check_updates_on_launch" = "Check for updates on launch";
-"app_settings.default_bonjour_timeout" = "Bonjour timeout seconds";
+"app_settings.default_bonjour_timeout" = "Discovery timeout seconds";
 "app_settings.error.ata_idle" = "ATA idle seconds must be a non-negative integer.";
 "app_settings.error.ata_standby" = "ATA standby seconds must be blank or a non-negative integer.";
 "app_settings.error.bonjour_timeout" = "Bonjour timeout must be a non-negative number.";

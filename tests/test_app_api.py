@@ -955,7 +955,7 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(checks[0]["status"], "PASS")
         self.assertEqual(checks[0]["details"], {"port": 445})
 
-    def test_doctor_passes_bonjour_timeout_to_checks(self) -> None:
+    def test_doctor_ignores_legacy_bonjour_timeout_param(self) -> None:
         collector = CollectingSink()
         config = AppConfig.from_values({"TC_HOST": "root@10.0.0.2", "TC_PASSWORD": "pw"})
 
@@ -969,7 +969,7 @@ class AppApiTests(unittest.TestCase):
                         )
 
         self.assertEqual(rc, 0)
-        self.assertEqual(checks.call_args.kwargs["bonjour_timeout"], 2.75)
+        self.assertNotIn("bonjour_timeout", checks.call_args.kwargs)
 
     def test_doctor_uses_request_credentials_without_requiring_saved_password(self) -> None:
         collector = CollectingSink()
@@ -1464,6 +1464,11 @@ class AppApiTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         upload.assert_called_once()
+        upload_sources = upload.call_args.kwargs["source_resolver"]
+        self.assertIn("packaged:boot.sh", upload_sources)
+        self.assertIn("packaged:manager.sh", upload_sources)
+        self.assertNotIn("packaged:start-samba.sh", upload_sources)
+        self.assertNotIn("packaged:watchdog.sh", upload_sources)
         self.assertEqual(remote_actions.call_count, 3)
         wait.assert_not_called()
         verify_runtime.assert_called_once()
@@ -1560,6 +1565,7 @@ class AppApiTests(unittest.TestCase):
                                                             )
 
         self.assertEqual(rc, 0)
+        self.assertFalse(connection.remote_has_scp)
         reboot.assert_called_once()
         activate.assert_not_called()
         payload = collector.events_of_type("result")[0]["payload"]

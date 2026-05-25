@@ -29,6 +29,17 @@ from timecapsulesmb.transport.ssh import SshCommandTimeout, SshConnection, SshEr
 
 
 REBOOT_UP_TIMEOUT_MESSAGE = "Timed out waiting for SSH after reboot."
+DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE = (
+    "Timed out waiting for SSH after reboot.\n\n"
+    "The payload was uploaded and the reboot request succeeded, but the device did not accept SSH again "
+    "before the 4 minute timeout. It may still be booting, or it may have come back with a different IP address.\n\n"
+    "Next steps:\n"
+    "  1. Wait a few more minutes.\n"
+    "  2. If the device is reachable at a new IP, update TC_HOST or rerun configure.\n"
+    "  3. Make sure you are connected to the same network/wifi as the device.\n"
+    "  4. On NetBSD 4 devices, run `tcapsule activate` once SSH is reachable; "
+    "deploy did not get far enough to activate Samba after reboot."
+)
 ACP_REBOOT_REQUEST_TIMEOUT_SECONDS = 10
 SSH_SHUTDOWN_REBOOT_PROGRESS_MESSAGE = "SSH: /bin/sync; /sbin/shutdown -r now (fallback /sbin/reboot)"
 
@@ -86,6 +97,7 @@ def request_reboot_and_wait(
     reboot_no_down_message: str,
     down_timeout_seconds: int = 60,
     up_timeout_seconds: int = 240,
+    reboot_up_timeout_message: str = REBOOT_UP_TIMEOUT_MESSAGE,
 ) -> bool:
     request_reboot(connection, command_context)
 
@@ -95,6 +107,7 @@ def request_reboot_and_wait(
         reboot_no_down_message=reboot_no_down_message,
         down_timeout_seconds=down_timeout_seconds,
         up_timeout_seconds=up_timeout_seconds,
+        reboot_up_timeout_message=reboot_up_timeout_message,
     )
 
 
@@ -116,6 +129,7 @@ def request_deploy_reboot_and_wait(
     reboot_no_down_message: str,
     down_timeout_seconds: int = 60,
     up_timeout_seconds: int = 240,
+    reboot_up_timeout_message: str = DEPLOY_REBOOT_UP_TIMEOUT_MESSAGE,
 ) -> bool:
     request_deploy_reboot(connection, command_context)
 
@@ -125,6 +139,7 @@ def request_deploy_reboot_and_wait(
         reboot_no_down_message=reboot_no_down_message,
         down_timeout_seconds=down_timeout_seconds,
         up_timeout_seconds=up_timeout_seconds,
+        reboot_up_timeout_message=reboot_up_timeout_message,
     )
 
 
@@ -262,6 +277,7 @@ def observe_reboot_cycle(
     reboot_no_down_message: str,
     down_timeout_seconds: int,
     up_timeout_seconds: int,
+    reboot_up_timeout_message: str = REBOOT_UP_TIMEOUT_MESSAGE,
 ) -> bool:
     print("Waiting for the device to go down...")
     command_context.set_stage("wait_for_reboot_down")
@@ -270,11 +286,11 @@ def observe_reboot_cycle(
         command_context.fail_with_error(reboot_no_down_message)
         return False
 
-    print("Waiting for the device to come back up...")
+    print("Device went down; waiting for it to come back up...")
     command_context.set_stage("wait_for_reboot_up")
     if not wait_for_ssh_state_conn(connection, expected_up=True, timeout_seconds=up_timeout_seconds):
-        print(REBOOT_UP_TIMEOUT_MESSAGE)
-        command_context.fail_with_error(REBOOT_UP_TIMEOUT_MESSAGE)
+        print(reboot_up_timeout_message)
+        command_context.fail_with_error(reboot_up_timeout_message)
         return False
 
     command_context.update_fields(device_came_back_after_reboot=True)

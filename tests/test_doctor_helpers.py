@@ -12,8 +12,12 @@ if str(SRC_ROOT) not in sys.path:
 
 from timecapsulesmb.checks.bonjour import BonjourServiceTarget  # noqa: E402
 from timecapsulesmb.checks.smb_config import (  # noqa: E402
+    SmbShare,
     parse_active_netbios_name,
+    parse_active_payload_dir,
     parse_active_share_names,
+    parse_active_share_paths,
+    parse_active_shares,
     parse_xattr_tdb_paths,
 )
 from timecapsulesmb.checks.smb_targets import doctor_smb_servers  # noqa: E402
@@ -59,6 +63,38 @@ class DoctorHelperTests(unittest.TestCase):
         """
 
         self.assertEqual(parse_active_share_names(smb_conf), ["Data", "Time Machine"])
+
+    def test_parse_active_shares_tracks_section_paths(self) -> None:
+        smb_conf = """
+        [global]
+          path = /ignored/global
+        [Data]
+          path = /Volumes/dk2/ShareRoot
+        [ Time Machine ]
+          comment = backups
+          path = /Volumes/dk3
+        [Empty]
+        """
+
+        self.assertEqual(
+            parse_active_shares(smb_conf),
+            [
+                SmbShare("Data", "/Volumes/dk2/ShareRoot"),
+                SmbShare("Time Machine", "/Volumes/dk3"),
+                SmbShare("Empty", None),
+            ],
+        )
+        self.assertEqual(parse_active_share_paths(smb_conf), ["/Volumes/dk2/ShareRoot", "/Volumes/dk3"])
+
+    def test_parse_active_payload_dir_derives_parent_from_global_log_file(self) -> None:
+        smb_conf = """
+        [global]
+          log file = /Volumes/dk2/.samba4/logs/log.smbd
+        [Data]
+          path = /Volumes/dk2/ShareRoot
+        """
+
+        self.assertEqual(parse_active_payload_dir(smb_conf), "/Volumes/dk2/.samba4")
 
     def runtime_identity(self, host_label: str = "timecapsulesamba4") -> RuntimeNamingIdentityProbeResult:
         return RuntimeNamingIdentityProbeResult(

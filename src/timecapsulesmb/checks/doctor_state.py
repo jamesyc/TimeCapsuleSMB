@@ -6,6 +6,7 @@ from pathlib import Path
 
 from timecapsulesmb.checks.bonjour import BonjourServiceTarget
 from timecapsulesmb.checks.models import CheckResult, is_fatal
+from timecapsulesmb.checks.network_plan import NetworkCheckPlan
 from timecapsulesmb.core.config import AppConfig
 from timecapsulesmb.device.probe import ProbedDeviceState, RemoteInterfaceProbeResult, RuntimeNamingIdentityProbeResult
 from timecapsulesmb.transport.ssh import SshConnection
@@ -27,7 +28,6 @@ class DoctorOptions:
     skip_ssh: bool
     skip_bonjour: bool
     skip_smb: bool
-    bonjour_timeout: float
 
 
 @dataclass(frozen=True)
@@ -86,6 +86,12 @@ class SmbConfigState:
 @dataclass(frozen=True)
 class RuntimeNamingState:
     identity: RuntimeNamingIdentityProbeResult | None
+
+
+@dataclass(frozen=True)
+class NetworkPlanState:
+    plan: NetworkCheckPlan | None
+    reason: str = ""
 
 
 @dataclass(frozen=True)

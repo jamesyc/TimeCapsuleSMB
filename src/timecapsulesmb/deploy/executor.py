@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import shlex
 from pathlib import Path, PurePosixPath
-from typing import Iterable, Mapping
+from typing import Callable, Iterable, Mapping
 
 from timecapsulesmb.deploy.commands import RemoteAction, render_remote_actions
 from timecapsulesmb.deploy.planner import FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, DeploymentPlan, FileTransfer, UninstallPlan
@@ -93,6 +93,7 @@ def upload_deployment_payload(
     *,
     connection: SshConnection,
     source_resolver: Mapping[str, Path],
+    on_uploaded: Callable[[FileTransfer], None] | None = None,
 ) -> None:
     planned_modes = {permission.path: permission.mode for permission in plan.permissions}
     for transfer in plan.uploads:
@@ -111,11 +112,23 @@ def upload_deployment_payload(
             )
         else:
             raise ValueError(f"Unsupported deployment upload mode {transfer.mode!r} for {transfer.source_id!r}")
+        if on_uploaded is not None:
+            on_uploaded(transfer)
 
 
-def run_remote_actions(connection: SshConnection, actions: Iterable[RemoteAction]) -> None:
-    for command in render_remote_actions(list(actions)):
+def run_remote_actions(
+    connection: SshConnection,
+    actions: Iterable[RemoteAction],
+    *,
+    on_action_done: Callable[[RemoteAction, int, int], None] | None = None,
+) -> None:
+    action_list = list(actions)
+    commands = render_remote_actions(action_list)
+    total = len(action_list)
+    for index, (action, command) in enumerate(zip(action_list, commands), start=1):
         run_ssh(connection, command)
+        if on_action_done is not None:
+            on_action_done(action, index, total)
 
 
 def remote_request_reboot(connection: SshConnection) -> None:

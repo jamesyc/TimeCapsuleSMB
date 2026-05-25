@@ -5,7 +5,11 @@ import shlex
 from typing import Callable
 
 from timecapsulesmb.deploy.executor import DETACHED_SHUTDOWN_REBOOT_COMMAND
-from timecapsulesmb.device.processes import render_direct_pkill9_by_ucomm, render_direct_pkill9_watchdog
+from timecapsulesmb.device.processes import (
+    render_direct_pkill9_by_ucomm,
+    render_direct_pkill9_manager,
+    render_direct_pkill9_watchdog,
+)
 from timecapsulesmb.device.storage import MaStVolume
 
 
@@ -123,6 +127,7 @@ def format_fsck_plan(target: FsckTarget, *, reboot: bool, wait: bool) -> str:
 
 def build_remote_fsck_script(device: str, mountpoint: str, *, reboot: bool) -> str:
     lines = [
+        render_direct_pkill9_manager(),
         render_direct_pkill9_watchdog(),
         render_direct_pkill9_by_ucomm("smbd"),
         render_direct_pkill9_by_ucomm("afpserver"),

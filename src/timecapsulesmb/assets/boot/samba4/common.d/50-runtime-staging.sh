@@ -1,138 +1,14 @@
-tc_refresh_disk_state() {
-    volumes_file="$TC_STATE_DIR/mast-volumes.$$"
-    raw_file="$TC_STATE_DIR/mast.raw.$$"
-    shares_file="$TC_STATE_DIR/shares.tsv.$$"
-    adisk_file="$TC_STATE_DIR/adisk.tsv.$$"
-    payload_file="$TC_STATE_DIR/payload.tsv.$$"
-    TC_DISK_REFRESH_RESULT=failed
-
-    tc_log "disk-state refresh: discovering MaSt HFS volumes"
-    rm -f "$volumes_file" "$raw_file" "$shares_file" "$adisk_file" "$payload_file"
-    if ! tc_read_mast_volumes_to "$volumes_file" "$raw_file"; then
-        tc_log "MaSt discovery failed"
-        TC_DISK_REFRESH_RESULT=mast_failed
-        rm -f "$volumes_file" "$raw_file" "$shares_file" "$adisk_file" "$payload_file"
-        return 1
-    fi
-    tc_log "disk-state refresh: MaSt discovery complete"
-    tc_log_mast_volume_state "$volumes_file"
-
-    if [ ! -s "$volumes_file" ]; then
-        tc_log "disk-state refresh: MaSt reports zero managed HFS volumes; writing diskless runtime state"
-        : >"$shares_file"
-        : >"$adisk_file"
-        : >"$payload_file"
-        mv -f "$volumes_file" "$TC_TOPOLOGY_SIGNATURE"
-        mv -f "$shares_file" "$TC_SHARES_TSV"
-        mv -f "$adisk_file" "$TC_ADISK_TSV"
-        mv -f "$payload_file" "$TC_PAYLOAD_TSV"
-        TC_DISK_REFRESH_RESULT=no_payload
-        tc_log "disk-state refresh complete: diskless runtime state written"
-        rm -f "$raw_file" "$volumes_file" "$shares_file" "$adisk_file" "$payload_file"
-        return 0
-    fi
-
-    tc_log "disk-state refresh: activating discovered MaSt volumes"
-    tc_mount_mast_volumes_for_boot "$volumes_file"
-
-    tc_log "disk-state refresh: resolving payload directory"
-    if ! tc_resolve_payload "$volumes_file"; then
-        tc_log "payload discovery failed; writing no-payload runtime state"
-        : >"$shares_file"
-        : >"$adisk_file"
-        : >"$payload_file"
-        mv -f "$volumes_file" "$TC_TOPOLOGY_SIGNATURE"
-        mv -f "$shares_file" "$TC_SHARES_TSV"
-        mv -f "$adisk_file" "$TC_ADISK_TSV"
-        mv -f "$payload_file" "$TC_PAYLOAD_TSV"
-        TC_DISK_REFRESH_RESULT=no_payload
-        tc_log "disk-state refresh complete: no-payload runtime state written"
-        rm -f "$raw_file" "$volumes_file" "$shares_file" "$adisk_file" "$payload_file"
-        return 0
-    fi
-
-    tc_log "disk-state refresh: building share state from mounted writable MaSt volumes"
-    if ! tc_build_share_state "$volumes_file" "$shares_file" "$adisk_file"; then
-        tc_log "no writable MaSt share volumes are available; writing no-payload runtime state"
-        : >"$shares_file"
-        : >"$adisk_file"
-        : >"$payload_file"
-        mv -f "$volumes_file" "$TC_TOPOLOGY_SIGNATURE"
-        mv -f "$shares_file" "$TC_SHARES_TSV"
-        mv -f "$adisk_file" "$TC_ADISK_TSV"
-        mv -f "$payload_file" "$TC_PAYLOAD_TSV"
-        TC_DISK_REFRESH_RESULT=no_payload
-        tc_log "disk-state refresh complete: no-payload runtime state written"
-        rm -f "$raw_file" "$volumes_file" "$shares_file" "$adisk_file" "$payload_file"
-        return 0
-    fi
-    tc_log "disk-state refresh: share state ready"
-
-    tc_log "disk-state refresh: applying ATA drive settings after payload and share-state build"
-    tc_configure_ata_drive_settings_for_mast_disks "$volumes_file" || true
-
-    tc_write_payload_state "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME" "$TC_RESOLVED_PAYLOAD_DEVICE" "$payload_file"
-    mv -f "$volumes_file" "$TC_TOPOLOGY_SIGNATURE"
-    mv -f "$shares_file" "$TC_SHARES_TSV"
-    mv -f "$adisk_file" "$TC_ADISK_TSV"
-    mv -f "$payload_file" "$TC_PAYLOAD_TSV"
-    tc_log "disk-state refresh: payload state written: dir=$TC_RESOLVED_PAYLOAD_DIR volume=$TC_RESOLVED_PAYLOAD_VOLUME device=$TC_RESOLVED_PAYLOAD_DEVICE"
-    tc_set_payload_log_dir "$TC_RESOLVED_PAYLOAD_DIR" "$TC_RESOLVED_PAYLOAD_VOLUME"
-    if tc_payload_log_dir_ready; then
-        tc_log "payload smbd log directory ready at $TC_PAYLOAD_LOG_DIR"
-    else
-        tc_log "payload smbd log directory unavailable at $TC_PAYLOAD_LOG_DIR"
-    fi
-
-    tc_log "disk-state refresh complete: runtime state written"
-    TC_DISK_REFRESH_RESULT=ready
-    rm -f "$volumes_file" "$raw_file" "$shares_file" "$adisk_file" "$payload_file"
-    return 0
-}
-
-tc_stage_disk_runtime() {
-    if ! tc_load_payload_state; then
-        tc_log "payload discovery failed: payload state is unavailable"
-        return 1
-    fi
-    tc_set_payload_log_dir "$TC_PAYLOAD_DIR" "$TC_PAYLOAD_VOLUME"
-
-    SMBD_SRC=$(tc_find_payload_smbd "$TC_PAYLOAD_DIR") || {
-        tc_log "payload discovery failed: missing smbd binary in $TC_PAYLOAD_DIR"
-        return 1
-    }
-
-    NBNS_SRC=
-    if [ "$NBNS_ENABLED" = "1" ]; then
-        if NBNS_SRC=$(tc_find_payload_nbns "$TC_PAYLOAD_DIR"); then
-            :
-        else
-            NBNS_SRC=
-        fi
-    fi
-
-    tc_stage_runtime "$TC_PAYLOAD_DIR" "$SMBD_SRC" "$NBNS_SRC"
-    if [ -z "$TC_SMB_BIND_INTERFACES" ]; then
-        tc_refresh_smb_bind_interfaces || {
-            tc_log "runtime staging failed: no usable bind address is available"
-            return 1
-        }
-    fi
-    tc_generate_smb_conf "$TC_PAYLOAD_DIR"
-    tc_log "runtime staging complete under $RAM_ROOT"
-}
-
 tc_find_payload_smbd() {
     payload_dir=$1
 
     if [ -x "$payload_dir/smbd" ]; then
-        tc_log "selected smbd binary $payload_dir/smbd"
+        tc_smbd_debug_log "selected smbd binary $payload_dir/smbd"
         echo "$payload_dir/smbd"
         return 0
     fi
 
     if [ -x "$payload_dir/sbin/smbd" ]; then
-        tc_log "selected smbd binary $payload_dir/sbin/smbd"
+        tc_smbd_debug_log "selected smbd binary $payload_dir/sbin/smbd"
         echo "$payload_dir/sbin/smbd"
         return 0
     fi
@@ -145,7 +21,7 @@ tc_find_payload_nbns() {
     payload_dir=$1
 
     if [ -x "$payload_dir/nbns-advertiser" ]; then
-        tc_log "selected nbns binary $payload_dir/nbns-advertiser"
+        tc_smbd_debug_log "selected nbns binary $payload_dir/nbns-advertiser"
         echo "$payload_dir/nbns-advertiser"
         return 0
     fi
@@ -161,6 +37,13 @@ tc_select_cache_directory() {
         4.*) echo "$payload_dir/cache" ;;
         *) echo "$RAM_VAR" ;;
     esac
+}
+
+tc_clear_payload_log_dir() {
+    TC_PAYLOAD_LOG_DIR=
+    TC_PAYLOAD_LOG_VOLUME=
+    TC_MDNS_LOG_FILE="$RAM_VAR/mdns.log"
+    TC_NBNS_LOG_FILE="$RAM_VAR/nbns.log"
 }
 
 tc_set_payload_log_dir() {
@@ -212,27 +95,47 @@ tc_prepare_runtime_log_file() {
     tc_trim_log_file_if_needed "$log_path" "$max_bytes"
 }
 
+tc_stage_runtime_executable() {
+    executable_src=$1
+    executable_dest=$2
+    executable_tmp="$executable_dest.tmp.$$"
+
+    rm -f "$executable_tmp" >/dev/null 2>&1 || true
+    # Copy through a same-directory temporary file so a failed copy cannot
+    # truncate the executable path that a running daemon may still need.
+    cp "$executable_src" "$executable_tmp" || {
+        rm -f "$executable_tmp" >/dev/null 2>&1 || true
+        return 1
+    }
+    chmod 755 "$executable_tmp" || {
+        rm -f "$executable_tmp" >/dev/null 2>&1 || true
+        return 1
+    }
+    mv "$executable_tmp" "$executable_dest" || {
+        rm -f "$executable_tmp" >/dev/null 2>&1 || true
+        return 1
+    }
+}
+
 tc_stage_runtime() {
     payload_dir=$1
     smbd_src=$2
     nbns_src=${3:-}
 
-    cp "$smbd_src" "$TC_SMBD_BIN"
-    chmod 755 "$TC_SMBD_BIN"
+    tc_stage_runtime_executable "$smbd_src" "$TC_SMBD_BIN" || return 1
 
     for required_file in smbpasswd username.map; do
         if [ ! -f "$payload_dir/private/$required_file" ]; then
             tc_log "required Samba private file missing: $payload_dir/private/$required_file"
             return 1
         fi
-        cp "$payload_dir/private/$required_file" "$RAM_PRIVATE/$required_file"
+        cp "$payload_dir/private/$required_file" "$RAM_PRIVATE/$required_file" || return 1
     done
-    chmod 600 "$RAM_PRIVATE/smbpasswd" "$RAM_PRIVATE/username.map"
+    chmod 600 "$RAM_PRIVATE/smbpasswd" "$RAM_PRIVATE/username.map" || return 1
     tc_log "staged Samba auth files into RAM private directory"
 
     if [ "$NBNS_ENABLED" = "1" ] && [ -n "$nbns_src" ] && [ -x "$nbns_src" ]; then
-        cp "$nbns_src" "$TC_NBNS_BIN"
-        chmod 755 "$TC_NBNS_BIN"
+        tc_stage_runtime_executable "$nbns_src" "$TC_NBNS_BIN" || return 1
         tc_log "staged nbns runtime binary"
     else
         tc_log "nbns runtime staging skipped"
@@ -257,8 +160,9 @@ tc_smbd_fruit_model() {
     echo MacSamba
 }
 
-tc_generate_smb_conf() {
+tc_generate_smb_conf_from_share_rows() {
     payload_dir=$1
+    runtime_share_rows=$2
     tc_ensure_runtime_identity
     if [ -z "$TC_SMB_BIND_INTERFACES" ]; then
         tc_log "smb.conf generation failed: TC_SMB_BIND_INTERFACES is empty"
@@ -270,8 +174,9 @@ tc_generate_smb_conf() {
     smbd_log_level_line=
     smbd_protocol_lines=
     smbd_fruit_model=$(tc_smbd_fruit_model)
+    smbd_conf_tmp="$TC_SMBD_CONF.tmp.$$"
 
-    mkdir -p "$payload_dir/logs"
+    mkdir -p "$payload_dir/logs" || return 1
     chmod 755 "$payload_dir/logs" >/dev/null 2>&1 || true
     tc_prepare_smbd_core_dir "$payload_dir/logs" || true
     if [ "$TC_SMBD_DISK_LOGGING_ENABLED" = "1" ]; then
@@ -279,7 +184,7 @@ tc_generate_smb_conf() {
         : >>"$smbd_log" || true
         tc_log "smbd debug logging enabled at $smbd_log"
     else
-        tc_prepare_log_file "$smbd_log" "$TC_RUNTIME_LOG_MAX_BYTES"
+        tc_prepare_log_file "$smbd_log" "$TC_RUNTIME_LOG_MAX_BYTES" || return 1
     fi
     if [ "$ANY_PROTOCOL" != "1" ]; then
         smbd_protocol_lines="    min protocol = SMB2
@@ -287,6 +192,7 @@ tc_generate_smb_conf() {
 "
     fi
 
+    rm -f "$smbd_conf_tmp" >/dev/null 2>&1 || true
     {
         cat <<EOF
 [global]
@@ -333,7 +239,8 @@ $smbd_log_level_line
     fruit:delete_empty_adfiles = yes
 EOF
 
-        while IFS="$TC_TAB" read -r share_name share_path part_device builtin part_uuid; do
+        while IFS="$TC_TAB" read -r share_name share_path part_device builtin part_uuid ||
+            [ -n "$share_name$share_path$part_device$builtin$part_uuid" ]; do
             [ -n "$share_name" ] || continue
             cat <<EOF
 
@@ -360,6 +267,15 @@ EOF
     force create mode = 0666
     force directory mode = 0777
 EOF
-        done <"$TC_SHARES_TSV"
-    } >"$TC_SMBD_CONF"
+        done <<EOF
+$runtime_share_rows
+EOF
+    } >"$smbd_conf_tmp" || {
+        rm -f "$smbd_conf_tmp" >/dev/null 2>&1 || true
+        return 1
+    }
+    mv "$smbd_conf_tmp" "$TC_SMBD_CONF" || {
+        rm -f "$smbd_conf_tmp" >/dev/null 2>&1 || true
+        return 1
+    }
 }

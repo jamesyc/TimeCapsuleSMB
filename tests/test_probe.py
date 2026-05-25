@@ -19,7 +19,7 @@ from timecapsulesmb.device.probe import (
     probe_remote_interface_candidates_conn,
     probe_remote_interface_conn,
     read_remote_network_diagnostics_conn,
-    read_runtime_share_names_conn,
+    read_runtime_payload_dir_conn,
     read_runtime_log_tails_conn,
     runtime_ram_root_present_conn,
     runtime_startup_failure_debug_fields,
@@ -28,33 +28,24 @@ from timecapsulesmb.transport.ssh import SshConnection
 
 
 class ProbeTests(unittest.TestCase):
-    def test_read_runtime_share_names_conn_parses_shares_tsv(self) -> None:
+    def test_read_runtime_payload_dir_conn_derives_payload_from_active_smb_conf_log_file(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
         proc = subprocess.CompletedProcess(
             args=["ssh"],
             returncode=0,
-            stdout="AirPort Disk\t/Volumes/dk2/ShareRoot\nBackup (dk3)\t/Volumes/dk3\n",
+            stdout="[global]\n    log file = /Volumes/dk2/.samba4/logs/log.smbd\n[Data]\n    path = /Volumes/dk2/ShareRoot\n",
         )
 
         with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc) as run_ssh_mock:
-            result = read_runtime_share_names_conn(connection)
+            result = read_runtime_payload_dir_conn(connection)
 
-        self.assertEqual(result, ["AirPort Disk", "Backup (dk3)"])
+        self.assertEqual(result, "/Volumes/dk2/.samba4")
         run_ssh_mock.assert_called_once()
         args, kwargs = run_ssh_mock.call_args
         self.assertEqual(args[0], connection)
-        self.assertIn(probe.RUNTIME_SHARES_TSV, args[1])
+        self.assertIn(probe.RUNTIME_SMB_CONF, args[1])
         self.assertFalse(kwargs["check"])
         self.assertEqual(kwargs["timeout"], probe.REMOTE_STATE_PROBE_TIMEOUT_SECONDS)
-
-    def test_read_runtime_share_names_conn_ignores_non_tsv_output(self) -> None:
-        connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
-        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="enabled\n\n")
-
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
-            result = read_runtime_share_names_conn(connection)
-
-        self.assertEqual(result, [])
 
     def test_read_deployed_version_conn_sources_flash_runtime_config(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "-o StrictHostKeyChecking=no")
@@ -119,12 +110,17 @@ class ProbeTests(unittest.TestCase):
             remote_cmd: str,
             **_kwargs: object,
         ) -> subprocess.CompletedProcess[str]:
-            if "payload.tsv" in remote_cmd:
-                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="/Volumes/dk2/.samba4\n", stderr="")
             if "rc.local.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rc log\n", stderr="")
-            if "watchdog.log" in remote_cmd:
-                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="watchdog log\n", stderr="")
+            if "manager.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="manager log\n", stderr="")
+            if probe.RUNTIME_SMB_CONF in remote_cmd:
+                return subprocess.CompletedProcess(
+                    args=["ssh"],
+                    returncode=0,
+                    stdout="[global]\n    log file = /Volumes/dk2/.samba4/logs/log.smbd\n[Data]\n    path = /Volumes/dk2/ShareRoot\n",
+                    stderr="",
+                )
             if "mdns.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="mdns log\n", stderr="")
             if "nbns.log" in remote_cmd:
@@ -138,7 +134,7 @@ class ProbeTests(unittest.TestCase):
 
         self.assertEqual(logs["remote_rc_local_log_tail"], "rc log")
         self.assertEqual(logs["remote_payload_log_dir"], "/Volumes/dk2/.samba4")
-        self.assertEqual(logs["remote_watchdog_log_tail"], "watchdog log")
+        self.assertEqual(logs["remote_manager_log_tail"], "manager log")
         self.assertEqual(logs["remote_mdns_log_tail"], "mdns log")
         self.assertEqual(logs["remote_nbns_log_tail"], "nbns log")
         self.assertEqual(logs["remote_smbd_log_tail"], "smbd log")
@@ -162,12 +158,12 @@ class ProbeTests(unittest.TestCase):
             remote_cmd: str,
             **_kwargs: object,
         ) -> subprocess.CompletedProcess[str]:
-            if "payload.tsv" in remote_cmd:
-                return subprocess.CompletedProcess(args=["ssh"], returncode=1, stdout="", stderr="")
             if "rc.local.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rc log\n", stderr="")
-            if "watchdog.log" in remote_cmd:
-                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="watchdog log\n", stderr="")
+            if "manager.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="manager log\n", stderr="")
+            if probe.RUNTIME_SMB_CONF in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="[global]\n[Data]\n    path = /Volumes/dk2/ShareRoot\n", stderr="")
             if "/mnt/Memory/samba4/var/mdns.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="ram mdns log\n", stderr="")
             if "/mnt/Memory/samba4/var/nbns.log" in remote_cmd:
@@ -177,7 +173,8 @@ class ProbeTests(unittest.TestCase):
         with mock.patch("timecapsulesmb.device.probe.run_ssh", side_effect=fake_run_ssh) as run_ssh_mock:
             logs = read_runtime_log_tails_conn(connection)
 
-        self.assertEqual(logs["remote_payload_log_dir"], f"(missing {probe.RUNTIME_PAYLOAD_TSV})")
+        self.assertEqual(logs["remote_payload_log_dir"], f"(unavailable from active {probe.RUNTIME_SMB_CONF})")
+        self.assertEqual(logs["remote_manager_log_tail"], "manager log")
         self.assertEqual(logs["remote_mdns_log_tail"], "ram mdns log")
         self.assertEqual(logs["remote_nbns_log_tail"], "ram nbns log")
         self.assertEqual(run_ssh_mock.call_count, 5)
@@ -202,9 +199,9 @@ class ProbeTests(unittest.TestCase):
     def test_runtime_startup_failure_debug_fields_classifies_auto_ip_unavailable(self) -> None:
         fields = runtime_startup_failure_debug_fields(
             {
-                "remote_watchdog_log_tail": (
-                    "watchdog: mDNS auto-ip check: no usable address yet\n"
-                    "watchdog: mDNS startup deferred; no usable address has appeared yet\n"
+                "remote_manager_log_tail": (
+                    "manager: mDNS auto-ip check: no usable address yet\n"
+                    "manager: mDNS startup deferred; no usable address has appeared yet\n"
                 )
             }
         )

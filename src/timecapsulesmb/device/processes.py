@@ -5,6 +5,8 @@ import shlex
 
 WATCHDOG_PATH = "/mnt/Flash/watchdog.sh"
 WATCHDOG_KILL_PATTERN = "[w]atchdog.sh"
+MANAGER_PATH = "/mnt/Flash/manager.sh"
+MANAGER_KILL_PATTERN = "[m]anager.sh"
 PS_TEMP_COMMAND = "ps axww -o stat= -o ucomm= -o command= >/tmp/tcapsule-ps.$$ 2>/dev/null"
 PS_CAPTURE_COMMAND = "/bin/ps axww -o pid= -o ppid= -o stat= -o time= -o ucomm= -o command= 2>/dev/null || true"
 WATCHDOG_PID_PS_COMMAND = "/bin/ps axww -o pid= -o stat= -o ucomm= -o command="
@@ -58,11 +60,36 @@ def render_watchdog_process_present() -> str:
     )
 
 
+def render_manager_process_present() -> str:
+    manager_path = shlex.quote(MANAGER_PATH)
+    return (
+        "found=1; "
+        f"if {PS_TEMP_COMMAND}; then "
+        "found=0; "
+        "while IFS= read line; do "
+        '[ -n "$line" ] || continue; '
+        "set -- $line; "
+        '[ "$#" -ge 3 ] || continue; '
+        'case "$1" in Z*) continue ;; esac; '
+        '[ "$2" = sh ] || continue; '
+        f'if [ "${{3:-}}" = {manager_path} ]; then found=1; break; fi; '
+        'if [ "${3:-}" = /bin/sh ] || [ "${3:-}" = sh ]; then '
+        f'if [ "${{4:-}}" = {manager_path} ]; then found=1; break; fi; '
+        "fi; "
+        "done </tmp/tcapsule-ps.$$; "
+        "rm -f /tmp/tcapsule-ps.$$; "
+        "fi; "
+        '[ \"$found\" -eq 1 ]'
+    )
+
+
 def render_process_present(pattern: str, *, full: bool) -> str:
     if not full:
         return render_process_present_by_ucomm(pattern)
     if pattern in {WATCHDOG_PATH, WATCHDOG_KILL_PATTERN}:
         return render_watchdog_process_present()
+    if pattern in {MANAGER_PATH, MANAGER_KILL_PATTERN}:
+        return render_manager_process_present()
     raise ValueError(f"Unsupported full process match: {pattern!r}")
 
 
@@ -107,6 +134,43 @@ def render_watchdog_pid_helpers() -> str:
         'case "$tc_watchdog_signal" in '
         'KILL) /bin/kill -9 "$tc_watchdog_pid" >/dev/null 2>&1 || true ;; '
         'TERM|"") /bin/kill "$tc_watchdog_pid" >/dev/null 2>&1 || true ;; '
+        "*) return 1 ;; "
+        "esac; "
+        "done; "
+        "}; "
+    )
+
+
+def render_manager_pid_helpers() -> str:
+    manager_path = shlex.quote(MANAGER_PATH)
+    return (
+        "tc_manager_pids() { "
+        "tc_manager_ps=/tmp/tcapsule-manager-ps.$$; "
+        f"if {WATCHDOG_PID_PS_COMMAND} >\"$tc_manager_ps\" 2>/dev/null; then "
+        "while IFS= read line; do "
+        '[ -n "$line" ] || continue; '
+        "set -- $line; "
+        '[ "$#" -ge 4 ] || continue; '
+        "tc_manager_pid=$1; "
+        "tc_manager_stat=$2; "
+        "tc_manager_ucomm=$3; "
+        "shift 3; "
+        'case "$tc_manager_stat" in Z*) continue ;; esac; '
+        '[ "$tc_manager_ucomm" = sh ] || continue; '
+        f'if [ "${{1:-}}" = {manager_path} ]; then printf "%s\\n" "$tc_manager_pid"; continue; fi; '
+        'if [ "${1:-}" = /bin/sh ] || [ "${1:-}" = sh ]; then '
+        f'[ "${{2:-}}" = {manager_path} ] && printf "%s\\n" "$tc_manager_pid"; '
+        "fi; "
+        "done <\"$tc_manager_ps\"; "
+        "fi; "
+        "rm -f \"$tc_manager_ps\"; "
+        "}; "
+        "tc_kill_manager_pids() { "
+        "tc_manager_signal=$1; "
+        "for tc_manager_pid in $(tc_manager_pids); do "
+        'case "$tc_manager_signal" in '
+        'KILL) /bin/kill -9 "$tc_manager_pid" >/dev/null 2>&1 || true ;; '
+        'TERM|"") /bin/kill "$tc_manager_pid" >/dev/null 2>&1 || true ;; '
         "*) return 1 ;; "
         "esac; "
         "done; "
@@ -168,11 +232,29 @@ def render_pkill_wait_pkill9_watchdog(*, attempts: int = 5) -> str:
     )
 
 
+def render_pkill_wait_pkill9_manager(*, attempts: int = 5) -> str:
+    present_command = render_manager_process_present()
+    wait_command = render_wait_for_process_absent(present_command, attempts=attempts)
+    process_present = f"/bin/sh -c {shlex.quote(present_command)} >/dev/null 2>&1"
+    failure_message = shlex.quote("process manager did not stop")
+    return (
+        f"{render_manager_pid_helpers()}"
+        "tc_kill_manager_pids TERM; "
+        f"{wait_command}; "
+        f"if {process_present}; then "
+        f"tc_kill_manager_pids KILL; {wait_command}; "
+        "fi; "
+        f"if {process_present}; then echo {failure_message} >&2; exit 1; fi"
+    )
+
+
 def render_pkill_wait_pkill9(pattern: str, *, full: bool, attempts: int = 5) -> str:
     if not full:
         return render_pkill_wait_pkill9_by_ucomm(pattern, attempts=attempts)
     if pattern in {WATCHDOG_PATH, WATCHDOG_KILL_PATTERN}:
         return render_pkill_wait_pkill9_watchdog(attempts=attempts)
+    if pattern in {MANAGER_PATH, MANAGER_KILL_PATTERN}:
+        return render_pkill_wait_pkill9_manager(attempts=attempts)
     raise ValueError(f"Unsupported full process stop: {pattern!r}")
 
 
@@ -184,9 +266,13 @@ def render_direct_pkill9_watchdog() -> str:
     return f"{render_watchdog_pid_helpers()}tc_kill_watchdog_pids KILL"
 
 
+def render_direct_pkill9_manager() -> str:
+    return f"{render_manager_pid_helpers()}tc_kill_manager_pids KILL"
+
+
 PROBE_PROCESS_HELPERS = (
     r'''
-WATCHDOG_PATH=__WATCHDOG_PATH__
+MANAGER_PATH=__MANAGER_PATH__
 
 capture_ps_out() {
     __PS_CAPTURE_COMMAND__
@@ -253,8 +339,9 @@ apple_mdns_present() {
     process_by_ucomm_present "$1" mDNSResponder
 }
 
-watchdog_process_present_for_volume() {
+runtime_script_process_present() {
     ps_out=$1
+    script_path=$2
     while IFS= read -r line; do
         [ -n "$line" ] || continue
         set -- $line
@@ -263,16 +350,20 @@ watchdog_process_present_for_volume() {
             Z*) continue ;;
         esac
         [ "$5" = "sh" ] || continue
-        if [ "${6:-}" = "$WATCHDOG_PATH" ]; then
+        if [ "${6:-}" = "$script_path" ]; then
             return 0
         fi
         if [ "${6:-}" = "/bin/sh" ] || [ "${6:-}" = "sh" ]; then
-            [ "${7:-}" = "$WATCHDOG_PATH" ] && return 0
+            [ "${7:-}" = "$script_path" ] && return 0
         fi
     done <<EOF
 $ps_out
 EOF
     return 1
+}
+
+manager_process_present_for_volume() {
+    runtime_script_process_present "$1" "$MANAGER_PATH"
 }
 
 runtime_startup_script_present() {
@@ -287,7 +378,7 @@ runtime_startup_script_present() {
         shift 5
         for arg do
             case "$arg" in
-                /mnt/Flash/rc.local|/mnt/Flash/start-samba.sh) return 0 ;;
+                /mnt/Flash/rc.local|/mnt/Flash/boot.sh) return 0 ;;
             esac
         done
     done <<EOF
@@ -316,6 +407,6 @@ $ps_out
 EOF
 }
 '''
-    .replace("__WATCHDOG_PATH__", shlex.quote(WATCHDOG_PATH))
+    .replace("__MANAGER_PATH__", shlex.quote(MANAGER_PATH))
     .replace("__PS_CAPTURE_COMMAND__", PS_CAPTURE_COMMAND)
 )
