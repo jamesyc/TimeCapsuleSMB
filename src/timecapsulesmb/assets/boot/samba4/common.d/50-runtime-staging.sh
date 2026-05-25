@@ -2,13 +2,13 @@ tc_find_payload_smbd() {
     payload_dir=$1
 
     if [ -x "$payload_dir/smbd" ]; then
-        tc_log "selected smbd binary $payload_dir/smbd"
+        tc_smbd_debug_log "selected smbd binary $payload_dir/smbd"
         echo "$payload_dir/smbd"
         return 0
     fi
 
     if [ -x "$payload_dir/sbin/smbd" ]; then
-        tc_log "selected smbd binary $payload_dir/sbin/smbd"
+        tc_smbd_debug_log "selected smbd binary $payload_dir/sbin/smbd"
         echo "$payload_dir/sbin/smbd"
         return 0
     fi
@@ -21,7 +21,7 @@ tc_find_payload_nbns() {
     payload_dir=$1
 
     if [ -x "$payload_dir/nbns-advertiser" ]; then
-        tc_log "selected nbns binary $payload_dir/nbns-advertiser"
+        tc_smbd_debug_log "selected nbns binary $payload_dir/nbns-advertiser"
         echo "$payload_dir/nbns-advertiser"
         return 0
     fi

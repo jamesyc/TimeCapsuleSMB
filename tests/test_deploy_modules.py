@@ -474,6 +474,50 @@ echo "file-size=$(tc_log_file_size "$SAMPLE")"
         self.assertIn("utf8-byte-len=4", result.stdout)
         self.assertIn("file-size=12", result.stdout)
 
+    def test_common_binary_selection_logs_only_when_debug_logging_enabled(self) -> None:
+        common = load_boot_asset_text("common.sh")
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            payload = tmp_path / "payload"
+            payload.mkdir()
+            for name in ("smbd", "nbns-advertiser"):
+                binary = payload / name
+                binary.write_text("#!/bin/sh\n")
+                binary.chmod(0o755)
+            log = tmp_path / "runtime.log"
+            script = tmp_path / "check.sh"
+            script.write_text(
+                common
+                + f"\nPAYLOAD={shlex.quote(str(payload))}\n"
+                + f"TC_LOG_FILE={shlex.quote(str(log))}\n"
+                + """
+TC_LOG_PREFIX=manager
+TC_LOG_MAX_BYTES=65536
+SMBD_DEBUG_LOGGING=0
+echo "smbd-normal=$(tc_find_payload_smbd "$PAYLOAD")"
+echo "nbns-normal=$(tc_find_payload_nbns "$PAYLOAD")"
+normal_log=$(cat "$TC_LOG_FILE" 2>/dev/null || true)
+SMBD_DEBUG_LOGGING=1
+echo "smbd-debug=$(tc_find_payload_smbd "$PAYLOAD")"
+echo "nbns-debug=$(tc_find_payload_nbns "$PAYLOAD")"
+printf '%s\n' "$normal_log" >"$PAYLOAD/normal.log"
+"""
+            )
+
+            result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
+            normal_log = (payload / "normal.log").read_text()
+            debug_log = log.read_text()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"smbd-normal={payload}/smbd", result.stdout)
+        self.assertIn(f"nbns-normal={payload}/nbns-advertiser", result.stdout)
+        self.assertIn(f"smbd-debug={payload}/smbd", result.stdout)
+        self.assertIn(f"nbns-debug={payload}/nbns-advertiser", result.stdout)
+        self.assertNotIn("selected smbd binary", normal_log)
+        self.assertNotIn("selected nbns binary", normal_log)
+        self.assertIn(f"selected smbd binary {payload}/smbd", debug_log)
+        self.assertIn(f"selected nbns binary {payload}/nbns-advertiser", debug_log)
+
     def test_common_select_advertise_mac_falls_back_to_ifconfig_mac(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
