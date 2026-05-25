@@ -46,7 +46,7 @@ class NetworkPlanTests(unittest.TestCase):
             ("fdbb::3",),
         )
 
-    def test_build_network_check_plan_keeps_families_independent(self) -> None:
+    def test_build_network_check_plan_keeps_mdns_samba_dual_stack_and_nbns_ipv4_only(self) -> None:
         plan = build_network_check_plan(
             smb_bind_interfaces="127.0.0.1/8 ::1/128 10.0.1.2/24 fdbb::1/64",
             mdns_families=("ipv4", "ipv6"),
@@ -61,7 +61,7 @@ class NetworkPlanTests(unittest.TestCase):
         self.assertEqual(plan.ipv4.local_sources, ("10.0.1.3",))
         self.assertTrue(plan.ipv6.mdns_expected)
         self.assertTrue(plan.ipv6.samba_expected)
-        self.assertTrue(plan.ipv6.nbns_expected)
+        self.assertFalse(plan.ipv6.nbns_expected)
         self.assertEqual(plan.ipv6.remote_addresses, ("fdbb::1",))
         self.assertEqual(plan.ipv6.local_sources, ())
 

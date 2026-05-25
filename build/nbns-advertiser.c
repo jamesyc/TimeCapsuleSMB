@@ -130,9 +130,7 @@ static ssize_t sendto_retry(int sockfd, const void *buf, size_t len, int flags,
 
 struct config {
     char netbios_name[MAX_NAME];
-    int response_family;
     uint32_t ipv4_addr;
-    struct in6_addr ipv6_addr;
     uint32_t ttl;
 };
 
@@ -175,12 +173,20 @@ static const char *ipv4_to_string(uint32_t ipv4_addr, char *out, size_t out_len)
 
 #include "auto-ip-common.inc"
 
-static const char *ipv6_to_string(const struct in6_addr *addr, char *out, size_t out_len) {
-    if (inet_ntop(AF_INET6, addr, out, out_len) == NULL) {
-        strncpy(out, "invalid", out_len - 1);
-        out[out_len - 1] = '\0';
+static void keep_only_nbns_ipv4_link_contexts(struct link_context_set *set) {
+    size_t read_pos;
+    size_t write_pos = 0;
+
+    for (read_pos = 0; read_pos < set->count; read_pos++) {
+        struct link_context link = set->links[read_pos];
+        if (!link_context_has_advertisable_ipv4(&link)) {
+            continue;
+        }
+        link.ipv6_count = 0;
+        link.mdns_ipv6_transport = 0;
+        set->links[write_pos++] = link;
     }
-    return out;
+    set->count = write_pos;
 }
 
 static int link_contexts_need_nbns_ipv4_socket(const struct link_context_set *set) {
@@ -188,17 +194,6 @@ static int link_contexts_need_nbns_ipv4_socket(const struct link_context_set *se
 
     for (i = 0; i < set->count; i++) {
         if (link_context_has_advertisable_ipv4(&set->links[i])) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int link_contexts_need_nbns_ipv6_socket(const struct link_context_set *set) {
-    size_t i;
-
-    for (i = 0; i < set->count; i++) {
-        if (link_context_has_advertisable_ipv6(&set->links[i])) {
             return 1;
         }
     }
@@ -214,6 +209,7 @@ static int collect_usable_nbns_link_contexts(struct link_context_set *out) {
         return -1;
     }
     filter_advertise_link_contexts(out, &all_links);
+    keep_only_nbns_ipv4_link_contexts(out);
     if (all_links.truncated || out->truncated) {
         fprintf(stderr, "auto-ip: NBNS link list exceeded static capacity\n");
         return -1;
@@ -223,31 +219,16 @@ static int collect_usable_nbns_link_contexts(struct link_context_set *out) {
 
 static int print_nbns_socket_families(FILE *stream) {
     struct link_context_set links;
-    int need_ipv4;
-    int need_ipv6;
 
     memset(&links, 0, sizeof(links));
     if (collect_usable_nbns_link_contexts(&links) != 0) {
         return EXIT_AUTO_IP_PROBE_FAILED;
     }
-    if (links.count == 0) {
+    if (!link_contexts_need_nbns_ipv4_socket(&links)) {
         return EXIT_AUTO_IP_UNAVAILABLE;
     }
-    need_ipv4 = link_contexts_need_nbns_ipv4_socket(&links);
-    need_ipv6 = link_contexts_need_nbns_ipv6_socket(&links);
-    if (!need_ipv4 && !need_ipv6) {
-        return EXIT_AUTO_IP_UNAVAILABLE;
-    }
-    if (need_ipv4 && fputs("ipv4", stream) == EOF) {
+    if (fputs("ipv4", stream) == EOF) {
         return EXIT_AUTO_IP_PROBE_FAILED;
-    }
-    if (need_ipv6) {
-        if (need_ipv4 && fputc(' ', stream) == EOF) {
-            return EXIT_AUTO_IP_PROBE_FAILED;
-        }
-        if (fputs("ipv6", stream) == EOF) {
-            return EXIT_AUTO_IP_PROBE_FAILED;
-        }
     }
     if (fputc('\n', stream) == EOF) {
         return EXIT_AUTO_IP_PROBE_FAILED;
@@ -261,14 +242,14 @@ static int wait_for_auto_link_contexts(struct link_context_set *out) {
     memset(out, 0, sizeof(*out));
     while (!g_stop) {
         memset(&first, 0, sizeof(first));
-        if (collect_usable_nbns_link_contexts(&first) == 0 && first.count > 0) {
-            fprintf(stderr, "nbns auto-ip: first usable address observed; waiting %ds for network stabilization\n",
+        if (collect_usable_nbns_link_contexts(&first) == 0 && link_contexts_need_nbns_ipv4_socket(&first)) {
+            fprintf(stderr, "nbns auto-ip: first usable IPv4 address observed; waiting %ds for network stabilization\n",
                     AUTO_IP_STABILIZE_SECONDS);
             sleep(AUTO_IP_STABILIZE_SECONDS);
-            if (collect_usable_nbns_link_contexts(out) == 0 && out->count > 0) {
+            if (collect_usable_nbns_link_contexts(out) == 0 && link_contexts_need_nbns_ipv4_socket(out)) {
                 return 0;
             }
-            fprintf(stderr, "nbns auto-ip: usable address disappeared during stabilization; retrying\n");
+            fprintf(stderr, "nbns auto-ip: usable IPv4 address disappeared during stabilization; retrying\n");
         }
         sleep(AUTO_IP_STARTUP_POLL_SECONDS);
     }
@@ -320,43 +301,6 @@ static uint32_t choose_response_ipv4_from_links(const struct link_context_set *l
     return addr_count == 1 ? only_addr : 0;
 }
 
-static int source_matches_link_ipv6_subnet(const struct in6_addr *source,
-                                           const struct link_ipv6_addr *addr) {
-    if (!link_ipv6_addr_is_samba_bindable(addr)) {
-        return 0;
-    }
-    return ipv6_prefix_matches(source, &addr->addr, addr->prefix_len);
-}
-
-static int choose_response_ipv6_from_links(const struct link_context_set *links,
-                                           const struct in6_addr *peer_addr,
-                                           struct in6_addr *out) {
-    const struct in6_addr *only_addr = NULL;
-    size_t addr_count = 0;
-    size_t i;
-
-    for (i = 0; i < links->count; i++) {
-        size_t j;
-        for (j = 0; j < links->links[i].ipv6_count; j++) {
-            const struct link_ipv6_addr *candidate = &links->links[i].ipv6[j];
-            if (!link_ipv6_addr_is_samba_bindable(candidate)) {
-                continue;
-            }
-            if (source_matches_link_ipv6_subnet(peer_addr, candidate)) {
-                *out = candidate->addr;
-                return 1;
-            }
-            only_addr = &candidate->addr;
-            addr_count++;
-        }
-    }
-    if (addr_count == 1 && only_addr != NULL) {
-        *out = *only_addr;
-        return 1;
-    }
-    return 0;
-}
-
 static int refresh_auto_link_contexts_if_needed(struct link_context_set *contexts,
                                                 time_t *last_link_poll) {
     if (time(NULL) - *last_link_poll >= AUTO_IP_STABLE_POLL_SECONDS) {
@@ -368,7 +312,8 @@ static int refresh_auto_link_contexts_if_needed(struct link_context_set *context
                     AUTO_IP_STABILIZE_SECONDS);
             log_link_contexts("nbns auto-ip observed", &next_contexts);
             sleep(AUTO_IP_STABILIZE_SECONDS);
-            if (collect_usable_nbns_link_contexts(&next_contexts) == 0 && next_contexts.count > 0) {
+            if (collect_usable_nbns_link_contexts(&next_contexts) == 0 &&
+                link_contexts_need_nbns_ipv4_socket(&next_contexts)) {
                 *contexts = next_contexts;
             } else if (wait_for_auto_link_contexts(contexts) != 0) {
                 return -1;
@@ -608,40 +553,6 @@ static int build_positive_response(uint8_t *out,
         sizeof(rdata));
 }
 
-static int build_positive_response_ipv6(uint8_t *out,
-                                        size_t out_len,
-                                        const uint8_t *request,
-                                        size_t request_len,
-                                        size_t question_name_off,
-                                        size_t question_name_end_off,
-                                        uint32_t ttl,
-                                        const struct in6_addr *ipv6_addr) {
-    uint8_t rdata[18];
-    uint16_t nb_flags = htons(0x0000);
-
-    /*
-     * Classic NBNS only defines a 4-byte IPv4 address for NB records. This
-     * 18-byte payload is a TimeCapsuleSMB extension used by doctor and our
-     * responder so an IPv6-only LAN still has a lightweight name probe.
-     */
-    memcpy(rdata, &nb_flags, sizeof(nb_flags));
-    memcpy(rdata + sizeof(nb_flags), ipv6_addr->s6_addr, sizeof(ipv6_addr->s6_addr));
-
-    return build_resource_response(
-        out,
-        out_len,
-        request,
-        request_len,
-        question_name_off,
-        question_name_end_off,
-        (uint16_t)(NBNS_FLAG_RESPONSE | NBNS_FLAG_AUTHORITATIVE | NBNS_FLAG_RECURSION_AVAILABLE | NBNS_RCODE_POSITIVE),
-        1,
-        NB_TYPE_NB,
-        ttl,
-        rdata,
-        sizeof(rdata));
-}
-
 static int build_negative_query_response(uint8_t *out,
                                          size_t out_len,
                                          const uint8_t *request,
@@ -813,27 +724,15 @@ static int maybe_respond_to_query_addr(int sock,
         return 0;
     }
 
-    if (cfg->response_family == AF_INET6) {
-        response_len = build_positive_response_ipv6(
-            response,
-            sizeof(response),
-            buf,
-            len,
-            question_name_off,
-            question_name_end_off,
-            cfg->ttl,
-            &cfg->ipv6_addr);
-    } else {
-        response_len = build_positive_response(
-            response,
-            sizeof(response),
-            buf,
-            len,
-            question_name_off,
-            question_name_end_off,
-            cfg->ttl,
-            cfg->ipv4_addr);
-    }
+    response_len = build_positive_response(
+        response,
+        sizeof(response),
+        buf,
+        len,
+        question_name_off,
+        question_name_end_off,
+        cfg->ttl,
+        cfg->ipv4_addr);
     if (response_len < 0) {
         return 0;
     }
@@ -880,43 +779,9 @@ static int open_nbns_ipv4_socket(void) {
     return sock;
 }
 
-static int open_nbns_ipv6_socket(void) {
-    struct sockaddr_in6 addr;
-    int sock;
-    int yes = 1;
-
-    sock = socket(AF_INET6, SOCK_DGRAM, 0);
-    if (sock < 0) {
-        perror("socket(AF_INET6)");
-        return -1;
-    }
-    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0) {
-        perror("setsockopt(SO_REUSEADDR)");
-        close(sock);
-        return -1;
-    }
-#ifdef SO_REUSEPORT
-    setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
-#endif
-#ifdef IPV6_V6ONLY
-    setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, &yes, sizeof(yes));
-#endif
-    memset(&addr, 0, sizeof(addr));
-    addr.sin6_family = AF_INET6;
-    addr.sin6_port = htons(NBNS_PORT);
-    addr.sin6_addr = in6addr_any;
-    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("bind(AF_INET6)");
-        close(sock);
-        return -1;
-    }
-    return sock;
-}
-
 int main(int argc, char **argv) {
     struct config cfg;
     int sock4 = -1;
-    int sock6 = -1;
     int i;
     int auto_ip = 0;
     int print_socket_families = 0;
@@ -984,23 +849,12 @@ int main(int argc, char **argv) {
             return EXIT_RUNTIME_ERROR;
         }
     }
-    if (link_contexts_need_nbns_ipv6_socket(&link_contexts)) {
-        sock6 = open_nbns_ipv6_socket();
-        if (sock6 < 0) {
-            if (sock4 >= 0) {
-                close(sock4);
-            }
-            return EXIT_RUNTIME_ERROR;
-        }
-    }
-
     while (!g_stop) {
         fd_set readfds;
         struct timeval timeout;
         int maxfd = -1;
         int selected;
         int need_ipv4;
-        int need_ipv6;
 
         FD_ZERO(&readfds);
         timeout.tv_sec = 1;
@@ -1011,7 +865,6 @@ int main(int argc, char **argv) {
         }
 
         need_ipv4 = link_contexts_need_nbns_ipv4_socket(&link_contexts);
-        need_ipv6 = link_contexts_need_nbns_ipv6_socket(&link_contexts);
         if (need_ipv4 && sock4 < 0) {
             sock4 = open_nbns_ipv4_socket();
             if (sock4 < 0) {
@@ -1021,23 +874,10 @@ int main(int argc, char **argv) {
             close(sock4);
             sock4 = -1;
         }
-        if (need_ipv6 && sock6 < 0) {
-            sock6 = open_nbns_ipv6_socket();
-            if (sock6 < 0) {
-                break;
-            }
-        } else if (!need_ipv6 && sock6 >= 0) {
-            close(sock6);
-            sock6 = -1;
-        }
 
         if (sock4 >= 0) {
             FD_SET(sock4, &readfds);
             maxfd = sock4 > maxfd ? sock4 : maxfd;
-        }
-        if (sock6 >= 0) {
-            FD_SET(sock6, &readfds);
-            maxfd = sock6 > maxfd ? sock6 : maxfd;
         }
         if (maxfd < 0) {
             sleep(1);
@@ -1052,9 +892,6 @@ int main(int argc, char **argv) {
             perror("select");
             if (sock4 >= 0) {
                 close(sock4);
-            }
-            if (sock6 >= 0) {
-                close(sock6);
             }
             return EXIT_RUNTIME_ERROR;
         }
@@ -1077,7 +914,6 @@ int main(int argc, char **argv) {
                 if (response_ip == 0) {
                     log_nbns_ipv4_link_miss(&link_contexts, peer.sin_addr.s_addr);
                 } else {
-                    context_cfg.response_family = AF_INET;
                     context_cfg.ipv4_addr = response_ip;
                     (void)maybe_respond_to_query_addr(sock4,
                                                       &context_cfg,
@@ -1088,52 +924,10 @@ int main(int argc, char **argv) {
                 }
             }
         }
-
-        if (sock6 >= 0 && FD_ISSET(sock6, &readfds)) {
-            uint8_t buf[BUF_SIZE];
-            struct sockaddr_in6 peer;
-            socklen_t peer_len = sizeof(peer);
-            ssize_t nread;
-            struct in6_addr response_ip6;
-            struct config context_cfg = cfg;
-
-            nread = recvfrom(sock6, buf, sizeof(buf), 0, (struct sockaddr *)&peer, &peer_len);
-            if (nread < 0) {
-                if (errno != EINTR) {
-                    perror("recvfrom(AF_INET6)");
-                }
-                continue;
-            }
-            memset(&response_ip6, 0, sizeof(response_ip6));
-            if (!choose_response_ipv6_from_links(&link_contexts, &peer.sin6_addr, &response_ip6)) {
-                static time_t last_ipv6_miss_log = 0;
-                time_t now = time(NULL);
-                if (last_ipv6_miss_log == 0 || now - last_ipv6_miss_log >= 60) {
-                    char peer_buf[INET6_ADDRSTRLEN];
-                    fprintf(stderr,
-                            "nbns auto-ip: ignoring IPv6 query from %s; no matching prefix among %lu links\n",
-                            ipv6_to_string(&peer.sin6_addr, peer_buf, sizeof(peer_buf)),
-                            (unsigned long)link_contexts.count);
-                    last_ipv6_miss_log = now;
-                }
-                continue;
-            }
-            context_cfg.response_family = AF_INET6;
-            context_cfg.ipv6_addr = response_ip6;
-            (void)maybe_respond_to_query_addr(sock6,
-                                              &context_cfg,
-                                              buf,
-                                              (size_t)nread,
-                                              (const struct sockaddr *)&peer,
-                                              peer_len);
-        }
     }
 
     if (sock4 >= 0) {
         close(sock4);
-    }
-    if (sock6 >= 0) {
-        close(sock6);
     }
     return EXIT_OK;
 }

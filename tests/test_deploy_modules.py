@@ -5445,7 +5445,6 @@ static int invoke_query(const uint8_t *query, size_t query_len) {
 
     memset(&cfg, 0, sizeof(cfg));
     memcpy(cfg.netbios_name, "TimeCapsule", sizeof("TimeCapsule"));
-    cfg.response_family = AF_INET;
     cfg.ipv4_addr = inet_addr("192.168.1.217");
     cfg.ttl = 123;
 
@@ -5453,30 +5452,6 @@ static int invoke_query(const uint8_t *query, size_t query_len) {
     peer.sin_family = AF_INET;
     peer.sin_port = htons(40000);
     peer.sin_addr.s_addr = inet_addr("192.168.1.50");
-
-    return maybe_respond_to_query_addr(
-        1,
-        &cfg,
-        query,
-        query_len,
-        (const struct sockaddr *)(const void *)&peer,
-        sizeof(peer));
-}
-
-static int invoke_ipv6_query(const uint8_t *query, size_t query_len) {
-    struct config cfg;
-    struct sockaddr_in6 peer;
-
-    memset(&cfg, 0, sizeof(cfg));
-    memcpy(cfg.netbios_name, "TimeCapsule", sizeof("TimeCapsule"));
-    cfg.response_family = AF_INET6;
-    if (inet_pton(AF_INET6, "fd00::1", &cfg.ipv6_addr) != 1) return -1;
-    cfg.ttl = 321;
-
-    memset(&peer, 0, sizeof(peer));
-    peer.sin6_family = AF_INET6;
-    peer.sin6_port = htons(40000);
-    if (inet_pton(AF_INET6, "fd00::50", &peer.sin6_addr) != 1) return -1;
 
     return maybe_respond_to_query_addr(
         1,
@@ -5505,28 +5480,6 @@ static int expect_positive_nb_response(const uint8_t *query, size_t qname_len) {
     if (get_u16(captured, off + 8) != 6) return 20;
     if (get_u16(captured, off + 10) != 0) return 21;
     if (get_u32(captured, off + 12) != expected_ip) return 22;
-    return 0;
-}
-
-static int expect_positive_ipv6_nb_response(const uint8_t *query, size_t qname_len) {
-    size_t off = 12;
-    struct in6_addr expected_ip;
-
-    if (inet_pton(AF_INET6, "fd00::1", &expected_ip) != 1) return 70;
-    if (captured_len != 12 + qname_len + 10 + 18) return 71;
-    if (get_u16(captured, 0) != 0x1337) return 72;
-    if (get_u16(captured, 2) != 0x8480) return 73;
-    if (get_u16(captured, 4) != 0) return 74;
-    if (get_u16(captured, 6) != 1) return 75;
-    if (get_u16(captured, 8) != 0 || get_u16(captured, 10) != 0) return 76;
-    if (memcmp(captured + off, query + 12, qname_len) != 0) return 77;
-    off += qname_len;
-    if (get_u16(captured, off) != NB_TYPE_NB) return 78;
-    if (get_u16(captured, off + 2) != DNS_CLASS_IN) return 79;
-    if (get_u32(captured, off + 4) != 321) return 80;
-    if (get_u16(captured, off + 8) != 18) return 81;
-    if (get_u16(captured, off + 10) != 0) return 82;
-    if (memcmp(captured + off + 12, expected_ip.s6_addr, sizeof(expected_ip.s6_addr)) != 0) return 83;
     return 0;
 }
 
@@ -5581,13 +5534,6 @@ int main(void) {
     if (invoke_query(query, query_len) != 1 || sendto_call_count != 1) return 2;
     rc = expect_positive_nb_response(query, qname_len);
     if (rc != 0) return 100 + rc;
-
-    query_len = build_query(query, "TimeCapsule", NBNS_SUFFIX_SERVER, NB_TYPE_NB, 0, NULL);
-    qname_len = query_len - 12 - 4;
-    reset_capture();
-    if (invoke_ipv6_query(query, query_len) != 1 || sendto_call_count != 1) return 5;
-    rc = expect_positive_ipv6_nb_response(query, qname_len);
-    if (rc != 0) return 400 + rc;
 
     query_len = build_query(query, "*", NBNS_SUFFIX_WORKSTATION, NB_TYPE_NBSTAT, 0, NULL);
     qname_len = query_len - 12 - 4;
@@ -5720,7 +5666,6 @@ static int invoke_query(const uint8_t *query, size_t query_len) {
 
     memset(&cfg, 0, sizeof(cfg));
     memcpy(cfg.netbios_name, "TimeCapsule", sizeof("TimeCapsule"));
-    cfg.response_family = AF_INET;
     cfg.ipv4_addr = inet_addr("192.168.1.217");
     cfg.ttl = 300;
 
@@ -5811,13 +5756,10 @@ int main(void) {
 int main(void) {{
     struct link_context_set links;
     struct link_context_set single_link;
-    struct link_context_set v6_link_local;
+    struct link_context_set v6_only_links;
     struct link_context_set links_a;
     struct link_context_set links_b;
     struct in6_addr v6_addr;
-    struct in6_addr v6_peer;
-    struct in6_addr v6_chosen;
-    struct in6_addr v6_link_local_addr;
 
     if (AUTO_IP_STARTUP_POLL_SECONDS != 2 || AUTO_IP_STABLE_POLL_SECONDS != 30) {{
         return 10;
@@ -5879,29 +5821,25 @@ int main(void) {{
         return 20;
     }}
     append_link_ipv6(&links, "bridge0", &v6_addr, 64, 0, IFF_UP | IFF_RUNNING);
-    if (!link_contexts_need_nbns_ipv4_socket(&links) || !link_contexts_need_nbns_ipv6_socket(&links)) {{
+    keep_only_nbns_ipv4_link_contexts(&links);
+    if (!link_contexts_need_nbns_ipv4_socket(&links)) {{
         return 21;
     }}
-    if (inet_pton(AF_INET6, "fd00::99", &v6_peer) != 1) {{
+    if (links.count != 1 || links.links[0].ipv6_count != 0 || links.links[0].mdns_ipv6_transport != 0) {{
         return 22;
     }}
-    memset(&v6_chosen, 0, sizeof(v6_chosen));
-    if (!choose_response_ipv6_from_links(&links, &v6_peer, &v6_chosen) ||
-        memcmp(&v6_chosen, &v6_addr, sizeof(v6_addr)) != 0) {{
+    if (choose_response_ipv4_from_links(&links, inet_addr("172.16.1.5")) != inet_addr("10.0.1.1")) {{
         return 23;
     }}
 
-    memset(&v6_link_local, 0, sizeof(v6_link_local));
-    if (inet_pton(AF_INET6, "fe80::1", &v6_link_local_addr) != 1) {{
+    memset(&v6_only_links, 0, sizeof(v6_only_links));
+    append_link_ipv6(&v6_only_links, "bridge0", &v6_addr, 64, 0, IFF_UP | IFF_RUNNING);
+    keep_only_nbns_ipv4_link_contexts(&v6_only_links);
+    if (v6_only_links.count != 0) {{
         return 24;
     }}
-    append_link_ipv6(&v6_link_local, "bridge0", &v6_link_local_addr, 64, 2, IFF_UP | IFF_RUNNING);
-    if (link_contexts_need_nbns_ipv6_socket(&v6_link_local)) {{
+    if (link_contexts_need_nbns_ipv4_socket(&v6_only_links)) {{
         return 25;
-    }}
-    memset(&v6_chosen, 0, sizeof(v6_chosen));
-    if (choose_response_ipv6_from_links(&v6_link_local, &v6_link_local_addr, &v6_chosen)) {{
-        return 26;
     }}
 
     memset(&links_a, 0, sizeof(links_a));

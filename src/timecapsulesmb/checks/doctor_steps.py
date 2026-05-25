@@ -1011,6 +1011,8 @@ def _doctor_check_network_plan(target: DoctorTarget, remote: RemoteAccess, smb_c
         mdns_families = bind_families
     if not nbns_families:
         nbns_families = bind_families
+    # NBNS is IPv4-only by protocol; do not inherit Samba/mDNS IPv6 support.
+    nbns_families = tuple(family for family in nbns_families if family == "ipv4")
 
     if not smb_bind_interfaces or not bind_families:
         reason = "runtime network plan unavailable; active smb.conf has no non-loopback bind interfaces"

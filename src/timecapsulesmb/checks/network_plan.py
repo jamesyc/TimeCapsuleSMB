@@ -184,7 +184,9 @@ def build_network_check_plan(
 ) -> NetworkCheckPlan:
     bind_interfaces = parse_bind_interfaces(smb_bind_interfaces)
     mdns = set(normalize_family_tokens(mdns_families))
-    nbns = set(normalize_family_tokens(nbns_families))
+    # RFC NBNS NB records carry only IPv4 addresses. Keep this independent
+    # from Samba/mDNS, which can be dual-stack.
+    nbns = {family for family in normalize_family_tokens(nbns_families) if family == "ipv4"}
 
     def family_plan(family: NetworkFamily) -> NetworkFamilyPlan:
         remote_addresses: list[str] = []

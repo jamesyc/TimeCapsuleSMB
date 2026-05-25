@@ -2495,7 +2495,7 @@ class CheckTests(unittest.TestCase):
         )
         self.assertEqual(extract_nbns_response_ip(packet), "192.168.1.217")
 
-    def test_extract_nbns_response_ip_reads_ipv6_extension_answer(self) -> None:
+    def test_extract_nbns_response_ip_rejects_non_rfc_ipv6_extension_answer(self) -> None:
         packet = (
             b"\x13\x37\x85\x00\x00\x01\x00\x01\x00\x00\x00\x00"
             + b"\x20" + b"FEEFFDFECACACACACACACACACACACAAA" + b"\x00"
@@ -2503,7 +2503,7 @@ class CheckTests(unittest.TestCase):
             + b"\xc0\x0c\x00\x20\x00\x01\x00\x00\x01,\x00\x12\x00\x00"
             + socket.inet_pton(socket.AF_INET6, "fd00::217")
         )
-        self.assertEqual(extract_nbns_response_ip(packet), "fd00::217")
+        self.assertIsNone(extract_nbns_response_ip(packet))
 
     def test_extract_nbns_response_ip_returns_none_for_truncated_name(self) -> None:
         packet = (
@@ -2552,36 +2552,12 @@ class CheckTests(unittest.TestCase):
         self.assertIn("192.168.1.217", result.message)
         fake_sock.sendto.assert_called_once()
 
-    def test_check_nbns_name_resolution_uses_ipv6_socket_for_ipv6_expected_ip(self) -> None:
-        fake_sock = mock.Mock()
-        fake_sock.recvfrom.return_value = (
-            b"\x13\x37\x85\x00\x00\x01\x00\x01\x00\x00\x00\x00"
-            + b"\x20" + b"FEEFFDFECACACACACACACACACACACAAA" + b"\x00"
-            + b"\x00\x20\x00\x01"
-            + b"\xc0\x0c\x00\x20\x00\x01\x00\x00\x01,\x00\x12\x00\x00"
-            + socket.inet_pton(socket.AF_INET6, "fd00::217"),
-            ("fd00::217", 137, 0, 0),
-        )
-        with mock.patch("timecapsulesmb.checks.nbns.socket.socket", return_value=fake_sock) as socket_mock:
+    def test_check_nbns_name_resolution_rejects_ipv6_expected_ip(self) -> None:
+        with mock.patch("timecapsulesmb.checks.nbns.socket.socket") as socket_mock:
             result = check_nbns_name_resolution("TimeCapsule", "fd00::217", "fd00::217")
-        self.assertEqual(result.status, "PASS")
-        socket_mock.assert_called_once_with(socket.AF_INET6, socket.SOCK_DGRAM)
-        fake_sock.sendto.assert_called_once_with(mock.ANY, ("fd00::217", 137))
-
-    def test_check_nbns_name_resolution_normalizes_expected_ipv6(self) -> None:
-        fake_sock = mock.Mock()
-        fake_sock.recvfrom.return_value = (
-            b"\x13\x37\x85\x00\x00\x01\x00\x01\x00\x00\x00\x00"
-            + b"\x20" + b"FEEFFDFECACACACACACACACACACACAAA" + b"\x00"
-            + b"\x00\x20\x00\x01"
-            + b"\xc0\x0c\x00\x20\x00\x01\x00\x00\x01,\x00\x12\x00\x00"
-            + socket.inet_pton(socket.AF_INET6, "fd00::217"),
-            ("fd00::217", 137, 0, 0),
-        )
-        with mock.patch("timecapsulesmb.checks.nbns.socket.socket", return_value=fake_sock):
-            result = check_nbns_name_resolution("TimeCapsule", "fd00::217", "FD00:0:0:0:0:0:0:217")
-        self.assertEqual(result.status, "PASS")
-        self.assertIn("fd00::217", result.message)
+        self.assertEqual(result.status, "FAIL")
+        self.assertIn("NBNS only supports IPv4", result.message)
+        socket_mock.assert_not_called()
 
     def test_check_nbns_name_resolution_reports_wrong_ip(self) -> None:
         fake_sock = mock.Mock()
@@ -2768,7 +2744,7 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(next(result for result in results if result.message == "nbns ok").status, "PASS")
         nbns_mock.assert_called_once_with("TimeCapsule", "10.0.0.9", "10.0.0.9")
 
-    def test_run_doctor_checks_checks_nbns_for_reachable_ipv4_and_ipv6(self) -> None:
+    def test_run_doctor_checks_checks_nbns_only_for_reachable_ipv4(self) -> None:
         nbns_mock = mock.Mock(return_value=mock.Mock(status="PASS", message="nbns ok"))
         run = self.run_doctor_with_mocks(
             ssh_login=mock.Mock(status="PASS", message="ssh ok"),
@@ -2795,7 +2771,6 @@ class CheckTests(unittest.TestCase):
             nbns_mock.call_args_list,
             [
                 mock.call("TimeCapsule", "10.0.0.2", "10.0.0.2"),
-                mock.call("TimeCapsule", "fd00::2", "fd00::2"),
             ],
         )
 

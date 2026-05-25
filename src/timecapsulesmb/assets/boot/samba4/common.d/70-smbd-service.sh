@@ -138,10 +138,6 @@ tc_nbns_bound_ipv4_udp_137() {
     tc_process_bound_ipv4_udp_port "$NBNS_PROC_NAME" 137
 }
 
-tc_nbns_bound_ipv6_udp_137() {
-    tc_process_bound_ipv6_udp_port "$NBNS_PROC_NAME" 137
-}
-
 tc_mdns_bound_ipv4_udp_5353() {
     tc_process_bound_ipv4_udp_port "$MDNS_PROC_NAME" 5353
 }

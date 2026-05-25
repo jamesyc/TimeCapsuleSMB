@@ -67,8 +67,6 @@ def extract_nbns_response_ip(packet: bytes) -> Optional[str]:
 
         if rdlength == 6:
             return socket.inet_ntoa(packet[offset + 2 : offset + 6])
-        if rdlength == 18:
-            return socket.inet_ntop(socket.AF_INET6, packet[offset + 2 : offset + 18])
         return None
     except (IndexError, OSError, ValueError, struct.error):
         return None
@@ -81,8 +79,9 @@ def check_nbns_name_resolution(netbios_name: str, target_host: str, expected_ip:
     except ValueError:
         return CheckResult("FAIL", f"NBNS check expected IP is invalid: {expected_ip}")
     expected_ip = str(expected_addr)
-    sock_family = socket.AF_INET6 if expected_addr.version == 6 else socket.AF_INET
-    sock = socket.socket(sock_family, socket.SOCK_DGRAM)
+    if expected_addr.version != 4:
+        return CheckResult("FAIL", f"NBNS only supports IPv4 addresses, got {expected_ip}")
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(timeout)
     try:
         sock.sendto(query, (target_host, NBNS_PORT))
