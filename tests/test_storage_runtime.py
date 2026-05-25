@@ -122,6 +122,7 @@ class StorageRuntimeTests(unittest.TestCase):
                 NBNS_ENABLED=0
                 SMBD_DEBUG_LOGGING=0
                 MDNS_DEBUG_LOGGING=0
+                MANAGER_STOP_POLL_SECONDS=10
                 """
             )
         )
@@ -2204,6 +2205,132 @@ MaSt = (
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "reset\nidentity\nno_payload\nstatus=0\n")
         self.assertEqual(acp_count_text, "1")
+
+    def test_manager_sleep_exits_promptly_after_term_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            with (flash / "tcapsulesmb.conf").open("a") as conf:
+                conf.write("MANAGER_STOP_POLL_SECONDS=1\n")
+            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
+            acp_count = self.write_sequence_acp(tmp_path, (fixture.raw, fixture.raw))
+            sleep_count = tmp_path / "sleep-count"
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                    tc_log() {{ printf '%s\\n' "$*" >>"$TC_LOG_FILE"; }}
+                    tc_watchdog_reset_pass_state() {{ :; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                        TC_RUNTIME_IDENTITY_READY=1
+                    }}
+                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            mdns-advertiser) return 0 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    stop_runtime_process_by_ucomm() {{ :; }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    sleep() {{
+                        echo "sleep $1"
+                        count=$(/bin/cat {shlex.quote(str(sleep_count))} 2>/dev/null || echo 0)
+                        count=$((count + 1))
+                        echo "$count" >{shlex.quote(str(sleep_count))}
+                        if [ "$count" -eq 2 ]; then
+                            kill -TERM $$
+                        fi
+                        return 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            acp_count_text = acp_count.read_text().strip()
+            log_text = (memory / "samba4/var/manager.log").read_text()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "sleep 1\nsleep 1\n")
+        self.assertEqual(acp_count_text, "1")
+        self.assertIn("manager stop requested; exiting", log_text)
+
+    def test_manager_sleep_completes_poll_interval_before_next_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            flash, _memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
+            with (flash / "tcapsulesmb.conf").open("a") as conf:
+                conf.write("MANAGER_STOP_POLL_SECONDS=1\n")
+            fixture = next(fixture for fixture in SHELL_MAST_FIXTURES if fixture.name == "openstep_no_valid_hfs_partitions")
+            acp_count = self.write_sequence_acp(tmp_path, (fixture.raw, fixture.raw, fixture.raw))
+            sleep_count = tmp_path / "sleep-count"
+            with (flash / "common.sh").open("a") as common:
+                common.write(
+                    textwrap.dedent(
+                        f"""\
+
+                    tc_log() {{ :; }}
+                    tc_watchdog_reset_pass_state() {{ :; }}
+                    tc_prepare_local_hostname_resolution() {{ :; }}
+                    tc_init_runtime_identity() {{
+                        MDNS_INSTANCE_NAME=AirPort
+                        MDNS_HOST_LABEL=airport
+                        SMB_NETBIOS_NAME=AIRPORT
+                        SMB_SERVER_STRING=AirPort
+                        TC_RUNTIME_IDENTITY_READY=1
+                    }}
+                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    runtime_process_present_by_ucomm() {{
+                        case "$1" in
+                            mdns-advertiser) return 0 ;;
+                            *) return 1 ;;
+                        esac
+                    }}
+                    stop_runtime_process_by_ucomm() {{ :; }}
+                    tc_mdns_bound_udp_5353() {{ return 0; }}
+                    sleep() {{
+                        echo "sleep $1"
+                        count=$(/bin/cat {shlex.quote(str(sleep_count))} 2>/dev/null || echo 0)
+                        count=$((count + 1))
+                        echo "$count" >{shlex.quote(str(sleep_count))}
+                        if [ "$count" -eq 11 ]; then
+                            echo "status=$manager_status"
+                            exit 0
+                        fi
+                        return 0
+                    }}
+                    """
+                    )
+                )
+
+            proc = subprocess.run(
+                ["/bin/sh", str(flash / "manager.sh")],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            acp_count_text = acp_count.read_text().strip()
+            sleep_count_text = sleep_count.read_text().strip()
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.count("sleep 1\n"), 11, proc.stdout)
+        self.assertIn("status=0\n", proc.stdout)
+        self.assertEqual(acp_count_text, "2")
+        self.assertEqual(sleep_count_text, "11")
 
     def test_manager_scheduler_runs_bind_only_between_service_ticks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -7179,7 +7306,6 @@ MaSt = (
                     tc_set_log "$RAM_VAR/test.log" test
                     mkdir -p "$RAM_VAR" {volumes}/dk2
                     tc_now_seconds() {{ cat {shlex.quote(str(clock))}; }}
-                    tc_now_millis() {{ printf '%s000\\n' "$(tc_now_seconds)"; }}
                     is_volume_root_mounted() {{ [ -f {shlex.quote(str(mounted))} ]; }}
                     sleep() {{ echo "unexpected sleep $1"; exit 99; }}
                     tc_wake_or_mount_volume /dev/dk2 {volumes}/dk2

@@ -245,12 +245,16 @@ tc_now_seconds() {
     esac
 }
 
-tc_now_millis() {
-    now_millis=$(date '+%s%3N' 2>/dev/null || echo 0)
-    case "$now_millis" in
-        ""|*[!0123456789]*) echo "$(tc_now_seconds)000" ;;
-        *) echo "$now_millis" ;;
-    esac
+tc_elapsed_seconds_since() {
+    elapsed_start_seconds=$1
+    elapsed_end_seconds=$(tc_now_seconds)
+    if ! tc_is_unsigned_integer "$elapsed_start_seconds"; then
+        echo 0
+        return 0
+    fi
+    elapsed_seconds=$((elapsed_end_seconds - elapsed_start_seconds))
+    [ "$elapsed_seconds" -ge 0 ] || elapsed_seconds=0
+    echo "$elapsed_seconds"
 }
 
 tc_log_timestamp() {

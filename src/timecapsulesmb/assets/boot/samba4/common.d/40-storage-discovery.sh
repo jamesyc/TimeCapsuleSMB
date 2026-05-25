@@ -13,7 +13,7 @@ tc_request_diskd_use_volume() {
     volume_root=$1
     mount_context=$2
     attempt_label=${3:-}
-    request_start_ms=$(tc_now_millis)
+    request_start_seconds=$(tc_now_seconds)
 
     mkdir -p "$volume_root"
     if [ -n "$attempt_label" ]; then
@@ -22,37 +22,29 @@ tc_request_diskd_use_volume() {
         tc_log "$mount_context: requesting diskd.useVolume for $volume_root"
     fi
     if /usr/bin/acp rpc diskd.useVolume path:s:"$volume_root" >/dev/null 2>&1; then
-        request_end_ms=$(tc_now_millis)
-        request_duration_ms=$((request_end_ms - request_start_ms))
-        [ "$request_duration_ms" -ge 0 ] || request_duration_ms=0
-        tc_log "$mount_context: diskd.useVolume command completed for $volume_root duration_ms=$request_duration_ms"
+        request_duration_seconds=$(tc_elapsed_seconds_since "$request_start_seconds")
+        tc_log "$mount_context: diskd.useVolume command completed for $volume_root duration_seconds=$request_duration_seconds"
         return 0
     fi
-    request_end_ms=$(tc_now_millis)
-    request_duration_ms=$((request_end_ms - request_start_ms))
-    [ "$request_duration_ms" -ge 0 ] || request_duration_ms=0
-    tc_log "$mount_context: diskd.useVolume command failed for $volume_root duration_ms=$request_duration_ms"
+    request_duration_seconds=$(tc_elapsed_seconds_since "$request_start_seconds")
+    tc_log "$mount_context: diskd.useVolume command failed for $volume_root duration_seconds=$request_duration_seconds"
     return 1
 }
 
 tc_wait_for_diskd_volume_mount() {
     volume_root=$1
     mount_context=$2
-    mount_started_ms=${3:-}
+    mount_started_seconds=${3:-}
 
     tc_log_runtime_env_warnings
     mount_timeout_seconds=${TC_DISKD_USE_VOLUME_MOUNT_TIMEOUT_SECONDS:-31}
     mount_poll_seconds=${TC_DISKD_USE_VOLUME_MOUNT_POLL_SECONDS:-3}
 
     elapsed=0
-    if tc_is_unsigned_integer "$mount_started_ms" && [ "$mount_started_ms" -gt 0 ]; then
-        current_ms=$(tc_now_millis)
-        elapsed_ms=$((current_ms - mount_started_ms))
-        [ "$elapsed_ms" -ge 0 ] || elapsed_ms=0
-        if [ "$elapsed_ms" -le 1000 ]; then
+    if tc_is_unsigned_integer "$mount_started_seconds" && [ "$mount_started_seconds" -gt 0 ]; then
+        elapsed=$(tc_elapsed_seconds_since "$mount_started_seconds")
+        if [ "$elapsed" -le 1 ]; then
             elapsed=0
-        else
-            elapsed=$((elapsed_ms / 1000))
         fi
         [ "$elapsed" -ge 0 ] || elapsed=0
         tc_log "$mount_context: waiting up to ${mount_timeout_seconds}s total for diskd.useVolume to mount $volume_root"
@@ -112,10 +104,10 @@ tc_wake_or_mount_volume_with_policy() {
     while [ "$attempt" -le "$diskd_attempts" ]; do
         mounted_without_claim=0
         diskd_request_status=0
-        diskd_request_started_ms=$(tc_now_millis)
+        diskd_request_started_seconds=$(tc_now_seconds)
         tc_request_diskd_use_volume "$volume_root" "$mount_context" "attempt $attempt/$diskd_attempts" || diskd_request_status=$?
         if [ "$diskd_request_status" -eq 0 ]; then
-            if tc_wait_for_diskd_volume_mount "$volume_root" "$mount_context" "$diskd_request_started_ms"; then
+            if tc_wait_for_diskd_volume_mount "$volume_root" "$mount_context" "$diskd_request_started_seconds"; then
                 if [ "$was_mounted" -eq 1 ]; then
                     tc_log "$mount_context: diskd.useVolume claim complete; $volume_root remained mounted after attempt $attempt/$diskd_attempts"
                 else

@@ -23,20 +23,45 @@ tc_manager_debug_log() {
     tc_smbd_debug_log "$@"
 }
 
+tc_manager_stop_requested() {
+    [ "${TC_MANAGER_STOP_REQUESTED:-0}" = "1" ]
+}
+
+tc_manager_sleep_until_due() {
+    manager_sleep_remaining=$1
+    manager_sleep_chunk=$MANAGER_STOP_POLL_SECONDS
+
+    while [ "$manager_sleep_remaining" -gt 0 ]; do
+        if tc_manager_stop_requested; then
+            return 1
+        fi
+        if [ "$manager_sleep_chunk" -gt "$manager_sleep_remaining" ]; then
+            manager_sleep_chunk=$manager_sleep_remaining
+        fi
+        sleep "$manager_sleep_chunk" || {
+            tc_manager_stop_requested && return 1
+            return 1
+        }
+        manager_sleep_remaining=$((manager_sleep_remaining - manager_sleep_chunk))
+    done
+
+    tc_manager_stop_requested && return 1
+    return 0
+}
+
 tc_manager_log_step_end() {
     iteration_id=$1
     step_name=$2
-    step_start_ms=$3
+    step_start_seconds=$3
     step_status=$4
-    step_end_ms=$(tc_now_millis)
-    step_duration_ms=$((step_end_ms - step_start_ms))
+    step_duration_seconds=$(tc_elapsed_seconds_since "$step_start_seconds")
 
     case "$step_status" in
         ok|skipped)
-            tc_manager_debug_log "manager pass $iteration_id step=$step_name end status=$step_status duration_ms=$step_duration_ms"
+            tc_manager_debug_log "manager pass $iteration_id step=$step_name end status=$step_status duration_seconds=$step_duration_seconds"
             ;;
         *)
-            tc_log "manager pass $iteration_id step=$step_name end status=$step_status duration_ms=$step_duration_ms"
+            tc_log "manager pass $iteration_id step=$step_name end status=$step_status duration_seconds=$step_duration_seconds"
             ;;
     esac
 }
@@ -488,7 +513,7 @@ tc_manager_apply_diskless_state() {
 tc_manager_apply_runtime_from_topology() {
     refresh_reason=$1
     topology_rows=$2
-    refresh_start_ms=$(tc_now_millis)
+    refresh_start_seconds=$(tc_now_seconds)
     manager_topology_rows=$topology_rows
     topology_count=$(tc_manager_count_rows "$topology_rows")
 
@@ -524,9 +549,8 @@ tc_manager_apply_runtime_from_topology() {
     fi
 
     TC_MANAGER_DISK_STATE_CHANGED=1
-    refresh_end_ms=$(tc_now_millis)
-    refresh_duration_ms=$((refresh_end_ms - refresh_start_ms))
-    tc_log "manager disk refresh complete: reason=$refresh_reason payload=$TC_PAYLOAD_DIR shares=$(tc_manager_count_rows "$manager_share_rows") duration_ms=$refresh_duration_ms"
+    refresh_duration_seconds=$(tc_elapsed_seconds_since "$refresh_start_seconds")
+    tc_log "manager disk refresh complete: reason=$refresh_reason payload=$TC_PAYLOAD_DIR shares=$(tc_manager_count_rows "$manager_share_rows") duration_seconds=$refresh_duration_seconds"
 }
 
 tc_manager_share_rows_include_device() {
@@ -1111,7 +1135,7 @@ tc_manager_record_successful_bind_status() {
 }
 
 tc_manager_run_identity_step() {
-    manager_step_start_ms=$(tc_now_millis)
+    manager_step_start_seconds=$(tc_now_seconds)
     tc_manager_debug_log "manager pass $manager_iteration_id step=identity start"
     manager_step_status=0
     tc_manager_debug_log "manager identity: refreshing runtime naming and local hostname"
@@ -1152,33 +1176,33 @@ tc_manager_run_identity_step() {
     fi
     if [ "$manager_step_status" -eq 0 ]; then
         manager_identity_status=ok
-        tc_manager_log_step_end "$manager_iteration_id" identity "$manager_step_start_ms" ok
+        tc_manager_log_step_end "$manager_iteration_id" identity "$manager_step_start_seconds" ok
         return 0
     fi
 
     manager_status=1
     manager_identity_status=failed
-    tc_manager_log_step_end "$manager_iteration_id" identity "$manager_step_start_ms" failed
+    tc_manager_log_step_end "$manager_iteration_id" identity "$manager_step_start_seconds" failed
     return 1
 }
 
 tc_manager_run_disk_step() {
-    manager_step_start_ms=$(tc_now_millis)
+    manager_step_start_seconds=$(tc_now_seconds)
     tc_manager_debug_log "manager pass $manager_iteration_id step=disk start"
     if tc_manager_reconcile_disk_state; then
         manager_disk_status=ok
-        tc_manager_log_step_end "$manager_iteration_id" disk "$manager_step_start_ms" ok
+        tc_manager_log_step_end "$manager_iteration_id" disk "$manager_step_start_seconds" ok
         return 0
     fi
 
     manager_status=1
     manager_disk_status=failed
-    tc_manager_log_step_end "$manager_iteration_id" disk "$manager_step_start_ms" failed
+    tc_manager_log_step_end "$manager_iteration_id" disk "$manager_step_start_seconds" failed
     return 1
 }
 
 tc_manager_run_samba_full_step() {
-    manager_step_start_ms=$(tc_now_millis)
+    manager_step_start_seconds=$(tc_now_seconds)
     tc_manager_debug_log "manager pass $manager_iteration_id step=samba start"
     manager_step_status=0
     tc_manager_debug_log "manager Samba: reconciling staged runtime, bind interfaces, and smbd"
@@ -1216,18 +1240,18 @@ tc_manager_run_samba_full_step() {
     fi
     if [ "$manager_step_status" -eq 0 ]; then
         manager_samba_status=ok
-        tc_manager_log_step_end "$manager_iteration_id" samba "$manager_step_start_ms" ok
+        tc_manager_log_step_end "$manager_iteration_id" samba "$manager_step_start_seconds" ok
         return 0
     fi
 
     manager_status=1
     manager_samba_status=failed
-    tc_manager_log_step_end "$manager_iteration_id" samba "$manager_step_start_ms" failed
+    tc_manager_log_step_end "$manager_iteration_id" samba "$manager_step_start_seconds" failed
     return 1
 }
 
 tc_manager_run_samba_bind_step() {
-    manager_step_start_ms=$(tc_now_millis)
+    manager_step_start_seconds=$(tc_now_seconds)
     tc_manager_debug_log "manager pass $manager_iteration_id step=samba_bind start"
     TC_MANAGER_SMBD_RESTART_REQUIRED=0
     TC_MANAGER_SMBD_RELOAD_REQUIRED=0
@@ -1236,13 +1260,13 @@ tc_manager_run_samba_bind_step() {
     if ! tc_manager_current_payload_ready; then
         manager_bind_status=skipped_no_payload
         tc_log "manager Samba bind: skipped because no payload is active"
-        tc_manager_log_step_end "$manager_iteration_id" samba_bind "$manager_step_start_ms" skipped
+        tc_manager_log_step_end "$manager_iteration_id" samba_bind "$manager_step_start_seconds" skipped
         return 0
     fi
     if ! tc_manager_samba_runtime_ready_for_bind_tick; then
         manager_bind_status=skipped_runtime
         tc_log "manager Samba bind: runtime is not staged; waiting for full service reconciliation"
-        tc_manager_log_step_end "$manager_iteration_id" samba_bind "$manager_step_start_ms" skipped
+        tc_manager_log_step_end "$manager_iteration_id" samba_bind "$manager_step_start_seconds" skipped
         return 0
     fi
 
@@ -1254,29 +1278,29 @@ tc_manager_run_samba_bind_step() {
                 tc_manager_restore_smb_bind_after_config_failure
                 manager_status=1
                 manager_bind_status=failed
-                tc_manager_log_step_end "$manager_iteration_id" samba_bind "$manager_step_start_ms" failed
+                tc_manager_log_step_end "$manager_iteration_id" samba_bind "$manager_step_start_seconds" failed
                 return 1
             fi
             if ! tc_manager_reconcile_smbd; then
                 manager_status=1
                 manager_bind_status=failed
-                tc_manager_log_step_end "$manager_iteration_id" samba_bind "$manager_step_start_ms" failed
+                tc_manager_log_step_end "$manager_iteration_id" samba_bind "$manager_step_start_seconds" failed
                 return 1
             fi
         fi
         tc_manager_record_successful_bind_status
-        tc_manager_log_step_end "$manager_iteration_id" samba_bind "$manager_step_start_ms" ok
+        tc_manager_log_step_end "$manager_iteration_id" samba_bind "$manager_step_start_seconds" ok
         return 0
     fi
 
     manager_status=1
     manager_bind_status=failed
-    tc_manager_log_step_end "$manager_iteration_id" samba_bind "$manager_step_start_ms" failed
+    tc_manager_log_step_end "$manager_iteration_id" samba_bind "$manager_step_start_seconds" failed
     return 1
 }
 
 tc_manager_run_no_payload_step() {
-    manager_step_start_ms=$(tc_now_millis)
+    manager_step_start_seconds=$(tc_now_seconds)
     tc_manager_debug_log "manager pass $manager_iteration_id step=no_payload start"
     tc_manager_debug_log "manager no_payload: clearing staged runtime and stopping Samba lane"
     TC_MANAGER_RUNTIME_STAGED=0
@@ -1287,13 +1311,13 @@ tc_manager_run_no_payload_step() {
     TC_MANAGER_SMBD_RELOAD_REQUIRED=0
     if tc_watchdog_stop_samba_lane_without_payload; then
         manager_samba_status=no_payload
-        tc_manager_log_step_end "$manager_iteration_id" no_payload "$manager_step_start_ms" ok
+        tc_manager_log_step_end "$manager_iteration_id" no_payload "$manager_step_start_seconds" ok
         return 0
     fi
 
     manager_status=1
     manager_samba_status=failed
-    tc_manager_log_step_end "$manager_iteration_id" no_payload "$manager_step_start_ms" failed
+    tc_manager_log_step_end "$manager_iteration_id" no_payload "$manager_step_start_seconds" failed
     return 1
 }
 
@@ -1313,7 +1337,7 @@ tc_manager_run_nbns_reconcile_before_mdns() {
 }
 
 tc_manager_run_mdns_step() {
-    manager_step_start_ms=$(tc_now_millis)
+    manager_step_start_seconds=$(tc_now_seconds)
     tc_manager_debug_log "manager pass $manager_iteration_id step=mdns start"
     tc_manager_debug_log "manager mDNS: reconciling advertiser"
     if [ "${TC_MANAGER_DISK_STATE_CHANGED:-0}" = "1" ] || [ "${TC_MANAGER_IDENTITY_CHANGED:-0}" = "1" ]; then
@@ -1322,28 +1346,28 @@ tc_manager_run_mdns_step() {
     fi
     if tc_manager_reconcile_mdns; then
         manager_mdns_status=ok
-        tc_manager_log_step_end "$manager_iteration_id" mdns "$manager_step_start_ms" ok
+        tc_manager_log_step_end "$manager_iteration_id" mdns "$manager_step_start_seconds" ok
         return 0
     fi
 
     manager_status=1
     manager_mdns_status=failed
-    tc_manager_log_step_end "$manager_iteration_id" mdns "$manager_step_start_ms" failed
+    tc_manager_log_step_end "$manager_iteration_id" mdns "$manager_step_start_seconds" failed
     return 1
 }
 
 tc_manager_run_nbns_wait_step() {
-    manager_step_start_ms=$(tc_now_millis)
+    manager_step_start_seconds=$(tc_now_seconds)
     tc_manager_debug_log "manager pass $manager_iteration_id step=nbns start"
     if [ "$manager_nbns_reconcile_status" = "ok" ] && tc_manager_wait_for_nbns_ready 10; then
         manager_nbns_status=ok
-        tc_manager_log_step_end "$manager_iteration_id" nbns "$manager_step_start_ms" ok
+        tc_manager_log_step_end "$manager_iteration_id" nbns "$manager_step_start_seconds" ok
         return 0
     fi
 
     manager_status=1
     manager_nbns_status=failed
-    tc_manager_log_step_end "$manager_iteration_id" nbns "$manager_step_start_ms" failed
+    tc_manager_log_step_end "$manager_iteration_id" nbns "$manager_step_start_seconds" failed
     return 1
 }
 
@@ -1381,6 +1405,8 @@ MANAGER_BIND_POLL_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_BIND_POLL_SE
 MANAGER_SERVICE_POLL_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_SERVICE_POLL_SECONDS:-30}" 30)
 MANAGER_MAST_RETRY_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_MAST_RETRY_SECONDS:-5}" 5)
 MANAGER_TOPOLOGY_DEBOUNCE_SECONDS=$(tc_sanitize_positive_integer "${WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS:-5}" 5)
+MANAGER_STOP_POLL_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_STOP_POLL_SECONDS:-1}" 1)
+TC_MANAGER_STOP_REQUESTED=0
 TC_MANAGER_ITERATION=0
 TC_MANAGER_RUNTIME_STAGED=0
 TC_MANAGER_LAST_BINARY_SIGNATURE=
@@ -1405,12 +1431,14 @@ manager_bind_seconds_until_due=0
 tc_manager_clear_payload_state
 
 tc_log "manager startup beginning"
-tc_log "manager intervals: disk=${MANAGER_DISK_POLL_SECONDS}s bind=${MANAGER_BIND_POLL_SECONDS}s services=${MANAGER_SERVICE_POLL_SECONDS}s mast_retry=${MANAGER_MAST_RETRY_SECONDS}s topology_debounce=${MANAGER_TOPOLOGY_DEBOUNCE_SECONDS}s"
+tc_log "manager intervals: disk=${MANAGER_DISK_POLL_SECONDS}s bind=${MANAGER_BIND_POLL_SECONDS}s services=${MANAGER_SERVICE_POLL_SECONDS}s mast_retry=${MANAGER_MAST_RETRY_SECONDS}s topology_debounce=${MANAGER_TOPOLOGY_DEBOUNCE_SECONDS}s stop_poll=${MANAGER_STOP_POLL_SECONDS}s"
 
-while :; do
+trap 'TC_MANAGER_STOP_REQUESTED=1' TERM INT
+
+while ! tc_manager_stop_requested; do
     TC_MANAGER_ITERATION=$((TC_MANAGER_ITERATION + 1))
     manager_iteration_id=$TC_MANAGER_ITERATION
-    manager_iteration_start_ms=$(tc_now_millis)
+    manager_iteration_start_seconds=$(tc_now_seconds)
     manager_status=0
     manager_payload_expected=0
     manager_identity_status=skipped
@@ -1477,8 +1505,7 @@ while :; do
         tc_manager_debug_log "manager scheduler: service reconciliation skipped on disk-only pass"
     fi
 
-    manager_iteration_end_ms=$(tc_now_millis)
-    manager_iteration_duration_ms=$((manager_iteration_end_ms - manager_iteration_start_ms))
+    manager_iteration_duration_seconds=$(tc_elapsed_seconds_since "$manager_iteration_start_seconds")
     if [ "$manager_status" -eq 0 ]; then
         manager_pass_status=ok
     else
@@ -1498,10 +1525,16 @@ while :; do
         [ "${TC_MANAGER_IDENTITY_CHANGED:-0}" = "1" ] ||
         [ "$manager_bind_status" = "changed" ] ||
         [ "$manager_bind_status" = "deferred_no_ip" ]; then
-        tc_log "manager pass $manager_iteration_id summary status=$manager_pass_status scheduler=$manager_scheduler_status identity=$manager_identity_status disk=$manager_disk_status disk_probe=${TC_MANAGER_DISK_PROBE_RESULT:-unknown} disk_refresh=${TC_MANAGER_DISK_REFRESH_RESULT:-unknown} payload=$manager_payload_status samba=$manager_samba_status bind=$manager_bind_status mdns=$manager_mdns_status nbns=$manager_nbns_status services=$manager_services_status duration_ms=$manager_iteration_duration_ms"
+        tc_log "manager pass $manager_iteration_id summary status=$manager_pass_status scheduler=$manager_scheduler_status identity=$manager_identity_status disk=$manager_disk_status disk_probe=${TC_MANAGER_DISK_PROBE_RESULT:-unknown} disk_refresh=${TC_MANAGER_DISK_REFRESH_RESULT:-unknown} payload=$manager_payload_status samba=$manager_samba_status bind=$manager_bind_status mdns=$manager_mdns_status nbns=$manager_nbns_status services=$manager_services_status duration_seconds=$manager_iteration_duration_seconds"
     fi
     tc_manager_debug_log "manager sleeping ${MANAGER_DISK_POLL_SECONDS}s after $manager_pass_status pass next_service=${manager_next_service_seconds}s next_bind=${manager_next_bind_seconds}s"
-    sleep "$MANAGER_DISK_POLL_SECONDS"
+    if ! tc_manager_sleep_until_due "$MANAGER_DISK_POLL_SECONDS"; then
+        break
+    fi
     manager_service_seconds_until_due=$manager_next_service_seconds
     manager_bind_seconds_until_due=$manager_next_bind_seconds
 done
+
+if tc_manager_stop_requested; then
+    tc_log "manager stop requested; exiting"
+fi
