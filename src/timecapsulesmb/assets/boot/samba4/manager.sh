@@ -894,7 +894,7 @@ tc_manager_start_smbd_if_needed() {
         return 0
     fi
 
-    tc_watchdog_refresh_runtime_identity_for_recovery
+    tc_manager_refresh_runtime_identity_for_recovery
     tc_manager_validate_smbd_runtime_state || return 1
     rm -rf "$LOCKS_ROOT"/* >/dev/null 2>&1 || true
     "$TC_SMBD_BIN" -D -s "$TC_SMBD_CONF" >/dev/null 2>&1 || true
@@ -1071,7 +1071,7 @@ tc_manager_reconcile_mdns() {
                 tc_mark_mdns_deferred_no_ip
                 return 0
             fi
-            TC_WATCHDOG_MDNS_UNAVAILABLE=1
+            TC_MANAGER_MDNS_UNAVAILABLE=1
             tc_log "manager mDNS recovery: mDNS auto-ip check failed with exit code $mdns_auto_ip_status"
             return 0
         fi
@@ -1081,12 +1081,12 @@ tc_manager_reconcile_mdns() {
         return 0
     fi
 
-    tc_watchdog_refresh_runtime_identity_for_recovery
+    tc_manager_refresh_runtime_identity_for_recovery
     if ! tc_ensure_mdns_auto_ip_seen; then
         return 0
     fi
     tc_manager_prepare_mdns_snapshot
-    tc_manager_launch_current_mdns_advertiser "manager recovery" 10
+    tc_manager_launch_current_mdns_advertiser "manager mDNS recovery" 10
 }
 
 tc_manager_wait_for_nbns_ready() {
@@ -1095,7 +1095,7 @@ tc_manager_wait_for_nbns_ready() {
     if ! tc_nbns_enabled; then
         return 0
     fi
-    if [ "${TC_WATCHDOG_NBNS_DEFERRED_NO_IP:-0}" = "1" ]; then
+    if [ "${TC_MANAGER_NBNS_DEFERRED_NO_IP:-0}" = "1" ]; then
         tc_log "manager NBNS: readiness wait skipped; NBNS deferred waiting for usable address"
         return 0
     fi
@@ -1157,8 +1157,8 @@ tc_manager_run_identity_step() {
         manager_step_status=1
     fi
     if [ "$manager_step_status" -eq 0 ]; then
-        TC_WATCHDOG_RECOVERY_IDENTITY_REFRESHED=1
-        if tc_watchdog_identity_signature_changed; then
+        TC_MANAGER_RECOVERY_IDENTITY_REFRESHED=1
+        if tc_manager_identity_signature_changed; then
             TC_MANAGER_IDENTITY_CHANGED=1
             tc_log "manager identity change: refreshing managed advertisers and Samba config"
             if tc_manager_current_payload_ready && [ -f "$TC_SMBD_CONF" ]; then
@@ -1179,7 +1179,7 @@ tc_manager_run_identity_step() {
                 if tc_nbns_enabled; then
                     stop_runtime_process_by_ucomm "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" || true
                 fi
-                if ! tc_watchdog_write_identity_signature; then
+                if ! tc_manager_write_identity_signature; then
                     manager_step_status=1
                 fi
             fi
@@ -1320,7 +1320,7 @@ tc_manager_run_no_payload_step() {
     TC_MANAGER_PENDING_CONFIG_SIGNATURE=
     TC_MANAGER_SMBD_RESTART_REQUIRED=0
     TC_MANAGER_SMBD_RELOAD_REQUIRED=0
-    if tc_watchdog_stop_samba_lane_without_payload; then
+    if tc_manager_stop_samba_lane_without_payload; then
         manager_samba_status=no_payload
         tc_manager_log_step_end "$manager_iteration_id" no_payload "$manager_step_start_seconds" ok
         return 0
@@ -1334,7 +1334,7 @@ tc_manager_run_no_payload_step() {
 
 tc_manager_run_nbns_reconcile_before_mdns() {
     tc_manager_debug_log "manager NBNS: reconciling responder before mDNS so startup can overlap mDNS capture"
-    if tc_watchdog_reconcile_nbns; then
+    if tc_manager_reconcile_nbns; then
         manager_nbns_reconcile_status=ok
         tc_manager_debug_log "manager NBNS: reconcile requested; readiness check will run after mDNS"
         return 0
@@ -1415,7 +1415,7 @@ MANAGER_DISK_POLL_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_DISK_POLL_SE
 MANAGER_BIND_POLL_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_BIND_POLL_SECONDS:-$MANAGER_DISK_POLL_SECONDS}" "$MANAGER_DISK_POLL_SECONDS")
 MANAGER_SERVICE_POLL_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_SERVICE_POLL_SECONDS:-30}" 30)
 MANAGER_MAST_RETRY_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_MAST_RETRY_SECONDS:-5}" 5)
-MANAGER_TOPOLOGY_DEBOUNCE_SECONDS=$(tc_sanitize_positive_integer "${WATCHDOG_TOPOLOGY_DEBOUNCE_SECONDS:-5}" 5)
+MANAGER_TOPOLOGY_DEBOUNCE_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_TOPOLOGY_DEBOUNCE_SECONDS:-5}" 5)
 MANAGER_STOP_POLL_SECONDS=$(tc_sanitize_positive_integer "${MANAGER_STOP_POLL_SECONDS:-1}" 1)
 TC_MANAGER_STOP_REQUESTED=0
 TC_MANAGER_ITERATION=0
@@ -1462,7 +1462,7 @@ while ! tc_manager_stop_requested; do
     manager_nbns_status=skipped
     manager_services_status=skipped
     manager_scheduler_status=disk_only
-    TC_WATCHDOG_RECOVERY_IDENTITY_REFRESHED=0
+    TC_MANAGER_RECOVERY_IDENTITY_REFRESHED=0
     TC_MANAGER_DISK_STATE_CHANGED=0
     TC_MANAGER_IDENTITY_CHANGED=0
     manager_nbns_reconcile_status=skipped
@@ -1477,7 +1477,7 @@ while ! tc_manager_stop_requested; do
     fi
 
     tc_manager_debug_log "manager pass $manager_iteration_id start"
-    tc_watchdog_reset_pass_state
+    tc_manager_reset_pass_state
 
     tc_manager_run_disk_step || true
     tc_manager_update_payload_status

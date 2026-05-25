@@ -237,7 +237,7 @@ tc_nbns_auto_ip_available() {
 }
 
 tc_mark_mdns_deferred_no_ip() {
-    TC_WATCHDOG_MDNS_DEFERRED_NO_IP=1
+    TC_MANAGER_MDNS_DEFERRED_NO_IP=1
     if [ "$TC_MDNS_AUTO_IP_WAIT_LOGGED" != "1" ]; then
         tc_log "mDNS startup deferred; no usable address has appeared yet"
         TC_MDNS_AUTO_IP_WAIT_LOGGED=1
@@ -250,7 +250,7 @@ tc_ensure_mdns_auto_ip_seen() {
     fi
 
     if [ ! -x "$TC_MDNS_BIN" ]; then
-        TC_WATCHDOG_MDNS_UNAVAILABLE=1
+        TC_MANAGER_MDNS_UNAVAILABLE=1
         tc_log "mDNS auto-ip check failed; missing $TC_MDNS_BIN"
         return 1
     fi
@@ -269,7 +269,7 @@ tc_ensure_mdns_auto_ip_seen() {
         tc_log "mDNS auto-ip check: no usable address yet"
         tc_mark_mdns_deferred_no_ip
     else
-        TC_WATCHDOG_MDNS_UNAVAILABLE=1
+        TC_MANAGER_MDNS_UNAVAILABLE=1
         tc_log "mDNS auto-ip check failed with exit code $mdns_auto_ip_status"
     fi
     return 1
@@ -497,9 +497,9 @@ tc_start_mdns_advertiser() {
 
 tc_restart_mdns() {
     if tc_load_payload_state; then
-        tc_launch_mdns_advertiser "watchdog recovery" 1 0 0
+        tc_launch_mdns_advertiser "manager mDNS recovery" 1 0 0
     else
-        tc_launch_mdns_advertiser "watchdog recovery" 1 0 1
+        tc_launch_mdns_advertiser "manager mDNS recovery" 1 0 1
     fi
 }
 
@@ -518,7 +518,7 @@ tc_launch_nbns() {
         return 0
     fi
 
-    if [ "$context" = "watchdog recovery" ]; then
+    if [ "$context" = "manager NBNS recovery" ]; then
         stop_apple_nbns_conflicts || {
             tc_log "$context: nbns responder launch skipped; conflicting Apple CIFS/NBNS processes still running"
             return 0
@@ -558,5 +558,5 @@ tc_launch_nbns() {
 }
 
 tc_restart_nbns() {
-    tc_launch_nbns "watchdog recovery" 0
+    tc_launch_nbns "manager NBNS recovery" 0
 }

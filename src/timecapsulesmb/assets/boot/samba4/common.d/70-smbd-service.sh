@@ -232,7 +232,7 @@ tc_log_smbd_socket_diagnostics() {
 tc_reload_smbd_config() {
     smbd_pid=$(tc_smbd_parent_pid || true)
     if [ -z "$smbd_pid" ]; then
-        tc_log "watchdog recovery: smbd config reload skipped; missing valid $RAM_VAR/smbd.pid"
+        tc_log "manager smbd recovery: smbd config reload skipped; missing valid $RAM_VAR/smbd.pid"
         return 1
     fi
 
@@ -240,10 +240,10 @@ tc_reload_smbd_config() {
     # parent pid file instead of pkilling every smbd child, so active SMB
     # sessions can keep running while new share definitions are loaded.
     if kill -HUP "$smbd_pid" >/dev/null 2>&1; then
-        tc_log "watchdog recovery: smbd config reload requested with SIGHUP pid $smbd_pid"
+        tc_log "manager smbd recovery: smbd config reload requested with SIGHUP pid $smbd_pid"
         return 0
     fi
 
-    tc_log "watchdog recovery: smbd config reload failed for pid $smbd_pid"
+    tc_log "manager smbd recovery: smbd config reload failed for pid $smbd_pid"
     return 1
 }

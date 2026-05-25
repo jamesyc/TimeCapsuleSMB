@@ -145,7 +145,7 @@ tc_auto_ip_unavailable_status() {
 }
 
 tc_mark_smb_deferred_no_ip() {
-    TC_WATCHDOG_SMB_DEFERRED_NO_IP=1
+    TC_MANAGER_SMB_DEFERRED_NO_IP=1
     if [ "${TC_SMB_IPV4_WAIT_LOGGED:-0}" != "1" ]; then
         tc_log "Samba bind discovery deferred; no usable address has appeared yet"
         TC_SMB_IPV4_WAIT_LOGGED=1
@@ -179,7 +179,7 @@ tc_wait_for_smb_ipv4() {
 tc_refresh_smb_bind_interfaces() {
     if bind_interfaces=$(tc_probe_smb_bind_interfaces); then
         TC_SMB_BIND_INTERFACES=$bind_interfaces
-        TC_WATCHDOG_SMB_DEFERRED_NO_IP=0
+        TC_MANAGER_SMB_DEFERRED_NO_IP=0
         tc_log "Samba bind interfaces: $TC_SMB_BIND_INTERFACES"
         return 0
     else

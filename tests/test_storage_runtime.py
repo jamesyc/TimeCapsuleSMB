@@ -1638,7 +1638,7 @@ MaSt = (
 
                         tc_prepare_ram_root() { mkdir -p "$RAM_VAR"; }
                         tc_prepare_local_hostname_resolution() { :; }
-                        tc_watchdog_reset_pass_state() {
+                        tc_manager_reset_pass_state() {
                             i=0
                             payload='abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz'
                             while [ "$i" -lt 220 ]; do
@@ -1652,7 +1652,7 @@ MaSt = (
                             SMB_NETBIOS_NAME=AIRPORT
                             SMB_SERVER_STRING=AirPort
                         }
-                        tc_watchdog_stop_samba_lane_without_payload() { :; }
+                        tc_manager_stop_samba_lane_without_payload() { :; }
                         runtime_process_present_by_ucomm() {
                             case "$1" in
                                 mdns-advertiser) return 0 ;;
@@ -1722,7 +1722,7 @@ MaSt = (
                         SMB_NETBIOS_NAME=AIRPORT
                         SMB_SERVER_STRING=AirPort
                     }
-                    tc_watchdog_stop_samba_lane_without_payload() { :; }
+                    tc_manager_stop_samba_lane_without_payload() { :; }
                     runtime_process_present_by_ucomm() {
                         case "$1" in
                             mdns-advertiser) return 0 ;;
@@ -1789,7 +1789,7 @@ MaSt = (
                         SMB_NETBIOS_NAME=AIRPORT
                         SMB_SERVER_STRING=AirPort
                     }
-                    tc_watchdog_stop_samba_lane_without_payload() { :; }
+                    tc_manager_stop_samba_lane_without_payload() { :; }
                     runtime_process_present_by_ucomm() {
                         case "$1" in
                             mdns-advertiser) return 0 ;;
@@ -1856,15 +1856,15 @@ MaSt = (
                     stop_runtime_process_by_ucomm() { :; }
                     tc_mdns_bound_udp_5353() { return 0; }
                     tc_nbns_enabled() { return 0; }
-                    TC_WATCHDOG_IDENTITY_SIGNATURE_READY=0
-                    TC_WATCHDOG_LAST_IDENTITY_SIGNATURE=
-                    tc_watchdog_stop_samba_lane_without_payload() { :; }
+                    TC_MANAGER_IDENTITY_SIGNATURE_READY=0
+                    TC_MANAGER_LAST_IDENTITY_SIGNATURE=
+                    tc_manager_stop_samba_lane_without_payload() { :; }
                     sleep() {
                         if [ "$1" = "1" ]; then
                             return 0
                         fi
                         echo "changed=$TC_MANAGER_IDENTITY_CHANGED"
-                        echo "ready=$TC_WATCHDOG_IDENTITY_SIGNATURE_READY"
+                        echo "ready=$TC_MANAGER_IDENTITY_SIGNATURE_READY"
                         exit 0
                     }
                     """
@@ -1906,7 +1906,7 @@ MaSt = (
 
                     tc_log() { :; }
                     tc_now_seconds() { echo 1000; }
-                    tc_watchdog_reset_pass_state() { echo reset; }
+                    tc_manager_reset_pass_state() { echo reset; }
                     tc_prepare_local_hostname_resolution() { :; }
                     tc_init_runtime_identity() {
                         echo identity
@@ -1916,7 +1916,7 @@ MaSt = (
                         SMB_SERVER_STRING=AirPort
                     }
                     tc_stage_runtime() { echo unexpected-stage; return 1; }
-                    tc_watchdog_stop_samba_lane_without_payload() { echo no_payload; }
+                    tc_manager_stop_samba_lane_without_payload() { echo no_payload; }
                     runtime_process_present_by_ucomm() {
                         case "$1" in
                             mdns-advertiser) return 0 ;;
@@ -1925,7 +1925,7 @@ MaSt = (
                     }
                     stop_runtime_process_by_ucomm() { :; }
                     tc_mdns_bound_udp_5353() { return 0; }
-                    tc_watchdog_reconcile_nbns() { echo unexpected-nbns; return 1; }
+                    tc_manager_reconcile_nbns() { echo unexpected-nbns; return 1; }
                     sleep() {
                         if [ "$1" = "1" ]; then
                             return 0
@@ -1965,7 +1965,7 @@ MaSt = (
                         f"""\
 
                     tc_log() {{ printf '%s\\n' "$*" >>"$TC_LOG_FILE"; }}
-                    tc_watchdog_reset_pass_state() {{ :; }}
+                    tc_manager_reset_pass_state() {{ :; }}
                     tc_prepare_local_hostname_resolution() {{ :; }}
                     tc_init_runtime_identity() {{
                         MDNS_INSTANCE_NAME=AirPort
@@ -1974,7 +1974,7 @@ MaSt = (
                         SMB_SERVER_STRING=AirPort
                         TC_RUNTIME_IDENTITY_READY=1
                     }}
-                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
                             mdns-advertiser) return 0 ;;
@@ -2027,7 +2027,7 @@ MaSt = (
                         f"""\
 
                     tc_log() {{ :; }}
-                    tc_watchdog_reset_pass_state() {{ :; }}
+                    tc_manager_reset_pass_state() {{ :; }}
                     tc_prepare_local_hostname_resolution() {{ :; }}
                     tc_init_runtime_identity() {{
                         MDNS_INSTANCE_NAME=AirPort
@@ -2036,7 +2036,7 @@ MaSt = (
                         SMB_SERVER_STRING=AirPort
                         TC_RUNTIME_IDENTITY_READY=1
                     }}
-                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
                             mdns-advertiser) return 0 ;;
@@ -2104,7 +2104,7 @@ MaSt = (
                         SMB_SERVER_STRING=AirPort
                         TC_RUNTIME_IDENTITY_READY=1
                     }}
-                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
                     tc_wake_or_mount_volume() {{ return 0; }}
                     is_volume_root_mounted() {{ return 0; }}
                     tc_verify_payload_dir() {{ return 0; }}
@@ -2206,7 +2206,7 @@ MaSt = (
                         SMB_SERVER_STRING=AirPort
                         TC_RUNTIME_IDENTITY_READY=1
                     }}
-                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
                             mdns-advertiser) return 0 ;;
@@ -2278,7 +2278,7 @@ MaSt = (
                         SMB_SERVER_STRING=AirPort
                         TC_RUNTIME_IDENTITY_READY=1
                     }}
-                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
                     tc_wake_or_mount_volume() {{ return 0; }}
                     is_volume_root_mounted() {{ return 0; }}
                     tc_verify_payload_dir() {{ return 0; }}
@@ -2384,7 +2384,7 @@ MaSt = (
                         SMB_SERVER_STRING=AirPort
                         TC_RUNTIME_IDENTITY_READY=1
                     }}
-                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
                     tc_wake_or_mount_volume() {{ return 0; }}
                     is_volume_root_mounted() {{ return 0; }}
                     tc_verify_payload_dir() {{ return 0; }}
@@ -2475,7 +2475,7 @@ MaSt = (
                         SMB_SERVER_STRING=AirPort
                         TC_RUNTIME_IDENTITY_READY=1
                     }
-                    tc_watchdog_refresh_runtime_identity_for_recovery() { :; }
+                    tc_manager_refresh_runtime_identity_for_recovery() { :; }
                     tc_wake_or_mount_volume() { return 0; }
                     is_volume_root_mounted() { return 0; }
                     tc_verify_payload_dir() { return 0; }
@@ -2575,7 +2575,7 @@ MaSt = (
                         f"""\
 
                     tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
-                    tc_watchdog_reset_pass_state() {{ :; }}
+                    tc_manager_reset_pass_state() {{ :; }}
                     tc_prepare_local_hostname_resolution() {{ :; }}
                     tc_init_runtime_identity() {{
                         MDNS_INSTANCE_NAME=AirPort
@@ -2583,7 +2583,7 @@ MaSt = (
                         SMB_NETBIOS_NAME=AIRPORT
                         SMB_SERVER_STRING=AirPort
                     }}
-                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
                     tc_prepare_mdns_identity() {{
                         TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
                         AIRPORT_INSTANCE_NAME=AirPort
@@ -2600,7 +2600,7 @@ MaSt = (
                         AIRPORT_BJSD=
                         return 0
                     }}
-                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
                             mDNSResponder) return 0 ;;
@@ -2661,7 +2661,7 @@ MaSt = (
                         """\
 
                     tc_prepare_ram_root() { mkdir -p "$RAM_VAR"; }
-                    tc_watchdog_reset_pass_state() { :; }
+                    tc_manager_reset_pass_state() { :; }
                     tc_prepare_local_hostname_resolution() { :; }
                     tc_init_runtime_identity() {
                         MDNS_INSTANCE_NAME=AirPort
@@ -2669,7 +2669,7 @@ MaSt = (
                         SMB_NETBIOS_NAME=AIRPORT
                         SMB_SERVER_STRING=AirPort
                     }
-                    tc_watchdog_stop_samba_lane_without_payload() { :; }
+                    tc_manager_stop_samba_lane_without_payload() { :; }
                     runtime_process_present_by_ucomm() {
                         case "$1" in
                             mdns-advertiser) return 0 ;;
@@ -2724,7 +2724,7 @@ MaSt = (
                         """\
 
                     tc_prepare_ram_root() { mkdir -p "$RAM_VAR"; }
-                    tc_watchdog_reset_pass_state() { :; }
+                    tc_manager_reset_pass_state() { :; }
                     tc_prepare_local_hostname_resolution() { :; }
                     tc_init_runtime_identity() {
                         MDNS_INSTANCE_NAME=AirPort
@@ -2732,15 +2732,15 @@ MaSt = (
                         SMB_NETBIOS_NAME=AIRPORT
                         SMB_SERVER_STRING=AirPort
                     }
-                    tc_watchdog_refresh_runtime_identity_for_recovery() { :; }
-                    tc_watchdog_stop_samba_lane_without_payload() { :; }
+                    tc_manager_refresh_runtime_identity_for_recovery() { :; }
+                    tc_manager_stop_samba_lane_without_payload() { :; }
                     runtime_process_present_by_ucomm() { return 1; }
                     tc_mdns_bound_udp_5353() { return 1; }
                     sleep() {
                         case "$1" in
                             1) return 0 ;;
                             3) echo unexpected-settle; return 0 ;;
-                            10) echo "status=$manager_status deferred=$TC_WATCHDOG_MDNS_DEFERRED_NO_IP"; exit 0 ;;
+                            10) echo "status=$manager_status deferred=$TC_MANAGER_MDNS_DEFERRED_NO_IP"; exit 0 ;;
                         esac
                         return 0
                     }
@@ -2799,7 +2799,7 @@ MaSt = (
                         f"""\
 
                     tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
-                    tc_watchdog_reset_pass_state() {{ :; }}
+                    tc_manager_reset_pass_state() {{ :; }}
                     tc_prepare_local_hostname_resolution() {{ :; }}
                     tc_init_runtime_identity() {{
                         MDNS_INSTANCE_NAME=AirPort
@@ -2807,7 +2807,7 @@ MaSt = (
                         SMB_NETBIOS_NAME=AIRPORT
                         SMB_SERVER_STRING=AirPort
                     }}
-                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
                     tc_prepare_mdns_identity() {{
                         TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
                         AIRPORT_INSTANCE_NAME=AirPort
@@ -2824,7 +2824,7 @@ MaSt = (
                         AIRPORT_BJSD=
                         return 0
                     }}
-                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
                             mDNSResponder) return 0 ;;
@@ -2896,7 +2896,7 @@ MaSt = (
                         f"""\
 
                     tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
-                    tc_watchdog_reset_pass_state() {{ :; }}
+                    tc_manager_reset_pass_state() {{ :; }}
                     tc_prepare_local_hostname_resolution() {{ :; }}
                     tc_init_runtime_identity() {{
                         MDNS_INSTANCE_NAME=AirPort
@@ -2904,7 +2904,7 @@ MaSt = (
                         SMB_NETBIOS_NAME=AIRPORT
                         SMB_SERVER_STRING=AirPort
                     }}
-                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
                     tc_prepare_mdns_identity() {{
                         TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
                         AIRPORT_INSTANCE_NAME=AirPort
@@ -2921,7 +2921,7 @@ MaSt = (
                         AIRPORT_BJSD=
                         return 0
                     }}
-                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
                             mDNSResponder) return 0 ;;
@@ -2989,7 +2989,7 @@ MaSt = (
                         f"""\
 
                     tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
-                    tc_watchdog_reset_pass_state() {{ :; }}
+                    tc_manager_reset_pass_state() {{ :; }}
                     tc_prepare_local_hostname_resolution() {{ :; }}
                     tc_init_runtime_identity() {{
                         MDNS_INSTANCE_NAME=AirPort
@@ -2997,7 +2997,7 @@ MaSt = (
                         SMB_NETBIOS_NAME=AIRPORT
                         SMB_SERVER_STRING=AirPort
                     }}
-                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
                     tc_prepare_mdns_identity() {{
                         TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
                         AIRPORT_INSTANCE_NAME=AirPort
@@ -3014,7 +3014,7 @@ MaSt = (
                         AIRPORT_BJSD=
                         return 0
                     }}
-                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
                             mdns-advertiser) [ -f {shlex.quote(str(launched))} ] ;;
@@ -3079,7 +3079,7 @@ MaSt = (
                         f"""\
 
                     tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
-                    tc_watchdog_reset_pass_state() {{ :; }}
+                    tc_manager_reset_pass_state() {{ :; }}
                     tc_prepare_local_hostname_resolution() {{ :; }}
                     tc_init_runtime_identity() {{
                         MDNS_INSTANCE_NAME=AirPort
@@ -3087,7 +3087,7 @@ MaSt = (
                         SMB_NETBIOS_NAME=AIRPORT
                         SMB_SERVER_STRING=AirPort
                     }}
-                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
                     tc_prepare_mdns_identity() {{
                         TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
                         AIRPORT_INSTANCE_NAME=AirPort
@@ -3104,7 +3104,7 @@ MaSt = (
                         AIRPORT_BJSD=
                         return 0
                     }}
-                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
                             mdns-advertiser) [ -f {shlex.quote(str(launched))} ] ;;
@@ -3165,7 +3165,7 @@ MaSt = (
                         f"""\
 
                     tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
-                    tc_watchdog_reset_pass_state() {{
+                    tc_manager_reset_pass_state() {{
                         tc_set_payload_log_dir {shlex.quote(str(old_payload_logs.parent))} {shlex.quote(str(old_payload_logs.parent))}
                     }}
                     tc_prepare_local_hostname_resolution() {{ :; }}
@@ -3175,7 +3175,7 @@ MaSt = (
                         SMB_NETBIOS_NAME=AIRPORT
                         SMB_SERVER_STRING=AirPort
                     }}
-                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ :; }}
+                    tc_manager_refresh_runtime_identity_for_recovery() {{ :; }}
                     tc_prepare_mdns_identity() {{
                         TC_AIRPORT_FIELDS_ADVERTISE_MAC=80:EA:96:E6:58:68
                         AIRPORT_INSTANCE_NAME=AirPort
@@ -3192,7 +3192,7 @@ MaSt = (
                         AIRPORT_BJSD=
                         return 0
                     }}
-                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
                             mdns-advertiser) [ -f {shlex.quote(str(launched))} ] ;;
@@ -3312,7 +3312,7 @@ MaSt = (
         self.assertIn("stage-runtime\n", proc.stdout)
         self.assertIn("status=0\n", proc.stdout)
         self.assertNotIn("unexpected-debounce", proc.stdout)
-        self.assertNotIn("unexpected-watchdog-mount", proc.stdout)
+        self.assertNotIn("unexpected-manager-mount", proc.stdout)
 
     def test_manager_reclaims_active_disk_users_without_full_topology_refresh(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3431,7 +3431,7 @@ MaSt = (
                     tc_wake_or_mount_volume() {{ echo "disk-mount $1 $2"; return 0; }}
                     is_volume_root_mounted() {{ return 0; }}
                     tc_verify_payload_dir() {{ return 1; }}
-                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
                             mdns-advertiser) return 0 ;;
@@ -3551,7 +3551,7 @@ MaSt = (
         self.assertEqual(proc.stdout.count("disk-mount /dev/dk2"), 1, proc.stdout)
         self.assertIn("stage-runtime\n", proc.stdout)
         self.assertIn("status=0\n", proc.stdout)
-        self.assertNotIn("unexpected-watchdog-mount", proc.stdout)
+        self.assertNotIn("unexpected-manager-mount", proc.stdout)
 
     def test_manager_waits_for_nbns_udp_137_after_reconcile(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3602,7 +3602,7 @@ MaSt = (
                     }}
                     tc_smbd_bound_tcp_445() {{ return 0; }}
                     tc_mdns_bound_udp_5353() {{ return 0; }}
-                    tc_watchdog_reconcile_nbns() {{ echo nbns-reconcile >>{shlex.quote(str(events))}; echo nbns-reconcile; return 0; }}
+                    tc_manager_reconcile_nbns() {{ echo nbns-reconcile >>{shlex.quote(str(events))}; echo nbns-reconcile; return 0; }}
                     tc_nbns_bound_ipv4_udp_137() {{
                         echo nbns-socket >>{shlex.quote(str(events))}
                         count=$(/bin/cat {shlex.quote(str(nbns_bound_checks))} 2>/dev/null || echo 0)
@@ -3660,7 +3660,7 @@ MaSt = (
                         f"""\
 
                     tc_prepare_ram_root() {{ mkdir -p "$RAM_VAR"; }}
-                    tc_watchdog_reset_pass_state() {{ :; }}
+                    tc_manager_reset_pass_state() {{ :; }}
                     tc_prepare_local_hostname_resolution() {{ :; }}
                     tc_init_runtime_identity() {{
                         MDNS_INSTANCE_NAME=AirPort
@@ -3668,7 +3668,7 @@ MaSt = (
                         SMB_NETBIOS_NAME=AIRPORT
                         SMB_SERVER_STRING=AirPort
                     }}
-                    tc_watchdog_stop_samba_lane_without_payload() {{ :; }}
+                    tc_manager_stop_samba_lane_without_payload() {{ :; }}
                     runtime_process_present_by_ucomm() {{
                         case "$1" in
                             mdns-advertiser)
@@ -3761,7 +3761,7 @@ MaSt = (
                     }
                     tc_smbd_bound_tcp_445() { return 0; }
                     tc_mdns_bound_udp_5353() { return 0; }
-                    tc_watchdog_reconcile_nbns() { echo nbns-reconcile; return 0; }
+                    tc_manager_reconcile_nbns() { echo nbns-reconcile; return 0; }
                     tc_nbns_bound_ipv4_udp_137() { return 1; }
                     stop_runtime_process_by_ucomm() { :; }
                     sleep() {
@@ -5247,11 +5247,11 @@ MaSt = (
             "unsupported_family=1\n",
         )
 
-    def test_common_watchdog_restarts_nbns_when_running_without_udp_137_and_auto_ip_exists(self) -> None:
+    def test_common_manager_restarts_nbns_when_running_without_udp_137_and_auto_ip_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            script = tmp_path / "watchdog-nbns-restart-unbound.sh"
+            script = tmp_path / "manager-nbns-restart-unbound.sh"
             script.write_text(
                 textwrap.dedent(
                     f"""\
@@ -5270,9 +5270,9 @@ MaSt = (
                     tc_nbns_bound_ipv4_udp_137() {{ return 1; }}
                     tc_nbns_auto_ip_available() {{ echo auto-ip; return 0; }}
                     stop_runtime_process_by_ucomm() {{ echo "stop $1"; nbns_present=0; }}
-                    tc_watchdog_refresh_runtime_identity_for_recovery() {{ echo identity; }}
+                    tc_manager_refresh_runtime_identity_for_recovery() {{ echo identity; }}
                     tc_restart_nbns() {{ echo restart; }}
-                    tc_watchdog_reconcile_nbns
+                    tc_manager_reconcile_nbns
                     """
                 )
             )
@@ -5283,13 +5283,13 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "auto-ip\nstop nbns-advertiser\nidentity\nrestart\n")
-        self.assertIn("watchdog recovery: nbns responder is running without required UDP 137 sockets", log_text)
+        self.assertIn("manager NBNS recovery: nbns responder is running without required UDP 137 sockets", log_text)
 
-    def test_common_watchdog_defers_nbns_when_running_without_udp_137_and_no_auto_ip(self) -> None:
+    def test_common_manager_defers_nbns_when_running_without_udp_137_and_no_auto_ip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            script = tmp_path / "watchdog-nbns-defer-unbound.sh"
+            script = tmp_path / "manager-nbns-defer-unbound.sh"
             script.write_text(
                 textwrap.dedent(
                     f"""\
@@ -5308,8 +5308,8 @@ MaSt = (
                     tc_nbns_auto_ip_available() {{ echo auto-ip; return 11; }}
                     stop_runtime_process_by_ucomm() {{ echo "unexpected-stop $1"; return 1; }}
                     tc_restart_nbns() {{ echo unexpected-restart; return 1; }}
-                    tc_watchdog_reconcile_nbns
-                    echo "deferred=$TC_WATCHDOG_NBNS_DEFERRED_NO_IP"
+                    tc_manager_reconcile_nbns
+                    echo "deferred=$TC_MANAGER_NBNS_DEFERRED_NO_IP"
                     """
                 )
             )
@@ -5320,15 +5320,15 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "auto-ip\ndeferred=1\n")
-        self.assertIn("watchdog recovery: nbns responder is running without required UDP 137 sockets", log_text)
+        self.assertIn("manager NBNS recovery: nbns responder is running without required UDP 137 sockets", log_text)
         self.assertIn("NBNS startup deferred; no usable address has appeared yet", log_text)
         self.assertNotIn("unexpected", proc.stdout)
 
-    def test_common_watchdog_reports_nbns_hard_auto_ip_failure_when_unbound(self) -> None:
+    def test_common_manager_reports_nbns_hard_auto_ip_failure_when_unbound(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             flash, memory, _locks, _volumes = self.write_runtime_harness(tmp_path)
-            script = tmp_path / "watchdog-nbns-unbound-hard-fail.sh"
+            script = tmp_path / "manager-nbns-unbound-hard-fail.sh"
             script.write_text(
                 textwrap.dedent(
                     f"""\
@@ -5348,9 +5348,9 @@ MaSt = (
                     stop_runtime_process_by_ucomm() {{ echo "unexpected-stop $1"; return 1; }}
                     tc_restart_nbns() {{ echo unexpected-restart; return 1; }}
                     status=0
-                    tc_watchdog_reconcile_nbns || status=$?
+                    tc_manager_reconcile_nbns || status=$?
                     echo "status=$status"
-                    echo "deferred=$TC_WATCHDOG_NBNS_DEFERRED_NO_IP"
+                    echo "deferred=$TC_MANAGER_NBNS_DEFERRED_NO_IP"
                     """
                 )
             )
@@ -5361,8 +5361,8 @@ MaSt = (
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout, "auto-ip\nstatus=1\ndeferred=0\n")
-        self.assertIn("watchdog recovery: nbns responder is running without required UDP 137 sockets", log_text)
-        self.assertIn("watchdog recovery: NBNS auto-ip check failed with exit code 13", log_text)
+        self.assertIn("manager NBNS recovery: nbns responder is running without required UDP 137 sockets", log_text)
+        self.assertIn("manager NBNS recovery: auto-ip check failed with exit code 13", log_text)
         self.assertNotIn("unexpected", proc.stdout)
 
     def test_common_mdns_capture_has_no_async_wait_state(self) -> None:
