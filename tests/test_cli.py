@@ -1989,7 +1989,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("mDNS device model hint", seen_defaults)
         self.assertEqual(result.values["TC_MDNS_DEVICE_MODEL"], "TimeCapsule8,119")
 
-    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
+    @unittest.skip("TC_NET_IFACE is no longer configured; runtime manager selects advertise IP at boot")
     def test_configure_uses_target_ip_interface_default_instead_of_static_bridge0(self) -> None:
         seen_defaults = {}
         prompt_values = iter([
@@ -2032,7 +2032,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("bcmeth1: 10.0.1.1 (suggested)", result.text)
         self.assertIn("Using probed default for TC_NET_IFACE: bcmeth1", result.text)
 
-    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
+    @unittest.skip("TC_NET_IFACE is no longer configured; runtime manager selects advertise IP at boot")
     def test_configure_uses_discovered_ip_for_interface_default_when_host_is_name(self) -> None:
         seen_defaults = {}
         record = Discovered(
@@ -2082,7 +2082,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_NET_IFACE"], "bcmeth1")
         self.assertIn("bcmeth1: 10.0.1.1 (suggested)", result.text)
 
-    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
+    @unittest.skip("TC_NET_IFACE is no longer configured; runtime manager selects advertise IP at boot")
     def test_configure_keeps_saved_interface_when_it_matches_probed_candidates(self) -> None:
         seen_defaults = {}
         existing = {"TC_NET_IFACE": "bcmeth1"}
@@ -2125,7 +2125,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_NET_IFACE"], "bcmeth1")
         self.assertIn("Found saved value: bcmeth1", result.text)
 
-    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
+    @unittest.skip("TC_NET_IFACE is no longer configured; runtime manager selects advertise IP at boot")
     def test_configure_target_ip_match_overrides_conflicting_saved_interface(self) -> None:
         seen_defaults = {}
         existing = {"TC_NET_IFACE": "bridge0"}
@@ -2170,7 +2170,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Found saved value: bridge0", result.text)
         self.assertIn("Probed target IP 10.0.1.1 is on bcmeth1, so bcmeth1 is suggested instead.", result.text)
 
-    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
+    @unittest.skip("TC_NET_IFACE is no longer configured; runtime manager selects advertise IP at boot")
     def test_configure_private_discovered_ip_beats_loopback_ssh_target(self) -> None:
         seen_defaults = {}
         record = Discovered(
@@ -2223,7 +2223,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_NET_IFACE"], "bridge0")
         self.assertIn("bridge0: 192.168.1.217 (suggested)", result.text)
 
-    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
+    @unittest.skip("TC_NET_IFACE is no longer configured; runtime manager selects advertise IP at boot")
     def test_configure_loopback_target_ip_does_not_win_runtime_interface(self) -> None:
         seen_defaults = {}
         prompt_values = iter([
@@ -2341,7 +2341,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_HOST"], "root@10.0.0.2")
         self.assertIn("capsule.local resolves to 169.254.x.x link-local IPv4 address 169.254.44.9", result.text)
 
-    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
+    @unittest.skip("TC_NET_IFACE is no longer configured; runtime manager selects advertise IP at boot")
     def test_configure_multiple_private_interfaces_without_exact_match_prints_candidates_and_prompts(self) -> None:
         seen_defaults = {}
         prompt_values = iter([
@@ -2385,7 +2385,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("bcmeth1: 10.0.1.1", text)
         self.assertIn("bridge0: 192.168.1.217 (suggested)", text)
 
-    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
+    @unittest.skip("TC_NET_IFACE is no longer configured; runtime manager selects advertise IP at boot")
     def test_configure_uses_ssh_target_ip_before_discovered_ip_for_interface_default(self) -> None:
         seen_defaults = {}
         record = Discovered(
@@ -2438,7 +2438,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.values["TC_NET_IFACE"], "bcmeth1")
         self.assertIn("bcmeth1: 10.0.1.1 (suggested)", result.text)
 
-    @unittest.skip("TC_NET_IFACE is no longer configured; start-samba selects advertise IP at boot")
+    @unittest.skip("TC_NET_IFACE is no longer configured; runtime manager selects advertise IP at boot")
     def test_configure_fails_when_probe_has_no_runtime_usable_ipv4_candidates(self) -> None:
         seen_defaults = {}
         prompt_values = iter([

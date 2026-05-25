@@ -112,8 +112,8 @@ class ProbeTests(unittest.TestCase):
         ) -> subprocess.CompletedProcess[str]:
             if "rc.local.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rc log\n", stderr="")
-            if "watchdog.log" in remote_cmd:
-                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="watchdog log\n", stderr="")
+            if "manager.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="manager log\n", stderr="")
             if probe.RUNTIME_SMB_CONF in remote_cmd:
                 return subprocess.CompletedProcess(
                     args=["ssh"],
@@ -134,7 +134,7 @@ class ProbeTests(unittest.TestCase):
 
         self.assertEqual(logs["remote_rc_local_log_tail"], "rc log")
         self.assertEqual(logs["remote_payload_log_dir"], "/Volumes/dk2/.samba4")
-        self.assertEqual(logs["remote_watchdog_log_tail"], "watchdog log")
+        self.assertEqual(logs["remote_manager_log_tail"], "manager log")
         self.assertEqual(logs["remote_mdns_log_tail"], "mdns log")
         self.assertEqual(logs["remote_nbns_log_tail"], "nbns log")
         self.assertEqual(logs["remote_smbd_log_tail"], "smbd log")
@@ -160,8 +160,8 @@ class ProbeTests(unittest.TestCase):
         ) -> subprocess.CompletedProcess[str]:
             if "rc.local.log" in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="rc log\n", stderr="")
-            if "watchdog.log" in remote_cmd:
-                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="watchdog log\n", stderr="")
+            if "manager.log" in remote_cmd:
+                return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="manager log\n", stderr="")
             if probe.RUNTIME_SMB_CONF in remote_cmd:
                 return subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="[global]\n[Data]\n    path = /Volumes/dk2/ShareRoot\n", stderr="")
             if "/mnt/Memory/samba4/var/mdns.log" in remote_cmd:
@@ -174,6 +174,7 @@ class ProbeTests(unittest.TestCase):
             logs = read_runtime_log_tails_conn(connection)
 
         self.assertEqual(logs["remote_payload_log_dir"], f"(unavailable from active {probe.RUNTIME_SMB_CONF})")
+        self.assertEqual(logs["remote_manager_log_tail"], "manager log")
         self.assertEqual(logs["remote_mdns_log_tail"], "ram mdns log")
         self.assertEqual(logs["remote_nbns_log_tail"], "ram nbns log")
         self.assertEqual(run_ssh_mock.call_count, 5)
@@ -198,9 +199,9 @@ class ProbeTests(unittest.TestCase):
     def test_runtime_startup_failure_debug_fields_classifies_auto_ip_unavailable(self) -> None:
         fields = runtime_startup_failure_debug_fields(
             {
-                "remote_watchdog_log_tail": (
-                    "watchdog: mDNS auto-ip check: no usable address yet\n"
-                    "watchdog: mDNS startup deferred; no usable address has appeared yet\n"
+                "remote_manager_log_tail": (
+                    "manager: mDNS auto-ip check: no usable address yet\n"
+                    "manager: mDNS startup deferred; no usable address has appeared yet\n"
                 )
             }
         )

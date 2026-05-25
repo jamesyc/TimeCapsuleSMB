@@ -43,7 +43,7 @@ REMOTE_LOG_TAIL_TIMEOUT_SECONDS = 10
 REMOTE_NETWORK_DIAGNOSTICS_TIMEOUT_SECONDS = 10
 REMOTE_RUNTIME_RAM_LOG_PATHS = {
     "remote_rc_local_log_tail": "/mnt/Memory/samba4/var/rc.local.log",
-    "remote_watchdog_log_tail": "/mnt/Memory/samba4/var/watchdog.log",
+    "remote_manager_log_tail": "/mnt/Memory/samba4/var/manager.log",
 }
 REMOTE_PAYLOAD_LOG_FILENAMES = {
     "remote_smbd_log_tail": "log.smbd",
@@ -343,8 +343,6 @@ describe_managed_smbd_status() {{
     fi
     if manager_process_present_for_volume "$ps_out"; then
         echo "PASS:manager is running for managed runtime"
-    elif watchdog_process_present_for_volume "$ps_out"; then
-        echo "PASS:legacy watchdog is running for managed runtime"
     else
         echo "FAIL:manager is not running for managed runtime"
         status=1
@@ -1601,7 +1599,7 @@ def runtime_startup_failure_debug_fields(
     combined = "\n".join(
         str(value)
         for value in (
-            logs.get("remote_watchdog_log_tail"),
+            logs.get("remote_manager_log_tail"),
             logs.get("remote_mdns_log_tail"),
             logs.get("remote_nbns_log_tail"),
             verification_detail,
@@ -1615,8 +1613,6 @@ def runtime_startup_failure_debug_fields(
             "mDNS startup deferred; no usable address has appeared yet",
             "mdns-advertiser is waiting for auto-IP",
             "mdns-advertiser is waiting for a usable address",
-            "watchdog steady check: core services healthy; mDNS deferred waiting for usable IPv4",
-            "watchdog steady check: core services healthy; mDNS deferred waiting for usable address",
         )
     ):
         return {

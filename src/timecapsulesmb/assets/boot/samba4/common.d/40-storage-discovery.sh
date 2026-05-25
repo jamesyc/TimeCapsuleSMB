@@ -7,8 +7,8 @@ is_volume_root_mounted() {
     return 1
 }
 
-# Disk mount policy helpers. Boot and watchdog share the low-level
-# Apple-first flow, but keep separate entry points so their timing can diverge.
+# Disk mount policy helpers. Boot uses Apple's diskd.useVolume flow so sleeping
+# Apple-managed disks stay under diskd's ownership.
 tc_request_diskd_use_volume() {
     volume_root=$1
     mount_context=$2
@@ -137,10 +137,6 @@ tc_wake_or_mount_volume_with_policy() {
 
 tc_wake_or_mount_volume() {
     tc_wake_or_mount_volume_with_policy "$1" "$2" "$DISKD_USE_VOLUME_ATTEMPTS" "MaSt volume $2"
-}
-
-tc_watchdog_wake_or_mount_volume() {
-    tc_wake_or_mount_volume_with_policy "$1" "$2" "$WATCHDOG_DISKD_USE_VOLUME_ATTEMPTS" "watchdog volume $2"
 }
 
 tc_mount_mast_volumes_for_boot() {

@@ -68,8 +68,6 @@ from timecapsulesmb.deploy.planner import (
     PACKAGED_DFREE_SH_SOURCE,
     PACKAGED_MANAGER_SOURCE,
     PACKAGED_RC_LOCAL_SOURCE,
-    PACKAGED_START_SAMBA_SOURCE,
-    PACKAGED_WATCHDOG_SOURCE,
     PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS,
     build_deployment_plan,
     build_uninstall_plan,
@@ -407,8 +405,6 @@ class DeployModuleTests(unittest.TestCase):
                         "101 Z    wcifsnd         (wcifsnd)",
                         "102 Z    wcifsfs         (wcifsfs)",
                         "103 S    nbns-advertiser /mnt/Memory/samba4/sbin/nbns-advertiser --name TimeCapsule",
-                        "104 S    sh              /bin/sh /mnt/Flash/watchdog.sh",
-                        "105 S    sh              /bin/sh -c probe=/mnt/Flash/watchdog.sh",
                         "106 S    sh              /bin/sh /mnt/Flash/manager.sh",
                     ]
                 )
@@ -420,10 +416,7 @@ class DeployModuleTests(unittest.TestCase):
                 + """
 runtime_process_present_by_ucomm wcifsnd; echo "zombie-name=$?"
 runtime_process_present_by_ucomm nbns-advertiser; echo "live-name=$?"
-runtime_watchdog_present; echo "live-full=$?"
-runtime_watchdog_present < /dev/null; echo "live-full-repeat=$?"
 runtime_manager_present; echo "manager-full=$?"
-echo "watchdog-pids=$(runtime_watchdog_pids)"
 echo "manager-pids=$(runtime_manager_pids)"
 runtime_process_present_by_ucomm wcifsfs; echo "zombie-full=$?"
 wait_for_process nbns-advertiser 1; echo "live-wait=$?"
@@ -436,10 +429,7 @@ wait_for_process wcifsnd 1; echo "zombie-wait=$?"
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("zombie-name=1", result.stdout)
         self.assertIn("live-name=0", result.stdout)
-        self.assertIn("live-full=0", result.stdout)
-        self.assertIn("live-full-repeat=0", result.stdout)
         self.assertIn("manager-full=0", result.stdout)
-        self.assertIn("watchdog-pids=104", result.stdout)
         self.assertIn("manager-pids=106", result.stdout)
         self.assertIn("zombie-full=1", result.stdout)
         self.assertIn("live-wait=0", result.stdout)
@@ -581,8 +571,6 @@ tc_prepare_local_hostname_resolution
             fixture.write_text(
                 "\n".join(
                     [
-                        "101 S    sh              /bin/sh -c probe=/mnt/Flash/watchdog.sh",
-                        "102 S    sh              sh -c /bin/sh -c 'probe=/mnt/Flash/watchdog.sh'",
                         "103 S    sh              /bin/sh -c probe=/mnt/Flash/manager.sh",
                         "104 S    sh              sh -c /bin/sh -c 'probe=/mnt/Flash/manager.sh'",
                     ]
@@ -593,8 +581,6 @@ tc_prepare_local_hostname_resolution
                 common
                 + f"\nPS_FIXTURE={shlex.quote(str(fixture))}\n"
                 + """
-runtime_watchdog_present; echo "watchdog=$?"
-echo "watchdog-pids=$(runtime_watchdog_pids)"
 runtime_manager_present; echo "manager=$?"
 echo "manager-pids=$(runtime_manager_pids)"
 """
@@ -603,12 +589,10 @@ echo "manager-pids=$(runtime_manager_pids)"
             result = subprocess.run(["/bin/sh", str(script)], check=False, text=True, capture_output=True)
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("watchdog=1", result.stdout)
-        self.assertIn("watchdog-pids=", result.stdout)
         self.assertIn("manager=1", result.stdout)
         self.assertIn("manager-pids=", result.stdout)
 
-    def test_common_watchdog_kill_helper_targets_only_detected_pids(self) -> None:
+    def test_common_manager_kill_helper_targets_only_detected_pids(self) -> None:
         common = load_boot_asset_text("common.sh").replace("/bin/kill", "record_kill")
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / "check.sh"
@@ -618,10 +602,7 @@ echo "manager-pids=$(runtime_manager_pids)"
                 + f"\nKILL_LOG={shlex.quote(str(kill_log))}\n"
                 + """
 record_kill() { echo "kill:$*" >> "$KILL_LOG"; }
-runtime_watchdog_pids() { printf '%s\\n' 111 222; }
 runtime_manager_pids() { printf '%s\\n' 333; }
-kill_watchdog_pids TERM
-kill_watchdog_pids KILL
 kill_manager_pids TERM
 kill_manager_pids KILL
 """
@@ -633,7 +614,7 @@ kill_manager_pids KILL
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             kill_lines,
-            ["kill:111", "kill:222", "kill:-9 111", "kill:-9 222", "kill:333", "kill:-9 333"],
+            ["kill:333", "kill:-9 333"],
         )
 
     def test_common_script_kill_helper_allows_no_detected_pids_under_nounset(self) -> None:
@@ -647,9 +628,7 @@ kill_manager_pids KILL
                 + """
 set -eu
 record_kill() { echo "unexpected kill:$*" >> "$KILL_LOG"; }
-runtime_watchdog_pids() { :; }
 runtime_manager_pids() { :; }
-kill_watchdog_pids TERM
 kill_manager_pids TERM
 echo ok
 """
@@ -784,24 +763,10 @@ echo ok
     def test_runtime_scripts_source_common_sh(self) -> None:
         boot = load_boot_asset_text("boot.sh")
         manager = load_boot_asset_text("manager.sh")
-        start = load_boot_asset_text("start-samba.sh")
-        watchdog = load_boot_asset_text("watchdog.sh")
         self.assertIn(". /mnt/Flash/common.sh", boot)
         self.assertIn(". /mnt/Flash/common.sh", manager)
-        self.assertIn(". /mnt/Flash/common.sh", start)
-        self.assertIn(". /mnt/Flash/common.sh", watchdog)
         self.assertNotIn("RAM_SAMBA_LIBEXEC", boot)
         self.assertNotIn("RAM_SAMBA_LIBEXEC", manager)
-        self.assertNotIn("RAM_SAMBA_LIBEXEC", start)
-        self.assertNotIn("stage_runtime_helper", start)
-        self.assertNotIn("get_radio_mac()", start)
-        self.assertNotIn("get_airport_srcv()", start)
-        self.assertNotIn("get_airport_syvs()", start)
-        self.assertNotIn("wait_for_process()", start)
-        self.assertNotIn("wait_for_smbd_ready()", start)
-        self.assertNotIn("get_radio_mac()", watchdog)
-        self.assertNotIn("get_airport_srcv()", watchdog)
-        self.assertNotIn("get_airport_syvs()", watchdog)
 
     def test_rc_local_leaves_service_launch_to_boot_script(self) -> None:
         content = load_boot_asset_text("rc.local")
@@ -5944,8 +5909,6 @@ int main(void) {{
             PACKAGED_BOOT_SOURCE: Path("/tmp/boot.sh"),
             PACKAGED_MANAGER_SOURCE: Path("/tmp/manager.sh"),
             PACKAGED_DFREE_SH_SOURCE: Path("/tmp/dfree.sh"),
-            PACKAGED_START_SAMBA_SOURCE: Path("/tmp/start-samba.sh"),
-            PACKAGED_WATCHDOG_SOURCE: Path("/tmp/watchdog.sh"),
         }
         with mock.patch("timecapsulesmb.deploy.executor.run_scp") as scp_mock:
             with mock.patch("timecapsulesmb.deploy.executor.run_ssh") as ssh_mock:
@@ -5955,7 +5918,7 @@ int main(void) {{
                         connection=connection,
                         source_resolver=source_resolver,
                     )
-        self.assertEqual(scp_mock.call_count, 14)
+        self.assertEqual(scp_mock.call_count, 12)
         self.assertEqual(mount_mock.call_count, 5)
         self.assertTrue(all(call.args[:3] == (connection, "/Volumes/dk2", "/dev/dk2") for call in mount_mock.call_args_list))
         self.assertTrue(all(call.kwargs == {"wait_seconds": DEFAULT_APPLE_MOUNT_WAIT_SECONDS} for call in mount_mock.call_args_list))
@@ -5971,8 +5934,6 @@ int main(void) {{
                 Path("/tmp/common.sh"),
                 Path("/tmp/boot.sh"),
                 Path("/tmp/manager.sh"),
-                Path("/tmp/start-samba.sh"),
-                Path("/tmp/watchdog.sh"),
                 Path("/tmp/dfree.sh"),
                 Path("/tmp/tcapsulesmb.conf"),
                 Path("/tmp/smbpasswd"),
@@ -5991,8 +5952,6 @@ int main(void) {{
                 "/mnt/Flash/.common.sh.tmp",
                 "/mnt/Flash/.boot.sh.tmp",
                 "/mnt/Flash/.manager.sh.tmp",
-                "/mnt/Flash/.start-samba.sh.tmp",
-                "/mnt/Flash/.watchdog.sh.tmp",
                 "/mnt/Flash/.dfree.sh.tmp",
                 "/mnt/Flash/.tcapsulesmb.conf.tmp",
                 "/Volumes/dk2/samba4/private/smbpasswd",
@@ -6002,13 +5961,13 @@ int main(void) {{
         binary_upload_timeouts = [call.kwargs.get("timeout") for call in scp_mock.call_args_list[:4]]
         self.assertEqual(binary_upload_timeouts, [PAYLOAD_BINARY_UPLOAD_TIMEOUT_SECONDS] * 4)
         text_upload_timeouts = [call.kwargs.get("timeout") for call in scp_mock.call_args_list[4:]]
-        self.assertEqual(text_upload_timeouts, [FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS] * 8 + [None] * 2)
-        self.assertEqual(ssh_mock.call_count, 18)
+        self.assertEqual(text_upload_timeouts, [FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS] * 6 + [None] * 2)
+        self.assertEqual(ssh_mock.call_count, 14)
 
     def test_upload_deployment_payload_consumes_plan_uploads_directly(self) -> None:
         paths = self._payload_home("/Volumes/dk2", "samba4")
         plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
-        custom_plan = replace(plan, uploads=[plan.uploads[10], plan.uploads[11]])
+        custom_plan = replace(plan, uploads=[plan.uploads[8], plan.uploads[9]])
         connection = SshConnection("host", "pw", "-o foo")
         source_resolver = {
             PACKAGED_DFREE_SH_SOURCE: Path("/tmp/dfree.sh"),
@@ -6186,27 +6145,24 @@ capture_fstat_for_ucomm "$mixed_smbd" smbd
         self.assertNotIn("fstat:100", result.stdout)
         self.assertIn("fstat:101", result.stdout)
 
-    def test_probe_status_helpers_do_not_count_probe_shell_body_as_watchdog(self) -> None:
+    def test_probe_status_helpers_do_not_count_probe_shell_body_as_manager(self) -> None:
         script = (
             SMBD_STATUS_HELPERS
             + r'''
-real_watchdog="202 1 S 0:00.00 sh /bin/sh /mnt/Flash/watchdog.sh"
 real_manager="203 1 S 0:00.00 sh /bin/sh /mnt/Flash/manager.sh"
-self_match_watchdog=$(cat <<'EOF'
-3308 11745 S 0:00.01 sh /bin/sh -c probe=/mnt/Flash/watchdog.sh
-11745 11677 Ss 0:00.01 sh sh -c /bin/sh -c 'probe=/mnt/Flash/watchdog.sh'
+self_match_manager=$(cat <<'EOF'
+3308 11745 S 0:00.01 sh /bin/sh -c probe=/mnt/Flash/manager.sh
+11745 11677 Ss 0:00.01 sh sh -c /bin/sh -c 'probe=/mnt/Flash/manager.sh'
 EOF
 )
-watchdog_process_present_for_volume "$real_watchdog"; echo "real=$?"
 manager_process_present_for_volume "$real_manager"; echo "manager=$?"
-watchdog_process_present_for_volume "$self_match_watchdog"; echo "self=$?"
+manager_process_present_for_volume "$self_match_manager"; echo "self=$?"
 '''
         )
 
         result = subprocess.run(["/bin/sh", "-c", script], check=False, text=True, capture_output=True)
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("real=0", result.stdout)
         self.assertIn("manager=0", result.stdout)
         self.assertIn("self=1", result.stdout)
 
@@ -6236,11 +6192,11 @@ runtime_startup_script_present "$self_match"; echo "self=$?"
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("rc-local=0", result.stdout)
         self.assertIn("boot=0", result.stdout)
-        self.assertIn("start-samba=0", result.stdout)
+        self.assertIn("start-samba=1", result.stdout)
         self.assertIn("zombie=1", result.stdout)
         self.assertIn("self=1", result.stdout)
 
-    def test_smbd_status_helpers_pass_only_with_live_ram_auth_mount_and_watchdog(self) -> None:
+    def test_smbd_status_helpers_pass_only_with_live_ram_auth_mount_and_manager(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             ram_root = tmp / "mnt" / "Memory" / "samba4"
@@ -6325,7 +6281,7 @@ smbd_bound_445 "$both" "127.0.0.1/8 ::1/128 192.168.1.40/24 fdbb:1111:2222:3333:
         self.assertIn("ipv4_missing_v6=1", result.stdout)
         self.assertIn("both_required=0", result.stdout)
 
-    def test_smbd_status_helpers_fail_for_disk_auth_unmounted_volume_and_missing_watchdog(self) -> None:
+    def test_smbd_status_helpers_fail_for_disk_auth_unmounted_volume_and_missing_manager(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             ram_root = tmp / "mnt" / "Memory" / "samba4"
@@ -7014,10 +6970,10 @@ fi
         plan = build_deployment_plan("host", paths, Path("bin/smbd"), Path("bin/mdns"), Path("bin/nbns"))
         expected_guard = EnsureVolumeMountedAction("/Volumes/dk2", "/dev/dk2", DEFAULT_APPLE_MOUNT_WAIT_SECONDS)
 
-        self.assertEqual(plan.pre_upload_actions[5], expected_guard)
         self.assertEqual(plan.pre_upload_actions[7], expected_guard)
         self.assertEqual(plan.pre_upload_actions[9], expected_guard)
         self.assertEqual(plan.pre_upload_actions[11], expected_guard)
+        self.assertEqual(plan.pre_upload_actions[13], expected_guard)
         self.assertEqual(plan.post_upload_actions[0], expected_guard)
 
     def test_deployment_plan_marks_uploaded_payload_binaries_executable(self) -> None:

@@ -272,7 +272,6 @@ def render_direct_pkill9_manager() -> str:
 
 PROBE_PROCESS_HELPERS = (
     r'''
-WATCHDOG_PATH=__WATCHDOG_PATH__
 MANAGER_PATH=__MANAGER_PATH__
 
 capture_ps_out() {
@@ -363,10 +362,6 @@ EOF
     return 1
 }
 
-watchdog_process_present_for_volume() {
-    runtime_script_process_present "$1" "$WATCHDOG_PATH"
-}
-
 manager_process_present_for_volume() {
     runtime_script_process_present "$1" "$MANAGER_PATH"
 }
@@ -383,7 +378,7 @@ runtime_startup_script_present() {
         shift 5
         for arg do
             case "$arg" in
-                /mnt/Flash/rc.local|/mnt/Flash/boot.sh|/mnt/Flash/start-samba.sh) return 0 ;;
+                /mnt/Flash/rc.local|/mnt/Flash/boot.sh) return 0 ;;
             esac
         done
     done <<EOF
@@ -412,7 +407,6 @@ $ps_out
 EOF
 }
 '''
-    .replace("__WATCHDOG_PATH__", shlex.quote(WATCHDOG_PATH))
     .replace("__MANAGER_PATH__", shlex.quote(MANAGER_PATH))
     .replace("__PS_CAPTURE_COMMAND__", PS_CAPTURE_COMMAND)
 )

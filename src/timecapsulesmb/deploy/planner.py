@@ -31,8 +31,6 @@ PACKAGED_COMMON_SH_SOURCE = "packaged:common.sh"
 PACKAGED_DFREE_SH_SOURCE = "packaged:dfree.sh"
 PACKAGED_BOOT_SOURCE = "packaged:boot.sh"
 PACKAGED_MANAGER_SOURCE = "packaged:manager.sh"
-PACKAGED_START_SAMBA_SOURCE = "packaged:start-samba.sh"
-PACKAGED_WATCHDOG_SOURCE = "packaged:watchdog.sh"
 GENERATED_FLASH_CONFIG_SOURCE = "generated:tcapsulesmb.conf"
 GENERATED_SMBPASSWD_SOURCE = "generated:smbpasswd"
 GENERATED_USERNAME_MAP_SOURCE = "generated:username.map"
@@ -210,8 +208,6 @@ def build_deployment_plan(
         "common.sh": "/mnt/Flash/common.sh",
         "boot.sh": "/mnt/Flash/boot.sh",
         "manager.sh": "/mnt/Flash/manager.sh",
-        "start-samba.sh": "/mnt/Flash/start-samba.sh",
-        "watchdog.sh": "/mnt/Flash/watchdog.sh",
         "dfree.sh": "/mnt/Flash/dfree.sh",
         "mdns-advertiser": "/mnt/Flash/mdns-advertiser",
         "tcapsulesmb.conf": "/mnt/Flash/tcapsulesmb.conf",
@@ -250,8 +246,6 @@ def build_deployment_plan(
         RemotePermission(flash_targets["common.sh"], "755"),
         RemotePermission(flash_targets["boot.sh"], "755"),
         RemotePermission(flash_targets["manager.sh"], "755"),
-        RemotePermission(flash_targets["start-samba.sh"], "755"),
-        RemotePermission(flash_targets["watchdog.sh"], "755"),
         RemotePermission(flash_targets["dfree.sh"], "755"),
         RemotePermission(flash_targets["mdns-advertiser"], "755"),
         RemotePermission(flash_targets["tcapsulesmb.conf"], "600"),
@@ -284,8 +278,6 @@ def build_deployment_plan(
             FileTransfer(PACKAGED_COMMON_SH_SOURCE, flash_targets["common.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged common.sh"),
             FileTransfer(PACKAGED_BOOT_SOURCE, flash_targets["boot.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged boot.sh"),
             FileTransfer(PACKAGED_MANAGER_SOURCE, flash_targets["manager.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged manager.sh"),
-            FileTransfer(PACKAGED_START_SAMBA_SOURCE, flash_targets["start-samba.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged start-samba.sh"),
-            FileTransfer(PACKAGED_WATCHDOG_SOURCE, flash_targets["watchdog.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged watchdog.sh"),
             FileTransfer(PACKAGED_DFREE_SH_SOURCE, flash_targets["dfree.sh"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "packaged dfree.sh"),
             FileTransfer(GENERATED_FLASH_CONFIG_SOURCE, flash_targets["tcapsulesmb.conf"], "flash_atomic", FLASH_TEXT_UPLOAD_TIMEOUT_SECONDS, "generated flash runtime config"),
             *generated_files,
@@ -299,6 +291,8 @@ def build_deployment_plan(
             StopProcessAction("smbd"),
             StopProcessAction("mdns-advertiser"),
             StopProcessAction("nbns-advertiser"),
+            RemovePathAction("/mnt/Flash/start-samba.sh"),
+            RemovePathAction("/mnt/Flash/watchdog.sh"),
             ensure_payload_volume,
             RemovePathAction(f"{payload_dir}/smb.conf.template"),
             ensure_payload_volume,

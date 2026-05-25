@@ -48,9 +48,7 @@ from timecapsulesmb.deploy.planner import (
     PACKAGED_COMMON_SH_SOURCE,
     PACKAGED_DFREE_SH_SOURCE,
     PACKAGED_MANAGER_SOURCE,
-    PACKAGED_START_SAMBA_SOURCE,
     PACKAGED_RC_LOCAL_SOURCE,
-    PACKAGED_WATCHDOG_SOURCE,
     build_deployment_plan,
 )
 from timecapsulesmb.deploy.boot_assets import (
@@ -343,8 +341,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                 PACKAGED_BOOT_SOURCE: boot_assets.enter_context(boot_asset_path("boot.sh")),
                 PACKAGED_MANAGER_SOURCE: boot_assets.enter_context(boot_asset_path("manager.sh")),
                 PACKAGED_DFREE_SH_SOURCE: boot_assets.enter_context(boot_asset_path("dfree.sh")),
-                PACKAGED_START_SAMBA_SOURCE: boot_assets.enter_context(boot_asset_path("start-samba.sh")),
-                PACKAGED_WATCHDOG_SOURCE: boot_assets.enter_context(boot_asset_path("watchdog.sh")),
             }
 
             command_context.set_stage("upload_payload")

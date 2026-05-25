@@ -87,16 +87,8 @@ runtime_script_pids() {
     fi
 }
 
-runtime_watchdog_pids() {
-    runtime_script_pids "/mnt/Flash/watchdog.sh"
-}
-
 runtime_manager_pids() {
     runtime_script_pids "/mnt/Flash/manager.sh"
-}
-
-runtime_watchdog_present() {
-    [ -n "$(runtime_watchdog_pids)" ]
 }
 
 runtime_manager_present() {
@@ -117,11 +109,6 @@ kill_runtime_script_pids() {
     done
 }
 
-kill_watchdog_pids() {
-    watchdog_signal=$1
-    kill_runtime_script_pids "$watchdog_signal" $(runtime_watchdog_pids)
-}
-
 kill_manager_pids() {
     manager_signal=$1
     kill_runtime_script_pids "$manager_signal" $(runtime_manager_pids)
@@ -133,20 +120,6 @@ wait_for_runtime_process_absent_by_ucomm() {
     attempt=0
 
     while runtime_process_present_by_ucomm "$proc_name"; do
-        if [ "$attempt" -ge "$max_attempts" ]; then
-            return 1
-        fi
-        attempt=$((attempt + 1))
-        sleep 1
-    done
-    return 0
-}
-
-wait_for_watchdog_absent() {
-    max_attempts=${1:-5}
-    attempt=0
-
-    while runtime_watchdog_present; do
         if [ "$attempt" -ge "$max_attempts" ]; then
             return 1
         fi
@@ -215,25 +188,6 @@ stop_manager_process() {
     fi
 
     tc_log "old manager survived KILL"
-    return 1
-}
-
-stop_watchdog_process() {
-    tc_log "stopping old watchdog"
-    kill_watchdog_pids TERM
-
-    if wait_for_watchdog_absent 5; then
-        return 0
-    fi
-
-    tc_log "old watchdog still running after TERM; sending KILL"
-    kill_watchdog_pids KILL
-
-    if wait_for_watchdog_absent 5; then
-        return 0
-    fi
-
-    tc_log "old watchdog survived KILL"
     return 1
 }
 

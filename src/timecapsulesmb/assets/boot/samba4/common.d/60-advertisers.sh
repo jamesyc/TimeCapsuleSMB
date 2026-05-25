@@ -3,7 +3,6 @@ tc_cleanup_old_runtime() {
 
     tc_log "cleaning old managed runtime processes and RAM state"
     stop_manager_process || cleanup_status=1
-    stop_watchdog_process || cleanup_status=1
     stop_runtime_process_by_ucomm "smbd" "smbd" || cleanup_status=1
     stop_runtime_process_by_ucomm "$MDNS_PROC_NAME" "$MDNS_PROC_NAME" || cleanup_status=1
     stop_runtime_process_by_ucomm "$NBNS_PROC_NAME" "$NBNS_PROC_NAME" || cleanup_status=1
