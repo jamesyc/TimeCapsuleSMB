@@ -19,13 +19,6 @@ def command_exists(name: str) -> bool:
     ).returncode == 0
 
 
-def require_command(name: str, message: str) -> str:
-    path = find_command(name)
-    if path:
-        return path
-    raise RuntimeError(message)
-
-
 def tcp_connect_error(host: str, port: int, timeout: float = 2.0) -> str | None:
     errors: list[str] = []
     try:

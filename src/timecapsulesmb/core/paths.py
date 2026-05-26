@@ -154,10 +154,6 @@ def resolve_distribution_root(start: Path | None = None) -> Path:
     )
 
 
-def resolve_project_root(start: Path | None = None) -> Path:
-    return resolve_distribution_root(start)
-
-
 def _resolve_config_path(distribution_root: Path, config_path: Path | str | None) -> Path:
     if config_path is not None:
         return _resolve_user_path(config_path)

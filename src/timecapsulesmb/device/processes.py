@@ -83,16 +83,6 @@ def render_manager_process_present() -> str:
     )
 
 
-def render_process_present(pattern: str, *, full: bool) -> str:
-    if not full:
-        return render_process_present_by_ucomm(pattern)
-    if pattern in {WATCHDOG_PATH, WATCHDOG_KILL_PATTERN}:
-        return render_watchdog_process_present()
-    if pattern in {MANAGER_PATH, MANAGER_KILL_PATTERN}:
-        return render_manager_process_present()
-    raise ValueError(f"Unsupported full process match: {pattern!r}")
-
-
 def render_wait_for_process_absent(present_command: str, *, attempts: int) -> str:
     return (
         "attempt=0; "
@@ -246,16 +236,6 @@ def render_pkill_wait_pkill9_manager(*, attempts: int = 5) -> str:
         "fi; "
         f"if {process_present}; then echo {failure_message} >&2; exit 1; fi"
     )
-
-
-def render_pkill_wait_pkill9(pattern: str, *, full: bool, attempts: int = 5) -> str:
-    if not full:
-        return render_pkill_wait_pkill9_by_ucomm(pattern, attempts=attempts)
-    if pattern in {WATCHDOG_PATH, WATCHDOG_KILL_PATTERN}:
-        return render_pkill_wait_pkill9_watchdog(attempts=attempts)
-    if pattern in {MANAGER_PATH, MANAGER_KILL_PATTERN}:
-        return render_pkill_wait_pkill9_manager(attempts=attempts)
-    raise ValueError(f"Unsupported full process stop: {pattern!r}")
 
 
 def render_direct_pkill9_by_ucomm(name: str) -> str:

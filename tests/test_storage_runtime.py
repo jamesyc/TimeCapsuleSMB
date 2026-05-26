@@ -26,7 +26,6 @@ from timecapsulesmb.device.probe import (
 from timecapsulesmb.device.storage import (
     MAST_PROBE_COMMAND,
     PayloadVerificationResult,
-    NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE,
     MaStProbeDiagnostics,
     MaStReadResult,
     MaStVolume,
@@ -39,7 +38,6 @@ from timecapsulesmb.device.storage import (
     parse_mast_plist,
     probe_mast_diagnostics_conn,
     render_ensure_volume_root_mounted_script,
-    select_payload_home_conn,
     select_payload_home_with_diagnostics_conn,
     verify_payload_home_conn,
     wait_for_mast_volumes_conn,
@@ -546,9 +544,9 @@ MaSt = (
 
         with mock.patch("timecapsulesmb.device.storage.ensure_mast_volume_mounted_conn", return_value=True) as mount_mock:
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", side_effect=[True]) as writable_mock:
-                home = select_payload_home_conn(connection, (external, internal), ".samba4", wait_seconds=30)
+                selection = select_payload_home_with_diagnostics_conn(connection, (external, internal), ".samba4", wait_seconds=30)
 
-        self.assertEqual(home, PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"))
+        self.assertEqual(selection.payload_home, PayloadHome("/Volumes/dk2", "/dev/dk2", ".samba4"))
         mount_mock.assert_called_once_with(connection, internal, wait_seconds=30)
         writable_mock.assert_called_once_with(connection, "/Volumes/dk2")
 
@@ -618,9 +616,9 @@ MaSt = (
 
         with mock.patch("timecapsulesmb.device.storage.ensure_mast_volume_mounted_conn", side_effect=[False, True]) as mount_mock:
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", return_value=True) as writable_mock:
-                home = select_payload_home_conn(connection, (external, internal), ".samba4", wait_seconds=9)
+                selection = select_payload_home_with_diagnostics_conn(connection, (external, internal), ".samba4", wait_seconds=9)
 
-        self.assertEqual(home, PayloadHome("/Volumes/dk3", "/dev/dk3", ".samba4"))
+        self.assertEqual(selection.payload_home, PayloadHome("/Volumes/dk3", "/dev/dk3", ".samba4"))
         self.assertEqual(
             mount_mock.call_args_list,
             [
@@ -697,32 +695,34 @@ MaSt = (
         self.assertEqual([check.mounted for check in selection.checks], [True, True])
         self.assertEqual([check.writable for check in selection.checks], [False, False])
 
-    def test_select_payload_home_fails_when_all_candidates_unmountable(self) -> None:
+    def test_select_payload_home_records_unmountable_candidates(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")
         internal = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
         external = MaStVolume("sd0", "dk3", "/Volumes/dk3", "USB", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs")
 
         with mock.patch("timecapsulesmb.device.storage.ensure_mast_volume_mounted_conn", return_value=False):
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn") as writable_mock:
-                with self.assertRaisesRegex(RuntimeError, NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE):
-                    select_payload_home_conn(connection, (internal, external), ".samba4", wait_seconds=30)
+                selection = select_payload_home_with_diagnostics_conn(connection, (internal, external), ".samba4", wait_seconds=30)
 
+        self.assertIsNone(selection.payload_home)
+        self.assertEqual([check.mounted for check in selection.checks], [False, False])
         writable_mock.assert_not_called()
 
-    def test_select_payload_home_falls_back_to_external_and_fails_when_none_writable(self) -> None:
+    def test_select_payload_home_falls_back_to_external_and_records_none_writable(self) -> None:
         connection = SshConnection("root@10.0.0.2", "pw", "")
         internal = MaStVolume("wd0", "dk2", "/Volumes/dk2", "Data", "f42bdb83-c265-5522-a087-25606a4d0abf", True, "hfs")
         external = MaStVolume("sd0", "dk3", "/Volumes/dk3", "USB", "51f93e6f-dc69-524d-986d-cee4d7cb3573", False, "hfs")
 
         with mock.patch("timecapsulesmb.device.storage.ensure_mast_volume_mounted_conn", return_value=True):
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", side_effect=[False, True]):
-                home = select_payload_home_conn(connection, (internal, external), ".samba4", wait_seconds=30)
-        self.assertEqual(home, PayloadHome("/Volumes/dk3", "/dev/dk3", ".samba4"))
+                selection = select_payload_home_with_diagnostics_conn(connection, (internal, external), ".samba4", wait_seconds=30)
+        self.assertEqual(selection.payload_home, PayloadHome("/Volumes/dk3", "/dev/dk3", ".samba4"))
 
         with mock.patch("timecapsulesmb.device.storage.ensure_mast_volume_mounted_conn", return_value=True):
             with mock.patch("timecapsulesmb.device.storage.volume_root_is_writable_conn", return_value=False):
-                with self.assertRaisesRegex(RuntimeError, NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE):
-                    select_payload_home_conn(connection, (internal, external), ".samba4", wait_seconds=30)
+                selection = select_payload_home_with_diagnostics_conn(connection, (internal, external), ".samba4", wait_seconds=30)
+        self.assertIsNone(selection.payload_home)
+        self.assertEqual([check.writable for check in selection.checks], [False, False])
 
     def test_flash_runtime_config_contains_runtime_settings_and_no_share_name(self) -> None:
         config = AppConfig.from_values(

@@ -30,7 +30,7 @@ from timecapsulesmb.deploy.dry_run import activation_plan_to_jsonable, uninstall
 from timecapsulesmb.deploy.executor import remote_uninstall_payload, run_remote_actions
 from timecapsulesmb.deploy.planner import (
     DEFAULT_APPLE_MOUNT_WAIT_SECONDS,
-    build_netbsd4_activation_plan,
+    build_runtime_activation_plan,
     build_uninstall_plan,
 )
 from timecapsulesmb.deploy.verify import render_post_uninstall_verification, verify_post_uninstall
@@ -82,7 +82,7 @@ def activate_operation(params: dict[str, object], sink: EventSink) -> OperationR
     operation = "activate"
     dry_run = bool_param(params, "dry_run")
     sink.stage(operation, "build_activation_plan")
-    plan = build_netbsd4_activation_plan()
+    plan = build_runtime_activation_plan()
     if dry_run:
         return OperationResult(True, activation_plan_payload(activation_plan_to_jsonable(plan)))
 

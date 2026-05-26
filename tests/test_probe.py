@@ -366,13 +366,6 @@ bridge0: flags=e043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 150
         self.assertEqual(preferred_interface_name(candidates), "bridge0")
         self.assertEqual(candidates[0].ipv4_addrs, ("10.0.1.13",))
 
-    def test_runtime_ipv4_cidr_from_ifconfig_parses_netbsd_inet_alias(self) -> None:
-        ifconfig_output = """
-bridge0: flags=e043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
-\tinet alias 10.0.1.13 netmask 0xffffff00 broadcast 10.0.1.255
-"""
-        self.assertEqual(probe.runtime_ipv4_cidr_from_ifconfig(ifconfig_output), "10.0.1.13/24")
-
     def test_preferred_interface_name_prefers_bcmeth1_when_bridge0_has_no_ipv4(self) -> None:
         ifconfig_output = """
 bcmeth1: flags=ffffe843<UP,BROADCAST,RUNNING,SIMPLEX,LINK1,LINK2,MULTICAST> metric 0 mtu 1500
@@ -458,27 +451,6 @@ bridge0: flags=ffffe043<UP,BROADCAST,RUNNING,LINK1,LINK2,MULTICAST> metric 0 mtu
         candidates = probe._parse_ifconfig_candidates(ifconfig_output)
 
         self.assertEqual(preferred_interface_name(candidates, target_ips=("169.254.44.9",)), "bridge0")
-
-    def test_read_interface_ipv4_conn_returns_first_runtime_usable_address(self) -> None:
-        connection = SshConnection("root@10.0.0.2", "pw", "")
-        proc = subprocess.CompletedProcess(
-            args=["ssh"],
-            returncode=0,
-            stdout="0.0.0.0\n169.254.44.9\n192.168.1.217\n",
-        )
-
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
-            self.assertEqual(probe.read_interface_ipv4_conn(connection, "bridge0"), "192.168.1.217")
-
-    def test_read_interface_ipv4_conn_rejects_link_local_only_address(self) -> None:
-        connection = SshConnection("root@169.254.44.9", "pw", "")
-        proc = subprocess.CompletedProcess(args=["ssh"], returncode=0, stdout="0.0.0.0\n169.254.44.9\n")
-
-        with mock.patch("timecapsulesmb.device.probe.run_ssh", return_value=proc):
-            with self.assertRaises(probe.DeviceError) as ctx:
-                probe.read_interface_ipv4_conn(connection, "bridge0")
-
-        self.assertIn("could not determine non-link-local IPv4 for interface bridge0", str(ctx.exception))
 
     def test_probe_remote_interface_candidates_preserves_multiple_private_candidates(self) -> None:
         ifconfig_output = """
