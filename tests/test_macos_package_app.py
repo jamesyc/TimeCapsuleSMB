@@ -76,18 +76,17 @@ def test_assert_bundle_layout_checks_helper_python_tools_and_artifacts(
     package_app = load_package_app_module()
     app = tmp_path / "TimeCapsuleSMB.app"
     helper = app / "Contents" / "Helpers" / "tcapsule"
-    python = app / "Contents" / "Resources" / "Python" / "bin" / "python"
+    python_packages = app / "Contents" / "Resources" / "Python" / "site-packages"
     tools = app / "Contents" / "Resources" / "Tools" / "bin"
     distribution = app / "Contents" / "Resources" / "Distribution"
-    for directory in (helper.parent, python.parent, tools, distribution / "bin" / "payloads"):
+    for directory in (helper.parent, python_packages, tools, distribution / "bin" / "payloads"):
         directory.mkdir(parents=True)
     helper.write_text("#!/bin/sh\n", encoding="utf-8")
-    python.write_text("#!/bin/sh\n", encoding="utf-8")
     helper.chmod(0o755)
-    python.chmod(0o755)
     (distribution / "artifact-manifest.json").write_text('{"artifacts":{}}', encoding="utf-8")
 
     monkeypatch.setattr(package_app, "artifact_paths", lambda: ["bin/payloads/one", "bin/payloads/two"])
+    monkeypatch.setattr(package_app, "assert_python_dependencies_are_bundled", lambda app: None)
     (distribution / "bin" / "payloads" / "one").write_text("one", encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="missing payload artifact"):
@@ -102,15 +101,28 @@ def test_assert_bundle_layout_requires_artifact_manifest(tmp_path: Path) -> None
     package_app = load_package_app_module()
     app = tmp_path / "TimeCapsuleSMB.app"
     helper = app / "Contents" / "Helpers" / "tcapsule"
-    python = app / "Contents" / "Resources" / "Python" / "bin" / "python"
+    python_packages = app / "Contents" / "Resources" / "Python" / "site-packages"
     tools = app / "Contents" / "Resources" / "Tools" / "bin"
     distribution = app / "Contents" / "Resources" / "Distribution"
-    for directory in (helper.parent, python.parent, tools, distribution / "bin"):
+    for directory in (helper.parent, python_packages, tools, distribution / "bin"):
         directory.mkdir(parents=True)
     helper.write_text("#!/bin/sh\n", encoding="utf-8")
-    python.write_text("#!/bin/sh\n", encoding="utf-8")
     helper.chmod(0o755)
-    python.chmod(0o755)
 
     with pytest.raises(RuntimeError, match="missing bundled artifact manifest"):
+        package_app.assert_bundle_layout(app)
+
+
+def test_assert_bundle_layout_requires_python_packages(tmp_path: Path) -> None:
+    package_app = load_package_app_module()
+    app = tmp_path / "TimeCapsuleSMB.app"
+    helper = app / "Contents" / "Helpers" / "tcapsule"
+    tools = app / "Contents" / "Resources" / "Tools" / "bin"
+    distribution = app / "Contents" / "Resources" / "Distribution"
+    for directory in (helper.parent, tools, distribution / "bin"):
+        directory.mkdir(parents=True)
+    helper.write_text("#!/bin/sh\n", encoding="utf-8")
+    helper.chmod(0o755)
+
+    with pytest.raises(RuntimeError, match="missing bundled Python packages"):
         package_app.assert_bundle_layout(app)

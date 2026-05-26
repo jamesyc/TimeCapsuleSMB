@@ -177,11 +177,11 @@ final class HelperLocatorTests: XCTestCase {
         let macOS = contents.appendingPathComponent("MacOS", isDirectory: true)
         let resources = contents.appendingPathComponent("Resources", isDirectory: true)
         let helpers = contents.appendingPathComponent("Helpers", isDirectory: true)
-        let pythonBin = resources.appendingPathComponent("Python/bin", isDirectory: true)
+        let pythonPackages = resources.appendingPathComponent("Python/site-packages", isDirectory: true)
         try FileManager.default.createDirectory(at: macOS, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: helpers, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: pythonBin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: pythonPackages, withIntermediateDirectories: true)
         try """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -198,9 +198,7 @@ final class HelperLocatorTests: XCTestCase {
         """.write(to: contents.appendingPathComponent("Info.plist"), atomically: true, encoding: .utf8)
         try "#!/bin/sh\nexit 0\n".write(to: macOS.appendingPathComponent("TimeCapsuleSMB"), atomically: true, encoding: .utf8)
         try "#!/bin/sh\nexit 0\n".write(to: helpers.appendingPathComponent("tcapsule"), atomically: true, encoding: .utf8)
-        try "#!/bin/sh\nexit 0\n".write(to: pythonBin.appendingPathComponent("python"), atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helpers.appendingPathComponent("tcapsule").path)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: pythonBin.appendingPathComponent("python").path)
         try FileManager.default.createDirectory(
             at: resources.appendingPathComponent("Distribution/bin", isDirectory: true),
             withIntermediateDirectories: true
