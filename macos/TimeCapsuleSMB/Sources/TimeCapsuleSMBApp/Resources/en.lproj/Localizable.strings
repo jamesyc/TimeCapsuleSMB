@@ -29,6 +29,7 @@
 "add_device.saved" = "Saved %@";
 "add_device.setup_target" = "Setup target: %@";
 "add_device.state.auth_failed" = "Password Rejected";
+"add_device.state.awaiting_confirmation" = "Waiting for Confirmation";
 "add_device.state.configuring" = "Configuring";
 "add_device.state.discovering" = "Discovering";
 "add_device.state.discovery_empty" = "No Devices Found";
@@ -125,6 +126,9 @@
 "confirm.activate.netbsd4.title" = "Activate NetBSD4 Runtime?";
 "confirm.backend.message" = "Continue with this operation?";
 "confirm.backend.title" = "Confirm Operation?";
+"confirm.configure.enable_ssh_reboot.action" = "Enable SSH and Reboot";
+"confirm.configure.enable_ssh_reboot.message" = "SSH is closed on %@. Enable SSH using AirPort ACP and reboot this Time Capsule?";
+"confirm.configure.enable_ssh_reboot.title" = "Enable SSH And Reboot?";
 "confirm.deploy.activate_now.action" = "Deploy and Start SMB";
 "confirm.deploy.activate_now.message" = "Deploy TimeCapsuleSMB to this %@ and start SMB without rebooting it?";
 "confirm.deploy.activate_now.title" = "Deploy And Start SMB?";
@@ -529,6 +533,7 @@
 "timeline.stage.checking_bundled_files" = "Checking Bundled Files";
 "timeline.stage.checking_runtime" = "Checking SMB";
 "timeline.stage.checking_ssh" = "Checking SSH";
+"timeline.stage.confirming_ssh_enable" = "Confirming SSH Enablement";
 "timeline.stage.deleting_old_deployed_files" = "Deleting Old Deployed Files";
 "timeline.stage.enabling_ssh" = "Enabling SSH";
 "timeline.stage.finding_disk" = "Finding Disk";

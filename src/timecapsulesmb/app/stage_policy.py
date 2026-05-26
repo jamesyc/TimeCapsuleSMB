@@ -50,6 +50,7 @@ _POLICIES: dict[tuple[str, str], StagePolicy] = {
     ("version-check", "check_version"): StagePolicy(LOCAL_READ, True, "Fetch or read version metadata."),
     ("configure", "load_existing_config"): StagePolicy(LOCAL_READ, True, "Read the existing .env configuration."),
     ("configure", "ssh_probe"): StagePolicy(REMOTE_READ, True, "Probe SSH reachability and device compatibility."),
+    ("configure", "confirm_enable_ssh"): StagePolicy(REBOOT, True, "Confirm SSH enablement and reboot through AirPort ACP."),
     ("configure", "acp_enable_ssh"): StagePolicy(REMOTE_WRITE, False, "Request SSH enablement through AirPort ACP."),
     ("configure", "wait_for_ssh_after_acp"): StagePolicy(REMOTE_READ, True, "Wait for SSH to open after ACP enablement."),
     ("configure", "ssh_probe_after_acp"): StagePolicy(REMOTE_READ, True, "Probe SSH again after ACP enablement."),

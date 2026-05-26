@@ -144,6 +144,8 @@ struct AddDeviceView: View {
             return "circle"
         case .discovering, .configuring, .savingProfile:
             return "hourglass"
+        case .awaitingConfirmation:
+            return "questionmark.circle"
         case .discoveryReady, .saved:
             return "checkmark.circle"
         case .discoveryEmpty:
@@ -157,6 +159,8 @@ struct AddDeviceView: View {
         switch store.state {
         case .discoveryReady, .saved:
             return .green
+        case .awaitingConfirmation:
+            return .yellow
         case .authFailed, .unsupported, .failed:
             return .red
         default:
