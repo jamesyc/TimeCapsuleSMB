@@ -12,7 +12,6 @@ import uuid
 from timecapsulesmb.transport.ssh import SshConnection, run_ssh
 
 
-NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE = "no writable persistent volume found"
 MAST_DISCOVERY_ATTEMPTS = 10
 MAST_DISCOVERY_DELAY_SECONDS = 3
 MAST_ACP_COMMAND = "/usr/bin/acp MaSt"
@@ -580,21 +579,3 @@ def select_payload_home_with_diagnostics_conn(
                 tuple(checks),
             )
     return PayloadHomeSelection(None, tuple(checks))
-
-
-def select_payload_home_conn(
-    connection: SshConnection,
-    volumes: tuple[MaStVolume, ...],
-    payload_dir_name: str,
-    *,
-    wait_seconds: int,
-) -> PayloadHome:
-    selection = select_payload_home_with_diagnostics_conn(
-        connection,
-        volumes,
-        payload_dir_name,
-        wait_seconds=wait_seconds,
-    )
-    if selection.payload_home is not None:
-        return selection.payload_home
-    raise RuntimeError(NO_WRITABLE_PERSISTENT_VOLUME_MESSAGE)

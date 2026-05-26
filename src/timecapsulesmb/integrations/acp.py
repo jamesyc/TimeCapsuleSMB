@@ -411,10 +411,6 @@ def set_dbug(
     set_property_int(host, password, "dbug", value, timeout=timeout)
 
 
-def get_dbug(host: str, password: str, *, timeout: float = 10.0) -> int:
-    return get_property_int(host, password, "dbug", timeout=timeout)
-
-
 def reboot(
     host: str,
     password: str,

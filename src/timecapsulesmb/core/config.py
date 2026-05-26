@@ -4,7 +4,6 @@ import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
-import ipaddress
 import re
 
 from timecapsulesmb.core.net import extract_host, ipv4_literal, is_link_local_ipv4
@@ -13,17 +12,9 @@ from timecapsulesmb.core.paths import package_project_root, resolve_app_paths
 REPO_ROOT = package_project_root()
 ENV_PATH = REPO_ROOT / ".env"
 MAX_DNS_LABEL_BYTES = 63
-MAX_DNS_NAME_BYTES = 255
 MAX_DNS_TXT_BYTES = 255
 MAX_NETBIOS_NAME_BYTES = 15
 MODEL_TXT_PREFIX = "model="
-ADISK_DEFAULT_DISK_KEY = "dk2"
-ADISK_MANAGED_DISK_ADVF = "0x82"
-ADISK_DISK_UUID_EXAMPLE = "12345678-1234-1234-1234-123456789012"
-ADISK_DISK_TXT_ADVF_PREFIX = "=adVF="
-ADISK_DISK_TXT_ADVN_MID = ",adVN="
-ADISK_DISK_TXT_SUFFIX = ",adVU="
-MAX_SAMBA_USER_BYTES = 32
 MANAGED_PAYLOAD_DIR_NAME = ".samba4"
 DEFAULT_SAMBA_AUTH_USER = "admin"
 DEFAULT_MDNS_DEVICE_MODEL = "TimeCapsule"
@@ -62,12 +53,6 @@ AIRPORT_SYAP_TO_MODEL = {
     for identity in AIRPORT_DEVICE_IDENTITIES
 }
 DEFAULT_SSH_TARGET_PLACEHOLDER = "root@192.168.x.x"
-
-
-def airport_identity_from_values(values: dict[str, str]) -> AirportDeviceIdentity | None:
-    syap = values.get("TC_AIRPORT_SYAP", "")
-    model = values.get("TC_MDNS_DEVICE_MODEL", "")
-    return AIRPORT_IDENTITIES_BY_SYAP.get(syap) or AIRPORT_IDENTITIES_BY_MODEL.get(model)
 
 
 DEFAULTS = {
@@ -315,17 +300,6 @@ def build_mdns_device_model_txt(value: str) -> Optional[str]:
     return txt
 
 
-def build_adisk_share_txt(value: str) -> Optional[str]:
-    txt = (
-        f"{ADISK_DEFAULT_DISK_KEY}{ADISK_DISK_TXT_ADVF_PREFIX}{ADISK_MANAGED_DISK_ADVF}"
-        f"{ADISK_DISK_TXT_ADVN_MID}{value}"
-        f"{ADISK_DISK_TXT_SUFFIX}{ADISK_DISK_UUID_EXAMPLE}"
-    )
-    if len(txt.encode("utf-8")) > MAX_DNS_TXT_BYTES:
-        return None
-    return txt
-
-
 def validate_mdns_device_model(value: str, field_name: str) -> Optional[str]:
     if not value:
         return f"{field_name} cannot be blank."
@@ -335,91 +309,6 @@ def validate_mdns_device_model(value: str, field_name: str) -> Optional[str]:
         return f"{field_name} must be 249 bytes or fewer."
     if _contains_invalid_control_character(value):
         return f"{field_name} contains an invalid control character."
-    return None
-
-
-def validate_mdns_instance_name(value: str, field_name: str) -> Optional[str]:
-    if not value:
-        return f"{field_name} cannot be blank."
-    if len(value.encode("utf-8")) > MAX_DNS_LABEL_BYTES:
-        return f"{field_name} must be {MAX_DNS_LABEL_BYTES} bytes or fewer."
-    if "." in value:
-        return f"{field_name} must not contain dots."
-    if _contains_invalid_control_character(value):
-        return f"{field_name} contains an invalid control character."
-    return None
-
-
-def validate_mdns_host_label(value: str, field_name: str) -> Optional[str]:
-    if not value:
-        return f"{field_name} cannot be blank."
-    if len(value.encode("utf-8")) > MAX_DNS_LABEL_BYTES:
-        return f"{field_name} must be {MAX_DNS_LABEL_BYTES} bytes or fewer."
-    try:
-        ipaddress.ip_address(value)
-        return f"{field_name} must be a single DNS label, not an IP address."
-    except ValueError:
-        pass
-    if "." in value:
-        return f"{field_name} must not contain dots."
-    if value.startswith("-") or value.endswith("-"):
-        return f"{field_name} must not start or end with a hyphen."
-    if not _has_only_safe_chars(value, r"[A-Za-z0-9-]+"):
-        return f"{field_name} may contain only letters, numbers, and hyphens."
-    return None
-
-
-def validate_netbios_name(value: str, field_name: str) -> Optional[str]:
-    if not value:
-        return f"{field_name} cannot be blank."
-    if len(value.encode("utf-8")) > MAX_NETBIOS_NAME_BYTES:
-        return f"{field_name} must be {MAX_NETBIOS_NAME_BYTES} bytes or fewer."
-    if _contains_invalid_control_character(value):
-        return f"{field_name} contains an invalid control character."
-    if not _has_only_safe_chars(value, r"[A-Za-z0-9_-]+"):
-        return f"{field_name} may contain only letters, numbers, underscores, and hyphens."
-    return None
-
-
-def validate_samba_user(value: str, field_name: str) -> Optional[str]:
-    if not value:
-        return f"{field_name} cannot be blank."
-    if len(value.encode("utf-8")) > MAX_SAMBA_USER_BYTES:
-        return f"{field_name} must be {MAX_SAMBA_USER_BYTES} bytes or fewer."
-    if _contains_invalid_control_character(value):
-        return f"{field_name} contains an invalid control character."
-    if _contains_whitespace(value):
-        return f"{field_name} must not contain whitespace."
-    if not _has_only_safe_chars(value, r"[A-Za-z0-9._-]+"):
-        return f"{field_name} may contain only letters, numbers, dots, underscores, and hyphens."
-    return None
-
-
-def validate_payload_dir_name(value: str, field_name: str) -> Optional[str]:
-    if not value:
-        return f"{field_name} cannot be blank."
-    if value in {".", ".."}:
-        return f"{field_name} must not be . or ..."
-    if "/" in value or "\\" in value:
-        return f"{field_name} must be a single directory name, not a path."
-    if value.startswith("-"):
-        return f"{field_name} must not start with a hyphen."
-    if _contains_invalid_control_character(value):
-        return f"{field_name} contains an invalid control character."
-    if not _has_only_safe_chars(value, r"[A-Za-z0-9._-]+"):
-        return f"{field_name} may contain only letters, numbers, dots, underscores, and hyphens."
-    return None
-
-
-def validate_net_iface(value: str, field_name: str) -> Optional[str]:
-    if not value:
-        return f"{field_name} cannot be blank."
-    if _contains_invalid_control_character(value):
-        return f"{field_name} contains an invalid control character."
-    if _contains_whitespace(value):
-        return f"{field_name} must not contain whitespace."
-    if not _has_only_safe_chars(value, r"[A-Za-z0-9._:-]+"):
-        return f"{field_name} may contain only letters, numbers, dots, underscores, colons, and hyphens."
     return None
 
 
@@ -502,8 +391,6 @@ def validate_mdns_device_model_matches_syap(syap: str, device_model: str) -> Opt
 
 CONFIG_VALIDATORS: dict[str, Callable[[str, str], Optional[str]]] = {
     "TC_HOST": validate_ssh_target,
-    "TC_SAMBA_USER": validate_samba_user,
-    "TC_PAYLOAD_DIR_NAME": validate_payload_dir_name,
     "TC_AIRPORT_SYAP": validate_airport_syap,
     "TC_MDNS_DEVICE_MODEL": validate_mdns_device_model,
     "TC_INTERNAL_SHARE_USE_DISK_ROOT": validate_bool,

@@ -88,7 +88,11 @@ from timecapsulesmb.deploy.verify import (
     verify_post_uninstall,
 )
 from timecapsulesmb.core.config import AppConfig
-from timecapsulesmb.device.processes import render_process_present
+from timecapsulesmb.device.processes import (
+    render_manager_process_present,
+    render_process_present_by_ucomm,
+    render_watchdog_process_present,
+)
 from timecapsulesmb.device.probe import (
     ManagedMdnsTakeoverProbeResult,
     ManagedRuntimeProbeResult,
@@ -7056,8 +7060,7 @@ fi
         self.assertEqual([call.args[1] for call in run_ssh_mock.call_args_list], expected)
 
     def test_render_process_present_ignores_zombies_for_name_and_full_matches(self) -> None:
-        def process_present(pattern: str, *, full: bool, ps_lines: list[str]) -> bool:
-            command = render_process_present(pattern, full=full)
+        def process_present(command: str, *, ps_lines: list[str]) -> bool:
             with tempfile.TemporaryDirectory() as tmp:
                 fixture = Path(tmp) / "ps.txt"
                 fixture.write_text("\n".join(ps_lines) + "\n")
@@ -7069,16 +7072,15 @@ fi
             self.assertEqual(result.stderr, "")
             return result.returncode == 0
 
-        self.assertFalse(process_present("wcifsnd", full=False, ps_lines=["Z    wcifsnd         (wcifsnd)"]))
-        self.assertTrue(process_present("wcifsnd", full=False, ps_lines=["S    wcifsnd         wcifsnd"]))
-        self.assertFalse(process_present("/mnt/Flash/watchdog.sh", full=True, ps_lines=["Z    sh              /bin/sh /mnt/Flash/watchdog.sh"]))
-        self.assertTrue(process_present("/mnt/Flash/watchdog.sh", full=True, ps_lines=["S    sh              /bin/sh /mnt/Flash/watchdog.sh"]))
-        self.assertFalse(process_present("/mnt/Flash/manager.sh", full=True, ps_lines=["Z    sh              /bin/sh /mnt/Flash/manager.sh"]))
-        self.assertTrue(process_present("/mnt/Flash/manager.sh", full=True, ps_lines=["S    sh              /bin/sh /mnt/Flash/manager.sh"]))
+        self.assertFalse(process_present(render_process_present_by_ucomm("wcifsnd"), ps_lines=["Z    wcifsnd         (wcifsnd)"]))
+        self.assertTrue(process_present(render_process_present_by_ucomm("wcifsnd"), ps_lines=["S    wcifsnd         wcifsnd"]))
+        self.assertFalse(process_present(render_watchdog_process_present(), ps_lines=["Z    sh              /bin/sh /mnt/Flash/watchdog.sh"]))
+        self.assertTrue(process_present(render_watchdog_process_present(), ps_lines=["S    sh              /bin/sh /mnt/Flash/watchdog.sh"]))
+        self.assertFalse(process_present(render_manager_process_present(), ps_lines=["Z    sh              /bin/sh /mnt/Flash/manager.sh"]))
+        self.assertTrue(process_present(render_manager_process_present(), ps_lines=["S    sh              /bin/sh /mnt/Flash/manager.sh"]))
         self.assertFalse(
             process_present(
-                "/mnt/Flash/watchdog.sh",
-                full=True,
+                render_watchdog_process_present(),
                 ps_lines=[
                     "S    sh              /bin/sh -c probe=/mnt/Flash/watchdog.sh",
                     "S    sh              sh -c /bin/sh -c 'probe=/mnt/Flash/watchdog.sh'",
@@ -7087,8 +7089,7 @@ fi
         )
         self.assertFalse(
             process_present(
-                "/mnt/Flash/manager.sh",
-                full=True,
+                render_manager_process_present(),
                 ps_lines=[
                     "S    sh              /bin/sh -c probe=/mnt/Flash/manager.sh",
                     "S    sh              sh -c /bin/sh -c 'probe=/mnt/Flash/manager.sh'",
@@ -7097,8 +7098,6 @@ fi
         )
 
     def test_render_process_present_rejects_generic_full_substring_matches(self) -> None:
-        with self.assertRaises(ValueError):
-            render_process_present("smbd", full=True)
         with self.assertRaises(ValueError):
             render_remote_action(StopProcessAction("smbd;rm"))
 

@@ -19,7 +19,6 @@ from timecapsulesmb.device.compat import (
     DeviceCompatibility,
     is_netbsd4_payload_family,
     render_compatibility_message,
-    require_compatibility,
 )
 from timecapsulesmb.device.probe import (
     ProbedDeviceState,
@@ -117,14 +116,6 @@ def confirm(
         if answer in {"n", "no"}:
             return False
         print("Please answer 'y' or 'n'.")
-
-
-def load_config_from_args(
-    args: argparse.Namespace,
-    *,
-    defaults: dict[str, str] | None = None,
-) -> AppConfig:
-    return load_env_config(env_path=config_path_from_args(args), defaults=defaults)
 
 
 def load_env_config(*, env_path: Path | None = None, defaults: dict[str, str] | None = None) -> AppConfig:
@@ -227,14 +218,6 @@ def resolve_validated_managed_target(
         return ManagedTargetState(connection=connection, interface_probe=None, probe_state=None)
     probe_state = probe_connection_state(connection) if include_probe else None
     return ManagedTargetState(connection=connection, interface_probe=None, probe_state=probe_state)
-
-
-def require_connection_compatibility(connection: SshConnection) -> DeviceCompatibility:
-    state = probe_connection_state(connection)
-    return require_compatibility(
-        state.compatibility,
-        fallback_error=state.probe_result.error or "Failed to determine remote device OS compatibility.",
-    )
 
 
 def require_supported_device_compatibility(

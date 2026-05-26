@@ -150,19 +150,11 @@ def build_runtime_activation_actions() -> list[RemoteAction]:
     ]
 
 
-def build_netbsd4_activation_actions() -> list[RemoteAction]:
-    return build_runtime_activation_actions()
-
-
 def build_runtime_activation_plan() -> ActivationPlan:
     return ActivationPlan(
         actions=build_runtime_activation_actions(),
         post_activation_checks=RUNTIME_ACTIVATION_CHECKS,
     )
-
-
-def build_netbsd4_activation_plan() -> ActivationPlan:
-    return build_runtime_activation_plan()
 
 
 def _deploy_reboot_required(startup_mode: DeploymentStartupMode) -> bool:

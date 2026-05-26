@@ -20,13 +20,13 @@ from timecapsulesmb.flash import (
     FlashAnalysisError,
     analyze_bank,
     analyze_flash_banks,
-    analysis_to_jsonable,
     build_patch,
     classify_login,
     find_gzip_member,
     find_footer,
     inspect_flash_banks,
     inspection_to_jsonable,
+    write_decision_for_bank,
 )
 
 
@@ -265,13 +265,12 @@ class FlashAnalysisTests(unittest.TestCase):
             cks2=bank_checksum(secondary),
             os_release="4.0_STABLE",
         )
-        payload = analysis_to_jsonable(analysis)
 
         self.assertEqual(analysis.active_bank, "primary")
         self.assertEqual(analysis.primary.login.classification, "already_patched")
         self.assertIsNone(analysis.primary.patch)
-        self.assertEqual(payload["banks"][0]["write_decision"], "active bank already patched; no patched output written")
-        self.assertEqual(payload["banks"][1]["write_decision"], "inactive bank left unmodified")
+        self.assertEqual(write_decision_for_bank(analysis, analysis.primary), "active bank already patched; no patched output written")
+        self.assertEqual(write_decision_for_bank(analysis, analysis.secondary), "inactive bank left unmodified")
 
     def test_analyze_flash_banks_refuses_active_unknown_login(self) -> None:
         primary = make_bank(login=b"#!/bin/sh\n# PROVIDE: LOGIN\nexit 0\n", release=b"NetBSD 4.0_STABLE #0: current")
@@ -284,12 +283,11 @@ class FlashAnalysisTests(unittest.TestCase):
             cks2=bank_checksum(secondary),
             os_release="4.0_STABLE",
         )
-        payload = analysis_to_jsonable(analysis)
 
         self.assertEqual(analysis.active_bank, "primary")
         self.assertEqual(analysis.primary.login.classification, "unknown")
         self.assertIsNone(analysis.primary.patch)
-        self.assertEqual(payload["banks"][0]["write_decision"], "active bank patch refused: LOGIN classification unknown")
+        self.assertEqual(write_decision_for_bank(analysis, analysis.primary), "active bank patch refused: LOGIN classification unknown")
 
     def test_analyze_bank_marks_acp_checksum_mismatch(self) -> None:
         bank = make_bank()

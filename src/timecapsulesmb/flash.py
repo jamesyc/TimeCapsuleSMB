@@ -705,30 +705,6 @@ def bank_to_jsonable(
     return payload
 
 
-def analysis_to_jsonable(analysis: FlashAnalysis) -> dict[str, object]:
-    return {
-        "active_bank": analysis.active_bank,
-        "write_policy": "active_bank_only",
-        "active_selection": {
-            "status": analysis.active_selection.status,
-            "candidates": list(analysis.active_selection.candidates),
-            "selected_by": analysis.active_selection.selected_by,
-        },
-        "banks": [
-            bank_to_jsonable(
-                analysis.primary,
-                would_write=analysis.active_bank == analysis.primary.name and analysis.primary.patch is not None,
-                write_decision=write_decision_for_bank(analysis, analysis.primary),
-            ),
-            bank_to_jsonable(
-                analysis.secondary,
-                would_write=analysis.active_bank == analysis.secondary.name and analysis.secondary.patch is not None,
-                write_decision=write_decision_for_bank(analysis, analysis.secondary),
-            ),
-        ],
-    }
-
-
 def bank_inspection_to_jsonable(
     bank: BankInspection,
     *,

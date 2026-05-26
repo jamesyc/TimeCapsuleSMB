@@ -10,10 +10,6 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from timecapsulesmb.configure_defaults import (  # noqa: E402
-    ConfigureValueChoice,
-    saved_value_choice,
-)
 from timecapsulesmb.core.net import ipv4_literal  # noqa: E402
 
 
@@ -23,13 +19,6 @@ class ConfigureDefaultsTests(unittest.TestCase):
         self.assertIsNone(ipv4_literal("fe80::1"))
         self.assertIsNone(ipv4_literal("10.0.1.999"))
         self.assertIsNone(ipv4_literal("capsule.local"))
-
-    def test_saved_value_choice_rejects_invalid_saved_config_values(self) -> None:
-        self.assertIsNone(saved_value_choice({"TC_AIRPORT_SYAP": "999"}, "TC_AIRPORT_SYAP", "Airport Utility syAP code"))
-        self.assertEqual(
-            saved_value_choice({"TC_AIRPORT_SYAP": "119"}, "TC_AIRPORT_SYAP", "Airport Utility syAP code"),
-            ConfigureValueChoice("119", "saved"),
-        )
 
 if __name__ == "__main__":
     unittest.main()

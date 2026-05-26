@@ -99,10 +99,6 @@ def cidr_family(cidr: str) -> NetworkFamily | None:
     return "ipv6" if network.version == 6 else "ipv4"
 
 
-def cidrs_for_family(cidrs: Sequence[str], family: NetworkFamily) -> tuple[str, ...]:
-    return tuple(cidr for cidr in cidrs if cidr_family(cidr) == family)
-
-
 def _adapter_ip_text(value: object) -> str | None:
     if isinstance(value, tuple):
         value = value[0] if value else ""
